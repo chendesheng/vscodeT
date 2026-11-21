@@ -16,7 +16,6 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const watcher_only = b.option(bool, "watcher-only", "Build only the file-watcher tests") orelse false;
-    const vscode_source = b.option([]const u8, "vscode-source", "Pinned VS Code checkout used to bundle the Node extension host");
     const onig_paths = OnigPaths{
         .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h"),
         .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library"),
@@ -48,6 +47,9 @@ pub fn build(b: *std.Build) void {
             }),
         });
 
+        const app_build_options = b.addOptions();
+        app_build_options.addOption(bool, "e2e", false);
+        exe.root_module.addOptions("build_options", app_build_options);
         exe.root_module.addImport("oniguruma", onig);
         exe.root_module.addImport("vscode_textmate", vscode_textmate);
         exe.root_module.addImport("ui", ui);
@@ -78,18 +80,17 @@ pub fn build(b: *std.Build) void {
     }
 
     setupWatcherTests(b, target, optimize);
-    setupExtensionHost(b, vscode_source);
+    setupExtensionHost(b);
 }
 
 /// The Node extension host is a runtime asset, not a Zig artifact: bundling it
 /// needs Node and the `host/` npm dependencies. Keep it behind an explicit step
-/// so `zig build` stays hermetic, and let `-Dvscode-source` point the bundle at
-/// the pinned VS Code checkout that the generated RPC table came from.
-fn setupExtensionHost(b: *std.Build, vscode_source: ?[]const u8) void {
+/// so `zig build` stays hermetic. The bundle always reads the pinned `vscode/`
+/// submodule, which is the source the generated RPC table comes from.
+fn setupExtensionHost(b: *std.Build) void {
     const host_step = b.step("host", "Bundle the Node extension host (host/dist/extensionHost.mjs)");
     const host_build = b.addSystemCommand(&.{ "node", "build.js" });
     host_build.setCwd(b.path("host"));
-    if (vscode_source) |path| host_build.setEnvironmentVariable("VSCODE_SOURCE_PATH", path);
     host_step.dependOn(&host_build.step);
 }
 
@@ -466,26 +467,70 @@ fn setupWatcherTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: 
     check_watcher_step.dependOn(&watcher_tests.step);
 }
 
+fn createTestRootModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.Optimize,
+    onig: *std.Build.Module,
+    vscode_textmate: *std.Build.Module,
+    ui: *std.Build.Module,
+    markdown: *std.Build.Module,
+    vscode_syntax: *std.Build.Module,
+    ghostty_vt: *std.Build.Module,
+    onig_paths: OnigPaths,
+    bench: bool,
+    e2e: bool,
+    bench_file: []const u8,
+) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addImport("oniguruma", onig);
+    module.addImport("vscode_textmate", vscode_textmate);
+    module.addImport("ui", ui);
+    module.addImport("markdown", markdown);
+    module.addImport("vscode-syntax", vscode_syntax);
+    module.addImport("ghostty-vt", ghostty_vt);
+    addOnigLibraryPath(b, module, onig_paths);
+    module.linkSystemLibrary("onig", .{});
+    linkPtyLibraries(module, target);
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "bench", bench);
+    build_options.addOption(bool, "e2e", e2e);
+    build_options.addOption([]const u8, "bench_file", bench_file);
+    module.addOptions("build_options", build_options);
+    return module;
+}
+
 fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, onig: *std.Build.Module, vscode_textmate: *std.Build.Module, ui: *std.Build.Module, markdown: *std.Build.Module, vscode_syntax: *std.Build.Module, ghostty_vt: *std.Build.Module, onig_paths: OnigPaths) void {
     const test_step = b.step("test", "Run all tests");
+    const bench_file = b.option(
+        []const u8,
+        "bench-file",
+        "File opened by the benchmark tests (default src/tui/app.zig)",
+    ) orelse "src/tui/app.zig";
 
     const tests = b.addTest(.{
         .name = "tests",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = createTestRootModule(
+            b,
+            target,
+            optimize,
+            onig,
+            vscode_textmate,
+            ui,
+            markdown,
+            vscode_syntax,
+            ghostty_vt,
+            onig_paths,
+            false,
+            false,
+            bench_file,
+        ),
     });
-    tests.root_module.addImport("oniguruma", onig);
-    tests.root_module.addImport("vscode_textmate", vscode_textmate);
-    tests.root_module.addImport("ui", ui);
-    tests.root_module.addImport("markdown", markdown);
-    tests.root_module.addImport("vscode-syntax", vscode_syntax);
-    tests.root_module.addImport("ghostty-vt", ghostty_vt);
-    addOnigLibraryPath(b, tests.root_module, onig_paths);
-    tests.root_module.linkSystemLibrary("onig", .{});
-    linkPtyLibraries(tests.root_module, target);
 
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
@@ -509,9 +554,28 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
 
     // The extension-host interop test needs Node, the esbuild bundle in
     // host/dist and the extracted VSCodeVim fixture. Keep it out of the
-    // hermetic `test` step; docs/extensions.md §15 defines this target.
-    const run_e2e_tests = b.addRunArtifact(tests);
-    run_e2e_tests.setEnvironmentVariable("ZIG_E2E_EXTENSION_HOST", "1");
+    // hermetic `test` step; docs/extensions.md §15 defines this target. The
+    // build option `e2e` replaces the old environment gate.
+    const e2e_tests = b.addTest(.{
+        .name = "e2e_tests",
+        .root_module = createTestRootModule(
+            b,
+            target,
+            optimize,
+            onig,
+            vscode_textmate,
+            ui,
+            markdown,
+            vscode_syntax,
+            ghostty_vt,
+            onig_paths,
+            false,
+            true,
+            bench_file,
+        ),
+        .filters = &.{ "Extensions:", "VSCodeVim" },
+    });
+    const run_e2e_tests = b.addRunArtifact(e2e_tests);
     const e2e_test_step = b.step("test-e2e", "Run the extension-host interop tests");
     e2e_test_step.dependOn(&run_e2e_tests.step);
 
@@ -528,11 +592,24 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     // tests are skipped in the normal suite unless this step enables them.
     const bench_tests = b.addTest(.{
         .name = "open_bench",
-        .root_module = tests.root_module,
+        .root_module = createTestRootModule(
+            b,
+            target,
+            optimize,
+            onig,
+            vscode_textmate,
+            ui,
+            markdown,
+            vscode_syntax,
+            ghostty_vt,
+            onig_paths,
+            true,
+            false,
+            bench_file,
+        ),
         .filters = &.{"benchmark:"},
     });
     const run_bench_tests = b.addRunArtifact(bench_tests);
-    run_bench_tests.setEnvironmentVariable("VSCODE_TEXTBUFFER_BENCH", "1");
     const bench_test_step = b.step("bench-open", "Run the Debug open/edit benchmarks");
     bench_test_step.dependOn(&run_bench_tests.step);
 

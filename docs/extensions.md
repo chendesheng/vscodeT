@@ -685,10 +685,9 @@ files.
 The launcher is bundled, not run from an `out/` build: `host/build.js` asks
 esbuild for the module graph reachable from `host/extensionHost.ts` and writes
 `host/dist/extensionHost.mjs`. The launcher's `../vscode/` imports resolve
-against `VSCODE_SOURCE_PATH` (default `vscode/`), so the bundle is always
-built from the tree the RPC table was generated from. `zig build host`
-wraps that step and accepts `-Dvscode-source=<dir>`; `zig build` itself stays
-free of Node and npm. The bundle needs `@vscode/ripgrep` and `@vscode/spdlog`
+against the pinned `vscode/` submodule, so the bundle is always built from the
+tree the RPC table was generated from. `zig build host` wraps that step;
+`zig build` itself stays free of Node and npm. The bundle needs `@vscode/ripgrep` and `@vscode/spdlog`
 at runtime: the first is imported by the search services, the second by
 `SpdLogLogger`. Both are declared in `host/package.json`, as is `esbuild`
 (the bundler is a dependency, not a dev-only tool, so `npm ci` is enough even
@@ -1950,8 +1949,8 @@ markers remain deferred.
 The built-in `typescript-language-features` extension is not reimplemented.
 `host/build-typescript-extension.js` copies VS Code's shipped extension bundle
 and its TypeScript SDK (`extensions/node_modules/typescript`) into
-`host/dist/extensions`; `VSCODE_APP_PATH`/`TYPESCRIPT_SDK` select another
-installation. `extensionHostManager.buildInitData` now emits all loadable
+`host/dist/extensions`; it autodetects a standard VS Code installation and uses
+that installation's bundled SDK. `extensionHostManager.buildInitData` now emits all loadable
 extensions (the TypeScript builtin plus the user VSCodeVim instance) in one
 payload, with per-extension `isBuiltin` and activation events. The workbench
 sends `$activateByEvent("onLanguage:<id>")` after the document delta is queued;

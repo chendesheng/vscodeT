@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
+const theme_colors_mod = @import("../../../browser/themeColors.zig");
 const service_mod = @import("./terminalService.zig");
 const terminal_view = @import("./terminalRenderer.zig");
 
@@ -45,14 +46,18 @@ pub fn contentRect(rect: ui.Rect) ui.Rect {
     };
 }
 
-pub fn render(grid: *ui.CellGrid, service: *TerminalService, rect: ui.Rect, focused: bool) !void {
+pub fn render(grid: *ui.CellGrid, service: *TerminalService, rect: ui.Rect, focused: bool, palette: ?*const theme_colors_mod.ThemeColors) !void {
     const l = layout(rect);
     if (l.content_width == 0 or ui.cell.snap(rect.h) == 0) return;
 
-    const bar_bg = if (focused)
-        ui.cell.PaintStyle{ .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }) }
+    const bar_background = if (palette) |colors|
+        colors.color("panel.background", .{ 30, 30, 33 })
+    else if (focused)
+        ui.Color{ .r = 30, .g = 30, .b = 33 }
     else
-        ui.cell.PaintStyle{ .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }) };
+        ui.Color{ .r = 37, .g = 37, .b = 38 };
+    const terminal_background = if (palette) |colors| colors.color("terminal.background", .{ 30, 30, 33 }) else ui.Color{ .r = 30, .g = 30, .b = 33 };
+    const bar_bg = ui.cell.PaintStyle{ .bg = ui.cell.packColor(bar_background) };
     grid.fillRect(rect.x, @floatFromInt(l.tab_y), rect.w, 1, bar_bg);
 
     var x = l.content_x;
@@ -65,11 +70,14 @@ pub fn render(grid: *ui.CellGrid, service: *TerminalService, rect: ui.Rect, focu
         const tab_width: usize = 18;
         if (x + tab_width + 3 > right_limit) break;
         const style = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(if (active)
-                .{ .r = 255, .g = 255, .b = 255 }
-            else
-                .{ .r = 150, .g = 150, .b = 150 }),
-            .bg = if (active)
+            .fg = ui.cell.packColor(if (palette) |colors| colors.color(
+                if (active) "panelTitle.activeForeground" else "panelTitle.inactiveForeground",
+                if (active) .{ 255, 255, 255 } else .{ 150, 150, 150 },
+            ) else if (active) ui.Color{ .r = 255, .g = 255, .b = 255 } else ui.Color{ .r = 150, .g = 150, .b = 150 }),
+            .bg = if (palette) |colors| ui.cell.packColor(colors.color(
+                if (active) "panelTitle.activeBackground" else "panel.background",
+                if (active) .{ 45, 45, 48 } else .{ 30, 30, 33 },
+            )) else if (active)
                 ui.cell.packColor(.{ .r = 45, .g = 45, .b = 48 })
             else
                 bar_bg.bg,
@@ -85,29 +93,30 @@ pub fn render(grid: *ui.CellGrid, service: *TerminalService, rect: ui.Rect, focu
     const actions = "+ x";
     if (right_limit >= actions.len) {
         const action_style = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(.{ .r = 190, .g = 190, .b = 190 }),
+            .fg = ui.cell.packColor(if (palette) |colors| colors.color("descriptionForeground", .{ 190, 190, 190 }) else ui.Color{ .r = 190, .g = 190, .b = 190 }),
             .bg = bar_bg.bg,
         };
         _ = drawText(grid, right_limit - actions.len, l.tab_y, actions.len, actions, action_style);
     }
 
+    const content = contentRect(rect);
+    grid.fillRect(
+        content.x,
+        content.y,
+        content.w,
+        content.h,
+        .{ .bg = ui.cell.packColor(terminal_background) },
+    );
     if (service.active()) |instance| {
-        try terminal_view.paint(&instance.emulator, grid, contentRect(rect));
+        try terminal_view.paint(&instance.emulator, grid, content);
     } else {
-        grid.fillRect(
-            @floatFromInt(l.content_x),
-            @floatFromInt(l.content_y),
-            @floatFromInt(l.content_width),
-            @floatFromInt(l.content_height),
-            .{ .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }) },
-        );
         _ = drawText(
             grid,
             l.content_x + 1,
             l.content_y,
             l.content_width -| 1,
             "No terminals",
-            .{ .fg = ui.cell.packColor(.{ .r = 150, .g = 150, .b = 150 }) },
+            .{ .fg = ui.cell.packColor(if (palette) |colors| colors.color("descriptionForeground", .{ 150, 150, 150 }) else ui.Color{ .r = 150, .g = 150, .b = 150 }) },
         );
     }
 }

@@ -60,8 +60,8 @@ required for the measurements below.
   loads its TextMate grammar once per process.
 - `zig build bench-open` runs the opt-in `benchmark:` tests: open stages, edit
   stage breakdown, one-line/page/wheel scroll frames, word-highlight scanning,
-  and the viewport-tokenization contract.
-  Set `VSCODE_TEXTBUFFER_BENCH_FILE` to benchmark another file (default
+  and the viewport-tokenization contract. Pass
+  `-Dbench-file=<path>` to benchmark another file (default
   `src/tui/app.zig`).
 - An end-to-end profile of the default Debug build and ReleaseFast, including
   VSCodeVim interaction latency and CPU hotspots, is in
@@ -90,8 +90,8 @@ Without an initialized submodule, `zig build` still works with the vendored
 grammar and theme fallbacks in `src/support/` (Zig, TOML, YAML and Markdown,
 plus Dark+); the remaining upstream syntax/theme assets, language
 configurations and the Node extension host need `vscode/`.
-`-Dvscode-source=<dir>` / `VSCODE_SOURCE_PATH` can point the host bundle at
-another checkout, but it must be the same 1.147.0 tree.
+The host bundle always reads the pinned `vscode/` submodule; there is no
+checkout override, so the protocol table and bundle cannot drift apart.
 
 Bumping the pin is not a routine dependency update: the generated protocol
 table and the ported line counts are tied to this commit. Move the submodule
@@ -165,9 +165,12 @@ line format as upstream's `FileLogger`:
 2026-11-17 03:36:00.568Z [info] workbench ready: 2 tab(s)
 ```
 
-The file defaults to `$XDG_STATE_HOME/vscode-textbuffer/logs/main.log`
-(`$HOME/.local/state/...` fallback) and `VSCODE_TEXTBUFFER_LOG` overrides the
-path. Timestamps are UTC because the terminal host has no time-zone database.
+The file lives in the terminal user data directory's `logs` folder
+(`~/Library/Application Support/vscode-textbuffer/logs/main.log` on macOS,
+`$XDG_CONFIG_HOME/vscode-textbuffer/logs/main.log` on Linux,
+`%APPDATA%\vscode-textbuffer\logs\main.log` on Windows); the upstream
+`--logsPath <dir>` switch overrides the directory. Timestamps are UTC because
+the terminal host has no time-zone database.
 Console loggers, the URI-keyed `ILoggerService` registry and the log-output
 picker are not ported: the TUI owns the terminal (alternate screen, raw mode)
 and has a single log file instead of per-channel resources.
@@ -199,14 +202,13 @@ fails at runtime.
 ```sh
 cd host && npm ci                          # esbuild, @vscode/ripgrep, @vscode/spdlog
 cd .. && zig build host                    # bundles from the pinned vscode/ submodule
-zig build run -- [--extensions-dir <dir>] [<file>...]
+zig build run -- [--user-data-dir <dir>] [--extensions-dir <dir>] [--logsPath <dir>] [<file>...]
 zig build test-e2e                        # boots the host and edits through VSCodeVim
 ```
 
-`-Dvscode-source` becomes `VSCODE_SOURCE_PATH` for `host/build.js` and defaults
-to `vscode/`, the embedded pinned checkout. Pass it only to bundle a different
-1.147.0 tree. `zig build` itself never runs Node; `zig build host` is the
-explicit step that produces `host/dist/extensionHost.mjs`.
+`host/build.js` always reads the embedded pinned `vscode/` checkout. `zig build`
+itself never runs Node; `zig build host` is the explicit step that produces
+`host/dist/extensionHost.mjs`.
 
 `npm run build:json` (in `host/`) is the optional `host/dist/jsonServer.mjs`
 step. If the host bundle is missing at startup, the app reports
@@ -220,9 +222,9 @@ ConPTY and a named-pipe transport are follow-ups.
 
 `npm run build:typescript-extension` (in `host/`) is the optional step that
 provisions VS Code's real `typescript-language-features` extension and
-its TypeScript SDK under `host/dist/extensions`. It uses an installed VS Code by
-default; set `VSCODE_APP_PATH` to choose one, or `TYPESCRIPT_SDK` to override
-the SDK. The extension is a runtime asset, not vendored source.
+its TypeScript SDK under `host/dist/extensions`. It autodetects a standard VS Code
+installation and copies the extension and SDK from it; there is no path or SDK
+override. The extension is a runtime asset, not vendored source.
 
 The JSON server bundle reuses the runtime dependencies of the pinned
 `vscode/extensions/json-language-features/server`; install them there first
@@ -323,10 +325,9 @@ unsupported. Provider calls are synchronous with a bounded timeout
 because the terminal editor has no asynchronous provider boundary.
 
 Host stderr is written to `<data dir>/extension-host.log` (normally
-`~/.local/state/vscode-textbuffer/extensions/extension-host.log`) so it cannot
+`<user-data-dir>/logs/extension-host.log`) so it cannot
 corrupt the TUI frame. Startup failures that disable the host are logged to
-the main log (`$XDG_STATE_HOME/vscode-textbuffer/logs/main.log`, normally
-`~/.local/state/vscode-textbuffer/logs/main.log`). `test-e2e` is skipped unless `host/dist/extensionHost.mjs`
+the main log (`<user-data-dir>/logs/main.log`). `test-e2e` is skipped unless `host/dist/extensionHost.mjs`
 and the extracted fixture at `.cache-ext/vim/extension` are present. Caret and
 selection changes the TUI makes itself (click, drag, TUI-handled keys, find)
 are pushed to the host with upstream's `source` string, so VSCodeVim's cursor
@@ -475,24 +476,85 @@ console API for raw mode, sizing and input polling.
   controller (per-segment focus/hover) and identity-provider diffing through
   the object models.
 - The configuration service (`src/vs/workbench/services/configuration/browser/configurationService.zig`)
-  resolves defaults, user settings, the workspace file's `settings` block and
-  each folder's `.vscode/settings.json`, in that precedence order. It uses the
-  ported `ConfigurationModel`/`ConfigurationRegistry` and accepts JSONC
-  comments and trailing commas. User settings default to
-  `$XDG_CONFIG_HOME/vscode-textbuffer/settings.json` (or
-  `$HOME/.config/vscode-textbuffer/settings.json`); set
-  `VSCODE_TEXTBUFFER_USER_SETTINGS` to override the path. The TUI watches the
-  user settings file, the workspace file and each folder's
-  `.vscode/settings.json`, and reloads the service automatically. Not ported:
-  - `updateValue` and settings editing (needs the JSONC-preserving configuration
-    editing service);
-  - language override blocks such as `[typescript]` (override models are not
-    ported);
+  resolves defaults, the VS Code profile's user settings, the terminal's own
+  user settings, the workspace file's `settings` block and each folder's
+  `.vscode/settings.json`, in that precedence order. It uses the ported
+  `ConfigurationModel`/`ConfigurationRegistry` and accepts JSONC comments and
+  trailing commas. The profile layer is the VS Code stable `User` directory
+  (`~/Library/Application Support/Code/User` on macOS, `~/.config/Code/User` on
+  Linux, `%APPDATA%\Code\User` on Windows). There is no environment override,
+  matching upstream. The terminal layer is the TUI profile's
+  `<user-data-dir>/User/settings.json`, using upstream `userDataPath.ts`
+  precedence: `VSCODE_PORTABLE` → `<portable>/user-data`, `VSCODE_APPDATA` →
+  `<appdata>/vscode-textbuffer`, `--user-data-dir <dir>`, then the platform
+  application-data directory (`~/Library/Application Support/vscode-textbuffer`,
+  `$XDG_CONFIG_HOME/vscode-textbuffer`, `%APPDATA%\vscode-textbuffer`).
+  `src/tui/vscodeProfile.zig` owns the discovery. The TUI watches every user
+  layer, the workspace file, each folder's `.vscode/settings.json` and the
+  keybinding files, and reloads automatically. "Preferences: Open User Settings
+  (JSON)" in the command palette opens the terminal layer and creates it when
+  missing. Not ported:
+  - `updateValue` and settings editing through the configuration service (the
+    JSON file is edited directly);
   - policy, application, remote and profile scopes (those services do not exist
     in the terminal workbench);
   - trusted-workspace filtering and restricted settings (no workspace-trust
     service);
-  - the Settings editor/view, which remains a placeholder.
+  - the Settings editor/view, which remains a placeholder. Language override
+    blocks such as `[typescript]` resolve through `getValue(...,
+    override_identifier)` but are not projected by a Settings UI.
+- Color themes are discovered from the pinned `theme-defaults` extension (all
+  ten built-in themes), then the VS Code profile's extensions folder (later
+  roots win for duplicate theme ids). `src/tui/vscodeProfile.zig` resolves the
+  extensions path with upstream's `--extensions-dir`/`VSCODE_EXTENSIONS`/
+  `VSCODE_PORTABLE` behavior and `extensionsRegistry.scanThemes` parses only
+  `contributes.themes`, so installed languages/grammars are not pulled in. The
+  setting value is the contributed theme `id` (falling back to its label) and
+  `workbench.colorTheme` defaults to `Dark 2026`; the preferred dark/light/HC
+  theme settings and `migrateThemeSettingsId` legacy ids are honored.
+  `ThemeService` loads JSONC themes and `include` chains from the extension
+  root, applies `workbench.colorCustomizations` (flat and `[theme]`-scoped),
+  `editor.tokenColorCustomizations` (`textMateRules`, flat and theme-scoped) and
+  the flat semantic rule map, and fires a change event. The TUI rebuilds the
+  token theme from the active `ColorThemeData`, so syntax colors switch live
+  when the settings file is saved. `src/vs/workbench/browser/themeColors.zig`
+  resolves color ids to terminal cells (alpha composited over
+  `editor.background`, with the previous literal as fallback); the editor
+  current-line highlight is wired through it. The remaining UI chrome
+  (status bar, tabs, activity bar, sidebar, search/SCM, terminal panel,
+  quick picker, markdown preview) still uses the original terminal palette and
+  is the remaining full-UI theming work; icon themes and the Color Theme picker
+  are not ported. The terminal host reports a dark scheme for
+  `window.autoDetectColorScheme` (no portable OS color-scheme API). Without the
+  `vscode/` submodule the built-in theme files are unavailable; the workbench
+  keeps the `vs-dark` fallback entry active and installs the bundled Dark+
+  syntax theme through the legacy loader.
+- User keybindings are read from the VS Code profile's `keybindings.json` and
+  then the TUI profile's `<user-data-dir>/User/keybindings.json` (later entries
+  win). Use the upstream `--user-data-dir <dir>` switch to relocate the TUI
+  profile; "Preferences: Open Keyboard Shortcuts (JSON)" opens its file. The ported
+  `KeybindingParser`/`keybindingIO` read the upstream array format (JSONC,
+  platform `key` variants, chords, `when`, `args`, `systemWide` and
+  `-command` removals), and the resolved items are passed to the workbench
+  keybinding hosts: user bindings resolve before defaults, removals subtract
+  the matching default rules from the global, tab, status-bar, search and
+  editor-shortcut hosts. The shared `ContextKeyService` sets the focus keys
+  (`editorTextFocus`, `editorFocus`, `listFocus`, `inputFocus`, `sideBarFocus`,
+  `statusBarFocus`, `terminalFocus`, `inQuickOpen`, `inFilesPicker`, the
+  Explorer/Search/SCM viewlet keys and a small `resourceScheme`/read-only set);
+  unknown keys stay undefined and therefore false. User items whose command is
+  not registered in the terminal's command table are ignored with a log entry
+  instead of swallowing the key, a documented terminal deviation from VS Code's
+  command-not-found error. The file is watched and the hosts rebuild on change.
+  Not ported: extension-contributed `contributes.keybindings`, the Keyboard
+  Shortcuts editor, `keyboard.dispatch`/layout settings, command arguments
+  consumed by commands (they are parsed and carried on the item only). The
+  VS Code `list.*` navigation ids are registered as a small bridge that
+  synthesizes the corresponding list navigation for the focused Explorer,
+  Search or Source Control view (`focusUp/Down/First/Last/PageUp/PageDown`,
+  `collapse`, `expand`, `toggleExpand`, `select`); Explorer file-operation
+  commands (rename/delete/copy/cut/paste/new file/folder) remain unported and
+  are filtered as unknown.
 - The file watcher (`src/vs/platform/files/...`) ports the VS Code service and
   the Linux/macOS/Windows backends: `common/files.zig` and
   `common/watcher.zig` for change/request contracts, coalescing, pattern
@@ -668,8 +730,10 @@ console API for raw mode, sizing and input polling.
   "Go to File" with recent editors first and workspace files as the query is
   typed, and typing `>` switches to the command selector. The command selector
   is also bound to `Alt-P` because a plain terminal reports `Ctrl-Shift-P` as
-  `Ctrl-P`; the action metadata keeps the upstream command ids and labels. Up,
-  Down, PageUp/PageDown, Ctrl-Home/Ctrl-End navigate, Enter accepts, Escape or
+  `Ctrl-P`; the action metadata keeps the upstream command ids and labels.
+  Ctrl-N/Ctrl-P select the next/previous item (the terminal form of the macOS
+  quick-pick bindings), Up/Down and PageUp/PageDown move by one or a page,
+  Ctrl-Home/Ctrl-End jump to the ends, Enter accepts, Escape or
   an outside click closes, the wheel scrolls the list, and clicking a row
   accepts it. The workspace file index is built lazily while the picker is
   open, honors `.gitignore`/`.ignore` through the same ported `IgnoreFile`,

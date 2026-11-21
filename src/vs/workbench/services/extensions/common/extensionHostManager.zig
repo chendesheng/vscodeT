@@ -83,7 +83,9 @@ pub const Options = struct {
     extensions: []const *const ExtensionDescription,
     workspace_path: ?[]const u8 = null,
     workspace_name: []const u8 = "workspace",
-    data_path: []const u8,
+    /// The TUI user data directory; storage and logs follow upstream's
+    /// `<userData>/User/...` and `<userData>/logs` layout.
+    user_data_dir: []const u8,
     app_root: []const u8,
     parent_pid: u32,
 };
@@ -157,7 +159,7 @@ pub const HostManager = struct {
         errdefer allocator.free(self.socket_path);
 
         for (options.extensions) |extension| {
-            const extension_storage = try std.fs.path.join(allocator, &.{ options.data_path, "globalStorage", extension.identifier });
+            const extension_storage = try std.fs.path.join(allocator, &.{ options.user_data_dir, "User", "globalStorage", extension.identifier });
             defer allocator.free(extension_storage);
             std.Io.Dir.cwd().createDirPath(self.io, extension_storage) catch {};
         }
@@ -165,7 +167,10 @@ pub const HostManager = struct {
         const address = std.Io.net.UnixAddress.init(self.socket_path) catch return ExtensionHostError.SocketSetupFailed;
         self.server = address.listen(self.io, .{}) catch return ExtensionHostError.SocketSetupFailed;
 
-        const stderr_path = try std.fs.path.join(allocator, &.{ options.data_path, "extension-host.log" });
+        const stderr_path = try std.fs.path.join(allocator, &.{ options.user_data_dir, "logs", "extension-host.log" });
+        if (std.fs.path.dirname(stderr_path)) |directory| {
+            std.Io.Dir.cwd().createDirPath(self.io, directory) catch {};
+        }
         defer allocator.free(stderr_path);
         // Spawn through the shell and redirect there. Zig's posix_spawn path
         // returns EBADF for `.pipe`/`.file` stdio in the interactive TUI (the
@@ -497,8 +502,8 @@ pub fn buildInitData(
     try environment.put(arena, "appLanguage", .{ .string = "en" });
     try environment.put(arena, "isExtensionTelemetryLoggingOnly", .{ .bool = false });
     try environment.put(arena, "appUriScheme", .{ .string = "zig-editor" });
-    try environment.put(arena, "globalStorageHome", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.data_path, "globalStorage" })));
-    try environment.put(arena, "workspaceStorageHome", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.data_path, "workspaceStorage" })));
+    try environment.put(arena, "globalStorageHome", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.user_data_dir, "User", "globalStorage" })));
+    try environment.put(arena, "workspaceStorageHome", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.user_data_dir, "User", "workspaceStorage" })));
     try environment.put(arena, "useHostProxy", .{ .bool = false });
     try environment.put(arena, "skipWorkspaceStorageLock", .{ .bool = true });
     try root.put(arena, "environment", .{ .object = environment });
@@ -568,7 +573,7 @@ pub fn buildInitData(
     try root.put(arena, "telemetryInfo", .{ .object = telemetry });
     try root.put(arena, "logLevel", .{ .integer = 1 });
     try root.put(arena, "loggers", .{ .array = std.json.Array.init(arena) });
-    try root.put(arena, "logsLocation", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.data_path, "logs" })));
+    try root.put(arena, "logsLocation", try fileUri(arena, try std.fs.path.resolve(arena, &.{ options.user_data_dir, "logs" })));
     try root.put(arena, "autoStart", .{ .bool = false });
 
     var remote: std.json.ObjectMap = .empty;

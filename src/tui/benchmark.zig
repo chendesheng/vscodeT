@@ -2,18 +2,19 @@
 //!
 //! The timing tests are opt-in so `zig build test` stays deterministic; the
 //! viewport-tokenization contract test runs in the normal suite as well.
-//! The `bench-open` build step sets `VSCODE_TEXTBUFFER_BENCH=1` and runs the
-//! `benchmark:` filter:
+//! The `bench-open` build step compiles the same suite with
+//! `build_options.bench = true` and runs the `benchmark:` filter:
 //!
 //!     zig build bench-open
+//!     zig build bench-open -Dbench-file=<path>
 //!
-//! The default file is `src/tui/app.zig`; override with
-//! `VSCODE_TEXTBUFFER_BENCH_FILE`. Timings use the monotonic clock and the
-//! page allocator so the numbers reflect the app more closely than the
+//! The default file is `src/tui/app.zig`. Timings use the monotonic clock and
+//! the page allocator so the numbers reflect the app more closely than the
 //! testing allocator does. They are diagnostics, not assertions: only the
 //! structural checks (viewport tokenization, unattached model) assert.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const time_compat = @import("../vs/base/common/timeCompat.zig");
@@ -23,18 +24,14 @@ const FileEditorInput = @import("../vs/workbench/contrib/files/browser/editors/f
 const Position = @import("../vs/editor/common/core/position.zig").Position;
 const TextualDocumentHighlightProvider = @import("../vs/editor/contrib/wordHighlighter/browser/textualHighlightProvider.zig").TextualDocumentHighlightProvider;
 
-const bench_env = "VSCODE_TEXTBUFFER_BENCH";
-const file_env = "VSCODE_TEXTBUFFER_BENCH_FILE";
-const default_file = "src/tui/app.zig";
 const iterations: usize = 5;
 
 fn enabled() bool {
-    return std.c.getenv(bench_env) != null;
+    return build_options.bench;
 }
 
 fn benchFile() []const u8 {
-    const raw = std.c.getenv(file_env) orelse return default_file;
-    return std.mem.span(raw);
+    return build_options.bench_file;
 }
 
 fn nowUs(io: Io) i64 {

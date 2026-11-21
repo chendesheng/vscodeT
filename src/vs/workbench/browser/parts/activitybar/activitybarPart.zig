@@ -191,6 +191,7 @@ pub const ActivityBarPart = struct {
 // ---------------------------------------------------------------------------
 
 const ui = @import("ui");
+const theme_colors_mod = @import("../../themeColors.zig");
 const ActivityService = @import("../../../services/activity/browser/activityService.zig").ActivityService;
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
@@ -221,6 +222,7 @@ pub fn render(
     rect: ui.Rect,
     active: usize,
     focused: bool,
+    palette: ?*const theme_colors_mod.ThemeColors,
 ) void {
     if (!part.visible) return;
     const x = ui.cell.snap(rect.x);
@@ -229,15 +231,26 @@ pub fn render(
     const height = ui.cell.snap(rect.h);
     if (width == 0 or height == 0) return;
 
-    const base = PaintStyle{
+    var base = PaintStyle{
         .fg = ui.cell.packColor(.{ .r = 130, .g = 130, .b = 135 }),
         .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
     };
-    const active_style = PaintStyle{
+    var active_style = PaintStyle{
         .fg = ui.cell.packColor(.{ .r = 245, .g = 245, .b = 245 }),
         .bg = ui.cell.packColor(.{ .r = 45, .g = 45, .b = 50 }),
     };
-    const badge_foreground = ui.cell.packColor(.{ .r = 250, .g = 200, .b = 80 });
+    var badge_foreground = ui.cell.packColor(.{ .r = 250, .g = 200, .b = 80 });
+    if (palette) |colors| {
+        base = .{
+            .fg = ui.cell.packColor(colors.color("activityBar.inactiveForeground", .{ 130, 130, 135 })),
+            .bg = ui.cell.packColor(colors.color("activityBar.background", .{ 30, 30, 33 })),
+        };
+        active_style = .{
+            .fg = ui.cell.packColor(colors.color("activityBar.foreground", .{ 245, 245, 245 })),
+            .bg = ui.cell.packColor(colors.color("activityBar.activeBackground", .{ 45, 45, 50 })),
+        };
+        badge_foreground = ui.cell.packColor(colors.color("activityBarBadge.foreground", .{ 250, 200, 80 }));
+    }
     grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), base);
 
     var visible_index: usize = 0;
@@ -305,7 +318,7 @@ test "activityBar: draws the active entry from the model" {
     for (default_activities) |activity| try part.addActivity(activity);
     try part.setVisible(true);
 
-    render(&part, null, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true);
+    render(&part, null, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true, null);
     const row = try grid.rowText(allocator, 2);
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "F") != null);
@@ -316,7 +329,7 @@ test "activityBar: draws the active entry from the model" {
         .id = "search.results",
         .badge = .{ .description = "572" },
     });
-    render(&part, &service, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true);
+    render(&part, &service, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true, null);
     const badge_row = try grid.rowText(allocator, 2);
     defer allocator.free(badge_row);
     try std.testing.expect(std.mem.indexOf(u8, badge_row, "•") != null);

@@ -122,10 +122,11 @@ with the documented omissions listed at the end of this document.
   (adapter forwarding/no-swallow behavior, duplicate suppression window,
   native-error and stackless formatting, per-handler suppression, level
   filtering).
-- `src/tui/logger.zig` is now the terminal host over that core: one synchronous
-  `main.log` in upstream `FileLogger` line format with UTC timestamps, and
-  `app.zig` reports startup, session outcomes and errors through the log
-  service. `VSCODE_TEXTBUFFER_LOG` overrides the path.
+- `src/vs/platform/log/common/fileLog.zig` is the terminal host over that core:
+  one synchronous `main.log` in upstream `FileLogger` line format with UTC
+  timestamps, and `app.zig` reports startup, session outcomes and errors
+  through the log service. The path comes from the upstream `logsPath`
+  resolution (`<user-data-dir>/logs` or `--logsPath`).
 - Documented gap: the console loggers, the URI-keyed `ILoggerService` registry
   and the log-output picker are not ported. The TUI owns the terminal and has a
   single log file instead of per-channel resources.

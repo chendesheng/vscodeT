@@ -12,6 +12,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const ui = @import("ui");
+const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
 const Range = @import("../vs/editor/common/core/range.zig").Range;
@@ -27,13 +28,13 @@ const scrolling = @import("../vs/workbench/contrib/markdown/browser/scrolling.zi
 const preview_config = @import("../vs/workbench/contrib/markdown/browser/markdownPreviewConfig.zig");
 const cellMetrics = @import("./cellMetrics.zig");
 
-const preview_background = ui.Color{ .r = 30, .g = 30, .b = 33 };
-const preview_foreground = ui.Color{ .r = 204, .g = 204, .b = 204 };
-const code_background = ui.Color{ .r = 30, .g = 30, .b = 30 };
-const active_line_background = ui.Color{ .r = 70, .g = 76, .b = 84 };
-const scrollbar_track = ui.Color{ .r = 30, .g = 32, .b = 40 };
-const scrollbar_thumb = ui.Color{ .r = 105, .g = 108, .b = 122 };
-const divider_color = ui.Color{ .r = 70, .g = 70, .b = 70 };
+const base_preview_background = ui.Color{ .r = 30, .g = 30, .b = 33 };
+const base_preview_foreground = ui.Color{ .r = 204, .g = 204, .b = 204 };
+const base_code_background = ui.Color{ .r = 30, .g = 30, .b = 30 };
+const base_active_line_background = ui.Color{ .r = 70, .g = 76, .b = 84 };
+const base_scrollbar_track = ui.Color{ .r = 30, .g = 32, .b = 40 };
+const base_scrollbar_thumb = ui.Color{ .r = 105, .g = 108, .b = 122 };
+const base_divider_color = ui.Color{ .r = 70, .g = 70, .b = 70 };
 
 pub const MarkdownPreview = struct {
     allocator: Allocator,
@@ -66,6 +67,7 @@ pub const MarkdownPreview = struct {
     reveal_timer: DeadlineTimer = .{},
     view_handler: ViewEventHandler = .{},
     last_error: ?anyerror = null,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
 
     pub fn init(allocator: Allocator, editor: *Editor) !*MarkdownPreview {
         const self = try allocator.create(MarkdownPreview);
@@ -79,6 +81,11 @@ pub const MarkdownPreview = struct {
         editor.addViewEventHandler(&self.view_handler);
         self.last_version = editor.model.getVersionId();
         return self;
+    }
+
+    pub fn setThemeColors(self: *MarkdownPreview, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+        self.dirty = true;
     }
 
     pub fn deinit(self: *MarkdownPreview) void {
@@ -388,6 +395,22 @@ pub const MarkdownPreview = struct {
     }
 
     fn buildNodes(self: *MarkdownPreview) !void {
+        var preview_background = base_preview_background;
+        var preview_foreground = base_preview_foreground;
+        var code_background = base_code_background;
+        var active_line_background = base_active_line_background;
+        var scrollbar_track = base_scrollbar_track;
+        var scrollbar_thumb = base_scrollbar_thumb;
+        var divider_color = base_divider_color;
+        if (self.theme) |palette| {
+            preview_background = palette.colorOr("editor.background", base_preview_background);
+            preview_foreground = palette.colorOr("editor.foreground", base_preview_foreground);
+            code_background = palette.colorOr("textCodeBlock.background", base_code_background);
+            active_line_background = palette.colorOr("editor.lineHighlightBackground", base_active_line_background);
+            scrollbar_track = palette.colorOr("editor.background", base_scrollbar_track);
+            scrollbar_thumb = palette.colorOr("scrollbarSlider.background", base_scrollbar_thumb);
+            divider_color = palette.colorOr("editorWidget.border", base_divider_color);
+        }
         const surface = &(self.surface orelse return);
         const document = &(self.document orelse {
             const doc = surface.document();

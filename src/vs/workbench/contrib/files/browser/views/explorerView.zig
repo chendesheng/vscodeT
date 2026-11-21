@@ -30,6 +30,7 @@ const CompressedElement = CompressibleTree.Element;
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
+const theme_colors_mod = @import("../../../../browser/themeColors.zig");
 
 const header_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 200, .g = 200, .b = 200 }),
@@ -78,6 +79,7 @@ pub const Sidebar = struct {
     sort_order: explorer.SortOrder = .FilesFirst,
     show_roots: bool = false,
     last_rect: ui.Rect = .{},
+    theme: ?*const theme_colors_mod.ThemeColors = null,
 
     pub fn init(
         allocator: Allocator,
@@ -375,6 +377,10 @@ pub const Sidebar = struct {
         return !self.tree.isCollapsed(item);
     }
 
+    pub fn setThemeColors(self: *Sidebar, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+    }
+
     pub fn render(self: *Sidebar, grid: *CellGrid, rect: ui.Rect, focused: bool) !void {
         self.last_rect = rect;
         const x = ui.cell.snap(rect.x);
@@ -383,11 +389,19 @@ pub const Sidebar = struct {
         const height = ui.cell.snap(rect.h);
         if (width == 0 or height == 0) return;
 
-        grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), .{});
+        const background = if (self.theme) |palette|
+            ui.cell.PaintStyle{ .bg = ui.cell.packColor(palette.color("sideBar.background", .{ 30, 30, 33 })) }
+        else
+            ui.cell.PaintStyle{};
+        grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), background);
 
+        const header_style_local = if (self.theme) |palette| ui.cell.PaintStyle{
+            .fg = ui.cell.packColor(palette.color("sideBarSectionHeader.foreground", .{ 200, 200, 200 })),
+            .bg = ui.cell.packColor(palette.color("sideBarSectionHeader.background", .{ 38, 38, 42 })),
+        } else header_style;
         const header = if (focused) " EXPLORER " else " Explorer ";
-        grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style);
-        _ = drawText(grid, x + 1, y, width - 2, header, header_style);
+        grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style_local);
+        _ = drawText(grid, x + 1, y, width - 2, header, header_style_local);
 
         if (height <= 1) return;
         const rows = height - 1;
@@ -478,12 +492,12 @@ fn readSortOrder(configuration: *ConfigurationService, model: *ExplorerModel) ex
 }
 
 fn renderRow(context: *anyopaque, row: *const list.Row, node: *const CompressibleTree.Node) void {
-    _ = context;
+    const sidebar: *Sidebar = @ptrCast(@alignCast(context));
     const compressed = node.element orelse return;
     if (compressed.elements.len == 0) return;
     const item = compressed.elements[compressed.elements.len - 1];
     const selected = row.selected;
-    const paint = if (selected)
+    var paint = if (selected)
         (if (item.is_directory)
             (if (row.focused) selected_dir_style else unfocused_dir_selection_style)
         else
@@ -492,6 +506,22 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
         dir_style
     else
         text_style;
+    if (sidebar.theme) |palette| {
+        paint = if (selected) .{
+            .fg = ui.cell.packColor(palette.color(
+                if (row.focused) "list.activeSelectionForeground" else "list.inactiveSelectionForeground",
+                .{ 245, 245, 245 },
+            )),
+            .bg = ui.cell.packColor(palette.color(
+                if (row.focused) "list.activeSelectionBackground" else "list.inactiveSelectionBackground",
+                .{ 55, 65, 80 },
+            )),
+        } else if (item.is_directory) .{
+            .fg = ui.cell.packColor(palette.color("symbolIcon.folderForeground", .{ 170, 190, 210 })),
+        } else .{
+            .fg = ui.cell.packColor(palette.color("sideBar.foreground", .{ 190, 190, 190 })),
+        };
+    }
 
     if (selected) {
         row.grid.fillRect(

@@ -46,6 +46,8 @@ const tui_editor_mod = @import("../../editor/browser/widget/codeEditor/codeEdito
 const Editor = tui_editor_mod.Editor;
 const TextEdit = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const View = @import("../../../tui/editorView.zig").View;
+const terminal_editor_config = @import("../../editor/browser/config/terminalEditorConfiguration.zig");
+const editor_options = @import("../../editor/common/config/editorOptions.zig");
 const ViewCell = @import("../../../tui/editorView.zig").Cell;
 const tab_bar = @import("./parts/editor/multiEditorTabsControl.zig");
 const Sidebar = @import("../contrib/files/browser/views/explorerView.zig").Sidebar;
@@ -80,6 +82,15 @@ const WorkingCopyService = working_copy_service_mod.WorkingCopyService;
 const keybinding_service = @import("../services/keybinding/browser/keybindingService.zig");
 const key_codes = @import("../../base/common/keyCodes.zig");
 const keybinding_registry = @import("../../platform/keybinding/common/keybindingsRegistry.zig");
+const resolved_keybinding_item = @import("../../platform/keybinding/common/resolvedKeybindingItem.zig");
+const context_key_mod = @import("../../platform/contextkey/common/contextkey.zig");
+const user_keybindings_mod = @import("../services/keybinding/browser/userKeybindings.zig");
+const theme_service_mod = @import("../services/themes/browser/workbenchThemeService.zig");
+const theme_configuration_mod = @import("../services/themes/common/themeConfiguration.zig");
+const host_color_scheme_mod = @import("../services/themes/common/hostColorSchemeService.zig");
+const color_utils = @import("../../platform/theme/common/colorUtils.zig");
+const syntax_theme_mod = @import("../../editor/standalone/browser/standaloneThemeService.zig");
+const theme_colors_mod = @import("./themeColors.zig");
 const SettingsWatcher = configuration_mod.SettingsWatcher;
 const lifecycle_mod = @import("../../base/common/lifecycle.zig");
 const IDisposable = lifecycle_mod.IDisposable;
@@ -178,6 +189,57 @@ const TerminalSize = struct { cols: u16, rows: u16 };
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
 pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal };
+
+/// Handles for the context keys the workbench maintains. User keybindings use
+/// them in `when` clauses; keys the terminal cannot know stay undefined, which
+/// evaluates to false (e.g. `treeFindOpen`).
+const ContextKeyHandles = struct {
+    editor_focus: context_key_mod.IContextKey,
+    editor_text_focus: context_key_mod.IContextKey,
+    input_focus: context_key_mod.IContextKey,
+    list_focus: context_key_mod.IContextKey,
+    side_bar_focus: context_key_mod.IContextKey,
+    status_bar_focus: context_key_mod.IContextKey,
+    terminal_focus: context_key_mod.IContextKey,
+    in_quick_open: context_key_mod.IContextKey,
+    in_files_picker: context_key_mod.IContextKey,
+    explorer_viewlet_visible: context_key_mod.IContextKey,
+    explorer_viewlet_focus: context_key_mod.IContextKey,
+    files_explorer_focus: context_key_mod.IContextKey,
+    search_viewlet_visible: context_key_mod.IContextKey,
+    search_view_focus: context_key_mod.IContextKey,
+    scm_viewlet_visible: context_key_mod.IContextKey,
+    scm_view_focus: context_key_mod.IContextKey,
+    explorer_resource_is_root: context_key_mod.IContextKey,
+    explorer_resource_readonly: context_key_mod.IContextKey,
+    tree_find_open: context_key_mod.IContextKey,
+    resource_scheme: context_key_mod.IContextKey,
+    editor_read_only: context_key_mod.IContextKey,
+};
+
+/// Terminal host color scheme. The terminal has no portable OS color-scheme
+/// API, so the default is dark; `COLORFGBG`-style detection is left to the
+/// host application. High contrast is reported as false.
+const TerminalColorSchemeHost = struct {
+    dark: bool = true,
+    high_contrast: bool = false,
+
+    fn isDark(context: *anyopaque) bool {
+        return @as(*TerminalColorSchemeHost, @ptrCast(@alignCast(context))).dark;
+    }
+
+    fn isHighContrast(context: *anyopaque) bool {
+        return @as(*TerminalColorSchemeHost, @ptrCast(@alignCast(context))).high_contrast;
+    }
+
+    fn interface(self: *TerminalColorSchemeHost) host_color_scheme_mod.IHostColorSchemeService {
+        return .{
+            .context = self,
+            .is_dark = isDark,
+            .is_high_contrast = isHighContrast,
+        };
+    }
+};
 pub const DiffRef = enum { head, index, working, empty };
 const DiffWidgetOptions = diff_widget_mod.Options;
 
@@ -275,7 +337,10 @@ pub const Workbench = struct {
     /// Workspace file watcher. Kept separate from the settings watcher so a
     /// workspace change never triggers a settings reload.
     files_watcher: ?*UniversalWatcher = null,
-    user_settings_path: ?[]u8,
+    user_settings_paths: []const []const u8,
+    /// User keybinding files (VS Code profile then TUI override). Watched by
+    /// the settings watcher; reloaded with the rest of the configuration.
+    keybindings_paths: []const []const u8,
     history: HistoryService,
     commands: CommandRegistry,
     working_copy_service: WorkingCopyService,
@@ -283,6 +348,17 @@ pub const Workbench = struct {
     tab_command_result: ?TabKeyResult = null,
     global_service: ?*keybinding_service.KeybindingService,
     statusbar_service: ?*keybinding_service.KeybindingService,
+    context_keys: ?*context_key_mod.ContextKeyService,
+    context_key_handles: ?ContextKeyHandles,
+    user_keybindings: ?*user_keybindings_mod.UserKeybindings,
+    /// Filtered user bindings passed to the global host; owned by the workbench.
+    global_user_overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem,
+    theme_colors: ?*color_utils.ColorRegistry,
+    theme_service: ?*theme_service_mod.ThemeService,
+    syntax_theme: syntax_theme_mod.SyntaxTheme,
+    syntax_theme_ready: bool,
+    theme_scheme_host: TerminalColorSchemeHost,
+    theme_palette: ?*theme_colors_mod.ThemeColors,
     quick_access: *QuickAccessService,
     outline_service: OutlineService,
     breadcrumbs_service: BreadcrumbsService,
@@ -359,6 +435,16 @@ pub const Workbench = struct {
         self.tab_service = null;
         self.global_service = null;
         self.statusbar_service = null;
+        self.context_keys = null;
+        self.context_key_handles = null;
+        self.user_keybindings = null;
+        self.global_user_overrides = &.{};
+        self.theme_colors = null;
+        self.theme_service = null;
+        self.syntax_theme = .{};
+        self.syntax_theme_ready = false;
+        self.theme_scheme_host = .{};
+        self.theme_palette = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.terminal_service = null;
@@ -427,7 +513,8 @@ pub const Workbench = struct {
         self.configuration = null;
         self.settings_watcher = null;
         self.files_watcher = null;
-        self.user_settings_path = null;
+        self.user_settings_paths = &.{};
+        self.keybindings_paths = &.{};
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
@@ -470,6 +557,16 @@ pub const Workbench = struct {
         self.tab_service = null;
         self.global_service = null;
         self.statusbar_service = null;
+        self.context_keys = null;
+        self.context_key_handles = null;
+        self.user_keybindings = null;
+        self.global_user_overrides = &.{};
+        self.theme_colors = null;
+        self.theme_service = null;
+        self.syntax_theme = .{};
+        self.syntax_theme_ready = false;
+        self.theme_scheme_host = .{};
+        self.theme_palette = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.terminal_service = null;
@@ -538,7 +635,8 @@ pub const Workbench = struct {
         self.configuration = null;
         self.settings_watcher = null;
         self.files_watcher = null;
-        self.user_settings_path = null;
+        self.user_settings_paths = &.{};
+        self.keybindings_paths = &.{};
 
         self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
@@ -597,6 +695,16 @@ pub const Workbench = struct {
         self.tab_service = null;
         self.global_service = null;
         self.statusbar_service = null;
+        self.context_keys = null;
+        self.context_key_handles = null;
+        self.user_keybindings = null;
+        self.global_user_overrides = &.{};
+        self.theme_colors = null;
+        self.theme_service = null;
+        self.syntax_theme = .{};
+        self.syntax_theme_ready = false;
+        self.theme_scheme_host = .{};
+        self.theme_palette = null;
         self.rows = @max(rows, 1);
         self.is_pasting = false;
         self.terminal_service = null;
@@ -665,7 +773,8 @@ pub const Workbench = struct {
         self.configuration = null;
         self.settings_watcher = null;
         self.files_watcher = null;
-        self.user_settings_path = null;
+        self.user_settings_paths = &.{};
+        self.keybindings_paths = &.{};
 
         self.service = try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, data, registry, .{});
         errdefer self.service.deinit();
@@ -851,6 +960,18 @@ pub const Workbench = struct {
             .{ .id = editor_status_mod.change_language_mode_command, .label = "Change Language Mode", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeLanguageMode },
             .{ .id = "workbench.action.files.save", .label = "Save", .category = "File", .context = self, .run = commandSave },
             .{ .id = "workbench.action.files.revert", .label = "Revert File", .category = "File", .context = self, .run = commandRevert },
+            .{ .id = "list.focusUp", .label = "Focus Previous Item", .category = "List", .context = self, .run = commandListFocusUp },
+            .{ .id = "list.focusDown", .label = "Focus Next Item", .category = "List", .context = self, .run = commandListFocusDown },
+            .{ .id = "list.focusFirst", .label = "Focus First Item", .category = "List", .context = self, .run = commandListFocusFirst },
+            .{ .id = "list.focusLast", .label = "Focus Last Item", .category = "List", .context = self, .run = commandListFocusLast },
+            .{ .id = "list.focusPageUp", .label = "Focus Previous Page", .category = "List", .context = self, .run = commandListFocusPageUp },
+            .{ .id = "list.focusPageDown", .label = "Focus Next Page", .category = "List", .context = self, .run = commandListFocusPageDown },
+            .{ .id = "list.collapse", .label = "Collapse", .category = "List", .context = self, .run = commandListCollapse },
+            .{ .id = "list.expand", .label = "Expand", .category = "List", .context = self, .run = commandListExpand },
+            .{ .id = "list.toggleExpand", .label = "Toggle Expand", .category = "List", .context = self, .run = commandListToggleExpand },
+            .{ .id = "list.select", .label = "Select", .category = "List", .context = self, .run = commandListSelect },
+            .{ .id = "workbench.action.openSettingsJson", .label = "Open User Settings (JSON)", .category = "Preferences", .context = self, .run = commandOpenSettingsJson },
+            .{ .id = "workbench.action.openGlobalKeybindingsFile", .label = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .context = self, .run = commandOpenKeybindingsJson },
             .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
@@ -1106,6 +1227,20 @@ pub const Workbench = struct {
             service.deinit();
         }
         if (self.statusbar_service) |service| service.deinit();
+        self.freeUserOverrides(self.global_user_overrides);
+        self.global_user_overrides = &.{};
+        if (self.user_keybindings) |bindings| bindings.deinit();
+        if (self.context_keys) |service| {
+            service.deinit();
+            self.allocator.destroy(service);
+        }
+        if (self.theme_palette) |palette| self.allocator.destroy(palette);
+        if (self.syntax_theme_ready) self.syntax_theme.deinit();
+        if (self.theme_service) |service| service.deinit();
+        if (self.theme_colors) |registry| {
+            registry.deinit();
+            self.allocator.destroy(registry);
+        }
         self.quick_access.deinit();
         self.working_copy_service.deinit();
         self.commands.deinit();
@@ -1126,7 +1261,8 @@ pub const Workbench = struct {
             self.terminal_service = null;
         }
         if (self.configuration) |configuration| configuration.deinit();
-        if (self.user_settings_path) |path| self.allocator.free(path);
+        freeOwnedPaths(self.allocator, self.user_settings_paths);
+        freeOwnedPaths(self.allocator, self.keybindings_paths);
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
@@ -1326,11 +1462,12 @@ pub const Workbench = struct {
         self.startFilesWatcher() catch {};
     }
 
-    /// Sets the user settings file before the Explorer/configuration service is
-    /// created. The app derives it from `XDG_CONFIG_HOME`/`HOME`.
-    pub fn setUserSettingsPath(self: *Workbench, path: ?[]const u8) !void {
-        if (self.user_settings_path) |old| self.allocator.free(old);
-        self.user_settings_path = if (path) |value| try self.allocator.dupe(u8, value) else null;
+    /// Sets the user settings files before the Explorer/configuration service
+    /// is created. The app derives them from the VS Code profile and the
+    /// terminal's own config directory; later layers override earlier ones.
+    pub fn setUserSettingsPaths(self: *Workbench, paths: []const []const u8) !void {
+        freeOwnedPaths(self.allocator, self.user_settings_paths);
+        self.user_settings_paths = try dupeOwnedPaths(self.allocator, paths);
         if (self.configuration) |configuration| {
             if (self.settings_watcher) |watcher| {
                 watcher.deinit();
@@ -1339,10 +1476,22 @@ pub const Workbench = struct {
             configuration.deinit();
             self.configuration = null;
             try self.ensureConfiguration();
+            self.applyEditorSettingsToAllTabs();
             self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
             self.disposeBreadcrumbs();
             self.layoutAll();
         }
+    }
+
+    /// Sets the user keybinding files. They are watched by the settings
+    /// watcher; the keymap itself is rebuilt by the keybinding phase.
+    pub fn setKeybindingsPaths(self: *Workbench, paths: []const []const u8) !void {
+        freeOwnedPaths(self.allocator, self.keybindings_paths);
+        self.keybindings_paths = try dupeOwnedPaths(self.allocator, paths);
+        if (self.settings_watcher) |watcher| {
+            watcher.setExtraPaths(self.keybindings_paths) catch {};
+        }
+        self.reloadKeybindings();
     }
 
     fn ensureConfiguration(self: *Workbench) !void {
@@ -1352,13 +1501,14 @@ pub const Workbench = struct {
             self.io,
             self.workspace,
             .{
-                .user_settings_path = self.user_settings_path,
-                .defaults_json = &.{ search_configuration.defaults_json, terminal_configuration.defaults_json },
+                .user_settings_paths = self.user_settings_paths,
+                .defaults_json = &.{ search_configuration.defaults_json, terminal_configuration.defaults_json, theme_configuration_mod.defaults_json },
             },
         );
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
         if (self.settings_watcher) |watcher| {
             watcher.setOnReload(.{ .context = self, .callback = onSettingsReloaded });
+            watcher.setExtraPaths(self.keybindings_paths) catch {};
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
     }
@@ -1366,6 +1516,9 @@ pub const Workbench = struct {
     fn onSettingsReloaded(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyConfiguredLanguageAssociationsToAllEditors();
+        self.applyEditorSettingsToAllTabs();
+        self.reloadKeybindings();
+        self.applyThemeSettings();
         self.applyBreadcrumbsSettings();
         self.applyMarkdownPreviewConfig();
         if (self.quick_diff_controller) |controller| {
@@ -1376,6 +1529,26 @@ pub const Workbench = struct {
             });
         }
         if (self.git_scm_provider != null) self.refreshGitStatus();
+    }
+
+    fn editorSettingsReader(self: *Workbench) terminal_editor_config.Reader {
+        return .{ .context = self, .get_value = readEditorSetting };
+    }
+
+    fn applyEditorSettingsToTab(self: *Workbench, tab: *Tab) void {
+        if (tab.isDiff()) return;
+        const reader = self.editorSettingsReader();
+        const language_id = tab.editor.languageId();
+        const resource = tab.editor.path;
+        _ = tab.editor.applyEditorSettings(reader, language_id, resource) catch false;
+        _ = tab.view.applyEditorSettings(reader, language_id, resource) catch false;
+        if (self.theme_palette) |palette| tab.view.setThemeColors(palette);
+    }
+
+    fn applyEditorSettingsToAllTabs(self: *Workbench) void {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| self.applyEditorSettingsToTab(tab);
+        }
     }
 
     /// Applies `files.associations` from the current configuration to `editor`.
@@ -2900,6 +3073,7 @@ pub const Workbench = struct {
         try tab.setMarkdownPreviewVisible(true);
         pane.layout();
         if (tab.markdown_preview) |preview| {
+            if (self.theme_palette) |palette| preview.setThemeColors(palette);
             preview.open(start_line) catch |err| {
                 tab.editor.setMessage("markdown preview: {s}", .{@errorName(err)});
             };
@@ -3043,6 +3217,7 @@ pub const Workbench = struct {
         const tab = try Tab.initFromInput(self.allocator, input);
         try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
+        self.applyEditorSettingsToTab(tab);
         self.registerWorkingCopy(tab);
         if (self.quick_diff_controller) |controller| controller.attach(tab.editor, tab.editor.path) catch {};
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
@@ -4021,9 +4196,288 @@ pub const Workbench = struct {
         self.breadcrumbs_dirty = true;
     }
 
+    fn ensureContextKeys(self: *Workbench) !*context_key_mod.ContextKeyService {
+        if (self.context_keys) |service| return service;
+        const service = try self.allocator.create(context_key_mod.ContextKeyService);
+        errdefer self.allocator.destroy(service);
+        service.* = context_key_mod.ContextKeyService.init(self.allocator);
+        errdefer service.deinit();
+        self.context_key_handles = .{
+            .editor_focus = try service.createKey("editorFocus", .{ .boolean = false }),
+            .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
+            .input_focus = try service.createKey("inputFocus", .{ .boolean = false }),
+            .list_focus = try service.createKey("listFocus", .{ .boolean = false }),
+            .side_bar_focus = try service.createKey("sideBarFocus", .{ .boolean = false }),
+            .status_bar_focus = try service.createKey("statusBarFocus", .{ .boolean = false }),
+            .terminal_focus = try service.createKey("terminalFocus", .{ .boolean = false }),
+            .in_quick_open = try service.createKey("inQuickOpen", .{ .boolean = false }),
+            .in_files_picker = try service.createKey("inFilesPicker", .{ .boolean = false }),
+            .explorer_viewlet_visible = try service.createKey("explorerViewletVisible", .{ .boolean = false }),
+            .explorer_viewlet_focus = try service.createKey("explorerViewletFocus", .{ .boolean = false }),
+            .files_explorer_focus = try service.createKey("filesExplorerFocus", .{ .boolean = false }),
+            .search_viewlet_visible = try service.createKey("searchViewletVisible", .{ .boolean = false }),
+            .search_view_focus = try service.createKey("searchViewFocus", .{ .boolean = false }),
+            .scm_viewlet_visible = try service.createKey("scmViewletVisible", .{ .boolean = false }),
+            .scm_view_focus = try service.createKey("scmViewFocus", .{ .boolean = false }),
+            .explorer_resource_is_root = try service.createKey("explorerResourceIsRoot", .{ .boolean = false }),
+            .explorer_resource_readonly = try service.createKey("explorerResourceReadonly", .{ .boolean = false }),
+            .tree_find_open = try service.createKey("treeFindOpen", .{ .boolean = false }),
+            .resource_scheme = try service.createKey("resourceScheme", .{ .string = "file" }),
+            .editor_read_only = try service.createKey("editorReadOnly", .{ .boolean = false }),
+        };
+        self.context_keys = service;
+        self.updateContextKeys();
+        return service;
+    }
+
+    fn updateContextKeys(self: *Workbench) void {
+        const keys = self.context_key_handles orelse return;
+        const active_activity = self.activity_bar_part.active_id orelse "";
+        const sidebar_focused = self.focus == .sidebar and self.sidebarShown();
+        const explorer_active = std.mem.eql(u8, active_activity, "explorer");
+        const search_active = std.mem.eql(u8, active_activity, "search");
+        const scm_active = std.mem.eql(u8, active_activity, "scm");
+        const search_results_focused = if (self.search_view) |view| view.results_focused else false;
+        const editor_focused = self.focus == .editor;
+        keys.editor_focus.set(.{ .boolean = editor_focused });
+        keys.editor_text_focus.set(.{ .boolean = editor_focused and self.dialog == null and !self.quick_access.isOpen() });
+        keys.side_bar_focus.set(.{ .boolean = sidebar_focused });
+        keys.list_focus.set(.{ .boolean = sidebar_focused and (!search_active or search_results_focused) });
+        keys.input_focus.set(.{ .boolean = sidebar_focused and search_active and !search_results_focused });
+        keys.status_bar_focus.set(.{ .boolean = self.focus == .statusbar });
+        keys.terminal_focus.set(.{ .boolean = self.focus == .terminal });
+        keys.in_quick_open.set(.{ .boolean = self.quick_access.isOpen() });
+        keys.in_files_picker.set(.{ .boolean = self.quick_access.isOpen() and !self.quick_access.isPickOpen() });
+        keys.explorer_viewlet_visible.set(.{ .boolean = self.sidebarShown() and explorer_active });
+        keys.explorer_viewlet_focus.set(.{ .boolean = sidebar_focused and explorer_active });
+        keys.files_explorer_focus.set(.{ .boolean = sidebar_focused and explorer_active });
+        keys.search_viewlet_visible.set(.{ .boolean = self.sidebarShown() and search_active });
+        keys.search_view_focus.set(.{ .boolean = sidebar_focused and search_active });
+        keys.scm_viewlet_visible.set(.{ .boolean = self.sidebarShown() and scm_active });
+        keys.scm_view_focus.set(.{ .boolean = sidebar_focused and scm_active });
+        // Explorer file operations are not ported; these keys keep bindings
+        // that require them inert rather than active.
+        keys.explorer_resource_is_root.set(.{ .boolean = false });
+        keys.explorer_resource_readonly.set(.{ .boolean = false });
+        keys.tree_find_open.set(.{ .boolean = false });
+        keys.resource_scheme.set(.{ .string = "file" });
+        keys.editor_read_only.set(.{ .boolean = if (self.activeTab()) |tab| tab.editor.read_only else false });
+    }
+
+    fn themeColor(self: *const Workbench, id: []const u8, fallback: [3]u8) ui.Color {
+        const palette = self.theme_palette orelse return .{ .r = fallback[0], .g = fallback[1], .b = fallback[2] };
+        return palette.color(id, fallback);
+    }
+
+    fn ensureUserKeybindings(self: *Workbench) !void {
+        if (self.user_keybindings != null) return;
+        if (self.keybindings_paths.len == 0) return;
+        self.user_keybindings = try user_keybindings_mod.UserKeybindings.load(
+            self.allocator,
+            self.io,
+            self.keybindings_paths,
+        );
+    }
+
+    fn userRemovalOverrides(self: *Workbench) []const *const resolved_keybinding_item.ResolvedKeybindingItem {
+        const bindings = self.user_keybindings orelse return &.{};
+        return bindings.removals();
+    }
+
+    fn isKnownCommand(self: *const Workbench, command: []const u8) bool {
+        if (self.commands.get(command) != null) return true;
+        for (global_keybinding_rules) |rule| {
+            if (std.mem.eql(u8, rule.id, command)) return true;
+        }
+        for (tab_keybinding_rules) |rule| {
+            if (std.mem.eql(u8, rule.id, command)) return true;
+        }
+        for (statusbar_keybinding_rules) |rule| {
+            if (std.mem.eql(u8, rule.id, command)) return true;
+        }
+        return false;
+    }
+
+    fn buildGlobalUserOverrides(self: *Workbench) ![]const *const resolved_keybinding_item.ResolvedKeybindingItem {
+        self.ensureUserKeybindings() catch return &.{};
+        const bindings = self.user_keybindings orelse return &.{};
+        var overrides = std.array_list.Managed(*const resolved_keybinding_item.ResolvedKeybindingItem).init(self.allocator);
+        errdefer overrides.deinit();
+        for (bindings.userItems()) |item| {
+            const command = item.command orelse continue;
+            if (!self.isKnownCommand(command)) continue;
+            try overrides.append(item);
+        }
+        for (bindings.removals()) |item| try overrides.append(item);
+        return overrides.toOwnedSlice();
+    }
+
+    fn freeUserOverrides(
+        self: *Workbench,
+        overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem,
+    ) void {
+        if (overrides.len > 0) self.allocator.free(overrides);
+    }
+
+    /// Rebuilds every keybinding host after the user keymap changed. The old
+    /// hosts are disposed before the keymap owner so no service keeps borrowed
+    /// items past their lifetime.
+    pub fn reloadKeybindings(self: *Workbench) void {
+        if (self.global_service) |service| {
+            service.deinit();
+            self.global_service = null;
+        }
+        if (self.tab_service) |service| {
+            service.deinit();
+            self.tab_service = null;
+        }
+        if (self.statusbar_service) |service| {
+            service.deinit();
+            self.statusbar_service = null;
+        }
+        self.freeUserOverrides(self.global_user_overrides);
+        self.global_user_overrides = &.{};
+        if (self.user_keybindings) |bindings| {
+            bindings.deinit();
+            self.user_keybindings = null;
+        }
+        self.ensureUserKeybindings() catch {};
+        const removals = self.userRemovalOverrides();
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (!tab.isDiff()) tab.editor.reloadShortcutKeybindings(removals);
+            }
+        }
+        if (self.search_view) |view| view.reloadKeybindings(removals);
+    }
+
+    fn ensureThemeService(self: *Workbench) !*theme_service_mod.ThemeService {
+        if (self.theme_service) |service| return service;
+        const registry = try self.allocator.create(color_utils.ColorRegistry);
+        registry.* = color_utils.ColorRegistry.init(self.allocator);
+        errdefer {
+            registry.deinit();
+            self.allocator.destroy(registry);
+        }
+        const service = try theme_service_mod.ThemeService.init(self.allocator, registry, null);
+        self.theme_colors = registry;
+        self.theme_service = service;
+        return service;
+    }
+
+    /// Registers the color themes discovered from the built-in and installed
+    /// extension roots. Later registrations win, so the TUI extension root can
+    /// override a profile or built-in theme with the same settings id.
+    pub fn registerThemeSources(self: *Workbench, themes: []const extensions_registry.Theme) !void {
+        const service = try self.ensureThemeService();
+        for (themes) |theme| {
+            try service.registerThemeFile(
+                theme.settings_id,
+                theme.label,
+                theme_service_mod.colorSchemeForUiTheme(theme.ui_theme),
+                theme.root,
+                theme.path,
+            );
+        }
+    }
+
+    /// Applies `workbench.colorTheme`, the preferred-scheme settings and the
+    /// color/token customizations, then reinstalls the token theme. Falls back
+    /// to the default dark theme and, for a checkout without theme assets, to
+    /// the bundled syntax theme.
+    pub fn applyThemeSettings(self: *Workbench) void {
+        self.ensureConfiguration() catch {};
+        const configuration = self.configuration orelse return;
+        const service = self.ensureThemeService() catch return;
+
+        const theme_configuration = theme_configuration_mod.ThemeConfiguration.init(
+            configuration.interface(),
+            self.theme_scheme_host.interface(),
+        );
+        const requested = theme_configuration.getColorTheme() orelse
+            theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK;
+        var loaded = service.activateSettingsId(requested) catch false;
+        if (!loaded) {
+            loaded = service.activateSettingsId(theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK) catch false;
+        }
+        if (!loaded) loaded = service.activateSettingsId("vs-dark") catch false;
+
+        service.applyColorCustomizations(
+            self.allocator,
+            configuration.getValue(theme_service_mod.ThemeSettings.COLOR_CUSTOMIZATIONS, .{}),
+        ) catch {};
+        service.applyTokenColorCustomizations(
+            self.allocator,
+            configuration.getValue(theme_service_mod.ThemeSettings.TOKEN_COLOR_CUSTOMIZATIONS, .{}),
+        ) catch {};
+        service.applySemanticTokenColorCustomizations(
+            self.allocator,
+            configuration.getValue(theme_service_mod.ThemeSettings.SEMANTIC_TOKEN_COLOR_CUSTOMIZATIONS, .{}),
+        ) catch {};
+
+        self.refreshSyntaxTheme(loaded);
+
+        const palette = self.allocator.create(theme_colors_mod.ThemeColors) catch return;
+        palette.* = theme_colors_mod.ThemeColors.init(service.getActiveTheme());
+        const previous = self.theme_palette;
+        self.theme_palette = palette;
+        self.applyThemeToParts(palette);
+        if (previous) |old| self.allocator.destroy(old);
+        self.refreshOpenViews();
+    }
+
+    fn applyThemeToParts(self: *Workbench, palette: ?*const theme_colors_mod.ThemeColors) void {
+        if (self.sidebar) |sidebar| sidebar.setThemeColors(palette);
+        if (self.search_view) |view| view.setThemeColors(palette);
+        if (self.scm_view) |view| view.setThemeColors(palette);
+        if (self.breadcrumbs_control) |control| control.setThemeColors(palette);
+        self.statusbar.main_part.setThemeColors(palette);
+        self.quick_access.setThemeColors(palette);
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (!tab.isDiff()) tab.view.setThemeColors(palette);
+                if (tab.markdown_preview) |preview| preview.setThemeColors(palette);
+            }
+        }
+    }
+
+    fn refreshSyntaxTheme(self: *Workbench, loaded: bool) void {
+        const service = self.theme_service orelse return;
+        if (self.syntax_theme_ready) {
+            self.syntax_theme.deinit();
+            self.syntax_theme_ready = false;
+        }
+        if (loaded and service.getActiveTheme().is_loaded) {
+            self.syntax_theme.initFromColorThemeData(self.allocator, service.getActiveTheme()) catch {};
+            self.syntax_theme_ready = true;
+        }
+        if (!self.syntax_theme_ready) {
+            self.syntax_theme.init(self.allocator) catch return;
+            self.syntax_theme_ready = true;
+        }
+    }
+
+    fn refreshOpenViews(self: *Workbench) void {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (!tab.isDiff()) tab.view.invalidate();
+            }
+        }
+    }
+
     fn ensureGlobalService(self: *Workbench) !*keybinding_service.KeybindingService {
         if (self.global_service) |service| return service;
-        const service = try keybinding_service.KeybindingService.init(self.allocator, &global_keybinding_rules, .{ .context = self, .execute = executeGlobalCommand });
+        const context = try self.ensureContextKeys();
+        self.updateContextKeys();
+        const overrides = try self.buildGlobalUserOverrides();
+        errdefer self.freeUserOverrides(overrides);
+        const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
+            .rules = &global_keybinding_rules,
+            .executor = .{ .context = self, .execute = executeGlobalCommand },
+            .context = context,
+            .overrides = overrides,
+        });
+        self.global_user_overrides = overrides;
         self.global_service = service;
         return service;
     }
@@ -4032,6 +4486,8 @@ pub const Workbench = struct {
     /// Skipped while quick access owns the keyboard so Ctrl+P keeps cycling
     /// the open picker.
     pub fn handleGlobalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+        _ = try self.ensureContextKeys();
+        self.updateContextKeys();
         if (self.quick_access.isOpen()) return false;
         self.suppress_global_command = false;
         // Ctrl-] is the TUI-specific definition alias. F12 and its modified
@@ -4050,9 +4506,11 @@ pub const Workbench = struct {
 
     fn ensureTabService(self: *Workbench) !*keybinding_service.KeybindingService {
         if (self.tab_service) |service| return service;
-        const service = try keybinding_service.KeybindingService.init(self.allocator, &tab_keybinding_rules, .{
-            .context = self,
-            .execute = executeTabCommand,
+        self.ensureUserKeybindings() catch {};
+        const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
+            .rules = &tab_keybinding_rules,
+            .executor = .{ .context = self, .execute = executeTabCommand },
+            .overrides = self.userRemovalOverrides(),
         });
         self.tab_service = service;
         return service;
@@ -4350,7 +4808,7 @@ pub const Workbench = struct {
         if (!self.part.cell_borders) return;
         const stroke = ui.cell_border.Stroke{
             .width = 64,
-            .color = .{ .rgb = .{ .r = 0xe5, .g = 0xc0, .b = 0x7b } },
+            .color = .{ .rgb = self.themeColor("focusBorder", .{ 0xe5, 0xc0, 0x7b }) },
             .placement = .centered,
             .layer = .above_text,
             .priority = 3,
@@ -4424,9 +4882,11 @@ pub const Workbench = struct {
 
     fn ensureStatusbarService(self: *Workbench) !*keybinding_service.KeybindingService {
         if (self.statusbar_service) |service| return service;
-        const service = try keybinding_service.KeybindingService.init(self.allocator, &statusbar_keybinding_rules, .{
-            .context = self,
-            .execute = executeStatusbarKeyCommand,
+        self.ensureUserKeybindings() catch {};
+        const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
+            .rules = &statusbar_keybinding_rules,
+            .executor = .{ .context = self, .execute = executeStatusbarKeyCommand },
+            .overrides = self.userRemovalOverrides(),
         });
         self.statusbar_service = service;
         return service;
@@ -4897,21 +5357,33 @@ pub const Workbench = struct {
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
         self.syncSearchActivity();
         self.frame.begin();
+        if (self.theme_palette) |palette| {
+            self.frame.next.fillRect(
+                0,
+                0,
+                @floatFromInt(self.cols),
+                @floatFromInt(self.rows),
+                .{ .bg = ui.cell.packColor(palette.background) },
+            );
+        }
 
         if (self.sidebarShown()) {
             const focused = self.focus == .sidebar;
-            activity_bar_mod.render(&self.activity_bar_part, &self.activity_service, &self.frame.next, self.activityRect(), self.activeActivity(), focused);
+            activity_bar_mod.render(&self.activity_bar_part, &self.activity_service, &self.frame.next, self.activityRect(), self.activeActivity(), focused, self.theme_palette);
             const active_id = self.activity_bar_part.active_id orelse "";
             if (std.mem.eql(u8, active_id, "explorer")) {
                 if (self.sidebar) |sidebar| {
+                    if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
                     try sidebar.render(&self.frame.next, self.sidebarRect(), focused);
                 }
             } else if (std.mem.eql(u8, active_id, "search")) {
                 if (self.search_view) |view| {
+                    if (self.theme_palette) |palette| view.setThemeColors(palette);
                     try view.render(&self.frame.next, self.sidebarRect());
                 }
             } else if (std.mem.eql(u8, active_id, "scm")) {
                 if (self.scm_view) |view| {
+                    if (self.theme_palette) |palette| view.setThemeColors(palette);
                     try view.render(&self.frame.next, self.sidebarRect(), focused);
                 } else {
                     self.renderPlaceholder(self.sidebarRect(), focused);
@@ -4928,7 +5400,7 @@ pub const Workbench = struct {
 
             const divider_x = self.activityBarWidth() + self.sidebarWidth();
             const style = ui.cell.PaintStyle{
-                .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
+                .fg = ui.cell.packColor(self.themeColor("sideBar.border", .{ 70, 70, 70 })),
             };
             var row: usize = 0;
             while (row < self.workbenchRows()) : (row += 1) {
@@ -4965,10 +5437,12 @@ pub const Workbench = struct {
                     service,
                     self.panelRect(),
                     self.focus == .terminal,
+                    self.theme_palette,
                 );
             }
         }
         if (self.statusBarVisible()) {
+            if (self.theme_palette) |palette| self.statusbar.main_part.setThemeColors(palette);
             try self.statusbar.main_part.render(&self.frame.next, self.statusBarRect(), .{
                 .no_folder = self.workspace.getWorkbenchState() == .EMPTY,
                 .part_focused = self.focus == .statusbar,
@@ -5040,6 +5514,7 @@ pub const Workbench = struct {
             width,
             &pane.hits,
             .{ .group_active = active_group, .hovered = hovered_index, .title_action = title_action },
+            self.theme_palette,
         );
 
         const chrome = pane.chromeHeight();
@@ -5060,8 +5535,8 @@ pub const Workbench = struct {
         if (width == 0 or height == 0) return;
 
         const bg = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(.{ .r = 190, .g = 190, .b = 190 }),
-            .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
+            .fg = ui.cell.packColor(self.themeColor("sideBar.foreground", .{ 190, 190, 190 })),
+            .bg = ui.cell.packColor(self.themeColor("sideBar.background", .{ 30, 30, 33 })),
         };
         const active_id = self.activity_bar_part.active_id orelse "";
         const is_scm = std.mem.eql(u8, active_id, "scm");
@@ -5082,8 +5557,8 @@ pub const Workbench = struct {
             "Settings view is not ported yet";
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
         const header_style = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
-            .bg = ui.cell.packColor(.{ .r = 38, .g = 38, .b = 42 }),
+            .fg = ui.cell.packColor(self.themeColor("sideBarTitle.foreground", .{ 220, 220, 220 })),
+            .bg = ui.cell.packColor(self.themeColor("sideBarSectionHeader.background", .{ 38, 38, 42 })),
         };
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style);
         drawPlainText(&self.frame.next, x + 1, y, width - 2, header, header_style);
@@ -5096,7 +5571,7 @@ pub const Workbench = struct {
             .leaf => {},
             .split => |split| {
                 const style = ui.cell.PaintStyle{
-                    .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
+                    .fg = ui.cell.packColor(self.themeColor("editorGroup.border", .{ 70, 70, 70 })),
                 };
                 if (split.direction == .horizontal) {
                     const x = ui.cell.snap(split.first.rect.right());
@@ -5125,9 +5600,15 @@ pub const Workbench = struct {
     /// regardless of neighbour order; inactive panes stay dim.
     fn renderPaneBorder(self: *Workbench, pane: *GroupPane) void {
         const active = self.focus == .editor and pane.group == self.service.activeGroup();
+        var inactive_color = inactive_pane_border;
+        var active_color = active_pane_border;
+        if (self.theme_palette) |palette| {
+            inactive_color = palette.color("editorGroup.border", .{ 70, 70, 70 });
+            active_color = palette.color("focusBorder", .{ 0x4d, 0x9b, 0xd6 });
+        }
         const stroke = ui.cell_border.Stroke{
             .width = pane_border_width,
-            .color = .{ .rgb = if (active) active_pane_border else inactive_pane_border },
+            .color = .{ .rgb = if (active) active_color else inactive_color },
             .placement = .centered,
             .layer = .below_text,
             .priority = if (active) 1 else 0,
@@ -5200,6 +5681,7 @@ pub const Workbench = struct {
         );
         errdefer control.deinit();
         control.setGroup(pane.group.id);
+        control.setThemeColors(self.theme_palette);
         const registration = try self.breadcrumbs_service.register(pane.group.id, control);
         self.breadcrumbs_control = control;
         self.breadcrumbs_pane = pane;
@@ -5212,7 +5694,7 @@ pub const Workbench = struct {
     fn renderBreadcrumbs(self: *Workbench, pane: *GroupPane, x: usize, y: usize, width: usize, active_group: bool) !void {
         if (!self.breadcrumbsEnabled() or width == 0) return;
         const row_background = ui.cell.PaintStyle{
-            .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
+            .bg = ui.cell.packColor(self.themeColor("breadcrumb.background", .{ 37, 37, 38 })),
         };
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, row_background);
         if (pane.activeTab() == null) return;
@@ -5986,6 +6468,106 @@ fn commandViewExplorer(context: *anyopaque) anyerror!void {
 fn commandToggleSidebar(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.toggleSidebar();
+}
+
+fn listCommandKey(command: []const u8) ?ui.Key {
+    if (std.mem.eql(u8, command, "list.focusUp")) return .up;
+    if (std.mem.eql(u8, command, "list.focusDown")) return .down;
+    if (std.mem.eql(u8, command, "list.focusFirst")) return .home;
+    if (std.mem.eql(u8, command, "list.focusLast")) return .end;
+    if (std.mem.eql(u8, command, "list.focusPageUp")) return .page_up;
+    if (std.mem.eql(u8, command, "list.focusPageDown")) return .page_down;
+    if (std.mem.eql(u8, command, "list.collapse")) return .left;
+    if (std.mem.eql(u8, command, "list.expand")) return .right;
+    if (std.mem.eql(u8, command, "list.toggleExpand")) return .{ .char = ' ' };
+    if (std.mem.eql(u8, command, "list.select")) return .enter;
+    return null;
+}
+
+fn runListCommand(context: *anyopaque, command: []const u8) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const key = listCommandKey(command) orelse return;
+    var event = ui.KeyEvent{ .key = key };
+    const active_id = self.activity_bar_part.active_id orelse "";
+    if (std.mem.eql(u8, active_id, "explorer")) {
+        if (self.sidebar) |sidebar| {
+            _ = try sidebar.handleKey(&event);
+            return;
+        }
+    }
+    if (std.mem.eql(u8, active_id, "search")) {
+        if (self.search_view) |view| {
+            _ = view.handleKey(&event);
+            return;
+        }
+    }
+    if (std.mem.eql(u8, active_id, "scm")) {
+        if (self.scm_view) |view| {
+            _ = try view.handleKey(&event);
+            return;
+        }
+    }
+}
+
+fn commandListFocusUp(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.focusUp");
+}
+fn commandListFocusDown(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.focusDown");
+}
+fn commandListFocusFirst(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.focusFirst");
+}
+fn commandListFocusLast(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.focusLast");
+}
+fn commandListFocusPageUp(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.focusPageUp");
+}
+fn commandListFocusPageDown(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.focusPageDown");
+}
+fn commandListCollapse(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.collapse");
+}
+fn commandListExpand(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.expand");
+}
+fn commandListToggleExpand(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.toggleExpand");
+}
+fn commandListSelect(context: *anyopaque) anyerror!void {
+    return runListCommand(context, "list.select");
+}
+
+fn commandOpenSettingsJson(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try openConfigJson(self, self.user_settings_paths, "{\n}\n");
+}
+
+fn commandOpenKeybindingsJson(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try openConfigJson(self, self.keybindings_paths, "[\n]\n");
+}
+
+/// Opens the highest-precedence (TUI) settings or keybindings file, creating
+/// it with valid empty JSONC when it does not exist yet. VS Code's profile
+/// files stay read-only inputs.
+fn openConfigJson(self: *Workbench, paths: []const []const u8, empty_contents: []const u8) !void {
+    if (paths.len == 0) return error.NoConfigPath;
+    const target = paths[paths.len - 1];
+    if (std.fs.path.dirname(target)) |dir| {
+        std.Io.Dir.cwd().createDirPath(self.io, dir) catch {};
+    }
+    if (std.Io.Dir.cwd().access(self.io, target, .{})) |_| {} else |err| switch (err) {
+        error.FileNotFound => {
+            var file = try std.Io.Dir.cwd().createFile(self.io, target, .{});
+            defer file.close(self.io);
+            try file.writeStreamingAll(self.io, empty_contents);
+        },
+        else => return err,
+    }
+    try self.openPath(target);
 }
 
 fn statusFocusEditor(context: *anyopaque) void {
@@ -7638,6 +8220,252 @@ test "Workbench: quick open renders and an outside click only closes it" {
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
 
+test "Workbench: list keybindings route to the focused sidebar" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    var file_a = try tmp.dir.createFile(io, "a.txt", .{});
+    try file_a.writeStreamingAll(io, "a");
+    file_a.close(io);
+    var file_b = try tmp.dir.createFile(io, "b.txt", .{});
+    try file_b.writeStreamingAll(io, "b");
+    file_b.close(io);
+
+    const keybindings_path = try std.fmt.allocPrint(allocator, "{s}/list-keybindings.json", .{root});
+    defer allocator.free(keybindings_path);
+    var keybindings = try std.Io.Dir.cwd().createFile(io, keybindings_path, .{});
+    try keybindings.writeStreamingAll(io,
+        \\[ { "key": "j", "command": "list.focusDown", "when": "listFocus" } ]
+    );
+    keybindings.close(io);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.setWorkspaceFolders(&.{root});
+    try workbench.initSidebarFromWorkspace();
+    try workbench.setKeybindingsPaths(&.{keybindings_path});
+
+    var j = ui.KeyEvent{ .key = .{ .char = 'j' } };
+    // The binding is gated by `listFocus`; the editor does not match it.
+    workbench.focusEditor();
+    try std.testing.expect(!(try workbench.handleGlobalKey(&j)));
+    workbench.focusSidebar();
+    try std.testing.expect(try workbench.handleGlobalKey(&j));
+}
+
+test "Workbench: color theme settings load a registered theme palette" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var theme_file = try tmp.dir.createFile(io, "theme.json", .{});
+    try theme_file.writeStreamingAll(io,
+        \\{ "colors": { "editor.background": "#ffffff", "editor.foreground": "#101010", "statusBar.background": "#eeeeee" } }
+    );
+    theme_file.close(io);
+    var settings_file = try tmp.dir.createFile(io, "settings.json", .{});
+    try settings_file.writeStreamingAll(io,
+        \\{ "workbench.colorTheme": "Test Theme" }
+    );
+    settings_file.close(io);
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = try allocator.dupe(u8, buffer[0..root_len]);
+    defer allocator.free(root);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 60, 12);
+    defer workbench.deinit();
+    try workbench.registerThemeSources(&.{
+        .{
+            .root = root,
+            .id = "Test Theme",
+            .settings_id = "Test Theme",
+            .label = "Test Theme",
+            .ui_theme = "vs",
+            .path = "theme.json",
+        },
+    });
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    workbench.applyThemeSettings();
+
+    const service = workbench.theme_service.?;
+    try std.testing.expectEqualStrings("Test Theme", service.getActiveThemeId());
+    const palette = workbench.theme_palette.?;
+    try std.testing.expectEqual(@as(u8, 0xff), palette.background.r);
+    try std.testing.expectEqual(@as(u8, 0x10), palette.foreground.g);
+    const status = palette.color("statusBar.background", .{ 0, 0, 0 });
+    try std.testing.expectEqual(@as(u8, 0xee), status.r);
+}
+
+test "Workbench: Preferences JSON commands create and open the TUI layer" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/config/settings.json", .{buffer[0..root_len]});
+    defer allocator.free(settings_path);
+    const keybindings_path = try std.fmt.allocPrint(allocator, "{s}/config/keybindings.json", .{buffer[0..root_len]});
+    defer allocator.free(keybindings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    try workbench.setKeybindingsPaths(&.{keybindings_path});
+
+    try workbench.commands.execute("workbench.action.openSettingsJson");
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expectEqualStrings("settings.json", workbench.activeTab().?.input.getName());
+    var settings_content = try workbench.activeTab().?.editor.model.getValue(.TextDefined, false);
+    defer settings_content.deinit();
+    try std.testing.expectEqualStrings("{\n}\n", settings_content.items);
+
+    try workbench.commands.execute("workbench.action.openGlobalKeybindingsFile");
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqualStrings("keybindings.json", workbench.activeTab().?.input.getName());
+    var keybindings_content = try workbench.activeTab().?.editor.model.getValue(.TextDefined, false);
+    defer keybindings_content.deinit();
+    try std.testing.expectEqualStrings("[\n]\n", keybindings_content.items);
+}
+
+test "Workbench: user keybindings override defaults, honor when and removals" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const keybindings_path = try std.fmt.allocPrint(allocator, "{s}/keybindings.json", .{buffer[0..root_len]});
+    defer allocator.free(keybindings_path);
+
+    try writeKeybindingsFile(&tmp, io, keybindings_path, allocator,
+        \\[
+        \\  { "key": "ctrl+alt+g", "command": "workbench.action.showCommands" },
+        \\  { "key": "ctrl+b", "command": "workbench.action.showCommands" },
+        \\  { "key": "ctrl+alt+n", "command": "workbench.action.showCommands", "when": "editorTextFocus" },
+        \\  { "key": "ctrl+alt+m", "command": "workbench.action.showCommands", "when": "!editorTextFocus" },
+        \\  { "key": "ctrl+alt+u", "command": "no.such.command" },
+        \\  { "command": "-workbench.action.toggleSidebarVisibility" }
+        \\]
+    );
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.setKeybindingsPaths(&.{keybindings_path});
+    workbench.focusEditor();
+
+    const ctrl_alt_g = ui.KeyEvent{ .key = .{ .char = 'g' }, .mods = .{ .ctrl = true, .alt = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_alt_g));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+    try closeQuickAccess(workbench);
+
+    // A user binding with the same chord as a default wins.
+    var ctrl_b = ui.KeyEvent{ .key = .{ .char = 'b' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_b));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+    try closeQuickAccess(workbench);
+
+    // `when` clauses use the shared context keys.
+    const ctrl_alt_n = ui.KeyEvent{ .key = .{ .char = 'n' }, .mods = .{ .ctrl = true, .alt = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_alt_n));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+    try closeQuickAccess(workbench);
+    const ctrl_alt_m = ui.KeyEvent{ .key = .{ .char = 'm' }, .mods = .{ .ctrl = true, .alt = true } };
+    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_alt_m)));
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+
+    // Unknown commands are filtered so they cannot swallow typing.
+    const ctrl_alt_u = ui.KeyEvent{ .key = .{ .char = 'u' }, .mods = .{ .ctrl = true, .alt = true } };
+    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_alt_u)));
+
+    // Reloading applies removals: Ctrl+B no longer resolves globally.
+    try writeKeybindingsFile(&tmp, io, keybindings_path, allocator,
+        \\[
+        \\  { "command": "-workbench.action.toggleSidebarVisibility" }
+        \\]
+    );
+    try workbench.setKeybindingsPaths(&.{keybindings_path});
+    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_b)));
+    try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_alt_g)));
+}
+
+fn closeQuickAccess(workbench: *Workbench) !void {
+    var escape = ui.KeyEvent{ .key = .escape };
+    _ = try workbench.handleQuickAccessKey(&escape);
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+}
+
+fn writeKeybindingsFile(
+    tmp: *std.testing.TmpDir,
+    io: Io,
+    path: []const u8,
+    allocator: Allocator,
+    contents: []const u8,
+) !void {
+    _ = path;
+    _ = allocator;
+    var file = try tmp.dir.createFile(io, "keybindings.json", .{ .truncate = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, contents);
+}
+
+test "Workbench: editor settings apply to open editors and reload" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "settings_editor.txt", "alpha\nbeta\n");
+    defer allocator.free(path);
+    var settings_file = try tmp.dir.createFile(io, "editor-settings.json", .{});
+    try settings_file.writeStreamingAll(io, "{\"editor.lineNumbers\":\"relative\",\"editor.renderWhitespace\":\"all\",\"editor.matchBrackets\":\"never\"}");
+    settings_file.close(io);
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/editor-settings.json", .{buffer[0..root_len]});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+
+    const tab = workbench.activeTab().?;
+    try std.testing.expectEqual(
+        editor_options.RenderLineNumbersType.Relative,
+        tab.view.terminal_view_host.options.get(.lineNumbers).render_type,
+    );
+    try std.testing.expectEqual(
+        editor_options.RenderWhitespace.all,
+        tab.view.terminal_view_host.options.get(.renderWhitespace),
+    );
+    try std.testing.expectEqual(
+        editor_options.MatchBrackets.never,
+        tab.view.terminal_view_host.options.get(.matchBrackets),
+    );
+
+    // Editing the file and re-applying the layer updates the open editor.
+    var reloaded_settings = try tmp.dir.createFile(io, "editor-settings.json", .{ .truncate = true });
+    try reloaded_settings.writeStreamingAll(io, "{\"editor.lineNumbers\":\"off\"}");
+    reloaded_settings.close(io);
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    try std.testing.expectEqual(
+        editor_options.RenderLineNumbersType.Off,
+        tab.view.terminal_view_host.options.get(.lineNumbers).render_type,
+    );
+}
+
 test "Workbench: search shows no-results and honors showLineNumbers" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -7659,7 +8487,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
 
     const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
     defer workbench.deinit();
-    try workbench.setUserSettingsPath(settings_path);
+    try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.initSidebar(root);
     try workbench.findInFiles();
     const view = workbench.search_view.?;
@@ -8121,6 +8949,36 @@ fn terminalCommandSkipsShell(command_id: []const u8) bool {
     return terminal_common.skipsShell(command_id);
 }
 
+fn readEditorSetting(
+    context: *anyopaque,
+    key: []const u8,
+    language_id: ?[]const u8,
+    resource: ?[]const u8,
+) ?*const configuration_mod.Value {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const configuration = self.configuration orelse return null;
+    return configuration.getValue(key, .{ .override_identifier = language_id, .resource = resource });
+}
+
+fn dupeOwnedPaths(allocator: Allocator, paths: []const []const u8) ![]const []const u8 {
+    const copies = try allocator.alloc([]const u8, paths.len);
+    errdefer allocator.free(copies);
+    var initialized: usize = 0;
+    errdefer {
+        for (copies[0..initialized]) |path| allocator.free(path);
+    }
+    for (paths, 0..) |path, index| {
+        copies[index] = try allocator.dupe(u8, path);
+        initialized += 1;
+    }
+    return copies;
+}
+
+fn freeOwnedPaths(allocator: Allocator, paths: []const []const u8) void {
+    for (paths) |path| allocator.free(path);
+    if (paths.len > 0) allocator.free(paths);
+}
+
 test "Workbench: files.associations change the opened editor language" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -8140,7 +8998,7 @@ test "Workbench: files.associations change the opened editor language" {
 
     const workbench = try Workbench.init(allocator, io, &.{}, 40, 9);
     defer workbench.deinit();
-    try workbench.setUserSettingsPath(settings_path);
+    try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.openPath(path);
 
     try std.testing.expectEqualStrings("zig", workbench.activeTab().?.editor.languageId());
@@ -8774,7 +9632,7 @@ test "Workbench: disabling breadcrumbs removes the row and shifts content" {
 
     const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
     defer workbench.deinit();
-    try workbench.setUserSettingsPath(settings_path);
+    try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.activeTab().?.ensureControllers();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -9031,9 +9889,9 @@ test "Workbench: LSP navigation, references and symbol picker" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "lsp/sample.ts",
-        \\const value = 1;
-        \\value;
-        \\value;
+        \\\const value = 1;
+        \\\value;
+        \\\value;
     );
     defer allocator.free(path);
 
@@ -9147,8 +10005,8 @@ test "Workbench: F12 and Shift+F12 dispatch through keybindings" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "lsp/keys.ts",
-        \\alpha
-        \\beta
+        \\\alpha
+        \\\beta
     );
     defer allocator.free(path);
 
@@ -9203,8 +10061,8 @@ test "Workbench: same-file navigation reuses the current editor across path form
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "lsp/relative.ts",
-        \\const value = 1;
-        \\value;
+        \\\const value = 1;
+        \\\value;
     );
     defer allocator.free(path);
     var absolute_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;

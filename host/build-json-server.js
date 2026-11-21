@@ -7,9 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
-const vscodeRoot = process.env.VSCODE_SOURCE_PATH
-	? path.resolve(process.env.VSCODE_SOURCE_PATH)
-	: path.resolve(repoRoot, 'vscode');
+const vscodeRoot = path.resolve(repoRoot, 'vscode');
 const entry = path.join(vscodeRoot, 'extensions/json-language-features/server/src/node/jsonServerMain.ts');
 
 const jsToTs = {

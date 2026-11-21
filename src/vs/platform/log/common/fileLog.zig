@@ -11,9 +11,9 @@
 // Timestamps are UTC because the terminal host has no time-zone database; the
 // `debug`/`warning` labels match `FileLogger.stringifyLogLevel`.
 //
-// The default location is `$XDG_STATE_HOME/vscode-textbuffer/logs/main.log`
-// (falling back to `$HOME/.local/state/...`). `VSCODE_TEXTBUFFER_LOG` overrides
-// the file path, mirroring `VSCODE_TEXTBUFFER_USER_SETTINGS`.
+// The location comes from the upstream `logsPath` resolution in
+// `src/tui/vscodeProfile.zig`: the terminal user data directory's `logs`
+// folder, or the upstream `--logsPath` switch.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -63,22 +63,6 @@ pub const FileLogger = struct {
         return self.service.interface();
     }
 };
-
-/// `$XDG_STATE_HOME/vscode-textbuffer/logs/main.log`, `$HOME/.local/state/...`
-/// or `VSCODE_TEXTBUFFER_LOG`. Returns `null` when the environment has no home
-/// directory. The caller owns the returned path.
-pub fn defaultLogPath(allocator: Allocator, environ: *const std.process.Environ.Map) !?[]u8 {
-    if (environ.get("VSCODE_TEXTBUFFER_LOG")) |path| {
-        return try allocator.dupe(u8, path);
-    }
-    if (environ.get("XDG_STATE_HOME")) |xdg| {
-        return try std.fs.path.join(allocator, &.{ xdg, "vscode-textbuffer", "logs", "main.log" });
-    }
-    if (environ.get("HOME")) |home| {
-        return try std.fs.path.join(allocator, &.{ home, ".local", "state", "vscode-textbuffer", "logs", "main.log" });
-    }
-    return null;
-}
 
 fn openFile(io: Io, path: []const u8) !Io.File {
     if (std.fs.path.dirname(path)) |directory| {

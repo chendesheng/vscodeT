@@ -60,6 +60,9 @@ const ModifierSet = struct {
 pub const CommandExecutor = struct {
     context: *anyopaque,
     execute: *const fn (context: *anyopaque, command_id: []const u8) anyerror!void,
+    /// Optional arg-aware variant. User keybindings may carry `args`; hosts
+    /// that do not consume arguments keep using `execute`.
+    execute_with_args: ?*const fn (context: *anyopaque, command_id: []const u8, command_args: ?*const anyopaque) anyerror!void = null,
 };
 
 pub const AbstractKeybindingService = struct {
@@ -299,9 +302,15 @@ pub const AbstractKeybindingService = struct {
                 if (self.inChordMode()) self.leaveChordMode();
                 const prevent_default = !result.isBubble;
                 self.currently_dispatching = command_id;
-                self.command_service.execute(self.command_service.context, command_id.?) catch |err| {
-                    self.notification_service.warn(.{ .error_message = @errorName(err) });
-                };
+                if (self.command_service.execute_with_args) |execute_with_args| {
+                    execute_with_args(self.command_service.context, command_id.?, result.commandArgs) catch |err| {
+                        self.notification_service.warn(.{ .error_message = @errorName(err) });
+                    };
+                } else {
+                    self.command_service.execute(self.command_service.context, command_id.?) catch |err| {
+                        self.notification_service.warn(.{ .error_message = @errorName(err) });
+                    };
+                }
                 self.currently_dispatching = null;
                 return prevent_default;
             },

@@ -32,6 +32,7 @@ const rendering_context = @import("../../view/renderingContext.zig");
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
 const editor_configuration = @import("../../../common/config/editorConfiguration.zig");
 const browser_config = @import("../../config/editorConfiguration.zig");
+const terminal_editor_config = @import("../../config/terminalEditorConfiguration.zig");
 const editor_options = @import("../../../common/config/editorOptions.zig");
 const theme_service = @import("../../../../platform/theme/common/themeService.zig");
 const actions = @import("../../../../platform/actions/common/actions.zig");
@@ -248,6 +249,26 @@ pub const TerminalViewHost = struct {
         return self;
     }
 
+    /// Applies the configured `editor.*` view settings, keeping the
+    /// terminal-specific accommodations. `changed` receives the option ids
+    /// whose values changed so the caller can fan a configuration event out
+    /// through the ported `View`.
+    pub fn applyEditorSettings(
+        self: *TerminalViewHost,
+        reader: terminal_editor_config.Reader,
+        language_id: ?[]const u8,
+        resource: ?[]const u8,
+        changed: *terminal_editor_config.ChangeSet,
+    ) bool {
+        const any = terminal_editor_config.applyViewSettings(&self.options, reader, language_id, resource, changed);
+        // Cell rendering keeps its one-row metrics even when settings choose a
+        // font size or line height; those options have no terminal meaning.
+        self.options.set(.lineHeight, 1);
+        self.options.set(.experimentalWhitespaceRendering, .off);
+        self.options.set(.stopRenderingLineAfter, -1);
+        return any;
+    }
+
     pub fn deinit(self: *TerminalViewHost) void {
         self.editor.removeViewEventHandler(&self.view_model_handler);
         self.view.deinit();
@@ -378,7 +399,7 @@ pub const TerminalViewHost = struct {
         line_backgrounds: []const ?ui.Color = &.{},
         selected_flag: u32,
         secondary_cursor_flag: u32,
-        background_color: ui.Color,
+        background_color: ?ui.Color,
         ellipsis_style: ui.Style,
     };
 

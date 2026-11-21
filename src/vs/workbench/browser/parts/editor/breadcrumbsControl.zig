@@ -20,6 +20,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
+const theme_colors_mod = @import("../../themeColors.zig");
 
 const GroupIdentifier = @import("../../../common/editor.zig").GroupIdentifier;
 const WorkspaceContextService = @import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService;
@@ -63,28 +64,28 @@ pub const Host = struct {
     focus_editor: *const fn (context: *anyopaque) void,
 };
 
-const background = ui.cell.PaintStyle{
+const base_background = ui.cell.PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 204, .g = 204, .b = 204 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
-const inactive_background = ui.cell.PaintStyle{
+const base_inactive_background = ui.cell.PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 150, .g = 150, .b = 150 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
-const focused_style = ui.cell.PaintStyle{
+const base_focused_style = ui.cell.PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 255, .g = 255, .b = 255 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
     .attrs = ui.cell.Attr.underline,
 };
-const hovered_style = ui.cell.PaintStyle{
+const base_hovered_style = ui.cell.PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 255, .g = 255, .b = 255 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
-const separator_style = ui.cell.PaintStyle{
+const base_separator_style = ui.cell.PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 110, .g = 110, .b = 110 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
-const icon_style = ui.cell.PaintStyle{
+const base_icon_style = ui.cell.PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 180, .g = 180, .b = 180 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
@@ -102,6 +103,7 @@ pub const BreadcrumbsControl = struct {
     visible: bool = false,
     focused: bool = false,
     group_id: GroupIdentifier = 0,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
 
     pub fn init(
         allocator: Allocator,
@@ -234,12 +236,49 @@ pub const BreadcrumbsControl = struct {
         if (self.focused) self.widget.setFocused(items.items.len -| 1) else self.widget.revealLast();
     }
 
+    pub fn setThemeColors(self: *BreadcrumbsControl, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+    }
+
     pub fn draw(self: *BreadcrumbsControl, grid: *ui.CellGrid, rect: ui.Rect, active_group: bool) !void {
         if (!self.visible) return;
         const x = ui.cell.snap(rect.x);
         const y = ui.cell.snap(rect.y);
         const width = ui.cell.snap(rect.w);
         if (width == 0) return;
+        var background = base_background;
+        var inactive_background = base_inactive_background;
+        var focused_style = base_focused_style;
+        var hovered_style = base_hovered_style;
+        var separator_style = base_separator_style;
+        var icon_style = base_icon_style;
+        if (self.theme) |colors| {
+            background = .{
+                .fg = ui.cell.packColor(colors.color("breadcrumb.foreground", .{ 204, 204, 204 })),
+                .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
+            };
+            inactive_background = .{
+                .fg = ui.cell.packColor(colors.color("descriptionForeground", .{ 150, 150, 150 })),
+                .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
+            };
+            focused_style = .{
+                .fg = ui.cell.packColor(colors.color("breadcrumb.focusForeground", .{ 255, 255, 255 })),
+                .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
+                .attrs = ui.cell.Attr.underline,
+            };
+            hovered_style = .{
+                .fg = ui.cell.packColor(colors.color("breadcrumb.activeSelectionForeground", .{ 255, 255, 255 })),
+                .bg = ui.cell.packColor(colors.color("toolbar.hoverBackground", .{ 37, 37, 38 })),
+            };
+            separator_style = .{
+                .fg = ui.cell.packColor(colors.color("editorGroup.border", .{ 110, 110, 110 })),
+                .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
+            };
+            icon_style = .{
+                .fg = ui.cell.packColor(colors.color("symbolIcon.fileForeground", .{ 180, 180, 180 })),
+                .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
+            };
+        }
         const base = if (active_group) background else inactive_background;
         const style = widget_mod.Style{
             .background = base,

@@ -19,7 +19,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
+const theme_colors_mod = @import("../../../browser/themeColors.zig");
 const keybinding_service = @import("../../../services/keybinding/browser/keybindingService.zig");
+const resolved_keybinding_item = @import("../../../../platform/keybinding/common/resolvedKeybindingItem.zig");
 const key_codes = @import("../../../../base/common/keyCodes.zig");
 const keybinding_registry = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
 const search = @import("../../../services/search/common/search.zig");
@@ -49,16 +51,16 @@ const Range = @import("../../../../editor/common/core/range.zig").Range;
 const workspace_context = @import("../../../services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 
-const background = ui.Color{ .r = 30, .g = 30, .b = 33 };
-const foreground = ui.Color{ .r = 210, .g = 210, .b = 210 };
-const dim = ui.Color{ .r = 135, .g = 135, .b = 142 };
-const header_background = ui.Color{ .r = 38, .g = 38, .b = 42 };
-const selected_background = ui.Color{ .r = 55, .g = 65, .b = 80 };
-const folder_color = ui.Color{ .r = 170, .g = 190, .b = 210 };
-const match_color = ui.Color{ .r = 240, .g = 190, .b = 90 };
-const replace_color = ui.Color{ .r = 120, .g = 210, .b = 120 };
-const scrollbar_track_color = ui.Color{ .r = 30, .g = 32, .b = 40 };
-const scrollbar_thumb_color = ui.Color{ .r = 105, .g = 108, .b = 122 };
+const base_background = ui.Color{ .r = 30, .g = 30, .b = 33 };
+const base_foreground = ui.Color{ .r = 210, .g = 210, .b = 210 };
+const base_dim = ui.Color{ .r = 135, .g = 135, .b = 142 };
+const base_header_background = ui.Color{ .r = 38, .g = 38, .b = 42 };
+const base_selected_background = ui.Color{ .r = 55, .g = 65, .b = 80 };
+const base_folder_color = ui.Color{ .r = 170, .g = 190, .b = 210 };
+const base_match_color = ui.Color{ .r = 240, .g = 190, .b = 90 };
+const base_replace_color = ui.Color{ .r = 120, .g = 210, .b = 120 };
+const base_scrollbar_track_color = ui.Color{ .r = 30, .g = 32, .b = 40 };
+const base_scrollbar_thumb_color = ui.Color{ .r = 105, .g = 108, .b = 122 };
 
 pub const Action = enum { unhandled, handled, focus_editor };
 
@@ -150,6 +152,8 @@ pub const SearchView = struct {
     started_once: bool = false,
     replace_confirmation: ?controller_mod.ReplaceAllRequest = null,
     keybindings: ?*keybinding_service.KeybindingService = null,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
+    keybinding_removals: []const *const resolved_keybinding_item.ResolvedKeybindingItem = &.{},
     pending_action: ?Action = null,
 
     pub fn init(
@@ -352,11 +356,25 @@ pub const SearchView = struct {
 
     fn ensureKeybindings(self: *SearchView) !void {
         if (self.keybindings != null) return;
-        const service = try keybinding_service.KeybindingService.init(self.allocator, &search_keybinding_rules, .{
-            .context = self,
-            .execute = executeSearchCommand,
+        const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
+            .rules = &search_keybinding_rules,
+            .executor = .{ .context = self, .execute = executeSearchCommand },
+            .overrides = self.keybinding_removals,
         });
         self.keybindings = service;
+    }
+
+    /// Rebuilds the search shortcut host after the user keymap changed. The
+    /// removals stay borrowed from the workbench's keymap owner.
+    pub fn reloadKeybindings(
+        self: *SearchView,
+        overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem,
+    ) void {
+        if (self.keybindings) |service| {
+            service.deinit();
+            self.keybindings = null;
+        }
+        self.keybinding_removals = overrides;
     }
 
     fn executeSearchCommand(context: *anyopaque, command: []const u8) anyerror!void {
@@ -933,6 +951,10 @@ pub const SearchView = struct {
         return true;
     }
 
+    pub fn setThemeColors(self: *SearchView, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+    }
+
     pub fn render(self: *SearchView, grid: *ui.CellGrid, rect: ui.Rect) !void {
         self.last_rect = rect;
         const x = ui.cell.snap(rect.x);
@@ -940,6 +962,28 @@ pub const SearchView = struct {
         const width = ui.cell.snap(rect.w);
         const height = ui.cell.snap(rect.h);
         if (width == 0 or height == 0) return;
+        var background = base_background;
+        var foreground = base_foreground;
+        var dim = base_dim;
+        var header_background = base_header_background;
+        var selected_background = base_selected_background;
+        var folder_color = base_folder_color;
+        var match_color = base_match_color;
+        var replace_color = base_replace_color;
+        var scrollbar_track_color = base_scrollbar_track_color;
+        var scrollbar_thumb_color = base_scrollbar_thumb_color;
+        if (self.theme) |palette| {
+            background = palette.colorOr("sideBar.background", base_background);
+            foreground = palette.colorOr("sideBar.foreground", base_foreground);
+            dim = palette.colorOr("descriptionForeground", base_dim);
+            header_background = palette.colorOr("sideBarSectionHeader.background", base_header_background);
+            selected_background = palette.colorOr("list.activeSelectionBackground", base_selected_background);
+            folder_color = palette.colorOr("symbolIcon.folderForeground", base_folder_color);
+            match_color = palette.colorOr("search.matchHighlightForeground", base_match_color);
+            replace_color = palette.colorOr("gitDecoration.addedResourceForeground", base_replace_color);
+            scrollbar_track_color = palette.colorOr("sideBar.background", base_scrollbar_track_color);
+            scrollbar_thumb_color = palette.colorOr("scrollbarSlider.background", base_scrollbar_thumb_color);
+        }
 
         const base = ui.cell.PaintStyle{ .fg = ui.cell.packColor(foreground), .bg = ui.cell.packColor(background) };
         grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), base);
@@ -1021,8 +1065,12 @@ pub const SearchView = struct {
     }
 
     fn renderRow(self: *SearchView, grid: *ui.CellGrid, x: usize, y: usize, width: usize, row: Row, depth: usize, row_bg: ui.Color) void {
-        const base_fg = ui.cell.packColor(foreground);
-        const dim_fg = ui.cell.packColor(dim);
+        const palette = self.theme;
+        const base_fg = ui.cell.packColor(if (palette) |colors| colors.colorOr("sideBar.foreground", base_foreground) else base_foreground);
+        const dim_fg = ui.cell.packColor(if (palette) |colors| colors.colorOr("descriptionForeground", base_dim) else base_dim);
+        const folder_fg = if (palette) |colors| colors.colorOr("symbolIcon.folderForeground", base_folder_color) else base_folder_color;
+        const match_fg = if (palette) |colors| colors.colorOr("search.matchHighlightForeground", base_match_color) else base_match_color;
+        const replace_fg = if (palette) |colors| colors.colorOr("gitDecoration.addedResourceForeground", base_replace_color) else base_replace_color;
         const bg = ui.cell.packColor(row_bg);
         switch (row) {
             .heading => {
@@ -1037,7 +1085,7 @@ pub const SearchView = struct {
                     folder.recursiveMatchCount(),
                 }) catch folder.name;
                 const indent = results_view.indentCells(depth);
-                _ = drawText(grid, x + indent, y, width -| indent, text, .{ .fg = ui.cell.packColor(folder_color), .bg = bg });
+                _ = drawText(grid, x + indent, y, width -| indent, text, .{ .fg = ui.cell.packColor(folder_fg), .bg = bg });
             },
             .file => |file| {
                 const expanded = self.rowExpanded(row);
@@ -1068,7 +1116,7 @@ pub const SearchView = struct {
                     }
                 }
                 const inside = replacement orelse preview.inside;
-                const inside_color = if (replacement != null) replace_color else match_color;
+                const inside_color = if (replacement != null) replace_fg else match_fg;
                 const row_data = results_view.rowData(.{ .match = match }, .{
                     .mode = self.controller.viewMode(),
                     .show_line_numbers = self.controller.showLineNumbers(),

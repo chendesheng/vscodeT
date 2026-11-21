@@ -5,7 +5,9 @@
 // controller, a one-shot picker for workbench selectors, and the terminal
 // widget, and routes keys/mouse/render/poll from the workbench. `Ctrl-P` opens
 // Go to File; typing `>` switches to the command palette; `Alt-P` opens the
-// command palette directly. A plain terminal sends the same byte for Ctrl-P
+// command palette directly. While a picker is open, `Ctrl-N`/`Ctrl-P` select
+// the next/previous item (the terminal form of the macOS quick-pick bindings;
+// the widget handles them). A plain terminal sends the same byte for Ctrl-P
 // and Ctrl-Shift-P, so the latter cannot be used.
 //
 // The file index advances from `poll()`, not from a search worker. An outside
@@ -40,7 +42,9 @@ const QuickAccessController = controller_mod.QuickAccessController;
 const quick_input_service_mod = @import("../../platform/quickinput/browser/quickInputService.zig");
 const QuickInputService = quick_input_service_mod.QuickInputService;
 const QuickPick = @import("../../platform/quickinput/browser/quickInput.zig").QuickPick;
+const QuickPickItem = @import("../../platform/quickinput/common/quickInput.zig").QuickPickItem;
 const widget_mod = @import("../../platform/quickinput/browser/quickInputList.zig");
+const theme_colors_mod = @import("./themeColors.zig");
 const QuickPickWidget = widget_mod.QuickPickWidget;
 
 pub const Host = struct {
@@ -152,6 +156,10 @@ pub const QuickAccessService = struct {
         self.allocator.destroy(self);
     }
 
+    pub fn setThemeColors(self: *QuickAccessService, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.widget.setThemeColors(palette);
+    }
+
     pub fn setWorkspace(self: *QuickAccessService, workspace: *WorkspaceContextService) !void {
         self.workspace = workspace;
         if (self.input.isVisible()) self.input.hide();
@@ -206,15 +214,10 @@ pub const QuickAccessService = struct {
         }
 
         const picker = self.controller.pickerRef();
-        if (isCtrlShiftChar(event, 'p')) {
-            if (self.isFilePickerActive()) picker.focusPrevious();
-            return true;
-        }
-        if (isCtrlChar(event, 'p')) {
-            if (self.isFilePickerActive()) picker.focusNext();
-            return true;
-        }
-        if (isAltChar(event, 'p')) return true;
+        // Navigation (Ctrl-N/Ctrl-P, arrows, pages) belongs to the widget so
+        // the file picker, the command palette and the one-shot pickers all
+        // share it. Only swallow the alternate command-palette chord here.
+        if (isCtrlShiftChar(event, 'p') or isAltChar(event, 'p')) return true;
 
         _ = self.widget.handleKey(picker, event);
         return true;
@@ -419,4 +422,93 @@ test "QuickAccessService: file and command pickers share one controller" {
     try std.testing.expect(try service.handleKey(&alt_p));
     try std.testing.expect(service.isOpen());
     try std.testing.expect(!service.isFilePickerActive());
+}
+
+test "QuickAccessService: Ctrl-N/Ctrl-P select next/previous in every picker" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const context = try WorkspaceContextService.initEmpty(allocator, "test");
+    defer context.deinit();
+    var history = HistoryService.init(allocator);
+    defer history.deinit();
+
+    var commands = CommandRegistry.init(allocator);
+    defer commands.deinit();
+
+    const items = [_]QuickPickItem{
+        .{ .item = .{ .id = "a", .label = "Alpha" } },
+        .{ .item = .{ .id = "b", .label = "Beta" } },
+        .{ .item = .{ .id = "c", .label = "Gamma" } },
+    };
+
+    const State = struct {
+        fn openFile(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn report(_: *anyopaque, _: []const u8) void {}
+        fn cancel(_: *anyopaque) void {}
+        fn pick(_: *anyopaque, _: *QuickPick) anyerror!void {}
+    };
+    var state = State{};
+    const service = try QuickAccessService.init(allocator, io, context, &history, &commands, .{
+        .context = &state,
+        .open_file = State.openFile,
+        .report_error = State.report,
+        .cancel_popups = State.cancel,
+    });
+    defer service.deinit();
+
+    var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
+    var ctrl_n = ui.KeyEvent{ .key = .{ .char = 'n' }, .mods = .{ .ctrl = true } };
+
+    // Go to File.
+    try std.testing.expect(try service.handleKey(&ctrl_p));
+    const picker = service.controller.pickerRef();
+    try picker.setItems(&items);
+    try std.testing.expectEqual(@as(?usize, 0), picker.active_index);
+
+    try std.testing.expect(try service.handleKey(&ctrl_n));
+    try std.testing.expectEqual(@as(?usize, 1), picker.active_index);
+    try std.testing.expect(try service.handleKey(&ctrl_n));
+    try std.testing.expectEqual(@as(?usize, 2), picker.active_index);
+    // Focus loops like the upstream quick pick.
+    try std.testing.expect(try service.handleKey(&ctrl_n));
+    try std.testing.expectEqual(@as(?usize, 0), picker.active_index);
+
+    // Ctrl-P is previous, not the file picker's quick-navigate-next chord.
+    try std.testing.expect(try service.handleKey(&ctrl_p));
+    try std.testing.expectEqual(@as(?usize, 2), picker.active_index);
+    try std.testing.expect(try service.handleKey(&ctrl_p));
+    try std.testing.expectEqual(@as(?usize, 1), picker.active_index);
+    // Navigation chords never reach the filter input.
+    try std.testing.expectEqualStrings("", picker.value.items);
+
+    // The command palette keeps the same navigation.
+    var greater = ui.KeyEvent{ .key = .{ .char = '>' } };
+    _ = try service.handleKey(&greater);
+    try std.testing.expect(!service.isFilePickerActive());
+    try picker.setItems(&items);
+    try std.testing.expect(try service.handleKey(&ctrl_n));
+    try std.testing.expectEqual(@as(?usize, 1), picker.active_index);
+    try std.testing.expect(try service.handleKey(&ctrl_p));
+    try std.testing.expectEqual(@as(?usize, 0), picker.active_index);
+    try std.testing.expectEqualStrings(">", picker.value.items);
+
+    var escape = ui.KeyEvent{ .key = .escape };
+    _ = try service.handleKey(&escape);
+    try std.testing.expect(!service.isOpen());
+
+    // One-shot pickers (Go to Symbol, indentation, encoding, ...) share the
+    // same widget navigation.
+    try service.input.showPick(&items, .{}, State.pick, &state);
+    defer service.input.hide();
+    try std.testing.expect(service.input.isVisible());
+    const input_picker = service.input.pickerRef();
+    try std.testing.expectEqual(@as(?usize, 0), input_picker.active_index);
+    try std.testing.expect(try service.handleKey(&ctrl_n));
+    try std.testing.expectEqual(@as(?usize, 1), input_picker.active_index);
+    try std.testing.expect(try service.handleKey(&ctrl_p));
+    try std.testing.expectEqual(@as(?usize, 0), input_picker.active_index);
+    // The uppercase form (some terminals report Ctrl-Shift-N/P) navigates too.
+    var ctrl_upper_p = ui.KeyEvent{ .key = .{ .char = 'P' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try service.handleKey(&ctrl_upper_p));
+    try std.testing.expectEqual(@as(?usize, 2), input_picker.active_index);
 }

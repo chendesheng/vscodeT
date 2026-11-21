@@ -11,6 +11,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
+const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
 
 const scm = @import("../vs/workbench/contrib/scm/common/scm.zig");
 const IDisposable = @import("../vs/base/common/lifecycle.zig").IDisposable;
@@ -49,6 +50,7 @@ pub const ScmView = struct {
     resource_rows: std.array_list.Managed(usize),
     selection: usize = 0,
     scroll: usize = 0,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
 
     pub fn init(allocator: Allocator, service: *ISCMService, host: Host) ScmView {
         return .{
@@ -224,6 +226,10 @@ pub const ScmView = struct {
         }
     }
 
+    pub fn setThemeColors(self: *ScmView, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+    }
+
     pub fn render(self: *ScmView, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
         const x = ui.cell.snap(rect.x);
         const y = ui.cell.snap(rect.y);
@@ -231,21 +237,42 @@ pub const ScmView = struct {
         const height = ui.cell.snap(rect.h);
         if (width == 0 or height == 0) return;
 
-        const background = ui.cell.PaintStyle{
+        var background = ui.cell.PaintStyle{
             .fg = ui.cell.packColor(.{ .r = 190, .g = 190, .b = 190 }),
             .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
         };
+        var header_foreground = ui.Color{ .r = 220, .g = 220, .b = 220 };
+        var divider_color = ui.Color{ .r = 70, .g = 70, .b = 70 };
+        var selected_background = if (focused) ui.Color{ .r = 38, .g = 79, .b = 120 } else ui.Color{ .r = 32, .g = 34, .b = 40 };
+        var selected_foreground = ui.Color{ .r = 240, .g = 240, .b = 240 };
+        var dim_foreground = ui.Color{ .r = 150, .g = 150, .b = 150 };
+        var group_foreground = ui.Color{ .r = 170, .g = 170, .b = 170 };
+        var scrollbar_color = ui.Color{ .r = 108, .g = 108, .b = 108 };
+        if (self.theme) |palette| {
+            background.fg = ui.cell.packColor(palette.color("sideBar.foreground", .{ 190, 190, 190 }));
+            background.bg = ui.cell.packColor(palette.color("sideBar.background", .{ 30, 30, 33 }));
+            header_foreground = palette.color("sideBarSectionHeader.foreground", .{ 220, 220, 220 });
+            divider_color = palette.color("editorGroup.border", .{ 70, 70, 70 });
+            selected_background = palette.color(
+                if (focused) "list.activeSelectionBackground" else "list.inactiveSelectionBackground",
+                .{ 38, 79, 120 },
+            );
+            selected_foreground = palette.color("list.activeSelectionForeground", .{ 240, 240, 240 });
+            dim_foreground = palette.color("descriptionForeground", .{ 150, 150, 150 });
+            group_foreground = palette.color("sideBar.foreground", .{ 170, 170, 170 });
+            scrollbar_color = palette.color("scrollbarSlider.background", .{ 108, 108, 108 });
+        }
         grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), background);
 
         const header_style = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
+            .fg = ui.cell.packColor(header_foreground),
             .attrs = if (focused) ui.cell.Attr.bold else 0,
         };
         drawText(grid, x + 1, y, width -| 2, "SOURCE CONTROL", header_style);
 
         if (height > 1) {
             const divider_style = ui.cell.PaintStyle{
-                .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
+                .fg = ui.cell.packColor(divider_color),
             };
             var divider: usize = 0;
             while (divider < width) : (divider += 1) {
@@ -264,13 +291,13 @@ pub const ScmView = struct {
             var style = background;
             const selected = entry.kind == .resource and self.isSelected(source);
             if (selected) {
-                style.bg = ui.cell.packColor(.{ .r = if (focused) 38 else 32, .g = if (focused) 79 else 34, .b = if (focused) 120 else 40 });
-                style.fg = ui.cell.packColor(.{ .r = 240, .g = 240, .b = 240 });
+                style.bg = ui.cell.packColor(selected_background);
+                style.fg = ui.cell.packColor(selected_foreground);
             }
             const indent = entry.depth * 2;
             switch (entry.kind) {
                 .welcome => {
-                    style.fg = ui.cell.packColor(.{ .r = 150, .g = 150, .b = 150 });
+                    style.fg = ui.cell.packColor(dim_foreground);
                     drawText(grid, x + 1, list_top + row, width -| 2, entry.label, style);
                 },
                 .repository => {
@@ -287,7 +314,7 @@ pub const ScmView = struct {
                 },
                 .group => {
                     const count = entry.group.?.resources().len;
-                    style.fg = ui.cell.packColor(.{ .r = 170, .g = 170, .b = 170 });
+                    style.fg = ui.cell.packColor(group_foreground);
                     const label = std.fmt.allocPrint(self.allocator, "{s} ({d})", .{ entry.label, count }) catch entry.label;
                     defer if (label.ptr != entry.label.ptr) self.allocator.free(label);
                     drawText(grid, x + indent, list_top + row, width -| indent, label, style);
@@ -295,7 +322,7 @@ pub const ScmView = struct {
                 .resource => {
                     if (entry.status != 0) {
                         const status_style = ui.cell.PaintStyle{
-                            .fg = ui.cell.packColor(statusColor(entry.status)),
+                            .fg = ui.cell.packColor(statusColor(entry.status, self.theme)),
                             .bg = style.bg,
                         };
                         const glyph = [1]u8{entry.status};
@@ -313,7 +340,7 @@ pub const ScmView = struct {
             var index: usize = 0;
             while (index < list_height) : (index += 1) {
                 const style = ui.cell.PaintStyle{
-                    .fg = ui.cell.packColor(.{ .r = 108, .g = 108, .b = 108 }),
+                    .fg = ui.cell.packColor(scrollbar_color),
                 };
                 const glyph: u21 = if (index >= thumb.start and index < thumb.start + thumb.length) '\u{2588}' else '\u{2502}';
                 grid.putCodepoint(column, list_top + index, glyph, 1, style);
@@ -358,12 +385,12 @@ fn resourceStatus(resource: *ISCMResource) u8 {
     return 'M';
 }
 
-fn statusColor(status: u8) ui.Color {
+fn statusColor(status: u8, palette: ?*const theme_colors_mod.ThemeColors) ui.Color {
     return switch (status) {
-        'D', 'U' => .{ .r = 214, .g = 80, .b = 80 },
-        'A', '?' => .{ .r = 90, .g = 170, .b = 90 },
-        'R' => .{ .r = 200, .g = 160, .b = 70 },
-        else => .{ .r = 200, .g = 180, .b = 90 },
+        'D', 'U' => if (palette) |colors| colors.color("gitDecoration.deletedResourceForeground", .{ 214, 80, 80 }) else .{ .r = 214, .g = 80, .b = 80 },
+        'A', '?' => if (palette) |colors| colors.color("gitDecoration.addedResourceForeground", .{ 90, 170, 90 }) else .{ .r = 90, .g = 170, .b = 90 },
+        'R' => if (palette) |colors| colors.color("gitDecoration.renamedResourceForeground", .{ 200, 160, 70 }) else .{ .r = 200, .g = 160, .b = 70 },
+        else => if (palette) |colors| colors.color("gitDecoration.modifiedResourceForeground", .{ 200, 180, 90 }) else .{ .r = 200, .g = 180, .b = 90 },
     };
 }
 

@@ -306,8 +306,7 @@ the cascade.
 
 ## In-process benchmark (Debug, 1,000 lines)
 
-`zig build bench-open` with `VSCODE_TEXTBUFFER_BENCH_FILE` set to the same
-1,000-line file. These stages are editor-only; they exclude the workbench
+`zig build bench-open -Dbench-file=<path>` using the same 1,000-line file. These stages are editor-only; they exclude the workbench
 composite, status bar, ANSI encode, PTY and extension host.
 
 | Stage | Time |

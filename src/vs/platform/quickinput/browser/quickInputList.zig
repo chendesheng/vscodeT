@@ -14,13 +14,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
+const theme_colors_mod = @import("../../../workbench/browser/themeColors.zig");
 const QuickPick = @import("./quickInput.zig").QuickPick;
 
-const background = ui.Color{ .r = 45, .g = 45, .b = 55 };
-const foreground = ui.Color{ .r = 230, .g = 230, .b = 230 };
-const dim_foreground = ui.Color{ .r = 145, .g = 145, .b = 158 };
-const active_background = ui.Color{ .r = 60, .g = 70, .b = 95 };
-const hover_background = ui.Color{ .r = 52, .g = 58, .b = 74 };
+const base_background = ui.Color{ .r = 45, .g = 45, .b = 55 };
+const base_foreground = ui.Color{ .r = 230, .g = 230, .b = 230 };
+const base_dim_foreground = ui.Color{ .r = 145, .g = 145, .b = 158 };
+const base_active_background = ui.Color{ .r = 60, .g = 70, .b = 95 };
+const base_hover_background = ui.Color{ .r = 52, .g = 58, .b = 74 };
 
 pub const Layout = struct {
     x: usize = 0,
@@ -31,7 +32,17 @@ pub const Layout = struct {
 };
 
 pub const QuickPickWidget = struct {
+    pub const Colors = struct {
+        background: ui.Color = base_background,
+        foreground: ui.Color = base_foreground,
+        dim_foreground: ui.Color = base_dim_foreground,
+        active_background: ui.Color = base_active_background,
+        hover_background: ui.Color = base_hover_background,
+    };
+
     allocator: Allocator,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
+    colors: Colors = .{},
     input: ui.InputBox,
     input_surface: ?ui.Surface = null,
     input_surface_width: usize = 0,
@@ -51,6 +62,21 @@ pub const QuickPickWidget = struct {
         self.input.callback_context = self;
         self.input.on_change = onInputChanged;
         return self;
+    }
+
+    pub fn setThemeColors(self: *QuickPickWidget, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+    }
+
+    fn resolveColors(self: *const QuickPickWidget) Colors {
+        const palette = self.theme orelse return .{};
+        return .{
+            .background = palette.colorOr("quickInput.background", base_background),
+            .foreground = palette.colorOr("quickInput.foreground", base_foreground),
+            .dim_foreground = palette.colorOr("descriptionForeground", base_dim_foreground),
+            .active_background = palette.colorOr("quickInputList.focusBackground", base_active_background),
+            .hover_background = palette.colorOr("list.hoverBackground", base_hover_background),
+        };
     }
 
     pub fn deinit(self: *QuickPickWidget) void {
@@ -94,6 +120,7 @@ pub const QuickPickWidget = struct {
         grid: *ui.CellGrid,
     ) !Layout {
         self.active_picker = picker;
+        self.colors = self.resolveColors();
         const layout = self.computeLayout(picker, grid.cols, grid.rows);
         if (layout.width == 0 or layout.height == 0) return layout;
 
@@ -112,8 +139,8 @@ pub const QuickPickWidget = struct {
 
         if (picker.busy and layout.width > 3) {
             grid.putCodepoint(layout.x + layout.width - 2, layout.y, 0x2026, 1, .{
-                .fg = ui.cell.packColor(dim_foreground),
-                .bg = ui.cell.packColor(background),
+                .fg = ui.cell.packColor(self.colors.dim_foreground),
+                .bg = ui.cell.packColor(self.colors.background),
             });
         }
         return layout;
@@ -126,8 +153,8 @@ pub const QuickPickWidget = struct {
             self.syncing = false;
         }
         self.input.placeholder = picker.placeholder;
-        self.input.color = foreground;
-        self.input.placeholder_color = dim_foreground;
+        self.input.color = self.colors.foreground;
+        self.input.placeholder_color = self.colors.dim_foreground;
         self.input.focused = true;
     }
 
@@ -157,8 +184,8 @@ pub const QuickPickWidget = struct {
             .height = .{ .cells = 1 },
             .white_space = .pre,
             .overflow = .hidden,
-            .background = background,
-            .color = foreground,
+            .background = self.colors.background,
+            .color = self.colors.foreground,
         });
         const input_node = try self.input.build(doc, layout.width);
         _ = try root.appendChild(input_node);
@@ -185,13 +212,13 @@ pub const QuickPickWidget = struct {
             const is_active = picker.active_index == index;
             const is_hover = self.hover_index == index and !is_active;
             const row_bg = if (is_active)
-                active_background
+                self.colors.active_background
             else if (is_hover)
-                hover_background
+                self.colors.hover_background
             else
-                background;
+                self.colors.background;
             const row_style = ui.cell.PaintStyle{
-                .fg = ui.cell.packColor(if (is_active) foreground else dim_foreground),
+                .fg = ui.cell.packColor(if (is_active) self.colors.foreground else self.colors.dim_foreground),
                 .bg = ui.cell.packColor(row_bg),
             };
             grid.fillRect(
@@ -211,14 +238,14 @@ pub const QuickPickWidget = struct {
                             row,
                             layout.width -| 2,
                             separator.label,
-                            .{ .fg = ui.cell.packColor(dim_foreground), .bg = ui.cell.packColor(row_bg) },
+                            .{ .fg = ui.cell.packColor(self.colors.dim_foreground), .bg = ui.cell.packColor(row_bg) },
                             &.{},
                         );
                     }
                 },
                 .item => |entry| {
                     const label_style = ui.cell.PaintStyle{
-                        .fg = ui.cell.packColor(foreground),
+                        .fg = ui.cell.packColor(self.colors.foreground),
                         .bg = ui.cell.packColor(row_bg),
                         .attrs = if (is_active) ui.cell.Attr.bold else 0,
                     };
@@ -239,7 +266,7 @@ pub const QuickPickWidget = struct {
                             row,
                             label_range -| (label_width + 1),
                             entry.description,
-                            .{ .fg = ui.cell.packColor(dim_foreground), .bg = ui.cell.packColor(row_bg) },
+                            .{ .fg = ui.cell.packColor(self.colors.dim_foreground), .bg = ui.cell.packColor(row_bg) },
                             entry.highlights.description,
                         );
                     }
@@ -287,6 +314,27 @@ pub const QuickPickWidget = struct {
                 if (event.mods.ctrl) {
                     picker.focusLast();
                     return true;
+                }
+            },
+            .char => |ch| {
+                // Upstream binds select-next/select-previous in quick open to
+                // Ctrl+N/Ctrl+P on macOS (`KeyMod.WinCtrl`). A terminal only
+                // delivers Ctrl, so these are the reachable variants of
+                // `workbench.action.quickOpenSelectNext`/`SelectPrevious`.
+                // They must run before the input box, which consumes every
+                // Ctrl chord without moving the list.
+                if (event.mods.ctrl and !event.mods.alt) {
+                    switch (ch) {
+                        'n', 'N' => {
+                            picker.focusNext();
+                            return true;
+                        },
+                        'p', 'P' => {
+                            picker.focusPrevious();
+                            return true;
+                        },
+                        else => {},
+                    }
                 }
             },
             else => {},

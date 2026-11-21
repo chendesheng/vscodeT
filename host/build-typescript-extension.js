@@ -7,11 +7,10 @@
 // so the host runs the real extension without compiling the pinned checkout.
 //
 // Sources, in order:
-//   1. `VSCODE_APP_PATH` (a VS Code installation directory).
-//   2. Auto-detected VS Code installations.
-//   3. A dev checkout build under `$VSCODE_SOURCE_PATH/extensions/.../dist`.
-//   4. `TYPESCRIPT_SDK` / the checkout's installed `node_modules/typescript`
-//      for the SDK when the extension came from an app without one.
+//   1. Auto-detected VS Code installations.
+//   2. A built extension under the pinned `vscode/extensions/.../dist`.
+//   3. The extension's bundled TypeScript SDK, then the checkout's installed
+//      `node_modules/typescript` when the app did not ship one.
 //
 // Run from `host/`: `node build-typescript-extension.js`.
 import fs from 'node:fs';
@@ -20,9 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
-const vscodeRoot = process.env.VSCODE_SOURCE_PATH
-	? path.resolve(process.env.VSCODE_SOURCE_PATH)
-	: path.resolve(repoRoot, 'vscode');
+const vscodeRoot = path.resolve(repoRoot, 'vscode');
 const outRoot = path.join(here, 'dist', 'extensions');
 const extensionName = 'typescript-language-features';
 const outExtension = path.join(outRoot, extensionName);
@@ -51,9 +48,6 @@ function isFile(value) {
 
 function appCandidates() {
 	const candidates = [];
-	if (process.env.VSCODE_APP_PATH) {
-		candidates.push(process.env.VSCODE_APP_PATH);
-	}
 	if (process.platform === 'darwin') {
 		candidates.push('/Applications/Visual Studio Code.app/Contents/Resources/app');
 		candidates.push(path.join(process.env.HOME ?? '', 'Applications', 'Visual Studio Code.app', 'Contents', 'Resources', 'app'));
@@ -100,7 +94,6 @@ function copyTypeScriptSdk(sdkRoot, required) {
 
 function sdkCandidates(appRoot) {
 	const candidates = [];
-	if (process.env.TYPESCRIPT_SDK) candidates.push(path.resolve(process.env.TYPESCRIPT_SDK));
 	if (appRoot) candidates.push(path.join(appRoot, 'extensions', 'node_modules', 'typescript'));
 	candidates.push(path.join(vscodeRoot, 'node_modules', 'typescript'));
 	candidates.push(path.join(vscodeRoot, 'extensions', 'node_modules', 'typescript'));
@@ -157,7 +150,7 @@ function installFromCheckout() {
 		sdk = copyTypeScriptSdk(candidate, false);
 		if (sdk) break;
 	}
-	if (!sdk) fail(`Found a built ${extensionName} but no TypeScript SDK; set TYPESCRIPT_SDK`);
+	if (!sdk) fail(`Found a built ${extensionName} but no bundled TypeScript SDK`);
 	return { manifest, source: builtBundle, sdk };
 }
 
@@ -166,7 +159,7 @@ const installed = appRoot ? installFromApp(appRoot) : installFromCheckout();
 if (!installed) {
 	fail(
 		'No VS Code installation with extensions/typescript-language-features/dist/extension.js found.\n' +
-		'Set VSCODE_APP_PATH to a VS Code app directory, or build the pinned checkout\'s extension.'
+		'Install VS Code in a standard location, or build the pinned checkout\'s extension.'
 	);
 }
 

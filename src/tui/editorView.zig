@@ -71,6 +71,10 @@ const ViewLines = view_lines_mod.ViewLines;
 const ViewOverlayWidgets = overlay_widgets_mod.ViewOverlayWidgets;
 const ViewContentWidgets = content_widgets_mod.ViewContentWidgets;
 const ContentWidgetEntry = content_widgets_mod.ContentWidgetEntry;
+const view_events = @import("../vs/editor/common/viewEvents.zig");
+const editor_options = @import("../vs/editor/common/config/editorOptions.zig");
+const terminal_editor_config = @import("../vs/editor/browser/config/terminalEditorConfiguration.zig");
+const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
 
 const gutter_color = [3]u8{ 110, 110, 110 };
 const continuation_color = [3]u8{ 90, 90, 90 };
@@ -86,6 +90,14 @@ const bracket_guide_colors = [_][3]u8{
     .{ 70, 84, 86 },
 };
 const bracket_guide_active_color = [3]u8{ 132, 138, 144 };
+const bracket_guide_ids = [_][]const u8{
+    "editorBracketPairGuide.background1",
+    "editorBracketPairGuide.background2",
+    "editorBracketPairGuide.background3",
+    "editorBracketPairGuide.background4",
+    "editorBracketPairGuide.background5",
+    "editorBracketPairGuide.background6",
+};
 
 const find_options = makeDecorationOptions("findMatch", .Left, overview_find_color, 10);
 const current_find_options = makeDecorationOptions("currentFindMatch", .Full, overview_current_find_color, 13);
@@ -280,6 +292,8 @@ pub const View = struct {
     /// Bridges the terminal editor to the ported `ViewLines` stack. The
     /// renderer below consumes its rendered line records.
     terminal_view_host: *TerminalViewHost,
+    /// Active color-theme palette; null keeps the standalone fallback colors.
+    theme_colors: ?*const theme_colors_mod.ThemeColors = null,
 
     pub fn init(allocator: std.mem.Allocator, editor: *Editor) !*View {
         const self = try allocator.create(View);
@@ -756,6 +770,49 @@ pub const View = struct {
 
     /// Rebuilds the whole document from the editor state. This is the forced
     /// path used after an input batch; batching call sites use `invalidate`.
+    pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme_colors = palette;
+        self.invalidate();
+    }
+
+    /// Applies `editor.*` view settings to the ported options and fans a
+    /// configuration-change event out to the view parts, then schedules a
+    /// rebuild. Model-level settings are applied by the owning editor.
+    pub fn applyEditorSettings(
+        self: *View,
+        reader: terminal_editor_config.Reader,
+        language_id: ?[]const u8,
+        resource: ?[]const u8,
+    ) !bool {
+        var changed: terminal_editor_config.ChangeSet = undefined;
+        if (!self.terminal_view_host.applyEditorSettings(reader, language_id, resource, &changed)) return false;
+        const event = view_events.ViewConfigurationChangedEvent.init(
+            editor_options.ConfigurationChangedEvent.init(&changed),
+        );
+        _ = self.terminal_view_host.viewRef().onConfigurationChanged(&event);
+        self.needs_rebuild = true;
+        return true;
+    }
+
+    /// Content background for the current-line highlight. `gutter` and `none`
+    /// leave the content background untouched; the focus-only variant keeps
+    /// painting because the view does not track focus separately from the
+    /// workbench.
+    fn themeRgb(self: *const View, id: []const u8, fallback: [3]u8) [3]u8 {
+        const resolved = if (self.theme_colors) |palette| palette.color(id, fallback) else color(fallback);
+        return .{ resolved.r, resolved.g, resolved.b };
+    }
+
+    fn currentLineBackground(self: *const View) ?ui.Color {
+        return switch (self.terminal_view_host.options.get(.renderLineHighlight)) {
+            .none, .gutter => null,
+            .line, .all => if (self.theme_colors) |palette|
+                palette.color("editor.lineHighlightBackground", current_line_background)
+            else
+                color(current_line_background),
+        };
+    }
+
     pub fn refresh(self: *View) !void {
         try self.rebuild();
     }
@@ -836,19 +893,23 @@ pub const View = struct {
         if (self.last_bracket_generation == null or self.last_bracket_generation.? != bracket_generation) {
             var bracket_decorations = std.array_list.Managed(editorBrowser.Decoration).init(self.allocator);
             defer bracket_decorations.deinit();
-            for (bracket_data) |entry| {
-                const brackets = entry.brackets orelse continue;
-                const overview = entry.options == .with_overview_ruler;
-                try bracket_decorations.append(.{
-                    .range = brackets[0],
-                    .kind = .bracket_match,
-                    .show_in_overview_ruler = overview,
-                });
-                try bracket_decorations.append(.{
-                    .range = brackets[1],
-                    .kind = .bracket_match,
-                    .show_in_overview_ruler = overview,
-                });
+            // `editor.matchBrackets: "never"` drops the highlight but still
+            // advances the generation so the previous decorations are cleared.
+            if (self.terminal_view_host.options.get(.matchBrackets) != .never) {
+                for (bracket_data) |entry| {
+                    const brackets = entry.brackets orelse continue;
+                    const overview = entry.options == .with_overview_ruler;
+                    try bracket_decorations.append(.{
+                        .range = brackets[0],
+                        .kind = .bracket_match,
+                        .show_in_overview_ruler = overview,
+                    });
+                    try bracket_decorations.append(.{
+                        .range = brackets[1],
+                        .kind = .bracket_match,
+                        .show_in_overview_ruler = overview,
+                    });
+                }
             }
             try self.replaceModelDecorations(DecorationOwner.bracket, bracket_decorations.items);
             self.last_bracket_generation = bracket_generation;
@@ -912,7 +973,7 @@ pub const View = struct {
                     const guide_col = level * indent_size;
                     if (guide_col >= text_width) break;
                     if (indent_width >= 0 and guide_col >= @as(usize, @intCast(indent_width))) break;
-                    try guide_specs.append(.{ .row = row, .col = guide_col, .color = indent_guide_color });
+                    try guide_specs.append(.{ .row = row, .col = guide_col, .color = self.themeRgb("editorIndentGuide.background1", indent_guide_color) });
                 }
             }
 
@@ -942,7 +1003,7 @@ pub const View = struct {
                         try guide_specs.append(.{
                             .row = row,
                             .col = (active_level - 1) * indent_size,
-                            .color = indent_guide_active_color,
+                            .color = self.themeRgb("editorIndentGuide.activeBackground1", indent_guide_active_color),
                         });
                     }
                 }
@@ -980,9 +1041,12 @@ pub const View = struct {
                                 .row = row,
                                 .col = guide.column,
                                 .color = if (guide.active)
-                                    bracket_guide_active_color
+                                    self.themeRgb("editorBracketPairGuide.activeBackground1", bracket_guide_active_color)
                                 else
-                                    bracket_guide_colors[guide.level % bracket_guide_colors.len],
+                                    self.themeRgb(
+                                        bracket_guide_ids[guide.level % bracket_guide_ids.len],
+                                        bracket_guide_colors[guide.level % bracket_guide_colors.len],
+                                    ),
                             });
                         }
                     }
@@ -998,6 +1062,7 @@ pub const View = struct {
             .width = .{ .percent = 100 },
             .height = .{ .percent = 100 },
             .overflow = .hidden,
+            .background = if (self.theme_colors) |palette| palette.background else null,
         });
         doc.setRoot(root);
 
@@ -1065,12 +1130,12 @@ pub const View = struct {
             .text_width = text_width,
             .cursor = cursor,
             .states = states,
-            .style_fn = lineStyleForPart,
+            .style_fn = .{ .context = self, .apply = lineStyleForPart },
             .decoration_bits_fn = decorationBits,
             .line_backgrounds = line_backgrounds,
             .selected_flag = CellFlag.selected,
             .secondary_cursor_flag = CellFlag.secondary_cursor,
-            .background_color = color(current_line_background),
+            .background_color = self.currentLineBackground(),
             .ellipsis_style = .{ .color = color(continuation_color) },
         });
 
@@ -1152,73 +1217,80 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
     // text. Standalone/preview callers must supply it through `setStatusText`.
 }
 
-/// Terminal paint adapter for one rendered part and its cell flags.
-fn lineStyleForPart(part: line_renderer.RenderedPart, flag: u32) ui.Style {
+/// Terminal paint adapter for one rendered part and its cell flags. The
+/// context is the owning `View`, so the theme palette reaches the flag styles.
+fn lineStyleForPart(context: ?*const anyopaque, part: line_renderer.RenderedPart, flag: u32) ui.Style {
+    const view: *const View = @ptrCast(@alignCast(context orelse return tokenStyle(part)));
     var style = tokenStyle(part);
-    applyFlagStyle(&style, flag);
+    applyFlagStyle(&style, flag, view.theme_colors);
     return style;
 }
 
-fn applyFlagStyle(style: *ui.Style, flag: u32) void {
+fn themedColor(palette: ?*const theme_colors_mod.ThemeColors, id: []const u8, fallback: [3]u8) ui.Color {
+    const colors = palette orelse return color(fallback);
+    return colors.color(id, fallback);
+}
+
+fn applyFlagStyle(style: *ui.Style, flag: u32, palette: ?*const theme_colors_mod.ThemeColors) void {
     if (flag & CellFlag.search_range_highlight != 0) {
-        style.background = color(search_range_highlight_background);
+        style.background = themedColor(palette, "editor.rangeHighlightBackground", search_range_highlight_background);
     }
     if (flag & CellFlag.word_highlight_text != 0) {
-        style.background = color(word_highlight_background);
+        style.background = themedColor(palette, "editor.wordHighlightBackground", word_highlight_background);
     } else if (flag & CellFlag.word_highlight != 0) {
-        style.background = color(word_highlight_background);
+        style.background = themedColor(palette, "editor.wordHighlightBackground", word_highlight_background);
     } else if (flag & CellFlag.word_highlight_strong != 0) {
-        style.background = color(word_highlight_strong_background);
+        style.background = themedColor(palette, "editor.wordHighlightStrongBackground", word_highlight_strong_background);
     }
     if (flag & CellFlag.hover_highlight != 0) {
-        style.background = color(hover_highlight_background);
+        style.background = themedColor(palette, "editor.hoverHighlightBackground", hover_highlight_background);
     }
     if (flag & CellFlag.bracket_match != 0) {
-        style.background = color(bracket_match_background);
-        style.color = color(bracket_match_foreground);
+        style.background = themedColor(palette, "editorBracketMatch.background", bracket_match_background);
+        style.color = themedColor(palette, "editorBracketMatch.border", bracket_match_foreground);
         style.underline = true;
     }
     if (flag & CellFlag.current_find_match != 0) {
-        style.background = color(current_find_match_background);
-        style.color = color(current_find_match_foreground);
+        style.background = themedColor(palette, "editor.findMatchBackground", current_find_match_background);
+        style.color = themedColor(palette, "editor.findMatchForeground", current_find_match_foreground);
     } else if (flag & CellFlag.find_match != 0) {
-        style.background = color(find_match_background);
+        style.background = themedColor(palette, "editor.findMatchHighlightBackground", find_match_background);
     } else if (flag & CellFlag.find_scope != 0) {
-        style.background = color(find_scope_background);
+        style.background = themedColor(palette, "editor.findRangeHighlightBackground", find_scope_background);
     }
     if (flag & CellFlag.snippet_placeholder != 0) {
-        style.background = color(snippet_placeholder_background);
+        style.background = themedColor(palette, "editor.snippetTabstopHighlightBackground", snippet_placeholder_background);
     } else if (flag & CellFlag.finish_snippet_placeholder != 0) {
-        style.background = color(finish_snippet_placeholder_background);
+        style.background = themedColor(palette, "editor.snippetFinalTabstopHighlightBackground", finish_snippet_placeholder_background);
     }
     if (flag & CellFlag.value_set_replacement != 0) {
-        style.color = color(bracket_match_foreground);
+        style.color = themedColor(palette, "editorBracketMatch.border", bracket_match_foreground);
         style.underline = true;
     }
     if (flag & CellFlag.diagnostic_error != 0) {
-        style.color = color(diagnostic_error_color);
+        style.color = themedColor(palette, "editorError.foreground", diagnostic_error_color);
         style.underline = true;
     } else if (flag & CellFlag.diagnostic_warning != 0) {
-        style.color = color(diagnostic_warning_color);
+        style.color = themedColor(palette, "editorWarning.foreground", diagnostic_warning_color);
         style.underline = true;
     } else if (flag & CellFlag.diagnostic_info != 0) {
-        style.color = color(diagnostic_info_color);
+        style.color = themedColor(palette, "editorInfo.foreground", diagnostic_info_color);
         style.underline = true;
     } else if (flag & CellFlag.diagnostic_hint != 0) {
-        style.color = color(diagnostic_hint_color);
+        style.color = themedColor(palette, "editorHint.foreground", diagnostic_hint_color);
         style.underline = true;
     } else if ((flag & CellFlag.diagnostic_unnecessary != 0) or (flag & CellFlag.diagnostic_deprecated != 0)) {
         style.dim = true;
         style.underline = true;
     }
     if (flag & CellFlag.char_insert != 0) {
-        style.background = color(diff_insert_char_background);
+        style.background = themedColor(palette, "diffEditor.insertedTextBackground", diff_insert_char_background);
     } else if (flag & CellFlag.char_delete != 0) {
-        style.background = color(diff_delete_char_background);
+        style.background = themedColor(palette, "diffEditor.removedTextBackground", diff_delete_char_background);
     }
     if (flag & CellFlag.secondary_cursor != 0) {
         style.reverse = true;
-        style.background = color(secondary_cursor_background);
+        style.background = themedColor(palette, "editorCursor.foreground", secondary_cursor_background);
     }
     if (flag & CellFlag.selected != 0) style.reverse = true;
 }

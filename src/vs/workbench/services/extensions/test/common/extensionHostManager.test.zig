@@ -3,9 +3,11 @@
 // configuration, start the extension host, and observe VSCodeVim activation.
 //
 // It needs Node, the bundled launcher (host/dist/extensionHost.mjs) and the
-// extracted VSCodeVim fixture, so it only runs when ZIG_E2E_EXTENSION_HOST=1
+// extracted VSCodeVim fixture, so it only runs in the e2e build (build option
+// `e2e`), which the `test-e2e` step enables
 // and both paths exist. `zig build test` therefore stays hermetic.
 const std = @import("std");
+const build_options = @import("build_options");
 const time_compat = @import("../../../../../base/common/timeCompat.zig");
 const manager = @import("../../common/extensionHostManager.zig");
 const rpc = @import("../../common/rpcProtocol.zig");
@@ -217,7 +219,7 @@ fn emptyConfig(arena: std.mem.Allocator) !std.json.Value {
 }
 
 test "VSCodeVim activates in the pinned extension host" {
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     const repo_root = try std.Io.Dir.cwd().realPathFileAlloc(time_compat.io, ".", allocator);
@@ -233,9 +235,9 @@ test "VSCodeVim activates in the pinned extension host" {
     var description = try manager.readExtensionDescription(allocator, extension_path);
     defer description.deinit(allocator);
 
-    const data_path = try std.fs.path.join(allocator, &.{ repo_root, ".cache-ext/data-e2e" });
-    defer allocator.free(data_path);
-    std.Io.Dir.cwd().createDirPath(time_compat.io, data_path) catch {};
+    const user_data_dir = try std.fs.path.join(allocator, &.{ repo_root, ".cache-ext/data-e2e" });
+    defer allocator.free(user_data_dir);
+    std.Io.Dir.cwd().createDirPath(time_compat.io, user_data_dir) catch {};
     const workspace = try std.fs.path.join(allocator, &.{ repo_root, ".cache-ext/workspace" });
     defer allocator.free(workspace);
     std.Io.Dir.cwd().createDirPath(time_compat.io, workspace) catch {};
@@ -251,7 +253,7 @@ test "VSCodeVim activates in the pinned extension host" {
         .extensions = &.{&description},
         .workspace_path = workspace,
         .workspace_name = "workspace",
-        .data_path = data_path,
+        .user_data_dir = user_data_dir,
         .app_root = repo_root,
         .parent_pid = @intCast(manager.currentProcessId()),
     });
@@ -273,7 +275,7 @@ test "VSCodeVim activates in the pinned extension host" {
         .extensions = &.{&description},
         .workspace_path = workspace,
         .workspace_name = "workspace",
-        .data_path = data_path,
+        .user_data_dir = user_data_dir,
         .app_root = repo_root,
         .parent_pid = @intCast(manager.currentProcessId()),
     });

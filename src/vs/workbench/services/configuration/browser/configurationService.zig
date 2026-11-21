@@ -36,9 +36,11 @@ pub const Overrides = configuration.Overrides;
 pub const Change = configuration.Change;
 
 pub const Options = struct {
-    /// Absolute path to the user settings file. When null only defaults and
-    /// workspace/folder settings are read.
-    user_settings_path: ?[]const u8 = null,
+    /// Absolute paths to the user settings files, in precedence order (later
+    /// files override earlier ones). The first layer is typically the VS Code
+    /// profile's `User/settings.json`, the last the terminal's own file. When
+    /// empty only defaults and workspace/folder settings are read.
+    user_settings_paths: []const []const u8 = &.{},
     /// Additional JSON default fragments registered by the composition root
     /// after the generic terminal defaults (later defaults win).
     defaults_json: []const []const u8 = &.{},
@@ -48,7 +50,8 @@ pub const ConfigurationService = struct {
     allocator: Allocator,
     io: Io,
     workspace: *WorkspaceContextService,
-    user_settings_path: ?[]u8,
+    /// Owned copies of `Options.user_settings_paths`.
+    user_settings_paths: []const []u8,
 
     registry: *ConfigurationRegistry,
     defaults: ConfigurationModel,
@@ -79,17 +82,11 @@ pub const ConfigurationService = struct {
             try registry.registerDefaultsJson(defaults);
         }
 
-        const user_settings_path = if (options.user_settings_path) |path|
-            try allocator.dupe(u8, path)
-        else
-            null;
-        errdefer if (user_settings_path) |path| allocator.free(path);
-
         self.* = .{
             .allocator = allocator,
             .io = io,
             .workspace = workspace,
-            .user_settings_path = user_settings_path,
+            .user_settings_paths = &.{},
             .registry = registry,
             .defaults = try ConfigurationModel.initEmpty(allocator),
             .user = try ConfigurationModel.initEmpty(allocator),
@@ -101,6 +98,10 @@ pub const ConfigurationService = struct {
             .change_emitter = Emitter(configuration.Change).init(allocator),
         };
         errdefer self.deinit();
+
+        // Own the path list before the fallible load. The helper's errdefers
+        // only cover the allocation itself; once committed, `deinit` owns it.
+        self.user_settings_paths = try dupePaths(allocator, options.user_settings_paths);
 
         try self.load();
         return self;
@@ -116,7 +117,7 @@ pub const ConfigurationService = struct {
         self.user.deinit();
         self.defaults.deinit();
         self.registry.deinit();
-        if (self.user_settings_path) |path| self.allocator.free(path);
+        freePaths(self.allocator, self.user_settings_paths);
         self.allocator.destroy(self);
     }
 
@@ -171,7 +172,7 @@ pub const ConfigurationService = struct {
     fn load(self: *ConfigurationService) !void {
         var new_defaults = try self.registry.buildDefaultModel(self.allocator);
         errdefer new_defaults.deinit();
-        var new_user = try self.readModel(self.user_settings_path);
+        var new_user = try self.readUserModel();
         errdefer new_user.deinit();
         var new_workspace = try self.readWorkspaceModel();
         errdefer new_workspace.deinit();
@@ -337,7 +338,7 @@ pub const ConfigurationService = struct {
             paths.deinit();
         }
 
-        if (self.user_settings_path) |path| {
+        for (self.user_settings_paths) |path| {
             try paths.append(try allocator.dupe(u8, path));
         }
         if (self.workspace.getWorkspace().configuration) |path| {
@@ -354,6 +355,25 @@ pub const ConfigurationService = struct {
         _ = self;
         for (paths) |path| allocator.free(path);
         allocator.free(paths);
+    }
+
+    fn dupePaths(allocator: Allocator, paths: []const []const u8) ![]const []u8 {
+        const copies = try allocator.alloc([]u8, paths.len);
+        errdefer allocator.free(copies);
+        var initialized: usize = 0;
+        errdefer {
+            for (copies[0..initialized]) |path| allocator.free(path);
+        }
+        for (paths, 0..) |path, index| {
+            copies[index] = try allocator.dupe(u8, path);
+            initialized += 1;
+        }
+        return copies;
+    }
+
+    fn freePaths(allocator: Allocator, paths: []const []u8) void {
+        for (paths) |path| allocator.free(path);
+        if (paths.len > 0) allocator.free(paths);
     }
 
     pub fn keys(self: *const ConfigurationService) configuration.Keys {
@@ -380,6 +400,38 @@ pub const ConfigurationService = struct {
         const path = resource orelse return null;
         const folder = self.workspace.getWorkspaceFolder(path) orelse return null;
         return self.folder_consolidated.get(folder.resource);
+    }
+
+    /// Merges every user layer in precedence order (later files win). A
+    /// missing or unparsable file behaves like an empty layer, exactly like a
+    /// single user settings file did before the VS Code profile was added.
+    fn readUserModel(self: *ConfigurationService) !ConfigurationModel {
+        if (self.user_settings_paths.len == 0) {
+            return ConfigurationModel.initEmpty(self.allocator);
+        }
+        if (self.user_settings_paths.len == 1) {
+            return self.readModel(self.user_settings_paths[0]);
+        }
+
+        var models = std.array_list.Managed(*ConfigurationModel).init(self.allocator);
+        defer models.deinit();
+        defer {
+            for (models.items) |model| {
+                model.deinit();
+                self.allocator.destroy(model);
+            }
+        }
+        for (self.user_settings_paths) |path| {
+            const model = try self.allocator.create(ConfigurationModel);
+            errdefer self.allocator.destroy(model);
+            model.* = try self.readModel(path);
+            try models.append(model);
+        }
+
+        const pointers = try self.allocator.alloc(*const ConfigurationModel, models.items.len);
+        defer self.allocator.free(pointers);
+        for (models.items, 0..) |model, index| pointers[index] = model;
+        return ConfigurationModel.merge(self.allocator, pointers);
     }
 
     fn readModel(self: *ConfigurationService, path: ?[]const u8) !ConfigurationModel {
@@ -543,6 +595,10 @@ pub const SettingsWatcher = struct {
     io: Io,
     configuration_service: *ConfigurationService,
     watcher: *UniversalWatcher,
+    /// Non-settings files that must trigger a reload as well, for example the
+    /// user keybindings files (they are watched but are not configuration
+    /// scopes).
+    extra_paths: std.array_list.Managed([]u8),
     on_reload: ?ReloadCallback = null,
     reload_count: usize = 0,
     last_reload_failed: bool = false,
@@ -563,6 +619,7 @@ pub const SettingsWatcher = struct {
             .io = io,
             .configuration_service = configuration_service,
             .watcher = watcher,
+            .extra_paths = std.array_list.Managed([]u8).init(allocator),
         };
         _ = try watcher.on_change.listen(self, onFileChanges);
         try self.update();
@@ -570,8 +627,19 @@ pub const SettingsWatcher = struct {
     }
 
     pub fn deinit(self: *SettingsWatcher) void {
+        self.setExtraPaths(&.{}) catch {};
+        self.extra_paths.deinit();
         self.watcher.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Replaces the extra watched files (owned copies) and refreshes the
+    /// watcher. Missing files are tolerated exactly like missing settings.
+    pub fn setExtraPaths(self: *SettingsWatcher, paths: []const []const u8) !void {
+        for (self.extra_paths.items) |path| self.allocator.free(path);
+        self.extra_paths.clearRetainingCapacity();
+        for (paths) |path| try self.extra_paths.append(try self.allocator.dupe(u8, path));
+        try self.update();
     }
 
     pub fn setOnReload(self: *SettingsWatcher, callback: ?ReloadCallback) void {
@@ -585,6 +653,12 @@ pub const SettingsWatcher = struct {
         var requests = std.array_list.Managed(WatchRequest).init(self.allocator);
         defer requests.deinit();
         for (paths) |path| {
+            try requests.append(.{
+                .path = path,
+                .recursive = false,
+            });
+        }
+        for (self.extra_paths.items) |path| {
             try requests.append(.{
                 .path = path,
                 .recursive = false,

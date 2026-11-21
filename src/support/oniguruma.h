@@ -1,5 +1,5 @@
-#ifndef VSCODE_TEXTBUFFER_ONIGURUMA_H
-#define VSCODE_TEXTBUFFER_ONIGURUMA_H
+#ifndef VSCODE_T_ONIG_WRAPPER_H
+#define VSCODE_T_ONIG_WRAPPER_H
 
 #include <oniguruma.h>
 

@@ -822,7 +822,10 @@ Library constraints:
   composites it after every pane and the tab strip, and hides the hardware
   cursor while it is open. `Ctrl-P` opens Go to File, `>` switches to the
   command provider, and `Alt-P` opens the command provider directly because a
-  terminal cannot distinguish `Ctrl-Shift-P`. The workspace file index is a
+  terminal cannot distinguish `Ctrl-Shift-P`. While a picker is open,
+  `Ctrl-N`/`Ctrl-P` select the next/previous item (the terminal form of the
+  macOS quick-pick bindings; arrows, pages and Ctrl-Home/End work as well), and
+  the chord never reaches the filter input. The workspace file index is a
   TUI adapter (`src/vs/workbench/services/search/common/fileIndex.zig`) that walks the workspace instead of
   calling the search process, but it honors `.gitignore`/`.ignore` through the
   same ported `IgnoreFile`. Icons, buttons, keybinding labels,
@@ -1104,25 +1107,60 @@ Library constraints:
 - Configuration lives in
   `src/vs/workbench/services/configuration/browser/configurationService.zig`,
   over the platform `configuration.zig`, `configurationModels.zig` and
-  `configurationRegistry.zig` ports. It reads defaults, a user settings file,
+  `configurationRegistry.zig` ports. It reads defaults, the VS Code profile's
+  `User/settings.json`, the TUI profile's `<user-data-dir>/User/settings.json`,
   the workspace file's `settings` object and each folder's
-  `.vscode/settings.json`, with folder > workspace > user > defaults precedence.
-  Settings JSON accepts comments and trailing commas. The service exposes
-  `getValue`, `inspect`, `keys`, `reload` and a change emitter.
+  `.vscode/settings.json`, with folder > workspace > terminal user > VS Code
+  user > defaults precedence. `src/tui/vscodeProfile.zig` discovers the layers:
+  the stable VS Code `Code/User` path has no override, and the TUI user data
+  dir follows upstream `userDataPath.ts` (`VSCODE_PORTABLE`, `VSCODE_APPDATA`,
+  `--user-data-dir`, then the platform application-data directory). Settings
+  JSON accepts comments and trailing commas. The service exposes `getValue`, `inspect`, `keys`, `reload` and a
+  change emitter; `getValue` resolves `[language]` override identifiers.
   Native watching uses inotify on Linux, kqueue on macOS and overlapped
   `ReadDirectoryChangesW` on Windows; the `@parcel/watcher` FSEvents backend is
   not ported because it requires the CoreServices SDK and a CFRunLoop thread.
-  Not ported in this configuration-service port:
+  The same watcher covers the user keybinding files, so editing them reloads the
+  workbench. Not ported in this configuration-service port:
   - `updateValue` and settings editing; these need the JSONC-preserving
     configuration-editing service, which is not ported;
-  - language override blocks (`[typescript]`); `ConfigurationModel` keeps the
-    blocks but does not resolve override identifiers;
   - policy, application, remote and profile scopes; the corresponding
     services do not exist in the terminal workbench;
   - trusted-workspace filtering and restricted settings; there is no
     workspace-trust service;
   - the browser Settings editor/view; the activity-bar Settings container
     remains a placeholder.
+
+- User keybindings live in `src/vs/workbench/services/keybinding/browser/userKeybindings.zig`,
+  over the ported `base/common/keybindingParser.zig` and
+  `workbench/services/keybinding/common/keybindingIO.zig`. The VS Code profile
+  file is the base layer and the terminal file overrides it; JSONC, platform
+  key variants, chords, `when`, `args` and `-command` removals all follow the
+  upstream reader. The workbench owns one `ContextKeyService` and passes its
+  focus keys to the global host, appends the user items as resolver overrides
+  (last match wins, matching user-over-default priority) and passes the removal
+  items to every host so `KeybindingResolver.handleRemovals` subtracts the
+  affected defaults. The settings watcher rebuilds the hosts and the per-editor
+  shortcut hosts on change. User commands that the terminal does not register
+  are filtered out (documented deviation) so they cannot swallow typing.
+  The `list.*` navigation ids are registered as a bridge that synthesizes the
+  matching list key for the focused Explorer/Search/Source Control view.
+  Extension-contributed keybindings remain unported.
+
+- Color themes are registered from the `theme-defaults` declarative scan and
+  from `extensionsRegistry.scanThemes` over the profile/TUI extension roots,
+  keyed by the contributed theme settings id. `ThemeService` loads JSONC theme
+  files (and include chains) from the extension root, applies
+  `workbench.colorCustomizations` and the token color customizations, and the
+  workbench rebuilds the token theme from the active `ColorThemeData`.
+  `src/vs/workbench/browser/themeColors.zig` is the cell palette bridge
+  (resolves ids, composites alpha over `editor.background` and falls back to
+  the previous literal). It paints the workbench background/dividers/pane
+  borders/placeholders, tab strip, breadcrumbs, activity bar, status bar,
+  Explorer, Search, Source Control, terminal panel, quick picker, Markdown
+  preview and the editor background/highlights/guides. Terminal ANSI output,
+  overview-ruler marker accents and a few legacy badge literals keep their
+  fallback colors. The Color Theme picker and icon themes are not ported.
 
 ### 8.1 Integrated terminal panel
 

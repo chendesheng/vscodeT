@@ -68,7 +68,7 @@ test "ConfigurationService: workspace settings override user settings" {
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
     defer context.deinit();
     const service = try ConfigurationService.init(allocator, io, context, .{
-        .user_settings_path = user_path,
+        .user_settings_paths = &.{user_path},
     });
     defer service.deinit();
 
@@ -88,6 +88,51 @@ test "ConfigurationService: workspace settings override user settings" {
     const keys = service.keys();
     try std.testing.expectEqual(@as(usize, 2), keys.user.len);
     try std.testing.expectEqual(@as(usize, 0), keys.workspace.len);
+}
+
+test "ConfigurationService: later user layers override earlier ones" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(&tmp, io, "vscode-user.json",
+        \\{
+        \\  // VS Code profile layer
+        \\  "editor.tabSize": 8,
+        \\  "files.eol": "\n",
+        \\}
+    );
+    try writeFile(&tmp, io, "tui-user.json",
+        \\{
+        \\  "editor.tabSize": 3,
+        \\  "editor.insertSpaces": false,
+        \\}
+    );
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = try absoluteRoot(&tmp, io, &buffer);
+    const vscode_user = try std.fmt.allocPrint(allocator, "{s}/vscode-user.json", .{root});
+    defer allocator.free(vscode_user);
+    const tui_user = try std.fmt.allocPrint(allocator, "{s}/tui-user.json", .{root});
+    defer allocator.free(tui_user);
+    const missing_user = try std.fmt.allocPrint(allocator, "{s}/missing-settings.json", .{root});
+    defer allocator.free(missing_user);
+
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const service = try ConfigurationService.init(allocator, io, context, .{
+        .user_settings_paths = &.{ vscode_user, tui_user, missing_user },
+    });
+    defer service.deinit();
+
+    // The later TUI layer wins; the earlier layer's other keys survive and a
+    // missing file behaves like an empty layer.
+    try std.testing.expectEqual(@as(i64, 3), service.getValue("editor.tabSize", .{}).?.integer);
+    try std.testing.expect(!service.getValue("editor.insertSpaces", .{}).?.bool);
+    try std.testing.expectEqualStrings("\n", service.getValue("files.eol", .{}).?.string);
+    const inspected = service.inspect("editor.tabSize", .{});
+    try std.testing.expectEqual(@as(i64, 3), inspected.user.?.integer);
 }
 
 test "ConfigurationService: workspace file settings and folder override" {
@@ -217,7 +262,7 @@ test "ConfigurationService: language overrides from workspace settings" {
 
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
     defer context.deinit();
-    const service = try ConfigurationService.init(allocator, io, context, .{ .user_settings_path = user_path });
+    const service = try ConfigurationService.init(allocator, io, context, .{ .user_settings_paths = &.{user_path} });
     defer service.deinit();
 
     const resource = try std.fmt.allocPrint(allocator, "{s}/main.zig", .{root});
@@ -278,7 +323,7 @@ test "ConfigurationService: application and machine settings ignore workspace va
 
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
     defer context.deinit();
-    const service = try ConfigurationService.init(allocator, io, context, .{ .user_settings_path = user_path });
+    const service = try ConfigurationService.init(allocator, io, context, .{ .user_settings_paths = &.{user_path} });
     defer service.deinit();
     try service.registry.registerConfiguration("test", &.{
         .{
@@ -323,7 +368,7 @@ test "ConfigurationService: untrusted workspaces ignore unregistered workspace v
     defer allocator.free(user_path);
     const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
     defer context.deinit();
-    const service = try ConfigurationService.init(allocator, io, context, .{ .user_settings_path = user_path });
+    const service = try ConfigurationService.init(allocator, io, context, .{ .user_settings_paths = &.{user_path} });
     defer service.deinit();
 
     const resource = try std.fmt.allocPrint(allocator, "{s}/main.zig", .{root});

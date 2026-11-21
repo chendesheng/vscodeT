@@ -309,7 +309,12 @@ pub const ViewLine = struct {
         guides: []const Guide = &.{},
     };
 
-    pub const PartStyleFn = *const fn (part: view_line_renderer.RenderedPart, flag: u32) ui.Style;
+    /// Paint-boundary adapter from token/decoration data to terminal styles.
+    /// The context carries the view's active theme palette.
+    pub const PartStyleFn = struct {
+        context: ?*const anyopaque = null,
+        apply: *const fn (context: ?*const anyopaque, part: view_line_renderer.RenderedPart, flag: u32) ui.Style,
+    };
 
     pub fn paint(
         self: *ViewLine,
@@ -361,7 +366,7 @@ pub const ViewLine = struct {
                     }
                 }
             }
-            const style = style_fn(part, flag);
+            const style = style_fn.apply(style_fn.context, part, flag);
 
             if (run_style == null or !std.meta.eql(run_style.?, style)) {
                 if (run_style != null and absolute > run_start) {

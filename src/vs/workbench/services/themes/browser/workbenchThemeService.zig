@@ -12,6 +12,10 @@ const theme_service = @import("../../../../platform/theme/common/themeService.zi
 const theme_mod = @import("../../../../platform/theme/common/theme.zig");
 const storage_mod = @import("../../../../platform/storage/common/storage.zig");
 const color_theme = @import("../common/colorThemeData.zig");
+const configuration_mod = @import("../../../../platform/configuration/common/configuration.zig");
+const time_compat = @import("../../../../base/common/timeCompat.zig");
+
+const Value = configuration_mod.Value;
 
 const ColorThemeData = color_theme.ColorThemeData;
 const ResourceReader = color_theme.ResourceReader;
@@ -24,6 +28,35 @@ pub const STORAGE_KEY = "workbench.theme.activeId";
 pub const ThemeEntry = struct {
     label: []const u8,
     theme_type: ColorScheme,
+    /// Extension/tree root for file-backed themes; null for the built-in
+    /// empty fallback entries used by tests and the no-submodule path.
+    root: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+};
+
+/// Maps a contributed `uiTheme` to the ported color scheme enum.
+pub fn colorSchemeForUiTheme(ui_theme: []const u8) ColorScheme {
+    if (std.mem.eql(u8, ui_theme, "vs")) return .LIGHT;
+    if (std.mem.eql(u8, ui_theme, "hc-black")) return .HIGH_CONTRAST_DARK;
+    if (std.mem.eql(u8, ui_theme, "hc-light")) return .HIGH_CONTRAST_LIGHT;
+    return .DARK;
+}
+
+/// Reads theme files and their `include` targets relative to an extension or
+/// built-in theme root.
+const FileResourceReader = struct {
+    root: []const u8,
+    arena: std.heap.ArenaAllocator,
+
+    fn read(context: *anyopaque, path: []const u8) anyerror![]const u8 {
+        const self: *FileResourceReader = @ptrCast(@alignCast(context));
+        const full_path = try std.fs.path.join(self.arena.allocator(), &.{ self.root, path });
+        return std.Io.Dir.cwd().readFileAlloc(time_compat.io, full_path, self.arena.allocator(), .unlimited);
+    }
+
+    fn interface(self: *FileResourceReader) ResourceReader {
+        return .{ .context = self, .read = read };
+    }
 };
 
 pub const ThemeService = struct {
@@ -73,6 +106,25 @@ pub const ThemeService = struct {
         try self.themes.put(id, .{ .label = label, .theme_type = theme_type });
     }
 
+    /// Registers a file-backed theme keyed by its `settings_id` (the value
+    /// `workbench.colorTheme` stores). Later registrations win, so the TUI
+    /// scan roots can override profile and built-in themes with the same id.
+    pub fn registerThemeFile(
+        self: *ThemeService,
+        settings_id: []const u8,
+        label: []const u8,
+        theme_type: ColorScheme,
+        root: []const u8,
+        path: []const u8,
+    ) !void {
+        try self.themes.put(settings_id, .{
+            .label = label,
+            .theme_type = theme_type,
+            .root = root,
+            .path = path,
+        });
+    }
+
     pub fn getActiveTheme(self: *ThemeService) *ColorThemeData {
         return self.active;
     }
@@ -94,7 +146,105 @@ pub const ThemeService = struct {
         return self.active_id;
     }
 
-    /// Applies a registered theme, optionally loading its file first.
+    /// Resolves a `workbench.colorTheme` value (legacy ids migrated) to a
+    /// registered entry key. Falls back to matching the contributed label,
+    /// which is what extensions without an explicit `id` store.
+    pub fn findThemeSettingsId(self: *const ThemeService, value: []const u8) ?[]const u8 {
+        const migrated = migrateThemeSettingsId(value);
+        if (self.themes.contains(migrated)) return migrated;
+        var iterator = self.themes.iterator();
+        while (iterator.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.label, migrated)) return entry.key_ptr.*;
+        }
+        return null;
+    }
+
+    /// Loads and applies a registered theme. A missing/broken file leaves the
+    /// previous theme active.
+    pub fn activate(self: *ThemeService, id: []const u8) !void {
+        const entry = self.themes.get(id) orelse return error.UnknownTheme;
+        const theme = try ColorThemeData.createUnloadedTheme(self.allocator, self.colors, id, &.{});
+        errdefer theme.deinit();
+        theme.theme_type = entry.theme_type;
+        theme.label = try theme.arena.allocator().dupe(u8, entry.label);
+        if (entry.path) |location| {
+            theme.location = location;
+            const root = entry.root orelse return error.MissingThemeRoot;
+            var reader = FileResourceReader{
+                .root = root,
+                .arena = std.heap.ArenaAllocator.init(self.allocator),
+            };
+            defer reader.arena.deinit();
+            try theme.ensureLoaded(reader.interface());
+        }
+
+        self.active.deinit();
+        self.active = theme;
+        try self.applyThemeId(id);
+    }
+
+    /// Applies the configured theme value. Returns false when the value is not
+    /// a registered theme (the caller falls back to the default theme).
+    pub fn activateSettingsId(self: *ThemeService, value: []const u8) !bool {
+        const id = self.findThemeSettingsId(value) orelse return false;
+        try self.activate(id);
+        return true;
+    }
+
+    /// Applies `workbench.colorCustomizations`: flat entries plus the
+    /// `["<theme settings id>"]` scoped block, later entries winning.
+    pub fn applyColorCustomizations(self: *ThemeService, allocator: Allocator, value: ?*const Value) !void {
+        var pairs = std.array_list.Managed([2][]const u8).init(allocator);
+        defer pairs.deinit();
+        if (value) |colors| {
+            if (colors.* == .object) {
+                try appendColorEntries(&pairs, colors.object);
+                const scoped_key = try std.fmt.allocPrint(allocator, "[{s}]", .{self.active_id});
+                defer allocator.free(scoped_key);
+                if (colors.object.get(scoped_key)) |scoped| {
+                    if (scoped == .object) try appendColorEntries(&pairs, scoped.object);
+                }
+            }
+        }
+        try self.active.setCustomColors(pairs.items);
+    }
+
+    fn appendColorEntries(
+        pairs: *std.array_list.Managed([2][]const u8),
+        object: std.json.ObjectMap,
+    ) !void {
+        var iterator = object.iterator();
+        while (iterator.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (key.len > 0 and key[0] == '[') continue;
+            const text = switch (entry.value_ptr.*) {
+                .string => |inner| inner,
+                else => continue,
+            };
+            try pairs.append(.{ key, text });
+        }
+    }
+
+    /// Applies `editor.tokenColorCustomizations` (flat + theme-scoped
+    /// `textMateRules`) and the flat semantic token rules.
+    pub fn applyTokenColorCustomizations(self: *ThemeService, allocator: Allocator, value: ?*const Value) !void {
+        if (try mergeTextMateRules(allocator, value, self.active_id)) |text| {
+            defer allocator.free(text);
+            try self.active.setCustomTokenColorsJson(text);
+        }
+    }
+
+    pub fn applySemanticTokenColorCustomizations(self: *ThemeService, allocator: Allocator, value: ?*const Value) !void {
+        const semantic = value orelse return;
+        if (semantic.* != .object) return;
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        try std.json.Stringify.value(semantic.*, .{}, &out.writer);
+        try self.active.setCustomSemanticTokenColorsJson(out.written());
+    }
+
+    /// Applies a registered theme, optionally loading its file first. Kept for
+    /// the standalone syntax-theme loader and tests.
     pub fn setTheme(self: *ThemeService, id: []const u8, reader: ?ResourceReader, path: ?[]const u8) !void {
         const entry = self.themes.get(id) orelse return error.UnknownTheme;
         const theme = try ColorThemeData.createUnloadedTheme(self.allocator, self.colors, id, &.{});
@@ -119,6 +269,41 @@ pub const ThemeService = struct {
         try self.onDidColorThemeChange.fire({});
     }
 };
+
+fn mergeTextMateRules(allocator: Allocator, value: ?*const Value, settings_id: []const u8) !?[]u8 {
+    const customizations = value orelse return null;
+    if (customizations.* != .object) return null;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var merged = std.json.Array.init(scratch);
+    var found = false;
+    try appendRuleArray(&merged, customizations.object, &found);
+    const scoped_key = try std.fmt.allocPrint(scratch, "[{s}]", .{settings_id});
+    if (customizations.object.get(scoped_key)) |scoped| {
+        if (scoped == .object) try appendRuleArray(&merged, scoped.object, &found);
+    }
+    if (!found) return null;
+
+    var root: std.json.ObjectMap = .empty;
+    try root.put(scratch, "textMateRules", .{ .array = merged });
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try std.json.Stringify.value(Value{ .object = root }, .{}, &out.writer);
+    return try out.toOwnedSlice();
+}
+
+fn appendRuleArray(
+    merged: *std.json.Array,
+    object: std.json.ObjectMap,
+    found: *bool,
+) !void {
+    const rules = object.get("textMateRules") orelse return;
+    if (rules != .array) return;
+    for (rules.array.items) |rule| try merged.append(rule);
+    found.* = true;
+}
 
 test "theme service applies and restores the active theme" {
     const allocator = std.testing.allocator;
@@ -246,4 +431,54 @@ test "restores only for preferred color scheme changes" {
     host.dark = true;
     results[4] = configuration.isPreferredColorSchemeChange(.{ .dark = false, .high_contrast = false });
     try std.testing.expectEqual([5]bool{ false, true, true, true, true }, results);
+}
+
+test "theme service loads a file-backed theme and applies customizations" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try tmp.dir.createFile(io, "custom.json", .{});
+    try file.writeStreamingAll(io,
+        \\{
+        \\  "colors": { "editor.background": "#112233", "editor.foreground": "#ddeeff" },
+        \\  "tokenColors": [{ "scope": "keyword", "settings": { "foreground": "#ff0000" } }]
+        \\}
+    );
+    file.close(io);
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = try allocator.dupe(u8, buffer[0..root_len]);
+    defer allocator.free(root);
+
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const service = try ThemeService.init(allocator, &registry, null);
+    defer service.deinit();
+
+    try service.registerThemeFile("Custom Theme", "Custom Theme", .DARK, root, "custom.json");
+    try std.testing.expectEqualStrings("Custom Theme", service.findThemeSettingsId("Custom Theme").?);
+    try std.testing.expect(try service.activateSettingsId("Custom Theme"));
+    const background = service.getActiveTheme().getColor("editor.background", false).?;
+    try std.testing.expectEqual(@as(u8, 0x11), background.r);
+    try std.testing.expectEqual(@as(u8, 0x22), background.g);
+    try std.testing.expectEqual(@as(u8, 0x33), background.b);
+
+    var colors = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{ "editor.background": "#445566", "[Custom Theme]": { "editor.background": "#010203" } }
+    , .{});
+    defer colors.deinit();
+    try service.applyColorCustomizations(allocator, &colors.value);
+    const customized = service.getActiveTheme().getColor("editor.background", false).?;
+    try std.testing.expectEqual(@as(u8, 0x01), customized.r);
+    try std.testing.expectEqual(@as(u8, 0x02), customized.g);
+    try std.testing.expectEqual(@as(u8, 0x03), customized.b);
+
+    var tokens = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{ "textMateRules": [{ "scope": "keyword", "settings": { "foreground": "#00ff00" } }] }
+    , .{});
+    defer tokens.deinit();
+    try service.applyTokenColorCustomizations(allocator, &tokens.value);
 }

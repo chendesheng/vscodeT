@@ -845,7 +845,7 @@ backup are not ported).
 Port `FileLogger` into `platform/log/common/fileLog.zig` (mirror upstream,
 without `IFileService`/URI: inject a writer/file handle) and keep ~40 lines in
 the host for the default path
-(`$XDG_STATE_HOME/vscode-textbuffer/logs/main.log`).
+(`<user-data-dir>/logs/main.log`, or the upstream `--logsPath` directory).
 
 **`session.zig`**
 

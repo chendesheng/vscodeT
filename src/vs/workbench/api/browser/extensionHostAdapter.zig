@@ -6,6 +6,7 @@
 // surface VSCodeVim calls back into, and the key path that sends typed text
 // through the `type` command.
 const std = @import("std");
+const build_options = @import("build_options");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const manager = @import("../../services/extensions/common/extensionHostManager.zig");
@@ -93,7 +94,7 @@ pub const Extensions = struct {
     /// payload; activation events select which one runs.
     descriptions: []manager.ExtensionDescription,
     extension_ptrs: []const *const manager.ExtensionDescription,
-    data_path: []u8,
+    user_data_dir: []u8,
     active: ?ActiveDocument = null,
     /// Cursor produced by the last host-driven type. VSCodeVim computes its
     /// own cursor from the requested text, which does not include automatic
@@ -136,7 +137,7 @@ pub const Extensions = struct {
         io: Io,
         workbench: *Workbench,
         extension_paths: []const ExtensionPath,
-        data_path: []const u8,
+        user_data_dir: []const u8,
     ) !*Extensions {
         const self = try allocator.create(Extensions);
         errdefer allocator.destroy(self);
@@ -155,7 +156,7 @@ pub const Extensions = struct {
             workbench.registerExtensionConfiguration(description.manifest, description.identifier);
         }
 
-        const data = try allocator.dupe(u8, data_path);
+        const data = try allocator.dupe(u8, user_data_dir);
         errdefer allocator.free(data);
 
         self.* = .{
@@ -165,7 +166,7 @@ pub const Extensions = struct {
             .host = undefined,
             .descriptions = owned_descriptions,
             .extension_ptrs = extension_ptrs,
-            .data_path = data,
+            .user_data_dir = data,
             .activation_tracker = extension_service.ActivationTracker.init(allocator),
             .last_selections = std.array_list.Managed(Selection).init(allocator),
         };
@@ -182,7 +183,7 @@ pub const Extensions = struct {
             .extensions = self.extension_ptrs,
             .workspace_path = workspace_path,
             .workspace_name = "workspace",
-            .data_path = data,
+            .user_data_dir = data,
             .app_root = ".",
             .parent_pid = @intCast(manager.currentProcessId()),
         });
@@ -258,7 +259,7 @@ pub const Extensions = struct {
         for (self.descriptions) |*description| description.deinit(self.allocator);
         self.allocator.free(self.descriptions);
         self.allocator.free(self.extension_ptrs);
-        self.allocator.free(self.data_path);
+        self.allocator.free(self.user_data_dir);
         self.allocator.destroy(self);
     }
 
@@ -592,7 +593,7 @@ pub const Extensions = struct {
             .extensions = self.extension_ptrs,
             .workspace_path = workspace,
             .workspace_name = "workspace",
-            .data_path = self.data_path,
+            .user_data_dir = self.user_data_dir,
             .app_root = ".",
             .parent_pid = @intCast(manager.currentProcessId()),
         });
@@ -1753,7 +1754,7 @@ test "Extensions: insert-mode Backspace and Delete run the core editor commands"
 }
 
 test "Extensions: VSCodeVim inserts text into the active TUI editor" {
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
     std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(time_compat.io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
 
@@ -1866,7 +1867,7 @@ test "Extensions: VSCodeVim inserts text into the active TUI editor" {
 }
 
 test "Extensions: VSCodeVim vertical motion uses its character column" {
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
     const io = time_compat.io;
     std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
@@ -1945,7 +1946,7 @@ test "Extensions: VSCodeVim vertical motion uses its character column" {
 test "Extensions: language feature registration reaches the workbench registries" {
     // The fixture registers definition/declaration/implementation/type
     // definition/reference providers so the bridge actions run without tsserver.
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
     std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(time_compat.io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
 
@@ -2046,7 +2047,7 @@ test "Extensions: relative paths mirror the model URI language features use" {
     // raw spelling while language-feature requests carried the model's
     // absolute URI. The host never found the document, so `gd`/F12 and the
     // other navigation actions returned no result for relative paths.
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
     const io = time_compat.io;
     std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
@@ -2116,7 +2117,7 @@ test "Extensions: relative paths mirror the model URI language features use" {
 }
 
 test "Extensions: real TypeScript extension drives the language features" {
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
     const io = time_compat.io;
     std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
@@ -2294,7 +2295,7 @@ test "Extensions: real TypeScript extension drives the language features" {
 }
 
 test "Extensions: TypeScript and VSCodeVim share one host" {
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
     const io = time_compat.io;
     std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
@@ -2366,7 +2367,7 @@ test "Extensions: showDocument applies a line selection" {
 }
 
 test "Extensions: VSCodeVim navigation commands reach the workbench actions" {
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
     const io = time_compat.io;
     std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
@@ -2512,7 +2513,7 @@ test "Extensions: VSCodeVim z commands scroll the viewport" {
 }
 
 test "Extensions: VSCodeVim gf opens the file under the cursor at a line" {
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    if (!build_options.e2e) return error.SkipZigTest;
     const io = time_compat.io;
     std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;

@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
+const theme_colors_mod = @import("../../themeColors.zig");
 const editor_group_view = @import("./editorGroupView.zig");
 
 const CellGrid = ui.CellGrid;
@@ -56,40 +57,40 @@ pub const DrawOptions = struct {
 /// The terminal tab strip's hit rectangle; the group view keeps this cache.
 pub const Hit = editor_group_view.TabHit;
 
-const strip_background = PaintStyle{
+const base_strip_background = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 190, .g = 190, .b = 190 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
-const active_style = PaintStyle{
+const base_active_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 245, .g = 245, .b = 245 }),
     .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 30 }),
     .attrs = ui.cell.Attr.bold,
 };
-const inactive_group_active_style = PaintStyle{
+const base_inactive_group_active_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 205, .g = 205, .b = 205 }),
     .bg = ui.cell.packColor(.{ .r = 45, .g = 45, .b = 45 }),
 };
-const inactive_style = PaintStyle{
+const base_inactive_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 150, .g = 150, .b = 150 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
-const separator_style = PaintStyle{
+const base_separator_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
-const dirty_style = PaintStyle{
+const base_dirty_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 230, .g = 170, .b = 70 }),
     .attrs = ui.cell.Attr.bold,
 };
-const title_action_style = PaintStyle{
+const base_title_action_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 150, .g = 150, .b = 150 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
-const title_action_hover_style = PaintStyle{
+const base_title_action_hover_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 235, .g = 235, .b = 235 }),
     .bg = ui.cell.packColor(.{ .r = 55, .g = 55, .b = 58 }),
 };
-const title_action_active_style = PaintStyle{
+const base_title_action_active_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 245, .g = 245, .b = 245 }),
     .bg = ui.cell.packColor(.{ .r = 45, .g = 75, .b = 105 }),
     .attrs = ui.cell.Attr.bold,
@@ -164,6 +165,7 @@ pub fn draw(
     width: usize,
     hits: *std.array_list.Managed(Hit),
     options: DrawOptions,
+    palette: ?*const theme_colors_mod.ThemeColors,
 ) !?TitleActionHit {
     hits.clearRetainingCapacity();
     if (row >= grid.rows) return null;
@@ -171,6 +173,54 @@ pub fn draw(
 
     const cols = @min(width, grid.cols - x);
     if (cols == 0) return null;
+    var strip_background = base_strip_background;
+    var active_style = base_active_style;
+    var inactive_group_active_style = base_inactive_group_active_style;
+    var inactive_style = base_inactive_style;
+    var separator_style = base_separator_style;
+    var dirty_style = base_dirty_style;
+    var title_action_style = base_title_action_style;
+    var title_action_hover_style = base_title_action_hover_style;
+    var title_action_active_style = base_title_action_active_style;
+    if (palette) |colors| {
+        strip_background = .{
+            .fg = ui.cell.packColor(colors.color("tab.inactiveForeground", .{ 190, 190, 190 })),
+            .bg = ui.cell.packColor(colors.color("editorGroupHeader.tabsBackground", .{ 37, 37, 38 })),
+        };
+        active_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.activeForeground", .{ 245, 245, 245 })),
+            .bg = ui.cell.packColor(colors.color("tab.activeBackground", .{ 30, 30, 30 })),
+            .attrs = ui.cell.Attr.bold,
+        };
+        inactive_group_active_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.unfocusedActiveForeground", .{ 205, 205, 205 })),
+            .bg = ui.cell.packColor(colors.color("tab.unfocusedActiveBackground", .{ 45, 45, 45 })),
+        };
+        inactive_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.inactiveForeground", .{ 150, 150, 150 })),
+            .bg = ui.cell.packColor(colors.color("tab.inactiveBackground", .{ 37, 37, 38 })),
+        };
+        separator_style = .{
+            .fg = ui.cell.packColor(colors.color("editorGroup.border", .{ 70, 70, 70 })),
+            .bg = ui.cell.packColor(colors.color("editorGroupHeader.tabsBackground", .{ 37, 37, 38 })),
+        };
+        dirty_style = .{
+            .fg = ui.cell.packColor(colors.color("gitDecoration.modifiedResourceForeground", .{ 230, 170, 70 })),
+            .attrs = ui.cell.Attr.bold,
+        };
+        title_action_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.inactiveForeground", .{ 150, 150, 150 })),
+            .bg = ui.cell.packColor(colors.color("editorGroupHeader.tabsBackground", .{ 37, 37, 38 })),
+        };
+        title_action_hover_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.activeForeground", .{ 235, 235, 235 })),
+            .bg = ui.cell.packColor(colors.color("toolbar.hoverBackground", .{ 55, 55, 58 })),
+        };
+        title_action_active_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.activeForeground", .{ 255, 255, 255 })),
+            .bg = ui.cell.packColor(colors.color("toolbar.activeBackground", .{ 75, 75, 78 })),
+        };
+    }
     grid.fillRect(@floatFromInt(x), @floatFromInt(row), @floatFromInt(cols), 1, strip_background);
     if (tabs.len == 0) return null;
 
@@ -342,7 +392,7 @@ test "tabBar draws labels, active state and hits" {
         .{ .label = "b.txt", .language = "typescript", .dirty = true },
         .{ .label = "c.txt", .language = "plaintext" },
     };
-    _ = try draw(&grid, &tabs, 1, 0, 0, grid.cols, &hits, .{});
+    _ = try draw(&grid, &tabs, 1, 0, 0, grid.cols, &hits, .{}, null);
 
     try std.testing.expectEqual(@as(usize, 3), hits.items.len);
     try std.testing.expectEqual(@as(usize, 1), hitAt(hits.items, hits.items[1].start).?);
@@ -369,7 +419,7 @@ test "tabBar close hits and hovered close" {
         .{ .label = "a.txt", .language = "plaintext" },
         .{ .label = "b.txt", .language = "plaintext" },
     };
-    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{ .hovered = 1 });
+    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{ .hovered = 1 }, null);
     try std.testing.expectEqual(@as(usize, 2), hits.items.len);
     // Inactive tab has no close glyph unless hovered/active.
     try std.testing.expect(hits.items[0].close_start != null);
@@ -390,7 +440,7 @@ test "tabBar scrolls to keep the active tab visible" {
         .{ .label = "second.txt", .language = "plaintext" },
         .{ .label = "third.txt", .language = "plaintext" },
     };
-    _ = try draw(&grid, &tabs, 2, 0, 0, grid.cols, &hits, .{});
+    _ = try draw(&grid, &tabs, 2, 0, 0, grid.cols, &hits, .{}, null);
 
     try std.testing.expect(hits.items.len >= 1);
     try std.testing.expectEqual(@as(usize, 2), hits.items[hits.items.len - 1].index);
@@ -408,7 +458,7 @@ test "tabBar italicizes preview tabs" {
     const tabs = [_]TabInfo{
         .{ .label = "p.ts", .language = "typescript", .pinned = false },
     };
-    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{});
+    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{}, null);
     var col = hits.items[0].start;
     var found_italic = false;
     while (col < hits.items[0].end) : (col += 1) {
@@ -473,7 +523,7 @@ test "tabBar: title action reserves the right corner and reports its hit" {
     };
     const action_hit = (try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{
         .title_action = .{ .active = true },
-    })).?;
+    }, null)).?;
     try std.testing.expectEqual(@as(usize, 28), action_hit.start);
     try std.testing.expectEqual(@as(usize, 30), action_hit.end);
     try std.testing.expectEqual(@as(u32, 0x25EB), grid.cluster[grid.index(28, 0)]);

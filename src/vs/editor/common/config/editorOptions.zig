@@ -276,6 +276,9 @@ pub const FullwidthCharacterWidth = enum { font, two_cells };
 /// Upstream validates `'alt' | 'ctrlCmd'` into the pressed modifier key.
 pub const MultiCursorModifier = enum { alt_key, meta_key, ctrl_key };
 
+/// Upstream `editor.matchBrackets`.
+pub const MatchBrackets = enum { always, near, never };
+
 pub const MinimapAutohide = enum { none, mouseover, scroll };
 
 pub const MinimapSide = enum { right, left };
@@ -480,6 +483,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .cursorSurroundingLinesStyle => CursorSurroundingLinesStyle,
         .cursorStyle, .effectiveCursorStyle => TextEditorCursorStyle,
         .multiCursorModifier => MultiCursorModifier,
+        .matchBrackets => MatchBrackets,
         .renderFinalNewline => RenderFinalNewline,
         .renderLineHighlight => RenderLineHighlight,
         .renderWhitespace => RenderWhitespace,

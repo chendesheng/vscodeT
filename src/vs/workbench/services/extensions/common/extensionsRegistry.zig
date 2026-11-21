@@ -29,7 +29,11 @@ pub const Grammar = struct {
 
 pub const Theme = struct {
     root: []const u8,
+    /// The contributed `id` (falls back to the path for unnamed themes).
     id: []const u8,
+    /// `id`, else the NLS-resolved label: the value `workbench.colorTheme`
+    /// stores, matching upstream `ColorThemeData.settingsId`.
+    settings_id: []const u8,
     label: []const u8,
     ui_theme: []const u8,
     path: []const u8,
@@ -238,10 +242,13 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
                 const theme = item.object;
                 const path = stringField(theme, "path") orelse continue;
                 const ui_theme = stringField(theme, "uiTheme") orelse continue;
+                const contributed_id = stringField(theme, "id");
+                const label = resolveNls(nls, stringField(theme, "label") orelse "");
                 try contributions.themes.append(.{
                     .root = root_copy,
-                    .id = try scratch.dupe(u8, stringField(theme, "id") orelse path),
-                    .label = try scratch.dupe(u8, resolveNls(nls, stringField(theme, "label") orelse "")),
+                    .id = try scratch.dupe(u8, contributed_id orelse path),
+                    .settings_id = try scratch.dupe(u8, contributed_id orelse if (label.len > 0) label else path),
+                    .label = try scratch.dupe(u8, label),
                     .ui_theme = try scratch.dupe(u8, ui_theme),
                     .path = try scratch.dupe(u8, path),
                 });
@@ -266,6 +273,45 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
     }
 
     return true;
+}
+
+/// A themes-only scan result. Installed extensions usually contribute more
+/// than themes; scanning the whole extension directory for every contribution
+/// would also register its languages and grammars, which is not part of the
+/// theme source. This keeps only the theme records.
+pub const ThemeList = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    themes: []const Theme,
+
+    pub fn deinit(self: *ThemeList) void {
+        self.arena.deinit();
+    }
+};
+
+pub fn scanThemes(allocator: Allocator, roots: []const []const u8) !ThemeList {
+    var registry = try scan(allocator, roots);
+    defer registry.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const scratch = arena.allocator();
+    var themes = std.array_list.Managed(Theme).init(scratch);
+    for (registry.themes) |theme| {
+        try themes.append(.{
+            .root = try scratch.dupe(u8, theme.root),
+            .id = try scratch.dupe(u8, theme.id),
+            .settings_id = try scratch.dupe(u8, theme.settings_id),
+            .label = try scratch.dupe(u8, theme.label),
+            .ui_theme = try scratch.dupe(u8, theme.ui_theme),
+            .path = try scratch.dupe(u8, theme.path),
+        });
+    }
+    return .{
+        .allocator = allocator,
+        .arena = arena,
+        .themes = try themes.toOwnedSlice(),
+    };
 }
 
 /// Scans the direct child directories of `absolute` that contain a

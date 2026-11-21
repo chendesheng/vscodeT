@@ -38,6 +38,23 @@ pub fn defaultColorTheme() []const u8 {
     return ThemeSettingDefaults.COLOR_THEME_DARK;
 }
 
+/// Defaults for the color-theme settings. The terminal registers these as a
+/// configuration defaults fragment (it has no settings editor to project the
+/// full schema); `registerThemeConfigurationSchemas` remains available for
+/// hosts that want the typed registry entries.
+pub const defaults_json =
+    \\{
+    \\  "workbench": {
+    \\    "colorTheme": "Dark 2026",
+    \\    "preferredDarkColorTheme": "Dark 2026",
+    \\    "preferredLightColorTheme": "Light 2026",
+    \\    "preferredHighContrastColorTheme": "Default High Contrast",
+    \\    "preferredHighContrastLightColorTheme": "Default High Contrast Light"
+    \\  },
+    \\  "window": { "autoDetectColorScheme": false, "autoDetectHighContrast": true }
+    \\}
+;
+
 /// Port of the configuration-schema contribution of `themeConfiguration.ts`.
 ///
 /// Terminal adaptation: the theme enum values that upstream fills from the

@@ -15,9 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
-const vscodeRoot = process.env.VSCODE_SOURCE_PATH
-	? path.resolve(process.env.VSCODE_SOURCE_PATH)
-	: path.resolve(repoRoot, 'vscode');
+const vscodeRoot = path.resolve(repoRoot, 'vscode');
 const protocolPath = path.join(vscodeRoot, 'src/vs/workbench/api/common/extHost.protocol.ts');
 const outDir = path.join(repoRoot, 'src/vs/workbench/api/common');
 

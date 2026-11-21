@@ -30,6 +30,7 @@ const StatusbarEntryPriority = statusbar.StatusbarEntryPriority;
 const StatusbarStyleOverride = statusbar.StatusbarStyleOverride;
 const StatusbarCommandExecutor = statusbar.StatusbarCommandExecutor;
 
+const theme_colors_mod = @import("../../themeColors.zig");
 const model_mod = @import("statusbarModel.zig");
 const StatusbarModel = model_mod.StatusbarModel;
 const Entry = model_mod.Entry;
@@ -128,6 +129,16 @@ pub const StatusbarPart = struct {
     command_executor: ?StatusbarCommandExecutor = null,
     hovered: ?EntryHandle = null,
     rect: ui.Rect = .{},
+    theme: ?*const theme_colors_mod.ThemeColors = null,
+
+    pub fn setThemeColors(self: *StatusbarPart, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+    }
+
+    fn color(self: *const StatusbarPart, id: []const u8, fallback: ui.Color) ui.Color {
+        const palette = self.theme orelse return fallback;
+        return palette.colorOr(id, fallback);
+    }
 
     pub fn init(allocator: Allocator) !StatusbarPart {
         var surface = try ui.Surface.init(allocator, .{
@@ -365,8 +376,11 @@ pub const StatusbarPart = struct {
         }
 
         const override = self.activeStyleOverride();
-        var background: ui.Color = if (options.no_folder) status_no_folder else status_standard;
-        var foreground: ui.Color = status_foreground;
+        var background: ui.Color = if (options.no_folder)
+            self.color("statusBar.noFolderBackground", status_no_folder)
+        else
+            self.color("statusBar.background", status_standard);
+        var foreground: ui.Color = self.color("statusBar.foreground", status_foreground);
         if (override) |value| {
             if (value.background) |rgb| background = colorFromRgb(rgb);
             if (value.foreground) |rgb| foreground = colorFromRgb(rgb);
@@ -510,8 +524,8 @@ pub const StatusbarPart = struct {
             @floatFromInt(tooltip_width),
             1,
             .{
-                .fg = ui.cell.packColor(tooltip_foreground),
-                .bg = ui.cell.packColor(tooltip_background),
+                .fg = ui.cell.packColor(self.color("editorWidget.foreground", tooltip_foreground)),
+                .bg = ui.cell.packColor(self.color("editorWidget.background", tooltip_background)),
             },
         );
         drawClippedText(
@@ -522,8 +536,8 @@ pub const StatusbarPart = struct {
             tooltip_width - 2,
             text,
             .{
-                .fg = ui.cell.packColor(tooltip_foreground),
-                .bg = ui.cell.packColor(tooltip_background),
+                .fg = ui.cell.packColor(self.color("editorWidget.foreground", tooltip_foreground)),
+                .bg = ui.cell.packColor(self.color("editorWidget.background", tooltip_background)),
             },
         );
     }

@@ -97,6 +97,7 @@ const supported_options = [_]EditorOption{
     .cursorStyle,
     .effectiveCursorStyle,
     .multiCursorModifier,
+    .matchBrackets,
     .renderFinalNewline,
     .renderLineHighlight,
     .renderWhitespace,
@@ -179,6 +180,7 @@ pub fn optionField(comptime option: EditorOption) []const u8 {
         .cursorSurroundingLinesStyle => "cursor_surrounding_lines_style",
         .cursorStyle, .effectiveCursorStyle => if (option == .cursorStyle) "cursor_style" else "effective_cursor_style",
         .multiCursorModifier => "multi_cursor_modifier",
+        .matchBrackets => "match_brackets",
         .renderFinalNewline => "render_final_newline",
         .renderLineHighlight => "render_line_highlight",
         .renderWhitespace => "render_whitespace",
@@ -266,6 +268,7 @@ pub const ComputedEditorOptions = struct {
     cursor_style: TextEditorCursorStyle = .Line,
     effective_cursor_style: TextEditorCursorStyle = .Line,
     multi_cursor_modifier: MultiCursorModifier = .alt_key,
+    match_brackets: editorOptions.MatchBrackets = .always,
     render_final_newline: RenderFinalNewline = if (builtin.os.tag == .linux) .dimmed else .on,
     render_line_highlight: RenderLineHighlight = .line,
     render_whitespace: RenderWhitespace = .selection,
@@ -390,5 +393,5 @@ test "ComputedEditorOptions exposes the supported options" {
         _ = options.read(option);
         _ = view.get(option);
     }
-    try std.testing.expectEqual(@as(usize, 72), supported_options.len);
+    try std.testing.expectEqual(@as(usize, 73), supported_options.len);
 }

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const tui = @import("./tui.zig");
+const vscode_profile = @import("./vscodeProfile.zig");
 const ui = @import("ui");
 const input = ui.input;
 const terminal_input = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
@@ -10,11 +11,9 @@ const View = @import("./editorView.zig").View;
 const Workbench = @import("../vs/workbench/browser/workbench.zig").Workbench;
 const extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
-const environment_service = @import("../vs/platform/environment/common/environmentService.zig");
 const extensions_scanner = @import("../vs/platform/extensionManagement/common/extensionsScannerService.zig");
 const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
 const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
-const SyntaxTheme = @import("../vs/editor/standalone/browser/standaloneThemeService.zig").SyntaxTheme;
 const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorSerializer;
 const FileEditorInput = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const EditorFactoryRegistry = @import("../vs/workbench/common/editor/editorFactory.zig").EditorFactoryRegistry;
@@ -58,12 +57,22 @@ const Args = struct {
     preview: bool = false,
     session: ?[]const u8 = null,
     extensions_dir: ?[]const u8 = null,
+    user_data_dir: ?[]const u8 = null,
+    logs_path: ?[]const u8 = null,
 };
 
-/// Parses `--preview`, `--session <file>`, `--extensions-dir <dir>` and the
+/// Parses upstream VS Code's path switches (`--user-data-dir`,
+/// `--extensions-dir`, `--logsPath`), `--preview`, `--session <file>` and the
 /// remaining paths. `--preview` is only valid with exactly one path;
 /// `--session` restores the saved group when the file exists and otherwise
-/// opens the given paths; `--extensions-dir` is VS Code's extensions folder.
+/// opens the given paths.
+/// Returns the value of `--name=value`, the form upstream's argv parser also
+/// accepts for string options.
+fn inlineOption(arg: []const u8, name: []const u8) ?[]const u8 {
+    if (arg.len <= name.len or !std.mem.startsWith(u8, arg, name) or arg[name.len] != '=') return null;
+    return arg[name.len + 1 ..];
+}
+
 fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *ArrayList([]const u8)) !Args {
     var it = try std.process.Args.Iterator.initAllocator(args, allocator);
     defer it.deinit();
@@ -72,6 +81,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
     var parsed: Args = .{};
     errdefer if (parsed.session) |session_path| allocator.free(session_path);
     errdefer if (parsed.extensions_dir) |path| allocator.free(path);
+    errdefer if (parsed.user_data_dir) |path| allocator.free(path);
+    errdefer if (parsed.logs_path) |path| allocator.free(path);
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--preview")) {
             parsed.preview = true;
@@ -79,10 +90,15 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
             const value = it.next() orelse return error.MissingSessionPath;
             if (parsed.session) |old| allocator.free(old);
             parsed.session = try allocator.dupe(u8, value);
-        } else if (std.mem.eql(u8, arg, "--extensions-dir")) {
-            const value = it.next() orelse return error.MissingExtensionsDir;
+        } else if (inlineOption(arg, "--extensions-dir") orelse (if (std.mem.eql(u8, arg, "--extensions-dir")) it.next() orelse return error.MissingExtensionsDir else null)) |value| {
             if (parsed.extensions_dir) |old| allocator.free(old);
             parsed.extensions_dir = try allocator.dupe(u8, value);
+        } else if (inlineOption(arg, "--user-data-dir") orelse (if (std.mem.eql(u8, arg, "--user-data-dir")) it.next() orelse return error.MissingUserDataDir else null)) |value| {
+            if (parsed.user_data_dir) |old| allocator.free(old);
+            parsed.user_data_dir = try allocator.dupe(u8, value);
+        } else if (inlineOption(arg, "--logsPath") orelse (if (std.mem.eql(u8, arg, "--logsPath")) it.next() orelse return error.MissingLogsPath else null)) |value| {
+            if (parsed.logs_path) |old| allocator.free(old);
+            parsed.logs_path = try allocator.dupe(u8, value);
         } else {
             const copy = try allocator.dupe(u8, arg);
             errdefer allocator.free(copy);
@@ -95,33 +111,16 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
     return parsed;
 }
 
-/// Extension discovery follows VS Code: resolve `extensionsPath` from the
-/// `--extensions-dir` argument, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE` or the
-/// product's user folder, then perform upstream's `scanAllUserExtensions`
+/// Extension discovery follows VS Code: the profile-resolved
+/// `extensionsPath` is scanned with upstream's `scanAllUserExtensions`
 /// location scan. The user extension host loads VSCodeVim; the built-in
 /// TypeScript extension is provisioned separately under `host/dist/extensions`.
 fn findVimExtension(
     allocator: std.mem.Allocator,
     io: Io,
-    cli_extensions_dir: ?[]const u8,
-    environ: *const std.process.Environ.Map,
+    extensions_path: []const u8,
     log_service: ?log_module.ILogger,
 ) !?[]u8 {
-    // `IEnvironmentService.userHome` is `os.homedir()`; on Windows that is
-    // `USERPROFILE` rather than `HOME`.
-    const home = environ.get("HOME") orelse environ.get("USERPROFILE") orelse {
-        report(log_service, "extension discovery skipped: no home directory", .{});
-        return null;
-    };
-    const environment = environment_service.Environment{
-        .user_home = home,
-        .cli_extensions_dir = cli_extensions_dir,
-        .env_extensions = environ.get("VSCODE_EXTENSIONS"),
-        .env_portable = environ.get("VSCODE_PORTABLE"),
-    };
-    const extensions_path = try environment.extensionsPath(allocator);
-    defer allocator.free(extensions_path);
-
     const scanned = try extensions_scanner.scanExtensionsFromLocation(allocator, io, extensions_path, .user);
     defer {
         for (scanned) |*extension| extension.deinit(allocator);
@@ -133,29 +132,6 @@ fn findVimExtension(
         return null;
     };
     return try allocator.dupe(u8, found.location);
-}
-
-fn defaultExtensionDataPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map) ![]u8 {
-    if (environ.get("VSCODE_TEXTBUFFER_EXTENSION_DATA")) |path| return allocator.dupe(u8, path);
-    if (environ.get("XDG_STATE_HOME")) |state| return std.fs.path.join(allocator, &.{ state, "vscode-textbuffer", "extensions" });
-    if (environ.get("HOME")) |home| return std.fs.path.join(allocator, &.{ home, ".local", "state", "vscode-textbuffer", "extensions" });
-    return allocator.dupe(u8, ".cache-ext/data");
-}
-
-fn defaultUserSettingsPath(
-    allocator: std.mem.Allocator,
-    environ: *const std.process.Environ.Map,
-) !?[]u8 {
-    if (environ.get("VSCODE_TEXTBUFFER_USER_SETTINGS")) |path| {
-        return try allocator.dupe(u8, path);
-    }
-    if (environ.get("XDG_CONFIG_HOME")) |xdg| {
-        return try std.fs.path.join(allocator, &.{ xdg, "vscode-textbuffer", "settings.json" });
-    }
-    if (environ.get("HOME")) |home| {
-        return try std.fs.path.join(allocator, &.{ home, ".config", "vscode-textbuffer", "settings.json" });
-    }
-    return null;
 }
 
 const ProbeHost = struct {
@@ -178,8 +154,37 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
 
+    var paths = ArrayList([]const u8).init(allocator);
+    defer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit();
+    }
+
+    const args = parseArgs(allocator, init.minimal.args, &paths) catch {
+        std.debug.print(
+            "usage: zig <folder> [<file>...]\n       zig <file>...\n       zig --session <file> [<folder>] [<file>...]\n       zig --preview <file>\n       zig [--user-data-dir <dir>] [--extensions-dir <dir>] [--logsPath <dir>] [<folder>|<file>...]\n",
+            .{},
+        );
+        return;
+    };
+    defer if (args.session) |session_path| allocator.free(session_path);
+    defer if (args.extensions_dir) |path| allocator.free(path);
+    defer if (args.user_data_dir) |path| allocator.free(path);
+    defer if (args.logs_path) |path| allocator.free(path);
+
+    // Profile discovery resolves the TUI user-data dir with upstream's
+    // `VSCODE_PORTABLE`/`VSCODE_APPDATA`/`--user-data-dir` precedence and the
+    // extensions path with `--extensions-dir`/`VSCODE_EXTENSIONS`/
+    // `VSCODE_PORTABLE`. The VS Code `Code/User` profile is the base layer.
+    var vscode_environment = vscode_profile.Environment.fromProcess(init.environ_map);
+    vscode_environment.cli_extensions_dir = args.extensions_dir;
+    vscode_environment.cli_user_data_dir = args.user_data_dir;
+    vscode_environment.cli_logs_path = args.logs_path;
+    var profile = try vscode_profile.discover(allocator, vscode_environment);
+    defer profile.deinit();
+
     var file_logger: ?*logger.FileLogger = null;
-    const log_path = logger.defaultLogPath(allocator, init.environ_map) catch null;
+    const log_path = profile.mainLogPath(allocator) catch null;
     defer if (log_path) |path| allocator.free(path);
     if (log_path) |path| {
         file_logger = logger.FileLogger.create(allocator, io, path) catch |err| blk: {
@@ -190,6 +195,11 @@ pub fn main(init: std.process.Init) !void {
     defer if (file_logger) |value| value.destroy();
     const log_service: ?log_module.ILogger = if (file_logger) |value| value.logger() else null;
     defer infoLog(log_service, "exit", .{});
+    infoLog(log_service, "starting: preview={} session={s} paths={d}", .{
+        args.preview,
+        args.session orelse "-",
+        paths.items.len,
+    });
 
     var declarative: ?extensions_registry.Registry = extensions_registry.scan(allocator, &.{
         "vscode/extensions/theme-defaults",
@@ -206,50 +216,9 @@ pub fn main(init: std.process.Init) !void {
     } else |_| {}
     defer if (json_client) |client| client.deinit();
 
-    var syntax_theme: SyntaxTheme = undefined;
-    if (declarative) |*registry| {
-        if (registry.theme("Dark+")) |theme| {
-            syntax_theme.initFromThemeFiles(allocator, theme.root, theme.path, theme.ui_theme) catch |err| {
-                infoLog(log_service, "declarative theme unavailable: {s}; using the bundled loader", .{@errorName(err)});
-                syntax_theme.initFromThemeService(allocator) catch try syntax_theme.init(allocator);
-            };
-        } else {
-            syntax_theme.initFromThemeService(allocator) catch |err| {
-                infoLog(log_service, "theme service unavailable: {s}; using the bundled loader", .{@errorName(err)});
-                try syntax_theme.init(allocator);
-            };
-        }
-    } else {
-        syntax_theme.initFromThemeService(allocator) catch |err| {
-            infoLog(log_service, "theme service unavailable: {s}; using the bundled loader", .{@errorName(err)});
-            try syntax_theme.init(allocator);
-        };
-    }
-    defer syntax_theme.deinit();
     // The whole-word search classifier cache is process-lifetime by design;
     // release it before the safe allocator checks for leaks on exit.
     defer word_character_classifier.freeWordClassifierCache();
-
-    var paths = ArrayList([]const u8).init(allocator);
-    defer {
-        for (paths.items) |path| allocator.free(path);
-        paths.deinit();
-    }
-
-    const args = parseArgs(allocator, init.minimal.args, &paths) catch {
-        std.debug.print(
-            "usage: zig <folder> [<file>...]\n       zig <file>...\n       zig --session <file> [<folder>] [<file>...]\n       zig --preview <file>\n       zig --extensions-dir <dir> [<file>...]\n",
-            .{},
-        );
-        return;
-    };
-    defer if (args.session) |session_path| allocator.free(session_path);
-    defer if (args.extensions_dir) |path| allocator.free(path);
-    infoLog(log_service, "starting: preview={} session={s} paths={d}", .{
-        args.preview,
-        args.session orelse "-",
-        paths.items.len,
-    });
 
     var out_buffer: [65536]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
@@ -387,9 +356,34 @@ pub fn main(init: std.process.Init) !void {
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);
 
-    const user_settings_path = try defaultUserSettingsPath(allocator, init.environ_map);
-    defer if (user_settings_path) |path| allocator.free(path);
-    try workbench.setUserSettingsPath(user_settings_path);
+    try workbench.setUserSettingsPaths(profile.settings_paths);
+    try workbench.setKeybindingsPaths(profile.keybindings_paths);
+
+    // Color themes: the built-in theme-defaults contributions first, then the
+    // profile's extensions path (later registrations win). A missing submodule leaves only the fallback
+    // syntax theme installed by the workbench.
+    var theme_roots = ArrayList([]const u8).init(allocator);
+    defer theme_roots.deinit();
+    if (profile.extensions_dir) |dir| theme_roots.append(dir) catch {};
+    var extra_themes: ?extensions_registry.ThemeList = null;
+    if (theme_roots.items.len > 0) {
+        extra_themes = extensions_registry.scanThemes(allocator, theme_roots.items) catch |err| blk: {
+            infoLog(log_service, "theme scan failed: {s}", .{@errorName(err)});
+            break :blk null;
+        };
+    }
+    defer if (extra_themes) |*list| list.deinit();
+    if (declarative) |*decl_ext| {
+        workbench.registerThemeSources(decl_ext.themes) catch |err| {
+            report(log_service, "built-in themes unavailable: {s}", .{@errorName(err)});
+        };
+    }
+    if (extra_themes) |*list| {
+        workbench.registerThemeSources(list.themes) catch |err| {
+            report(log_service, "installed themes unavailable: {s}", .{@errorName(err)});
+        };
+    }
+    workbench.applyThemeSettings();
     if (json_client) |client| {
         if (workbench.jsonSchemasValue()) |schemas| {
             var arena = std.heap.ArenaAllocator.init(allocator);
@@ -429,10 +423,13 @@ pub fn main(init: std.process.Init) !void {
     defer if (extension_host) |ext| ext.deinit();
     var extension_paths = std.array_list.Managed(extensions.Extensions.ExtensionPath).init(allocator);
     defer extension_paths.deinit();
-    const extension_path = findVimExtension(allocator, io, args.extensions_dir, init.environ_map, log_service) catch |err| blk: {
-        report(log_service, "extension discovery failed: {s}", .{@errorName(err)});
-        break :blk null;
-    };
+    const extension_path = if (profile.extensions_dir) |dir|
+        findVimExtension(allocator, io, dir, log_service) catch |err| blk: {
+            report(log_service, "extension discovery failed: {s}", .{@errorName(err)});
+            break :blk null;
+        }
+    else
+        null;
     // Keep the Vim path alive until the extension host has copied it into its
     // descriptions; freeing it at the end of this block leaves a dangling
     // slice in `extension_paths` and the host init fails with FileNotFound.
@@ -447,17 +444,19 @@ pub fn main(init: std.process.Init) !void {
         if (err != error.FileNotFound) infoLog(log_service, "TypeScript extension unavailable: {s}", .{@errorName(err)});
     }
     if (extension_paths.items.len > 0) {
-        const extension_data = try defaultExtensionDataPath(allocator, init.environ_map);
-        defer allocator.free(extension_data);
-        std.Io.Dir.cwd().createDirPath(io, extension_data) catch {};
-        extension_host = extensions.Extensions.init(allocator, io, workbench, extension_paths.items, extension_data) catch |err| blk: {
-            if (err == error.ExtensionHostBundleMissing) {
-                report(log_service, "extension host disabled: host/dist/extensionHost.mjs is missing; run `zig build host` (details in README)", .{});
-            } else {
-                report(log_service, "extension host disabled: {s}", .{@errorName(err)});
-            }
-            break :blk null;
-        };
+        if (profile.user_data_dir) |user_data_dir| {
+            std.Io.Dir.cwd().createDirPath(io, user_data_dir) catch {};
+            extension_host = extensions.Extensions.init(allocator, io, workbench, extension_paths.items, user_data_dir) catch |err| blk: {
+                if (err == error.ExtensionHostBundleMissing) {
+                    report(log_service, "extension host disabled: host/dist/extensionHost.mjs is missing; run `zig build host` (details in README)", .{});
+                } else {
+                    report(log_service, "extension host disabled: {s}", .{@errorName(err)});
+                }
+                break :blk null;
+            };
+        } else {
+            infoLog(log_service, "extension host disabled: no user data directory", .{});
+        }
     } else {
         infoLog(log_service, "extension host disabled: no VSCodeVim or TypeScript extension found", .{});
     }

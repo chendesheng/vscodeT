@@ -27,6 +27,8 @@ const CoordinatesConverter = @import("../../../common/viewModel/viewModelLines.z
 const ViewLineData = @import("../../../common/viewModel.zig").ViewLineData;
 const WordBreak = @import("../../../common/modelLineProjectionData.zig").WordBreak;
 const WrappingIndent = @import("../../../common/config/editorOptions.zig").WrappingIndent;
+const terminal_editor_config = @import("../../config/terminalEditorConfiguration.zig");
+const resolved_keybinding_item = @import("../../../../platform/keybinding/common/resolvedKeybindingItem.zig");
 const EditorAutoIndentStrategy = @import("../../../common/config/editorOptions.zig").EditorAutoIndentStrategy;
 const cursorCommon = @import("../../../common/cursorCommon.zig");
 const CursorConfiguration = cursorCommon.CursorConfiguration;
@@ -376,6 +378,8 @@ pub const Editor = struct {
     /// Ctrl/Alt character shortcuts are resolved through the ported keybinding
     /// registry; text editing itself stays on the editor methods below.
     keybindings: ?*keybinding_service.KeybindingService = null,
+    /// User-keybinding removals that apply to this editor's shortcut rules.
+    keybinding_overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem = &.{},
     shortcut_commands: CommandRegistry,
     /// Find controller hooks, installed by the per-tab controllers.
     find_context: ?*anyopaque = null,
@@ -748,11 +752,26 @@ pub const Editor = struct {
             });
         }
 
-        const service = try keybinding_service.KeybindingService.init(self.allocator, &shortcut_keybinding_rules, .{
-            .context = self,
-            .execute = executeShortcutCommand,
+        const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
+            .rules = &shortcut_keybinding_rules,
+            .executor = .{ .context = self, .execute = executeShortcutCommand },
+            .overrides = self.keybinding_overrides,
         });
         self.keybindings = service;
+    }
+
+    /// Rebuilds the shortcut host after the user keymap changed. The removals
+    /// stay borrowed from the workbench's user-keybindings owner, which must
+    /// outlive the editor's next dispatch.
+    pub fn reloadShortcutKeybindings(
+        self: *Editor,
+        overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem,
+    ) void {
+        if (self.keybindings) |service| {
+            service.deinit();
+            self.keybindings = null;
+        }
+        self.keybinding_overrides = overrides;
     }
 
     fn executeShortcutCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
@@ -3231,6 +3250,23 @@ pub const Editor = struct {
         indentation_commands.detectIndentation(self.model);
         self.refreshCursorOptions();
         self.ensureCursorVisible();
+    }
+
+    /// Applies the configured indentation and bracket-colorization settings to
+    /// the model and keeps the cursor/wrapping configuration in sync. Returns
+    /// true when a model option changed.
+    pub fn applyEditorSettings(
+        self: *Editor,
+        reader: terminal_editor_config.Reader,
+        language_id: ?[]const u8,
+        resource: ?[]const u8,
+    ) !bool {
+        if (!terminal_editor_config.applyModelSettings(self.model, reader, language_id, resource)) return false;
+        self.refreshCursorOptions();
+        _ = try self.view_lines.setTabSize(self.model.getOptions().tabSize);
+        try self.refreshLayout();
+        self.ensureCursorVisible();
+        return true;
     }
 
     pub fn changeIndentation(self: *Editor, tab_size: usize, insert_spaces: bool, display_size_only: bool) void {

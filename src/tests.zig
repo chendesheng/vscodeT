@@ -68,6 +68,7 @@ comptime {
     _ = @import("./tui/gitScmProvider.zig");
     _ = @import("./tui/quickDiffController.zig");
     _ = @import("./tui/scmView.zig");
+    _ = @import("./tui/vscodeProfile.zig");
     _ = @import("./vs/workbench/browser/parts/editor/textDiffEditor.zig");
     _ = @import("./tui/benchmark.zig");
     _ = @import("./vs/base/test/browser/ui/breadcrumbs/breadcrumbsWidget.test.zig");
@@ -520,6 +521,11 @@ comptime {
     _ = @import("./vs/base/common/platform.zig");
     _ = @import("./vs/base/test/common/keyCodes.test.zig");
     _ = @import("./vs/base/common/keybindingLabels.zig");
+    _ = @import("./vs/base/common/keybindingParser.zig");
+    _ = @import("./vs/workbench/services/keybinding/common/keybindingIO.zig");
+    _ = @import("./vs/workbench/services/keybinding/test/browser/keybindingIO.test.zig");
+    _ = @import("./vs/workbench/services/keybinding/browser/userKeybindings.zig");
+    _ = @import("./vs/workbench/browser/themeColors.zig");
     _ = @import("./vs/platform/keybinding/common/baseResolvedKeybinding.zig");
     _ = @import("./vs/platform/keybinding/common/usLayoutResolvedKeybinding.zig");
     _ = @import("./vs/platform/keybinding/test/common/keybindingsTestUtils.zig");
@@ -551,6 +557,7 @@ comptime {
     _ = @import("./vs/editor/browser/view/viewOverlays.zig");
     _ = @import("./vs/editor/common/config/editorConfiguration.zig");
     _ = @import("./vs/editor/browser/config/editorConfiguration.zig");
+    _ = @import("./vs/editor/browser/config/terminalEditorConfiguration.zig");
     _ = @import("./vs/editor/browser/viewParts/viewLines/viewLineOptions.zig");
     _ = @import("./vs/editor/browser/viewParts/viewLines/viewLine.zig");
     _ = @import("./vs/editor/browser/viewParts/viewLines/viewLines.zig");

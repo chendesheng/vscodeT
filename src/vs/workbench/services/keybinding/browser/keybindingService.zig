@@ -35,17 +35,30 @@ const AbstractKeybindingService = abstract_mod.AbstractKeybindingService;
 /// on macOS keeps every `CtrlCmd` rule on Ctrl, matching the shortcuts the TUI
 /// documents. The registry also selects platform-specific rule variants from
 /// this value, so macOS uses the Ctrl-based (Linux) variants too.
-fn bindingOS() platform.OperatingSystem {
+pub fn bindingOS() platform.OperatingSystem {
     return switch (platform.OS) {
         .Macintosh => .Linux,
         else => platform.OS,
     };
 }
 
+pub const Options = struct {
+    rules: []const registry_module.IKeybindingRule,
+    executor: abstract_mod.CommandExecutor,
+    /// Shared workbench context key service. When null the service owns one
+    /// (tests and standalone hosts).
+    context: ?*contextkey.ContextKeyService = null,
+    /// User-keybinding overrides, including `-command` removal entries. The
+    /// resolver borrows them for the lifetime of the service.
+    overrides: []const *const ResolvedKeybindingItem = &.{},
+};
+
 pub const KeybindingService = struct {
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
-    context: contextkey.ContextKeyService,
+    context: *contextkey.ContextKeyService,
+    owns_context: bool,
+    overrides: []const *const ResolvedKeybindingItem,
     noop_notification: notification_mod.NoOpNotification = .{},
     commands: abstract_mod.CommandExecutor,
     items: std.array_list.Managed(*ResolvedKeybindingItem),
@@ -55,12 +68,16 @@ pub const KeybindingService = struct {
     last_command: ?[]const u8 = null,
 
     pub fn init(allocator: Allocator, rules: []const registry_module.IKeybindingRule, executor: abstract_mod.CommandExecutor) !*KeybindingService {
+        return initWithOptions(allocator, .{ .rules = rules, .executor = executor });
+    }
+
+    pub fn initWithOptions(allocator: Allocator, options: Options) !*KeybindingService {
         const self = try allocator.create(KeybindingService);
         errdefer allocator.destroy(self);
 
         var registry = registry_module.KeybindingsRegistry.init(allocator);
         defer registry.deinit();
-        for (rules) |rule| {
+        for (options.rules) |rule| {
             var registration = try registry.registerKeybindingRule(rule);
             registration.disposed = true;
         }
@@ -70,11 +87,20 @@ pub const KeybindingService = struct {
         const registry_items = try registry.getDefaultKeybindingsForOS(allocator, bindingOS());
         defer registry_module.deinitKeybindings(allocator, registry_items);
 
+        const context = if (options.context) |shared|
+            shared
+        else blk: {
+            const created = try allocator.create(contextkey.ContextKeyService);
+            created.* = contextkey.ContextKeyService.init(allocator);
+            break :blk created;
+        };
         self.* = .{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
-            .context = contextkey.ContextKeyService.init(allocator),
-            .commands = executor,
+            .context = context,
+            .owns_context = options.context == null,
+            .overrides = options.overrides,
+            .commands = options.executor,
             .items = std.array_list.Managed(*ResolvedKeybindingItem).init(allocator),
             .resolved = std.array_list.Managed(*USLayoutResolvedKeybinding).init(allocator),
             .resolver = undefined,
@@ -104,7 +130,7 @@ pub const KeybindingService = struct {
         const item_ptrs = try allocator.alloc(*const ResolvedKeybindingItem, self.items.items.len);
         defer allocator.free(item_ptrs);
         for (self.items.items, 0..) |item, index| item_ptrs[index] = item;
-        self.resolver = try resolver_module.KeybindingResolver.init(allocator, item_ptrs, &.{});
+        self.resolver = try resolver_module.KeybindingResolver.init(allocator, item_ptrs, options.overrides);
 
         self.service = AbstractKeybindingService.init(
             allocator,
@@ -134,7 +160,10 @@ pub const KeybindingService = struct {
             self.allocator.destroy(resolved);
         }
         self.resolved.deinit();
-        self.context.deinit();
+        if (self.owns_context) {
+            self.context.deinit();
+            self.allocator.destroy(self.context);
+        }
         self.arena.deinit();
         self.allocator.destroy(self);
     }
