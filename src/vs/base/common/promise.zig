@@ -1,6 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
-const io = Io.Threaded.global_single_threaded.io();
+// The resolver tests drive the promise from a worker thread. The global
+// single-threaded instance explicitly does not support concurrency; the test
+// runner installs a threaded Io for each test instead.
+const io = if (builtin.is_test) std.testing.io else Io.Threaded.global_single_threaded.io();
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const pair = @import("./utils.zig").pair;
