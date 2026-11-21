@@ -371,15 +371,33 @@ flex list/detail split, and the hover status bar is a flex row. The
 terminal-specific list windowing, hit targets and hover scrolling remain
 manual; the generic `ui.ScrollView` covers arbitrary overflowing content.
 
-The box tree owns invalidation. DOM mutation APIs notify the attached
-`MutationObserver`. Structural, style and text changes all set `needs_rebuild`
-(and `needs_layout`): boxes copy the direct `Style` and text data when they are
-built, and a `display` change can alter the box shape, so the POC rebuilds the
-derived tree from the DOM before solving. There is no document-level dirty flag
-or revision. Per-box `needs_layout` is kept for the future incremental pass,
-which can update copied values in place instead of rebuilding. Direct writes to
-public `Element.style`/`Text.style` fields bypass the observer; use
-`Node.setStyle`.
+The box tree owns invalidation. By default DOM mutation APIs notify the
+attached `MutationObserver`; structural, style and text changes set
+`needs_rebuild`/`needs_layout`, and the surface rebuilds the derived tree from
+the DOM before solving. There is no document-level dirty flag or revision.
+Direct writes to public `Element.style`/`Text.style` fields bypass the
+observer; use `Node.setStyle`.
+
+A retained view can turn the automatic path off and drive the tree explicitly,
+the way WebKit dirties a layout subtree:
+
+```zig
+tree.setAutoInvalidate(false);
+_ = try tree.addSubtree(node);       // a newly attached line/part node
+_ = tree.translateSubtree(node, 0, dy); // a moved line: shift rects/fragments
+_ = try tree.rebuildSubtree(node);   // a line whose text children changed
+tree.removeSubtree(node);            // a detached line/part
+try layout.layoutSubtree(tree, doc, box); // solve one out-of-flow subtree
+```
+
+The editor view uses this mode for its retained, windowed line DOM: only the
+visible lines have nodes (`ViewLine.dom_node`), a scroll translates the retained
+lines instead of rewriting them, and the layout scratch is not reset by a
+targeted solve, so clean lines keep their text fragments. Nodes are recycled
+through `Document.destroy`/`Node.clearChildren`; the document arena is reset
+only when it crosses a bound. Text runs share interned `PaintStyle` objects
+(the CSS-class analogue); `Element.pointer_events` is the hit-testing
+`pointer-events` analogue for transparent layout containers.
 
 ### 5.3 Why the tree
 

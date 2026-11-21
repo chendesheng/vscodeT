@@ -72,16 +72,20 @@ pub const LayoutBox = struct {
     cell_border: style_mod.Edges = .{},
     /// Padding box inset by the padding: the content box.
     content_rect: style_mod.Rect = .{},
+    /// Paint payload for a `.text` box (elements use `style`).
+    paint: style_mod.PaintStyle = .{},
+    /// Shared paint style from the editor's class cache.
+    paint_ref: ?*const style_mod.PaintStyle = null,
     /// Text content for a `.text` box.
     text: ?[]const u8 = null,
     /// Painted line fragments for a `.text` box. Populated by the layout pass
     /// that places the box; empty means "paint the whole text at `rect`".
-    text_fragments: []const TextFragment = &.{},
+    text_fragments: []TextFragment = &.{},
     /// Whether the layout pass has computed `text_fragments` for this text box
     /// (an empty slice then means the text paints nothing).
     has_text_layout: bool = false,
     /// Per-line border boxes for a fragmented non-atomic inline element.
-    inline_fragments: []const InlineFragment = &.{},
+    inline_fragments: []InlineFragment = &.{},
     /// Set when this box or something it contains needs layout. The current
     /// pass solves the whole tree but clears the bits at the end, so the flag
     /// is ready for the incremental pass.
@@ -114,6 +118,11 @@ pub const BoxTree = struct {
     /// attributes on the box edge and do not reserve cells, so `width`,
     /// `height`, padding and content geometry ignore the border widths.
     cell_borders: bool = false,
+    /// When false, DOM mutations do not invalidate the tree. The retained
+    /// editor view owns a stable document and explicitly marks the line/row
+    /// subtrees it changed, like WebKit's layout invalidation on a dirty
+    /// subtree. Generic surfaces keep the automatic path.
+    auto_invalidate: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) !BoxTree {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -172,6 +181,94 @@ pub const BoxTree = struct {
     pub fn clearNeedsLayout(self: *BoxTree) void {
         clearBoxNeedsLayout(self.root);
         self.needs_layout = false;
+    }
+
+    /// Switches automatic mutation invalidation. The retained editor view
+    /// turns it off after the initial full build and drives the tree through
+    /// the explicit subtree calls below.
+    pub fn setAutoInvalidate(self: *BoxTree, enabled: bool) void {
+        self.auto_invalidate = enabled;
+    }
+
+    pub fn markFullRebuild(self: *BoxTree) void {
+        self.needs_rebuild = true;
+        self.needs_layout = true;
+    }
+
+    /// Creates boxes for a newly attached DOM node and appends them under its
+    /// parent's box. Returns the new box, or null when the node has no parent
+    /// box yet (the caller then falls back to a full rebuild).
+    pub fn addSubtree(self: *BoxTree, node: *dom.Node) !?*LayoutBox {
+        const parent_node = node.parent orelse return null;
+        const parent_box = self.node_boxes.get(parent_node) orelse return null;
+        const allocator = self.arena.allocator();
+        const box = switch (node.kind) {
+            .text => |*text| try createTextBox(self, parent_box, node, text),
+            .element => |*element| blk: {
+                switch (element.style.display) {
+                    .none => return null,
+                    .contents => return null,
+                    else => {},
+                }
+                const created = try createElementBox(self, parent_box, node, element);
+                var run: std.ArrayList(*LayoutBox) = .empty;
+                try collectChildren(self, created, node, &run);
+                break :blk created;
+            },
+        };
+        try parent_box.children.append(allocator, box);
+        if (box.kind == .element) {
+            box.needs_layout = true;
+        } else {
+            parent_box.needs_layout = true;
+        }
+        return box;
+    }
+
+    /// Drops the box subtree for a detached DOM node. Absolute siblings are
+    /// unaffected, so this does not need a layout pass.
+    pub fn removeSubtree(self: *BoxTree, node: *dom.Node) void {
+        const box = self.node_boxes.get(node) orelse return;
+        if (box.parent) |parent| {
+            for (parent.children.items, 0..) |child, index| {
+                if (child == box) {
+                    _ = parent.children.orderedRemove(index);
+                    break;
+                }
+            }
+        }
+        removeBoxMappings(self, box);
+    }
+
+    /// Rebuilds the box children of `node` from the DOM and marks the box for
+    /// a targeted layout. Used for a line whose text runs changed and for the
+    /// gutter/scrollbar/status parts that update their own subtree.
+    pub fn rebuildSubtree(self: *BoxTree, node: *dom.Node) !?*LayoutBox {
+        const box = self.node_boxes.get(node) orelse return self.addSubtree(node);
+        for (box.children.items) |child| removeBoxMappings(self, child);
+        box.children.clearRetainingCapacity();
+        if (node.kind == .element) {
+            var run: std.ArrayList(*LayoutBox) = .empty;
+            try collectChildren(self, box, node, &run);
+        }
+        box.needs_layout = true;
+        return box;
+    }
+
+    /// Shifts an existing box subtree by a cell delta without re-running text
+    /// layout. Used when a retained line only moves to another row.
+    pub fn translateSubtree(self: *BoxTree, node: *dom.Node, dx: f64, dy: f64) bool {
+        const box = self.node_boxes.get(node) orelse return false;
+        if (node.kind == .element) {
+            box.style = node.asElement().style;
+            box.text_style = style_mod.TextStyle.resolve(
+                if (box.parent) |parent| parent.text_style else .{},
+                box.style,
+            );
+        }
+        shiftBox(box, dx, dy);
+        copyBoxRects(box);
+        return true;
     }
 
     /// Discards the derived tree and rebuilds it from the current DOM. The
@@ -271,7 +368,7 @@ fn hitTestBox(current: *const LayoutBox, x: f64, y: f64, clip: style_mod.Rect) ?
             }
 
             if (current.owner) |owner| {
-                if (current.kind == .element) {
+                if (current.kind == .element and current.owner.?.asElement().pointer_events) {
                     if (current.inline_fragments.len > 0) {
                         for (current.inline_fragments) |fragment| {
                             if (rectContains(.{
@@ -313,6 +410,39 @@ fn rootStyle() style_mod.Style {
     };
 }
 
+fn removeBoxMappings(tree: *BoxTree, box: *LayoutBox) void {
+    if (box.owner) |owner| _ = tree.node_boxes.remove(owner);
+    for (box.children.items) |child| removeBoxMappings(tree, child);
+}
+
+fn copyBoxRects(box: *LayoutBox) void {
+    if (box.owner) |owner| {
+        switch (owner.kind) {
+            .element => |*element| element.rect = box.rect,
+            .text => |*text| text.rect = box.rect,
+        }
+    }
+    for (box.children.items) |child| copyBoxRects(child);
+}
+
+fn shiftBox(box: *LayoutBox, dx: f64, dy: f64) void {
+    box.rect.x += dx;
+    box.rect.y += dy;
+    box.padding_rect.x += dx;
+    box.padding_rect.y += dy;
+    box.content_rect.x += dx;
+    box.content_rect.y += dy;
+    for (box.text_fragments) |*fragment| {
+        fragment.x += dx;
+        fragment.y += dy;
+    }
+    for (box.inline_fragments) |*fragment| {
+        fragment.x += dx;
+        fragment.y += dy;
+    }
+    for (box.children.items) |child| shiftBox(child, dx, dy);
+}
+
 fn createElementBox(
     tree: *BoxTree,
     parent: *LayoutBox,
@@ -344,8 +474,9 @@ fn createTextBox(tree: *BoxTree, parent: *LayoutBox, node: *dom.Node, text: *dom
     box.* = .{
         .kind = .text,
         .owner = node,
-        .style = text.style,
-        .text_style = style_mod.TextStyle.resolve(parent.text_style, text.style),
+        .paint = text.paint,
+        .paint_ref = text.paint_ref,
+        .text_style = style_mod.TextStyle.resolveFlow(parent.text_style, text.flow),
         .text = text.data,
         .parent = parent,
     };
@@ -482,6 +613,7 @@ fn clearBoxNeedsLayout(box: *LayoutBox) void {
 
 fn onMutation(context: *anyopaque, _: *dom.Node, kind: dom.MutationKind) void {
     const tree: *BoxTree = @ptrCast(@alignCast(context));
+    if (!tree.auto_invalidate) return;
     switch (kind) {
         .tree => {
             tree.needs_rebuild = true;

@@ -312,6 +312,36 @@ const overview_secondary_cursor_color = [3]u8{ 86, 70, 26 };
 /// distinguishable while the marker cells stay subdued.
 const scrollbar_thumb_color = [3]u8{ 108, 108, 108 };
 
+/// Key for the view's shared paint styles: token color + attributes, the
+/// inline-decoration class list and the terminal cell flags. This is the
+/// terminal equivalent of the browser's CSS class list on a text span.
+const PaintStyleKey = struct {
+    foreground: u9,
+    attrs: u8,
+    flags: u32,
+    class: []const u8,
+
+    const Context = struct {
+        pub fn hash(_: Context, key: PaintStyleKey) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hasher.update(std.mem.asBytes(&key.foreground));
+            hasher.update(std.mem.asBytes(&key.attrs));
+            hasher.update(std.mem.asBytes(&key.flags));
+            hasher.update(key.class);
+            return hasher.final();
+        }
+
+        pub fn eql(_: Context, a: PaintStyleKey, b: PaintStyleKey) bool {
+            return a.foreground == b.foreground and
+                a.attrs == b.attrs and
+                a.flags == b.flags and
+                std.mem.eql(u8, a.class, b.class);
+        }
+    };
+};
+
+const default_paint_style: ui.style.PaintStyle = .{};
+
 pub const View = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
@@ -347,6 +377,16 @@ pub const View = struct {
     /// stale. The next paint/render flushes it, so a burst of registrations
     /// costs one rebuild instead of one per call.
     needs_rebuild: bool = true,
+    /// The retained document roots (viewport, windowed content, chrome). They
+    /// are rebuilt only on resize/theme/capacity resets; ordinary refreshes
+    /// update the existing tree in place.
+    document_ready: bool = false,
+    root_node: ?*ui.Node = null,
+    content_root: ?*ui.Node = null,
+    chrome_root: ?*ui.Node = null,
+    /// The box tree has to be rebuilt from scratch (first frame, resize,
+    /// theme rescan or the incremental capacity bound).
+    needs_full_box_rebuild: bool = true,
     /// Diagnostic counter for tests/benchmarks: full document rebuilds.
     rebuild_count: usize = 0,
     last_bracket_generation: ?usize = null,
@@ -357,6 +397,9 @@ pub const View = struct {
     terminal_view_host: *TerminalViewHost,
     /// Active color-theme palette; null keeps the standalone fallback colors.
     theme_colors: ?*const theme_colors_mod.ThemeColors = null,
+    /// Interned paint styles for visible text runs, keyed by the CSS-class
+    /// analogue. Cleared when the theme changes.
+    paint_styles: std.HashMapUnmanaged(PaintStyleKey, *const ui.style.PaintStyle, PaintStyleKey.Context, 80) = .empty,
     /// Non-transparent bracket-highlight colors, in theme order, cycled by
     /// `bracket-highlighting-N`. Refreshed when the palette changes.
     bracket_highlight_colors: [6]ui.Color = undefined,
@@ -402,6 +445,8 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.clearPaintStyles();
+        self.paint_styles.deinit(self.allocator);
         self.configuration_listeners.deinit();
         self.terminal_view_host.deinit();
         self.surface.deinit();
@@ -463,6 +508,7 @@ pub const View = struct {
         if (self.scrollbar_width == width) return;
         self.scrollbar_width = width;
         self.editor.setScrollbarWidth(width);
+        self.document_ready = false;
         try self.refresh();
     }
 
@@ -470,6 +516,7 @@ pub const View = struct {
         if (self.status_bar_visible == visible) return;
         self.status_bar_visible = visible;
         self.editor.setStatusRow(visible);
+        self.document_ready = false;
         self.invalidate();
     }
 
@@ -863,6 +910,14 @@ pub const View = struct {
             .measure_width = cellMetrics.measureCodepoint,
         });
 
+        // The line elements belong to the surface document that is about to be
+        // destroyed; drop the window without touching their DOM nodes.
+        self.terminal_view_host.viewRef().getViewLines().flushWindow();
+        self.document_ready = false;
+        self.root_node = null;
+        self.content_root = null;
+        self.chrome_root = null;
+        self.needs_full_box_rebuild = true;
         var previous = self.surface;
         self.surface = replacement;
         previous.deinit();
@@ -873,8 +928,19 @@ pub const View = struct {
     /// path used after an input batch; batching call sites use `invalidate`.
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
+        self.clearPaintStyles();
         self.refreshBracketHighlightColors();
+        self.document_ready = false;
         self.invalidate();
+    }
+
+    fn clearPaintStyles(self: *View) void {
+        var iterator = self.paint_styles.iterator();
+        while (iterator.next()) |entry| {
+            if (entry.key_ptr.class.len > 0) self.allocator.free(entry.key_ptr.class);
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.paint_styles.clearRetainingCapacity();
     }
 
     /// Rebuilds the bracket color pool from the active theme. Upstream's
@@ -999,6 +1065,7 @@ pub const View = struct {
         );
         _ = self.terminal_view_host.viewRef().onConfigurationChanged(&event);
         for (self.configuration_listeners.items) |listener| listener.notify(listener.context);
+        self.document_ready = false;
         self.needs_rebuild = true;
         return true;
     }
@@ -1078,7 +1145,49 @@ pub const View = struct {
     /// scroll reuses it so its header rows get the same syntax/bracket colors
     /// as ordinary lines.
     pub fn lineStyleFunction(self: *View) view_line_mod.ViewLine.PartStyleFn {
-        return .{ .context = self, .apply = lineStyleForPart };
+        return .{ .context = self, .apply = paintStyleThunk };
+    }
+
+    /// Shared paint style for a rendered part, keyed by the CSS-class analogue
+    /// (token color + attributes + decoration classes + cell flags). Equal
+    /// styles are one object in the text-node DOM.
+    fn paintStyleForPart(
+        self: *View,
+        part: line_renderer.RenderedPart,
+        flag: u32,
+    ) !*const ui.style.PaintStyle {
+        var attrs: u8 = 0;
+        if (part.bold) attrs |= 1;
+        if (part.italic) attrs |= 2;
+        if (part.underline) attrs |= 4;
+        if (part.strikethrough) attrs |= 8;
+        const key = PaintStyleKey{
+            .foreground = part.foreground,
+            .attrs = attrs,
+            .flags = flag,
+            .class = part.decoration_class orelse "",
+        };
+        if (self.paint_styles.get(key)) |style| return style;
+
+        var value = paintOfPart(part);
+        applyFlagPaint(&value, flag, self.theme_colors);
+        // Upstream's colorization classes set the foreground while find/bracket
+        // decorations only add a background/border, so the rainbow color
+        // survives a highlight.
+        if (part.decoration_class) |classes| applyBracketHighlightPaint(&value, classes, self);
+
+        const class_copy = if (key.class.len > 0) try self.allocator.dupe(u8, key.class) else "";
+        errdefer if (class_copy.len > 0) self.allocator.free(class_copy);
+        const style = try self.allocator.create(ui.style.PaintStyle);
+        errdefer self.allocator.destroy(style);
+        style.* = value;
+        try self.paint_styles.put(self.allocator, .{
+            .foreground = key.foreground,
+            .attrs = key.attrs,
+            .flags = key.flags,
+            .class = class_copy,
+        }, style);
+        return style;
     }
 
     /// Maps a view-line decoration class list to terminal cell flags. Sticky
@@ -1152,7 +1261,56 @@ pub const View = struct {
         }
 
         const doc = self.surface.document();
-        doc.clear();
+        if (!self.document_ready) {
+            // Drop the rendered window without touching the old nodes: the
+            // whole document is about to be cleared.
+            self.terminal_view_host.viewRef().getViewLines().flushWindow();
+            doc.clear();
+            const root = try doc.createElement(.div);
+            root.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .width = .{ .percent = 100 },
+                .height = .{ .percent = 100 },
+                .overflow = .hidden,
+                .background = if (self.theme_colors) |palette| palette.background else null,
+            });
+            doc.setRoot(root);
+            const content_root = try doc.createElement(.div);
+            content_root.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .width = .{ .percent = 100 },
+                .height = .{ .percent = 100 },
+            });
+            content_root.setPointerEvents(false);
+            _ = try root.appendChild(content_root);
+            const chrome_root = try doc.createElement(.div);
+            chrome_root.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .width = .{ .percent = 100 },
+                .height = .{ .percent = 100 },
+            });
+            chrome_root.setPointerEvents(false);
+            _ = try root.appendChild(chrome_root);
+            self.root_node = root;
+            self.content_root = content_root;
+            self.chrome_root = chrome_root;
+            self.document_ready = true;
+            self.needs_full_box_rebuild = true;
+            self.terminal_view_host.viewRef().getViewLines().setDomHost(
+                doc,
+                content_root,
+                self,
+                viewLineDisposed,
+            );
+        } else {
+            self.chrome_root.?.clearChildren();
+        }
         self.cursor_row = null;
         self.cursor_col = 0;
 
@@ -1285,18 +1443,8 @@ pub const View = struct {
             }
         }
 
-        const root = try doc.createElement(.div);
-        root.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .percent = 100 },
-            .height = .{ .percent = 100 },
-            .overflow = .hidden,
-            .background = if (self.theme_colors) |palette| palette.background else null,
-        });
-        doc.setRoot(root);
-
+        const content_root = self.content_root orelse return error.DocumentRootMissing;
+        const chrome_root = self.chrome_root orelse return error.DocumentRootMissing;
         const states = try editor.viewCursorStates();
         defer editor.allocator.free(states);
         const cursor_render_data = self.terminal_view_host.getCursorRenderData();
@@ -1351,7 +1499,7 @@ pub const View = struct {
 
         try self.terminal_view_host.paintViewport(.{
             .doc = doc,
-            .root = root,
+            .root = content_root,
             .left_cells = gutter,
             .width_cells = text_width,
             .top_row = 0,
@@ -1361,7 +1509,7 @@ pub const View = struct {
             .text_width = text_width,
             .cursor = cursor,
             .states = states,
-            .style_fn = .{ .context = self, .apply = lineStyleForPart },
+            .style_fn = .{ .context = self, .apply = paintStyleThunk },
             .decoration_bits_fn = decorationBits,
             .line_backgrounds = line_backgrounds,
             .selected_flag = CellFlag.selected,
@@ -1372,7 +1520,7 @@ pub const View = struct {
 
         try self.terminal_view_host.viewRef().renderDocumentParts(.{
             .doc = doc,
-            .root = root,
+            .root = chrome_root,
             .editor = editor,
             .states = states,
             .cols = cols,
@@ -1385,8 +1533,77 @@ pub const View = struct {
             .line_decorations = &self.terminal_view_host.line_decorations,
             .folding = self.terminal_view_host.foldingDecorations(),
         });
-        try appendStatus(self, doc, root, rows);
+        try appendStatus(self, doc, chrome_root, rows);
+        try self.syncBoxes(doc);
         self.needs_rebuild = false;
+    }
+
+    /// Brings the box tree/layout in step with the retained DOM. The view owns
+    /// this invalidation (the box tree's automatic observer is off), mirroring
+    /// WebKit's dirty-subtree model: new lines get a box, changed lines rebuild
+    /// their children, moved lines translate, removed lines were dropped by
+    /// `viewLineDisposed`.
+    fn syncBoxes(self: *View, doc: *ui.Document) !void {
+        const tree = self.surface.box_tree;
+        if (self.needs_full_box_rebuild) {
+            try tree.rebuild(doc);
+            try @import("ui").layout.layoutTree(tree, doc);
+            tree.setAutoInvalidate(false);
+            self.needs_full_box_rebuild = false;
+            return;
+        }
+
+        if (self.chrome_root) |chrome| {
+            if (try tree.rebuildSubtree(chrome)) |box| {
+                try @import("ui").layout.layoutSubtree(tree, doc, box);
+            } else {
+                self.needs_full_box_rebuild = true;
+                return;
+            }
+        }
+
+        const lines = self.terminal_view_host.viewRef().getViewLines();
+        const start = lines.windowStart();
+        const end = lines.windowEnd();
+        if (start == 0 or end < start) return;
+
+        var line_number = start;
+        while (line_number <= end) : (line_number += 1) {
+            const line = lines.lineAt(line_number);
+            const node = line.dom_node orelse continue;
+            const existing = tree.find(node);
+            if (existing == null) {
+                const added = (try tree.addSubtree(node)) orelse {
+                    self.needs_full_box_rebuild = true;
+                    return;
+                };
+                try @import("ui").layout.layoutSubtree(tree, doc, added);
+            } else if (line.takeChildrenDirty()) {
+                const box = try tree.rebuildSubtree(node) orelse {
+                    self.needs_full_box_rebuild = true;
+                    return;
+                };
+                // The element background/geometry may have changed with the
+                // children; refresh the box style before solving.
+                _ = tree.translateSubtree(node, 0, 0);
+                try @import("ui").layout.layoutSubtree(tree, doc, box);
+            } else {
+                const dy = line.paintedTop() - existing.?.rect.y;
+                _ = tree.translateSubtree(node, 0, dy);
+            }
+        }
+
+        // The chrome is still rebuilt in place every frame, so its box arena
+        // grows until the next full solve. Rebuild the box tree (not the DOM)
+        // when it grows too large; a document reset is only needed when the
+        // DOM arena itself crosses its bound.
+        if (tree.arena.queryCapacity() > 32 * 1024 * 1024) {
+            self.needs_full_box_rebuild = true;
+        }
+        if (doc.arena.queryCapacity() > 64 * 1024 * 1024) {
+            self.document_ready = false;
+            self.needs_full_box_rebuild = true;
+        }
     }
 
     /// Test/diagnostic access to the overview markers produced by the ported
@@ -1404,6 +1621,15 @@ pub const View = struct {
 /// text instead.
 fn overviewRulerWidth(editor: *const Editor) usize {
     return Editor.overviewRulerWidthFor(editor.screen_width, editor.gutterWidth());
+}
+
+fn viewLineDisposed(context: *anyopaque, line: *ViewLine) void {
+    const self: *View = @ptrCast(@alignCast(context));
+    if (line.dom_node) |node| {
+        self.surface.box_tree.removeSubtree(node);
+        self.surface.document().destroy(node);
+        line.dom_node = null;
+    }
 }
 
 fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !void {
@@ -1483,7 +1709,7 @@ fn bracketHighlightingLevel(class_name: []const u8) ?usize {
 /// are applied first because their terminal styles also set a foreground
 /// (an adaptation), whereas upstream foreground comes from the colorization
 /// class and the decoration only contributes background/border.
-fn applyBracketHighlightStyle(style: *ui.Style, classes: []const u8, view: *const View) void {
+fn applyBracketHighlightPaint(style: *ui.style.PaintStyle, classes: []const u8, view: *const View) void {
     var iterator = std.mem.splitScalar(u8, classes, ' ');
     while (iterator.next()) |class_name| {
         if (std.mem.eql(u8, class_name, "unexpected-closing-bracket")) {
@@ -1499,15 +1725,13 @@ fn applyBracketHighlightStyle(style: *ui.Style, classes: []const u8, view: *cons
     }
 }
 
-fn lineStyleForPart(context: ?*const anyopaque, part: line_renderer.RenderedPart, flag: u32) ui.Style {
-    const view: *const View = @ptrCast(@alignCast(context orelse return tokenStyle(part)));
-    var style = tokenStyle(part);
-    applyFlagStyle(&style, flag, view.theme_colors);
-    // Upstream's colorization classes set the foreground while find/bracket
-    // decorations only add a background/border, so the rainbow color survives
-    // a highlight.
-    if (part.decoration_class) |classes| applyBracketHighlightStyle(&style, classes, view);
-    return style;
+fn paintStyleThunk(
+    context: ?*anyopaque,
+    part: line_renderer.RenderedPart,
+    flag: u32,
+) anyerror!*const ui.style.PaintStyle {
+    const view: *View = @ptrCast(@alignCast(context orelse return &default_paint_style));
+    return view.paintStyleForPart(part, flag);
 }
 
 fn themedColor(palette: ?*const theme_colors_mod.ThemeColors, id: []const u8, fallback: [3]u8) ui.Color {
@@ -1515,7 +1739,7 @@ fn themedColor(palette: ?*const theme_colors_mod.ThemeColors, id: []const u8, fa
     return colors.color(id, fallback);
 }
 
-fn applyFlagStyle(style: *ui.Style, flag: u32, palette: ?*const theme_colors_mod.ThemeColors) void {
+fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme_colors_mod.ThemeColors) void {
     if (flag & CellFlag.search_range_highlight != 0) {
         style.background = themedColor(palette, "editor.rangeHighlightBackground", search_range_highlight_background);
     }
@@ -1590,17 +1814,17 @@ fn visibleOffset(
     return (visible -| start_visible_column) + indent_cells;
 }
 
-fn tokenStyle(part: line_renderer.RenderedPart) ui.Style {
-    var style = ui.Style{
+fn paintOfPart(part: line_renderer.RenderedPart) ui.style.PaintStyle {
+    var paint = ui.style.PaintStyle{
         .bold = part.bold,
         .italic = part.italic,
         .underline = part.underline,
         .strikethrough = part.strikethrough,
     };
     if (colorForToken(part.foreground)) |rgb| {
-        style.color = color(rgb);
+        paint.color = color(rgb);
     }
-    return style;
+    return paint;
 }
 
 /// Token color lookup for the terminal view. The fallback palette keeps the
@@ -2581,6 +2805,55 @@ test "View: the gutter keeps a blank cell before the text" {
     try std.testing.expectEqual(@as(u32, '1'), grid.cluster[grid.index(gutter - 2, 0)]);
     try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(gutter - 1, 0)]);
     try std.testing.expectEqual(@as(u32, 'a'), grid.cluster[grid.index(gutter, 0)]);
+}
+
+test "View: scrolling reuses the visible line DOM nodes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(allocator);
+    for (0..50) |line| {
+        var buffer: [32]u8 = undefined;
+        const formatted = try std.fmt.bufPrint(&buffer, "line {d}\n", .{line + 1});
+        try text.appendSlice(allocator, formatted);
+    }
+    const editor = try Editor.createFromText(allocator, io, text.items, "test.txt", 30, 10);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const view_lines = view.terminal_view_host.viewRef().getViewLines();
+    const first_window_start = view_lines.windowStart();
+    const retained_number = first_window_start + 2;
+    const retained = view_lines.lineAt(retained_number);
+    const node_before = retained.dom_node orelse return error.TestUnexpectedResult;
+    const text_before = node_before.first_child orelse return error.TestUnexpectedResult;
+
+    try std.testing.expect(editor.scrollViewLines(1));
+    try view.refresh();
+    try view.paint();
+
+    try std.testing.expectEqual(first_window_start + 1, view_lines.windowStart());
+    try std.testing.expectEqual(node_before, view_lines.lineAt(retained_number).dom_node.?);
+    try std.testing.expectEqual(text_before, node_before.first_child.?);
+
+    // The content root holds exactly the windowed line nodes: the leaving line
+    // was unlinked and the entering line got a node, so the DOM count stays at
+    // the viewport size instead of growing with the document.
+    const content_root = view.content_root orelse return error.TestUnexpectedResult;
+    var child_count: usize = 0;
+    var child = content_root.first_child;
+    while (child) |current| : (child = current.next) child_count += 1;
+    try std.testing.expectEqual(view_lines.windowEnd() - view_lines.windowStart() + 1, child_count);
+    try std.testing.expect(view_lines.lineAt(view_lines.windowEnd()).dom_node != null);
 }
 
 fn testMouse(kind: ui.MouseKind, x: usize, y: usize) ui.MouseEvent {

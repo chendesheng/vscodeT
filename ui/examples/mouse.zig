@@ -226,7 +226,18 @@ const App = struct {
             row_style.background = if (selected) accent else if (hovered) hover_background else null;
             row.box.setStyle(row_style);
 
-            var text_style = row.text.style().*;
+            const paint = row.text.paintStyle().?;
+            var text_style = ui.Style{
+                .color = paint.color,
+                .background = paint.background,
+                .bold = paint.bold,
+                .italic = paint.italic,
+                .underline = paint.underline,
+                .strikethrough = paint.strikethrough,
+                .dim = paint.dim,
+                .reverse = paint.reverse,
+                .white_space = row.text.textFlow().white_space,
+            };
             text_style.color = if (selected or hovered) selected_text else foreground;
             row.text.setStyle(text_style);
 

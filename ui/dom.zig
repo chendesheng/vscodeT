@@ -29,7 +29,12 @@ pub const Tag = enum { div, span, generic };
 
 pub const Text = struct {
     data: []const u8,
-    style: Style = .{},
+    /// Paint properties carried by the text run (the CSS-class analogue). The
+    /// editor's class cache sets `paint_ref` to share one object across runs.
+    paint: style_mod.PaintStyle = .{},
+    paint_ref: ?*const style_mod.PaintStyle = null,
+    /// Text-flow overrides extracted from the last `setStyle`.
+    flow: style_mod.TextFlow = .{},
     rect: Rect = .{},
 };
 
@@ -46,6 +51,9 @@ pub const Element = struct {
     /// order; `0` uses tree order; negative values are focusable but skipped
     /// by Tab, as in HTML.
     tab_index: i32 = 0,
+    /// CSS `pointer-events` analogue: a transparent container that lays out
+    /// children but is not itself a hit-test target.
+    pointer_events: bool = true,
 };
 
 pub const MutationKind = enum { tree, style, text };
@@ -74,6 +82,10 @@ pub const Document = struct {
     tab_size: usize,
     measure_width: *const fn (u21) u2,
     observer: ?MutationObserver = null,
+    /// Retired nodes available for reuse. The document arena has no per-node
+    /// free; the retained editor view recycles nodes explicitly so long
+    /// sessions do not grow without bound between document resets.
+    free_nodes: std.ArrayListUnmanaged(*Node) = .empty,
 
     pub const Options = struct {
         cols: usize,
@@ -102,6 +114,7 @@ pub const Document = struct {
     }
 
     pub fn deinit(self: *Document) void {
+        self.free_nodes.deinit(self.allocator);
         self.arena.deinit();
     }
 
@@ -112,12 +125,65 @@ pub const Document = struct {
     /// This is what lets a view rebuild its tree per frame without allocating a
     /// new document (and without losing the renderer's previous frame diff).
     pub fn clear(self: *Document) void {
+        self.free_nodes.clearRetainingCapacity();
         _ = self.arena.reset(.retain_capacity);
         self.root = null;
         self.active_element = null;
     }
 
+    /// Retires `node` and its subtree into the free list. The caller must not
+    /// use any pointer into that subtree afterwards.
+    pub fn destroy(self: *Document, node: *Node) void {
+        if (node.parent) |parent| _ = parent.detachChild(node, true);
+        self.recycleNode(node);
+        event.clearDetachedFocus(self);
+    }
+
+    /// Unlinks and recycles every child of `node`, emitting one tree mutation.
+    pub fn destroyChildren(self: *Document, node: *Node) void {
+        var child = node.first_child;
+        node.first_child = null;
+        while (child) |current| {
+            const next = current.next;
+            current.parent = null;
+            current.next = null;
+            current.prev = null;
+            self.recycleNode(current);
+            child = next;
+        }
+        self.notifyMutation(node, .tree);
+        event.clearDetachedFocus(self);
+    }
+
+    fn recycleNode(self: *Document, node: *Node) void {
+        var child = node.first_child;
+        node.first_child = null;
+        while (child) |current| {
+            const next = current.next;
+            current.parent = null;
+            current.next = null;
+            current.prev = null;
+            self.recycleNode(current);
+            child = next;
+        }
+        node.parent = null;
+        node.next = null;
+        node.prev = null;
+        node.listeners.items.len = 0;
+        self.free_nodes.append(self.allocator, node) catch {};
+    }
+
     pub fn createElement(self: *Document, tag: Tag) !*Node {
+        if (self.free_nodes.pop()) |node| {
+            node.kind = .{ .element = .{ .tag = tag } };
+            node.parent = null;
+            node.first_child = null;
+            node.next = null;
+            node.prev = null;
+            node.document = self;
+            node.listeners.items.len = 0;
+            return node;
+        }
         const allocator = self.arena.allocator();
         const node = try allocator.create(Node);
         node.* = .{
@@ -128,13 +194,44 @@ pub const Document = struct {
     }
 
     pub fn createText(self: *Document, data: []const u8) !*Node {
+        const owned = try self.arena.allocator().dupe(u8, data);
+        return self.createTextOwned(owned);
+    }
+
+    /// Creates a text node that borrows `data`. The caller guarantees the
+    /// slice stays valid until the node is destroyed or re-pointed.
+    pub fn createTextBorrowed(self: *Document, data: []const u8) !*Node {
+        return self.createTextOwned(data);
+    }
+
+    fn createTextOwned(self: *Document, data: []const u8) !*Node {
+        if (self.free_nodes.pop()) |node| {
+            node.kind = .{ .text = .{ .data = data } };
+            node.parent = null;
+            node.first_child = null;
+            node.next = null;
+            node.prev = null;
+            node.document = self;
+            node.listeners.items.len = 0;
+            return node;
+        }
         const allocator = self.arena.allocator();
         const node = try allocator.create(Node);
         node.* = .{
-            .kind = .{ .text = .{ .data = try allocator.dupe(u8, data) } },
+            .kind = .{ .text = .{ .data = data } },
             .document = self,
         };
         return node;
+    }
+
+    /// Re-points a text node without allocating. Used for retained gutter and
+    /// status rows whose text is formatted into stable per-row buffers.
+    pub fn setTextBorrowed(self: *Node, data: []const u8) void {
+        switch (self.kind) {
+            .text => |*text| text.data = data,
+            .element => {},
+        }
+        self.document.notifyMutation(self, .text);
     }
 
     pub fn setRoot(self: *Document, root: *Node) void {
@@ -269,15 +366,50 @@ pub const Node = struct {
     pub fn setStyle(self: *Node, value: Style) void {
         switch (self.kind) {
             .element => |*element| element.style = value,
-            .text => |*text| text.style = value,
+            .text => |*text| {
+                // Text nodes only paint; layout/text-flow properties are
+                // extracted into the small text payload. The browser analogue
+                // is a style object resolved to CSS class properties.
+                text.paint = style_mod.paintStyleOf(value);
+                text.paint_ref = null;
+                text.flow = style_mod.textFlowOf(value);
+            },
         }
         self.document.notifyMutation(self, .style);
     }
 
+    /// Shares a paint style object with a text node (the editor's class-cache
+    /// fast path). No allocation: the cache owns the style.
+    pub fn setPaintRef(self: *Node, value: *const style_mod.PaintStyle) void {
+        switch (self.kind) {
+            .text => |*text| text.paint_ref = value,
+            .element => {},
+        }
+        self.document.notifyMutation(self, .style);
+    }
+
+    /// The paint style that applies to this text node. Elements return null;
+    /// their paint flow is merged from `element.style` by the painter.
+    pub fn paintStyle(self: *const Node) ?*const style_mod.PaintStyle {
+        return switch (self.kind) {
+            .text => |*text| text.paint_ref orelse &text.paint,
+            .element => null,
+        };
+    }
+
+    /// The flow overrides carried by a text node.
+    pub fn textFlow(self: *const Node) style_mod.TextFlow {
+        return switch (self.kind) {
+            .text => |text| text.flow,
+            .element => .{},
+        };
+    }
+
+    /// Element style. Text nodes carry paint/flow only; use `paintStyle`.
     pub fn style(self: *const Node) *const Style {
         return switch (self.kind) {
             .element => |*element| &element.style,
-            .text => |*text| &text.style,
+            .text => unreachable,
         };
     }
 
@@ -379,6 +511,12 @@ pub const Node = struct {
         if (self.parent) |parent| _ = parent.removeChild(self);
     }
 
+    /// Destroys every child through the document's free list. Used by retained
+    /// part roots that rebuild their own subtree in place.
+    pub fn clearChildren(self: *Node) void {
+        self.document.destroyChildren(self);
+    }
+
     pub fn appendText(self: *Node, data: []const u8) !*Node {
         return self.appendChild(try self.document.createText(data));
     }
@@ -439,6 +577,11 @@ pub const Node = struct {
             .text => {},
         }
         self.document.notifyMutation(self, .style);
+    }
+
+    pub fn setPointerEvents(self: *Node, enabled: bool) void {
+        if (self.kind != .element) return;
+        self.asElement().pointer_events = enabled;
     }
 
     pub fn addClass(self: *Node, class: []const u8) !void {

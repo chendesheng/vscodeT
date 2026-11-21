@@ -72,10 +72,8 @@ so these are in-process numbers.
 | ReleaseFast | average paint | 0.42 ms | **0.16 ms** | 2.6× |
 
 The paint drop is the compile-time line-break tables (the layout pass is the
-same tree; it just no longer re-decodes 2,812 Unicode ranges). The refresh cost
-is still dominated by rebuilding the editor line DOM; the viewport is painted
-through the retained `ViewLines` window but the terminal view still clears and
-recreates the document nodes on refresh.
+same tree; it just no longer re-decodes 2,812 Unicode ranges). This table is
+the pipeline-port checkpoint; the retained-DOM result below supersedes it.
 
 ## Full-workbench scroll (`benchmark: workbench scroll frame`, new)
 
@@ -89,6 +87,40 @@ ANSI frame diff/write. Before the status-bar/title caches the status bar alone
 was 33–38% of active CPU in the end-to-end profile; it is now skipped when
 unchanged.
 
+## Retained DOM window (latest tree)
+
+The cell-layer experiment was reverted: the editor renders through the `ui` DOM
+again, but the document is now retained and only the visible window exists. A
+scroll translates the retained line boxes (`translateSubtree`), dirty lines
+rebuild only their own children (`rebuildSubtree` + `layoutSubtree`), entering
+lines are added from the recycled node pool and leaving lines are destroyed.
+Text runs share interned `PaintStyle` objects instead of copying a full `Style`
+per node. The gutter, scrollbar, widgets and status row are still rebuilt in
+place every frame; the box arena is reset by a full box solve when it crosses
+its bound.
+
+| Build | Metric | Pipeline port | Retained DOM |
+| --- | --- | ---: | ---: |
+| Debug | one-line scroll (best) | 2.93 ms | **1.16 ms** |
+| Debug | wheel, 3 lines (best) | 3.01 ms | **1.32 ms** |
+| Debug | page scroll (best) | 3.25 ms | **1.55 ms** |
+| Debug | average refresh / paint | 2.11 / 1.48 ms | 1.28 / **0.11 ms** |
+| Debug | full-workbench frame (best) | 3.56 ms | **1.86 ms** |
+| ReleaseFast | one-line scroll (best) | 0.87 ms | **0.58 ms** |
+| ReleaseFast | wheel / page scroll (best) | 1.03 / 1.07 ms | **0.73 / 0.76 ms** |
+| ReleaseFast | full-workbench frame (best) | 1.00 ms | **0.76 ms** |
+
+The average paint is now small because layout happens once per refresh (on the
+dirty subtrees or, for a large dirty set, on the retained tree) instead of
+inside every paint. The useful number is the frame total.
+
+The edit frame is the one regression: Debug 4.62 ms and ReleaseFast 1.67 ms,
+versus 5.37/1.81 ms before this series but 3.18/1.50 ms in the reverted cell
+build. Each dirty line is solved separately to keep the scroll path cheap, and
+Debug text layout makes that expensive; a batched full solve was measured
+slower in Debug, so the next edit-path work is reusing per-line layout results
+across the dirty set rather than batching.
+
 ## Other stages
 
 | Build | Stage | Before | After |
@@ -101,11 +133,10 @@ unchanged.
 
 ## Remaining hotspots
 
-1. The editor view still rebuilds its line DOM on every refresh. The measured
-   paint is now cheap enough that this is the next candidate: paint the
-   retained `ViewLine` runs into the cell grid and keep only the hit-test
-   placeholder nodes. That is the terminal analogue of upstream's retained
-   line elements.
+1. The gutter, scrollbar, widgets and status row are still rebuilt in place on
+   every refresh. They are now the main fixed cost of an editor refresh; the
+   next step is retaining their per-line/per-marker nodes the same way as
+   `ViewLines` (and reusing their boxes instead of growing the box arena).
 2. `View.rebuild` still computes indentation/bracket guides and the gutter
    document on every refresh. The guide pass is the largest remaining
    editor-refresh cost in a Debug profile of the benchmark.

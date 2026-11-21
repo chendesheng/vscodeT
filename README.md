@@ -56,12 +56,17 @@ required for the measurements below.
   position lives in a line-granular `ViewLayout` instead of an editor field.
   The layout emits upstream's `ViewScrollChanged`; `ViewLines` reuses the
   overlapping rendered-line window, re-renders only lines invalidated by the
-  view events, and paints the retained output. A scroll no longer rebuilds
-  the whole editor model or the workbench chrome.
+  view events, and paints the retained output. The editor keeps a retained,
+  windowed line DOM (only the visible `ViewLine` elements exist); a scroll
+  updates their box geometry and leaves their text nodes alone, an entering
+  line gets the recycled node, and a changed line rewrites only its own runs.
+  Text runs share interned paint styles keyed like CSS classes (`mtk*` +
+  decoration classes). A scroll no longer rebuilds the whole editor model,
+  the line DOM or the workbench chrome.
 - Status bar, side bar title and panel title keep their last painted surface
   grid and skip the clear + flex layout when their content, width, theme,
-  focus and hover state are unchanged. This is the terminal equivalent of
-  upstream's retained DOM: a scroll in the editor renders the editor.
+  focus and hover state are unchanged, matching the editor's retained line
+  DOM: a scroll in the editor renders only the lines that moved or entered.
 - The Unicode line-break property tables are decoded at compile time instead
   of rebuilt on every `layoutTree` call, which removes a fixed per-layout cost
   from every surface. The paint path also has an ASCII fast path.

@@ -60,8 +60,18 @@ pub const ViewLine = struct {
     options: ViewLineOptions,
     is_maybe_invalid: bool = true,
     rendered_view_line: ?RenderedViewLine = null,
-    /// The terminal element created by `paint`, when connected.
+    /// The retained terminal element created by `paint`. The editor view keeps
+    /// it across frames and scrolls; only dirty lines rewrite its children.
     dom_node: ?*ui.Node = null,
+    /// Set when a render pass produced new render input for this line.
+    dom_dirty: bool = true,
+    /// Set when `paint` rebuilt the line's children; consumed by the view's
+    /// box-tree sync.
+    children_dirty: bool = false,
+    /// Hash of the per-cell flags/guides/ellipsis that produced the children.
+    last_paint_key: u64 = 0,
+    /// The last `top_cells` passed to `paint`.
+    painted_top: f64 = 0,
     /// Width in terminal cells of the last rendered line.
     width: usize = 0,
 
@@ -273,7 +283,18 @@ pub const ViewLine = struct {
             .line_height = line_height,
         };
         if (sb) |buffer| buffer.appendString(rendered.bytes) catch return false;
+        self.dom_dirty = true;
         return true;
+    }
+
+    pub fn takeChildrenDirty(self: *ViewLine) bool {
+        const dirty = self.children_dirty;
+        self.children_dirty = false;
+        return dirty;
+    }
+
+    pub fn paintedTop(self: *const ViewLine) f64 {
+        return self.painted_top;
     }
 
     pub fn getRenderedViewLine(self: *const ViewLine) ?*const RenderedViewLine {
@@ -307,13 +328,18 @@ pub const ViewLine = struct {
         folded_ellipsis: bool = false,
         folded_ellipsis_style: ui.Style = .{},
         guides: []const Guide = &.{},
+        /// Borrow the rendered bytes for the text nodes. Retained editor lines
+        /// keep their `RenderedViewLine` alive, so borrowing is safe; a
+        /// temporary line (sticky scroll) must copy.
+        borrow_text: bool = true,
     };
 
-    /// Paint-boundary adapter from token/decoration data to terminal styles.
-    /// The context carries the view's active theme palette.
+    /// Paint-boundary adapter from token/decoration data to shared paint
+    /// styles (the CSS-class analogue). The context is the editor view's class
+    /// cache, so equal parts reuse one style object.
     pub const PartStyleFn = struct {
-        context: ?*const anyopaque = null,
-        apply: *const fn (context: ?*const anyopaque, part: view_line_renderer.RenderedPart, flag: u32) ui.Style,
+        context: ?*anyopaque = null,
+        apply: *const fn (context: ?*anyopaque, part: view_line_renderer.RenderedPart, flag: u32) anyerror!*const ui.style.PaintStyle,
     };
 
     pub fn paint(
@@ -322,7 +348,7 @@ pub const ViewLine = struct {
         options: PaintOptions,
         style_fn: PartStyleFn,
     ) !*ui.Node {
-        const line = try doc.createElement(.div);
+        const line = self.dom_node orelse try doc.createElement(.div);
         self.dom_node = line;
         line.setStyle(.{
             .position = .absolute,
@@ -334,6 +360,14 @@ pub const ViewLine = struct {
             .overflow = .hidden,
             .background = options.background,
         });
+        self.painted_top = @floatFromInt(options.top_cells);
+
+        const paint_key = paintKeyOf(options);
+        if (!self.dom_dirty and paint_key == self.last_paint_key) return line;
+        self.last_paint_key = paint_key;
+        self.dom_dirty = false;
+        self.children_dirty = true;
+        line.clearChildren();
 
         const rendered = self.rendered_view_line orelse return line;
         var part_index: usize = 0;
@@ -342,7 +376,7 @@ pub const ViewLine = struct {
         var absolute: usize = 0;
 
         var run_start: usize = 0;
-        var run_style: ?ui.Style = null;
+        var run_style: ?*const ui.style.PaintStyle = null;
 
         while (part_index < rendered.rendered.parts.len) {
             const part = rendered.rendered.parts[part_index];
@@ -366,12 +400,17 @@ pub const ViewLine = struct {
                     }
                 }
             }
-            const style = style_fn.apply(style_fn.context, part, flag);
+            const style = try style_fn.apply(style_fn.context, part, flag);
 
-            if (run_style == null or !std.meta.eql(run_style.?, style)) {
+            // Pointer equality is the terminal equivalent of equal CSS class
+            // lists; the view's class cache interns each style once.
+            if (run_style == null or run_style.? != style) {
                 if (run_style != null and absolute > run_start) {
-                    const node = try doc.createText(rendered.rendered.bytes[run_start..absolute]);
-                    node.setStyle(run_style.?);
+                    const node = if (options.borrow_text)
+                        try doc.createTextBorrowed(rendered.rendered.bytes[run_start..absolute])
+                    else
+                        try doc.createText(rendered.rendered.bytes[run_start..absolute]);
+                    node.setPaintRef(run_style.?);
                     _ = try line.appendChild(node);
                 }
                 run_start = absolute;
@@ -384,8 +423,11 @@ pub const ViewLine = struct {
         }
 
         if (run_style != null and absolute > run_start) {
-            const node = try doc.createText(rendered.rendered.bytes[run_start..absolute]);
-            node.setStyle(run_style.?);
+            const node = if (options.borrow_text)
+                try doc.createTextBorrowed(rendered.rendered.bytes[run_start..absolute])
+            else
+                try doc.createText(rendered.rendered.bytes[run_start..absolute]);
+            node.setPaintRef(run_style.?);
             _ = try line.appendChild(node);
         }
 
@@ -487,6 +529,17 @@ pub const ViewLine = struct {
 };
 
 /// Terminal cell width of a codepoint, matching the editor's visible columns.
+fn paintKeyOf(options: ViewLine.PaintOptions) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(std.mem.sliceAsBytes(options.flags));
+    for (options.guides) |guide| {
+        hasher.update(std.mem.asBytes(&guide.column));
+        hasher.update(std.mem.asBytes(&guide.color));
+    }
+    hasher.update(&[_]u8{@intFromBool(options.folded_ellipsis)});
+    return hasher.final();
+}
+
 fn measureCellWidth(cp: u21) u2 {
     const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
     const next = CursorColumns.nextVisibleColumn(cp, 0, 1);

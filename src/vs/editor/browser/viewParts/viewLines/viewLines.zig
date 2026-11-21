@@ -51,6 +51,12 @@ pub const ViewLines = struct {
     view_line_options: ViewLineOptions,
     line_factory: LineFactory,
     visible_lines: view_layer.VisibleLinesCollection(ViewLine),
+    /// The retained DOM root for the visible line elements (set by the
+    /// terminal view) and the host callback run when a line leaves the window.
+    dom_doc: ?*ui.Document = null,
+    dom_root: ?*ui.Node = null,
+    dispose_context: ?*anyopaque = null,
+    dispose_fn: ?*const fn (context: *anyopaque, line: *ViewLine) void = null,
     /// The view model and visible range of the last render pass, kept by value
     /// so `visibleRangeForPosition` never dereferences a caller's stack
     /// `ViewportData` after it returns (upstream keeps `_lastRenderData`).
@@ -206,6 +212,45 @@ pub const ViewLines = struct {
         };
     }
 
+    /// Points the window renderer at its retained line root. The host owns the
+    /// root and the line disposal (DOM node destruction + box removal).
+    pub fn setDomHost(
+        self: *ViewLines,
+        doc: *ui.Document,
+        root: *ui.Node,
+        context: ?*anyopaque,
+        dispose: ?*const fn (context: *anyopaque, line: *ViewLine) void,
+    ) void {
+        self.dom_doc = doc;
+        self.dom_root = root;
+        self.dispose_context = context;
+        self.dispose_fn = dispose;
+        self.visible_lines.setDisposeHandler(context, dispose);
+    }
+
+    /// Drops the rendered window without running the DOM disposal hook. Used
+    /// before a document/surface reset where the whole DOM tree goes away.
+    pub fn flushWindow(self: *ViewLines) void {
+        self.visible_lines.setDisposeHandler(null, null);
+        _ = self.visible_lines.onFlushed(&.{});
+        self.dom_doc = null;
+        self.dom_root = null;
+        self.dispose_context = null;
+        self.dispose_fn = null;
+    }
+
+    pub fn windowStart(self: *const ViewLines) usize {
+        return self.visible_lines.getStartLineNumber();
+    }
+
+    pub fn windowEnd(self: *const ViewLines) usize {
+        return self.visible_lines.getEndLineNumber();
+    }
+
+    pub fn lineAt(self: *const ViewLines, line_number: usize) *ViewLine {
+        return self.visible_lines.getVisibleLine(line_number);
+    }
+
     // --- end view event handlers
 
     fn updateOptions(self: *ViewLines) bool {
@@ -256,7 +301,9 @@ pub const ViewLines = struct {
             const line_height = self.context.view_layout.getLineHeightForLineNumber(line_number);
             line.layoutLine(line_number, delta_top, line_height);
             if (line.shouldRender()) {
-                _ = line.renderLine(line_number, delta_top, line_height, viewport, null);
+                if (line.renderLine(line_number, delta_top, line_height, viewport, null)) {
+                    line.dom_dirty = true;
+                }
                 line.onDidRender();
             }
             self.max_line_width = @max(self.max_line_width, @as(f64, @floatFromInt(line.getWidth())));
@@ -308,6 +355,7 @@ pub const ViewLines = struct {
             var data = try options.provider.get(options.provider.context, line_number);
             defer data.deinit(options.allocator);
 
+            const existed = line.dom_node != null;
             const node = try line.paint(options.doc, .{
                 .left_cells = options.left_cells,
                 .top_cells = options.top_row + (line_number - start),
@@ -319,7 +367,7 @@ pub const ViewLines = struct {
                 .folded_ellipsis_style = data.folded_ellipsis_style,
                 .guides = data.guides,
             }, options.style_fn);
-            _ = try options.root.appendChild(node);
+            if (!existed) _ = try options.root.appendChild(node);
         }
     }
 

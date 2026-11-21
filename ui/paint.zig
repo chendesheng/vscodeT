@@ -51,16 +51,18 @@ fn paintBox(
 
     switch (current.kind) {
         .text => {
-            const own = mergeStyle(inherited, current.style);
+            const paint = current.paint_ref orelse &current.paint;
+            const own = mergeTextStyle(inherited, paint.*);
             // Backgrounds are not inherited in CSS. A text run with no
             // background of its own sits on whatever the cell already shows;
             // this is what lets a transparent label over a filled panel keep
             // the panel color instead of punching a hole with the root's.
+            const keep_background = paint.background == null;
             if (!current.has_text_layout) {
-                drawText(doc, grid, current.text orelse "", current.rect.x, current.rect.y, own, current.style.background == null, clip);
+                drawText(doc, grid, current.text orelse "", current.rect.x, current.rect.y, own, keep_background, clip);
             } else {
                 for (current.text_fragments) |fragment| {
-                    drawText(doc, grid, fragment.text, fragment.x, fragment.y, own, current.style.background == null, clip);
+                    drawText(doc, grid, fragment.text, fragment.x, fragment.y, own, keep_background, clip);
                 }
             }
         },
@@ -116,6 +118,19 @@ fn paintBox(
             }
         },
     }
+}
+
+fn mergeTextStyle(base: PaintStyle, paint: style_mod.PaintStyle) PaintStyle {
+    var result = base;
+    if (paint.color) |color| result.fg = cell.packColor(color);
+    if (paint.background) |color| result.bg = cell.packColor(color);
+    if (paint.bold) result.attrs |= cell.Attr.bold;
+    if (paint.italic) result.attrs |= cell.Attr.italic;
+    if (paint.underline) result.attrs |= cell.Attr.underline;
+    if (paint.strikethrough) result.attrs |= cell.Attr.strikethrough;
+    if (paint.dim) result.attrs |= cell.Attr.dim;
+    if (paint.reverse) result.attrs |= cell.Attr.inverse;
+    return result;
 }
 
 fn mergeStyle(base: PaintStyle, style: Style) PaintStyle {

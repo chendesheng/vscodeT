@@ -27,6 +27,10 @@ pub fn RenderedLinesCollection(comptime T: type) type {
         lines: std.array_list.Managed(T),
         rend_line_number_start: usize,
         factory: Factory,
+        /// Optional host hook run before a rendered line is disposed. The
+        /// retained terminal view destroys the line's DOM node here.
+        dispose_context: ?*anyopaque = null,
+        dispose_fn: ?*const fn (context: *anyopaque, line: *T) void = null,
 
         pub const Factory = struct {
             context: *anyopaque,
@@ -53,7 +57,19 @@ pub fn RenderedLinesCollection(comptime T: type) type {
         }
 
         fn disposeLine(self: *Self, line: *T) void {
+            if (self.dispose_fn) |dispose| {
+                if (self.dispose_context) |context| dispose(context, line);
+            }
             if (@hasDecl(T, "deinit")) line.deinit(self.allocator);
+        }
+
+        pub fn setDisposeHandler(
+            self: *Self,
+            context: ?*anyopaque,
+            dispose: ?*const fn (context: *anyopaque, line: *T) void,
+        ) void {
+            self.dispose_context = context;
+            self.dispose_fn = dispose;
         }
 
         pub fn getStartLineNumber(self: *const Self) usize {
@@ -359,6 +375,14 @@ pub fn VisibleLinesCollection(comptime T: type) type {
 
         pub fn getVisibleLine(self: *const Self, line_number: usize) *T {
             return &self.lines.lines.items[line_number - self.lines.rend_line_number_start];
+        }
+
+        pub fn setDisposeHandler(
+            self: *Self,
+            context: ?*anyopaque,
+            dispose: ?*const fn (context: *anyopaque, line: *T) void,
+        ) void {
+            self.lines.setDisposeHandler(context, dispose);
         }
 
         /// Synchronizes the rendered window with `viewport`, reusing lines that

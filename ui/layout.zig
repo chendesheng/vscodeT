@@ -71,6 +71,42 @@ pub fn layoutTree(tree: *BoxTree, doc: *dom.Document) LayoutError!void {
     tree.clearNeedsLayout();
 }
 
+/// Solves one already-built out-of-flow box subtree (a retained editor line,
+/// gutter row or part) without resetting the layout scratch, so fragments for
+/// clean boxes stay valid. Used by the retained editor view.
+pub fn layoutSubtree(tree: *BoxTree, doc: *dom.Document, target: *LayoutBox) LayoutError!void {
+    var ctx = LayoutContext{
+        .doc = doc,
+        .allocator = tree.scratch.allocator(),
+        .tables = linebreak.LineBreakTables.value(),
+    };
+    const containing = containingBlockRect(target) orelse Rect{
+        .x = 0,
+        .y = 0,
+        .w = @floatFromInt(doc.cols),
+        .h = @floatFromInt(doc.rows),
+    };
+    try layoutAbsolute(&ctx, target, containing);
+    try layoutOutOfFlow(&ctx, target, target.padding_rect);
+    copyRects(target);
+    clearSubtreeLayout(target);
+}
+
+fn containingBlockRect(target: *const LayoutBox) ?Rect {
+    var current = target.parent;
+    while (current) |parent| {
+        if (parent.kind == .initial_containing_block) return parent.padding_rect;
+        if (parent.style.position != .static) return parent.padding_rect;
+        current = parent.parent;
+    }
+    return null;
+}
+
+fn clearSubtreeLayout(target: *LayoutBox) void {
+    target.needs_layout = false;
+    for (target.children.items) |child| clearSubtreeLayout(child);
+}
+
 const Sizing = enum { definite, shrink_to_fit, indefinite };
 
 const Constraints = struct {

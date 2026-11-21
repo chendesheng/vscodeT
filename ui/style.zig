@@ -87,6 +87,14 @@ pub const TextStyle = struct {
         };
     }
 
+    pub fn resolveFlow(parent: TextStyle, flow: TextFlow) TextStyle {
+        return .{
+            .white_space = flow.white_space orelse parent.white_space,
+            .word_break = flow.word_break orelse parent.word_break,
+            .overflow_wrap = flow.overflow_wrap orelse parent.overflow_wrap,
+        };
+    }
+
     pub fn preservesSpaces(self: TextStyle) bool {
         return switch (self.white_space) {
             .pre, .pre_wrap, .break_spaces => true,
@@ -259,6 +267,54 @@ pub const Style = struct {
     translate_x: f64 = 0,
     translate_y: f64 = 0,
 };
+
+/// The paint-only subset of `Style`: what a text run/span contributes to the
+/// cell style (the browser's CSS class properties). Layout properties stay on
+/// `Element.style`/`LayoutBox.style`; text nodes carry this small value or a
+/// shared reference to one.
+pub const PaintStyle = struct {
+    color: ?Color = null,
+    background: ?Color = null,
+    bold: bool = false,
+    italic: bool = false,
+    underline: bool = false,
+    strikethrough: bool = false,
+    dim: bool = false,
+    reverse: bool = false,
+
+    pub fn eql(a: PaintStyle, b: PaintStyle) bool {
+        return std.meta.eql(a, b);
+    }
+};
+
+/// Text-flow overrides carried by a text node (extracted from `Style`). They
+/// resolve against the parent box's `TextStyle`.
+pub const TextFlow = struct {
+    white_space: ?WhiteSpace = null,
+    word_break: ?WordBreak = null,
+    overflow_wrap: ?OverflowWrap = null,
+};
+
+pub fn paintStyleOf(style: Style) PaintStyle {
+    return .{
+        .color = style.color,
+        .background = style.background,
+        .bold = style.bold,
+        .italic = style.italic,
+        .underline = style.underline,
+        .strikethrough = style.strikethrough,
+        .dim = style.dim,
+        .reverse = style.reverse,
+    };
+}
+
+pub fn textFlowOf(style: Style) TextFlow {
+    return .{
+        .white_space = style.white_space,
+        .word_break = style.word_break,
+        .overflow_wrap = style.overflow_wrap,
+    };
+}
 
 pub fn borderWidths(style: Style) Edges {
     if (style.border_style == .none) return .{};

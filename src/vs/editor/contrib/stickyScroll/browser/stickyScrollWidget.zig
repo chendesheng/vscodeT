@@ -489,6 +489,7 @@ pub const StickyScrollWidget = struct {
             .background = background,
             .flags = flags,
             .decoration_bits_fn = host.decoration_bits_fn,
+            .borrow_text = false,
         }, host.style_fn);
     }
 
