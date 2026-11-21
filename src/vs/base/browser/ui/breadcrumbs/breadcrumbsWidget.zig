@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
+const Emitter = @import("../../../common/event.zig").Emitter;
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
@@ -73,6 +74,9 @@ pub const BreadcrumbsWidget = struct {
     allocator: std.mem.Allocator,
     items: std.array_list.Managed(Item),
     hits: std.array_list.Managed(Hit),
+    on_did_select_item: Emitter(usize),
+    on_did_focus_item: Emitter(usize),
+    on_did_change_focus: Emitter(bool),
     focused: ?usize = null,
     selected: ?usize = null,
     hovered: ?usize = null,
@@ -84,12 +88,35 @@ pub const BreadcrumbsWidget = struct {
             .allocator = allocator,
             .items = std.array_list.Managed(Item).init(allocator),
             .hits = std.array_list.Managed(Hit).init(allocator),
+            .on_did_select_item = Emitter(usize).init(allocator),
+            .on_did_focus_item = Emitter(usize).init(allocator),
+            .on_did_change_focus = Emitter(bool).init(allocator),
         };
     }
 
     pub fn deinit(self: *BreadcrumbsWidget) void {
         self.items.deinit();
         self.hits.deinit();
+        self.on_did_select_item.deinit();
+        self.on_did_focus_item.deinit();
+        self.on_did_change_focus.deinit();
+    }
+
+    pub fn selectItem(self: *BreadcrumbsWidget, index: usize) !void {
+        if (index >= self.items.items.len) return;
+        self.focused = index;
+        self.selected = index;
+        try self.on_did_select_item.fire(index);
+    }
+
+    pub fn emitFocus(self: *BreadcrumbsWidget, index: usize) !void {
+        if (index >= self.items.items.len) return;
+        self.focused = index;
+        try self.on_did_focus_item.fire(index);
+    }
+
+    pub fn emitFocusChanged(self: *BreadcrumbsWidget, focused: bool) !void {
+        try self.on_did_change_focus.fire(focused);
     }
 
     pub fn setItems(self: *BreadcrumbsWidget, items: []const Item) !void {

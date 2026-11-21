@@ -70,6 +70,26 @@ test "BreadcrumbsControl: labels and item kinds from a path model" {
     const expected = file_icon.file("file.ts");
     try std.testing.expectEqual(expected.glyph, file_icon_item.codepoint);
     try std.testing.expectEqual(expected.color, file_icon_item.color);
+
+    const Counter = struct {
+        var selected: ?usize = null;
+        var focus_changed: ?bool = null;
+        fn select(index: usize, ctx: *@This()) !void {
+            _ = ctx;
+            selected = index;
+        }
+        fn focus(focused: bool, ctx: *@This()) !void {
+            _ = ctx;
+            focus_changed = focused;
+        }
+    };
+    var counter: Counter = .{};
+    _ = try control.widget.on_did_select_item.listen(&counter, Counter.select);
+    _ = try control.widget.on_did_change_focus.listen(&counter, Counter.focus);
+    _ = try control.selectIndex(0);
+    try std.testing.expectEqual(@as(?usize, 0), Counter.selected);
+    control.setFocused(true);
+    try std.testing.expectEqual(@as(?bool, true), Counter.focus_changed);
 }
 
 test "BreadcrumbsControl: focus, selection and escape return focus to the editor" {
