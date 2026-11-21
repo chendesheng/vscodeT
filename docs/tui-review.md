@@ -24,8 +24,8 @@ scroll, `TerminalViewHost.renderViewport` takes the visible range from the view
 layout, and `ViewLines` re-renders only lines dirtied by view events. Status
 bar, side-bar title and panel title retain their painted grids while unchanged,
 and the Unicode line-break tables are compile-time constants. The editor
-viewport is still rebuilt as DOM nodes on refresh; painting the retained
-`ViewLine` runs into cells is the next step. See
+viewport paints the retained `ViewLine` runs into a cell layer under the
+gutter/widget tree, so refreshes no longer create a text node per token. See
 [`perf/2026-11-21/README.md`](perf/2026-11-21/README.md).
 
 ## Consolidation progress (2026-11-19)

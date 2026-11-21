@@ -425,28 +425,61 @@ pub const TerminalViewHost = struct {
     /// guide and fold decisions stay host-side because they are terminal paint
     /// inputs; the assembly and line DOM belong to the ported stack.
     pub fn paintViewport(self: *TerminalViewHost, args: ViewportPaintArgs) !void {
-        const Context = struct {
-            host: *TerminalViewHost,
-            args: *const ViewportPaintArgs,
-        };
-        var context = Context{ .host = self, .args = &args };
         try self.view.getViewLines().paintViewport(.{
-            .allocator = self.allocator,
             .doc = args.doc,
             .root = args.root,
+            .left_cells = args.left_cells,
+            .width_cells = args.width_cells,
+            .top_row = args.top_row,
+        });
+    }
+
+    /// Terminal paint inputs for the visible viewport. They are kept by the
+    /// view between rebuild and paint so `paintCells` can write the cell layer
+    /// at frame time (under the gutter/widget tree).
+    pub const CellPaintArgs = struct {
+        grid: *ui.CellGrid,
+        left_cells: usize,
+        width_cells: usize,
+        top_row: usize,
+        top: usize,
+        tab_size: usize,
+        text_width: usize,
+        cursor: Position,
+        states: []const CursorState,
+        guides: []const PaintGuide,
+        line_backgrounds: []const ?ui.Color,
+        background_color: ?ui.Color,
+        selected_flag: u32,
+        secondary_cursor_flag: u32,
+        ellipsis_style: ui.Style,
+        default_background: ?ui.Color,
+        style_fn: ViewLine.PartStyleFn,
+        decoration_bits_fn: ?*const fn (classes: []const u8) u32,
+    };
+
+    pub fn paintCells(self: *TerminalViewHost, args: CellPaintArgs) !void {
+        const Context = struct {
+            host: *TerminalViewHost,
+            args: *const CellPaintArgs,
+        };
+        var context = Context{ .host = self, .args = &args };
+        try self.view.getViewLines().paintCells(.{
+            .grid = args.grid,
             .left_cells = args.left_cells,
             .width_cells = args.width_cells,
             .top_row = args.top_row,
             .provider = .{ .context = &context, .get = linePaintData },
             .style_fn = args.style_fn,
             .decoration_bits_fn = args.decoration_bits_fn,
+            .default_background = args.default_background,
         });
     }
 
     fn linePaintData(context: *anyopaque, view_line: usize) anyerror!ViewLines.LinePaintData {
         const Context = struct {
             host: *TerminalViewHost,
-            args: *const ViewportPaintArgs,
+            args: *const CellPaintArgs,
         };
         const ctx: *Context = @ptrCast(@alignCast(context));
         const self = ctx.host;

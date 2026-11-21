@@ -831,7 +831,10 @@ Library constraints:
   - Uses the existing `Editor`, `ProjectedViewModelLines`, and `viewLineData`
     to iterate visible view lines.
   - Creates a gutter column (right-aligned line numbers) and a text column; one
-    line element per view line, one text node per rendered part.
+    empty, positioned line element per view line for hit testing. The line text
+    is painted as a cell layer under the gutter/widget tree from the retained
+    `ViewLine` runs (`Surface.paintFrameWithCells`), so a scroll does not
+    rebuild a text node per token.
   - Paints selections as inverted cells and the cursor line with a background;
     the hardware cursor is moved to the caret cell after layout.
   - Turns the cached bracket-matching data into model decorations and paints
