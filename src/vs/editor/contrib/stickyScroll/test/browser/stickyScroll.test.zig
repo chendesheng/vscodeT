@@ -30,6 +30,7 @@ const StickyScrollWidgetState = @import("../../browser/stickyScrollWidget.zig").
 const LanguageFeaturesService = @import("../../../../common/services/languageFeaturesService.zig").LanguageFeaturesService;
 const languages = @import("../../../../common/languages.zig");
 const Range = @import("../../../../common/core/range.zig").Range;
+const Position = @import("../../../../common/core/position.zig").Position;
 const CancellationToken = @import("../../../../../base/common/cancellation.zig").CancellationToken;
 
 const text =
@@ -527,6 +528,49 @@ test "sticky widget state exposes displayed line numbers and caps height" {
     try testing.expectEqual(@as(?usize, 1), state.show_end_for_line);
 }
 
+const code_web_symbols = [_]languages.DocumentSymbol{
+    .{
+        .name = "directoryExists",
+        .kind = 0,
+        .range = Range.init(106, 1, 112, 1),
+        .selection_range = Range.init(106, 1, 106, 1),
+    },
+    .{
+        .name = "downloadPlaygroundFile",
+        .kind = 0,
+        .range = Range.init(115, 1, 129, 1),
+        .selection_range = Range.init(115, 1, 115, 1),
+    },
+    .{
+        .name = "ensureWebDevExtensions",
+        .kind = 0,
+        .range = Range.init(131, 1, 180, 1),
+        .selection_range = Range.init(131, 1, 131, 1),
+    },
+};
+
+test "outline symbols keep the scope above the viewport sticky" {
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "vscode/scripts/code-web.js",
+        allocator,
+        .limited(1024 * 1024),
+    ) catch return error.SkipZigTest;
+    defer allocator.free(source);
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, source, &code_web_symbols);
+    defer fixture.deinit();
+    try fixture.createView();
+    try fixture.updateProvider();
+    const top_view_line = fixture.editor.viewPositionOfModelPosition(Position.init(120, 1)).lineNumber;
+    _ = fixture.editor.setTopViewLine(top_view_line);
+    var state = try fixture.controller.?.findScrollWidgetState();
+    defer state.deinit();
+    try testing.expectEqualSlices(usize, &.{115}, state.start_line_numbers);
+}
+
 test "real JavaScript file produces sticky scopes from indentation" {
     const allocator = testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -550,6 +594,10 @@ test "real JavaScript file produces sticky scopes from indentation" {
     host.attach(controller);
     try view.addOverlayWidget(controller.widget.interface());
     try controller.getStickyScrollCandidateProvider().update();
+    _ = editor.setTopViewLine(120);
+    var state120 = try controller.findScrollWidgetState();
+    defer state120.deinit();
+    try testing.expect(std.mem.indexOfScalar(usize, state120.start_line_numbers, 115) != null);
     _ = editor.setTopViewLine(135);
     try view.refresh();
     try view.paint();

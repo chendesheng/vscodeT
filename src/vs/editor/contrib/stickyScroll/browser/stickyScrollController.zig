@@ -395,9 +395,14 @@ pub const StickyScrollController = struct {
         defer ends.deinit();
 
         var last_line_relative_position: isize = 0;
+        // Candidate ranges are model-line ranges (like upstream
+        // `getVisibleRanges`), not projected view lines. With word wrapping the
+        // two differ, so convert the viewport before querying the provider.
+        const visible_model_start = self.editor.modelLineNumber(top);
+        const visible_model_end = self.editor.modelLineNumber(end_visible);
         const candidates = try self.provider.getCandidateStickyLinesIntersecting(
             self.allocator,
-            StickyRange.init(top, end_visible),
+            StickyRange.init(visible_model_start, visible_model_end),
         );
         defer self.allocator.free(candidates);
 
