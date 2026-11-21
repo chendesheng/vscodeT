@@ -283,8 +283,10 @@ test "Promise/resolve" {
     try std.testing.expect(!rejected);
     try std.testing.expect(!finally_called);
 
-    // "event loop" — wait for the worker thread to resolve the promise.
-    for (0..100) |_| {
+    // "event loop" — wait for the worker thread to resolve the promise. The
+    // deadline is generous: Windows CI can schedule the spawned thread long
+    // after the timer's nominal 10ms.
+    for (0..500) |_| {
         io.sleep(.fromMilliseconds(10), .awake) catch {};
         try tick();
         if (fulfilled and finally_called) break;
