@@ -1073,9 +1073,13 @@ pub const Workbench = struct {
     }
 
     fn initStatusHint(self: *Workbench) !void {
+        // VS Code's status bar has no quit hint. The entry is kept for the
+        // Source Control messages set through `status_hint_accessor`, but it
+        // starts empty: the status bar and focus navigation skip empty
+        // entries, so it only appears once a message replaces the text.
         self.status_hint_accessor = try self.statusbar.addEntry(.{
-            .name = "Quit hint",
-            .text = "Ctrl-Q quit",
+            .name = "Source Control",
+            .text = "",
         }, "workbench.hint", .right, .{ .number = 0 });
         self.markers_status = try MarkersStatusBar.init(self.allocator, &self.statusbar);
         const highlights = try self.allocator.create(RangeHighlightDecorations);
@@ -10662,6 +10666,8 @@ test "Workbench: status bar spans the window and shows editor state" {
 
     const status = try workbench.frame.prev.rowText(allocator, 9);
     defer allocator.free(status);
+    // The status bar mirrors VS Code: no quit hint is rendered.
+    try std.testing.expect(std.mem.indexOf(u8, status, "Ctrl-Q") == null);
     try std.testing.expect(std.mem.indexOf(u8, status, "status.txt") == null);
     try std.testing.expect(std.mem.indexOf(u8, status, "Ln 1, Col 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, status, "Spaces: 4") != null);
