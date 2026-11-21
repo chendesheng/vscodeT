@@ -60,8 +60,13 @@ test "markerService: changeOne override and clear" {
 
     try service.changeOne("far", resource, &.{}, null);
     try std.testing.expectEqual(@as(usize, 1), try counts(&service, .{}));
+    // The owner index must no longer reference the retired bucket. Reading by
+    // owner used to follow a freed bucket pointer after this clear.
+    try std.testing.expectEqual(@as(usize, 0), try counts(&service, .{ .owner = "far" }));
+    try std.testing.expectEqual(@as(usize, 1), try counts(&service, .{ .owner = "boo" }));
     try service.changeAll("boo", &.{});
     try std.testing.expectEqual(@as(usize, 0), try counts(&service, .{}));
+    try std.testing.expectEqual(@as(usize, 0), try counts(&service, .{ .owner = "boo" }));
 }
 
 test "markerService: changeAll groups markers" {

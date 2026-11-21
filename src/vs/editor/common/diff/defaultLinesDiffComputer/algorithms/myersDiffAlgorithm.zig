@@ -74,7 +74,14 @@ pub const MyersDiffAlgorithm = struct {
                     continue;
                 }
 
-                const new_max_x = getXAfterSnake(seq_x, seq_y, @intCast(x), @intCast(y));
+                // Upstream JavaScript tolerates a negative `y`: `getElement(-1)`
+                // is `undefined`, so the snake loop never advances and the
+                // result is `x`. Keep that behavior instead of trapping in the
+                // `usize` conversion; such a diagonal has no matching prefix.
+                const new_max_x = if (y < 0)
+                    @as(usize, @intCast(x))
+                else
+                    getXAfterSnake(seq_x, seq_y, @intCast(x), @intCast(y));
                 try v.put(allocator, k, new_max_x);
 
                 const last_path: ?*SnakePath = if (x == max_x_of_d_line_top)
@@ -157,6 +164,49 @@ test "MyersDiffAlgorithm: identical sequences" {
     var result = try MyersDiffAlgorithm.compute(.{}, allocator, seq1.sequence(), seq1.sequence(), null);
     defer result.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), result.diffs.len);
+}
+
+test "MyersDiffAlgorithm: unequal lengths with an unmatched tail" {
+    const allocator = std.testing.allocator;
+
+    // This reaches d=3, k=2 with x=1 and y=-1: the diagonal is past the end of
+    // the x sequence, so it has no snake and the old port trapped in @intCast.
+    var seq1 = TestSequence.init(&.{1});
+    var seq2 = TestSequence.init(&.{ 2, 3 });
+
+    var result = try MyersDiffAlgorithm.compute(.{}, allocator, seq1.sequence(), seq2.sequence(), null);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diffs.len);
+    try std.testing.expectEqual(OffsetRange.init(0, 1), result.diffs[0].seq1Range);
+    try std.testing.expectEqual(OffsetRange.init(0, 2), result.diffs[0].seq2Range);
+}
+
+test "MyersDiffAlgorithm: unequal lengths keep ranges in bounds" {
+    const allocator = std.testing.allocator;
+
+    var len_a: usize = 1;
+    while (len_a <= 5) : (len_a += 1) {
+        var len_b: usize = 1;
+        while (len_b <= 5) : (len_b += 1) {
+            var items_a: [5]u64 = undefined;
+            var items_b: [5]u64 = undefined;
+            for (0..len_a) |index| items_a[index] = index + 1;
+            for (0..len_b) |index| items_b[index] = index + 100;
+
+            var seq_a = TestSequence.init(items_a[0..len_a]);
+            var seq_b = TestSequence.init(items_b[0..len_b]);
+            var result = try MyersDiffAlgorithm.compute(.{}, allocator, seq_a.sequence(), seq_b.sequence(), null);
+            defer result.deinit(allocator);
+
+            for (result.diffs) |change| {
+                try std.testing.expect(change.seq1Range.start <= change.seq1Range.endExclusive);
+                try std.testing.expect(change.seq1Range.endExclusive <= len_a);
+                try std.testing.expect(change.seq2Range.start <= change.seq2Range.endExclusive);
+                try std.testing.expect(change.seq2Range.endExclusive <= len_b);
+            }
+        }
+    }
 }
 
 const TestSequence = struct {

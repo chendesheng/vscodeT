@@ -215,17 +215,18 @@ pub const MarkerService = struct {
         }
         _ = bucket.owners.remove(owner);
         _ = bucket.truncated_owners.remove(owner);
+        // Keep the owner index consistent even when the bucket survives for
+        // other owners. `maybeRemoveBucket` cannot do this later: it only sees
+        // the owners still in `bucket.owners`, and this owner has just been
+        // removed from that map.
+        if (self.by_owner.get(owner)) |owner_bucket| {
+            _ = owner_bucket.resources.remove(bucket.key);
+        }
     }
 
     fn maybeRemoveBucket(self: *MarkerService, bucket: *Bucket) void {
         if (bucket.markers.items.len > 0) return;
         _ = self.by_resource.remove(bucket.key);
-        var owners = bucket.owners.iterator();
-        while (owners.next()) |entry| {
-            if (self.by_owner.get(entry.key_ptr.*)) |owner_bucket| {
-                _ = owner_bucket.resources.remove(bucket.key);
-            }
-        }
         self.retireBucket(bucket);
     }
 

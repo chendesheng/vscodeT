@@ -31,6 +31,28 @@ test "OvertypingCapturer: records selected text before typing" {
     try std.testing.expect(capturer.getLastOvertypedInfo(2) == null);
 }
 
+test "OvertypingCapturer: reversed selection captures the normalized range" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "hello\nworld", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    // RTL selection: the anchor is at the end of the first line, the cursor at
+    // its start. The normalized range is still (1,1)-(1,6).
+    try editor.setSelections(&.{Selection.init(1, 6, 1, 1)});
+
+    var capturer = OvertypingCapturer.init(allocator);
+    defer capturer.deinit();
+    capturer.capture(editor);
+
+    const captured = capturer.getLastOvertypedInfo(0).?;
+    try std.testing.expectEqualStrings("hello", captured.value);
+    try std.testing.expect(!captured.multiline);
+}
+
 test "OvertypingCapturer: locked capture and empty selection clear" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

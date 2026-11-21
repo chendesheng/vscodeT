@@ -7,6 +7,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const Range = @import("../../../common/core/range.zig").Range;
 const variables = @import("../../snippet/browser/snippetVariables.zig");
 
 const max_selection_length: usize = 51200;
@@ -58,25 +59,25 @@ pub const OvertypingCapturer = struct {
         self.clear();
         for (selections, 0..) |selection, index| {
             if (index >= 8) break;
-            if (editor.model.getValueLengthInRange(.{
-                .startLineNumber = selection.selectionStartLineNumber,
-                .startColumn = selection.selectionStartColumn,
-                .endLineNumber = selection.positionLineNumber,
-                .endColumn = selection.positionColumn,
-            }, .TextDefined) > max_selection_length) {
+            // Upstream passes the `Selection` itself, whose Range part is
+            // normalized. A reversed (RTL) selection has its anchor after the
+            // position, so using the raw selectionStart/position fields would
+            // build an inverted range and underflow the length calculation.
+            const range = Range.init(
+                selection.startLineNumber,
+                selection.startColumn,
+                selection.endLineNumber,
+                selection.endColumn,
+            );
+            if (editor.model.getValueLengthInRange(range, .TextDefined) > max_selection_length) {
                 return;
             }
-            var text = editor.model.getValueInRange(.{
-                .startLineNumber = selection.selectionStartLineNumber,
-                .startColumn = selection.selectionStartColumn,
-                .endLineNumber = selection.positionLineNumber,
-                .endColumn = selection.positionColumn,
-            }, .TextDefined) catch return;
+            var text = editor.model.getValueInRange(range, .TextDefined) catch return;
             defer text.deinit();
             const value = self.allocator.dupe(u8, text.items) catch return;
             self.last_overtyped.append(self.allocator, .{
                 .value = value,
-                .multiline = selection.selectionStartLineNumber != selection.positionLineNumber,
+                .multiline = selection.startLineNumber != selection.endLineNumber,
             }) catch {
                 self.allocator.free(value);
                 return;

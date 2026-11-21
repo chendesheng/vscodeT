@@ -9,14 +9,20 @@ const MarkerService = @import("../../../../platform/markers/common/markerService
 const markers = @import("../../../../platform/markers/common/markers.zig");
 
 const Fake = struct {
+    allocator: std.mem.Allocator,
     notifications: usize = 0,
-    last_payload: ?std.json.Value = null,
+    /// Serialized copy of the last notification payload. The actor builds its
+    /// payload in a scratch arena and frees it when `flush` returns, so the
+    /// test must snapshot it inside the callback.
+    last_payload_json: ?[]u8 = null,
 
     fn notify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void {
         const self: *Fake = @ptrCast(@alignCast(context));
         if (!std.mem.eql(u8, method, "$acceptMarkersChange")) return;
         self.notifications += 1;
-        if (args.len > 0) self.last_payload = args[0].json;
+        if (args.len == 0) return;
+        if (self.last_payload_json) |old| self.allocator.free(old);
+        self.last_payload_json = std.json.Stringify.valueAlloc(self.allocator, args[0].json, .{}) catch null;
     }
 };
 
@@ -24,7 +30,8 @@ test "mainThreadDiagnostics: changeMany stores markers and forwards changes" {
     const allocator = std.testing.allocator;
     var marker_service = MarkerService.init(allocator);
     defer marker_service.deinit();
-    var fake = Fake{};
+    var fake = Fake{ .allocator = allocator };
+    defer if (fake.last_payload_json) |json| allocator.free(json);
     const actor = try MainThreadDiagnostics.init(allocator, &marker_service, .{
         .context = &fake,
         .notify = Fake.notify,
@@ -35,7 +42,7 @@ test "mainThreadDiagnostics: changeMany stores markers and forwards changes" {
     const args_value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(),
         \\["foo",[[{"$mid":1,"scheme":"file","authority":"","path":"/a","query":"","fragment":""},[{"severity":8,"message":"bad","startLineNumber":1,"startColumn":1,"endLineNumber":1,"endColumn":2}],true]]]
     , .{});
-    const args = [_]rpc.Arg{.{ .json = args_value }};
+    const args = [_]rpc.Arg{ .{ .json = args_value.array.items[0] }, .{ .json = args_value.array.items[1] } };
     _ = try actor.invoke("$changeMany", &args, arena.allocator());
 
     const resource = markers.Resource{ .scheme = "file", .authority = "", .path = "/a" };
@@ -47,8 +54,8 @@ test "mainThreadDiagnostics: changeMany stores markers and forwards changes" {
 
     try actor.flush();
     try std.testing.expectEqual(@as(usize, 1), fake.notifications);
-    try std.testing.expect(fake.last_payload != null);
-    const payload = fake.last_payload.?;
+    const payload_json = fake.last_payload_json orelse return error.TestUnexpectedResult;
+    const payload = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), payload_json, .{});
     try std.testing.expectEqual(@as(usize, 1), payload.array.items.len);
     const entry = payload.array.items[0];
     try std.testing.expectEqual(@as(usize, 2), entry.array.items.len);
@@ -60,7 +67,8 @@ test "mainThreadDiagnostics: clear removes owner markers on dispose" {
     const allocator = std.testing.allocator;
     var marker_service = MarkerService.init(allocator);
     defer marker_service.deinit();
-    var fake = Fake{};
+    var fake = Fake{ .allocator = allocator };
+    defer if (fake.last_payload_json) |json| allocator.free(json);
     const actor = try MainThreadDiagnostics.init(allocator, &marker_service, .{
         .context = &fake,
         .notify = Fake.notify,
@@ -71,7 +79,7 @@ test "mainThreadDiagnostics: clear removes owner markers on dispose" {
     const args_value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(),
         \\["foo",[[{"$mid":1,"scheme":"file","authority":"","path":"/b","query":"","fragment":""},[{"severity":4,"message":"warn","startLineNumber":1,"startColumn":1,"endLineNumber":1,"endColumn":1}]]]]
     , .{});
-    const args = [_]rpc.Arg{.{ .json = args_value }};
+    const args = [_]rpc.Arg{ .{ .json = args_value.array.items[0] }, .{ .json = args_value.array.items[1] } };
     _ = try actor.invoke("$changeMany", &args, arena.allocator());
     const resource = markers.Resource{ .scheme = "file", .authority = "", .path = "/b" };
     try std.testing.expectEqual(@as(usize, 1), blk: {
@@ -86,4 +94,41 @@ test "mainThreadDiagnostics: clear removes owner markers on dispose" {
         defer allocator.free(list);
         break :blk list.len;
     });
+}
+
+test "mainThreadDiagnostics: deinit after an owner clears its markers" {
+    const allocator = std.testing.allocator;
+    var marker_service = MarkerService.init(allocator);
+    defer marker_service.deinit();
+    var fake = Fake{ .allocator = allocator };
+    defer if (fake.last_payload_json) |json| allocator.free(json);
+    const actor = try MainThreadDiagnostics.init(allocator, &marker_service, .{
+        .context = &fake,
+        .notify = Fake.notify,
+    }, null);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const args_value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(),
+        \\["foo",[[{"$mid":1,"scheme":"file","authority":"","path":"/c","query":"","fragment":""},[{"severity":8,"message":"bad","startLineNumber":1,"startColumn":1,"endLineNumber":1,"endColumn":1}]]]]
+    , .{});
+    const args = [_]rpc.Arg{ .{ .json = args_value.array.items[0] }, .{ .json = args_value.array.items[1] } };
+    _ = try actor.invoke("$changeMany", &args, arena.allocator());
+
+    // Clear the same owner's markers while the actor still remembers the
+    // owner. This retires the resource bucket but keeps "foo" in the actor's
+    // active-owner set.
+    const empty_value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(),
+        \\["foo",[[{"$mid":1,"scheme":"file","authority":"","path":"/c","query":"","fragment":""},[]]]]
+    , .{});
+    const empty_args = [_]rpc.Arg{ .{ .json = empty_value.array.items[0] }, .{ .json = empty_value.array.items[1] } };
+    _ = try actor.invoke("$changeMany", &empty_args, arena.allocator());
+
+    // deinit -> clearOwnMarkers -> read by owner. The owner index must not
+    // point at the retired bucket that was freed after the clear event.
+    actor.deinit();
+
+    const list = try marker_service.read(allocator, .{});
+    defer allocator.free(list);
+    try std.testing.expectEqual(@as(usize, 0), list.len);
 }
