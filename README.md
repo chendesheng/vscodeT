@@ -32,11 +32,13 @@ The TUI targets a reasonable default **Debug** build; no ReleaseFast step is
 required for the measurements below.
 
 - Workspace watching starts in the `AfterRestored` phase, after the first
-  frame, and `fileService.watch` is asynchronous: the recursive kqueue/inotify
-  scan runs on a watcher worker thread. Opening a folder therefore no longer
-  walks the whole workspace on the UI thread before first paint. The remaining
-  pre-paint costs are theme discovery, workbench setup, and the native git
-  initialization; those are separate upstream service ports. `main.log`
+  frame, and `fileService.watch` is asynchronous. On macOS the recursive side
+  uses FSEvents (constant-time subscribe); Linux and non-FSEvents macOS builds
+  run the kqueue/inotify scan on a watcher worker thread. Opening a folder
+  therefore no longer walks the whole workspace on the UI thread before first
+  paint. The remaining pre-paint costs are theme discovery, workbench setup,
+  and the native git initialization; those are separate upstream service
+  ports. `main.log`
   records `startup:` stage timings (`workbench-init`, `themes`,
   `workspace-git`, `first-frame`, `after-restored`) for diagnosing them.
 - Opening a file performs one view rebuild and one full wrapping pass. The
@@ -218,12 +220,20 @@ unchanged. Stopping the watcher cancels an in-progress recursive scan
 cooperatively, so quitting does not wait for a large tree walk.
 
 `files.watcherExclude` (upstream defaults plus the user setting) and
-`files.watcherInclude` are wired. macOS uses the kqueue backend, which needs
-one descriptor per watched directory and stops adding watches at 75% of
-`RLIMIT_NOFILE`. Large build caches should be added to `files.watcherExclude`;
-that setting reduces the worker's scan and descriptor count without blocking
-the UI. The FSEvents backend that VS Code's `@parcel/watcher` uses on macOS is
-still not ported.
+`files.watcherInclude` are wired.
+
+On macOS the recursive side uses the ported FSEvents backend
+(`src/vs/platform/files/node/watcher/parcel/watcherLib/fsevents.zig`), the
+backend VS Code's `@parcel/watcher` uses there. It runs a CFRunLoop thread and
+subscribes in constant time, so recursive watching needs no initial tree walk
+and no per-directory descriptors. FSEvents only watches directories, so
+non-recursive requests (the settings watcher and `NodeJSWatcher`) stay on
+kqueue; kqueue is also used when cross-compiling macOS watcher tests from a
+non-macOS host. FSEvents has no initial directory snapshot, so its first event
+for a pre-existing path can be `ADDED`; open editors treat `ADDED` and
+`UPDATED` the same way for content reloads. Large build caches should still be
+added to `files.watcherExclude`: the patterns are passed to the FSEvents
+stream's exclusion paths and filtered on the worker.
 
 ## Extension host (experimental)
 
@@ -615,8 +625,9 @@ console API for raw mode, sizing and input polling.
   `parcel/watcherLib` for recursive watching; `nodejsWatcherLib.zig` for
   non-recursive watching; and `watcher.zig`/`watcherStats.zig` for the
   universal watcher and diagnostics. The Linux backend uses inotify, macOS
-  uses kqueue (the upstream parcel kqueue backend; FSEvents/CoreServices is not
-  ported), and Windows uses overlapped `ReadDirectoryChangesW`. Brute-force
+  uses the ported FSEvents backend for recursive requests and kqueue for
+  non-recursive requests (kqueue remains the cross-compile fallback), and
+  Windows uses overlapped `ReadDirectoryChangesW`. Brute-force
   snapshot polling backs the polling mode. The `@parcel/watcher` N-API binding,
   JS wrapper, prebuilds and Electron IPC watcher clients are not ported. The
   terminal uses `UniversalWatcherClient`, a worker-thread adaptation of

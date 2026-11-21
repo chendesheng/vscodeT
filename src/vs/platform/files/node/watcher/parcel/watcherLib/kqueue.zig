@@ -1,11 +1,12 @@
 // Port of `src/kqueue/KqueueBackend.cc` from `@parcel/watcher` v2.5.6
 // (external package).
 //
-// macOS uses kqueue as the terminal's native backend. The upstream parcel
-// package defaults to FSEvents, which needs the CoreServices SDK and a
-// CFRunLoop thread; kqueue is part of libSystem and integrates directly with
-// the terminal poll loop. Directory write events trigger a small directory
-// diff, and file descriptors are watched for content/metadata updates.
+// macOS normally uses the FSEvents backend for recursive requests. This
+// kqueue backend remains the non-recursive watcher (FSEvents only watches
+// directories) and the fallback when cross-compiling macOS watcher tests from
+// a host without the CoreServices SDK. Directory write events trigger a small
+// directory diff, and file descriptors are watched for content/metadata
+// updates.
 
 const std = @import("std");
 const builtin = @import("builtin");
