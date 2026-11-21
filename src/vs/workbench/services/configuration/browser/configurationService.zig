@@ -346,6 +346,42 @@ pub const ConfigurationService = struct {
     /// Returns the settings files this service reads. The watcher uses the
     /// same list so both always agree on the watched scopes. The caller owns
     /// the paths and the outer slice.
+    /// Writes a user setting to the highest-precedence user settings file and
+    /// reloads the effective model. JSONC comments are not preserved when the
+    /// file has to be rewritten; the terminal keeps the parsed value tree.
+    pub fn updateValue(self: *ConfigurationService, key: []const u8, value: ?std.json.Value, target: configuration.ConfigurationTarget) !void {
+        if (target != .USER) return error.UnsupportedConfigurationTarget;
+        if (self.user_settings_paths.len == 0) return error.NoWritableUserSettings;
+        const path = self.user_settings_paths[self.user_settings_paths.len - 1];
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+        var root: std.json.Value = .{ .object = .{} };
+        if (Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(max_settings_file_size))) |bytes| {
+            defer self.allocator.free(bytes);
+            var sanitized = std.array_list.Managed(u8).init(arena_allocator);
+            try sanitized.appendSlice(try configurationModels.stripJsonc(arena_allocator, bytes));
+            if (std.json.parseFromSliceLeaky(std.json.Value, arena_allocator, sanitized.items, .{})) |parsed| {
+                if (std.meta.activeTag(parsed) == .object) root = parsed;
+            } else |_| {}
+        } else |_| {}
+
+        if (value == null or std.meta.activeTag(value.?) == .null) {
+            _ = root.object.orderedRemove(key);
+        } else {
+            try root.object.put(arena_allocator, key, value.?);
+        }
+
+        if (std.fs.path.dirname(path)) |dir| Io.Dir.cwd().createDirPath(self.io, dir) catch {};
+        var out: Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        try std.json.Stringify.value(root, .{}, &out.writer);
+        try out.writer.writeByte('\n');
+        try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = out.written() });
+        try self.reload();
+    }
+
     pub fn settingsFilePaths(self: *const ConfigurationService, allocator: Allocator) ![]const []u8 {
         var paths = std.array_list.Managed([]u8).init(allocator);
         errdefer {

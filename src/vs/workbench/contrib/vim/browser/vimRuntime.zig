@@ -1,9 +1,9 @@
 // Product wiring for the native Vim built-in extension.
 //
-// The runtime is owned by the composition root. It registers the toggle
-// commands even while Vim is disabled, so a user can enable Vim after the
-// editor has started without restarting. The workbench core still knows only
-// the generic built-in extension and key-input contracts.
+// The runtime is owned by the composition root. It registers Enable/Disable
+// commands even while Vim is disabled. The commands persist `vim.enabled` in
+// the user settings file, so the choice survives a restart. The workbench core
+// still knows only the generic built-in extension and key-input contracts.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Workbench = @import("../../../browser/workbench.zig").Workbench;
@@ -27,7 +27,6 @@ pub const VimRuntime = struct {
         self.disable();
         self.workbench.commands.unregister("vim.enable");
         self.workbench.commands.unregister("vim.disable");
-        self.workbench.commands.unregister("vim.toggle");
         self.allocator.destroy(self);
     }
 
@@ -53,8 +52,14 @@ pub const VimRuntime = struct {
         return self.host != null;
     }
 
-    pub fn toggle(self: *VimRuntime) !void {
-        if (self.host != null) self.disable() else try self.enable();
+    /// Enables or disables Vim for this session and writes the choice to the
+    /// terminal's user settings file.
+    pub fn setEnabledPersistent(self: *VimRuntime, enabled: bool) !void {
+        if (enabled) try self.enable() else self.disable();
+        const value = std.json.Value{ .bool = enabled };
+        self.workbench.setUserConfigurationValue("vim.enabled", value) catch |err| {
+            if (self.workbench.activeTab()) |tab| tab.editor.setMessage("Unable to persist vim.enabled: {s}", .{@errorName(err)});
+        };
     }
 
     fn setMessage(self: *VimRuntime, text: []const u8) void {
@@ -76,27 +81,15 @@ pub const VimRuntime = struct {
             .context = self,
             .run = disableCommand,
         });
-        try self.workbench.commands.register(.{
-            .id = "vim.toggle",
-            .label = "Vim: Toggle",
-            .category = "Vim",
-            .context = self,
-            .run = toggleCommand,
-        });
     }
 
     fn enableCommand(context: *anyopaque) anyerror!void {
         const self: *VimRuntime = @ptrCast(@alignCast(context));
-        try self.enable();
+        try self.setEnabledPersistent(true);
     }
 
     fn disableCommand(context: *anyopaque) anyerror!void {
         const self: *VimRuntime = @ptrCast(@alignCast(context));
-        self.disable();
-    }
-
-    fn toggleCommand(context: *anyopaque) anyerror!void {
-        const self: *VimRuntime = @ptrCast(@alignCast(context));
-        try self.toggle();
+        try self.setEnabledPersistent(false);
     }
 };

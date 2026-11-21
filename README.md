@@ -286,7 +286,8 @@ The Node host is used for provisioned built-in Node extensions such as
 
 Vim is a compiled-in built-in extension (`vscode-textbuffer.vim`), enabled
 with `"vim.enabled": true` in the user settings or after startup with the
-`Vim: Enable` / `Vim: Toggle` commands. It does not use the Node extension
+`Vim: Enable` / `Vim: Disable` commands; both persist the user-level
+`vim.enabled` setting. It does not use the Node extension
 host. The editor core knows only the generic built-in extension and
 key-input interfaces; the Vim extension registers its own key handler through
 them. The normal/insert/replace/visual character/line/block modes, counts, motions

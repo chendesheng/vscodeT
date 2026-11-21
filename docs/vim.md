@@ -17,16 +17,14 @@ The setting is read at startup, before the Node host starts. VSCodeVim is not
 discovered or loaded regardless of whether it is installed.
 
 Vim can also be enabled after the editor starts. The product composition root
-registers three commands:
+registers two commands:
 
 - `Vim: Enable` (`vim.enable`)
 - `Vim: Disable` (`vim.disable`)
-- `Vim: Toggle` (`vim.toggle`)
 
-They are available from the command picker (`Ctrl-Shift-P`). The commands are
-session-only: they do not rewrite the `vim.enabled` setting. With the setting
-left at `false`, Vim starts disabled again on the next launch. With it set to
-`true`, Vim starts enabled and the same commands can still toggle it.
+They are available from the command picker (`Ctrl-Shift-P`). Both commands
+write `vim.enabled` to the user settings file (the same file opened by
+`Open User Settings (JSON)`), so the choice survives a restart.
 
 ## Editor state ownership
 

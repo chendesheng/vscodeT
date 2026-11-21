@@ -1801,6 +1801,11 @@ pub const Workbench = struct {
     /// Sets the user settings files before the Explorer/configuration service
     /// is created. The app derives them from the VS Code profile and the
     /// terminal's own config directory; later layers override earlier ones.
+    pub fn setUserConfigurationValue(self: *Workbench, key: []const u8, value: ?std.json.Value) !void {
+        const configuration = self.configuration orelse return error.ConfigurationUnavailable;
+        try configuration.updateValue(key, value, @import("../../platform/configuration/common/configuration.zig").ConfigurationTarget.USER);
+    }
+
     pub fn setUserSettingsPaths(self: *Workbench, paths: []const []const u8) !void {
         freeOwnedPaths(self.allocator, self.user_settings_paths);
         self.user_settings_paths = try dupeOwnedPaths(self.allocator, paths);
