@@ -136,6 +136,11 @@ For each row:
   compacted lane count (1-3), and paint one glyph per active lane. Added a
   multi-lane compaction test. Glyph tooltips, margin decorations and all
   line-decoration classes remain pending.
+- `5cbb73a` breadcrumbs: persist inactive controls and fix widget states.
+  One control per inactive group, disabled-click gating, focused.selected and
+  hover precedence, separator color, and the split-path active-tab fix. Added
+  widget and persistent-control tests. Widget emitters, home/root model cases,
+  picker parent/outline and editor-type/drop remain pending.
 
 ## Next slice
 
