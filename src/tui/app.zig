@@ -819,7 +819,9 @@ pub fn main(init: std.process.Init) !void {
                     if (modal_host) |host| {
                         const editor_focused = workbench.focus == .editor;
                         const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isImage() else false;
-                        if (!workbench.is_pasting and editor_focused and normal_tab and host.dispatchKey(event)) {
+                        if (!workbench.is_pasting and editor_focused and normal_tab and
+                            dispatchExtensionKey(workbench, host, event))
+                        {
                             needs_render = true;
                             continue;
                         }
@@ -962,6 +964,22 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
         needs_render = false;
     }
+}
+
+/// Routes one editor keydown through the built-in extension key handler.
+///
+/// Upstream's text area fires `CodeEditorWidget.onKeyDown` to the editor
+/// contributions before keybinding dispatch. In the TUI the extension key
+/// handler is that dispatch step, so the hover contribution must observe the
+/// key first: a Vim cursor motion then dismisses a hover opened with `gh`
+/// instead of leaving it behind. A focused editor widget (hover, find, suggest,
+/// sticky scroll) owns the keyboard, so the extension handler is skipped and
+/// the key falls through to the view's focused-node dispatch.
+///
+/// Returns true when the extension consumed the key.
+fn dispatchExtensionKey(workbench: *Workbench, host: anytype, event: *ui.KeyEvent) bool {
+    if (workbench.notifyEditorKeyDown(event)) return false;
+    return host.dispatchKey(event);
 }
 
 /// Handles one decoded editor event. The workbench routes Ctrl-Q (and the
@@ -1790,6 +1808,54 @@ test "app: hovering a word shows the rendered markdown hover" {
     try std.testing.expect(view.dispatchKey(&escape));
     try std.testing.expect(!hover.isVisible());
     try std.testing.expect(view.surface.document().active_element == null);
+}
+
+test "app: vim motions reach the hover before the extension key handler" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "hover-vim.txt", .data = "const value = 1;\n" });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPathFile(io, "hover-vim.txt", &path_buffer);
+
+    const workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 20);
+    defer workbench.deinit();
+    const tab = workbench.activeTab().?;
+    try tab.editor.setCursorPosition(Position.init(1, 7));
+    try std.testing.expect(try workbench.showHover());
+    try std.testing.expect(tab.controllers.?.hover.isVisible());
+
+    const FakeHost = struct {
+        calls: usize = 0,
+
+        fn dispatchKey(self: *@This(), event: *ui.KeyEvent) bool {
+            self.calls += 1;
+            return switch (event.key) {
+                .char => |char| char == 'j',
+                else => false,
+            };
+        }
+    };
+    var host = FakeHost{};
+    var motion = ui.KeyEvent{ .key = .{ .char = 'j' } };
+
+    // `gh` opened this hover from the keyboard. The motion key reaches the
+    // hover contribution before Vim, so the popup disappears while Vim still
+    // receives the key and moves the cursor.
+    try std.testing.expect(dispatchExtensionKey(workbench, &host, &motion));
+    try std.testing.expectEqual(@as(usize, 1), host.calls);
+    try std.testing.expect(!tab.controllers.?.hover.isVisible());
+
+    // A focused hover owns the keyboard: the extension handler is skipped and
+    // the normal view dispatch gives the key to the hover box.
+    try std.testing.expect(try workbench.showHover());
+    try std.testing.expect(try workbench.showHover());
+    try std.testing.expect(tab.controllers.?.hover.isFocused());
+    host.calls = 0;
+    try std.testing.expect(!dispatchExtensionKey(workbench, &host, &motion));
+    try std.testing.expectEqual(@as(usize, 0), host.calls);
+    try std.testing.expect(tab.controllers.?.hover.isVisible());
 }
 
 test "app: hover renders a GFM table and task list" {

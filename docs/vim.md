@@ -80,6 +80,9 @@ Command surface:
 - `:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`, `:noh`,
   `:set ignorecase`/`:set noignorecase`, line jumps and `:$`.
 - `gd`, `gD`, `gh`, `gO`, `gf`, `Ctrl-]`.
+  `gh` opens the hover at the cursor. Editor keydown listeners run before Vim,
+  so the next key dismisses the hover before Vim executes its command; a motion
+  key both hides the popup and moves the cursor.
 - `zz`, `zt`, `zb`, fold commands through the editor command registry; each
   viewport command centers or aligns relative to the cursor, not the current
   top line.

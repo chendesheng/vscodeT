@@ -4901,6 +4901,24 @@ pub const Workbench = struct {
         return true;
     }
 
+    /// Delivers a keydown to the editor contributions before the built-in
+    /// extension key handlers run. Upstream's text area fires
+    /// `CodeEditorWidget.onKeyDown` to the contributions before keybinding
+    /// dispatch, so a Vim motion key must reach the hover first; otherwise a
+    /// hover opened with `gh` never sees the motion that should dismiss it.
+    ///
+    /// Returns true when a focused editor widget (hover, find, suggest, sticky
+    /// scroll) owns the keyboard. The extension handler must be skipped then so
+    /// the key reaches that widget through the normal view dispatch.
+    pub fn notifyEditorKeyDown(self: *Workbench, event: *ui.KeyEvent) bool {
+        const tab = self.activeTab() orelse return false;
+        if (tab.isDiff() or tab.isImage()) return false;
+        tab.ensureControllers() catch return false;
+        const controllers = tab.controllers orelse return false;
+        _ = controllers.hover.onKeyDown(event);
+        return !tab.view.hasEditorFocus();
+    }
+
     /// Shows or focuses the content hover at the cursor, matching upstream's
     /// `editor.action.showHover`.
     pub fn showHover(self: *Workbench) !bool {
