@@ -1091,6 +1091,10 @@ pub const Workbench = struct {
     }
 
     fn initQuickAccess(self: *Workbench) !void {
+        self.history_state_path = null;
+        self.history_navigating = false;
+        self.history_tab = null;
+        self.history_selection_listener = null;
         self.history = HistoryService.init(self.allocator);
         errdefer self.history.deinit();
 
