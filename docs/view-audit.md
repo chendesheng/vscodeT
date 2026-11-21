@@ -157,6 +157,11 @@ For each row:
   append a dimmed parent directory; `workbench.editor.labelFormat` selects the
   short/medium/long form. Added a duplicate-label test. Tab actions/overflow
   and the control-layer variants remain pending.
+- `f04dff1` gutter: paint the current-line margin highlight. Registered the
+  margin current-line overlay and painted the gutter row for
+  `renderLineHighlight: gutter|all`; added a View regression test. Focus-only
+  tracking, glyph tooltips, margin decorations and line-decoration classes
+  remain pending.
 
 ## Next slice
 
