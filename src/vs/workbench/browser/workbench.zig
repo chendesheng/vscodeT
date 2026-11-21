@@ -7356,6 +7356,7 @@ pub const Workbench = struct {
             return true;
         }
         if (std.mem.eql(u8, command, "workbench.action.statusbar.escapeFocus")) {
+            part.clearHover();
             if (part.focusedHandle() != null) {
                 part.clearFocus();
             } else {
@@ -12410,6 +12411,26 @@ test "Workbench: duplicate tab labels show their directories" {
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, row, "same.txt"));
     try std.testing.expect(std.mem.indexOf(u8, row, "a") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "b") != null);
+}
+
+test "Workbench: status bar escape clears the hover tooltip" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "status_escape.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    const part = workbench.statusbar.main_part;
+    const entry = part.model.entries()[0];
+    part.setHovered(entry.handle);
+    try std.testing.expect(part.hovered != null);
+
+    _ = workbench.runStatusbarCommand("workbench.action.statusbar.escapeFocus");
+    try std.testing.expect(part.hovered == null);
 }
 
 test "Workbench: status bar spans the window and shows editor state" {
