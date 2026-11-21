@@ -12,6 +12,7 @@ const Range = @import("../../../common/core/range.zig").Range;
 const Selection = @import("../../../common/core/selection.zig").Selection;
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
 const extension_api = @import("../../../../workbench/api/common/extensionApi.zig");
+const ui = @import("ui");
 
 const ITextEditor = extension_api.ITextEditor;
 const IWindowService = extension_api.IWindowService;
@@ -24,15 +25,20 @@ pub const Mode = enum {
     replace,
     visual,
     visual_line,
+    visual_block,
     operator_pending,
     command_line,
     search_forward,
     search_backward,
 };
 
-const Operator = enum { none, delete, change, yank };
+const Operator = enum { none, delete, change, yank, indent, outdent };
 
 const Find = struct { char: u21, forward: bool, till: bool };
+const LastVisual = struct { range: Range, linewise: bool };
+const BlockSelection = struct { anchor: Position, cursor: Position };
+const RecordedKey = struct { key: ui.Key, mods: ui.Modifiers };
+const LineUndo = struct { line: usize, text: []u8 };
 
 const Register = struct {
     text: []u8,
@@ -97,6 +103,16 @@ pub const VimEngine = struct {
     search_buffer: ArrayList(u8),
     last_search: ArrayList(u8),
     search_forward: bool = true,
+    search_is_regex: bool = true,
+    last_search_match: ?Range = null,
+    last_visual: ?LastVisual = null,
+    last_insert_position: ?Position = null,
+    line_undo: ?LineUndo = null,
+    visual_block: ?BlockSelection = null,
+    pending_keys: ArrayList(RecordedKey),
+    last_change: ArrayList(RecordedKey),
+    replaying: bool = false,
+    did_change: bool = false,
     registers: *Registers,
     owns_registers: bool = false,
     status_buf: [192]u8 = undefined,
@@ -124,6 +140,8 @@ pub const VimEngine = struct {
             .command_buffer = ArrayList(u8).init(allocator),
             .search_buffer = ArrayList(u8).init(allocator),
             .last_search = ArrayList(u8).init(allocator),
+            .pending_keys = ArrayList(RecordedKey).init(allocator),
+            .last_change = ArrayList(RecordedKey).init(allocator),
             .registers = registers,
             .owns_registers = shared_registers == null,
         };
@@ -136,6 +154,11 @@ pub const VimEngine = struct {
         self.command_buffer.deinit();
         self.search_buffer.deinit();
         self.last_search.deinit();
+        self.clearRecorded(&self.pending_keys);
+        self.clearRecorded(&self.last_change);
+        self.pending_keys.deinit();
+        self.last_change.deinit();
+        if (self.line_undo) |*undo| self.allocator.free(undo.text);
         if (self.owns_registers) {
             self.registers.deinit();
             self.allocator.destroy(self.registers);
@@ -149,6 +172,7 @@ pub const VimEngine = struct {
             .replace => "-- REPLACE --",
             .visual => "-- VISUAL --",
             .visual_line => "-- VISUAL LINE --",
+            .visual_block => "-- VISUAL BLOCK --",
             .command_line => std.fmt.bufPrint(&self.status_buf, ":{s}", .{self.command_buffer.items}) catch ":",
             .search_forward => std.fmt.bufPrint(&self.status_buf, "/{s}", .{self.search_buffer.items}) catch "/",
             .search_backward => std.fmt.bufPrint(&self.status_buf, "?{s}", .{self.search_buffer.items}) catch "?",
@@ -175,6 +199,21 @@ pub const VimEngine = struct {
     }
 
     pub fn handleKey(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        if (!self.replaying) {
+            if (isDotCommand(event) and self.mode == .normal and self.operator == .none and
+                self.pending_find == null and self.pending_register == null and !self.pending_g and
+                !self.pending_z and !self.pending_window and !self.count_active)
+            {
+                return self.repeatLastChange();
+            }
+            try self.recordKey(event);
+        }
+        const consumed = try self.dispatchKey(event);
+        if (!self.replaying) try self.finishRecording();
+        return consumed;
+    }
+
+    fn dispatchKey(self: *VimEngine, event: *const KeyInputEvent) !bool {
         switch (self.mode) {
             .insert, .replace => return self.handleInsert(event),
             .command_line => return self.handleCommandLine(event),
@@ -183,7 +222,69 @@ pub const VimEngine = struct {
         }
     }
 
+    fn isDotCommand(event: *const KeyInputEvent) bool {
+        return switch (event.key) {
+            .char => |char| char == '.',
+            .text => |text| text.len == 1 and text[0] == '.',
+            else => false,
+        };
+    }
+
+    fn recordKey(self: *VimEngine, event: *const KeyInputEvent) !void {
+        var recorded = RecordedKey{ .key = event.key, .mods = event.mods };
+        if (event.key == .text) {
+            const copy = try self.allocator.dupe(u8, event.key.text);
+            errdefer self.allocator.free(copy);
+            recorded.key = .{ .text = copy };
+        }
+        try self.pending_keys.append(recorded);
+    }
+
+    fn clearRecorded(self: *VimEngine, keys: *ArrayList(RecordedKey)) void {
+        for (keys.items) |recorded| {
+            if (recorded.key == .text) self.allocator.free(recorded.key.text);
+        }
+        keys.clearRetainingCapacity();
+    }
+
+    fn finishRecording(self: *VimEngine) !void {
+        if (self.did_change and self.mode == .normal and self.operator == .none and
+            self.pending_find == null and self.pending_replace == false and
+            self.pending_register == null and !self.pending_g and !self.pending_z and
+            !self.pending_window and self.visual_block == null and !self.count_active)
+        {
+            self.clearRecorded(&self.last_change);
+            const old_pending = self.pending_keys;
+            self.pending_keys = self.last_change;
+            self.last_change = old_pending;
+            self.did_change = false;
+            return;
+        }
+        if (self.mode == .normal and !self.did_change and self.operator == .none and
+            self.pending_find == null and self.pending_replace == false and
+            self.pending_register == null and !self.pending_g and !self.pending_z and
+            !self.pending_window and self.visual_block == null and !self.count_active)
+        {
+            self.clearRecorded(&self.pending_keys);
+        }
+    }
+
+    fn repeatLastChange(self: *VimEngine) !bool {
+        if (self.last_change.items.len == 0) return true;
+        self.replaying = true;
+        defer self.replaying = false;
+        self.did_change = false;
+        self.clearRecorded(&self.pending_keys);
+        for (self.last_change.items) |recorded| {
+            var event = KeyInputEvent{ .key = recorded.key, .mods = recorded.mods };
+            _ = try self.dispatchKey(&event);
+        }
+        self.did_change = false;
+        return true;
+    }
+
     fn handleNormal(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        if (self.mode == .visual_block) return self.handleVisualBlockKey(event);
         switch (event.key) {
             .text => |text| {
                 // The terminal decoder emits printable runs as `.text` (not
@@ -206,6 +307,7 @@ pub const VimEngine = struct {
             .escape => {
                 self.resetPending();
                 if (self.mode == .visual or self.mode == .visual_line) {
+                    try self.rememberVisual();
                     const position = self.editor.cursorPosition();
                     try self.editor.setSelections(&[_]Selection{Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)});
                 }
@@ -273,6 +375,8 @@ pub const VimEngine = struct {
                 'd' => return self.applyVisualOperator(.delete),
                 'c' => return self.applyVisualOperator(.change),
                 'y' => return self.applyVisualOperator(.yank),
+                '>' => return self.applyVisualOperator(.indent),
+                '<' => return self.applyVisualOperator(.outdent),
                 'o' => {
                     const selections = try self.editor.getSelections(self.allocator);
                     defer self.allocator.free(selections);
@@ -322,6 +426,10 @@ pub const VimEngine = struct {
                 try self.window.switchTab(1);
             } else if (char == 'T') {
                 try self.window.switchTab(-1);
+            } else if (char == 'v') {
+                try self.reselectVisual();
+            } else if (char == 'i') {
+                try self.gotoLastInsert();
             }
             return true;
         }
@@ -377,9 +485,13 @@ pub const VimEngine = struct {
             'g' => self.pending_g = true,
             'z' => self.pending_z = true,
             'G' => try self.gotoLine(self.takeCount()),
+            '%' => try self.matchBracketMotion(),
             'd' => try self.startOperator(.delete),
             'c' => try self.startOperator(.change),
             'y' => try self.startOperator(.yank),
+            '>' => try self.startOperator(.indent),
+            '<' => try self.startOperator(.outdent),
+            'U' => try self.undoLine(),
             'x' => _ = try self.deleteChars(self.takeCount(), false),
             'X' => _ = try self.deleteChars(self.takeCount(), true),
             's' => try self.changeChars(self.takeCount()),
@@ -408,6 +520,7 @@ pub const VimEngine = struct {
             'J' => try self.joinLines(self.takeCount()),
             'v' => try self.startVisual(false),
             'V' => try self.startVisual(true),
+            'R' => try self.startReplaceMode(),
             ':' => {
                 self.command_buffer.clearRetainingCapacity();
                 self.mode = .command_line;
@@ -442,6 +555,7 @@ pub const VimEngine = struct {
             'e' => _ = self.editor.scrollViewLines(1),
             'y' => _ = self.editor.scrollViewLines(-1),
             ']' => _ = try self.commands.execute("editor.action.revealDefinition"),
+            'v' => try self.startVisualBlock(),
             else => return false,
         }
         return true;
@@ -458,6 +572,8 @@ pub const VimEngine = struct {
                 .delete => try self.deleteLines(line, count),
                 .change => try self.changeLines(line, count),
                 .yank => try self.yankLines(line, count),
+                .indent => try self.indentLines(line, count, true),
+                .outdent => try self.indentLines(line, count, false),
                 .none => {},
             }
             return;
@@ -478,12 +594,14 @@ pub const VimEngine = struct {
         self.operator = .none;
         self.operator_count = 1;
         self.mode = .normal;
-        if (char == 'd' or char == 'c' or char == 'y') {
+        if (char == 'd' or char == 'c' or char == 'y' or char == '>' or char == '<') {
             const line = self.editor.cursorPosition().lineNumber;
             switch (operator) {
                 .delete => try self.deleteLines(line, count),
                 .change => try self.changeLines(line, count),
                 .yank => try self.yankLines(line, count),
+                .indent => try self.indentLines(line, count, true),
+                .outdent => try self.indentLines(line, count, false),
                 .none => {},
             }
             return true;
@@ -544,7 +662,139 @@ pub const VimEngine = struct {
         }
     }
 
+    fn rememberLine(self: *VimEngine, line: usize) !void {
+        if (self.line_undo) |undo| {
+            if (undo.line == line) return;
+            self.allocator.free(undo.text);
+            self.line_undo = null;
+        }
+        var content = try self.editor.model.getLineContent(line);
+        defer content.deinit();
+        self.line_undo = .{ .line = line, .text = try self.allocator.dupe(u8, content.items) };
+    }
+
+    fn undoLine(self: *VimEngine) !void {
+        const undo = self.line_undo orelse return;
+        self.did_change = true;
+        const line = undo.line;
+        self.editor.beginUndoGroup();
+        defer self.editor.endUndoGroup();
+        try self.editor.setCursor(Position.init(line, 1));
+        try self.editor.applyEdits(
+            &[_]extension_api.ITextEdit{.{ .range = Range.init(line, 1, line, self.lineMaxColumn(line)), .text = undo.text }},
+            &[_]Position{Position.init(line, 1)},
+        );
+        self.allocator.free(undo.text);
+        self.line_undo = null;
+        try self.editor.setCursor(self.firstNonBlank(line));
+    }
+
+    fn indentLines(self: *VimEngine, line: usize, count: usize, indent: bool) !void {
+        const range = try self.linewiseRange(line, count);
+        try self.applyOperator(if (indent) .indent else .outdent, range, true);
+    }
+
+    fn matchBracketMotion(self: *VimEngine) !void {
+        const model = self.editor.model;
+        const cursor = self.editor.cursorPosition();
+        if (model.bracketPairs().matchBracket(cursor, null)) |pair| {
+            const opening = pair[0];
+            const target = if (opening.containsPosition(&cursor)) pair[1].startPosition() else opening.startPosition();
+            try self.editor.setCursor(target);
+            try self.clampNormal();
+            return;
+        }
+
+        // Plaintext files have no language bracket configuration, so fall
+        // back to a same-line matcher for `%`.
+        const line = try model.getLineContent(cursor.lineNumber);
+        defer line.deinit();
+        var index = @min(cursor.column -| 1, line.items.len);
+        while (index < line.items.len) : (index += 1) {
+            const kind = bracketKind(line.items[index]) orelse continue;
+            const target = scanBracket(line.items, index, kind) orelse return;
+            try self.editor.setCursor(Position.init(cursor.lineNumber, target + 1));
+            try self.clampNormal();
+            return;
+        }
+    }
+
+    const BracketKind = enum { open_paren, close_paren, open_square, close_square, open_brace, close_brace };
+
+    fn bracketKind(byte: u8) ?BracketKind {
+        return switch (byte) {
+            '(' => .open_paren,
+            ')' => .close_paren,
+            '[' => .open_square,
+            ']' => .close_square,
+            '{' => .open_brace,
+            '}' => .close_brace,
+            else => null,
+        };
+    }
+
+    fn scanBracket(line: []const u8, start: usize, kind: BracketKind) ?usize {
+        const open: u8 = switch (kind) {
+            .open_paren => '(',
+            .close_paren => ')',
+            .open_square => '[',
+            .close_square => ']',
+            .open_brace => '{',
+            .close_brace => '}',
+        };
+        const close: u8 = switch (kind) {
+            .open_paren => ')',
+            .close_paren => '(',
+            .open_square => ']',
+            .close_square => '[',
+            .open_brace => '}',
+            .close_brace => '{',
+        };
+        const forward = switch (kind) {
+            .open_paren, .open_square, .open_brace => true,
+            else => false,
+        };
+        var depth: isize = 0;
+        if (forward) {
+            var index = start;
+            while (index < line.len) : (index += 1) {
+                if (line[index] == open) depth += 1;
+                if (line[index] == close) {
+                    depth -= 1;
+                    if (depth == 0) return index;
+                }
+            }
+        } else {
+            var index: isize = @intCast(start);
+            while (index >= 0) : (index -= 1) {
+                const byte = line[@intCast(index)];
+                if (byte == open) depth += 1;
+                if (byte == close) {
+                    depth -= 1;
+                    if (depth == 0) return @intCast(index);
+                }
+            }
+        }
+        return null;
+    }
+
     fn applyOperator(self: *VimEngine, operator: Operator, range: Range, linewise: bool) !void {
+        if (operator == .indent or operator == .outdent) {
+            try self.rememberLine(range.startLineNumber);
+            self.did_change = true;
+            const start_line = range.startLineNumber;
+            var end_line = range.endLineNumber;
+            if (end_line > start_line and range.endColumn == 1) end_line -= 1;
+            self.editor.beginUndoGroup();
+            defer self.editor.endUndoGroup();
+            const selections = try self.allocator.alloc(Selection, 1);
+            defer self.allocator.free(selections);
+            selections[0] = Selection.init(start_line, 1, end_line, self.lineMaxColumn(end_line));
+            try self.editor.setSelections(selections);
+            if (operator == .indent) try self.editor.indentLines() else try self.editor.outdentLines();
+            try self.editor.setCursor(self.firstNonBlank(start_line));
+            return;
+        }
         if (operator == .yank) {
             const register = self.selectedRegister();
             const text = try self.rangeText(range);
@@ -553,6 +803,8 @@ pub const VimEngine = struct {
             try self.editor.setCursor(range.startPosition());
             return;
         }
+        try self.rememberLine(range.startLineNumber);
+        self.did_change = true;
         self.editor.beginUndoGroup();
         var keep_group = false;
         defer if (!keep_group) self.editor.endUndoGroup();
@@ -598,6 +850,8 @@ pub const VimEngine = struct {
     /// Deletes `range` and enters insert mode inside the already-open undo
     /// group. The group closes when insert mode is left.
     fn applyChangeRange(self: *VimEngine, range: Range) !void {
+        try self.rememberLine(range.startLineNumber);
+        self.did_change = true;
         const text = try self.rangeText(range);
         defer self.allocator.free(text);
         try self.registers.set(self.selectedRegister(), text, false);
@@ -662,7 +916,32 @@ pub const VimEngine = struct {
         try self.enterInsert(false);
     }
 
+    fn startReplaceMode(self: *VimEngine) !void {
+        try self.enterInsert(false);
+        self.mode = .replace;
+    }
+
+    fn replaceAtCursor(self: *VimEngine, char: u21) !void {
+        self.did_change = true;
+        const cursor = self.editor.cursorPosition();
+        const line = try self.editor.model.getLineContent(cursor.lineNumber);
+        defer line.deinit();
+        var buffer: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(char, &buffer) catch return;
+        if (cursor.column <= line.items.len) {
+            const end_column = try self.nextColumn(cursor.lineNumber, cursor.column);
+            try self.editor.applyEdits(
+                &[_]extension_api.ITextEdit{.{ .range = Range.init(cursor.lineNumber, cursor.column, cursor.lineNumber, end_column), .text = buffer[0..len] }},
+                &[_]Position{Position.init(cursor.lineNumber, cursor.column + len)},
+            );
+        } else {
+            try self.editor.insertText(buffer[0..len]);
+        }
+    }
+
     fn enterInsert(self: *VimEngine, group_active: bool) !void {
+        try self.rememberLine(self.editor.cursorPosition().lineNumber);
+        self.last_insert_position = self.editor.cursorPosition();
         if (!group_active) self.editor.beginUndoGroup();
         self.insert_group = true;
         self.mode = .insert;
@@ -670,8 +949,10 @@ pub const VimEngine = struct {
     }
 
     fn openLine(self: *VimEngine, above: bool) !void {
-        self.editor.beginUndoGroup();
+        self.did_change = true;
         const cursor = self.editor.cursorPosition();
+        try self.rememberLine(cursor.lineNumber);
+        self.editor.beginUndoGroup();
         if (above) {
             try self.editor.setCursor(Position.init(cursor.lineNumber, 1));
         } else {
@@ -684,6 +965,7 @@ pub const VimEngine = struct {
     }
 
     fn finishInsert(self: *VimEngine) !void {
+        self.last_insert_position = self.editor.cursorPosition();
         if (self.insert_group) {
             self.editor.endUndoGroup();
             self.insert_group = false;
@@ -698,6 +980,13 @@ pub const VimEngine = struct {
                 if (self.insert_register) {
                     self.insert_register = false;
                     try self.insertRegister(text);
+                    return true;
+                }
+                self.did_change = true;
+                if (self.mode == .replace) {
+                    var view = std.unicode.Utf8View.init(text) catch return false;
+                    var iterator = view.iterator();
+                    while (iterator.nextCodepoint()) |codepoint| try self.replaceAtCursor(codepoint);
                     return true;
                 }
                 try self.editor.insertText(text);
@@ -720,17 +1009,37 @@ pub const VimEngine = struct {
                     return true;
                 }
                 if (event.mods.alt) return false;
+                if (self.mode == .replace) {
+                    try self.replaceAtCursor(char);
+                    return true;
+                }
+                self.did_change = true;
                 var buffer: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(char, &buffer) catch return false;
                 try self.editor.insertText(buffer[0..len]);
                 return true;
             },
             .escape => try self.finishInsert(),
-            .enter => try self.editor.newline(),
-            .tab => try self.editor.insertTab(),
-            .backtab => try self.editor.outdent(),
-            .backspace => try self.editor.deleteLeft(),
-            .delete => try self.editor.deleteRight(),
+            .enter => {
+                self.did_change = true;
+                try self.editor.newline();
+            },
+            .tab => {
+                self.did_change = true;
+                try self.editor.insertTab();
+            },
+            .backtab => {
+                self.did_change = true;
+                try self.editor.outdent();
+            },
+            .backspace => {
+                self.did_change = true;
+                try self.editor.deleteLeft();
+            },
+            .delete => {
+                self.did_change = true;
+                try self.editor.deleteRight();
+            },
             .up => try self.editor.moveLogicalLine(false, false, 1),
             .down => try self.editor.moveLogicalLine(true, false, 1),
             .left => try self.moveLeft(1, false),
@@ -784,6 +1093,7 @@ pub const VimEngine = struct {
                     try self.last_search.appendSlice(self.search_buffer.items);
                 }
                 self.mode = .normal;
+                self.last_search_match = null;
                 try self.searchAgain(1, forward);
             },
             .backspace => {
@@ -831,6 +1141,10 @@ pub const VimEngine = struct {
             self.ignore_case = true;
         } else if (std.mem.eql(u8, command, "set noignorecase")) {
             self.ignore_case = false;
+        } else if (std.mem.eql(u8, command, "set regex")) {
+            self.search_is_regex = true;
+        } else if (std.mem.eql(u8, command, "set noregex")) {
+            self.search_is_regex = false;
         } else if (std.mem.startsWith(u8, command, "e ")) {
             try self.window.openPath(std.mem.trim(u8, command[2..], " "));
         } else if (std.fmt.parseInt(usize, command, 10)) |line| {
@@ -842,29 +1156,66 @@ pub const VimEngine = struct {
 
     fn searchAgain(self: *VimEngine, count: usize, forward: bool) !void {
         if (self.last_search.items.len == 0) return;
-        var value = try self.editor.model.getValue(.LF, false);
-        defer value.deinit();
-        const cursor_offset = self.editor.model.getOffsetAt(self.editor.cursorPosition());
-        var search_offset: usize = if (forward)
-            @min(cursor_offset + 1, value.items.len)
-        else
-            cursor_offset;
-        var found_offset: ?usize = null;
+        const model = self.editor.model;
+        const cursor = self.editor.cursorPosition();
+        var from = if (forward) try self.afterPosition(cursor) else try self.leftPosition(cursor, 1);
+        if (self.last_search_match) |last| {
+            if (last.containsPosition(&cursor)) {
+                from = if (forward) blk: {
+                    const end = Position.init(last.endLineNumber, last.endColumn + 1);
+                    if (end.column > model.getLineMaxColumn(end.lineNumber)) {
+                        if (end.lineNumber < model.getLineCount()) {
+                            break :blk Position.init(end.lineNumber + 1, 1);
+                        }
+                        break :blk end;
+                    }
+                    break :blk end;
+                } else try self.leftPosition(Position.init(last.startLineNumber, last.startColumn), 1);
+            }
+        }
+        var found: ?Range = null;
         var remaining = @max(count, 1);
         while (remaining > 0) : (remaining -= 1) {
-            const candidate = if (forward)
-                findForward(value.items, search_offset, self.last_search.items, self.ignore_case) orelse
-                    findForward(value.items, 0, self.last_search.items, self.ignore_case) orelse return
+            var match = if (forward)
+                try model.findNextMatch(self.last_search.items, from, self.search_is_regex, !self.ignore_case, null, false)
             else
-                findBackward(value.items, search_offset, self.last_search.items, self.ignore_case) orelse
-                    findBackward(value.items, value.items.len, self.last_search.items, self.ignore_case) orelse return;
-            found_offset = candidate;
-            search_offset = if (forward) candidate + 1 else candidate;
+                try model.findPreviousMatch(self.last_search.items, from, self.search_is_regex, !self.ignore_case, null, false);
+            if (match == null) {
+                const wrap_position = if (forward)
+                    Position.init(1, 1)
+                else
+                    Position.init(model.getLineCount(), model.getLineMaxColumn(model.getLineCount()));
+                match = if (forward)
+                    try model.findNextMatch(self.last_search.items, wrap_position, self.search_is_regex, !self.ignore_case, null, false)
+                else
+                    try model.findPreviousMatch(self.last_search.items, wrap_position, self.search_is_regex, !self.ignore_case, null, false);
+            }
+            const found_match = match orelse return;
+            found = found_match.range;
+            // Advance past the match for the next count iteration.
+            if (forward) {
+                from = Position.init(found_match.range.endLineNumber, found_match.range.endColumn + 1);
+                if (from.column > model.getLineMaxColumn(from.lineNumber)) {
+                    if (from.lineNumber < model.getLineCount()) {
+                        from = Position.init(from.lineNumber + 1, 1);
+                    } else {
+                        from = Position.init(from.lineNumber, model.getLineMaxColumn(from.lineNumber));
+                    }
+                }
+            } else {
+                from = Position.init(found_match.range.startLineNumber, found_match.range.startColumn);
+                if (from.column > 1) {
+                    from.column -= 1;
+                } else if (from.lineNumber > 1) {
+                    from = Position.init(from.lineNumber - 1, model.getLineMaxColumn(from.lineNumber - 1));
+                }
+            }
         }
-        const position = self.editor.model.getPositionAt(found_offset.?);
-        try self.editor.setCursor(position);
+        const range = found orelse return;
+        self.last_search_match = range;
+        try self.editor.setCursor(range.startPosition());
         try self.clampNormal();
-        self.editor.revealRange(Range.init(position.lineNumber, position.column, position.lineNumber, position.column));
+        self.editor.revealRange(range);
     }
 
     fn gotoLine(self: *VimEngine, line: usize) !void {
@@ -921,6 +1272,34 @@ pub const VimEngine = struct {
         return true;
     }
 
+    fn rememberVisual(self: *VimEngine) !void {
+        const selections = try self.editor.getSelections(self.allocator);
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return;
+        const selection = selections[0];
+        self.last_visual = .{
+            .range = Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn),
+            .linewise = self.mode == .visual_line,
+        };
+    }
+
+    fn reselectVisual(self: *VimEngine) !void {
+        const visual = self.last_visual orelse return;
+        self.mode = if (visual.linewise) .visual_line else .visual;
+        try self.editor.setSelections(&[_]Selection{Selection.init(
+            visual.range.startLineNumber,
+            visual.range.startColumn,
+            visual.range.endLineNumber,
+            visual.range.endColumn,
+        )});
+    }
+
+    fn gotoLastInsert(self: *VimEngine) !void {
+        const position = self.last_insert_position orelse return;
+        try self.editor.setCursor(position);
+        try self.enterInsert(false);
+    }
+
     fn applyVisualOperator(self: *VimEngine, operator: Operator) !bool {
         const selections = try self.editor.getSelections(self.allocator);
         defer self.allocator.free(selections);
@@ -933,8 +1312,172 @@ pub const VimEngine = struct {
             try self.linewiseRange(selection.startLineNumber, end_line - selection.startLineNumber + 1)
         else
             Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
+        self.last_visual = .{ .range = range, .linewise = linewise };
         self.mode = .normal;
         try self.applyOperator(operator, range, linewise);
+        return true;
+    }
+
+    fn startVisualBlock(self: *VimEngine) !void {
+        const cursor = self.editor.cursorPosition();
+        self.visual_block = .{ .anchor = cursor, .cursor = cursor };
+        self.mode = .visual_block;
+        try self.applyBlockSelections();
+    }
+
+    fn applyBlockSelections(self: *VimEngine) !void {
+        const block = self.visual_block orelse return;
+        const start_line = @min(block.anchor.lineNumber, block.cursor.lineNumber);
+        const end_line = @max(block.anchor.lineNumber, block.cursor.lineNumber);
+        const start_col = @min(block.anchor.column, block.cursor.column);
+        const end_col = @max(block.anchor.column, block.cursor.column) + 1;
+        const selections = try self.allocator.alloc(Selection, end_line - start_line + 1);
+        defer self.allocator.free(selections);
+        var line = start_line;
+        while (line <= end_line) : (line += 1) {
+            const max_column = self.lineMaxColumn(line);
+            const from = @min(start_col, max_column);
+            const to = @min(end_col, max_column);
+            selections[line - start_line] = Selection.init(line, from, line, @max(from, to));
+        }
+        try self.editor.setSelections(selections);
+    }
+
+    fn handleVisualBlockKey(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        const block = &(self.visual_block orelse return false);
+        switch (event.key) {
+            .escape => {
+                self.mode = .normal;
+                const position = block.cursor;
+                self.visual_block = null;
+                try self.editor.setSelections(&[_]Selection{Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)});
+                return true;
+            },
+            .left => {
+                block.cursor = try self.leftPositionOnLine(block.cursor, 1);
+                try self.applyBlockSelections();
+                return true;
+            },
+            .right => {
+                block.cursor = try self.rightPositionOnLine(block.cursor, 1);
+                try self.applyBlockSelections();
+                return true;
+            },
+            .up => {
+                try self.editor.setCursor(block.cursor);
+                try self.editor.moveLogicalLine(false, false, 1);
+                block.cursor = self.editor.cursorPosition();
+                try self.applyBlockSelections();
+                return true;
+            },
+            .down => {
+                try self.editor.setCursor(block.cursor);
+                try self.editor.moveLogicalLine(true, false, 1);
+                block.cursor = self.editor.cursorPosition();
+                try self.applyBlockSelections();
+                return true;
+            },
+            .char => |char| {
+                if (event.mods.ctrl or event.mods.alt) return false;
+                switch (char) {
+                    'h' => block.cursor = try self.leftPositionOnLine(block.cursor, 1),
+                    'l' => block.cursor = try self.rightPositionOnLine(block.cursor, 1),
+                    '0' => block.cursor = Position.init(block.cursor.lineNumber, 1),
+                    '$' => block.cursor = self.lineEndPosition(block.cursor.lineNumber, true),
+                    'j' => {
+                        try self.editor.setCursor(block.cursor);
+                        try self.editor.moveLogicalLine(true, false, 1);
+                        block.cursor = self.editor.cursorPosition();
+                    },
+                    'k' => {
+                        try self.editor.setCursor(block.cursor);
+                        try self.editor.moveLogicalLine(false, false, 1);
+                        block.cursor = self.editor.cursorPosition();
+                    },
+                    'o' => {
+                        const anchor = block.anchor;
+                        block.anchor = block.cursor;
+                        block.cursor = anchor;
+                        try self.applyBlockSelections();
+                        return true;
+                    },
+                    'd' => return self.applyBlockOperator(.delete),
+                    'y' => return self.applyBlockOperator(.yank),
+                    'c' => return self.applyBlockOperator(.change),
+                    else => return false,
+                }
+                try self.applyBlockSelections();
+                return true;
+            },
+            .text => |text| {
+                var view = std.unicode.Utf8View.init(text) catch return false;
+                var iterator = view.iterator();
+                var consumed = false;
+                while (iterator.nextCodepoint()) |codepoint| {
+                    var key_event = KeyInputEvent{ .key = .{ .char = codepoint } };
+                    consumed = (try self.handleVisualBlockKey(&key_event)) or consumed;
+                }
+                return consumed;
+            },
+            else => return false,
+        }
+    }
+
+    fn blockBounds(self: *VimEngine) struct { start_line: usize, end_line: usize, start_col: usize, end_col: usize } {
+        const block = self.visual_block.?;
+        return .{
+            .start_line = @min(block.anchor.lineNumber, block.cursor.lineNumber),
+            .end_line = @max(block.anchor.lineNumber, block.cursor.lineNumber),
+            .start_col = @min(block.anchor.column, block.cursor.column),
+            .end_col = @max(block.anchor.column, block.cursor.column) + 1,
+        };
+    }
+
+    fn applyBlockOperator(self: *VimEngine, operator: Operator) !bool {
+        const bounds = self.blockBounds();
+        const start = Position.init(bounds.start_line, bounds.start_col);
+        if (operator == .yank) {
+            var register_text = ArrayList(u8).init(self.allocator);
+            defer register_text.deinit();
+            var line = bounds.start_line;
+            while (line <= bounds.end_line) : (line += 1) {
+                const max_column = self.lineMaxColumn(line);
+                const range = Range.init(line, @min(bounds.start_col, max_column), line, @min(bounds.end_col, max_column));
+                const text = try self.rangeText(range);
+                defer self.allocator.free(text);
+                if (line != bounds.start_line) try register_text.append('\n');
+                try register_text.appendSlice(text);
+            }
+            try self.registers.set(self.selectedRegister(), register_text.items, false);
+            self.mode = .normal;
+            self.visual_block = null;
+            try self.editor.setCursor(start);
+            return true;
+        }
+
+        var edits = ArrayList(extension_api.ITextEdit).init(self.allocator);
+        defer edits.deinit();
+        var line = bounds.start_line;
+        while (line <= bounds.end_line) : (line += 1) {
+            const max_column = self.lineMaxColumn(line);
+            try edits.append(.{
+                .range = Range.init(line, @min(bounds.start_col, max_column), line, @min(bounds.end_col, max_column)),
+                .text = "",
+            });
+        }
+        try self.rememberLine(bounds.start_line);
+        self.did_change = true;
+        self.editor.beginUndoGroup();
+        var keep_group = false;
+        defer if (!keep_group) self.editor.endUndoGroup();
+        try self.editor.setCursor(start);
+        try self.editor.applyEdits(edits.items, &[_]Position{start});
+        self.mode = .normal;
+        self.visual_block = null;
+        if (operator == .change) {
+            keep_group = true;
+            try self.enterInsert(true);
+        }
         return true;
     }
 
@@ -979,6 +1522,7 @@ pub const VimEngine = struct {
 
     fn put(self: *VimEngine, before: bool, count: usize) !void {
         const register = self.registers.get(self.pending_register orelse 0) orelse return;
+        self.did_change = true;
         self.pending_register = null;
         var text = ArrayList(u8).init(self.allocator);
         defer text.deinit();
@@ -986,6 +1530,7 @@ pub const VimEngine = struct {
         while (i < count) : (i += 1) try text.appendSlice(register.text);
 
         const cursor = self.editor.cursorPosition();
+        try self.rememberLine(cursor.lineNumber);
         if (register.linewise) {
             const line = if (before) cursor.lineNumber else @min(cursor.lineNumber + 1, self.editor.model.getLineCount() + 1);
             const position = Position.init(line, 1);
@@ -1003,7 +1548,9 @@ pub const VimEngine = struct {
     }
 
     fn joinLines(self: *VimEngine, count: usize) !void {
+        self.did_change = true;
         const cursor = self.editor.cursorPosition();
+        try self.rememberLine(cursor.lineNumber);
         const line_count = self.editor.model.getLineCount();
         if (cursor.lineNumber >= line_count) return;
         const lines = @min(count, line_count - cursor.lineNumber);
@@ -1015,7 +1562,9 @@ pub const VimEngine = struct {
     }
 
     fn toggleCase(self: *VimEngine, count: usize) !void {
+        self.did_change = true;
         const cursor = self.editor.cursorPosition();
+        try self.rememberLine(cursor.lineNumber);
         const end = try self.rightPosition(cursor, count);
         const range = Range.fromPositions(cursor, end);
         const text = try self.rangeText(range);
@@ -1029,9 +1578,11 @@ pub const VimEngine = struct {
     }
 
     fn replaceChars(self: *VimEngine, char: u21, count: usize) !void {
+        self.did_change = true;
         const cursor = self.editor.cursorPosition();
         const end = try self.rightPosition(cursor, count);
         if (cursor.equals(end)) return;
+        try self.rememberLine(cursor.lineNumber);
         var buffer: [4]u8 = undefined;
         const len = std.unicode.utf8Encode(char, &buffer) catch return;
         var replacement = ArrayList(u8).init(self.allocator);
@@ -1091,12 +1642,14 @@ pub const VimEngine = struct {
 
     fn insertRegister(self: *VimEngine, text: []const u8) !void {
         if (text.len == 0) return;
+        self.did_change = true;
         const name = text[0];
         if (self.registers.get(name)) |register| try self.editor.insertText(register.text);
     }
 
     fn insertRegisterAt(self: *VimEngine, char: u21) !void {
         if (char > 0xff) return;
+        self.did_change = true;
         if (self.registers.get(@intCast(char))) |register| try self.editor.insertText(register.text);
     }
 
@@ -1313,7 +1866,7 @@ pub const VimEngine = struct {
     /// editor is about to apply.
     pub fn resetInteractionState(self: *VimEngine) void {
         self.resetPending();
-        if (self.mode == .visual or self.mode == .visual_line) self.mode = .normal;
+        if (self.mode == .visual or self.mode == .visual_line or self.mode == .visual_block) self.mode = .normal;
     }
 
     fn resetPending(self: *VimEngine) void {

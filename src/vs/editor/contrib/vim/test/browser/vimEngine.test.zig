@@ -323,3 +323,151 @@ test "Vim: printable text runs are normal-mode keys" {
     try h.sendText("u");
     try h.expectValue("abc");
 }
+
+test "Vim: search uses regular expressions" {
+    const h = try Harness.init(std.testing.allocator, "abc123def456");
+    defer h.deinit();
+    try h.sendChar('/');
+    try h.sendText("[0-9]+");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 4), h.editor.modelCursorPosition().column);
+    try h.sendChar('n');
+    try std.testing.expectEqual(@as(usize, 10), h.editor.modelCursorPosition().column);
+}
+
+test "Vim: percent jumps between matching brackets" {
+    const h = try Harness.init(std.testing.allocator, "(foo)");
+    defer h.deinit();
+    try h.sendChar('%');
+    try std.testing.expectEqual(@as(usize, 5), h.editor.modelCursorPosition().column);
+    try h.sendChar('%');
+    try std.testing.expectEqual(@as(usize, 1), h.editor.modelCursorPosition().column);
+}
+
+test "Vim: shift operators indent and outdent lines" {
+    const h = try Harness.init(std.testing.allocator, "one\ntwo");
+    defer h.deinit();
+    try h.sendChar('>');
+    try h.sendChar('>');
+    const indented = try h.value();
+    defer h.allocator.free(indented);
+    try std.testing.expect(std.mem.startsWith(u8, indented, "    one"));
+    try h.sendChar('<');
+    try h.sendChar('<');
+    try h.expectValue("one\ntwo");
+}
+
+test "Vim: U restores the last changed line" {
+    const h = try Harness.init(std.testing.allocator, "abc");
+    defer h.deinit();
+    try h.sendChar('x');
+    try h.expectValue("bc");
+    try h.sendChar('U');
+    try h.expectValue("abc");
+}
+
+test "Vim: gv reselects and gi returns to the last insert" {
+    const gv = try Harness.init(std.testing.allocator, "abc");
+    defer gv.deinit();
+    try gv.sendChar('v');
+    try gv.sendChar('l');
+    try gv.sendChar('d');
+    try gv.expectValue("c");
+    try gv.sendChar('u');
+    try gv.expectValue("abc");
+    try gv.sendChar('g');
+    try gv.sendChar('v');
+    try gv.sendChar('d');
+    try gv.expectValue("c");
+
+    const gi = try Harness.init(std.testing.allocator, "abc");
+    defer gi.deinit();
+    try gi.sendChar('i');
+    try gi.sendText("X");
+    try gi.send(.escape);
+    try gi.expectValue("Xabc");
+    try gi.sendChar('g');
+    try gi.sendChar('i');
+    try gi.sendText("Y");
+    try gi.send(.escape);
+    try gi.expectValue("XYabc");
+}
+
+test "Vim: R replaces text on the current line" {
+    const h = try Harness.init(std.testing.allocator, "abc");
+    defer h.deinit();
+    try h.sendChar('R');
+    try h.sendText("XY");
+    try h.send(.escape);
+    try h.expectValue("XYc");
+    try h.sendChar('u');
+    try h.expectValue("abc");
+}
+
+test "Vim: visual block deletes a rectangle" {
+    const h = try Harness.init(std.testing.allocator, "ab\ncd\nef");
+    defer h.deinit();
+    try h.sendCtrl('v');
+    try h.sendText("j");
+    try h.sendText("d");
+    try h.expectValue("b\nd\nef");
+}
+
+test "Vim: dot repeats the last change" {
+    const x = try Harness.init(std.testing.allocator, "abc");
+    defer x.deinit();
+    try x.sendChar('x');
+    try x.expectValue("bc");
+    try x.sendChar('.');
+    try x.expectValue("c");
+
+    const insert = try Harness.init(std.testing.allocator, "abc");
+    defer insert.deinit();
+    try insert.sendChar('i');
+    try insert.sendText("X");
+    try insert.send(.escape);
+    try insert.expectValue("Xabc");
+    try insert.sendChar('.');
+    try insert.expectValue("XXabc");
+
+    const word = try Harness.init(std.testing.allocator, "one two three");
+    defer word.deinit();
+    try word.sendChar('d');
+    try word.sendChar('w');
+    try word.expectValue("two three");
+    try word.sendChar('.');
+    try word.expectValue("three");
+
+    const count = try Harness.init(std.testing.allocator, "abcdef");
+    defer count.deinit();
+    try count.sendChar('3');
+    try count.sendChar('x');
+    try count.expectValue("def");
+    try count.sendChar('.');
+    try count.expectValue("");
+
+    const replace = try Harness.init(std.testing.allocator, "abc");
+    defer replace.deinit();
+    try replace.sendChar('r');
+    try replace.sendChar('X');
+    try replace.expectValue("Xbc");
+    try replace.sendChar('l');
+    try replace.sendChar('.');
+    try replace.expectValue("XXc");
+}
+
+test "Vim: >j and visual > indent lines" {
+    const motion = try Harness.init(std.testing.allocator, "one\ntwo");
+    defer motion.deinit();
+    try motion.sendChar('>');
+    try motion.sendChar('j');
+    const text = try motion.value();
+    defer motion.allocator.free(text);
+    try std.testing.expect(std.mem.startsWith(u8, text, "    one\n    two"));
+
+    const visual = try Harness.init(std.testing.allocator, "one\ntwo");
+    defer visual.deinit();
+    try visual.sendChar('V');
+    try visual.sendChar('>');
+    try visual.expectValue("    one\ntwo");
+}

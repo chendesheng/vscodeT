@@ -136,6 +136,8 @@ pub fn editorInterface(editor: *Editor) ITextEditor {
         .newline_fn = editorNewline,
         .insert_tab_fn = editorInsertTab,
         .outdent_fn = editorOutdent,
+        .indent_lines_fn = editorIndentLines,
+        .outdent_lines_fn = editorOutdentLines,
         .delete_left_fn = editorDeleteLeft,
         .delete_right_fn = editorDeleteRight,
         .begin_undo_group_fn = editorBeginUndoGroup,
@@ -209,6 +211,14 @@ fn editorInsertTab(context: *anyopaque) anyerror!void {
 
 fn editorOutdent(context: *anyopaque) anyerror!void {
     return editorFrom(context).outdent();
+}
+
+fn editorIndentLines(context: *anyopaque) anyerror!void {
+    return editorFrom(context).indentLines();
+}
+
+fn editorOutdentLines(context: *anyopaque) anyerror!void {
+    return editorFrom(context).outdentLines();
 }
 
 fn editorDeleteLeft(context: *anyopaque) anyerror!void {

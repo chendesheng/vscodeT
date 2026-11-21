@@ -51,21 +51,24 @@ field.
 
 Normal/edit:
 
-- Modes: normal, insert, visual character/line, operator pending, command line,
-  `/` and `?` search prompts.
+- Modes: normal, insert, replace, visual character/line/block, operator
+  pending, command line, `/` and `?` search prompts.
 - Counts, `h j k l`, `w W b B e E`, `0 ^ $`, `gg G`, `f F t T ; ,`.
-- Operators `d c y`, doubled linewise forms (`dd`, `cc`, `yy`), `x X s S D C Y`.
-- `i I a A o O`, `p P`, `r` (pending), `~`, `J`.
+- Operators `d c y`, `>`/`<` indentation, doubled linewise forms (`dd`, `cc`,
+  `yy`), `x X s S D C Y`.
+- `i I a A o O`, `p P`, `r`, `~`, `J`.
 - Registers: unnamed and named (`"a`–`"z`).
 - Text objects: `iw aw iW aW`.
-- Visual character/line operators and `o` to swap the selection anchor.
+- `%`, `U`, `gv`, `gi`, and `.` dot-repeat for the last change.
+- Visual character/line/block operators and `o` to swap the selection anchor.
 - `u`, `Ctrl-R`.
 - Insert mode: text, Enter, Tab, Backspace, Delete, arrows, `Ctrl-W`, `Ctrl-U`,
   `Ctrl-R` register insert, `Esc`.
 
 Command surface:
 
-- `/`, `?`, `n`, `N` literal search through the editor model.
+- `/`, `?`, `n`, `N` regular-expression search through the editor model;
+  `:set regex`/`:set noregex` selects regex or literal matching.
 - `:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`, `:noh`,
   `:set ignorecase`/`:set noignorecase`, line jumps and `:$`.
 - `gd`, `gD`, `gh`, `gO`, `gf`, `Ctrl-]`.
@@ -78,10 +81,9 @@ Command surface:
 
 - Vimscript evaluation, `.vimrc`, plugins and Neovim integration.
 - Macro recording/replay (`q`/`@`), marks and the jumplist.
-- Visual block, replace mode (`R`), multi-cursor operators.
-- Full regular-expression search; search is literal until a later phase.
-- `%`, `>`/`<`, `U`, `gv`, `gi`, `f`/`t` as operator motions and full
-  regular-expression search are not implemented yet.
+- Multi-cursor operators.
+- `f`/`t` as operator motions and block insert/append (`I`/`A` in visual
+  block).
 - System clipboard registers fall back to the unnamed register.
 
 These are documented gaps, not hidden behavior. Do not add VSCodeVim back as a

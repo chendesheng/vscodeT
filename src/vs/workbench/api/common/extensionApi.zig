@@ -45,6 +45,8 @@ pub const ITextEditor = struct {
     newline_fn: *const fn (context: *anyopaque) anyerror!void,
     insert_tab_fn: *const fn (context: *anyopaque) anyerror!void,
     outdent_fn: *const fn (context: *anyopaque) anyerror!void,
+    indent_lines_fn: *const fn (context: *anyopaque) anyerror!void,
+    outdent_lines_fn: *const fn (context: *anyopaque) anyerror!void,
     delete_left_fn: *const fn (context: *anyopaque) anyerror!void,
     delete_right_fn: *const fn (context: *anyopaque) anyerror!void,
     begin_undo_group_fn: *const fn (context: *anyopaque) void,
@@ -93,6 +95,12 @@ pub const ITextEditor = struct {
     }
     pub fn outdent(self: ITextEditor) !void {
         return self.outdent_fn(self.context);
+    }
+    pub fn indentLines(self: ITextEditor) !void {
+        return self.indent_lines_fn(self.context);
+    }
+    pub fn outdentLines(self: ITextEditor) !void {
+        return self.outdent_lines_fn(self.context);
     }
     pub fn deleteLeft(self: ITextEditor) !void {
         return self.delete_left_fn(self.context);
