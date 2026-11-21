@@ -948,7 +948,8 @@ console API for raw mode, sizing and input polling.
   files uses an empty workspace, as upstream does.
 - The editor is rendered through the library (`src/tui/editorView.zig`): text,
   syntax colors, `marginClassName` gutter row tints and marker-cell glyphs for
-  the known diff/edit/comment line classes, glyph-margin glyphs (compacted 1-3 cell lanes with a themed
+  the known diff/edit/comment line classes (the marker cell is reserved while
+  such a decoration exists), glyph-margin glyphs (compacted 1-3 cell lanes with a themed
   `●`/`▲` mapping for the known glyph classes, reserved only while a glyph
   decoration exists),
   right-aligned line numbers (inactive/active colors from
