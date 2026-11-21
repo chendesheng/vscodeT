@@ -6982,7 +6982,12 @@ pub const Workbench = struct {
         }
         if (event.kind == .down) {
             if (sidebar.handleClickPreview(event.x, event.y) catch null) |path| {
-                self.openPreviewPath(path) catch {};
+                self.openPreviewPath(path) catch |err| {
+                    // Like Enter and the async open path: report the failure
+                    // instead of silently leaving the editor unchanged.
+                    self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+                    return true;
+                };
                 self.focus = .editor;
             }
         }
