@@ -92,7 +92,11 @@ with the documented omissions listed at the end of this document.
   overview decorations.
 - `src/extensions/git/src/repository.zig` exposes the upstream `Merge Changes`,
   `Staged Changes` and `Changes` groups, v2 status letters and the
-  working/index and index/HEAD quick-diff providers. `src/vs/workbench/contrib/scm/browser/scmViewPane.zig` is
+  working/index and index/HEAD quick-diff providers. `src/vs/workbench/contrib/scm/browser/scmHistory.zig`
+  ports the Source Control Graph swimlane/ref/view-model generation and
+  `scmHistoryViewPane.zig` renders the graph on the `ui` DOM. The SCM container
+  (`viewPaneContainer.zig` + the shared `ViewContainerModel`) stacks the
+  collapsible Changes and Graph sections. `src/vs/workbench/contrib/scm/browser/scmViewPane.zig` is
   the terminal `SOURCE CONTROL` view; `src/tui/quickDiffController.zig` attaches
   quick diff to file editors.
 - `src/vs/editor/browser/widget/diffEditor/` ports the view model,

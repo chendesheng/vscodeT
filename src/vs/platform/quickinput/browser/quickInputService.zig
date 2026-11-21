@@ -25,6 +25,10 @@ pub const PickOptions = struct {
     /// This is the quick-input prompt used by Go to Line/Column.
     allow_free_input: bool = false,
     no_results_label: ?[]const u8 = null,
+    /// Called after the picker hides (accept or dismiss), so callers can free
+    /// labels/descriptions they handed to `showPick`.
+    cleanup: ?*const fn (context: *anyopaque) void = null,
+    cleanup_context: ?*anyopaque = null,
 };
 
 pub const Presenter = struct {
@@ -43,6 +47,8 @@ pub const QuickInputService = struct {
     handler_context: ?*anyopaque = null,
     allow_free_input: bool = false,
     no_results: ?QuickPickItem = null,
+    cleanup: ?*const fn (context: *anyopaque) void = null,
+    cleanup_context: ?*anyopaque = null,
     error_context: ?*anyopaque = null,
     on_error: ?*const fn (context: *anyopaque, message: []const u8) void = null,
 
@@ -97,6 +103,8 @@ pub const QuickInputService = struct {
         self.handler = handler;
         self.handler_context = context;
         self.allow_free_input = options.allow_free_input;
+        self.cleanup = options.cleanup;
+        self.cleanup_context = options.cleanup_context;
         self.no_results = if (options.no_results_label) |label|
             .{ .item = .{ .label = label } }
         else
@@ -153,6 +161,13 @@ pub const QuickInputService = struct {
     fn onPickerHidden(context: *anyopaque) void {
         const self: *QuickInputService = @ptrCast(@alignCast(context));
         self.presenter.hide(self.presenter.context);
+        const cleanup = self.cleanup;
+        const cleanup_context = self.cleanup_context;
+        self.cleanup = null;
+        self.cleanup_context = null;
+        if (cleanup) |callback| {
+            if (cleanup_context) |value| callback(value);
+        }
     }
 
     fn pickGetPicks(

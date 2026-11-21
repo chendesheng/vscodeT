@@ -220,11 +220,21 @@ const quick_diff_service_mod = @import("../contrib/scm/common/quickDiffService.z
 const quick_diff_controller_mod = @import("../../../tui/quickDiffController.zig");
 const repository_mod = @import("../../../extensions/git/src/repository.zig");
 const scm_view_mod = @import("../contrib/scm/browser/scmViewPane.zig");
+const scm_history_view_mod = @import("../contrib/scm/browser/scmHistoryViewPane.zig");
+const scm_common_history = @import("../contrib/scm/common/history.zig");
+const view_container_model_mod = @import("../services/views/common/viewContainerModel.zig");
+const view_pane_container_mod = @import("./parts/views/viewPaneContainer.zig");
 const text_diff_editor_mod = @import("./parts/editor/textDiffEditor.zig");
 const storage_mod = @import("../../platform/storage/common/storage.zig");
 const TerminalService = terminal_service_mod.TerminalService;
 
 const search_command_ids = @import("../contrib/search/common/constants.zig").SearchCommandIds;
+
+const scm_changes_title_action = views_mod.TitleAction{
+    .id = "git.refresh",
+    .label = "Refresh",
+    .glyph = '\u{27F3}',
+};
 
 /// Side bar title toolbar actions of the Search view container, matching the
 /// `MenuId.ViewTitle` actions upstream. The terminal workbench supplies only
@@ -515,6 +525,7 @@ pub const Workbench = struct {
     /// Stable storage for the transient "Opening ..." status hint; the
     /// status-bar entry keeps the slice.
     status_hint_buf: [256]u8 = undefined,
+    scm_hover_surface: ?ui.Surface = null,
     markers_status: ?*MarkersStatusBar = null,
     problems_view: ?*ProblemsView = null,
     marker_listener: ?@import("../../base/common/event.zig").Emitter(MarkerChangeEvent).ListenerId = null,
@@ -611,6 +622,11 @@ pub const Workbench = struct {
     quick_diff_service: ?*quick_diff_service_mod.QuickDiffService = null,
     quick_diff_controller: ?*quick_diff_controller_mod.Controller = null,
     scm_view: ?*scm_view_mod.ScmView = null,
+    scm_history_view: ?*scm_history_view_mod.SCMHistoryViewPane = null,
+    scm_view_model: ?*view_container_model_mod.ViewContainerModel = null,
+    scm_container: ?*view_pane_container_mod.ViewPaneContainer = null,
+    scm_panes: ?[]view_pane_container_mod.Pane = null,
+    changes_title_actions: [1]views_mod.TitleAction = .{scm_changes_title_action},
     repository: ?*repository_mod.Repository = null,
     git_root: ?[]u8 = null,
     scm_interface: ?*scm_common.ISCMService = null,
@@ -682,6 +698,12 @@ pub const Workbench = struct {
         self.quick_diff_service = null;
         self.quick_diff_controller = null;
         self.scm_view = null;
+        self.scm_history_view = null;
+        self.scm_view_model = null;
+        self.scm_container = null;
+        self.scm_panes = null;
+        self.changes_title_actions = .{scm_changes_title_action};
+        self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
         self.git_status_accessor = null;
@@ -827,6 +849,12 @@ pub const Workbench = struct {
         self.quick_diff_service = null;
         self.quick_diff_controller = null;
         self.scm_view = null;
+        self.scm_history_view = null;
+        self.scm_view_model = null;
+        self.scm_container = null;
+        self.scm_panes = null;
+        self.changes_title_actions = .{scm_changes_title_action};
+        self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
         self.git_status_accessor = null;
@@ -1005,6 +1033,12 @@ pub const Workbench = struct {
         self.quick_diff_service = null;
         self.quick_diff_controller = null;
         self.scm_view = null;
+        self.scm_history_view = null;
+        self.scm_view_model = null;
+        self.scm_container = null;
+        self.scm_panes = null;
+        self.changes_title_actions = .{scm_changes_title_action};
+        self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
         self.git_status_accessor = null;
@@ -1409,6 +1443,11 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.previousPanelView", .label = "View: Previous Panel View", .category = "View", .context = self, .run = commandPreviousPanelView },
             .{ .id = "workbench.action.nextPanelView", .label = "View: Next Panel View", .category = "View", .context = self, .run = commandNextPanelView },
             .{ .id = "git.refresh", .label = "Refresh", .category = "Source Control", .context = self, .run = commandGitRefresh },
+            .{ .id = "workbench.scm.action.graph.refresh", .label = "Source Control Graph: Refresh", .category = "Source Control", .context = self, .run = commandScmHistoryRefresh },
+            .{ .id = "workbench.scm.action.graph.pickHistoryItemRefs", .label = "Source Control Graph: Select History Item References", .category = "Source Control", .context = self, .run = commandScmHistoryPickRefs },
+            .{ .id = "workbench.scm.action.graph.revealCurrentHistoryItem", .label = "Source Control Graph: Go to Current History Item", .category = "Source Control", .context = self, .run = commandScmHistoryReveal },
+            .{ .id = "workbench.scm.action.graph.setListViewMode", .label = "Source Control Graph: View as List", .category = "Source Control", .context = self, .run = commandScmHistoryListMode },
+            .{ .id = "workbench.scm.action.graph.setTreeViewMode", .label = "Source Control Graph: View as Tree", .category = "Source Control", .context = self, .run = commandScmHistoryTreeMode },
             .{ .id = "git.openChange", .label = "Open Change", .category = "Source Control", .context = self, .run = commandGitOpenChange },
             .{ .id = "git.openFile", .label = "Open File", .category = "Source Control", .context = self, .run = commandGitOpenFile },
             .{ .id = "workbench.action.compareEditor.nextChange", .label = "Go to Next Change", .category = "Diff", .context = self, .run = commandDiffNext },
@@ -1698,6 +1737,10 @@ pub const Workbench = struct {
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
         self.service.deinit();
+        if (self.scm_hover_surface) |*surface| {
+            surface.deinit();
+            self.scm_hover_surface = null;
+        }
         self.deinitGit();
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
@@ -1879,6 +1922,12 @@ pub const Workbench = struct {
         const container = self.sidebar_part.pane.active_id orelse "";
         if (std.mem.eql(u8, container, "search")) {
             self.sidebar_part.pane.setTitleActions(&search_title_actions, &search_title_secondary_actions) catch {};
+        } else if (std.mem.eql(u8, container, "scm")) {
+            const merged = if (self.scm_container) |value|
+                value.mergedTitleActions(self.allocator) catch null
+            else
+                null;
+            self.sidebar_part.pane.setTitleActions(merged orelse &.{}, &.{}) catch {};
         } else {
             self.sidebar_part.pane.setTitleActions(&.{}, &.{}) catch {};
         }
@@ -2260,6 +2309,7 @@ pub const Workbench = struct {
             changed = watcher.poll(now_ms) catch false;
             if (changed) {
                 if (self.search_view) |view| view.onConfigurationChanged();
+                self.applyScmHistoryConfig();
             }
         }
         if (self.file_watcher_service) |service| {
@@ -3259,6 +3309,25 @@ pub const Workbench = struct {
     // --- begin git / source control
 
     fn deinitGit(self: *Workbench) void {
+        if (self.scm_container) |container| {
+            container.deinit();
+            self.allocator.destroy(container);
+            self.scm_container = null;
+        }
+        if (self.scm_view_model) |model| {
+            model.deinit();
+            self.allocator.destroy(model);
+            self.scm_view_model = null;
+        }
+        if (self.scm_panes) |panes| {
+            self.allocator.free(panes);
+            self.scm_panes = null;
+        }
+        if (self.scm_history_view) |view| {
+            view.deinit();
+            self.allocator.destroy(view);
+            self.scm_history_view = null;
+        }
         // Detach quick diff while the tab editors and their models still exist:
         // the decorator removes model decorations on detach.
         if (self.quick_diff_controller) |controller| {
@@ -3429,6 +3498,69 @@ pub const Workbench = struct {
         self.scm_view = scm_view;
         scm_view.refresh();
 
+        // Graph view and the collapsible SCM view container. The existing
+        // terminal ViewContainerModel only holds the portable visible/collapsed
+        // state; the workbench supplies the panes.
+        const history_view = try scm_history_view_mod.SCMHistoryViewPane.init(
+            self.allocator,
+            .{
+                .context = self,
+                .open_change = historyOpenChange,
+                .focus_editor = scmFocusEditor,
+                .pick_refs = historyPickRefs,
+            },
+            self.quick_diff_storage,
+        );
+        self.scm_history_view = history_view;
+        history_view.setConfig(self.scmHistoryConfig());
+        if (self.theme_palette) |palette| history_view.setThemeColors(palette);
+        if (provider.historyProvider()) |history_provider| {
+            history_view.setProvider(history_provider.interface());
+        }
+
+        const view_model = try self.allocator.create(view_container_model_mod.ViewContainerModel);
+        view_model.* = view_container_model_mod.ViewContainerModel.init(self.allocator, .{
+            .id = "scm",
+            .title = "Source Control",
+            .icon = "",
+        });
+        self.scm_view_model = view_model;
+        try view_model.addView(.{ .id = "changes", .name = "Changes", .order = 1, .weight = 40 });
+        try view_model.addView(.{
+            .id = "graph",
+            .name = "Graph",
+            .visible = provider.historyProvider() != null,
+            .order = 2,
+            .weight = 40,
+        });
+        view_model.setActiveView("changes");
+
+        const panes = try self.allocator.alloc(view_pane_container_mod.Pane, 2);
+        panes[0] = .{
+            .id = "changes",
+            .title = "Changes",
+            .context = self,
+            .render_body = scmChangesRenderBody,
+            .handle_key = scmChangesHandleKey,
+            .handle_mouse = scmChangesHandleMouse,
+            .title_actions = scmChangesTitleActions,
+        };
+        panes[1] = .{
+            .id = "graph",
+            .title = "Graph",
+            .context = self,
+            .render_body = scmHistoryRenderBody,
+            .handle_key = scmHistoryHandleKey,
+            .handle_mouse = scmHistoryHandleMouse,
+            .title_actions = scmHistoryTitleActions,
+        };
+        self.scm_panes = panes;
+        self.scm_container = try view_pane_container_mod.ViewPaneContainer.init(
+            self.allocator,
+            view_model,
+            panes,
+        );
+
         self.git_status_accessor = try self.statusbar.addEntry(.{
             .name = "Source Control",
             .text = "",
@@ -3542,6 +3674,9 @@ pub const Workbench = struct {
         const provider = self.repository orelse return;
         provider.refresh() catch {};
         if (self.scm_view) |view| view.refresh();
+        if (provider.refreshHistoryRefs(true)) {
+            if (self.scm_history_view) |view| view.onHistoryItemRefsChanged(true);
+        }
         if (self.quick_diff_controller) |controller| _ = controller.refreshAll();
         self.syncGitStatus();
         self.syncGitActivity();
@@ -3714,6 +3849,113 @@ pub const Workbench = struct {
         self.refreshStatus();
     }
 
+    /// Opens a read-only diff between the parent revision and a history item.
+    /// `original_path` is the rename source; `left_rev == null` compares the
+    /// root commit against the empty tree.
+    fn openRefDiff(
+        self: *Workbench,
+        path: []const u8,
+        original_path: ?[]const u8,
+        left_rev: ?[]const u8,
+        right_rev: []const u8,
+        left_label: []const u8,
+        right_label: []const u8,
+    ) !void {
+        const root = self.git_root orelse return error.NoRepository;
+        const git = self.git orelse return error.NoGit;
+        const relative_right = relativeToRoot(path, root) orelse return error.OutsideRepository;
+        const relative_left = if (original_path) |value|
+            relativeToRoot(value, root) orelse relative_right
+        else
+            relative_right;
+
+        const left_text = if (left_rev) |revision| blk: {
+            const value = git.readRefAt(self.allocator, root, relative_left, revision) catch null;
+            break :blk value orelse try self.allocator.dupe(u8, "");
+        } else try self.allocator.dupe(u8, "");
+        defer self.allocator.free(left_text);
+        const right_text = blk: {
+            const value = git.readRefAt(self.allocator, root, relative_right, right_rev) catch null;
+            break :blk value orelse try self.allocator.dupe(u8, "");
+        };
+        defer self.allocator.free(right_text);
+
+        try self.openSnapshotDiff(path, left_text, right_text, left_label, right_label);
+    }
+
+    fn openSnapshotDiff(
+        self: *Workbench,
+        path: []const u8,
+        original_text: []const u8,
+        modified_text: []const u8,
+        left_label: []const u8,
+        right_label: []const u8,
+    ) !void {
+        if (self.findDiffTab(path, left_label, right_label)) |tab| {
+            const pane = self.activePane();
+            const dims = if (pane) |value| editorDimensions(self, value) else Dimensions{ .width = self.cols, .height = self.editorRows() };
+            try tab.diff.?.replace(original_text, modified_text, dims.width, dims.height, self.diffEditorOptions());
+            tab.syncDiffViews();
+            if (pane) |value| {
+                try value.activateTab(tab);
+                tab.layoutCells(dims.width, dims.height);
+            }
+            tab.focusEditor();
+            self.refreshStatus();
+            return;
+        }
+
+        const pane = self.activePane();
+        const dims = if (pane) |value| editorDimensions(self, value) else Dimensions{ .width = self.cols, .height = self.editorRows() };
+        const view = try text_diff_editor_mod.DiffView.create(
+            self.allocator,
+            self.io,
+            .{
+                .original_path = path,
+                .modified_path = path,
+                .original_text = original_text,
+                .modified_text = modified_text,
+                .original_label = left_label,
+                .modified_label = right_label,
+            },
+            dims.width,
+            dims.height,
+            self.diffEditorOptions(),
+        );
+        var view_owned = true;
+        errdefer if (view_owned) view.destroy();
+
+        const opened = try self.service.openEditor(
+            view.input(),
+            null,
+            .{ .open = .{ .pinned = true, .active = true } },
+        );
+        const group_pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        if (!opened.result.is_new) {
+            view.destroy();
+            if (group_pane.tabForInput(view.input()) == null) {
+                for (group_pane.tabs.items) |candidate| {
+                    if (candidate.diff != null and candidate.input.matches(.{ .input = view.input() })) {
+                        try group_pane.activateTab(candidate);
+                        self.focusEditor();
+                        return;
+                    }
+                }
+            }
+            return;
+        }
+
+        const tab = try Tab.initDiff(self.allocator, view);
+        view_owned = false;
+        errdefer tab.deinit();
+        try group_pane.addTab(tab);
+        try group_pane.activateTab(tab);
+        tab.layoutCells(dims.width, dims.height);
+        tab.focusEditor();
+        self.focusEditor();
+        self.refreshStatus();
+    }
+
     const ResolvedDiffTexts = struct {
         original: []u8,
         modified: []u8,
@@ -3830,6 +4072,224 @@ pub const Workbench = struct {
     fn scmFocusEditor(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.focusEditor();
+    }
+
+    /// Builds the Graph configuration from the user settings.
+    pub fn scmHistoryConfig(self: *Workbench) scm_history_view_mod.Config {
+        var config = scm_history_view_mod.Config{};
+        const configuration = self.configuration orelse return config;
+        if (configuration.getValue("scm.graph.pageSize", .{})) |value| {
+            switch (value.*) {
+                .integer => |number| config.page_size = @intCast(@max(@min(number, 1000), 1)),
+                else => {},
+            }
+        }
+        if (configuration.getValue("scm.graph.pageOnScroll", .{})) |value| {
+            switch (value.*) {
+                .bool => |enabled| config.page_on_scroll = enabled,
+                else => {},
+            }
+        }
+        if (configuration.getValue("scm.graph.badges", .{})) |value| {
+            switch (value.*) {
+                .string => |text| config.badges_all = std.mem.eql(u8, text, "all"),
+                else => {},
+            }
+        }
+        if (configuration.getValue("scm.graph.showIncomingChanges", .{})) |value| {
+            switch (value.*) {
+                .bool => |enabled| config.show_incoming_changes = enabled,
+                else => {},
+            }
+        }
+        if (configuration.getValue("scm.graph.showOutgoingChanges", .{})) |value| {
+            switch (value.*) {
+                .bool => |enabled| config.show_outgoing_changes = enabled,
+                else => {},
+            }
+        }
+        if (configuration.getValue("scm.defaultViewMode", .{})) |value| {
+            switch (value.*) {
+                .string => |text| config.default_view_mode = if (std.mem.eql(u8, text, "tree")) .tree else .list,
+                else => {},
+            }
+        }
+        if (configuration.getValue("scm.compactFolders", .{})) |value| {
+            switch (value.*) {
+                .bool => |enabled| config.compact_folders = enabled,
+                else => {},
+            }
+        }
+        if (configuration.getValue("git.commitShortHashLength", .{})) |value| {
+            switch (value.*) {
+                .integer => |number| config.short_hash_length = @intCast(@max(number, 1)),
+                else => {},
+            }
+        }
+        return config;
+    }
+
+    fn applyScmHistoryConfig(self: *Workbench) void {
+        const config = self.scmHistoryConfig();
+        if (self.scm_history_view) |view| view.setConfig(config);
+        if (self.repository) |provider| provider.setCommitShortHashLength(config.short_hash_length);
+    }
+
+    fn scmChangesRenderBody(
+        context: *anyopaque,
+        grid: *ui.CellGrid,
+        rect: ui.Rect,
+        focused: bool,
+    ) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const view = self.scm_view orelse return;
+        if (self.theme_palette) |palette| view.setThemeColors(palette);
+        try view.render(grid, rect, focused, .{ .show_header = false });
+    }
+
+    fn scmChangesHandleKey(context: *anyopaque, event: *ui.KeyEvent) anyerror!bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const view = self.scm_view orelse return false;
+        return view.handleKey(event);
+    }
+
+    fn scmChangesHandleMouse(context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) anyerror!bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const view = self.scm_view orelse return false;
+        return view.handleMouse(@constCast(event), rect);
+    }
+
+    fn scmChangesTitleActions(context: *anyopaque) []const views_mod.TitleAction {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return &self.changes_title_actions;
+    }
+
+    fn scmHistoryRenderBody(
+        context: *anyopaque,
+        grid: *ui.CellGrid,
+        rect: ui.Rect,
+        focused: bool,
+    ) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const view = self.scm_history_view orelse return;
+        if (self.theme_palette) |palette| view.setThemeColors(palette);
+        try view.render(grid, rect, focused);
+    }
+
+    fn scmHistoryHandleKey(context: *anyopaque, event: *ui.KeyEvent) anyerror!bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const view = self.scm_history_view orelse return false;
+        return view.handleKey(event);
+    }
+
+    fn scmHistoryHandleMouse(context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) anyerror!bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const view = self.scm_history_view orelse return false;
+        return view.handleMouse(event, rect);
+    }
+
+    fn scmHistoryTitleActions(context: *anyopaque) []const views_mod.TitleAction {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const view = self.scm_history_view orelse return &.{};
+        return view.titleActions();
+    }
+
+    fn historyOpenChange(
+        context: *anyopaque,
+        history_item: *const scm_common_history.ISCMHistoryItem,
+        change: *const scm_common_history.ISCMHistoryItemChange,
+    ) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const display = history_item.display_id orelse history_item.id;
+        if (history_item.parent_ids.len > 0) {
+            const parent = history_item.parent_ids[0];
+            const parent_label = if (history_item.display_id) |id|
+                parent[0..@min(parent.len, id.len)]
+            else
+                parent;
+            return self.openRefDiff(
+                change.path,
+                change.original_path,
+                parent,
+                history_item.id,
+                parent_label,
+                display,
+            );
+        }
+        return self.openRefDiff(
+            change.path,
+            change.original_path,
+            null,
+            history_item.id,
+            "Empty",
+            display,
+        );
+    }
+
+    fn historyPickRefs(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.showHistoryRefPicker();
+    }
+
+    fn showHistoryRefPicker(self: *Workbench) void {
+        const view = self.scm_history_view orelse return;
+        const provider = view.provider orelse return;
+        const refs = provider.provideHistoryItemRefs(self.allocator, null) catch return;
+        defer scm_common_history.freeHistoryItemRefs(self.allocator, refs);
+
+        const state = self.allocator.create(PickHandlerState) catch return;
+        state.* = .{
+            .workbench = self,
+            .arena = std.heap.ArenaAllocator.init(self.allocator),
+        };
+        errdefer freeRefPickState(state);
+        const arena = state.arena.allocator();
+        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        items.append(.{ .item = .{ .id = "all", .label = "All", .description = "All history item references" } }) catch return;
+        items.append(.{ .item = .{ .id = "auto", .label = "Auto", .description = "Current history item references" } }) catch return;
+        if (refs.len > 0) items.append(.{ .separator = .{ .label = "References" } }) catch return;
+        for (refs) |reference| {
+            const label = arena.dupe(u8, reference.name) catch continue;
+            const description: []const u8 = if (reference.description) |value| arena.dupe(u8, value) catch "" else "";
+            items.append(.{ .item = .{ .id = reference.id, .label = label, .description = description } }) catch continue;
+        }
+        state.items = items.items;
+        self.quick_access.inputService().showPick(
+            state.items,
+            .{
+                .placeholder = "Select a history item reference to view",
+                .cleanup = freeRefPickState,
+                .cleanup_context = state,
+            },
+            refPickAccepted,
+            state,
+        ) catch {};
+    }
+
+    const PickHandlerState = struct {
+        workbench: *Workbench,
+        arena: std.heap.ArenaAllocator,
+        items: []QuickPickItem = &.{},
+    };
+
+    fn freeRefPickState(context: *anyopaque) void {
+        const state: *PickHandlerState = @ptrCast(@alignCast(context));
+        const allocator = state.arena.child_allocator;
+        state.arena.deinit();
+        allocator.destroy(state);
+    }
+
+    fn refPickAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
+        const state: *PickHandlerState = @ptrCast(@alignCast(context));
+        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+        const view = state.workbench.scm_history_view orelse return;
+        if (std.mem.eql(u8, item.id, "all")) {
+            view.setFilterAll();
+        } else if (std.mem.eql(u8, item.id, "auto")) {
+            view.setFilterAuto();
+        } else {
+            view.setFilterRefs(&.{item.id}) catch {};
+        }
     }
 
     fn diffRefLabel(ref: DiffRef) []const u8 {
@@ -6863,7 +7323,9 @@ pub const Workbench = struct {
 
         const active_id = self.activity_bar_part.active_id orelse "";
         if (std.mem.eql(u8, active_id, "scm")) {
-            if (self.scm_view) |view| {
+            if (self.scm_container) |container| {
+                _ = container.handleKey(@constCast(event)) catch {};
+            } else if (self.scm_view) |view| {
                 _ = view.handleKey(@constCast(event)) catch {};
             }
             return true;
@@ -6924,6 +7386,7 @@ pub const Workbench = struct {
         if (event.x > sidebar_right) {
             if (event.kind == .move) {
                 if (self.sidebar) |sidebar| sidebar.clearHover();
+                if (self.scm_history_view) |view| view.clearHover();
             }
             return false;
         }
@@ -6966,7 +7429,27 @@ pub const Workbench = struct {
         if (event.kind == .down) self.focus = .sidebar;
         const active_id = self.activity_bar_part.active_id orelse "";
         if (std.mem.eql(u8, active_id, "scm")) {
-            if (self.scm_view) |view| _ = view.handleMouse(@constCast(event), content) catch false;
+            if (self.scm_container) |container| {
+                if (container.hitTest(content, event.x, event.y)) |hit| {
+                    switch (hit) {
+                        .action => |action| {
+                            container.setActive(action.id);
+                            self.runSidebarTitleAction(action.action);
+                        },
+                        .toggle => |id| {
+                            container.model.setCollapsed(id, !container.model.isCollapsed(id));
+                            container.setActive(id);
+                        },
+                        .body => {
+                            _ = container.handleMouse(@constCast(event), content) catch false;
+                        },
+                    }
+                } else if (event.kind == .move) {
+                    if (self.scm_history_view) |view| view.clearHover();
+                }
+            } else if (self.scm_view) |view| {
+                _ = view.handleMouse(@constCast(event), content) catch false;
+            }
             return true;
         }
         if (std.mem.eql(u8, active_id, "search")) {
@@ -7295,6 +7778,62 @@ pub const Workbench = struct {
         if (self.media_status) |status| status.update(null);
     }
 
+    fn renderScmHistoryHover(self: *Workbench) !void {
+        const view = self.scm_history_view orelse return;
+        const content = view.hoverContent() orelse return;
+        const rect = view.hoverRect() orelse return;
+        const x = self.activityBarWidth() + self.sidebarWidth() + 1;
+        if (x >= self.cols) return;
+        const max_width = self.cols - x - 1;
+        if (max_width < 12) return;
+        const width = @min(max_width, 60);
+        var lines: usize = 1;
+        for (content) |ch| {
+            if (ch == '\n') lines += 1;
+        }
+        const max_height = self.workbenchRows() -| ui.cell.snap(rect.y) -| 2;
+        if (max_height < 3) return;
+        const height = @min(max_height, @min(lines + 2, 12));
+
+        if (self.scm_hover_surface == null or self.scm_hover_surface.?.doc.cols != width or self.scm_hover_surface.?.doc.rows != height) {
+            if (self.scm_hover_surface) |*surface| {
+                try surface.resize(width, height);
+            } else {
+                self.scm_hover_surface = try ui.Surface.init(self.allocator, .{ .cols = width, .rows = height });
+            }
+        }
+        const surface = &self.scm_hover_surface.?;
+        const doc = surface.document();
+        doc.clear();
+        var background = ui.Color{ .r = 37, .g = 37, .b = 38 };
+        var foreground = ui.Color{ .r = 204, .g = 204, .b = 204 };
+        var border = ui.Color{ .r = 69, .g = 69, .b = 69 };
+        if (self.theme_palette) |palette| {
+            background = palette.color("editorHoverWidget.background", .{ 37, 37, 38 });
+            foreground = palette.color("editorHoverWidget.foreground", .{ 204, 204, 204 });
+            border = palette.color("editorHoverWidget.border", .{ 69, 69, 69 });
+        }
+        const root = try doc.createElement(.div);
+        root.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = 0 },
+            .top = .{ .cells = 0 },
+            .width = .{ .cells = @floatFromInt(width) },
+            .height = .{ .cells = @floatFromInt(height) },
+            .background = background,
+            .color = foreground,
+            .border = .all(1),
+            .border_color = border,
+            .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+            .white_space = .pre,
+            .overflow = .hidden,
+        });
+        _ = try root.appendText(content);
+        doc.setRoot(root);
+        try surface.paintFrame();
+        try self.frame.next.blit(surface.grid(), x, ui.cell.snap(rect.y), width, height);
+    }
+
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
         self.syncSearchActivity();
         self.frame.begin();
@@ -7348,7 +7887,9 @@ pub const Workbench = struct {
                     self.renderPlaceholder(content, focused);
                 }
             } else if (std.mem.eql(u8, active_id, "scm")) {
-                if (self.scm_view) |view| {
+                if (self.scm_container) |container| {
+                    try container.render(&self.frame.next, content, focused, self.theme_palette);
+                } else if (self.scm_view) |view| {
                     if (self.theme_palette) |palette| view.setThemeColors(palette);
                     try view.render(&self.frame.next, content, focused, .{ .show_header = false });
                 } else {
@@ -7404,6 +7945,7 @@ pub const Workbench = struct {
                 .part_focused = self.focus == .statusbar,
             });
         }
+        try self.renderScmHistoryHover();
         try self.quick_access.render(&self.frame.next);
         if (self.dialog) |dialog| dialog.render(&self.frame.next);
 
@@ -8382,6 +8924,38 @@ fn commandNextPanelView(context: *anyopaque) anyerror!void {
 fn commandGitRefresh(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     self.refreshGitStatus();
+    if (self.scm_history_view) |view| {
+        view.outdated = false;
+        view.refresh(.reload) catch {};
+    }
+}
+
+fn commandScmHistoryRefresh(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_history_view) |view| {
+        view.outdated = false;
+        try view.refresh(.reload);
+    }
+}
+
+fn commandScmHistoryPickRefs(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.showHistoryRefPicker();
+}
+
+fn commandScmHistoryReveal(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_history_view) |view| try view.revealCurrentHistoryItem();
+}
+
+fn commandScmHistoryListMode(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_history_view) |view| view.setViewMode(.list);
+}
+
+fn commandScmHistoryTreeMode(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_history_view) |view| view.setViewMode(.tree);
 }
 
 fn commandGitOpenChange(context: *anyopaque) anyerror!void {
@@ -8421,9 +8995,21 @@ fn commandDiffRefresh(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return;
     const diff = tab.diff orelse return;
+    if (!isDiffRefLabel(diff.model.original_label) or !isDiffRefLabel(diff.model.modified_label)) {
+        // Commit-to-commit diffs keep display ids as labels; there is no ref to
+        // re-resolve from the workbench state, so leave them unchanged.
+        return;
+    }
     const left = diffRefFromLabel(diff.model.original_label);
     const right = diffRefFromLabel(diff.model.modified_label);
     try self.openDiff(diff.model.modified_path, left, right);
+}
+
+fn isDiffRefLabel(label: []const u8) bool {
+    return std.mem.eql(u8, label, "HEAD") or
+        std.mem.eql(u8, label, "Index") or
+        std.mem.eql(u8, label, "Working Tree") or
+        std.mem.eql(u8, label, "Empty");
 }
 
 fn diffRefFromLabel(label: []const u8) DiffRef {
@@ -8737,6 +9323,10 @@ fn runListCommand(context: *anyopaque, command: []const u8) anyerror!void {
         }
     }
     if (std.mem.eql(u8, active_id, "scm")) {
+        if (self.scm_container) |container| {
+            _ = try container.handleKey(&event);
+            return;
+        }
         if (self.scm_view) |view| {
             _ = try view.handleKey(&event);
             return;
@@ -12774,6 +13364,43 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const provider = workbench.repository.?;
     try std.testing.expect(provider.count() >= 3);
     try std.testing.expect(workbench.scm_view.?.resourceCount() >= 3);
+
+    // The SCM container stacks the Changes and Graph sections and the Graph
+    // lists the repository commits.
+    try std.testing.expect(workbench.scm_container != null);
+    try std.testing.expect(workbench.scm_view_model != null);
+    try std.testing.expect(workbench.scm_history_view != null);
+    const visible_views = try workbench.scm_view_model.?.visibleViews(allocator);
+    defer allocator.free(visible_views);
+    try std.testing.expectEqual(@as(usize, 2), visible_views.len);
+    try std.testing.expectEqualStrings("changes", visible_views[0].id);
+    try std.testing.expectEqualStrings("graph", visible_views[1].id);
+
+    workbench.refreshGitStatus();
+    const history_view = workbench.scm_history_view.?;
+    try history_view.refresh(.reload);
+    try std.testing.expect(history_view.view_models.len > 0);
+    try std.testing.expect(history_view.rows.items.len > 0);
+    try std.testing.expect(history_view.hasCurrentHistoryItem() or history_view.view_models.len > 0);
+
+    // Collapsing the Graph section keeps the header and gives the space to
+    // Changes; rendering both states must not crash.
+    _ = try workbench.showActivityById("scm");
+    workbench.scm_view_model.?.setCollapsed("graph", true);
+    try std.testing.expect(workbench.scm_view_model.?.isCollapsed("graph"));
+    var scm_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer scm_frame.deinit();
+    try workbench.render(&scm_frame.writer);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "SOURCE CONTROL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Graph") != null);
+    workbench.scm_view_model.?.setCollapsed("graph", false);
+
+    // Expanding a commit appends its changed-file rows.
+    if (history_view.rows.items.len > 1) {
+        history_view.selection = 0;
+        _ = try history_view.handleKey(&.{ .key = .right });
+        try std.testing.expect(history_view.rows.items.len >= 1);
+    }
 
     // The branch/status entry and activity badge follow the repository.
     try std.testing.expect(workbench.git_status_accessor != null);

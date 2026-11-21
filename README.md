@@ -788,11 +788,35 @@ console API for raw mode, sizing and input polling.
   (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`) shows `SOURCE CONTROL`, a repository/branch row,
   group counts and relative-path resource rows. `Up`/`Down` select, `Enter` or
   a click opens the change, `r` refreshes and `Escape` returns to the editor.
-  The branch/count status entry (`⎇ branch ↑n ↓m (count)`) opens the SCM view,
-  and the activity badge follows `scm.countBadge` (`all`/`focused`/`off`).
-  There is no extension-host SCM actor, so `vscode.git` is replaced by the CLI
-  delegate. Not ported: staging, committing, discarding, the SCM input box,
-  multi-repository selection, history and artifacts.
+  Resource groups collapse/expand with the header click, `Left`/`Right` or
+  `Space`. The branch/count status entry (`⎇ branch ↑n ↓m (count)`) opens the
+  SCM view, and the activity badge follows `scm.countBadge`
+  (`all`/`focused`/`off`). There is no extension-host SCM actor, so `vscode.git`
+  is replaced by the CLI delegate and the mirrored
+  `src/extensions/git/src/historyProvider.zig`.
+- The Source Control Graph (`workbench.scm.history`) is a second section of the
+  SCM container. `src/vs/workbench/contrib/scm/browser/scmHistory.zig` ports the
+  swimlane/color/reference/view-model generation, and `scmHistoryViewPane.zig`
+  renders it on the `ui` DOM: one cell per swimlane, commit subjects/authors,
+  ref badges, `●`/`◉`/`◎`/`◌` circles and `│`/`╱`/`╲`/`─` lanes. Commits start
+  collapsed; expanding shows changed files in list or compressed tree mode;
+  `Enter` opens a parent↔commit diff. `scm.graph.pageSize` (50),
+  `scm.graph.pageOnScroll` (true), `scm.graph.badges` (`filter`),
+  `scm.graph.showIncomingChanges`/`showOutgoingChanges` (true),
+  `scm.defaultViewMode` (`list`), `scm.compactFolders` (true) and
+  `git.commitShortHashLength` (7) are honored. The title actions select
+  All/Auto/one history-item reference, reveal the current commit, refresh and
+  toggle list/tree; background ref changes while scrolled show "Outdated".
+  View sections are 1-row headers split into weighted bodies (Changes/Graph
+  40/40); with one visible view the header merges into the container title.
+  Not ported: multi-diff "Open Changes" for a whole commit (only per-file
+  diffs), context menus, drag/drop, chat, clipboard copy actions and Git write
+  operations (checkout/cherry-pick/push/publish); the ref picker is
+  single-select instead of upstream's multi-select; one repository per
+  workspace so the repository picker is hidden; hover is plain text without
+  avatars/markdown/command links; page fetches are capped at 20 per call.
+  Staging, committing, discarding, the SCM input box, multi-repository
+  selection and artifacts remain unported.
 - Quick diff is applied as `TextModel` decorations with the upstream
   `dirty-diff-*` classes: whole-line added/modified/deleted ranges, the
   one-cell gutter marker (`+`/`~`/`-`, primary/secondary/pattern variants

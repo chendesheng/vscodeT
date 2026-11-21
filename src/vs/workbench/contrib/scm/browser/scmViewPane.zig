@@ -60,6 +60,11 @@ pub const ScmView = struct {
     /// paints them, zero when the side bar part paints the title.
     header_rows: usize = 2,
     theme: ?*const theme_colors_mod.ThemeColors = null,
+    /// Collapsed resource groups, keyed by the provider's stable group id.
+    collapsed_groups: std.StringHashMap(void),
+    /// Last group acted on, so a collapsed group can still be expanded after
+    /// its resources disappeared from the selection list.
+    last_group: ?*const ISCMResourceGroup = null,
 
     pub fn init(allocator: Allocator, service: *ISCMService, host: Host) ScmView {
         return .{
@@ -68,12 +73,14 @@ pub const ScmView = struct {
             .host = host,
             .rows = std.array_list.Managed(Row).init(allocator),
             .resource_rows = std.array_list.Managed(usize).init(allocator),
+            .collapsed_groups = std.StringHashMap(void).init(allocator),
         };
     }
 
     pub fn deinit(self: *ScmView) void {
         self.rows.deinit();
         self.resource_rows.deinit();
+        self.collapsed_groups.deinit();
         self.* = undefined;
     }
 
@@ -113,6 +120,7 @@ pub const ScmView = struct {
                     .detail = null,
                     .depth = 1,
                 }) catch {};
+                if (self.collapsed_groups.contains(group.id)) continue;
                 for (resources, 0..) |_, resource_index| {
                     // The interface returns values; take a stable pointer into
                     // the group's interface array so the row can open it.
@@ -166,6 +174,20 @@ pub const ScmView = struct {
 
     /// Handles the view's own keys. The workbench routes Up/Down/Enter/r while
     /// the SCM view is focused.
+    fn setSelectedGroupCollapsed(self: *ScmView, collapsed: bool) !void {
+        const group = if (self.selectedResource()) |resource|
+            resource.resource_group
+        else
+            self.last_group orelse return;
+        self.last_group = group;
+        if (collapsed) {
+            try self.collapsed_groups.put(group.id, {});
+        } else {
+            _ = self.collapsed_groups.remove(group.id);
+        }
+        self.refresh();
+    }
+
     pub fn handleKey(self: *ScmView, event: *ui.KeyEvent) !bool {
         switch (event.key) {
             .up => return self.moveSelection(-1),
@@ -177,11 +199,23 @@ pub const ScmView = struct {
                 }
                 return false;
             },
+            .left, .right => {
+                try self.setSelectedGroupCollapsed(event.key == .left);
+                return true;
+            },
             .escape => {
                 self.host.focus_editor(self.host.context);
                 return true;
             },
             .char => |ch| {
+                if (ch == ' ') {
+                    const group = if (self.selectedResource()) |resource|
+                        resource.resource_group
+                    else
+                        self.last_group orelse return false;
+                    try self.setSelectedGroupCollapsed(!self.collapsed_groups.contains(group.id));
+                    return true;
+                }
                 if (ch == 'r' or ch == 'R') {
                     self.host.refresh(self.host.context);
                     return true;
@@ -206,6 +240,17 @@ pub const ScmView = struct {
         if (event.y < y + self.header_rows) return false;
         const row_index = event.y - y - self.header_rows;
         const item = self.visibleRow(row_index, height -| self.header_rows) orelse return false;
+        if (self.rows.items[item].kind == .group) {
+            const group = self.rows.items[item].group orelse return false;
+            self.last_group = group;
+            if (self.collapsed_groups.contains(group.id)) {
+                _ = self.collapsed_groups.remove(group.id);
+            } else {
+                try self.collapsed_groups.put(group.id, {});
+            }
+            self.refresh();
+            return true;
+        }
         const resource_index = for (self.resource_rows.items, 0..) |value, index| {
             if (value == item) break index;
         } else return false;
@@ -330,7 +375,12 @@ pub const ScmView = struct {
                 .group => {
                     const count = entry.group.?.resources().len;
                     style.fg = ui.cell.packColor(group_foreground);
-                    const label = std.fmt.allocPrint(self.allocator, "{s} ({d})", .{ entry.label, count }) catch entry.label;
+                    const collapsed = entry.group != null and self.collapsed_groups.contains(entry.group.?.id);
+                    const label = std.fmt.allocPrint(
+                        self.allocator,
+                        "{s} {s} ({d})",
+                        .{ if (collapsed) "\u{25B8}" else "\u{25BE}", entry.label, count },
+                    ) catch entry.label;
                     defer if (label.ptr != entry.label.ptr) self.allocator.free(label);
                     drawText(grid, x + indent, list_top + row, width -| indent, label, style);
                 },
@@ -545,6 +595,28 @@ test "scmView: rows, selection, opening and rendering" {
     defer allocator.free(resource_row);
     try testing.expect(std.mem.indexOf(u8, resource_row, "M") != null);
     try testing.expect(std.mem.indexOf(u8, resource_row, "a.zig") != null);
+
+    // Resource groups collapse and expand from the keyboard and mouse.
+    const collapse_key = ui.KeyEvent{ .key = .left };
+    try testing.expect(try view.handleKey(@constCast(&collapse_key)));
+    try testing.expectEqual(@as(usize, 0), view.resourceCount());
+    var collapsed_grid = try ui.CellGrid.init(allocator, 30, 10);
+    defer collapsed_grid.deinit();
+    try view.render(&collapsed_grid, rect, true, .{ .show_header = false });
+    const collapsed_group = try collapsed_grid.rowText(allocator, 1);
+    defer allocator.free(collapsed_group);
+    try testing.expect(std.mem.indexOf(u8, collapsed_group, "\u{25B8} Changes") != null);
+
+    const expand_key = ui.KeyEvent{ .key = .right };
+    try testing.expect(try view.handleKey(@constCast(&expand_key)));
+    try testing.expectEqual(@as(usize, 1), view.resourceCount());
+
+    // Clicking the group header toggles it instead of opening a resource.
+    var group_click = ui.MouseEvent{ .kind = .down, .x = 3, .y = 1, .button = .left };
+    try testing.expect(try view.handleMouse(&group_click, rect));
+    try testing.expectEqual(@as(usize, 0), view.resourceCount());
+    try testing.expect(try view.handleMouse(&group_click, rect));
+    try testing.expectEqual(@as(usize, 1), view.resourceCount());
 }
 
 const TestScmGroup = struct {
