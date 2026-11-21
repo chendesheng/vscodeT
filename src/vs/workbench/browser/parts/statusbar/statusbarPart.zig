@@ -139,6 +139,7 @@ pub const StatusbarPart = struct {
     pub fn setThemeColors(self: *StatusbarPart, palette: ?*const theme_colors_mod.ThemeColors) void {
         if (self.theme == palette) return;
         self.theme = palette;
+        self.model.setTheme(statusbarTheme(palette));
         self.render_revision +%= 1;
     }
 
@@ -656,6 +657,43 @@ fn resolvePriority(id: []const u8, input: PriorityInput) StatusbarEntryPriority 
 fn measureWidth(cp: u21) u2 {
     const next = CursorColumns.nextVisibleColumn(cp, 0, 1);
     return @intCast(@min(next, 2));
+}
+
+fn statusbarTheme(palette: ?*const theme_colors_mod.ThemeColors) item_mod.Theme {
+    const colors = palette orelse return item_mod.Theme.dark();
+    return .{
+        .standard_hover_background = colors.color("statusBarItem.hoverBackground", .{ 55, 55, 55 }),
+        .prominent = .{
+            .background = colors.color("statusBarItem.prominentBackground", .{ 0, 61, 102 }),
+            .foreground = colors.color("statusBarItem.prominentForeground", .{ 255, 255, 255 }),
+            .hover_background = colors.color("statusBarItem.prominentHoverBackground", .{ 0, 91, 132 }),
+            .hover_foreground = colors.color("statusBarItem.prominentHoverForeground", .{ 255, 255, 255 }),
+        },
+        .warning = .{
+            .background = colors.color("statusBarItem.warningBackground", .{ 90, 74, 0 }),
+            .foreground = colors.color("statusBarItem.warningForeground", .{ 255, 255, 255 }),
+            .hover_background = colors.color("statusBarItem.warningHoverBackground", .{ 120, 104, 30 }),
+            .hover_foreground = colors.color("statusBarItem.warningHoverForeground", .{ 255, 255, 255 }),
+        },
+        .@"error" = .{
+            .background = colors.color("statusBarItem.errorBackground", .{ 90, 29, 29 }),
+            .foreground = colors.color("statusBarItem.errorForeground", .{ 255, 255, 255 }),
+            .hover_background = colors.color("statusBarItem.errorHoverBackground", .{ 120, 59, 59 }),
+            .hover_foreground = colors.color("statusBarItem.errorHoverForeground", .{ 255, 255, 255 }),
+        },
+        .remote = .{
+            .background = colors.color("statusBarItem.remoteBackground", .{ 0, 122, 204 }),
+            .foreground = colors.color("statusBarItem.remoteForeground", .{ 255, 255, 255 }),
+            .hover_background = colors.color("statusBarItem.remoteHoverBackground", .{ 30, 152, 234 }),
+            .hover_foreground = colors.color("statusBarItem.remoteHoverForeground", .{ 255, 255, 255 }),
+        },
+        .offline = .{
+            .background = colors.color("statusBarItem.offlineBackground", .{ 108, 23, 23 }),
+            .foreground = colors.color("statusBarItem.offlineForeground", .{ 255, 255, 255 }),
+            .hover_background = colors.color("statusBarItem.offlineHoverBackground", .{ 138, 53, 53 }),
+            .hover_foreground = colors.color("statusBarItem.offlineHoverForeground", .{ 255, 255, 255 }),
+        },
+    };
 }
 
 fn colorFromRgb(rgb: [3]u8) ui.Color {

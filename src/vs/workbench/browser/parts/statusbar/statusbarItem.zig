@@ -9,7 +9,9 @@
 // Terminal adaptation: codicon syntax is not interpreted, progress/beak icons
 // become a leading glyph, CSS `text-overflow: ellipsis` becomes pre-truncation
 // with `…`, and the focus outline becomes an underline. The label's padding and
-// margins are cell approximations of the upstream pixel values.
+// margins are cell approximations of the upstream pixel values. Item-kind and
+// hover colors come from the terminal `Theme` resolved by the part from the
+// `statusBarItem.*` ids.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -20,13 +22,64 @@ const StatusbarEntry = statusbar.StatusbarEntry;
 const StatusbarEntryKind = statusbar.StatusbarEntryKind;
 const StatusbarProgress = statusbar.StatusbarProgress;
 
-const background_standard = ui.Color{ .r = 0, .g = 122, .b = 204 };
-const background_prominent = ui.Color{ .r = 0, .g = 61, .b = 102 };
-const background_warning = ui.Color{ .r = 90, .g = 74, .b = 0 };
-const background_error = ui.Color{ .r = 90, .g = 29, .b = 29 };
-const background_remote = ui.Color{ .r = 0, .g = 122, .b = 204 };
-const background_offline = ui.Color{ .r = 108, .g = 23, .b = 23 };
-const foreground_standard = ui.Color{ .r = 255, .g = 255, .b = 255 };
+pub const KindColors = struct {
+    background: ui.Color,
+    foreground: ui.Color,
+    hover_background: ui.Color,
+    hover_foreground: ui.Color,
+};
+
+/// Terminal colors for the status-bar item kinds. The workbench resolves the
+/// `statusBarItem.*` ids and passes this bundle; the defaults keep the item
+/// usable in isolation and in tests.
+pub const Theme = struct {
+    standard_hover_background: ui.Color = .{ .r = 55, .g = 55, .b = 55 },
+    prominent: KindColors = .{
+        .background = .{ .r = 0, .g = 61, .b = 102 },
+        .foreground = .{ .r = 255, .g = 255, .b = 255 },
+        .hover_background = .{ .r = 0, .g = 91, .b = 132 },
+        .hover_foreground = .{ .r = 255, .g = 255, .b = 255 },
+    },
+    warning: KindColors = .{
+        .background = .{ .r = 90, .g = 74, .b = 0 },
+        .foreground = .{ .r = 255, .g = 255, .b = 255 },
+        .hover_background = .{ .r = 120, .g = 104, .b = 30 },
+        .hover_foreground = .{ .r = 255, .g = 255, .b = 255 },
+    },
+    @"error": KindColors = .{
+        .background = .{ .r = 90, .g = 29, .b = 29 },
+        .foreground = .{ .r = 255, .g = 255, .b = 255 },
+        .hover_background = .{ .r = 120, .g = 59, .b = 59 },
+        .hover_foreground = .{ .r = 255, .g = 255, .b = 255 },
+    },
+    remote: KindColors = .{
+        .background = .{ .r = 0, .g = 122, .b = 204 },
+        .foreground = .{ .r = 255, .g = 255, .b = 255 },
+        .hover_background = .{ .r = 30, .g = 152, .b = 234 },
+        .hover_foreground = .{ .r = 255, .g = 255, .b = 255 },
+    },
+    offline: KindColors = .{
+        .background = .{ .r = 108, .g = 23, .b = 23 },
+        .foreground = .{ .r = 255, .g = 255, .b = 255 },
+        .hover_background = .{ .r = 138, .g = 53, .b = 53 },
+        .hover_foreground = .{ .r = 255, .g = 255, .b = 255 },
+    },
+
+    pub fn colors(self: Theme, kind: StatusbarEntryKind) KindColors {
+        return switch (kind) {
+            .standard => self.remote,
+            .prominent => self.prominent,
+            .warning => self.warning,
+            .@"error" => self.@"error",
+            .remote => self.remote,
+            .offline => self.offline,
+        };
+    }
+
+    pub fn dark() Theme {
+        return .{};
+    }
+};
 
 pub const ItemOptions = struct {
     /// Terminal equivalent of `max-width: 40vw`, computed from the status bar
@@ -52,9 +105,14 @@ pub const ItemNodes = struct {
 
 pub const StatusbarItem = struct {
     entry: StatusbarEntry,
+    theme: Theme = Theme.dark(),
 
     pub fn init(entry: StatusbarEntry) StatusbarItem {
         return .{ .entry = entry };
+    }
+
+    pub fn setTheme(self: *StatusbarItem, theme: Theme) void {
+        self.theme = theme;
     }
 
     pub fn update(self: *StatusbarItem, entry: StatusbarEntry) void {
@@ -105,24 +163,19 @@ pub const StatusbarItem = struct {
     }
 
     pub fn labelBackground(self: *const StatusbarItem, hovered: bool) ui.Color {
-        const base = switch (self.entry.kind) {
-            .standard => background_standard,
-            .prominent => background_prominent,
-            .warning => background_warning,
-            .@"error" => background_error,
-            .remote => background_remote,
-            .offline => background_offline,
-        };
-        if (!hovered) return base;
-        return .{
-            .r = @intCast(@min(255, @as(u16, base.r) + 30)),
-            .g = @intCast(@min(255, @as(u16, base.g) + 30)),
-            .b = @intCast(@min(255, @as(u16, base.b) + 30)),
-        };
+        if (self.entry.kind == .standard) {
+            return self.theme.standard_hover_background;
+        }
+        const colors = self.theme.colors(self.entry.kind);
+        return if (hovered) colors.hover_background else colors.background;
     }
 
-    pub fn foreground(_: *const StatusbarItem) ui.Color {
-        return foreground_standard;
+    pub fn foreground(self: *const StatusbarItem, hovered: bool) ui.Color {
+        if (self.entry.kind == .standard) {
+            return self.theme.standard_hover_background;
+        }
+        const colors = self.theme.colors(self.entry.kind);
+        return if (hovered) colors.hover_foreground else colors.foreground;
     }
 
     /// Builds the terminal item container and label. `max_width_cells` bounds
@@ -147,7 +200,7 @@ pub const StatusbarItem = struct {
                 null
             else
                 self.labelBackground(state.hovered),
-            .color = if (self.entry.kind == .standard) null else self.foreground(),
+            .color = if (self.entry.kind == .standard) null else self.foreground(state.hovered),
         });
 
         const padding = labelPadding(options);
@@ -266,4 +319,31 @@ test "StatusbarItem: builds a label, truncates and renders progress" {
     const short = try item.build(&doc, .{}, .{});
     try std.testing.expectEqualStrings("zig", short.text.asText().data);
     try std.testing.expect(!item.hasCommand());
+}
+
+test "StatusbarItem: theme controls kind and hover colors" {
+    var item = StatusbarItem.init(.{
+        .name = "Problems",
+        .text = "2",
+        .kind = .warning,
+    });
+    const theme = Theme{
+        .warning = .{
+            .background = .{ .r = 10, .g = 20, .b = 30 },
+            .foreground = .{ .r = 40, .g = 50, .b = 60 },
+            .hover_background = .{ .r = 70, .g = 80, .b = 90 },
+            .hover_foreground = .{ .r = 100, .g = 110, .b = 120 },
+        },
+        .standard_hover_background = .{ .r = 130, .g = 140, .b = 150 },
+    };
+    item.setTheme(theme);
+
+    try std.testing.expect(item.labelBackground(false).eql(theme.warning.background));
+    try std.testing.expect(item.foreground(false).eql(theme.warning.foreground));
+    try std.testing.expect(item.labelBackground(true).eql(theme.warning.hover_background));
+    try std.testing.expect(item.foreground(true).eql(theme.warning.hover_foreground));
+
+    var standard = StatusbarItem.init(.{ .name = "Ready", .text = "" });
+    standard.setTheme(theme);
+    try std.testing.expect(standard.labelBackground(true).eql(theme.standard_hover_background));
 }
