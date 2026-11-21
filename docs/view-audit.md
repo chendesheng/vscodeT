@@ -144,6 +144,10 @@ For each row:
   `..` parent entry, the upstream multi-root/single-folder root condition and
   pure model/picker tests. Widget emitters, home labels, outline picker and
   editor-type/drop remain pending.
+- `9cd5b9f` statusbar: add compact-group hover and drop the flex gap. The
+  referenced half of a compact pair now uses `statusBarItem.compactHoverBackground`,
+  and entries are separated by padding alone. The actions context menu and
+  tooltip pin/Escape remain pending.
 
 ## Next slice
 
