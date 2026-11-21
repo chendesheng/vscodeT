@@ -122,6 +122,11 @@ For each row:
   `statusBarItem.*` kind/foreground/hover palette and applied it through the
   model/item; added a theme test. Context-menu actions, compact-group hover and
   tooltip pinning remain pending.
+- `17885a5` tabs: guard right-click and theme hover/borders. Right-click no
+  longer closes or activates a tab; hover, `tab.border`, `tab.lastPinnedBorder`
+  and the active top stroke are themed. Added tab-strip and Workbench
+  regression tests. The control-layer variants, tab options, labels/actions,
+  context menu and clickable overflow remain pending.
 
 ## Next slice
 
