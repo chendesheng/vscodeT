@@ -67,7 +67,7 @@ For each row:
 | Sticky scroll | `vs/editor/contrib/stickyScroll/browser/*`, `src/tui/stickyScrollHost.zig` | `editor/contrib/stickyScroll/browser/*` | Pending audit | Overlay-vs-view-zone decision, options, folding, theme, focus. |
 | Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | Pending audit | Aligned rows, center gutter, overview ruler, theme, hit, documented omissions. |
 | Snippet tab stops | decorations in `src/tui/editorView.zig` | `editor/contrib/snippet/browser/*` | Pending audit | Decoration classes, selection behavior, theme. |
-| Rulers | absent | `editor/browser/viewParts/rulers/rulers.ts` | **M** | Confirmed absent. Terminal feasibility: shade configured ruler columns (or paint a dim edge) behind text; next action is a small `Rulers` view part or a documented omission. |
+| Rulers | `vs/editor/browser/viewParts/rulers/rulers.zig` | `editor/browser/viewParts/rulers/rulers.ts` | **T** | Configured `editor.rulers` columns are mapped to visible cell columns and painted as one-cell vertical guides through the view-line guide layer; the guide is skipped where a text glyph occupies the cell because a cell cannot show both. Per-ruler CSS color overrides are not parsed; `editorRuler.foreground` is used. |
 | Scroll decoration | absent | `editor/browser/viewParts/scrollDecoration/` | **M** | Confirmed absent. A one-cell top shadow/edge is feasible; next action is the view part or a documented omission. |
 | View zones | absent | `editor/browser/viewParts/viewZones/` | **M** | Confirmed absent; sticky scroll paints as an overlay and find uses the inline bar. Decide whether diff/peek view zones need cell rows or remain documented omissions. |
 | Minimap | absent | `editor/browser/viewParts/minimap/` | **T** | Confirmed absent and documented as a terminal limitation (`README.md`: no minimap/pixel lanes); a cell-grid thumbnail is not the upstream minimap and is intentionally omitted. |
@@ -194,6 +194,8 @@ For each row:
   and minimap (**T**, documented terminal omission).
 - `statusbar` escape now clears the hover tooltip; added a regression test.
   Tooltip pinning remains a browser hover behavior.
+- Implemented the missing rulers view: mapped `editor.rulers` to one-cell
+  vertical guides, skipping text-occupied cells; added a View test.
 
 ## Next slice
 
