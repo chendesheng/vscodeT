@@ -37,6 +37,8 @@ const PaintStyle = ui.cell.PaintStyle;
 
 pub const TabInfo = struct {
     label: []const u8,
+    /// Optional dimmed description after the label (upstream `labelFormat`).
+    description: []const u8 = "",
     /// Base file name used for the Explorer file icon; empty shows no icon.
     file_name: []const u8 = "",
     dirty: bool = false,
@@ -154,7 +156,8 @@ fn closeWidth(tab: TabInfo) usize {
 }
 
 fn tabWidth(tab: TabInfo, cols: usize) usize {
-    const width = textWidth(tab.label) + 2 + iconSpace(tab) + closeWidth(tab);
+    const description_width = if (tab.description.len > 0) textWidth(tab.description) + 1 else 0;
+    const width = textWidth(tab.label) + description_width + 2 + iconSpace(tab) + closeWidth(tab);
     return @min(@max(width, 4), @max(cols -| 1, 1));
 }
 
@@ -219,6 +222,7 @@ pub fn draw(
     var title_action_hover_style = base_title_action_hover_style;
     var title_action_active_style = base_title_action_active_style;
     var drop_style = base_drop_style;
+    var description_color: ui.Color = .{ .r = 150, .g = 150, .b = 150 };
     if (palette) |colors| {
         strip_background = .{
             .fg = ui.cell.packColor(colors.color("tab.inactiveForeground", .{ 190, 190, 190 })),
@@ -276,6 +280,7 @@ pub fn draw(
         drop_style = .{
             .fg = ui.cell.packColor(colors.color("tab.dragAndDropBorder", .{ 245, 245, 245 })),
         };
+        description_color = colors.color("descriptionForeground", .{ 150, 150, 150 });
     }
     grid.fillRect(@floatFromInt(x), @floatFromInt(row), @floatFromInt(cols), 1, strip_background);
     if (tabs.len == 0) return null;
@@ -368,6 +373,14 @@ pub fn draw(
         const drawn = drawLabel(grid, tab.label, cursor, row, label_cells, label_paint);
         if (drawn < textWidth(tab.label) and cursor + drawn < label_end) {
             grid.putCodepoint(cursor + drawn, row, 0x2026, 1, label_paint);
+        } else if (tab.description.len > 0 and cursor + drawn + 1 < label_end) {
+            const desc_start = cursor + drawn + 1;
+            const desc_cells = label_end - desc_start;
+            const desc_paint = PaintStyle{ .fg = ui.cell.packColor(description_color), .bg = paint.bg };
+            const desc_drawn = drawLabel(grid, tab.description, desc_start, row, desc_cells, desc_paint);
+            if (desc_drawn < textWidth(tab.description) and desc_start + desc_drawn < label_end) {
+                grid.putCodepoint(desc_start + desc_drawn, row, 0x2026, 1, desc_paint);
+            }
         }
 
         if (reserved_close == 2 and tab_width >= 4) {

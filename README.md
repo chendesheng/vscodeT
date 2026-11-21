@@ -514,8 +514,10 @@ console API for raw mode, sizing and input polling.
   active-tab top border use their theme ids (the top border only when the
   terminal supports cell borders), right-click opens the terminal tab context
   menu (Close, Close Others, Close All, Pin/Unpin) instead of closing or
-  activating a tab, the close cell and middle click close it, and `Ctrl-W`
-  closes the active tab. A dirty tab first opens VS Code's save confirmation
+  activating a tab, duplicate labels append a dimmed parent-directory
+  description (`workbench.editor.labelFormat` short/medium/long/default is
+  read), the close cell and middle click close it, and `Ctrl-W` closes the
+  active tab. A dirty tab first opens VS Code's save confirmation
   (Save / Don't Save / Cancel): Save writes and then closes only if the buffer
   is clean, Don't Save discards the changes, and Cancel or Escape leaves the
   tab open. The dialog is
