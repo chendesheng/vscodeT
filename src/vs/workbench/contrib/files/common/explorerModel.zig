@@ -9,6 +9,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const files = @import("../../../../platform/files/common/files.zig");
 const workspace_context = @import("../../../services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 
@@ -19,6 +20,50 @@ pub const SortOrder = enum {
     Type,
     Modified,
 };
+
+/// The file-type flags upstream passes into the `ExplorerItem` constructor
+/// from a `FileStat` (`raw.isDirectory`, `raw.isSymbolicLink`,
+/// `!raw.isFile && !raw.isDirectory`).
+pub const EntryType = struct {
+    is_directory: bool,
+    is_symbolic_link: bool = false,
+    unknown: bool = false,
+
+    /// Maps upstream `FileType` bits to the constructor flags.
+    pub fn fromFileType(file_type: u8) EntryType {
+        const is_directory = files.FileType.isDirectory(file_type);
+        return .{
+            .is_directory = is_directory,
+            .is_symbolic_link = files.FileType.isSymbolicLink(file_type),
+            .unknown = !files.FileType.isFile(file_type) and !is_directory,
+        };
+    }
+};
+
+/// Resolves one directory entry to `FileType` bits like upstream
+/// `DiskFileSystemProvider.readdir`: a symbolic link reports the type of its
+/// target and keeps the `SymbolicLink` bit; a link whose target cannot be
+/// resolved reports `Unknown | SymbolicLink`, matching upstream's dangling
+/// link handling.
+pub fn entryFileType(io: Io, allocator: Allocator, parent: []const u8, entry: Io.Dir.Entry) u8 {
+    return switch (entry.kind) {
+        .file => files.FileType.File,
+        .directory => files.FileType.Directory,
+        .sym_link => blk: {
+            const path = std.fs.path.join(allocator, &.{ parent, entry.name }) catch
+                break :blk files.FileType.Unknown | files.FileType.SymbolicLink;
+            defer allocator.free(path);
+            const info = Io.Dir.cwd().statFile(io, path, .{}) catch
+                break :blk files.FileType.Unknown | files.FileType.SymbolicLink;
+            break :blk switch (info.kind) {
+                .file => files.FileType.File | files.FileType.SymbolicLink,
+                .directory => files.FileType.Directory | files.FileType.SymbolicLink,
+                else => files.FileType.Unknown | files.FileType.SymbolicLink,
+            };
+        },
+        else => files.FileType.Unknown,
+    };
+}
 
 pub const ExplorerItem = struct {
     allocator: Allocator,
@@ -58,6 +103,24 @@ pub const ExplorerItem = struct {
             .is_symbolic_link = false,
             .children = std.array_list.Managed(*ExplorerItem).init(allocator),
         };
+        return item;
+    }
+
+    /// Creates an item from resolved `FileType` bits. `create` keeps the
+    /// plain directory flag for callers that already know the type; directory
+    /// listing goes through here so symbolic links get the target's type and
+    /// keep the `SymbolicLink` flag, like upstream `readdir` + `ExplorerItem`.
+    pub fn createWithFileType(
+        allocator: Allocator,
+        resource: []const u8,
+        name: []const u8,
+        parent: ?*ExplorerItem,
+        file_type: u8,
+    ) !*ExplorerItem {
+        const entry_type = EntryType.fromFileType(file_type);
+        const item = try create(allocator, resource, name, parent, entry_type.is_directory);
+        item.is_symbolic_link = entry_type.is_symbolic_link;
+        item.unknown = entry_type.unknown;
         return item;
     }
 
@@ -148,12 +211,12 @@ pub const ExplorerItem = struct {
             if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
             const path = try std.fs.path.join(self.allocator, &.{ self.resource, entry.name });
             defer self.allocator.free(path);
-            const child = try ExplorerItem.create(
+            const child = try ExplorerItem.createWithFileType(
                 self.allocator,
                 path,
                 entry.name,
                 self,
-                entry.kind == .directory,
+                entryFileType(io, self.allocator, self.resource, entry),
             );
             try self.children.append(child);
         }

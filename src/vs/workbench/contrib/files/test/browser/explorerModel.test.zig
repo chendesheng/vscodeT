@@ -97,3 +97,57 @@ test "ExplorerModel: finds and resolves children with directories first" {
     defer allocator.free(found);
     try std.testing.expectEqual(@as(usize, 1), found.len);
 }
+
+test "ExplorerItem: fetchChildren resolves symbolic link targets" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "real");
+    var inner = try tmp.dir.createFile(io, "real/inner.txt", .{});
+    try inner.writeStreamingAll(io, "inside");
+    inner.close(io);
+    var real_file = try tmp.dir.createFile(io, "real.txt", .{});
+    try real_file.writeStreamingAll(io, "file");
+    real_file.close(io);
+    try tmp.dir.symLink(io, "real", "dir_link", .{ .is_directory = true });
+    try tmp.dir.symLink(io, "real.txt", "file_link", .{});
+    try tmp.dir.symLink(io, "missing", "dangling_link", .{});
+
+    const root_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root_path);
+    const root = try ExplorerItem.create(allocator, root_path, root_path, null, true);
+    defer root.destroy();
+
+    try root.fetchChildren(io, .FilesFirst);
+
+    // Upstream `DiskFileSystemProvider.readdir` resolves a link to its target
+    // and keeps the SymbolicLink flag, so the Explorer treats it as a folder.
+    const dir_link = root.getChild("dir_link").?;
+    try std.testing.expect(dir_link.is_directory);
+    try std.testing.expect(dir_link.is_symbolic_link);
+    try std.testing.expect(!dir_link.unknown);
+    try std.testing.expectEqualStrings("dir_link", std.fs.path.basename(dir_link.resource));
+
+    // Files reached through the linked directory keep the link path.
+    try dir_link.fetchChildren(io, .FilesFirst);
+    const inner_child = dir_link.getChild("inner.txt").?;
+    try std.testing.expect(!inner_child.is_directory);
+    try std.testing.expect(!inner_child.is_symbolic_link);
+    const expected_resource = try std.fs.path.join(allocator, &.{ root_path, "dir_link", "inner.txt" });
+    defer allocator.free(expected_resource);
+    try std.testing.expectEqualStrings(expected_resource, inner_child.resource);
+
+    const file_link = root.getChild("file_link").?;
+    try std.testing.expect(!file_link.is_directory);
+    try std.testing.expect(file_link.is_symbolic_link);
+    try std.testing.expect(!file_link.unknown);
+
+    // A dangling link keeps the link itself as an unknown file type.
+    const dangling = root.getChild("dangling_link").?;
+    try std.testing.expect(!dangling.is_directory);
+    try std.testing.expect(dangling.is_symbolic_link);
+    try std.testing.expect(dangling.unknown);
+}

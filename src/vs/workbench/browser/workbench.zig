@@ -13514,3 +13514,85 @@ test "Workbench: cancelling an in-flight open leaves no tab and no pending job" 
     workbench.requestOpenPath(path);
     workbench.deinit();
 }
+
+test "Workbench: Explorer expands a directory symlink and opens a file inside" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const ExplorerItem = @import("../contrib/files/common/explorerModel.zig").ExplorerItem;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "real");
+    var inner = try tmp.dir.createFile(io, "real/inner.txt", .{});
+    try inner.writeStreamingAll(io, "inside link");
+    inner.close(io);
+    try tmp.dir.symLink(io, "real", "link", .{ .is_directory = true });
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const inner_path = try std.fmt.allocPrint(allocator, "{s}/link/inner.txt", .{root});
+    defer allocator.free(inner_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    workbench.focusSidebar();
+
+    const sidebar = workbench.sidebar.?;
+    const link = sidebar.model.roots.items[0].getChild("link").?;
+    try std.testing.expect(link.is_directory);
+    try std.testing.expect(link.is_symbolic_link);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const rect = sidebar.last_rect;
+    const left = ui.cell.snap(rect.x);
+    const top = ui.cell.snap(rect.y) + sidebar.header_rows;
+
+    const RowPosition = struct {
+        fn find(sidebar_: *Sidebar, item: *ExplorerItem) ?usize {
+            var index: usize = 0;
+            while (index < sidebar_.count()) : (index += 1) {
+                if (sidebar_.renderedItem(index) == item) return index;
+            }
+            return null;
+        }
+    };
+
+    // A single click on the twistie expands the linked directory; before the
+    // type was resolved the row was a file and the click tried to open it.
+    const link_click = ui.MouseEvent{
+        .kind = .down,
+        .x = left + 2,
+        .y = top + (RowPosition.find(sidebar, link) orelse return error.TestUnexpectedResult),
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleSidebarMouse(&link_click));
+    try std.testing.expect(sidebar.hasPendingLoad());
+    var load_waited: usize = 0;
+    while (!sidebar.pollLoad() and load_waited < 2000) : (load_waited += 1) {
+        std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(load_waited < 2000);
+    try std.testing.expect(sidebar.isExpanded(link));
+    const inner_item = link.getChild("inner.txt") orelse return error.TestUnexpectedResult;
+
+    // A single click on the child opens it through the link path and reads the
+    // target, so files inside a linked directory have their real content.
+    try workbench.render(&out.writer);
+    const inner_click = ui.MouseEvent{
+        .kind = .down,
+        .x = left + 2,
+        .y = top + (RowPosition.find(sidebar, inner_item) orelse return error.TestUnexpectedResult),
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleSidebarMouse(&inner_click));
+    const tab = workbench.activeTab() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(inner_path, tab.editor.path);
+    var content = try tab.editor.model.getLineContent(1);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("inside link", content.items);
+}

@@ -91,7 +91,8 @@ pub const RenderOptions = struct {
 /// is mutated when the result is applied on the TUI thread.
 const ExplorerEntry = struct {
     name: []u8,
-    is_directory: bool,
+    /// Resolved `FileType` bits, mirroring upstream `readdir`.
+    file_type: u8,
 };
 
 const ExplorerLoadResult = union(enum) {
@@ -133,7 +134,7 @@ fn runExplorerLoad(job: *ExplorerLoadJob) ExplorerLoadResult {
         };
         entries.append(.{
             .name = name,
-            .is_directory = entry.kind == .directory,
+            .file_type = explorer.entryFileType(io, allocator, job.path, entry),
         }) catch |err| {
             allocator.free(name);
             freeExplorerEntryList(allocator, &entries);
@@ -295,12 +296,12 @@ pub const Sidebar = struct {
                 for (entries) |entry| {
                     const path = std.fs.path.join(self.allocator, &.{ item.resource, entry.name }) catch continue;
                     defer self.allocator.free(path);
-                    const child = ExplorerItem.create(
+                    const child = ExplorerItem.createWithFileType(
                         self.allocator,
                         path,
                         entry.name,
                         item,
-                        entry.is_directory,
+                        entry.file_type,
                     ) catch continue;
                     item.children.append(child) catch {
                         child.destroy();
@@ -1360,4 +1361,116 @@ test "explorer tree sidebar: expansion reads directories on the async Io" {
     try std.testing.expect(sidebar.isExpanded(alpha));
     try std.testing.expect(alpha.is_directory_resolved);
     try std.testing.expect(alpha.getChild("beta.txt") != null);
+}
+
+test "explorer tree sidebar: async expansion resolves a symbolic link directory" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "real");
+    var inner = try tmp.dir.createFile(io, "real/inner.txt", .{});
+    try inner.writeStreamingAll(io, "inside");
+    inner.close(io);
+    try tmp.dir.symLink(io, "real", "link", .{ .is_directory = true });
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+
+    var async_state = Io.Threaded.init(allocator, .{});
+    defer async_state.deinit();
+
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+    sidebar.setAsyncIo(async_state.io());
+
+    const link = sidebar.model.roots.items[0].getChild("link").?;
+    try std.testing.expect(link.is_directory);
+    sidebar.tree.setSelectionElement(link);
+
+    _ = try sidebar.handleKey(&.{ .key = .right });
+    try std.testing.expect(sidebar.hasPendingLoad());
+
+    var waited: usize = 0;
+    while (!sidebar.pollLoad() and waited < 2000) : (waited += 1) {
+        sidebar.async_io.?.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(!sidebar.hasPendingLoad());
+    try std.testing.expect(sidebar.isExpanded(link));
+    try std.testing.expect(link.is_directory_resolved);
+    const inner_child = link.getChild("inner.txt").?;
+    try std.testing.expect(!inner_child.is_directory);
+    try std.testing.expect(!inner_child.is_symbolic_link);
+}
+
+test "explorer tree sidebar: symbolic link directories render and expand" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "real");
+    var inner = try tmp.dir.createFile(io, "real/inner.txt", .{});
+    try inner.writeStreamingAll(io, "inside");
+    inner.close(io);
+    try tmp.dir.symLink(io, "real", "link", .{ .is_directory = true });
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    const link = sidebar.model.roots.items[0].getChild("link").?;
+    try std.testing.expect(link.is_directory);
+    try std.testing.expect(link.is_symbolic_link);
+
+    // The link row paints the folder twistie and the folder glyph instead of
+    // the generic file icon it used before resolving the target type.
+    var grid = try ui.CellGrid.init(allocator, 24, 8);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{ .show_header = false });
+    const link_row = try grid.rowText(allocator, 0);
+    defer allocator.free(link_row);
+    try std.testing.expect(std.mem.indexOf(u8, link_row, "link") != null);
+    try std.testing.expect(std.mem.indexOf(u8, link_row, "▸") != null);
+    try std.testing.expect(std.mem.indexOf(u8, link_row, "\u{f07b}") != null);
+
+    sidebar.tree.setSelectionElement(link);
+    _ = try sidebar.handleKey(&.{ .key = .right });
+    try std.testing.expect(sidebar.isExpanded(link));
+    try std.testing.expect(link.getChild("inner.txt") != null);
+
+    var expanded_grid = try ui.CellGrid.init(allocator, 24, 8);
+    defer expanded_grid.deinit();
+    try sidebar.render(&expanded_grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{ .show_header = false });
+    const link_expanded_row = try expanded_grid.rowText(allocator, 0);
+    defer allocator.free(link_expanded_row);
+    try std.testing.expect(std.mem.indexOf(u8, link_expanded_row, "▾") != null);
+    try std.testing.expect(std.mem.indexOf(u8, link_expanded_row, "\u{f07c}") != null);
+    const inner_row = try expanded_grid.rowText(allocator, 1);
+    defer allocator.free(inner_row);
+    try std.testing.expect(std.mem.indexOf(u8, inner_row, "inner.txt") != null);
+
+    // Files under the link keep the link path, so the editor reads the target
+    // through it like any other file.
+    sidebar.tree.setSelectionElement(link.getChild("inner.txt").?);
+    switch (try sidebar.handleKey(&.{ .key = .enter })) {
+        .open => |path| {
+            const expected = try std.fs.path.join(allocator, &.{ root, "link", "inner.txt" });
+            defer allocator.free(expected);
+            try std.testing.expectEqualStrings(expected, path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }

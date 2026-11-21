@@ -1194,7 +1194,10 @@ Library constraints:
   resolution, directories-first ordering, expand/collapse, selection and
   scroll. A single-folder workspace uses the folder as the tree input, so its
   children are top-level rows; multi-root workspaces show roots and expand the
-  first five by default. Filtering runs through the upstream-shaped
+  first five by default. Directory listings resolve symbolic links to the
+  target file type like upstream `DiskFileSystemProvider.readdir`, so a linked
+  directory expands and its files open through the link path; a dangling link
+  stays an unknown entry. Filtering runs through the upstream-shaped
   `FilesFilter`
   (`src/vs/workbench/contrib/files/browser/views/explorerViewer.zig`): it
   evaluates `files.exclude` per root, applies `!` exceptions, keeps folders

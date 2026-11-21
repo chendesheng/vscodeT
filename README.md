@@ -555,8 +555,12 @@ console API for raw mode, sizing and input polling.
   model. In a single-folder workspace the folder is the tree input, so its
   children are the top-level rows; a multi-root workspace shows root rows and
   expands the first five roots, matching the Explorer view's default. Deeper
-  directories resolve only when expanded. Filtering now runs through the
-  upstream-shaped `FilesFilter`
+  directories resolve only when expanded. Directory listings resolve symbolic
+  links to the target file type, mirroring upstream's
+  `DiskFileSystemProvider.readdir`: a linked directory renders and expands as a
+  directory, files under it open through the link path, and a dangling link
+  stays an unknown entry with its `SymbolicLink` flag. Filtering now runs
+  through the upstream-shaped `FilesFilter`
   (`src/vs/workbench/contrib/files/browser/views/explorerViewer.zig`): it
   evaluates `files.exclude` per workspace root, applies `!` exceptions and
   keeps the folders that lead to an exception visible. Entries matched by
