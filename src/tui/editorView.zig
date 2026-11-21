@@ -30,6 +30,17 @@
 //! foregrounds here instead of the CSS color rules the browser renderer would
 //! apply.
 //!
+//! Selections are the terminal replacement for `SelectionsOverlay` plus
+//! `selections.css`: the selected cells get the theme
+//! `editor.selectionBackground` (composited because cells have no alpha) and
+//! their glyphs are blended toward it, since a cell cannot alpha-composite the
+//! browser's selection layer over the text. High-contrast themes use the opaque
+//! `editor.selectionForeground` instead. Decoration flags are applied after the
+//! selection, matching the browser layer order (`SelectionsOverlay` before
+//! `DecorationsOverlay`). The old ANSI reverse-video paint is gone: inverse
+//! cells made an indentation guide's overlay glyph fall out of the selection
+//! band and read as a black line.
+//!
 //! Indentation guides are painted as dim `│` cells over the leading
 //! whitespace, using the ported `GuidesTextModelPart` count. Vertical
 //! bracket-pair guides and the active indentation/bracket scope are painted
@@ -88,6 +99,7 @@ const view_events = @import("../vs/editor/common/viewEvents.zig");
 const editor_options = @import("../vs/editor/common/config/editorOptions.zig");
 const terminal_editor_config = @import("../vs/editor/browser/config/terminalEditorConfiguration.zig");
 const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
+const theme_mod = @import("../vs/platform/theme/common/theme.zig");
 
 const gutter_color = [3]u8{ 110, 110, 110 };
 const continuation_color = [3]u8{ 90, 90, 90 };
@@ -296,6 +308,27 @@ const diagnostic_error_color = [3]u8{ 241, 76, 76 };
 const diagnostic_warning_color = [3]u8{ 204, 167, 0 };
 const diagnostic_info_color = [3]u8{ 55, 148, 255 };
 const diagnostic_hint_color = [3]u8{ 138, 138, 138 };
+
+/// Fallbacks for the selection paint. Upstream registers
+/// `editor.selectionBackground` (dark `#264F78`, light `#ADD6FF`, hcDark
+/// `#f3f518`, hcLight `#0F4A85`) and `editor.selectionForeground` (hcDark
+/// `#000000`, hcLight `#FFFFFF`) as color-registry defaults; those defaults are
+/// not ported, so the view keeps its own literals, like the other paint colors.
+/// The default themes do not define the selection ids in their JSON.
+const selection_background_dark = [3]u8{ 0x26, 0x4F, 0x78 };
+const selection_background_light = [3]u8{ 0xAD, 0xD6, 0xFF };
+const selection_background_hc_dark = [3]u8{ 0xF3, 0xF5, 0x18 };
+const selection_background_hc_light = [3]u8{ 0x0F, 0x4A, 0x85 };
+const selection_foreground_hc_dark = [3]u8{ 0x00, 0x00, 0x00 };
+const selection_foreground_hc_light = [3]u8{ 0xFF, 0xFF, 0xFF };
+/// Plain editor text without a token color is the terminal default; the theme's
+/// `editor.foreground` replaces it only where the selection paint needs an
+/// explicit RGB (the fallback matches `ThemeColors.init`).
+const default_text_color = [3]u8{ 204, 204, 204 };
+/// Fraction of its own color the covered glyph keeps. A terminal cell cannot
+/// alpha-composite the browser's selection layer over the text, so the glyph is
+/// blended toward the selection background instead.
+const selection_text_alpha: f32 = 0.7;
 
 /// Diff editor backgrounds. Upstream `diffEditor.insertedLineBackground`
 /// (rgba(155,185,85,.2)), `removedLineBackground` (rgba(255,0,0,.2)),
@@ -1963,7 +1996,57 @@ fn themedColor(palette: ?*const theme_colors_mod.ThemeColors, id: []const u8, fa
     return colors.color(id, fallback);
 }
 
+/// Per-theme-type selection literals. High-contrast themes carry a foreground:
+/// upstream paints them with `editor.selectionForeground` (the
+/// `inline-selected-text` rule) instead of lowering the text contrast.
+const SelectionFallback = struct {
+    background: [3]u8,
+    foreground: ?[3]u8 = null,
+};
+
+fn selectionFallback(theme_type: theme_mod.ColorScheme) SelectionFallback {
+    return switch (theme_type) {
+        .DARK => .{ .background = selection_background_dark },
+        .LIGHT => .{ .background = selection_background_light },
+        .HIGH_CONTRAST_DARK => .{
+            .background = selection_background_hc_dark,
+            .foreground = selection_foreground_hc_dark,
+        },
+        .HIGH_CONTRAST_LIGHT => .{
+            .background = selection_background_hc_light,
+            .foreground = selection_foreground_hc_light,
+        },
+    };
+}
+
+/// Terminal replacement for the browser's selection layer
+/// (`SelectionsOverlay` + `selections.css`). Upstream paints the selection as a
+/// translucent background below the text, so the glyphs keep their syntax
+/// colors. A cell has one glyph and no alpha channel, so the selection becomes
+/// an explicit background and the covered glyph is composited toward it; high
+/// contrast themes use the opaque `editor.selectionForeground`, mirroring the
+/// `inline-selected-text` CSS rule. Never sets `reverse`: the terminal
+/// inverse-video attribute is what made guide cells drop out of the band and
+/// look black.
+fn applySelectionPaint(style: *ui.style.PaintStyle, palette: ?*const theme_colors_mod.ThemeColors) void {
+    const theme_type = if (palette) |colors| colors.theme.theme_type else .DARK;
+    const fallback = selectionFallback(theme_type);
+    const background = themedColor(palette, "editor.selectionBackground", fallback.background);
+    style.background = background;
+
+    if (fallback.foreground) |foreground| {
+        style.color = themedColor(palette, "editor.selectionForeground", foreground);
+        return;
+    }
+    const text = style.color orelse (if (palette) |colors| colors.foreground else color(default_text_color));
+    style.color = fadeOver(text, selection_text_alpha, background);
+}
+
 fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme_colors_mod.ThemeColors) void {
+    // The browser adds `SelectionsOverlay` before `DecorationsOverlay`, so the
+    // selection paints first and any decoration background/foreground below
+    // keeps precedence (find matches stay visible inside a selection).
+    if (flag & CellFlag.selected != 0) applySelectionPaint(style, palette);
     if (flag & CellFlag.search_range_highlight != 0) {
         style.background = themedColor(palette, "editor.rangeHighlightBackground", search_range_highlight_background);
     }
@@ -2032,7 +2115,6 @@ fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme
         style.reverse = true;
         style.background = themedColor(palette, "editorCursor.foreground", secondary_cursor_background);
     }
-    if (flag & CellFlag.selected != 0) style.reverse = true;
 }
 
 fn visibleOffset(
@@ -2132,6 +2214,9 @@ fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "squiggly-unnecessary")) return CellFlag.diagnostic_unnecessary;
     if (std.mem.eql(u8, class_name, "squiggly-inline-unnecessary")) return CellFlag.diagnostic_inline_unnecessary;
     if (std.mem.eql(u8, class_name, "squiggly-inline-deprecated")) return CellFlag.diagnostic_deprecated;
+    // `inline-selected-text` (the high-contrast selection rule) needs no bit:
+    // the selected cell flag already carries the selection background and
+    // foreground.
     return null;
 }
 
@@ -2320,7 +2405,7 @@ test "View: wrapped continuation gets a gutter arrow" {
     try std.testing.expect(found_arrow);
 }
 
-test "View: selection paints inverted cells" {
+test "View: selection paints the theme background and dims covered text" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 20, 3);
@@ -2341,8 +2426,120 @@ test "View: selection paints inverted cells" {
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
-    try std.testing.expect(grid.attrs[grid.index(gutter, 0)] & ui.cell.Attr.inverse != 0);
+    // No theme is installed: the dark registry default is the selection
+    // background and plain text is the terminal default, so the covered glyph
+    // is composited from the fallback foreground.
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(selection_background_dark)),
+        grid.bg[grid.index(gutter, 0)],
+    );
+    try std.testing.expectEqual(
+        ui.cell.packColor(color([3]u8{ 154, 167, 179 })),
+        grid.fg[grid.index(gutter, 0)],
+    );
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(gutter, 0)] & ui.cell.Attr.inverse);
+
+    // The unselected cell keeps the current-line background and no inverse
+    // video: only the selection cells are covered.
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(current_line_background)),
+        grid.bg[grid.index(gutter + 2, 0)],
+    );
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(gutter + 2, 0)] & ui.cell.Attr.inverse);
+}
+
+test "View: selection uses the installed theme colors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 20, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.moveRight(true);
+    try editor.moveRight(true);
+
+    const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+    const color_theme = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test-dark", &.{
+        .{ "editor.background", "#101010" },
+        .{ "editor.foreground", "#e0e0e0" },
+        .{ "editor.selectionBackground", "#123456" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    view.setThemeColors(&palette);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    try std.testing.expectEqual(
+        ui.cell.packColor(.{ .r = 0x12, .g = 0x34, .b = 0x56 }),
+        grid.bg[grid.index(gutter, 0)],
+    );
+    // `editor.foreground` (#e0e0e0) composited 30% toward the selection color.
+    try std.testing.expectEqual(
+        ui.cell.packColor(.{ .r = 162, .g = 172, .b = 183 }),
+        grid.fg[grid.index(gutter, 0)],
+    );
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(gutter, 0)] & ui.cell.Attr.inverse);
+}
+
+test "View: high contrast selection uses the selection foreground" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "hello", "test.txt", 20, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.moveRight(true);
+    try editor.moveRight(true);
+
+    const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+    const color_theme = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test-hc-black", &.{
+        .{ "editor.background", "#000000" },
+        .{ "editor.foreground", "#ffffff" },
+        .{ "editor.selectionBackground", "#ffffff" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+    try std.testing.expectEqual(theme_mod.ColorScheme.HIGH_CONTRAST_DARK, palette.theme.theme_type);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    view.setThemeColors(&palette);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    try std.testing.expectEqual(
+        ui.cell.packColor(.{ .r = 255, .g = 255, .b = 255 }),
+        grid.bg[grid.index(gutter, 0)],
+    );
+    // High contrast keeps the opaque selection foreground, not a blend of
+    // `editor.foreground`.
+    try std.testing.expectEqual(
+        ui.cell.packColor(.{ .r = 0, .g = 0, .b = 0 }),
+        grid.fg[grid.index(gutter, 0)],
+    );
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(gutter, 0)] & ui.cell.Attr.inverse);
 }
 
 test "View: refresh keeps the frame diff and the cursor visible" {
@@ -3877,6 +4074,41 @@ test "View: indent guides mark leading whitespace and blank lines" {
     try std.testing.expectEqual(@as(u32, 'e'), grid.cluster[grid.index(gutter, 6)]);
 }
 
+test "View: indent guide inside a selection keeps the selection background" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "    x", "test.txt", 20, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 5)});
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const guide = grid.index(gutter, 0);
+    // The guide glyph paints over its selected cell. It must keep the selection
+    // background (the guide text run has no background of its own) instead of
+    // dropping out of the band as a dark cell, which is what the old inverse
+    // paint did.
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[guide]);
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(selection_background_dark)),
+        grid.bg[guide],
+    );
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[guide] & ui.cell.Attr.inverse);
+    // The guide keeps its own foreground color rather than the terminal default.
+    try std.testing.expect(grid.fg[guide] != 0);
+}
+
 test "View: indent guides honor per-level theme colors" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -4094,6 +4326,47 @@ test "view: diagnostic flags select terminal underline styles" {
     applyFlagPaint(&deprecated_style, CellFlag.diagnostic_deprecated, null);
     try std.testing.expect(deprecated_style.strikethrough);
     try std.testing.expect(!deprecated_style.underline);
+}
+
+test "view: selection fallbacks match the upstream registry defaults" {
+    const dark = selectionFallback(.DARK);
+    try std.testing.expectEqualSlices(u8, &selection_background_dark, &dark.background);
+    try std.testing.expect(dark.foreground == null);
+
+    const light = selectionFallback(.LIGHT);
+    try std.testing.expectEqualSlices(u8, &selection_background_light, &light.background);
+    try std.testing.expect(light.foreground == null);
+
+    const hc_dark = selectionFallback(.HIGH_CONTRAST_DARK);
+    try std.testing.expectEqualSlices(u8, &selection_background_hc_dark, &hc_dark.background);
+    try std.testing.expectEqualSlices(u8, &selection_foreground_hc_dark, &hc_dark.foreground.?);
+
+    const hc_light = selectionFallback(.HIGH_CONTRAST_LIGHT);
+    try std.testing.expectEqualSlices(u8, &selection_background_hc_light, &hc_light.background);
+    try std.testing.expectEqualSlices(u8, &selection_foreground_hc_light, &hc_light.foreground.?);
+}
+
+test "view: selection paint replaces reverse video and stays below decorations" {
+    var style = ui.style.PaintStyle{};
+    applyFlagPaint(&style, CellFlag.selected, null);
+    try std.testing.expect(!style.reverse);
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(selection_background_dark)),
+        ui.cell.packColor(style.background.?),
+    );
+    // The fallback foreground composited 30% toward the selection background.
+    try std.testing.expectEqual(@as(u8, 154), style.color.?.r);
+    try std.testing.expectEqual(@as(u8, 167), style.color.?.g);
+    try std.testing.expectEqual(@as(u8, 179), style.color.?.b);
+
+    // `SelectionsOverlay` is added before `DecorationsOverlay`, so a find match
+    // keeps its own background inside a selection.
+    var combined = ui.style.PaintStyle{};
+    applyFlagPaint(&combined, CellFlag.selected | CellFlag.find_match, null);
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(find_match_background)),
+        ui.cell.packColor(combined.background.?),
+    );
 }
 
 test "view: marker error ranges paint a curly underline" {
