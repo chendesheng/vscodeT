@@ -167,6 +167,7 @@ const go_to_commands = @import("../../editor/contrib/gotoSymbol/browser/goToComm
 const goto_symbol_quick_access = @import("../contrib/codeEditor/browser/quickaccess/gotoSymbolQuickAccess.zig");
 const hover_operation = @import("../../editor/contrib/hover/browser/hoverOperation.zig");
 const hover_types = @import("../../editor/contrib/hover/browser/hoverTypes.zig");
+const sticky_actions = @import("../../editor/contrib/stickyScroll/browser/stickyScrollActions.zig");
 const strings = @import("../../base/common/strings.zig");
 const topmost_line_monitor = @import("../contrib/markdown/browser/topmostLineMonitor.zig");
 const MarkdownPreviewConfig = @import("../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
@@ -1269,6 +1270,8 @@ pub const Workbench = struct {
             .{ .id = "editor.unfoldRecursively", .label = "Unfold Recursively", .category = "Editor", .context = self, .requires_editor = true, .run = commandUnfoldRecursively },
             .{ .id = "editor.foldAll", .label = "Fold All", .category = "Editor", .context = self, .requires_editor = true, .run = commandFoldAll },
             .{ .id = "editor.unfoldAll", .label = "Unfold All", .category = "Editor", .context = self, .requires_editor = true, .run = commandUnfoldAll },
+            .{ .id = sticky_actions.toggle_sticky_scroll.id, .label = sticky_actions.toggle_sticky_scroll.label, .category = "View", .context = self, .requires_editor = true, .run = commandToggleStickyScroll },
+            .{ .id = sticky_actions.focus_sticky_scroll.id, .label = sticky_actions.focus_sticky_scroll.label, .category = "View", .context = self, .requires_editor = true, .run = commandFocusStickyScroll },
             .{ .id = "editor.action.wordHighlight.next", .label = "Go to Next Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightNext },
             .{ .id = "editor.action.wordHighlight.prev", .label = "Go to Previous Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightPrevious },
         };
@@ -8080,6 +8083,18 @@ fn commandUnfold(context: *anyopaque) anyerror!void {
 fn commandToggleFold(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
     try tab.editor.toggleFoldAtCursor();
+}
+
+fn commandToggleStickyScroll(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.ensureControllers();
+    if (tab.controllers) |controllers| controllers.sticky.toggle();
+}
+
+fn commandFocusStickyScroll(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.ensureControllers();
+    if (tab.controllers) |controllers| controllers.sticky.focus();
 }
 
 fn commandFoldRecursively(context: *anyopaque) anyerror!void {

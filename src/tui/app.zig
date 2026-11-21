@@ -561,6 +561,7 @@ pub fn main(init: std.process.Init) !void {
                 if (active.editor.inPlaceReplaceTick(now_ms)) needs_render = true;
                 if (controllers.hover.onTick(now_ms)) needs_render = true;
                 if (controllers.word_highlighter.onTick(now_ms)) needs_render = true;
+                if (controllers.sticky.onTick(now_ms)) needs_render = true;
                 if (try controllers.suggest.onTick(now_ms)) needs_render = true;
 
                 timeout = controllers.hover.pollTimeout(now_ms, 250);
@@ -572,6 +573,9 @@ pub fn main(init: std.process.Init) !void {
                 }
                 if (controllers.suggest.pollTimeout(now_ms)) |suggest_timeout| {
                     timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
+                }
+                if (controllers.sticky.pollTimeout(now_ms)) |sticky_timeout| {
+                    timeout = @min(timeout, @as(i32, @intCast(@min(sticky_timeout, 250))));
                 }
             }
             if (needs_render) timeout = 0;

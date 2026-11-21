@@ -17,6 +17,7 @@ const view_event_handler = @import("../../../common/viewEventHandler.zig");
 const view_context = @import("../../../common/viewModel/viewContext.zig");
 const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.zig");
 const view_lines_mod = @import("../../viewParts/viewLines/viewLines.zig");
+const view_line_options_mod = @import("../../viewParts/viewLines/viewLineOptions.zig");
 const view_mod = @import("../../view.zig");
 const StringBuilder = @import("../../../common/core/stringBuilder.zig").StringBuilder;
 const view_model_decorations = @import("../../../common/viewModel/viewModelDecorations.zig");
@@ -45,6 +46,7 @@ const IViewModel = view_model.IViewModel;
 const IViewLayout = view_model.IViewLayout;
 const ViewportData = viewport_data.ViewportData;
 const ViewLines = view_lines_mod.ViewLines;
+const ViewLineOptions = view_line_options_mod.ViewLineOptions;
 const View = view_mod.View;
 const ViewEventHandler = view_event_handler.ViewEventHandler;
 const ViewEvent = view_events.ViewEvent;
@@ -575,6 +577,17 @@ pub const TerminalViewHost = struct {
 
     pub fn getCursorRenderData(self: *const TerminalViewHost) []const ViewCursorRenderData {
         return self.view_cursors.getLastRenderData();
+    }
+
+    /// The `IViewModel` adapter used by the terminal renderer and by
+    /// contributions that render additional lines (sticky scroll).
+    pub fn viewModelInterface(self: *TerminalViewHost) IViewModel {
+        return self.modelInterface();
+    }
+
+    /// The `ViewLineOptions` snapshot for the current options.
+    pub fn viewLineOptions(self: *const TerminalViewHost) ViewLineOptions {
+        return ViewLineOptions.init(&self.configuration, self.theme.scheme);
     }
 
     fn modelInterface(self: *TerminalViewHost) IViewModel {

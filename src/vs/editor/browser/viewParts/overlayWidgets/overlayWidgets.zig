@@ -75,12 +75,13 @@ pub const ViewOverlayWidgets = struct {
             if (width == 0 or height == 0) continue;
 
             const top: usize = switch (widget.get_position(widget.context)) {
-                .top_right_corner, .top_center => 0,
+                .top_right_corner, .top_center, .top_left_corner => 0,
                 .bottom_right_corner => editor_height -| height,
             };
             const left: usize = switch (widget.get_position(widget.context)) {
                 .top_right_corner, .bottom_right_corner => cols -| width,
                 .top_center => (cols -| width) / 2,
+                .top_left_corner => 0,
             };
 
             const container = try doc.createElement(.div);
@@ -144,6 +145,71 @@ const FakeWidget = struct {
     }
 
     fn interface(self: *FakeWidget) IOverlayWidget {
+        return .{
+            .context = self,
+            .get_id = id,
+            .get_position = position,
+            .width = width,
+            .height = height,
+            .build = build,
+            .focus_node = focusNode,
+            .is_focused = isFocused,
+        };
+    }
+};
+
+test "overlay widgets places a top-left widget at the origin" {
+    const allocator = testing.allocator;
+    var doc = try ui.Document.init(allocator, .{ .cols = 20, .rows = 10 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+
+    var widget = TopLeftWidget{};
+    var part = ViewOverlayWidgets.init(allocator);
+    defer part.deinit();
+    try part.add(widget.interface());
+    try part.render(&doc, root, 20, 10);
+
+    try testing.expectEqual(@as(usize, 1), part.entries.items.len);
+    const rect = part.entries.items[0];
+    try testing.expectEqual(@as(usize, 0), rect.left);
+    try testing.expectEqual(@as(usize, 0), rect.top);
+    try testing.expectEqual(@as(usize, 20), rect.width);
+    try testing.expectEqual(@as(usize, 2), rect.height);
+    try testing.expect(rect.contains(0, 0));
+    try testing.expect(rect.contains(19, 1));
+}
+
+const TopLeftWidget = struct {
+    node: ?*ui.Node = null,
+
+    fn id(_: *anyopaque) []const u8 {
+        return "top-left";
+    }
+    fn position(_: *anyopaque) editorBrowser.OverlayWidgetPositionPreference {
+        return .top_left_corner;
+    }
+    fn width(_: *anyopaque, cols: usize) usize {
+        return cols;
+    }
+    fn height(_: *anyopaque) usize {
+        return 2;
+    }
+    fn build(context: *anyopaque, doc: *ui.Document) anyerror!*ui.Node {
+        const self: *TopLeftWidget = @ptrCast(@alignCast(context));
+        self.node = try doc.createText("top-left");
+        return self.node.?;
+    }
+    fn focusNode(context: *anyopaque) ?*ui.Node {
+        const self: *TopLeftWidget = @ptrCast(@alignCast(context));
+        return self.node;
+    }
+    fn isFocused(_: *anyopaque) bool {
+        return false;
+    }
+
+    fn interface(self: *TopLeftWidget) IOverlayWidget {
         return .{
             .context = self,
             .get_id = id,

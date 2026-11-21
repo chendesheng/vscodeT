@@ -205,6 +205,12 @@ fn overviewRulerLaneFromModel(lane: OverviewRulerLane) decorationsOverviewRuler.
 const current_line_background = [3]u8{ 32, 32, 36 };
 const secondary_cursor_background = [3]u8{ 110, 90, 30 };
 
+/// Terminal contribution callback for `View.applyEditorSettings`.
+pub const ConfigurationListener = struct {
+    context: *anyopaque,
+    notify: *const fn (context: *anyopaque) void,
+};
+
 /// A cell position, 0-based, ready for `tui.moveCursor` after adding one.
 pub const Cell = struct {
     row: usize,
@@ -341,6 +347,8 @@ pub const View = struct {
     /// Diagnostic counter for tests/benchmarks: full document rebuilds.
     rebuild_count: usize = 0,
     last_bracket_generation: ?usize = null,
+    /// Contribution callbacks notified after `editor.*` view settings change.
+    configuration_listeners: std.array_list.Managed(ConfigurationListener),
     /// Bridges the terminal editor to the ported `ViewLines` stack. The
     /// renderer below consumes its rendered line records.
     terminal_view_host: *TerminalViewHost,
@@ -368,7 +376,7 @@ pub const View = struct {
             .editor = editor,
             .guides = GuidesTextModelPart.init(editor.model),
             .surface = undefined,
-
+            .configuration_listeners = std.array_list.Managed(ConfigurationListener).init(allocator),
             .terminal_view_host = undefined,
         };
         self.refreshBracketHighlightColors();
@@ -391,9 +399,24 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.configuration_listeners.deinit();
         self.terminal_view_host.deinit();
         self.surface.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Registers a contribution callback invoked after view settings change.
+    pub fn addConfigurationListener(self: *View, listener: ConfigurationListener) !void {
+        try self.configuration_listeners.append(listener);
+    }
+
+    pub fn removeConfigurationListener(self: *View, listener: ConfigurationListener) void {
+        for (self.configuration_listeners.items, 0..) |existing, index| {
+            if (existing.context == listener.context and existing.notify == listener.notify) {
+                _ = self.configuration_listeners.orderedRemove(index);
+                return;
+            }
+        }
     }
 
     /// Marks the current document stale. The next paint/render rebuilds it.
@@ -963,6 +986,7 @@ pub const View = struct {
             editor_options.ConfigurationChangedEvent.init(&changed),
         );
         _ = self.terminal_view_host.viewRef().onConfigurationChanged(&event);
+        for (self.configuration_listeners.items) |listener| listener.notify(listener.context);
         self.needs_rebuild = true;
         return true;
     }
@@ -1029,7 +1053,28 @@ pub const View = struct {
         const cols = self.surface.document().cols;
         if (row >= rows) return null;
         const right = @min(cols, self.editor.textAreaRight());
-        return .{ .row = row, .col = @min(self.cursor_col, right -| 1) };
+        const col = @min(self.cursor_col, right -| 1);
+        // Overlay widgets (sticky scroll, find) cover the cells beneath them.
+        // Hide the hardware cursor when it would be painted under a widget.
+        for (self.terminal_view_host.viewRef().overlayWidgets().entries.items) |entry| {
+            if (entry.contains(col, row)) return null;
+        }
+        return .{ .row = row, .col = col };
+    }
+
+    /// Terminal cell style adapter for a rendered view-line part. Sticky
+    /// scroll reuses it so its header rows get the same syntax/bracket colors
+    /// as ordinary lines.
+    pub fn lineStyleFunction(self: *View) view_line_mod.ViewLine.PartStyleFn {
+        return .{ .context = self, .apply = lineStyleForPart };
+    }
+
+    /// Maps a view-line decoration class list to terminal cell flags. Sticky
+    /// scroll passes this to `ViewLine.paint` so inline decorations on a
+    /// header line keep their cell styling.
+    pub fn decorationBitsFunction(self: *View) *const fn (classes: []const u8) u32 {
+        _ = self;
+        return decorationBits;
     }
 
     /// Whether no overlay or content widget owns the keyboard. Word

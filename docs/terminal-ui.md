@@ -857,8 +857,10 @@ Library constraints:
 - Overlay widgets use the terminal adaptation of upstream `IOverlayWidget`
   in `src/vs/editor/browser/editorBrowser.zig`. A widget reports its size in
   cells, builds a `ui` subtree each frame and is anchored to a corner
-  (`top_right_corner`, `bottom_right_corner`, `top_center`); the view restores
-  focus after every rebuild. `View.dispatchKey` forwards decoded keys through
+  (`top_right_corner`, `bottom_right_corner`, `top_center`, and the terminal
+  `top_left_corner` used by sticky scroll); the view restores focus after every
+  rebuild. Sticky rows paint after the text lines and before the find widget,
+  and the hardware cursor is hidden when its cell is covered by an overlay. `View.dispatchKey` forwards decoded keys through
   the widget document first, so a focused widget owns the keyboard.
 - Quick open is a workbench-level overlay, not an editor overlay. The
   controller (`src/vs/platform/quickinput/browser/quickAccess.zig`) owns one
@@ -913,10 +915,31 @@ Library constraints:
   gets the upstream `…` suffix. The editor binds `Ctrl-Shift-[`/`]`,
   `Ctrl-K Ctrl-L`, `Ctrl-K Ctrl-0` and `Ctrl-K Ctrl-J` and registers the
   corresponding `editor.fold*`/`editor.unfold*` commands in the workbench.
-  Syntax providers, folding decorations/CSS, sticky scroll and folding view
-  state are not ported. Fold state survives edits on the folded line; line
+  Syntax providers, folding decorations/CSS and folding view state are not
+  ported. Fold state survives edits on the folded line; line
   insertions or deletions above a collapsed region re-expand it because there
   are no tracked folding decorations to shift the range.
+- Sticky scroll is ported from
+  `src/vs/editor/contrib/stickyScroll/browser` and painted as an editor overlay
+  (`src/tui/stickyScrollHost.zig` is the terminal adapter). It is not a CSS
+  `position: sticky` element: like upstream, the controller computes the
+  enclosing outline/folding scopes from the scroll position and the widget
+  paints them above the text. Candidate providers are the document-symbol
+  outline (largest provider range-sum) and indentation folding; the syntax
+  folding provider has no terminal registry. The widget is anchored
+  `top_left_corner` (a terminal addition to the overlay preference enum), spans
+  the editor width minus the scrollbar, and reports one cell per sticky line.
+  It paints line numbers, syntax-colored `ViewLine` content and fold glyphs,
+  handles normal click (reveal scope line), Shift-click (reveal the line after
+  the scope), fold-icon clicks, hover/shift-hover and focused-row keys
+  (Up/Down/Enter/Escape). The 25% viewport cap and `editor.stickyScroll.*`
+  settings are read through the terminal configuration; the model rebuild uses
+  one 300 ms scheduler ticked by the app and runs synchronously on the UI
+  thread (the debounce coalesces edits but does not cancel a provider call). Because terminal scrolling is in
+  whole cells, a scope whose header is still the first visible row is not
+  duplicated. No CSS border/shadow, horizontal `scrollWithEditor` coupling,
+  context menu, go-to-definition from a sticky row or embedded-editor peek
+  styling is ported.
 - Indentation guides are painted by `View.rebuild` from the ported
   `src/vs/editor/common/model/guidesTextModelPart.zig` indentation subset. The
   model computes a guide count per visible model line, including the upstream

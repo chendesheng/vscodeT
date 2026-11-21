@@ -1733,6 +1733,39 @@ pub const Editor = struct {
         return self.folding.foldStateAtLine(line);
     }
 
+    /// Port of the folding-model access used by the sticky-scroll widget.
+    pub fn foldingModel(self: *Editor) *@import("../../../contrib/folding/browser/foldingModel.zig").FoldingModel {
+        return self.folding.folding_model;
+    }
+
+    /// Folding rules currently applied to this editor.
+    pub fn foldingRules(self: *const Editor) FoldingRules {
+        return self.folding.rules;
+    }
+
+    /// Port of the sticky-scroll fold-toggle path: toggle the region starting
+    /// at a model line and update the projected view model.
+    pub fn toggleFoldAtModelLine(self: *Editor, line: usize) !bool {
+        self.refreshFoldingIfDirty();
+        if (!self.folding.toggleAtLine(line)) return false;
+        try self.applyFoldingVisibility();
+        return true;
+    }
+
+    /// Port of `ICodeEditor.setHiddenAreas`. Folding remains the normal writer
+    /// of hidden ranges; this entry point exists for callers/tests that hide
+    /// model lines directly.
+    pub fn setHiddenAreas(self: *Editor, ranges: []const Range) !void {
+        const top_model_line = self.modelLineNumber(self.top_view_line);
+        const changed = try self.view_lines.setHiddenAreas(ranges);
+        if (!changed) return;
+        self.emitViewEvent(.{ .ViewFlushed = .{} });
+        self.emitViewEvent(.{ .ViewLineMappingChanged = .{} });
+        self.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
+        const top_position = self.viewPositionOfModelPosition(Position.init(top_model_line, 1));
+        _ = self.setTopViewLine(top_position.lineNumber);
+    }
+
     /// Hidden model lines still have content, but no view row. View parts that
     /// translate a model line (such as indentation guides) must skip them: the
     /// converter maps a hidden line to the preceding visible line, which would

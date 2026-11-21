@@ -43,6 +43,8 @@ const LanguageFeaturesService = @import("../../../../editor/common/services/lang
 const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const MarkdownPreview = @import("../../../../../tui/markdownPreview.zig").MarkdownPreview;
 const MarkdownPreviewConfig = @import("../../../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
+const StickyScrollHost = @import("../../../../../tui/stickyScrollHost.zig").StickyScrollHost;
+const StickyScrollController = @import("../../../../editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController;
 const ImagePreviewPane = @import("../../../../../tui/imagePreview.zig").ImagePreviewPane;
 const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 
@@ -204,6 +206,7 @@ pub const Tab = struct {
         const controllers = try Controllers.init(self.allocator, self.editor, self.view);
         errdefer controllers.deinit();
 
+        try self.view.addOverlayWidget(controllers.sticky.widget.interface());
         try self.view.addOverlayWidget(controllers.find.widget().interface());
         try self.view.addContentWidget(controllers.hover.widget().contentWidget());
         try self.view.addContentWidget(controllers.suggest.widgetInterface());
@@ -626,6 +629,9 @@ pub const Controllers = struct {
     word_sink: View.ModelDecorationSink,
 
     find: *FindController,
+    view: *View,
+    sticky_host: StickyScrollHost,
+    sticky: *StickyScrollController,
     hover_provider: TuiHoverProvider,
     hover_providers: [1]languages.HoverProvider,
     hover_participant: MarkdownHoverParticipant,
@@ -652,6 +658,12 @@ pub const Controllers = struct {
         });
         errdefer self.find.deinit();
         editor.setFindController(self.find, FindController.startFromContext);
+
+        self.view = view;
+        self.sticky_host = StickyScrollHost.init(allocator, view);
+        self.sticky = try StickyScrollController.init(allocator, editor, self.sticky_host.interface());
+        errdefer self.sticky.deinit();
+        self.sticky_host.attach(self.sticky);
 
         self.hover_sink = .{ .model = editor.model, .owner = 4 };
         self.word_sink = .{ .model = editor.model, .owner = 3 };
@@ -716,6 +728,7 @@ pub const Controllers = struct {
             try SuggestController.init(allocator, editor, self.completion_providers[0..self.completion_count], suggest_host);
         errdefer self.suggest.deinit();
 
+        try view.addConfigurationListener(.{ .context = self, .notify = onStickyConfigurationChanged });
         return self;
     }
 
@@ -731,6 +744,8 @@ pub const Controllers = struct {
     }
 
     pub fn deinit(self: *Controllers) void {
+        self.view.removeConfigurationListener(.{ .context = self, .notify = onStickyConfigurationChanged });
+        self.sticky.deinit();
         if (self.hover_registration) |registration| registration.dispose();
         self.suggest.deinit();
         self.word_highlighter.deinit();
@@ -741,6 +756,11 @@ pub const Controllers = struct {
         self.allocator.destroy(self);
     }
 };
+
+fn onStickyConfigurationChanged(context: *anyopaque) void {
+    const self: *Controllers = @ptrCast(@alignCast(context));
+    self.sticky.onConfigurationChanged();
+}
 
 fn viewTextHeight(context: *anyopaque) usize {
     const view: *View = @ptrCast(@alignCast(context));

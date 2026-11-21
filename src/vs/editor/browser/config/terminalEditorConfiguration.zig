@@ -175,6 +175,41 @@ pub fn applyViewSettings(
         }
     }
 
+    var sticky = options.get(.stickyScroll);
+    var sticky_changed = false;
+    if (readBool(reader, "editor.stickyScroll.enabled", language_id, resource)) |value| {
+        if (sticky.enabled != value) {
+            sticky.enabled = value;
+            sticky_changed = true;
+        }
+    }
+    if (readInt(reader, "editor.stickyScroll.maxLineCount", language_id, resource)) |value| {
+        const clamped: f64 = @floatFromInt(std.math.clamp(value, 1, 20));
+        if (sticky.max_line_count != clamped) {
+            sticky.max_line_count = clamped;
+            sticky_changed = true;
+        }
+    }
+    if (readString(reader, "editor.stickyScroll.defaultModel", language_id, resource)) |text| {
+        if (parseStickyDefaultModel(text)) |value| {
+            if (sticky.default_model != value) {
+                sticky.default_model = value;
+                sticky_changed = true;
+            }
+        }
+    }
+    if (readBool(reader, "editor.stickyScroll.scrollWithEditor", language_id, resource)) |value| {
+        if (sticky.scroll_with_editor != value) {
+            sticky.scroll_with_editor = value;
+            sticky_changed = true;
+        }
+    }
+    if (sticky_changed) {
+        options.set(.stickyScroll, sticky);
+        mark(changed, .stickyScroll, true);
+        any = true;
+    }
+
     return any;
 }
 
@@ -282,6 +317,13 @@ fn parseMultiCursorModifier(text: []const u8) ?MultiCursorModifier {
     return null;
 }
 
+fn parseStickyDefaultModel(text: []const u8) ?editorOptions.StickyScrollDefaultModel {
+    if (std.mem.eql(u8, text, "outlineModel")) return .outline_model;
+    if (std.mem.eql(u8, text, "foldingProviderModel")) return .folding_provider_model;
+    if (std.mem.eql(u8, text, "indentationModel")) return .indentation_model;
+    return null;
+}
+
 fn parseMatchBrackets(text: []const u8) ?MatchBrackets {
     if (std.mem.eql(u8, text, "always")) return .always;
     if (std.mem.eql(u8, text, "near")) return .near;
@@ -363,6 +405,26 @@ test "terminalEditorConfiguration: view settings map onto computed options" {
     var unchanged: ChangeSet = undefined;
     try std.testing.expect(!applyViewSettings(&options, settings.reader(), null, null, &unchanged));
     try std.testing.expect(!unchanged[@backingInt(EditorOption.lineNumbers)]);
+}
+
+test "terminalEditorConfiguration: sticky scroll settings map and clamp" {
+    const allocator = std.testing.allocator;
+    var settings = FakeSettings.init(allocator);
+    defer settings.deinit();
+    try settings.set("editor.stickyScroll.enabled", .{ .bool = false });
+    try settings.set("editor.stickyScroll.maxLineCount", .{ .integer = 100 });
+    try settings.set("editor.stickyScroll.defaultModel", .{ .string = "indentationModel" });
+    try settings.set("editor.stickyScroll.scrollWithEditor", .{ .bool = false });
+
+    var options = ComputedEditorOptions.init();
+    var changed: ChangeSet = undefined;
+    try std.testing.expect(applyViewSettings(&options, settings.reader(), null, null, &changed));
+    const sticky = options.get(.stickyScroll);
+    try std.testing.expect(!sticky.enabled);
+    try std.testing.expectEqual(@as(f64, 20), sticky.max_line_count);
+    try std.testing.expectEqual(editorOptions.StickyScrollDefaultModel.indentation_model, sticky.default_model);
+    try std.testing.expect(!sticky.scroll_with_editor);
+    try std.testing.expect(changed[@backingInt(EditorOption.stickyScroll)]);
 }
 
 test "terminalEditorConfiguration: absent settings keep terminal defaults" {

@@ -18,6 +18,10 @@ pub const OverlayWidgetPositionPreference = enum {
     top_right_corner,
     bottom_right_corner,
     top_center,
+    /// Terminal adaptation: upstream sticky scroll uses TOP_CENTER with a
+    /// cancelled right offset to obtain a full-width top-left overlay. The
+    /// terminal expresses that placement directly.
+    top_left_corner,
 };
 
 /// Mirrors upstream `IOverlayWidget`. Positions are computed by the host: a

@@ -1205,6 +1205,24 @@ TUI editor:
   `Ctrl-Shift-]` fold/unfold at the caret, `Ctrl-K Ctrl-L` toggles,
   `Ctrl-K Ctrl-0` folds all and `Ctrl-K Ctrl-J` unfolds all. Collapsed regions
   hide their model lines and end the first visible line with `…`.
+- Sticky scroll: enclosing outline scopes stay pinned in the first rows of the
+  editor, above the text and below later overlays such as the find widget. Up
+  to `min(25% of the visible text rows, editor.stickyScroll.maxLineCount)` rows
+  are shown. The widget is a top-left overlay, so it covers the rows rather
+  than shrinking the viewport; line heights are one cell. `defaultModel` uses
+  document symbols first and falls back to indentation folding; the syntax
+  folding provider is not ported. Clicking a sticky row moves the caret to its
+  scope line, Shift-click reveals the line after the scope, and `▸`/`▾` toggles
+  that folding region. `editor.action.toggleStickyScroll` and
+  `editor.action.focusStickyScroll` are in the command palette; while focused,
+  Up/Down select a row, Enter goes to it and Escape returns to the editor.
+  The toggle is session-only because the TUI has no settings-write service.
+  Model providers run synchronously on the UI thread; the 300 ms debounce
+  coalesces edits but does not cancel an in-flight provider call.
+  Terminal limits: no CSS border/shadow, no sub-row/partial scrolling (the
+  header is not duplicated while its line is still the first visible row), no
+  horizontal `scrollWithEditor` coupling, no context menu or go-to-definition
+  from a sticky row, and no preview syntax folding provider.
 - Multi-cursor: `Ctrl-Alt-Up`/`Ctrl-Alt-Down` add a cursor above/below,
   `Ctrl-D` adds the next occurrence of the selection, and `Alt-D` selects all
   occurrences. `Escape` removes secondary cursors before clearing a selection.
@@ -1333,11 +1351,23 @@ Editor contributions:
   The TUI gutter paints `▾`/`▸` in its last cell and handles the click; the
   editor binds the upstream fold/unfold/toggle/fold-all/unfold-all commands and
   registers them in the workbench command palette. Syntax folding providers,
-  folding-decoration CSS classes, sticky scroll, fold-imports-by-default,
-  folding mementos/view state, manual folding-range actions and the
+  folding-decoration CSS classes, fold-imports-by-default, folding
+  mementos/view state, manual folding-range actions and the
   goto-parent/previous/next-fold actions are not ported. Fold state survives
   edits on the folded line, but inserting or deleting lines above a collapsed
   region re-expands it because the TUI has no tracked folding decorations.
+- Sticky scroll is ported from
+  `src/vs/editor/contrib/stickyScroll/browser`: the sticky element/model tree,
+  outline and indentation candidate providers, the candidate walker with hidden
+  range filtering, the widget state and cell painting (line numbers, syntax
+  colors, fold glyphs), and the controller events. `stickyScrollActions.zig`
+  keeps the upstream action ids/metadata; the workbench registers the toggle
+  and focus commands, and the widget handles the focused-row keys. Not ported:
+  the syntax folding provider (no folding-range registry), outline provider-id
+  preference, context menus, Ctrl/Cmd-click go-to-definition, browser hover
+  definition underlining, embedded-editor peek styling, and CSS border/shadow.
+  The model rebuild debounce coalesces upstream's 50 ms provider scheduler and
+  300 ms model delayer into one 300 ms terminal scheduler ticked by the app.
 - Cursor/editing contributions are ported at the portable command/model layer:
   `anchorSelect` (position anchor state and action metadata), `caretOperations`
   (`MoveCaretCommand` and action metadata), `cursorUndo` (cursor undo/redo
