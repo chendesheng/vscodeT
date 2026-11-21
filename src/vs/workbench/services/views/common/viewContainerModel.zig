@@ -111,14 +111,19 @@ pub const ViewContainerModel = struct {
         return self.active_view;
     }
 
-    /// Visible views in declaration/order order. The returned slice is
-    /// allocated; the caller owns it.
+    /// Visible views in `order` order. The returned slice is allocated; the
+    /// caller owns it.
     pub fn visibleViews(self: *const ViewContainerModel, allocator: Allocator) ![]ViewDescriptor {
         var result = std.array_list.Managed(ViewDescriptor).init(allocator);
         errdefer result.deinit();
         for (self.views.items) |view| {
             if (view.visible) try result.append(view);
         }
+        std.sort.insertion(ViewDescriptor, result.items, {}, struct {
+            fn lessThan(_: void, a: ViewDescriptor, b: ViewDescriptor) bool {
+                return a.order < b.order;
+            }
+        }.lessThan);
         return result.toOwnedSlice();
     }
 };

@@ -177,6 +177,8 @@ pub const TitleAction = struct {
     label: []const u8,
     glyph: u21,
     enabled: bool = true,
+    /// Render the label after the glyph (the Graph reference picker does).
+    show_label: bool = false,
     /// Upstream secondary actions collapse into the toolbar overflow menu. The
     /// terminal paints them after the primary actions; there is no overflow.
     secondary: bool = false,
