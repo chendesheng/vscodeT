@@ -297,6 +297,13 @@ pub const TextQueryOptions = struct {
     preview: PreviewOptions = .{},
     max_results: usize = DEFAULT_MAX_SEARCH_RESULTS,
     use_ignore_files: bool = true,
+    use_parent_ignore_files: bool = true,
+    use_global_ignore_files: bool = true,
+    follow_symlinks: bool = true,
+    ignore_glob_case: bool = false,
+    is_multiline: bool = false,
+    surrounding_context: usize = 0,
+    max_file_size: ?usize = null,
     exclude_entries: []const glob.ExcludeEntry = &.{},
 };
 
@@ -317,6 +324,11 @@ pub const TextQuery = struct {
     use_ignore_files: bool = true,
     preview: PreviewOptions = .{},
     max_results: usize = DEFAULT_MAX_SEARCH_RESULTS,
+    settings: FileSearchSettings = .{},
+    ignore_glob_case: bool = false,
+    is_multiline: bool = false,
+    surrounding_context: usize = 0,
+    max_file_size: ?usize = null,
 
     pub fn init(
         allocator: Allocator,
@@ -408,6 +420,16 @@ pub const TextQuery = struct {
             .use_ignore_files = options.use_ignore_files,
             .preview = options.preview,
             .max_results = options.max_results,
+            .settings = .{
+                .use_ignore_files = options.use_ignore_files,
+                .use_parent_ignore_files = options.use_parent_ignore_files,
+                .use_global_ignore_files = options.use_global_ignore_files,
+                .follow_symlinks = options.follow_symlinks,
+            },
+            .ignore_glob_case = options.ignore_glob_case,
+            .is_multiline = options.is_multiline,
+            .surrounding_context = options.surrounding_context,
+            .max_file_size = options.max_file_size,
         };
     }
 
@@ -674,22 +696,46 @@ pub fn getNLines(text: []const u8, lines: usize) []const u8 {
     return text[0..end];
 }
 
+/// Port of upstream `ITextSearchContext`: one surrounding-context row.
+pub const TextSearchContext = struct {
+    text: []u8,
+    /// 1-based line number, as in upstream `ITextSearchContext.lineNumber`.
+    line_number: usize,
+
+    pub fn deinit(self: *TextSearchContext, allocator: Allocator) void {
+        allocator.free(self.text);
+    }
+};
+
 pub const SearchFileResult = struct {
     allocator: Allocator,
     resource: []u8,
     results: []TextSearchMatch,
+    /// Surrounding-context rows for this file, in report order.
+    contexts: []TextSearchContext = &.{},
 
     pub fn deinit(self: *SearchFileResult) void {
         self.allocator.free(self.resource);
         for (self.results) |*result| result.deinit();
-        self.allocator.free(self.results);
+        if (self.results.len > 0) self.allocator.free(self.results);
+        for (self.contexts) |*context| context.deinit(self.allocator);
+        if (self.contexts.len > 0) self.allocator.free(self.contexts);
     }
+};
+
+pub const SearchMessageKind = enum { info, warning, err };
+
+pub const SearchMessage = struct {
+    text: []u8,
+    kind: SearchMessageKind = .info,
 };
 
 pub const SearchStep = struct {
     results: []SearchFileResult,
     done: bool,
     limit_hit: bool,
+    /// Runtime errors/warnings for the view. Owned by the step allocator.
+    messages: []SearchMessage = &.{},
 };
 
 pub const ISearchJob = struct {
@@ -710,6 +756,9 @@ pub const FileContentProvider = struct {
     read: ?*const fn (context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?[]u8 = null,
     /// Returns owned paths for open files outside the workspace.
     extra_files: ?*const fn (context: *anyopaque, allocator: Allocator) anyerror![][]u8 = null,
+    /// Returns owned paths for every open editor, inside or outside the
+    /// workspace. The sync pass searches these buffers before ripgrep runs.
+    open_files: ?*const fn (context: *anyopaque, allocator: Allocator) anyerror![][]u8 = null,
     free_paths: ?*const fn (context: *anyopaque, allocator: Allocator, paths: [][]u8) void = null,
 };
 

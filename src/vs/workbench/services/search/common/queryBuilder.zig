@@ -30,6 +30,7 @@ const configuration_service = @import("../../configuration/browser/configuration
 const ConfigurationService = configuration_service.ConfigurationService;
 const workspace_context = @import("../../workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
+const text_model_search = @import("../../../../editor/common/model/textModelSearch.zig");
 
 pub const TextQueryBuilderOptions = struct {
     include_pattern: []const u8 = "",
@@ -41,6 +42,8 @@ pub const TextQueryBuilderOptions = struct {
     /// `files.exclude`/`search.exclude` nor ignore files are consulted.
     use_excludes_and_ignore_files: bool = true,
     is_smart_case: bool = false,
+    surrounding_context: usize = 0,
+    max_file_size: ?usize = null,
 };
 
 pub const QueryBuilder = struct {
@@ -101,6 +104,11 @@ pub const QueryBuilder = struct {
                 },
                 .max_results = options.max_results orelse self.maxResults(),
                 .use_ignore_files = use_excludes and self.configuration.getBool("search.useIgnoreFiles", true),
+                .use_parent_ignore_files = self.configuration.getBool("search.useParentIgnoreFiles", true),
+                .use_global_ignore_files = self.configuration.getBool("search.useGlobalIgnoreFiles", true),
+                .follow_symlinks = self.configuration.getBool("search.followSymlinks", true),
+                .surrounding_context = options.surrounding_context,
+                .max_file_size = options.max_file_size,
                 .exclude_entries = excludes,
             },
         );
@@ -109,6 +117,10 @@ pub const QueryBuilder = struct {
         query.is_regex = content.is_regex;
         query.is_word_match = content.is_word_match;
         query.is_case_sensitive = normalized.is_case_sensitive;
+        query.is_multiline = if (content.is_regex)
+            text_model_search.isMultilineRegexSource(query.pattern)
+        else
+            std.mem.indexOfScalar(u8, query.pattern, '\n') != null;
         return query;
     }
 
