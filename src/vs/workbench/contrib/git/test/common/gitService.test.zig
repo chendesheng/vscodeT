@@ -32,6 +32,13 @@ const FakeDelegate = struct {
             .diff_between_with_stats_fn = diffBetweenWithStats,
             .diff_between_with_stats2_fn = diffBetweenWithStats2,
             .commit_files_fn = commitFiles,
+            .log_fn = log,
+            .diff_root_commit_fn = diffRootCommit,
+            .merge_base_fn = mergeBase,
+            .get_branch_fn = getBranch,
+            .get_branch_base_fn = getBranchBase,
+            .read_ref_at_fn = readRefAt,
+            .has_git_version_at_least_fn = hasGitVersionAtLeast,
         };
     }
 
@@ -60,6 +67,27 @@ const FakeDelegate = struct {
     }
 
     fn commitFiles(_: *anyopaque, _: []const u8, _: []const []const u8, _: []const u8, _: GitCommitOptions) anyerror!void {}
+    fn log(_: *anyopaque, _: Allocator, _: []const u8, _: common.GitLogOptions, _: CancellationToken) anyerror![]common.GitCommit {
+        return &.{};
+    }
+    fn diffRootCommit(_: *anyopaque, _: Allocator, _: []const u8, _: []const u8) anyerror![]common.GitDiffChange {
+        return &.{};
+    }
+    fn mergeBase(_: *anyopaque, _: Allocator, _: []const u8, _: []const []const u8) anyerror!?[]u8 {
+        return null;
+    }
+    fn getBranch(_: *anyopaque, _: Allocator, _: []const u8, _: []const u8) anyerror!?common.GitBranch {
+        return null;
+    }
+    fn getBranchBase(_: *anyopaque, _: Allocator, _: []const u8, _: []const u8) anyerror!?common.GitBranch {
+        return null;
+    }
+    fn readRefAt(_: *anyopaque, _: Allocator, _: []const u8, _: []const u8, _: []const u8) anyerror!?[]u8 {
+        return null;
+    }
+    fn hasGitVersionAtLeast(_: *anyopaque, _: usize, _: usize) bool {
+        return true;
+    }
 };
 
 test "gitService: delegate is set once and can be cleared" {

@@ -19,7 +19,10 @@ pub const GitRepositoryState = git_common.GitRepositoryState;
 pub const GitRef = git_common.GitRef;
 pub const GitRefQuery = git_common.GitRefQuery;
 pub const GitDiffChange = git_common.GitDiffChange;
+pub const GitCommit = git_common.GitCommit;
+pub const GitLogOptions = git_common.GitLogOptions;
 pub const GitCommitOptions = git_common.GitCommitOptions;
+pub const GitBranch = git_common.GitBranch;
 pub const IGitRepository = git_common.IGitRepository;
 pub const IGitExtensionDelegate = git_common.IGitExtensionDelegate;
 pub const IGitService = git_common.IGitService;
@@ -210,6 +213,60 @@ pub const GitRepository = struct {
         );
     }
 
+    pub fn log(
+        self: *GitRepository,
+        allocator: Allocator,
+        options: GitLogOptions,
+        token: CancellationToken,
+    ) ![]GitCommit {
+        return self.delegate.log(allocator, self.root_path, options, token);
+    }
+
+    pub fn diffRootCommit(
+        self: *GitRepository,
+        allocator: Allocator,
+        commit: []const u8,
+    ) ![]GitDiffChange {
+        return self.delegate.diffRootCommit(allocator, self.root_path, commit);
+    }
+
+    pub fn mergeBase(
+        self: *GitRepository,
+        allocator: Allocator,
+        refs: []const []const u8,
+    ) !?[]u8 {
+        return self.delegate.mergeBase(allocator, self.root_path, refs);
+    }
+
+    pub fn getBranch(
+        self: *GitRepository,
+        allocator: Allocator,
+        name: []const u8,
+    ) !?GitBranch {
+        return self.delegate.getBranch(allocator, self.root_path, name);
+    }
+
+    pub fn getBranchBase(
+        self: *GitRepository,
+        allocator: Allocator,
+        name: []const u8,
+    ) !?GitBranch {
+        return self.delegate.getBranchBase(allocator, self.root_path, name);
+    }
+
+    pub fn readRefAt(
+        self: *GitRepository,
+        allocator: Allocator,
+        path: []const u8,
+        revision: []const u8,
+    ) !?[]u8 {
+        return self.delegate.readRefAt(allocator, self.root_path, path, revision);
+    }
+
+    pub fn hasGitVersionAtLeast(self: *GitRepository, major: usize, minor: usize) bool {
+        return self.delegate.hasGitVersionAtLeast(major, minor);
+    }
+
     pub fn interface(self: *GitRepository) IGitRepository {
         return .{
             .context = self,
@@ -221,6 +278,13 @@ pub const GitRepository = struct {
             .diff_between_with_stats_fn = diffBetweenWithStatsThunk,
             .diff_between_with_stats2_fn = diffBetweenWithStats2Thunk,
             .commit_files_fn = commitFilesThunk,
+            .log_fn = logThunk,
+            .diff_root_commit_fn = diffRootCommitThunk,
+            .merge_base_fn = mergeBaseThunk,
+            .get_branch_fn = getBranchThunk,
+            .get_branch_base_fn = getBranchBaseThunk,
+            .read_ref_at_fn = readRefAtThunk,
+            .has_git_version_at_least_fn = hasGitVersionAtLeastThunk,
         };
     }
 
@@ -278,5 +342,70 @@ pub const GitRepository = struct {
     ) anyerror!void {
         const self: *GitRepository = @ptrCast(@alignCast(context));
         return self.commitFiles(files, message, options);
+    }
+
+    fn logThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        options: GitLogOptions,
+        token: CancellationToken,
+    ) anyerror![]GitCommit {
+        const self: *GitRepository = @ptrCast(@alignCast(context));
+        return self.log(allocator, options, token);
+    }
+
+    fn diffRootCommitThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        commit: []const u8,
+    ) anyerror![]GitDiffChange {
+        const self: *GitRepository = @ptrCast(@alignCast(context));
+        return self.diffRootCommit(allocator, commit);
+    }
+
+    fn mergeBaseThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        refs: []const []const u8,
+    ) anyerror!?[]u8 {
+        const self: *GitRepository = @ptrCast(@alignCast(context));
+        return self.mergeBase(allocator, refs);
+    }
+
+    fn getBranchThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        name: []const u8,
+    ) anyerror!?GitBranch {
+        const self: *GitRepository = @ptrCast(@alignCast(context));
+        return self.getBranch(allocator, name);
+    }
+
+    fn getBranchBaseThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        name: []const u8,
+    ) anyerror!?GitBranch {
+        const self: *GitRepository = @ptrCast(@alignCast(context));
+        return self.getBranchBase(allocator, name);
+    }
+
+    fn readRefAtThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        path: []const u8,
+        revision: []const u8,
+    ) anyerror!?[]u8 {
+        const self: *GitRepository = @ptrCast(@alignCast(context));
+        return self.readRefAt(allocator, path, revision);
+    }
+
+    fn hasGitVersionAtLeastThunk(
+        context: *anyopaque,
+        major: usize,
+        minor: usize,
+    ) bool {
+        const self: *GitRepository = @ptrCast(@alignCast(context));
+        return self.hasGitVersionAtLeast(major, minor);
     }
 };

@@ -45,6 +45,14 @@ pub const GitRefType = git_common.GitRefType;
 pub const GitRefQuery = git_common.GitRefQuery;
 pub const GitUpstreamRef = git_common.GitUpstreamRef;
 pub const GitCommitOptions = git_common.GitCommitOptions;
+pub const freeGitCommits = git_common.freeGitCommits;
+pub const GitCommit = git_common.GitCommit;
+pub const GitCommitShortStat = git_common.GitCommitShortStat;
+pub const GitLogOptions = git_common.GitLogOptions;
+pub const GitDiffShortStat = git_common.GitCommitShortStat;
+
+/// `git log` record format from the upstream extension.
+const commit_format = "%H%n%aN%n%aE%n%at%n%ct%n%P%n%D%n%B";
 pub const CancellationToken = git_common.CancellationToken;
 pub const IGitRepository = git_common.IGitRepository;
 pub const IGitExtensionDelegate = git_common.IGitExtensionDelegate;
@@ -60,6 +68,10 @@ const status_output_limit: usize = 64 * 1024 * 1024;
 const discovery_output_limit: usize = 64 * 1024;
 const get_refs_output_limit: usize = 16 * 1024 * 1024;
 const diff_output_limit: usize = 64 * 1024 * 1024;
+const log_output_limit: usize = 32 * 1024 * 1024;
+const merge_base_output_limit: usize = 64 * 1024;
+
+const GitVersion = struct { major: usize, minor: usize };
 const stderr_limit: usize = 64 * 1024;
 
 /// A revision that `readRef` can materialize.
@@ -176,6 +188,9 @@ pub const Git = struct {
     no_repo_reported: bool = false,
     on_disabled: ?*const fn (context: ?*anyopaque, reason: []const u8) void = null,
     on_disabled_context: ?*anyopaque = null,
+    /// Cached `git --version`, probed lazily before options such as
+    /// `--diff-merges=first-parent` are used.
+    git_version: ?GitVersion = null,
 
     pub fn init(allocator: Allocator, options: Options) !*Git {
         const self = try allocator.create(Git);
@@ -230,6 +245,13 @@ pub const Git = struct {
             .diff_between_with_stats_fn = diffBetweenWithStatsThunk,
             .diff_between_with_stats2_fn = diffBetweenWithStats2Thunk,
             .commit_files_fn = commitFilesThunk,
+            .log_fn = logThunk,
+            .diff_root_commit_fn = diffRootCommitThunk,
+            .merge_base_fn = mergeBaseThunk,
+            .get_branch_fn = getBranchThunk,
+            .get_branch_base_fn = getBranchBaseThunk,
+            .read_ref_at_fn = readRefAtThunk,
+            .has_git_version_at_least_fn = hasGitVersionAtLeastThunk,
         };
 
         if (!options.enabled) self.disable("git.enabled is false");
@@ -493,8 +515,10 @@ pub const Git = struct {
         if (!self.directoryExists(root)) return null;
         const revision = if (std.mem.eql(u8, which, "HEAD"))
             try std.fmt.allocPrint(self.allocator, "HEAD:{s}", .{path})
+        else if (std.mem.eql(u8, which, "index"))
+            try std.fmt.allocPrint(self.allocator, ":{s}", .{path})
         else
-            try std.fmt.allocPrint(self.allocator, ":{s}", .{path});
+            try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ which, path });
         defer self.allocator.free(revision);
 
         var argv = std.array_list.Managed([]const u8).init(self.allocator);
@@ -728,7 +752,7 @@ pub const Git = struct {
         if (!self.directoryExists(root)) return error.NoGit;
         var argv = std.array_list.Managed([]const u8).init(self.allocator);
         defer argv.deinit();
-        try argv.appendSlice(&.{ self.exe, "diff", "--numstat", "-z", refspec });
+        try argv.appendSlice(&.{ self.exe, "diff", "--raw", "--numstat", "--diff-filter=ADMR", "--find-renames=50%", "-z", refspec });
         if (path) |p| {
             try argv.append("--");
             try argv.append(p);
@@ -743,7 +767,7 @@ pub const Git = struct {
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
         if (!result.term.success()) return error.GitFailed;
-        return parseNumStat(allocator, result.stdout);
+        return parseGitChangesRaw(allocator, result.stdout);
     }
 
     /// Stages `files` (including deleted paths) and commits the index. This is
@@ -790,6 +814,379 @@ pub const Git = struct {
             if (isNothingToCommit(commit_result.stderr)) return;
             return error.GitFailed;
         }
+    }
+
+    /// `git log` with the upstream extension's record format. Returns an owned
+    /// (possibly empty) array; a non-zero exit code is an empty/unborn history,
+    /// matching the extension.
+    pub fn log(
+        self: *Git,
+        allocator: Allocator,
+        root: []const u8,
+        options: GitLogOptions,
+        token: CancellationToken,
+    ) ![]GitCommit {
+        if (token.isCancellationRequested()) return error.CancellationError;
+        if (self.disabled) return error.NoGit;
+        if (!self.directoryExists(root)) return error.NoGit;
+        if (!options.all_refs) {
+            if (options.ref_names) |ref_names| {
+                if (ref_names.len == 0) return allocator.alloc(GitCommit, 0);
+            }
+        }
+
+        var argv = std.array_list.Managed([]const u8).init(self.allocator);
+        defer argv.deinit();
+        var owned_args = std.array_list.Managed([]u8).init(self.allocator);
+        defer {
+            for (owned_args.items) |argument| self.allocator.free(argument);
+            owned_args.deinit();
+        }
+
+        try argv.appendSlice(&.{ self.exe, "-c", "i18n.logOutputEncoding=UTF-8", "log", "--format=" ++ commit_format, "-z" });
+        if (options.short_stats) {
+            try argv.append("--shortstat");
+            if (self.hasGitVersionAtLeast(2, 31)) try argv.append("--diff-merges=first-parent");
+        }
+        if (options.range) |range| {
+            try argv.append(range);
+        } else {
+            const limit = options.max_entries orelse 32;
+            const argument = try std.fmt.allocPrint(self.allocator, "-n{d}", .{limit});
+            try owned_args.append(argument);
+            try argv.append(argument);
+        }
+        if (options.author) |author| {
+            const argument = try std.fmt.allocPrint(self.allocator, "--author={s}", .{author});
+            try owned_args.append(argument);
+            try argv.append(argument);
+        }
+        if (options.grep) |grep| {
+            const argument = try std.fmt.allocPrint(self.allocator, "--grep={s}", .{grep});
+            try owned_args.append(argument);
+            try argv.append(argument);
+            try argv.append("--extended-regexp");
+            try argv.append("--regexp-ignore-case");
+        }
+        if (options.max_parents) |max_parents| {
+            const argument = try std.fmt.allocPrint(self.allocator, "--max-parents={d}", .{max_parents});
+            try owned_args.append(argument);
+            try argv.append(argument);
+        }
+        if (options.skip) |skip| {
+            const argument = try std.fmt.allocPrint(self.allocator, "--skip={d}", .{skip});
+            try owned_args.append(argument);
+            try argv.append(argument);
+        }
+        if (options.all_refs) {
+            try argv.append("--topo-order");
+            try argv.append("--decorate=full");
+            try argv.append("--all");
+        } else if (options.ref_names) |ref_names| {
+            try argv.append("--topo-order");
+            try argv.append("--decorate=full");
+            try argv.appendSlice(ref_names);
+        }
+
+        var result = self.run(argv.items, root, log_output_limit) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Timeout => return error.Timeout,
+            error.NoGit => return error.NoGit,
+            error.OutputTooLarge, error.GitFailed => return error.GitFailed,
+        };
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return allocator.alloc(GitCommit, 0);
+        if (token.isCancellationRequested()) return error.CancellationError;
+        return parseGitCommits(allocator, result.stdout);
+    }
+
+    /// `git diff-tree --root` for a root commit; the terminal substitute for
+    /// the upstream empty-tree diff.
+    pub fn diffRootCommit(
+        self: *Git,
+        allocator: Allocator,
+        root: []const u8,
+        commit: []const u8,
+    ) ![]GitDiffChange {
+        if (self.disabled) return error.NoGit;
+        if (!self.directoryExists(root)) return error.NoGit;
+        var argv = std.array_list.Managed([]const u8).init(self.allocator);
+        defer argv.deinit();
+        try argv.appendSlice(&.{
+            self.exe,
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "-r",
+            "--raw",
+            "--numstat",
+            "--diff-filter=ADMR",
+            "--find-renames=50%",
+            "-z",
+            commit,
+            "--",
+        });
+        var result = self.run(argv.items, root, diff_output_limit) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Timeout => return error.Timeout,
+            error.NoGit => return error.NoGit,
+            error.OutputTooLarge, error.GitFailed => return error.GitFailed,
+        };
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return allocator.alloc(GitDiffChange, 0);
+        return parseGitChangesRaw(allocator, result.stdout);
+    }
+
+    /// `git merge-base <refs...>`; null when the refs have no common ancestor.
+    pub fn mergeBase(
+        self: *Git,
+        allocator: Allocator,
+        root: []const u8,
+        refs: []const []const u8,
+    ) !?[]u8 {
+        if (refs.len == 0) return null;
+        if (self.disabled) return error.NoGit;
+        if (!self.directoryExists(root)) return error.NoGit;
+        var argv = std.array_list.Managed([]const u8).init(self.allocator);
+        defer argv.deinit();
+        try argv.append(self.exe);
+        try argv.append("merge-base");
+        try argv.appendSlice(refs);
+        var result = self.run(argv.items, root, merge_base_output_limit) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Timeout, error.NoGit, error.OutputTooLarge, error.GitFailed => return null,
+        };
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return null;
+        const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+        if (trimmed.len == 0) return null;
+        return try allocator.dupe(u8, trimmed);
+    }
+
+    /// `git for-each-ref` for a single branch (local or remote), including its
+    /// upstream details. Returns an owned `GitBranch` or null.
+    pub fn getBranch(
+        self: *Git,
+        allocator: Allocator,
+        root: []const u8,
+        name: []const u8,
+    ) !?GitBranch {
+        if (self.disabled) return error.NoGit;
+        if (!self.directoryExists(root)) return error.NoGit;
+        if (name.len == 0 or name.len > 1024) return null;
+        var argv = std.array_list.Managed([]const u8).init(self.allocator);
+        defer argv.deinit();
+        try argv.appendSlice(&.{
+            self.exe,
+            "for-each-ref",
+            "--format=%(refname)%00%(upstream:short)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)",
+        });
+        if (std.mem.startsWith(u8, name, "refs/")) {
+            try argv.append(name);
+        } else {
+            const local = try std.fmt.allocPrint(self.allocator, "refs/heads/{s}", .{name});
+            defer self.allocator.free(local);
+            const remote = try std.fmt.allocPrint(self.allocator, "refs/remotes/{s}", .{name});
+            defer self.allocator.free(remote);
+            try argv.append(local);
+            try argv.append(remote);
+        }
+        var result = self.run(argv.items, root, get_refs_output_limit) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Timeout => return error.Timeout,
+            error.NoGit => return error.NoGit,
+            error.OutputTooLarge, error.GitFailed => return error.GitFailed,
+        };
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return null;
+        return parseBranch(allocator, result.stdout);
+    }
+
+    /// Read-only port of `repository.getBranchBase`: the branch base from
+    /// `branch.<name>.vscode-merge-base`, the creation reflog, or the remote
+    /// default branch. Unlike upstream it never writes the config key back.
+    pub fn getBranchBase(
+        self: *Git,
+        allocator: Allocator,
+        root: []const u8,
+        name: []const u8,
+    ) !?GitBranch {
+        var branch = (try self.getBranch(allocator, root, name)) orelse return null;
+        var branch_owned = true;
+        errdefer if (branch_owned) branch.deinit(allocator);
+
+        const local_name = branch.ref.name orelse {
+            branch.deinit(allocator);
+            return null;
+        };
+        const config_key = try std.fmt.allocPrint(self.allocator, "branch.{s}.vscode-merge-base", .{local_name});
+        defer self.allocator.free(config_key);
+        if (try self.getConfig(allocator, root, config_key)) |config_value| {
+            defer allocator.free(config_value);
+            if (config_value.len > 0) {
+                if (try self.getBranch(allocator, root, config_value)) |config_branch| {
+                    if (config_branch.ref.remote != null) {
+                        branch.deinit(allocator);
+                        return config_branch;
+                    }
+                    var config_owned = config_branch;
+                    config_owned.deinit(allocator);
+                }
+            }
+        }
+
+        // Creation reflog.
+        const reflog_ref = branch.ref.name orelse {
+            branch.deinit(allocator);
+            return null;
+        };
+        if (try self.getReflogSubject(allocator, root, reflog_ref, "branch: Created from *.")) |entry| {
+            defer allocator.free(entry);
+            if (std.mem.startsWith(u8, entry, "branch: Created from ")) {
+                const created_from = entry["branch: Created from ".len..];
+                if (created_from.len > 0 and !std.mem.eql(u8, created_from, "HEAD")) {
+                    if (try self.branchOrUpstream(allocator, root, created_from)) |base| {
+                        branch.deinit(allocator);
+                        return base;
+                    }
+                }
+                if (std.mem.eql(u8, created_from, "HEAD")) {
+                    const checkout_pattern = try std.fmt.allocPrint(
+                        self.allocator,
+                        "checkout: moving from .* to {s}",
+                        .{if (std.mem.startsWith(u8, local_name, "refs/heads/")) local_name["refs/heads/".len..] else local_name},
+                    );
+                    defer self.allocator.free(checkout_pattern);
+                    if (try self.getReflogSubject(allocator, root, "HEAD", checkout_pattern)) |checkout| {
+                        defer allocator.free(checkout);
+                        if (std.mem.indexOf(u8, checkout, "checkout: moving from ")) |start| {
+                            const rest = checkout[start + "checkout: moving from ".len ..];
+                            if (std.mem.indexOf(u8, rest, " ")) |end| {
+                                if (try self.branchOrUpstream(allocator, root, rest[0..end])) |base| {
+                                    branch.deinit(allocator);
+                                    return base;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Default branch of the first remote.
+        if (try self.defaultRemote(allocator, root)) |remote| {
+            defer allocator.free(remote);
+            const symbolic = try std.fmt.allocPrint(self.allocator, "refs/remotes/{s}/HEAD", .{remote});
+            defer self.allocator.free(symbolic);
+            if (try self.runOutput(allocator, root, &.{ self.exe, "symbolic-ref", "--short", symbolic }, merge_base_output_limit)) |default_ref| {
+                defer allocator.free(default_ref);
+                if (try self.branchOrUpstream(allocator, root, default_ref)) |base| {
+                    branch.deinit(allocator);
+                    return base;
+                }
+            }
+        }
+
+        branch_owned = false;
+        return branch;
+    }
+
+    fn branchOrUpstream(self: *Git, allocator: Allocator, root: []const u8, name: []const u8) !?GitBranch {
+        var branch = (try self.getBranch(allocator, root, name)) orelse return null;
+        if (branch.ref.remote != null) return branch;
+        const upstream = branch.upstream orelse {
+            branch.deinit(allocator);
+            return null;
+        };
+        const full = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ upstream.remote, upstream.name });
+        defer allocator.free(full);
+        branch.deinit(allocator);
+        return try self.getBranch(allocator, root, full);
+    }
+
+    fn getConfig(self: *Git, allocator: Allocator, root: []const u8, key: []const u8) !?[]u8 {
+        return self.runOutput(allocator, root, &.{ self.exe, "config", "--get", key }, merge_base_output_limit);
+    }
+
+    fn getReflogSubject(self: *Git, allocator: Allocator, root: []const u8, ref: []const u8, pattern: []const u8) !?[]u8 {
+        const grep = try std.fmt.allocPrint(self.allocator, "--grep-reflog={s}", .{pattern});
+        defer self.allocator.free(grep);
+        var argv = std.array_list.Managed([]const u8).init(self.allocator);
+        defer argv.deinit();
+        try argv.appendSlice(&.{ self.exe, "reflog", "show", ref, "--format=%gs", grep });
+        const output = (try self.runOutput(allocator, root, argv.items, merge_base_output_limit)) orelse return null;
+        defer self.allocator.free(output);
+        const trimmed = std.mem.trim(u8, output, "\r\n");
+        if (trimmed.len == 0) return null;
+        // Upstream requires exactly one matching reflog entry.
+        if (std.mem.indexOfScalar(u8, trimmed, '\n') != null) return null;
+        return try allocator.dupe(u8, trimmed);
+    }
+
+    fn defaultRemote(self: *Git, allocator: Allocator, root: []const u8) !?[]u8 {
+        const output = (try self.runOutput(allocator, root, &.{ self.exe, "remote" }, merge_base_output_limit)) orelse return null;
+        defer allocator.free(output);
+        const trimmed = std.mem.trim(u8, output, "\r\n");
+        if (trimmed.len == 0) return null;
+        const end = std.mem.indexOfScalar(u8, trimmed, '\n') orelse trimmed.len;
+        const first = std.mem.trimEnd(u8, trimmed[0..end], "\r");
+        if (first.len == 0) return null;
+        return try allocator.dupe(u8, first);
+    }
+
+    fn runOutput(
+        self: *Git,
+        allocator: Allocator,
+        root: []const u8,
+        argv: []const []const u8,
+        limit: usize,
+    ) !?[]u8 {
+        var result = self.run(argv, root, limit) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return null;
+        const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+        if (trimmed.len == 0) return null;
+        return try allocator.dupe(u8, trimmed);
+    }
+
+    /// Reads `path` at an arbitrary revision via `git show <rev>:<path>`.
+    pub fn readRefAt(
+        self: *Git,
+        allocator: Allocator,
+        root: []const u8,
+        path: []const u8,
+        revision: []const u8,
+    ) !?[]u8 {
+        if (!isSafeRelativePath(path)) return null;
+        if (std.mem.indexOfScalar(u8, revision, 0) != null or std.mem.indexOfScalar(u8, revision, ':') != null) return null;
+        const content = (try self.readGitBlob(root, revision, path)) orelse return null;
+        defer self.allocator.free(content);
+        return try allocator.dupe(u8, content);
+    }
+
+    pub fn hasGitVersionAtLeast(self: *const Git, major: usize, minor: usize) bool {
+        const version = self.ensureGitVersion() orelse return false;
+        return version.major > major or (version.major == major and version.minor >= minor);
+    }
+
+    fn ensureGitVersion(self: *const Git) ?GitVersion {
+        if (self.git_version) |version| return version;
+        var mutable: *Git = @constCast(self);
+        var result = mutable.run(&.{ mutable.exe, "--version" }, ".", merge_base_output_limit) catch return null;
+        defer mutable.allocator.free(result.stdout);
+        defer mutable.allocator.free(result.stderr);
+        if (!result.term.success()) return null;
+        const version = parseGitVersion(result.stdout) orelse return null;
+        mutable.git_version = version;
+        return version;
     }
 
     fn repositoriesThunk(context: *anyopaque) []const IGitRepository {
@@ -846,7 +1243,387 @@ pub const Git = struct {
         const self: *Git = @ptrCast(@alignCast(context));
         return self.commitFiles(root, files, message, options);
     }
+    fn logThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        options: GitLogOptions,
+        token: CancellationToken,
+    ) anyerror![]GitCommit {
+        const self: *Git = @ptrCast(@alignCast(context));
+        return self.log(allocator, root, options, token);
+    }
+
+    fn diffRootCommitThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        commit: []const u8,
+    ) anyerror![]GitDiffChange {
+        const self: *Git = @ptrCast(@alignCast(context));
+        return self.diffRootCommit(allocator, root, commit);
+    }
+
+    fn mergeBaseThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        refs: []const []const u8,
+    ) anyerror!?[]u8 {
+        const self: *Git = @ptrCast(@alignCast(context));
+        return self.mergeBase(allocator, root, refs);
+    }
+
+    fn getBranchThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        name: []const u8,
+    ) anyerror!?GitBranch {
+        const self: *Git = @ptrCast(@alignCast(context));
+        return self.getBranch(allocator, root, name);
+    }
+
+    fn getBranchBaseThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        name: []const u8,
+    ) anyerror!?GitBranch {
+        const self: *Git = @ptrCast(@alignCast(context));
+        return self.getBranchBase(allocator, root, name);
+    }
+
+    fn readRefAtThunk(
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        path: []const u8,
+        revision: []const u8,
+    ) anyerror!?[]u8 {
+        const self: *Git = @ptrCast(@alignCast(context));
+        return self.readRefAt(allocator, root, path, revision);
+    }
+
+    fn hasGitVersionAtLeastThunk(
+        context: *anyopaque,
+        major: usize,
+        minor: usize,
+    ) bool {
+        const self: *Git = @ptrCast(@alignCast(context));
+        return self.hasGitVersionAtLeast(major, minor);
+    }
 };
+
+// ---------------------------------------------------------------------------
+// `git log`, `git for-each-ref` and raw diff parsers
+// ---------------------------------------------------------------------------
+
+fn findByte(bytes: []const u8, start: usize, needle: u8) ?usize {
+    if (start >= bytes.len) return null;
+    return std.mem.indexOfScalarPos(u8, bytes, start, needle);
+}
+
+fn nextLine(bytes: []const u8, position: *usize) ?[]const u8 {
+    const end = findByte(bytes, position.*, '\n') orelse return null;
+    const line = bytes[position.*..end];
+    position.* = end + 1;
+    return line;
+}
+
+pub fn parseGitVersion(bytes: []const u8) ?GitVersion {
+    const marker = "git version ";
+    const start = std.mem.indexOf(u8, bytes, marker) orelse return null;
+    const rest = bytes[start + marker.len ..];
+    var index: usize = 0;
+    var major: usize = 0;
+    while (index < rest.len and rest[index] >= '0' and rest[index] <= '9') : (index += 1) {
+        major = major * 10 + (rest[index] - '0');
+    }
+    if (index >= rest.len or rest[index] != '.') return null;
+    index += 1;
+    var minor: usize = 0;
+    var digits: usize = 0;
+    while (index < rest.len and rest[index] >= '0' and rest[index] <= '9') : (index += 1) {
+        minor = minor * 10 + (rest[index] - '0');
+        digits += 1;
+    }
+    if (digits == 0) return null;
+    return .{ .major = major, .minor = minor };
+}
+
+fn parseSpaceList(allocator: Allocator, line: []const u8) ![]const []const u8 {
+    var result = std.array_list.Managed([]const u8).init(allocator);
+    errdefer {
+        for (result.items) |value| allocator.free(value);
+        result.deinit();
+    }
+    var iterator = std.mem.tokenizeScalar(u8, line, ' ');
+    while (iterator.next()) |part| {
+        try result.append(try allocator.dupe(u8, part));
+    }
+    return result.toOwnedSlice();
+}
+
+fn parseRefNames(allocator: Allocator, line: []const u8) ![]const []const u8 {
+    var result = std.array_list.Managed([]const u8).init(allocator);
+    errdefer {
+        for (result.items) |value| allocator.free(value);
+        result.deinit();
+    }
+    var iterator = std.mem.splitScalar(u8, line, ',');
+    while (iterator.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " \t");
+        if (name.len == 0) continue;
+        try result.append(try allocator.dupe(u8, name));
+    }
+    return result.toOwnedSlice();
+}
+
+fn numberBefore(line: []const u8, needle: []const u8) ?usize {
+    const at = std.mem.indexOf(u8, line, needle) orelse return null;
+    var end = at;
+    while (end > 0 and (line[end - 1] == ' ' or line[end - 1] == '\t')) end -= 1;
+    var start = end;
+    while (start > 0 and line[start - 1] >= '0' and line[start - 1] <= '9') start -= 1;
+    if (start == end) return null;
+    return std.fmt.parseInt(usize, line[start..end], 10) catch null;
+}
+
+pub fn parseGitDiffShortStat(line: []const u8) GitCommitShortStat {
+    return .{
+        .files = numberBefore(line, "file") orelse 0,
+        .insertions = numberBefore(line, "insertion") orelse 0,
+        .deletions = numberBefore(line, "deletion") orelse 0,
+    };
+}
+
+/// Port of the extension's `parseGitCommits` for the `-z` output described in
+/// the module header: seven newline fields, the message up to a NUL, then an
+/// optional shortstat line.
+pub fn parseGitCommits(allocator: Allocator, bytes: []const u8) ![]GitCommit {
+    var commits = std.array_list.Managed(GitCommit).init(allocator);
+    errdefer {
+        for (commits.items) |*commit| commit.deinit(allocator);
+        commits.deinit();
+    }
+
+    var position: usize = 0;
+    while (position < bytes.len) {
+        const hash = nextLine(bytes, &position) orelse break;
+        if (hash.len == 0) break;
+        const author_name = nextLine(bytes, &position) orelse break;
+        const author_email = nextLine(bytes, &position) orelse break;
+        const author_date_line = nextLine(bytes, &position) orelse break;
+        const commit_date_line = nextLine(bytes, &position) orelse break;
+        const parents_line = nextLine(bytes, &position) orelse break;
+        const refs_line = nextLine(bytes, &position) orelse break;
+
+        const nul = findByte(bytes, position, 0) orelse break;
+        var message = bytes[position..nul];
+        if (message.len > 0 and message[message.len - 1] == '\n') {
+            message = message[0 .. message.len - 1];
+        }
+        position = nul + 1;
+
+        var short_stat: ?GitCommitShortStat = null;
+        if (position < bytes.len and bytes[position] == '\n') {
+            if (findByte(bytes, position + 1, '\n')) |end| {
+                const stat_line = bytes[position + 1 .. end];
+                if (std.mem.indexOf(u8, stat_line, "files changed") != null) {
+                    short_stat = parseGitDiffShortStat(stat_line);
+                    position = end + 1;
+                }
+            }
+        }
+
+        const owned_hash = try allocator.dupe(u8, hash);
+        errdefer allocator.free(owned_hash);
+        const owned_message = try allocator.dupe(u8, message);
+        errdefer allocator.free(owned_message);
+        const owned_author_name = try allocator.dupe(u8, author_name);
+        errdefer allocator.free(owned_author_name);
+        const owned_author_email = try allocator.dupe(u8, author_email);
+        errdefer allocator.free(owned_author_email);
+        const parents = try parseSpaceList(allocator, parents_line);
+        errdefer {
+            for (parents) |parent| allocator.free(parent);
+            if (parents.len > 0) allocator.free(parents);
+        }
+        const ref_names = try parseRefNames(allocator, refs_line);
+        errdefer {
+            for (ref_names) |name| allocator.free(name);
+            if (ref_names.len > 0) allocator.free(ref_names);
+        }
+
+        try commits.append(.{
+            .hash = owned_hash,
+            .message = owned_message,
+            .parents = parents,
+            .author_name = owned_author_name,
+            .author_email = owned_author_email,
+            .author_date = std.fmt.parseInt(i64, std.mem.trim(u8, author_date_line, " \t"), 10) catch null,
+            .commit_date = std.fmt.parseInt(i64, std.mem.trim(u8, commit_date_line, " \t"), 10) catch null,
+            .ref_names = ref_names,
+            .short_stat = short_stat,
+        });
+    }
+
+    return commits.toOwnedSlice();
+}
+
+pub fn parseBranch(allocator: Allocator, bytes: []const u8) !?GitBranch {
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    const line = blk: {
+        while (lines.next()) |candidate| {
+            const trimmed = std.mem.trimEnd(u8, candidate, "\r");
+            if (trimmed.len > 0) break :blk trimmed;
+        }
+        return null;
+    };
+
+    var fields = std.mem.splitScalar(u8, line, 0);
+    const refname = fields.next() orelse return null;
+    const upstream_short = fields.next() orelse "";
+    const object_name = fields.next() orelse "";
+    const remote_name = fields.next() orelse "";
+    const upstream_remote_ref = fields.next() orelse "";
+
+    var branch = GitBranch{ .ref = .{ .ref_type = .head } };
+    errdefer branch.deinit(allocator);
+
+    if (std.mem.startsWith(u8, refname, "refs/heads/")) {
+        branch.ref.ref_type = .head;
+        branch.ref.name = try allocator.dupe(u8, refname["refs/heads/".len..]);
+        if (object_name.len > 0) branch.ref.commit = try allocator.dupe(u8, object_name);
+        if (upstream_short.len > 0) {
+            const slash = std.mem.indexOfScalar(u8, upstream_short, '/');
+            const remote = if (remote_name.len > 0)
+                try allocator.dupe(u8, remote_name)
+            else if (slash) |index|
+                try allocator.dupe(u8, upstream_short[0..index])
+            else
+                null;
+            const upstream_name = if (upstream_remote_ref.len > 0 and std.mem.startsWith(u8, upstream_remote_ref, "refs/heads/"))
+                try allocator.dupe(u8, upstream_remote_ref["refs/heads/".len..])
+            else
+                try allocator.dupe(u8, if (slash) |index| upstream_short[index + 1 ..] else upstream_short);
+            branch.upstream = .{
+                .remote = remote orelse try allocator.dupe(u8, ""),
+                .name = upstream_name,
+            };
+        }
+    } else if (std.mem.startsWith(u8, refname, "refs/remotes/")) {
+        const rest = refname["refs/remotes/".len..];
+        const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+        branch.ref.ref_type = .remote_head;
+        branch.ref.remote = try allocator.dupe(u8, rest[0..slash]);
+        branch.ref.name = try allocator.dupe(u8, rest[slash + 1 ..]);
+        if (object_name.len > 0) branch.ref.commit = try allocator.dupe(u8, object_name);
+    } else {
+        return null;
+    }
+
+    return branch;
+}
+
+const NumStat = struct { insertions: usize = 0, deletions: usize = 0 };
+
+/// Port of `parseGitChangesRaw`: parses the interleaved `--raw`/`--numstat -z`
+/// records into changes with status letters and line counts.
+pub fn parseGitChangesRaw(allocator: Allocator, bytes: []const u8) ![]GitDiffChange {
+    var segments = std.array_list.Managed([]const u8).init(allocator);
+    defer segments.deinit();
+    var start: usize = 0;
+    while (start <= bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, 0) orelse bytes.len;
+        const segment = bytes[start..end];
+        if (segment.len > 0) try segments.append(segment);
+        if (end == bytes.len) break;
+        start = end + 1;
+    }
+
+    var changes = std.array_list.Managed(GitDiffChange).init(allocator);
+    errdefer {
+        for (changes.items) |*change| {
+            allocator.free(change.change.path);
+            if (change.change.original_path) |path| allocator.free(path);
+        }
+        changes.deinit();
+    }
+    var num_stats = std.StringHashMap(NumStat).init(allocator);
+    defer num_stats.deinit();
+
+    var index: usize = 0;
+    while (index < segments.items.len) {
+        const segment = segments.items[index];
+        if (segment.len == 0) {
+            index += 1;
+            continue;
+        }
+        if (segment[0] == ':') {
+            var parts = std.mem.splitScalar(u8, segment, ' ');
+            _ = parts.next();
+            _ = parts.next();
+            _ = parts.next();
+            _ = parts.next();
+            const status_field = parts.next() orelse {
+                index += 1;
+                continue;
+            };
+            if (status_field.len == 0) {
+                index += 1;
+                continue;
+            }
+            index += 1;
+            if (index >= segments.items.len) break;
+            const old_path = segments.items[index];
+            index += 1;
+            const status = status_field[0];
+            var path = old_path;
+            var original_path: ?[]const u8 = null;
+            if ((status == 'R' or status == 'C') and index < segments.items.len) {
+                path = segments.items[index];
+                original_path = old_path;
+                index += 1;
+            }
+            const owned_path = try allocator.dupe(u8, path);
+            errdefer allocator.free(owned_path);
+            const owned_original = if (original_path) |value| try allocator.dupe(u8, value) else null;
+            errdefer if (owned_original) |value| allocator.free(value);
+            try changes.append(.{
+                .change = .{ .path = owned_path, .original_path = owned_original, .status = status },
+            });
+        } else {
+            var parts = std.mem.splitScalar(u8, segment, '\t');
+            const insertions_text = parts.next() orelse "";
+            const deletions_text = parts.next() orelse "";
+            const file_path = parts.next() orelse "";
+            var stat_path = file_path;
+            index += 1; // past the numstat record
+            if (file_path.len == 0) {
+                // Rename numstat: skip the old path and use the new one.
+                index += 1;
+                if (index >= segments.items.len) break;
+                stat_path = segments.items[index];
+                index += 1;
+            }
+            try num_stats.put(stat_path, .{
+                .insertions = std.fmt.parseInt(usize, insertions_text, 10) catch 0,
+                .deletions = std.fmt.parseInt(usize, deletions_text, 10) catch 0,
+            });
+        }
+    }
+
+    for (changes.items) |*change| {
+        if (num_stats.get(change.change.path)) |stat| {
+            change.insertions = stat.insertions;
+            change.deletions = stat.deletions;
+        }
+    }
+
+    return changes.toOwnedSlice();
+}
 
 fn ownTextBlob(allocator: Allocator, bytes: []const u8, max_file_size: usize) !?[]u8 {
     if (bytes.len > max_file_size) return null;

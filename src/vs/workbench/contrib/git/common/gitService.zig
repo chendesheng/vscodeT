@@ -39,6 +39,9 @@ pub const GitRefQuery = struct {
     contains: ?[]const u8 = null,
     count: ?usize = null,
     pattern: ?[]const u8 = null,
+    /// Terminal extension: `for-each-ref` accepts several patterns. Upstream
+    /// passes them via the `pattern` array form.
+    patterns: []const []const u8 = &.{},
     sort: ?GitRefSort = null,
 };
 
@@ -54,8 +57,61 @@ pub const GitChange = struct {
 
 pub const GitDiffChange = struct {
     change: GitChange,
-    insertions: usize,
-    deletions: usize,
+    insertions: usize = 0,
+    deletions: usize = 0,
+};
+
+pub const GitCommitShortStat = struct {
+    files: usize = 0,
+    insertions: usize = 0,
+    deletions: usize = 0,
+};
+
+/// Terminal port of the extension `Commit` (upstream `api/git.d.ts`). Dates are
+/// epoch seconds, like the `%at`/`%ct` placeholders; the history provider
+/// converts them to the millisecond `timestamp` of the SCM contract.
+pub const GitCommit = struct {
+    hash: []const u8,
+    message: []const u8,
+    parents: []const []const u8,
+    author_name: []const u8,
+    author_email: []const u8,
+    author_date: ?i64 = null,
+    commit_date: ?i64 = null,
+    ref_names: []const []const u8 = &.{},
+    short_stat: ?GitCommitShortStat = null,
+
+    pub fn deinit(self: *GitCommit, allocator: Allocator) void {
+        allocator.free(self.hash);
+        allocator.free(self.message);
+        allocator.free(self.author_name);
+        allocator.free(self.author_email);
+        for (self.parents) |parent| allocator.free(parent);
+        if (self.parents.len > 0) allocator.free(self.parents);
+        for (self.ref_names) |name| allocator.free(name);
+        if (self.ref_names.len > 0) allocator.free(self.ref_names);
+        self.* = undefined;
+    }
+};
+
+pub fn freeGitCommits(allocator: Allocator, commits: []GitCommit) void {
+    for (commits) |*commit| commit.deinit(allocator);
+    if (commits.len > 0) allocator.free(commits);
+}
+
+/// Port of the extension `LogOptions`: `refNames` is nullable and may be empty,
+/// `range` is the upstream `range` shorthand, `maxParents` filters roots.
+pub const GitLogOptions = struct {
+    ref_names: ?[]const []const u8 = null,
+    range: ?[]const u8 = null,
+    max_entries: ?usize = null,
+    skip: ?usize = null,
+    author: ?[]const u8 = null,
+    grep: ?[]const u8 = null,
+    max_parents: ?usize = null,
+    short_stats: bool = false,
+    /// Terminal extension: use `--all` instead of listing every revision.
+    all_refs: bool = false,
 };
 
 pub const GitRemote = struct {
@@ -70,7 +126,24 @@ pub const GitBranch = struct {
     upstream: ?GitUpstreamRef = null,
     ahead: ?usize = null,
     behind: ?usize = null,
+
+    pub fn deinit(self: *GitBranch, allocator: Allocator) void {
+        if (self.ref.name) |name| allocator.free(name);
+        if (self.ref.commit) |commit| allocator.free(commit);
+        if (self.ref.remote) |remote| allocator.free(remote);
+        if (self.upstream) |*upstream| {
+            allocator.free(upstream.remote);
+            allocator.free(upstream.name);
+            if (upstream.commit) |commit| allocator.free(commit);
+        }
+        self.* = undefined;
+    }
 };
+
+pub fn freeGitBranches(allocator: Allocator, branches: []GitBranch) void {
+    for (branches) |*branch| branch.deinit(allocator);
+    if (branches.len > 0) allocator.free(branches);
+}
 
 pub const GitBaseRef = struct {
     name: []const u8,
@@ -299,6 +372,43 @@ pub const IGitRepository = struct {
         message: []const u8,
         options: GitCommitOptions,
     ) anyerror!void,
+    log_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        options: GitLogOptions,
+        token: CancellationToken,
+    ) anyerror![]GitCommit,
+    diff_root_commit_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        commit: []const u8,
+    ) anyerror![]GitDiffChange,
+    merge_base_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        refs: []const []const u8,
+    ) anyerror!?[]u8,
+    get_branch_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        name: []const u8,
+    ) anyerror!?GitBranch,
+    get_branch_base_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        name: []const u8,
+    ) anyerror!?GitBranch,
+    read_ref_at_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        path: []const u8,
+        revision: []const u8,
+    ) anyerror!?[]u8,
+    has_git_version_at_least_fn: *const fn (
+        context: *anyopaque,
+        major: usize,
+        minor: usize,
+    ) bool,
 
     pub fn state(self: IGitRepository) *const GitRepositoryState {
         return self.state_fn(self.context);
@@ -343,6 +453,34 @@ pub const IGitRepository = struct {
     ) !void {
         return self.commit_files_fn(self.context, files, message, options);
     }
+
+    pub fn log(self: IGitRepository, allocator: Allocator, options: GitLogOptions, token: CancellationToken) ![]GitCommit {
+        return self.log_fn(self.context, allocator, options, token);
+    }
+
+    pub fn diffRootCommit(self: IGitRepository, allocator: Allocator, commit: []const u8) ![]GitDiffChange {
+        return self.diff_root_commit_fn(self.context, allocator, commit);
+    }
+
+    pub fn mergeBase(self: IGitRepository, allocator: Allocator, refs: []const []const u8) !?[]u8 {
+        return self.merge_base_fn(self.context, allocator, refs);
+    }
+
+    pub fn getBranch(self: IGitRepository, allocator: Allocator, name: []const u8) !?GitBranch {
+        return self.get_branch_fn(self.context, allocator, name);
+    }
+
+    pub fn getBranchBase(self: IGitRepository, allocator: Allocator, name: []const u8) !?GitBranch {
+        return self.get_branch_base_fn(self.context, allocator, name);
+    }
+
+    pub fn readRefAt(self: IGitRepository, allocator: Allocator, path: []const u8, revision: []const u8) !?[]u8 {
+        return self.read_ref_at_fn(self.context, allocator, path, revision);
+    }
+
+    pub fn hasGitVersionAtLeast(self: IGitRepository, major: usize, minor: usize) bool {
+        return self.has_git_version_at_least_fn(self.context, major, minor);
+    }
 };
 
 /// Terminal port of `IGitExtensionDelegate`. `repositories` returns a borrowed
@@ -380,6 +518,49 @@ pub const IGitExtensionDelegate = struct {
         message: []const u8,
         options: GitCommitOptions,
     ) anyerror!void,
+    log_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        options: GitLogOptions,
+        token: CancellationToken,
+    ) anyerror![]GitCommit,
+    diff_root_commit_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        commit: []const u8,
+    ) anyerror![]GitDiffChange,
+    merge_base_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        refs: []const []const u8,
+    ) anyerror!?[]u8,
+    get_branch_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        name: []const u8,
+    ) anyerror!?GitBranch,
+    get_branch_base_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        name: []const u8,
+    ) anyerror!?GitBranch,
+    read_ref_at_fn: *const fn (
+        context: *anyopaque,
+        allocator: Allocator,
+        root: []const u8,
+        path: []const u8,
+        revision: []const u8,
+    ) anyerror!?[]u8,
+    has_git_version_at_least_fn: *const fn (
+        context: *anyopaque,
+        major: usize,
+        minor: usize,
+    ) bool,
 
     pub fn repositories(self: IGitExtensionDelegate) []const IGitRepository {
         return self.repositories_fn(self.context);
@@ -418,6 +599,70 @@ pub const IGitExtensionDelegate = struct {
         options: GitCommitOptions,
     ) !void {
         return self.commit_files_fn(self.context, root, files, message, options);
+    }
+
+    pub fn log(
+        self: IGitExtensionDelegate,
+        allocator: Allocator,
+        root: []const u8,
+        options: GitLogOptions,
+        token: CancellationToken,
+    ) ![]GitCommit {
+        return self.log_fn(self.context, allocator, root, options, token);
+    }
+
+    pub fn diffRootCommit(
+        self: IGitExtensionDelegate,
+        allocator: Allocator,
+        root: []const u8,
+        commit: []const u8,
+    ) ![]GitDiffChange {
+        return self.diff_root_commit_fn(self.context, allocator, root, commit);
+    }
+
+    pub fn mergeBase(
+        self: IGitExtensionDelegate,
+        allocator: Allocator,
+        root: []const u8,
+        refs: []const []const u8,
+    ) !?[]u8 {
+        return self.merge_base_fn(self.context, allocator, root, refs);
+    }
+
+    pub fn getBranch(
+        self: IGitExtensionDelegate,
+        allocator: Allocator,
+        root: []const u8,
+        name: []const u8,
+    ) !?GitBranch {
+        return self.get_branch_fn(self.context, allocator, root, name);
+    }
+
+    pub fn getBranchBase(
+        self: IGitExtensionDelegate,
+        allocator: Allocator,
+        root: []const u8,
+        name: []const u8,
+    ) !?GitBranch {
+        return self.get_branch_base_fn(self.context, allocator, root, name);
+    }
+
+    pub fn readRefAt(
+        self: IGitExtensionDelegate,
+        allocator: Allocator,
+        root: []const u8,
+        path: []const u8,
+        revision: []const u8,
+    ) !?[]u8 {
+        return self.read_ref_at_fn(self.context, allocator, root, path, revision);
+    }
+
+    pub fn hasGitVersionAtLeast(
+        self: IGitExtensionDelegate,
+        major: usize,
+        minor: usize,
+    ) bool {
+        return self.has_git_version_at_least_fn(self.context, major, minor);
     }
 };
 

@@ -77,6 +77,7 @@ comptime {
     _ = @import("./vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
     _ = @import("./extensions/git/src/git.zig");
     _ = @import("./extensions/git/src/repository.zig");
+    _ = @import("./extensions/git/src/test/git.test.zig");
     _ = @import("./tui/quickDiffController.zig");
     _ = @import("./vs/workbench/contrib/scm/browser/scmViewPane.zig");
     _ = @import("./tui/vscodeProfile.zig");
