@@ -631,7 +631,16 @@ pub const tui_defaults_json =
     \\      "**/.jj": true,
     \\      "**/.DS_Store": true,
     \\      "**/Thumbs.db": true
-    \\    }
+    \\    },
+    \\    "watcherExclude": {
+    \\      ".git/objects/**": true,
+    \\      ".git/subtree-cache/**": true,
+    \\      ".hg/store/**": true,
+    \\      "*/.git/objects/**": true,
+    \\      "*/.git/subtree-cache/**": true,
+    \\      "*/.hg/store/**": true
+    \\    },
+    \\    "watcherInclude": []
     \\  },
     \\  "workbench": {
     \\    "tree": {
@@ -703,6 +712,10 @@ test "ConfigurationRegistry: terminal defaults hide VCS metadata and ignore file
     const exclude = model.getValue("files.exclude").?;
     try std.testing.expect(exclude.object.get("**/.git").?.bool);
     try std.testing.expect(exclude.object.get("**/.DS_Store").?.bool);
+    const watcher_exclude = model.getValue("files.watcherExclude").?;
+    try std.testing.expect(watcher_exclude.object.get(".git/objects/**").?.bool);
+    try std.testing.expect(watcher_exclude.object.get("*/.git/objects/**").?.bool);
+    try std.testing.expectEqual(@as(usize, 0), model.getValue("files.watcherInclude").?.array.items.len);
     try std.testing.expect(model.getValue("git.enabled").?.bool);
     try std.testing.expectEqualStrings("all", model.getValue("scm.diffDecorations").?.string);
     try std.testing.expectEqual(@as(i64, 3), model.getValue("scm.diffDecorationsGutterWidth").?.integer);

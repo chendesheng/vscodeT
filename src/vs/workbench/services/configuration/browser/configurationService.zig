@@ -167,6 +167,21 @@ pub const ConfigurationService = struct {
         _ = try self.change_emitter.listen(ctx, callback);
     }
 
+    /// ID-returning form of `onDidChangeConfiguration`, matching upstream's
+    /// `IDisposable` subscription. Callers that outlive the listener use this
+    /// so the subscription can be removed.
+    pub fn listenConfigurationChange(
+        self: *ConfigurationService,
+        ctx: anytype,
+        callback: fn (change: configuration.Change, ctx: @TypeOf(ctx)) anyerror!void,
+    ) !usize {
+        return self.change_emitter.listen(ctx, callback);
+    }
+
+    pub fn unlistenConfigurationChange(self: *ConfigurationService, id: usize) void {
+        self.change_emitter.unlisten(id);
+    }
+
     /// Reads all scopes into temporary models first, so a failed read leaves
     /// the previously loaded configuration intact.
     fn load(self: *ConfigurationService) !void {

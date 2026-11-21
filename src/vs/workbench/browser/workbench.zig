@@ -78,10 +78,11 @@ const configuration_mod = @import("../services/configuration/browser/configurati
 const workbench_configuration = @import("./workbenchConfiguration.zig");
 
 const ConfigurationService = configuration_mod.ConfigurationService;
-const universal_watcher_mod = @import("../../platform/files/node/watcher/watcher.zig");
-const UniversalWatcher = universal_watcher_mod.UniversalWatcher;
-const watch_common = @import("../../platform/files/common/watcher.zig");
-const WatchRequest = watch_common.WatchRequest;
+const file_watcher_service_mod = @import("../../platform/files/node/watcher/fileWatcherService.zig");
+const FileWatcherService = file_watcher_service_mod.FileWatcherService;
+const contributions_mod = @import("../common/contributions.zig");
+const workspace_watcher_mod = @import("../contrib/files/browser/workspaceWatcher.zig");
+const WorkspaceWatcher = workspace_watcher_mod.WorkspaceWatcher;
 const languages_associations = @import("../../editor/common/services/languagesAssociations.zig");
 const working_copy_service_mod = @import("../services/workingCopy/common/workingCopyService.zig");
 const WorkingCopyService = working_copy_service_mod.WorkingCopyService;
@@ -389,9 +390,15 @@ pub const Workbench = struct {
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
     settings_watcher: ?*SettingsWatcher = null,
-    /// Workspace file watcher. Kept separate from the settings watcher so a
-    /// workspace change never triggers a settings reload.
-    files_watcher: ?*UniversalWatcher = null,
+    /// Workspace file watcher service. Kept separate from the settings watcher
+    /// so a workspace change never triggers a settings reload. The recursive
+    /// scan runs on the service's worker thread.
+    file_watcher_service: ?*FileWatcherService = null,
+    /// Port of the `workspaceWatcher.ts` contribution. Instantiated by the
+    /// upstream `AfterRestored` phase, after the first frame.
+    workspace_watcher: ?*WorkspaceWatcher = null,
+    contributions: contributions_mod.WorkbenchContributions,
+    after_restored_ran: bool = false,
     user_settings_paths: []const []const u8,
     /// User keybinding files (VS Code profile then TUI override). Watched by
     /// the settings watcher; reloaded with the rest of the configuration.
@@ -579,7 +586,12 @@ pub const Workbench = struct {
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
-        self.files_watcher = null;
+        self.file_watcher_service = null;
+        self.workspace_watcher = null;
+        self.contributions = contributions_mod.WorkbenchContributions.init(allocator);
+        self.after_restored_ran = false;
+        errdefer self.contributions.deinit();
+        try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
         self.user_settings_paths = &.{};
         self.keybindings_paths = &.{};
 
@@ -704,7 +716,12 @@ pub const Workbench = struct {
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
-        self.files_watcher = null;
+        self.file_watcher_service = null;
+        self.workspace_watcher = null;
+        self.contributions = contributions_mod.WorkbenchContributions.init(allocator);
+        self.after_restored_ran = false;
+        errdefer self.contributions.deinit();
+        try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
         self.user_settings_paths = &.{};
         self.keybindings_paths = &.{};
 
@@ -861,7 +878,12 @@ pub const Workbench = struct {
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
-        self.files_watcher = null;
+        self.file_watcher_service = null;
+        self.workspace_watcher = null;
+        self.contributions = contributions_mod.WorkbenchContributions.init(allocator);
+        self.after_restored_ran = false;
+        errdefer self.contributions.deinit();
+        try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
         self.user_settings_paths = &.{};
         self.keybindings_paths = &.{};
 
@@ -1474,10 +1496,15 @@ pub const Workbench = struct {
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
         if (self.settings_watcher) |watcher| watcher.deinit();
-        if (self.files_watcher) |watcher| {
-            watcher.stop();
+        if (self.workspace_watcher) |watcher| {
             watcher.deinit();
+            self.workspace_watcher = null;
         }
+        if (self.file_watcher_service) |service| {
+            service.deinit();
+            self.file_watcher_service = null;
+        }
+        self.contributions.deinit();
         if (self.terminal_service) |service| {
             service.deinit();
             self.terminal_service = null;
@@ -1731,14 +1758,16 @@ pub const Workbench = struct {
             self.sidebar = null;
         }
         self.destroySearch();
+        // The contribution watches the current workspace/configuration; stop
+        // it before either is replaced and recreate it below when startup has
+        // already reached the AfterRestored phase.
+        if (self.workspace_watcher) |watcher| {
+            watcher.deinit();
+            self.workspace_watcher = null;
+        }
         if (self.settings_watcher) |watcher| {
             watcher.deinit();
             self.settings_watcher = null;
-        }
-        if (self.files_watcher) |watcher| {
-            watcher.stop();
-            watcher.deinit();
-            self.files_watcher = null;
         }
         if (self.configuration) |configuration| {
             configuration.deinit();
@@ -1756,7 +1785,11 @@ pub const Workbench = struct {
         self.disposeBreadcrumbs();
         self.layoutAll();
         try self.quick_access.setWorkspace(self.workspace);
-        self.startFilesWatcher() catch {};
+        if (self.after_restored_ran and self.workspace.getWorkspace().folders.items.len > 0) {
+            self.ensureWorkspaceWatcher() catch |err| {
+                std.log.scoped(.file_watcher).err("failed to start workspace watcher: {s}", .{@errorName(err)});
+            };
+        }
     }
 
     /// Sets the user settings files before the Explorer/configuration service
@@ -1766,6 +1799,10 @@ pub const Workbench = struct {
         freeOwnedPaths(self.allocator, self.user_settings_paths);
         self.user_settings_paths = try dupeOwnedPaths(self.allocator, paths);
         if (self.configuration) |configuration| {
+            if (self.workspace_watcher) |watcher| {
+                watcher.deinit();
+                self.workspace_watcher = null;
+            }
             if (self.settings_watcher) |watcher| {
                 watcher.deinit();
                 self.settings_watcher = null;
@@ -1777,6 +1814,11 @@ pub const Workbench = struct {
             self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
             self.disposeBreadcrumbs();
             self.layoutAll();
+            if (self.after_restored_ran and self.workspace.getWorkspace().folders.items.len > 0) {
+                self.ensureWorkspaceWatcher() catch |err| {
+                    std.log.scoped(.file_watcher).err("failed to restart workspace watcher: {s}", .{@errorName(err)});
+                };
+            }
         }
     }
 
@@ -1942,6 +1984,51 @@ pub const Workbench = struct {
         _ = self.working_copy_service.unregisterWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor));
     }
 
+    /// Runs the registered workbench contribution phase. The app calls
+    /// `after_restored` once after the first frame, matching the phase at
+    /// which upstream instantiates `WorkspaceWatcher`.
+    pub fn runContributionPhase(self: *Workbench, phase: contributions_mod.WorkbenchPhase) !void {
+        if (phase == .after_restored and self.after_restored_ran) return;
+        try self.contributions.run(phase);
+        if (phase == .after_restored) self.after_restored_ran = true;
+    }
+
+    fn initAfterRestoredWorkspaceWatcher(context: *anyopaque) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        try self.ensureWorkspaceWatcher();
+    }
+
+    fn ensureWorkspaceWatcher(self: *Workbench) !void {
+        if (self.workspace.getWorkspace().folders.items.len == 0) return;
+        if (self.configuration == null) try self.ensureConfiguration();
+        const configuration = self.configuration orelse return;
+
+        if (self.file_watcher_service == null) {
+            const service = try FileWatcherService.init(self.allocator, self.io);
+            errdefer service.deinit();
+            _ = try service.on_did_change.listen(self, onWorkspaceFileChanges);
+            self.file_watcher_service = service;
+        }
+
+        if (self.workspace_watcher == null) {
+            self.workspace_watcher = try WorkspaceWatcher.init(
+                self.allocator,
+                configuration,
+                self.workspace,
+                self.file_watcher_service.?,
+                .{ .context = self, .callback = reportWatcherMessage },
+            );
+        }
+    }
+
+    fn onWorkspaceFileChanges(changes: []const @import("../../platform/files/common/files.zig").FileChange, self: *Workbench) !void {
+        self.handleFileChanges(changes);
+    }
+
+    fn reportWatcherMessage(_: *anyopaque, message: []const u8) void {
+        std.log.scoped(.file_watcher).warn("{s}", .{message});
+    }
+
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
         var changed = false;
         if (self.settings_watcher) |watcher| {
@@ -1950,38 +2037,14 @@ pub const Workbench = struct {
                 if (self.search_view) |view| view.onConfigurationChanged();
             }
         }
-        if (self.files_watcher) |watcher| {
-            _ = watcher.poll(now_ms) catch false;
+        if (self.file_watcher_service) |service| {
+            if (self.workspace_watcher != null) _ = service.poll();
         }
         if (self.files_changed) {
             self.files_changed = false;
             changed = true;
         }
         return changed;
-    }
-
-    /// Starts the workspace watcher for absolute workspace folders; relative
-    /// folders (used by tests and some CLI invocations) are resolved by the app
-    /// before being passed here.
-    fn startFilesWatcher(self: *Workbench) !void {
-        if (self.workspace.getWorkspace().folders.items.len == 0) return;
-        var requests = std.array_list.Managed(WatchRequest).init(self.allocator);
-        defer requests.deinit();
-        for (self.workspace.getWorkspace().folders.items) |folder| {
-            if (!std.fs.path.isAbsolute(folder.resource)) continue;
-            try requests.append(.{ .path = folder.resource, .recursive = true });
-        }
-        if (requests.items.len == 0) return;
-
-        const watcher = try UniversalWatcher.init(self.allocator, self.io);
-        errdefer watcher.deinit();
-        _ = try watcher.on_change.listen(self, onWorkspaceFileChanges);
-        try watcher.watch(requests.items);
-        self.files_watcher = watcher;
-    }
-
-    fn onWorkspaceFileChanges(changes: []const @import("../../platform/files/common/files.zig").FileChange, self: *Workbench) !void {
-        self.handleFileChanges(changes);
     }
 
     pub fn fileWatcherFd(self: *const Workbench) ?std.posix.fd_t {
@@ -2000,9 +2063,15 @@ pub const Workbench = struct {
         };
     }
 
-    pub fn fileWatcherTimeout(self: *const Workbench, now_ms: i64) ?u32 {
-        const watcher = self.settings_watcher orelse return null;
-        return watcher.nextTimeout(now_ms);
+    pub fn fileWatcherTimeout(self: *Workbench, now_ms: i64) ?u32 {
+        var result: ?u32 = null;
+        if (self.settings_watcher) |watcher| result = watcher.nextTimeout(now_ms);
+        if (self.file_watcher_service) |service| {
+            if (service.nextTimeout()) |timeout| {
+                result = if (result) |current| @min(current, timeout) else timeout;
+            }
+        }
+        return result;
     }
 
     fn autoRevealEnabled(self: *const Workbench, resource: []const u8) bool {
@@ -10961,7 +11030,103 @@ test "Workbench: starts a workspace file watcher for absolute folders" {
     const workbench = try Workbench.init(allocator, io, &.{}, 40, 9);
     defer workbench.deinit();
     try workbench.setWorkspaceFolders(&.{root});
-    try std.testing.expect(workbench.files_watcher != null);
+    try std.testing.expect(workbench.workspace_watcher == null);
+    try workbench.runContributionPhase(.after_restored);
+    try std.testing.expect(workbench.workspace_watcher != null);
+    try std.testing.expect(workbench.file_watcher_service != null);
+}
+
+test "Workbench: workspace watcher honors watcherExclude and watcherInclude" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode");
+    var settings = try tmp.dir.createFile(io, ".vscode/settings.json", .{});
+    try settings.writeStreamingAll(
+        io,
+        "{\"files.watcherExclude\": {\"ignored/**\": true}, \"files.watcherInclude\": [\"included\"]}",
+    );
+    settings.close(io);
+    try tmp.dir.createDirPath(io, "ignored");
+    try tmp.dir.createDirPath(io, "included");
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.setWorkspaceFolders(&.{root});
+    try workbench.runContributionPhase(.after_restored);
+
+    const service = workbench.file_watcher_service.?;
+    const included = try std.fs.path.join(allocator, &.{ root, "included" });
+    defer allocator.free(included);
+
+    var found_root = false;
+    var found_included = false;
+    var index: usize = 0;
+    while (index < service.watchedCount()) : (index += 1) {
+        const path = service.watchedPathAt(index) orelse continue;
+        if (std.mem.eql(u8, path, root)) {
+            found_root = true;
+            const excludes = service.watchedExcludesAt(index) orelse &.{};
+            var has_custom = false;
+            var has_default = false;
+            for (excludes) |exclude| {
+                if (std.mem.eql(u8, exclude, "ignored/**")) has_custom = true;
+                if (std.mem.eql(u8, exclude, ".git/objects/**")) has_default = true;
+            }
+            try std.testing.expect(has_custom);
+            try std.testing.expect(has_default);
+        }
+        if (std.mem.eql(u8, path, included)) found_included = true;
+    }
+    try std.testing.expect(found_root);
+    try std.testing.expect(found_included);
+}
+
+test "Workbench: AfterRestored watcher reloads a clean editor" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "watched.txt", "before");
+    defer allocator.free(path);
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
+    defer workbench.deinit();
+    const tab = workbench.activeTab().?;
+
+    try workbench.setWorkspaceFolders(&.{root});
+    try workbench.runContributionPhase(.after_restored);
+    const service = workbench.file_watcher_service.?;
+
+    const ready_deadline = time_compat.milliTimestamp() + 3000;
+    while (time_compat.milliTimestamp() < ready_deadline and !service.isReady()) {
+        _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
+        io.sleep(.fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expect(service.isReady());
+
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "after" });
+
+    const deadline = time_compat.milliTimestamp() + 3000;
+    var reloaded = false;
+    while (time_compat.milliTimestamp() < deadline and !reloaded) {
+        _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
+        var value = tab.editor.model.getValue(.TextDefined, true) catch break;
+        reloaded = std.mem.eql(u8, value.items, "after");
+        value.deinit();
+        if (!reloaded) io.sleep(.fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expect(reloaded);
 }
 
 test "Workbench: revert command discards edits and clears conflicts" {

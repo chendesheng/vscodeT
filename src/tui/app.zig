@@ -181,6 +181,7 @@ const ProbeHost = struct {
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
+    const startup_start_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds();
 
     var paths = ArrayList([]const u8).init(allocator);
     defer {
@@ -408,6 +409,9 @@ pub fn main(init: std.process.Init) !void {
         }
         workbench = try Workbench.init(allocator, io, files.items, size.width, size.height);
     }
+    infoLog(log_service, "startup: workbench-init={d}ms", .{
+        std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
+    });
     defer workbench.deinit();
     workbench.setCellBorders(border_probe.supported);
     workbench.setImageProtocol(image_probe.capability);
@@ -434,6 +438,9 @@ pub fn main(init: std.process.Init) !void {
     else
         false;
     if (vim_enabled) try vim_runtime.enable();
+    infoLog(log_service, "startup: settings-vim={d}ms", .{
+        std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
+    });
 
     // Color themes: the built-in theme-defaults contributions first, then the
     // profile's extensions path (later registrations win). A missing submodule leaves only the fallback
@@ -460,6 +467,9 @@ pub fn main(init: std.process.Init) !void {
         };
     }
     workbench.applyThemeSettings();
+    infoLog(log_service, "startup: themes={d}ms", .{
+        std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
+    });
     if (json_client) |client| {
         if (workbench.jsonSchemasValue()) |schemas| {
             var arena = std.heap.ArenaAllocator.init(allocator);
@@ -494,6 +504,9 @@ pub fn main(init: std.process.Init) !void {
     } else {
         workbench.focusSidebar();
     }
+    infoLog(log_service, "startup: workspace-git={d}ms", .{
+        std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
+    });
 
     var extension_host: ?*extensions.Extensions = null;
     defer if (extension_host) |ext| ext.deinit();
@@ -522,6 +535,9 @@ pub fn main(init: std.process.Init) !void {
     } else {
         infoLog(log_service, "extension host disabled: no TypeScript extension found", .{});
     }
+    infoLog(log_service, "startup: extension-host={d}ms", .{
+        std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
+    });
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
     defer input_buffer.deinit();
@@ -537,6 +553,19 @@ pub fn main(init: std.process.Init) !void {
     try workbench.render(out);
     try workbench.syncCursor(out);
     try out.flush();
+    infoLog(log_service, "startup: first-frame={d}ms", .{
+        std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
+    });
+
+    // Match upstream's `WorkbenchPhase.AfterRestored`: the workspace watcher
+    // starts only after the restored UI has painted. `fileService.watch` is
+    // asynchronous, so the recursive scan runs on the watcher worker.
+    workbench.runContributionPhase(.after_restored) catch |err| {
+        report(log_service, "workspace watcher unavailable: {s}", .{@errorName(err)});
+    };
+    infoLog(log_service, "startup: after-restored={d}ms", .{
+        std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
+    });
 
     var needs_render = false;
     // A read can end in the middle of an escape sequence. Keep those bytes
