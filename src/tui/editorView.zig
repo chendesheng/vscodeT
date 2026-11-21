@@ -1168,10 +1168,14 @@ pub const View = struct {
     }
 
     /// Content background for the current-line highlight. `gutter` and `none`
-    /// leave the content background untouched; the focus-only variant keeps
-    /// painting because the view does not track focus separately from the
-    /// workbench.
+    /// leave the content background untouched. The focus-only variant follows
+    /// the forwarded View focus state.
     fn currentLineBackground(self: *const View) ?ui.Color {
+        if (self.terminal_view_host.options.get(.renderLineHighlightOnlyWhenFocus) and
+            !self.terminal_view_host.viewRef().isFocused())
+        {
+            return null;
+        }
         return switch (self.terminal_view_host.options.get(.renderLineHighlight)) {
             .none, .gutter => null,
             .line, .all => if (self.theme_colors) |palette|
@@ -1222,6 +1226,18 @@ pub const View = struct {
     /// Gives the keyboard back to the editor after a content widget closes.
     pub fn focusEditor(self: *View) void {
         self.surface.document().blur();
+    }
+
+    /// Forwards the workbench focus state to the ported View/overlays. This is
+    /// the terminal boundary for upstream `View.focus()`/`blur()`.
+    pub fn setFocused(self: *View, focused: bool) bool {
+        const changed = self.terminal_view_host.viewRef().setFocused(focused);
+        if (changed) self.needs_render = true;
+        return changed;
+    }
+
+    pub fn isFocused(self: *const View) bool {
+        return self.terminal_view_host.viewRef().isFocused();
     }
 
     /// Paints into the view's own frame without writing ANSI. The multi-file
@@ -4997,4 +5013,45 @@ test "View: line decoration classes paint the marker cell" {
     view.invalidate();
     try view.renderAnsi(&out.writer);
     try std.testing.expectEqual(@as(usize, 0), editor.lineDecorationsWidth());
+}
+
+test "View: focus-only line highlight follows forwarded focus" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 30, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    view.terminal_view_host.options.set(.renderLineHighlight, .line);
+    view.terminal_view_host.options.set(.renderLineHighlightOnlyWhenFocus, true);
+    const option_count = @typeInfo(editor_options.EditorOption).@"enum".field_names.len;
+    var changed: [option_count]bool = @splat(false);
+    changed[@backingInt(editor_options.EditorOption.renderLineHighlight)] = true;
+    changed[@backingInt(editor_options.EditorOption.renderLineHighlightOnlyWhenFocus)] = true;
+    const event = view_events.ViewConfigurationChangedEvent.init(
+        editor_options.ConfigurationChangedEvent.init(&changed),
+    );
+    _ = view.terminal_view_host.viewRef().onConfigurationChanged(&event);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+    try std.testing.expect(view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 0)] !=
+        ui.cell.packColor(color(current_line_background)));
+
+    _ = view.setFocused(true);
+    try view.renderAnsi(&out.writer);
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(current_line_background)),
+        view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 0)],
+    );
+
+    _ = view.setFocused(false);
+    try view.renderAnsi(&out.writer);
+    try std.testing.expect(view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 0)] !=
+        ui.cell.packColor(color(current_line_background)));
 }

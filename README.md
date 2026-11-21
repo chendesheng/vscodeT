@@ -955,7 +955,8 @@ console API for raw mode, sizing and input polling.
   right-aligned line numbers (inactive/active colors from
   `editorLineNumber.*`; the column follows `editor.lineNumbers`,
   `editor.lineNumbersMinChars` and the digit count), wrapped-line markers,
-  `renderLineHighlight: gutter|all` margin highlighting, selections
+  `renderLineHighlight: gutter|all`, focus-only highlighting via the forwarded
+  editor focus, selections
   (the theme `editor.selectionBackground` with dimmed covered text), the current
   line and a hardware cursor. The workbench status bar is a
   full-width bottom row built from the ported
