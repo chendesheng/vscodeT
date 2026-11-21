@@ -981,8 +981,8 @@ console API for raw mode, sizing and input polling.
   row text through `setStatusText`. The bar's terminal adaptations are documented in
   `docs/terminal-ui.md`: codicons are plain text, text ellipsis is
   pre-truncation, focus is an underline, the tooltip is plain text, hidden
-  entry state is in memory; a right-click opens the hide/manage-extension
-  actions through the quick pick, while the browser's other context-menu and
+  entry state is in memory; Escape dismisses the hover tooltip, a right-click
+  opens the hide/manage-extension actions through the quick pick, while the browser's other context-menu and
   auxiliary parts are not ported. The
   `zig build run -- --preview <file>` read-only mode uses the same token
   renderer and adds Up/Down, PageUp/PageDown, Home, End and mouse-wheel
