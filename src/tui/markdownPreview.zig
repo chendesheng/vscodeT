@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const ui = @import("ui");
 const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
@@ -26,6 +27,8 @@ const scroll_sync = @import("../vs/workbench/contrib/markdown/browser/scrollSync
 const topmost = @import("../vs/workbench/contrib/markdown/browser/topmostLineMonitor.zig");
 const scrolling = @import("../vs/workbench/contrib/markdown/browser/scrolling.zig");
 const preview_config = @import("../vs/workbench/contrib/markdown/browser/markdownPreviewConfig.zig");
+const mediaImage = @import("../vs/workbench/contrib/mediaPreview/common/mediaImage.zig");
+const TerminalImage = @import("./terminalImage.zig").TerminalImage;
 const cellMetrics = @import("./cellMetrics.zig");
 
 const base_preview_background = ui.Color{ .r = 30, .g = 30, .b = 33 };
@@ -39,6 +42,10 @@ const base_divider_color = ui.Color{ .r = 70, .g = 70, .b = 70 };
 pub const MarkdownPreview = struct {
     allocator: Allocator,
     editor: *Editor,
+    runtime: ?*ui.image.Runtime = null,
+    base_dir: []u8 = &.{},
+    image_entries: std.StringHashMap(*ImageEntry),
+    image_specs: std.array_list.Managed(preview_doc.ImageSpec),
     surface: ?ui.Surface = null,
     content: ?markdown.Content = null,
     document: ?preview_doc.Document = null,
@@ -68,11 +75,23 @@ pub const MarkdownPreview = struct {
     view_handler: ViewEventHandler = .{},
     last_error: ?anyerror = null,
     theme: ?*const theme_colors_mod.ThemeColors = null,
+    image_background: u32 = 0,
 
     pub fn init(allocator: Allocator, editor: *Editor) !*MarkdownPreview {
         const self = try allocator.create(MarkdownPreview);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .editor = editor };
+        self.* = .{
+            .allocator = allocator,
+            .editor = editor,
+            .image_entries = std.StringHashMap(*ImageEntry).init(allocator),
+            .image_specs = std.array_list.Managed(preview_doc.ImageSpec).init(allocator),
+        };
+        errdefer {
+            self.image_specs.deinit();
+            self.image_entries.deinit();
+        }
+        self.base_dir = try documentBaseDir(allocator, editor.io, editor.path);
+        errdefer allocator.free(self.base_dir);
         self.view_handler = ViewEventHandler.init(self, .{
             .onFlushed = onFlushed,
             .onScrollChanged = onScrollChanged,
@@ -83,12 +102,23 @@ pub const MarkdownPreview = struct {
         return self;
     }
 
+    /// Attaches the workbench's terminal image runtime. Called once when the
+    /// tab is created; a preview created without it keeps alt-text rendering.
+    pub fn setImageRuntime(self: *MarkdownPreview, runtime: ?*ui.image.Runtime) void {
+        self.runtime = runtime;
+        self.dirty = true;
+    }
+
     pub fn setThemeColors(self: *MarkdownPreview, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme = palette;
         self.dirty = true;
     }
 
     pub fn deinit(self: *MarkdownPreview) void {
+        self.releaseAllImages();
+        self.image_specs.deinit();
+        self.image_entries.deinit();
+        if (self.base_dir.len > 0) self.allocator.free(self.base_dir);
         self.editor.removeViewEventHandler(&self.view_handler);
         self.refresh_timer.cancel();
         self.scrolling_timer.cancel();
@@ -98,6 +128,15 @@ pub const MarkdownPreview = struct {
         if (self.content) |*content| content.deinit();
         if (self.surface) |*surface| surface.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Drops terminal image data/placements while keeping the decoded payload;
+    /// the next build/paint re-uploads it. Used after a protocol or terminal
+    /// resize cleared the screen.
+    pub fn invalidateImages(self: *MarkdownPreview) void {
+        var iterator = self.image_entries.iterator();
+        while (iterator.next()) |entry| entry.value_ptr.*.terminal.invalidate();
+        self.dirty = true;
     }
 
     pub fn setConfig(self: *MarkdownPreview, config: preview_config.MarkdownPreviewConfig) void {
@@ -126,6 +165,7 @@ pub const MarkdownPreview = struct {
             return;
         }
         self.content_width = @max(width -| 2, 1);
+        self.invalidateImages();
         if (self.surface) |*surface| {
             try surface.resize(width, height);
         } else {
@@ -137,7 +177,7 @@ pub const MarkdownPreview = struct {
             });
         }
         if (self.content) |*content| {
-            const replacement = try preview_doc.build(self.allocator, content, self.content_width);
+            const replacement = try self.buildDocument(content);
             if (self.document) |*document| document.deinit();
             self.document = replacement;
             self.clampScroll();
@@ -240,6 +280,7 @@ pub const MarkdownPreview = struct {
         if (self.dirty) try self.buildNodes();
         const surface = &(self.surface orelse return);
         try surface.paintFrame();
+        try self.paintImagePlaceholders(surface.presentedGrid(), w);
         try ui.CellGrid.blit(&frame.next, surface.grid(), x, y, w, h);
     }
 
@@ -293,7 +334,7 @@ pub const MarkdownPreview = struct {
         });
         errdefer content.deinit();
 
-        var document = try preview_doc.build(self.allocator, &content, self.content_width);
+        var document = try self.buildDocument(&content);
         errdefer document.deinit();
 
         const previous_line = self.currentTopLine();
@@ -394,6 +435,249 @@ pub const MarkdownPreview = struct {
         self.active_block = if (found.previous) |element| element.block_id else 0;
     }
 
+    const ImageEntry = struct {
+        path: []u8,
+        mtime: Io.Timestamp,
+        size: usize,
+        width: usize,
+        height: usize,
+        terminal: *TerminalImage,
+        used: bool = false,
+    };
+
+    fn documentBaseDir(allocator: Allocator, io: Io, path: []const u8) ![]u8 {
+        var cwd_buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+        const cwd_length = Io.Dir.cwd().realPathFile(io, ".", &cwd_buffer) catch 0;
+        const absolute = try std.fs.path.resolve(allocator, &.{ cwd_buffer[0..cwd_length], path });
+        defer allocator.free(absolute);
+        const directory = std.fs.path.dirname(absolute) orelse ".";
+        return allocator.dupe(u8, directory);
+    }
+
+    fn percentDecode(allocator: Allocator, text: []const u8) ![]u8 {
+        var out = try allocator.alloc(u8, text.len);
+        errdefer allocator.free(out);
+        var source: usize = 0;
+        var target: usize = 0;
+        while (source < text.len) {
+            if (text[source] == '%' and source + 2 < text.len) {
+                const high = std.fmt.charToDigit(text[source + 1], 16) catch {
+                    out[target] = text[source];
+                    source += 1;
+                    target += 1;
+                    continue;
+                };
+                const low = std.fmt.charToDigit(text[source + 2], 16) catch {
+                    out[target] = text[source];
+                    source += 1;
+                    target += 1;
+                    continue;
+                };
+                out[target] = (high << 4) | low;
+                source += 3;
+                target += 1;
+                continue;
+            }
+            out[target] = text[source];
+            source += 1;
+            target += 1;
+        }
+        return allocator.realloc(out, target);
+    }
+
+    /// Resolves a Markdown image URL to a local file path. Remote and data URLs
+    /// return null (the terminal preview does not fetch resources), and
+    /// fragments/query strings are stripped.
+    fn resolveImagePath(self: *const MarkdownPreview, allocator: Allocator, url: []const u8) !?[]u8 {
+        const trimmed = std.mem.trim(u8, url, " \t\r\n");
+        if (trimmed.len == 0) return null;
+        var end = trimmed.len;
+        if (std.mem.indexOfAny(u8, trimmed, "?#")) |index| end = index;
+        var raw = trimmed[0..end];
+        if (raw.len == 0) return null;
+        if (std.mem.startsWith(u8, raw, "http://") or std.mem.startsWith(u8, raw, "https://") or
+            std.mem.startsWith(u8, raw, "data:"))
+        {
+            return null;
+        }
+        if (std.mem.startsWith(u8, raw, "file://")) {
+            raw = raw["file://".len..];
+            if (std.mem.startsWith(u8, raw, "localhost/")) raw = raw["localhost".len..];
+        }
+        const decoded = try percentDecode(allocator, raw);
+        defer allocator.free(decoded);
+        if (decoded.len == 0) return null;
+        if (std.fs.path.isAbsolute(decoded)) return try std.fs.path.resolve(allocator, &.{decoded});
+        return try std.fs.path.resolve(allocator, &.{ self.base_dir, decoded });
+    }
+
+    fn cellSize(self: *const MarkdownPreview) preview_doc.CellSize {
+        if (self.runtime) |runtime| {
+            return .{ .width_px = runtime.cell_width_px, .height_px = runtime.cell_height_px };
+        }
+        return .{};
+    }
+
+    fn syncImages(self: *MarkdownPreview, content: *const markdown.Content) !void {
+        self.image_specs.clearRetainingCapacity();
+        var iterator = self.image_entries.iterator();
+        while (iterator.next()) |entry| entry.value_ptr.*.used = false;
+
+        const runtime = self.runtime orelse {
+            self.releaseUnusedImages();
+            return;
+        };
+        if (!runtime.enabled()) {
+            self.releaseUnusedImages();
+            return;
+        }
+
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        for (content.lines) |line| {
+            for (line.spans) |span| {
+                const image = span.image orelse continue;
+                if (seen.contains(image.url)) continue;
+                try seen.put(image.url, {});
+                const path = (try self.resolveImagePath(self.allocator, image.url)) orelse continue;
+                defer self.allocator.free(path);
+                const entry = try self.getOrLoadImage(path) orelse continue;
+                try self.image_specs.append(.{
+                    .url = image.url,
+                    .width = entry.width,
+                    .height = entry.height,
+                    .image_id = entry.terminal.id,
+                });
+            }
+        }
+        self.releaseUnusedImages();
+    }
+
+    fn getOrLoadImage(self: *MarkdownPreview, path: []const u8) !?*ImageEntry {
+        const io = self.editor.io;
+        const stat = Io.Dir.cwd().statFile(io, path, .{}) catch {
+            self.removeImage(path);
+            return null;
+        };
+        if (self.image_entries.get(path)) |entry| {
+            if (entry.size == stat.size and std.meta.eql(entry.mtime, stat.mtime)) {
+                entry.used = true;
+                return entry;
+            }
+            self.removeImage(path);
+        }
+
+        const runtime = self.runtime orelse return null;
+        if (!runtime.enabled()) return null;
+        const bytes = Io.Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(mediaImage.max_file_bytes)) catch return null;
+        defer self.allocator.free(bytes);
+        const decoded = mediaImage.decode(self.allocator, bytes) catch return null;
+        const image_width = decoded.width;
+        const image_height = decoded.height;
+        const terminal = TerminalImage.init(self.allocator, runtime, decoded) catch |err| {
+            var owned = decoded;
+            owned.deinit(self.allocator);
+            return err;
+        };
+        const key = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(key);
+        const entry = try self.allocator.create(ImageEntry);
+        errdefer self.allocator.destroy(entry);
+        entry.* = .{
+            .path = key,
+            .mtime = stat.mtime,
+            .size = stat.size,
+            .width = image_width,
+            .height = image_height,
+            .terminal = terminal,
+            .used = true,
+        };
+        try self.image_entries.put(key, entry);
+        return entry;
+    }
+
+    fn removeImage(self: *MarkdownPreview, path: []const u8) void {
+        if (self.image_entries.fetchRemove(path)) |kv| {
+            kv.value.terminal.deinit();
+            self.allocator.free(kv.value.path);
+            self.allocator.destroy(kv.value);
+        }
+    }
+
+    fn releaseUnusedImages(self: *MarkdownPreview) void {
+        var unused = std.array_list.Managed(*ImageEntry).init(self.allocator);
+        defer unused.deinit();
+        var iterator = self.image_entries.iterator();
+        while (iterator.next()) |entry| {
+            if (!entry.value_ptr.*.used) unused.append(entry.value_ptr.*) catch continue;
+        }
+        for (unused.items) |entry| self.removeImage(entry.path);
+    }
+
+    fn releaseAllImages(self: *MarkdownPreview) void {
+        var iterator = self.image_entries.iterator();
+        while (iterator.next()) |entry| {
+            entry.value_ptr.*.terminal.deinit();
+            self.allocator.free(entry.value_ptr.*.path);
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.image_entries.clearRetainingCapacity();
+    }
+
+    fn buildDocument(self: *MarkdownPreview, content: *const markdown.Content) !preview_doc.Document {
+        try self.syncImages(content);
+        var document = try preview_doc.build(self.allocator, content, self.content_width, .{
+            .images = self.image_specs.items,
+            .cell = self.cellSize(),
+        });
+        errdefer document.deinit();
+        try self.applyPlacements(&document);
+        return document;
+    }
+
+    fn applyPlacements(self: *MarkdownPreview, document: *const preview_doc.Document) !void {
+        const runtime = self.runtime orelse return;
+        if (!runtime.enabled()) return;
+        for (document.images) |placement| {
+            var iterator = self.image_entries.iterator();
+            while (iterator.next()) |entry| {
+                const terminal = entry.value_ptr.*.terminal;
+                if (terminal.id != placement.image_id) continue;
+                try terminal.ensurePlacement(placement.cols, placement.rows);
+                break;
+            }
+        }
+    }
+
+    pub fn usesImagePath(self: *const MarkdownPreview, path: []const u8) bool {
+        var iterator = self.image_entries.iterator();
+        while (iterator.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, path)) return true;
+        }
+        return false;
+    }
+
+    fn paintImagePlaceholders(self: *MarkdownPreview, grid: *ui.CellGrid, width: usize) !void {
+        const runtime = self.runtime orelse return;
+        if (!runtime.enabled()) return;
+        const document = if (self.document) |*value| value else return;
+        for (document.images) |placement| {
+            if (placement.row + placement.rows <= self.scroll or placement.row >= self.scroll + self.height) continue;
+            var image_row: usize = 0;
+            while (image_row < placement.rows) : (image_row += 1) {
+                const document_row = placement.row + image_row;
+                if (document_row < self.scroll or document_row >= self.scroll + self.height) continue;
+                const destination_row = document_row - self.scroll;
+                var image_col: usize = 0;
+                while (image_col < placement.cols) : (image_col += 1) {
+                    const destination_col = 1 + placement.col + image_col;
+                    if (destination_col >= width) continue;
+                    try ui.image.putPlaceholderWithBackground(grid, destination_col, destination_row, placement.image_id, image_row, image_col, self.image_background);
+                }
+            }
+        }
+    }
+
     fn buildNodes(self: *MarkdownPreview) !void {
         var preview_background = base_preview_background;
         var preview_foreground = base_preview_foreground;
@@ -411,6 +695,7 @@ pub const MarkdownPreview = struct {
             scrollbar_thumb = palette.colorOr("scrollbarSlider.background", base_scrollbar_thumb);
             divider_color = palette.colorOr("editorWidget.border", base_divider_color);
         }
+        self.image_background = ui.cell.packColor(preview_background);
         const surface = &(self.surface orelse return);
         const document = &(self.document orelse {
             const doc = surface.document();
@@ -602,4 +887,41 @@ fn repeat(allocator: Allocator, text: []const u8, count: usize) ![]u8 {
         @memcpy(result[index * text.len ..][0..text.len], text);
     }
     return result;
+}
+
+test "markdownPreview: resolves local image URLs and skips remote ones" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "# title", "/tmp/docs/readme.md", 40, 10);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const preview = try MarkdownPreview.init(allocator, editor);
+    defer preview.deinit();
+
+    {
+        const path = (try preview.resolveImagePath(allocator, "images/a.png")).?;
+        defer allocator.free(path);
+        try std.testing.expectEqualStrings("/tmp/docs/images/a.png", path);
+    }
+    {
+        const path = (try preview.resolveImagePath(allocator, "/tmp/abs.png#fragment")).?;
+        defer allocator.free(path);
+        try std.testing.expectEqualStrings("/tmp/abs.png", path);
+    }
+    {
+        const path = (try preview.resolveImagePath(allocator, "file:///tmp/a%20b.png")).?;
+        defer allocator.free(path);
+        try std.testing.expectEqualStrings("/tmp/a b.png", path);
+    }
+    try std.testing.expect((try preview.resolveImagePath(allocator, "https://example.com/a.png")) == null);
+    try std.testing.expect((try preview.resolveImagePath(allocator, "data:image/png;base64,AAAA")) == null);
+}
+
+test "markdownPreview: percent decoding keeps malformed escapes" {
+    const allocator = std.testing.allocator;
+    const decoded = try MarkdownPreview.percentDecode(allocator, "a%20b%zzc%");
+    defer allocator.free(decoded);
+    try std.testing.expectEqualStrings("a b%zzc%", decoded);
 }

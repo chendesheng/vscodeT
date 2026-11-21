@@ -175,7 +175,7 @@ test "scrollSync: source line mapping uses block boundaries" {
         .{},
     );
     defer content.deinit();
-    var document = try preview.build(std.testing.allocator, &content, 40);
+    var document = try preview.build(std.testing.allocator, &content, 40, .{});
     defer document.deinit();
 
     const first = getElementsForSourceLine(&document, 0);
@@ -192,7 +192,7 @@ test "scrollSync: anchors and multi-line code blocks map" {
         .{},
     );
     defer content.deinit();
-    var document = try preview.build(std.testing.allocator, &content, 40);
+    var document = try preview.build(std.testing.allocator, &content, 40, .{});
     defer document.deinit();
 
     const two = getLineElementForFragment(&document, "two");
@@ -214,7 +214,7 @@ test "scrollSync: page offset maps back to a fractional line" {
         .{},
     );
     defer content.deinit();
-    var document = try preview.build(std.testing.allocator, &content, 40);
+    var document = try preview.build(std.testing.allocator, &content, 40, .{});
     defer document.deinit();
 
     const line = getEditorLineNumberForPageOffset(&document, 0, 0);

@@ -71,12 +71,23 @@ const max_table_width: usize = 96;
 
 const RenderError = Allocator.Error;
 
+/// A document-mode image reference. The text of the span is the alt text so a
+/// renderer without image support still shows readable content.
+pub const Image = struct {
+    url: []const u8,
+    alt: []const u8,
+    title: ?[]const u8 = null,
+};
+
 pub const Span = struct {
     text: []const u8,
     style: ui.Style = .{},
     /// Present on link text so the document preview can hit-test `#fragment`
     /// links. Hover ignores it.
     link: ?[]const u8 = null,
+    /// Present on document-mode image spans. The preview document layout
+    /// replaces the alt text with an image block when the file is displayable.
+    image: ?Image = null,
 };
 
 pub const Mode = enum { hover, document };
@@ -1020,6 +1031,15 @@ const InlineBuilder = struct {
         try self.spans.append(.{ .text = expanded, .style = style, .link = self.link });
     }
 
+    fn appendImage(self: *InlineBuilder, url: []const u8, alt: []const u8, title: ?[]const u8) !void {
+        const expanded_alt = try expandTabs(self.allocator, alt);
+        try self.spans.append(.{
+            .text = expanded_alt,
+            .style = .{ .dim = true, .color = text_color },
+            .image = .{ .url = url, .alt = expanded_alt, .title = title },
+        });
+    }
+
     fn softBreak(self: *InlineBuilder, style: ui.Style) !void {
         if (self.replace_newline or (self.ctx.mode == .document and !self.ctx.preview_breaks)) {
             try self.spans.append(.{ .text = " ", .style = style, .link = self.link });
@@ -1118,12 +1138,20 @@ fn renderInline(
             }
         },
         .image => |image| {
-            if (image.alt.len > 0) {
+            if (isDocument(builder.ctx)) {
+                try builder.appendImage(image.url, image.alt, image.title);
+            } else if (image.alt.len > 0) {
                 try builder.appendText(image.alt, .{ .dim = true, .color = text_color });
             }
         },
         .image_reference => |image| {
-            if (image.alt.len > 0) {
+            if (isDocument(builder.ctx)) {
+                if (definitions.get(image.identifier)) |definition| {
+                    try builder.appendImage(definition.url, image.alt, definition.title);
+                } else if (image.alt.len > 0) {
+                    try builder.appendText(image.alt, .{ .dim = true, .color = text_color });
+                }
+            } else if (image.alt.len > 0) {
                 try builder.appendText(image.alt, .{ .dim = true, .color = text_color });
             }
         },
@@ -1604,4 +1632,24 @@ test "markdown: splitAtWidth keeps UTF-8 intact" {
     const split = splitAtWidth(text, 3);
     try testing.expect(std.unicode.utf8ValidateSlice(text[0..split]));
     try testing.expectEqual(@as(usize, 3), textWidth(text[0..split]));
+}
+
+test "markdown: document mode keeps image URLs for the preview layout" {
+    const allocator = std.testing.allocator;
+    var content = try parseDocument(allocator, "before ![shot](images/a.png) after\n\n![ref][id]\n\n[id]: b.jpg", .{});
+    defer content.deinit();
+    var saw_direct = false;
+    var saw_reference = false;
+    for (content.lines) |line| {
+        for (line.spans) |span| {
+            const image = span.image orelse continue;
+            if (std.mem.eql(u8, image.url, "images/a.png")) {
+                saw_direct = true;
+                try std.testing.expectEqualStrings("shot", span.text);
+            }
+            if (std.mem.eql(u8, image.url, "b.jpg")) saw_reference = true;
+        }
+    }
+    try std.testing.expect(saw_direct);
+    try std.testing.expect(saw_reference);
 }
