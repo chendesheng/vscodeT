@@ -146,6 +146,7 @@ pub const HelixEngine = struct {
     pending_replace: bool = false,
     pending_insert_register: bool = false,
     pending_find: ?Find = null,
+    pending_text_object: ?bool = null,
     surround: ?SurroundState = null,
     last_find: ?Find = null,
     last_macro: ?usize = null,
@@ -235,7 +236,10 @@ pub const HelixEngine = struct {
             .select => "-- SELECT --",
             .normal => self.pendingStatus(),
             .goto_mode => "g",
-            .match_mode => "m",
+            .match_mode => if (self.pending_text_object) |around|
+                (if (around) "ma" else "mi")
+            else
+                "m",
             .view_mode => "z",
             .window_mode => "<C-w>",
             .space_mode => " ",
@@ -2489,6 +2493,7 @@ pub const HelixEngine = struct {
     fn finishMinor(self: *HelixEngine) void {
         self.mode = if (self.minor_select) .select else .normal;
         self.minor_select = false;
+        self.pending_text_object = null;
         self.count = 0;
         self.count_active = false;
     }
@@ -2553,6 +2558,32 @@ pub const HelixEngine = struct {
     }
 
     fn handleMatchKey(self: *HelixEngine, event: *const KeyInputEvent) !bool {
+        if (self.pending_text_object) |around| {
+            switch (event.key) {
+                .escape => {
+                    self.pending_text_object = null;
+                    self.finishMinor();
+                },
+                .char => |char| {
+                    self.pending_text_object = null;
+                    try self.selectTextObject(around, char);
+                    self.finishMinor();
+                },
+                .text => |text| {
+                    self.pending_text_object = null;
+                    var view = std.unicode.Utf8View.init(text) catch return true;
+                    var iterator = view.iterator();
+                    if (iterator.nextCodepoint()) |char| try self.selectTextObject(around, char);
+                    self.finishMinor();
+                },
+                else => {
+                    self.pending_text_object = null;
+                    self.finishMinor();
+                },
+            }
+            return true;
+        }
+
         switch (event.key) {
             .escape => self.finishMinor(),
             .char => |char| {
@@ -2570,22 +2601,293 @@ pub const HelixEngine = struct {
                             .replace => .surround_replace,
                         };
                     },
-                    'a', 'i' => {
-                        self.window.setMessage("Helix: tree-sitter text objects are not available");
-                        self.finishMinor();
-                    },
+                    'a' => self.pending_text_object = true,
+                    'i' => self.pending_text_object = false,
                     else => self.finishMinor(),
                 }
             },
             .text => |text| {
-                if (text.len > 0) {
-                    var char_event = KeyInputEvent{ .key = .{ .char = text[0] } };
+                var view = std.unicode.Utf8View.init(text) catch return true;
+                var iterator = view.iterator();
+                // `ma`/`mi` and the object key can arrive in one text run.
+                var remaining: usize = 2;
+                while (remaining > 0 and self.mode == .match_mode) : (remaining -= 1) {
+                    const char = iterator.nextCodepoint() orelse break;
+                    var char_event = KeyInputEvent{ .key = .{ .char = char } };
                     _ = try self.handleMatchKey(&char_event);
                 }
             },
             else => self.finishMinor(),
         }
         return true;
+    }
+
+    fn selectTextObject(self: *HelixEngine, around: bool, char: u21) !void {
+        switch (char) {
+            'w', 'W', 'p', 'm', '(', ')', '[', ']', '{', '}', '<', '>', '"', '\'', '`' => {},
+            'f', 't', 'a', 'c', 'T', 'g', 'x' => {
+                self.window.setMessage("Helix: tree-sitter text object unavailable");
+                return;
+            },
+            else => return,
+        }
+
+        const selections = try self.getSelections();
+        defer self.allocator.free(selections);
+        const normalized = try self.normalizeSelections(selections);
+        defer self.allocator.free(normalized);
+        try self.rememberSelections(normalized);
+
+        const updated = try self.allocator.alloc(Selection, normalized.len);
+        defer self.allocator.free(updated);
+        var found = false;
+        for (normalized, 0..) |selection, index| {
+            const range = try self.textObjectRange(around, char, selection.getPosition()) orelse {
+                updated[index] = selection;
+                continue;
+            };
+            updated[index] = Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn);
+            found = true;
+        }
+        if (found) try self.setNormalizedSelections(updated);
+    }
+
+    fn textObjectRange(self: *HelixEngine, around: bool, char: u21, cursor: Position) !?Range {
+        return switch (char) {
+            'w' => try self.wordObject(around, false, cursor),
+            'W' => try self.wordObject(around, true, cursor),
+            'p' => try self.paragraphObject(around, cursor),
+            '(' => try self.bracketObject(around, '(', ')', cursor),
+            ')' => try self.bracketObject(around, '(', ')', cursor),
+            '[' => try self.bracketObject(around, '[', ']', cursor),
+            ']' => try self.bracketObject(around, '[', ']', cursor),
+            '{' => try self.bracketObject(around, '{', '}', cursor),
+            '}' => try self.bracketObject(around, '{', '}', cursor),
+            '<' => try self.bracketObject(around, '<', '>', cursor),
+            '>' => try self.bracketObject(around, '<', '>', cursor),
+            '"', '\'', '`' => try self.quoteObject(around, @intCast(char), cursor),
+            'm' => try self.closestSurround(around, cursor),
+            else => null,
+        };
+    }
+
+    fn wordObject(self: *HelixEngine, around: bool, big: bool, cursor: Position) !?Range {
+        var value = try self.modelValue();
+        defer value.deinit();
+        if (value.items.len == 0) return null;
+        var offset = self.editor.model.getOffsetAt(cursor);
+        if (offset >= value.items.len) offset = value.items.len - 1;
+        const class: *const fn ([]const u8, usize) u8 = if (big) wordClassBigAt else wordClassAt;
+        const target = class(value.items, offset);
+        var start = offset;
+        while (start > 0 and class(value.items, prevCodepointOffset(value.items, start)) == target) {
+            start = prevCodepointOffset(value.items, start);
+        }
+        var end = offset;
+        while (end < value.items.len and class(value.items, end) == target) {
+            end = nextCodepointOffset(value.items, end);
+        }
+        if (around) {
+            while (end < value.items.len and class(value.items, end) == 0) {
+                end = nextCodepointOffset(value.items, end);
+            }
+        }
+        if (start == end) return null;
+        return Range.fromPositions(self.editor.model.getPositionAt(start), self.editor.model.getPositionAt(end));
+    }
+
+    fn paragraphObject(self: *HelixEngine, around: bool, cursor: Position) !?Range {
+        const line_count = self.editor.model.getLineCount();
+        const current = @min(cursor.lineNumber, line_count);
+        const blank = try self.isBlankLine(current);
+        var start = current;
+        while (start > 1 and (try self.isBlankLine(start - 1)) == blank) start -= 1;
+        var end = current;
+        while (end < line_count and (try self.isBlankLine(end + 1)) == blank) end += 1;
+
+        if (around and !blank) {
+            var extra = end;
+            while (extra < line_count and (try self.isBlankLine(extra + 1))) extra += 1;
+            if (extra > end) {
+                end = extra;
+            } else {
+                while (start > 1 and (try self.isBlankLine(start - 1))) start -= 1;
+            }
+        }
+
+        if (around and end < line_count) {
+            return Range.init(start, 1, end + 1, 1);
+        }
+        return Range.init(start, 1, end, self.lineMaxColumn(end));
+    }
+
+    fn isBlankLine(self: *HelixEngine, line: usize) !bool {
+        const content = try self.editor.model.getLineContent(line);
+        defer content.deinit();
+        for (content.items) |byte| {
+            if (byte != ' ' and byte != '\t') return false;
+        }
+        return true;
+    }
+
+    fn bracketObject(self: *HelixEngine, around: bool, open: u8, close: u8, cursor: Position) !?Range {
+        var value = try self.modelValue();
+        defer value.deinit();
+        if (value.items.len == 0) return null;
+        var offset = self.editor.model.getOffsetAt(cursor);
+        if (offset >= value.items.len) offset = value.items.len - 1;
+
+        var open_index: ?usize = null;
+        var close_index: ?usize = null;
+        if (value.items[offset] == open) {
+            open_index = offset;
+        } else if (value.items[offset] == close) {
+            var depth: isize = 1;
+            var index = offset;
+            while (index > 0) {
+                index -= 1;
+                if (value.items[index] == close) {
+                    depth += 1;
+                } else if (value.items[index] == open) {
+                    depth -= 1;
+                    if (depth == 0) {
+                        open_index = index;
+                        close_index = offset;
+                        break;
+                    }
+                }
+            }
+        } else {
+            var depth: isize = 0;
+            var index = offset;
+            while (index > 0) {
+                index -= 1;
+                if (value.items[index] == close) {
+                    depth += 1;
+                } else if (value.items[index] == open) {
+                    if (depth == 0) {
+                        open_index = index;
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+        }
+        const start = open_index orelse return null;
+        if (close_index == null) {
+            var depth: isize = 0;
+            var index = start + 1;
+            while (index < value.items.len) : (index += 1) {
+                if (value.items[index] == open) {
+                    depth += 1;
+                } else if (value.items[index] == close) {
+                    if (depth == 0) {
+                        close_index = index;
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+        }
+        const end = close_index orelse return null;
+        const start_offset = if (around) start else start + 1;
+        const end_offset = if (around) end + 1 else end;
+        return Range.fromPositions(self.editor.model.getPositionAt(start_offset), self.editor.model.getPositionAt(end_offset));
+    }
+
+    fn quoteObject(self: *HelixEngine, around: bool, quote: u8, cursor: Position) !?Range {
+        const content = try self.editor.model.getLineContent(cursor.lineNumber);
+        defer content.deinit();
+        if (content.items.len == 0) return null;
+        const position = @min(cursor.column -| 1, content.items.len - 1);
+
+        var open_index: ?usize = null;
+        var close_index: ?usize = null;
+        if (content.items[position] == quote and !isEscaped(content.items, position)) {
+            var index = position;
+            while (index > 0) {
+                index -= 1;
+                if (content.items[index] == quote and !isEscaped(content.items, index)) {
+                    open_index = index;
+                    close_index = position;
+                    break;
+                }
+            }
+            if (open_index == null) {
+                index = position + 1;
+                while (index < content.items.len) : (index += 1) {
+                    if (content.items[index] == quote and !isEscaped(content.items, index)) {
+                        open_index = position;
+                        close_index = index;
+                        break;
+                    }
+                }
+            }
+        } else {
+            var index = position;
+            while (index > 0) {
+                index -= 1;
+                if (content.items[index] == quote and !isEscaped(content.items, index)) {
+                    open_index = index;
+                    break;
+                }
+            }
+            const start = open_index orelse return null;
+            index = start + 1;
+            while (index < content.items.len) : (index += 1) {
+                if (content.items[index] == quote and !isEscaped(content.items, index)) {
+                    close_index = index;
+                    break;
+                }
+            }
+        }
+        const start = open_index orelse return null;
+        const end = close_index orelse return null;
+        const start_offset = if (around) start else start + 1;
+        const end_offset = if (around) end + 1 else end;
+        return Range.fromPositions(
+            Position.init(cursor.lineNumber, start_offset + 1),
+            Position.init(cursor.lineNumber, end_offset + 1),
+        );
+    }
+
+    const SurroundCandidate = struct {
+        open: u8,
+        close: u8,
+        quote: bool,
+    };
+
+    fn closestSurround(self: *HelixEngine, around: bool, cursor: Position) !?Range {
+        const candidates = [_]SurroundCandidate{
+            .{ .open = '(', .close = ')', .quote = false },
+            .{ .open = '[', .close = ']', .quote = false },
+            .{ .open = '{', .close = '}', .quote = false },
+            .{ .open = '<', .close = '>', .quote = false },
+            .{ .open = '"', .close = '"', .quote = true },
+            .{ .open = '\'', .close = '\'', .quote = true },
+            .{ .open = '`', .close = '`', .quote = true },
+        };
+        var best_outer: ?Range = null;
+        var best_inner: ?Range = null;
+        var best_span: usize = std.math.maxInt(usize);
+        for (candidates) |candidate| {
+            const outer = if (candidate.quote)
+                try self.quoteObject(true, candidate.open, cursor)
+            else
+                try self.bracketObject(true, candidate.open, candidate.close, cursor);
+            const outer_range = outer orelse continue;
+            if (!outer_range.containsPosition(&cursor)) continue;
+            const span = self.editor.model.getOffsetAt(outer_range.endPosition()) - self.editor.model.getOffsetAt(outer_range.startPosition());
+            if (span >= best_span) continue;
+            const inner = if (candidate.quote)
+                try self.quoteObject(false, candidate.open, cursor)
+            else
+                try self.bracketObject(false, candidate.open, candidate.close, cursor);
+            best_inner = inner orelse continue;
+            best_outer = outer_range;
+            best_span = span;
+        }
+        return if (around) best_outer else best_inner;
     }
 
     fn handleViewKey(self: *HelixEngine, event: *const KeyInputEvent) !bool {
@@ -3249,6 +3551,7 @@ pub const HelixEngine = struct {
         self.pending_replace = false;
         self.pending_insert_register = false;
         self.pending_find = null;
+        self.pending_text_object = null;
         self.surround = null;
     }
 
@@ -3439,4 +3742,11 @@ fn trimSelectionText(allocator: Allocator, text: []const u8) ![]u8 {
         try output.appendSlice(std.mem.trim(u8, line, " \t\r"));
     }
     return output.toOwnedSlice();
+}
+
+fn isEscaped(line: []const u8, index: usize) bool {
+    var backslashes: usize = 0;
+    var i = index;
+    while (i > 0 and line[i - 1] == '\\') : (i -= 1) backslashes += 1;
+    return backslashes % 2 == 1;
 }

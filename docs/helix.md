@@ -113,8 +113,11 @@ Changes:
   `0`, `$` and `^` are TUI aliases for `gh`, `gl` and `gs`; `V` is a TUI alias
   for `X`.
 - `m` match mode: `mm` matching bracket, `ms`/`md`/`mr` add/delete/replace a
-  simple bracket or quote surround. Tree-sitter text objects (`ma`/`mi`) are
-  not available.
+  simple bracket or quote surround, and `mi`/`ma` select inside/around a
+  text object. Text objects are `w`/`W` (word/WORD), `p` (paragraph), a
+  specified bracket or quote (`(`, `[`, `{`, `<`, `"`, `'`, `` ` ``), or `m`
+  for the closest surround pair. Tree-sitter-only objects (`f`, `t`, `a`, `c`,
+  `T`, `g`, `x`) report that the grammar object is unavailable.
 - `z` and `Z` view mode: `zc`/`zz` center, `zt` top, `zb` bottom, `zj`/`zk`
   scroll one line, `Ctrl-d`/`Ctrl-u`/`Ctrl-f`/`Ctrl-b` page. `zm` is a no-op
   because the terminal has no horizontal scroll.
@@ -156,8 +159,9 @@ Changes:
 
 These are documented gaps, not hidden behavior:
 
-- Tree-sitter syntax nodes, `ma`/`mi` text objects, syntax-aware
-  expand/shrink, and unimpaired `[`/`]` motions.
+- Tree-sitter syntax nodes, the tree-sitter-only text objects (`f`, `t`, `a`,
+  `c`, `T`, `g`, `x`), syntax-aware expand/shrink, and unimpaired `[`/`]`
+  motions.
 - Shell integration (`|`, `!`, `$`, `:sh`, `:pipe`, `:read`, `:write`).
 - System clipboard registers; only the internal unnamed/named and black-hole
   registers are implemented.

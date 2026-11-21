@@ -1055,3 +1055,132 @@ test "Helix: Alt-* keeps the selection as a raw regex" {
     try h.sendAlt('*');
     try std.testing.expectEqualStrings("a.c", h.engine.last_search.items);
 }
+
+test "Helix: miw and maw select inside and around a word" {
+    const inside = try Harness.init(std.testing.allocator, "hello world");
+    defer inside.deinit();
+    try inside.editor.setCursorPosition(Position.init(1, 2));
+    try inside.sendChar('m');
+    try inside.sendChar('i');
+    try inside.sendChar('w');
+    try inside.sendChar('d');
+    try inside.expectValue(" world");
+
+    const around = try Harness.init(std.testing.allocator, "hello world");
+    defer around.deinit();
+    try around.editor.setCursorPosition(Position.init(1, 2));
+    try around.sendChar('m');
+    try around.sendChar('a');
+    try around.sendChar('w');
+    try around.sendChar('d');
+    try around.expectValue("world");
+}
+
+test "Helix: mi( and ma( select inside and around brackets" {
+    const inside = try Harness.init(std.testing.allocator, "f(abc)");
+    defer inside.deinit();
+    try inside.editor.setCursorPosition(Position.init(1, 3));
+    try inside.sendChar('m');
+    try inside.sendChar('i');
+    try inside.sendChar('(');
+    try inside.sendChar('d');
+    try inside.expectValue("f()");
+
+    const around = try Harness.init(std.testing.allocator, "f(abc)");
+    defer around.deinit();
+    try around.editor.setCursorPosition(Position.init(1, 3));
+    try around.sendChar('m');
+    try around.sendChar('a');
+    try around.sendChar('(');
+    try around.sendChar('d');
+    try around.expectValue("f");
+}
+
+test "Helix: mi\" and ma\" select inside and around quotes" {
+    const inside = try Harness.init(std.testing.allocator, "x = \"hello\";");
+    defer inside.deinit();
+    try inside.editor.setCursorPosition(Position.init(1, 7));
+    try inside.sendChar('m');
+    try inside.sendChar('i');
+    try inside.sendChar('"');
+    try inside.sendChar('d');
+    try inside.expectValue("x = \"\";");
+
+    const around = try Harness.init(std.testing.allocator, "x = \"hello\";");
+    defer around.deinit();
+    try around.editor.setCursorPosition(Position.init(1, 7));
+    try around.sendChar('m');
+    try around.sendChar('a');
+    try around.sendChar('"');
+    try around.sendChar('d');
+    try around.expectValue("x = ;");
+}
+
+test "Helix: mip and map select paragraphs" {
+    const inside = try Harness.init(std.testing.allocator, "one\ntwo\n\nthree");
+    defer inside.deinit();
+    try inside.editor.setCursorPosition(Position.init(2, 2));
+    try inside.sendChar('m');
+    try inside.sendChar('i');
+    try inside.sendChar('p');
+    const inside_selection = try inside.firstSelection();
+    try std.testing.expectEqual(Position.init(1, 1), inside_selection.getStartPosition());
+    try std.testing.expectEqual(Position.init(2, 4), inside_selection.getEndPosition());
+
+    const around = try Harness.init(std.testing.allocator, "one\ntwo\n\nthree");
+    defer around.deinit();
+    try around.editor.setCursorPosition(Position.init(2, 2));
+    try around.sendChar('m');
+    try around.sendChar('a');
+    try around.sendChar('p');
+    const around_selection = try around.firstSelection();
+    try std.testing.expectEqual(Position.init(1, 1), around_selection.getStartPosition());
+    try std.testing.expectEqual(Position.init(4, 1), around_selection.getEndPosition());
+}
+
+test "Helix: mim selects the closest surround pair" {
+    const h = try Harness.init(std.testing.allocator, "f(a, (b), c)");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 7));
+    try h.sendChar('m');
+    try h.sendChar('i');
+    try h.sendChar('m');
+    try h.sendChar('d');
+    try h.expectValue("f(a, (), c)");
+}
+
+test "Helix: text objects work on every selection" {
+    const h = try Harness.init(std.testing.allocator, "one two three");
+    defer h.deinit();
+    try h.editor.setSelections(&[_]Selection{
+        Selection.init(1, 1, 1, 1),
+        Selection.init(1, 5, 1, 5),
+        Selection.init(1, 9, 1, 9),
+    });
+    try h.sendChar('m');
+    try h.sendChar('i');
+    try h.sendChar('w');
+    try std.testing.expectEqual(@as(usize, 3), try h.selectionCount());
+    try h.sendChar('d');
+    try h.expectValue("  ");
+}
+
+test "Helix: tree-sitter-only text objects report a message" {
+    const h = try Harness.init(std.testing.allocator, "abc");
+    defer h.deinit();
+    try h.sendChar('m');
+    try h.sendChar('i');
+    try h.sendChar('f');
+    try std.testing.expectEqualStrings("Helix: tree-sitter text object unavailable", h.window.message.?);
+    try h.expectValue("abc");
+}
+
+test "Helix: text-object prefixes can arrive in one text run" {
+    const h = try Harness.init(std.testing.allocator, "hello world");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 2));
+    try h.sendChar('m');
+    try h.sendText("iw");
+    try h.sendChar('d');
+    try h.expectValue(" world");
+}

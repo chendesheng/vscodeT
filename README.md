@@ -364,11 +364,12 @@ Vim, but follows Helix's selection-first model: `w` selects a word, `d` acts on
 the selection, `x` selects a line, `%` selects the file, `s` selects regex
 matches, and editing commands work on every selection. The normal/insert/select
 modes, multiple selections, registers, macros, `.` repeat, search, command line,
-goto/match/view/window/space minor modes, linewise and surround operations,
-and the `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`, `:reload`, `:bn`, `:bp`,
-`:bd`, `:sp`, `:vsp`, `:noh`, `:set`) are implemented in Zig. Vim and Helix are
-mutually exclusive: enabling one disables and persists the other off. See
-`docs/helix.md` for the supported surface and deliberate gaps.
+goto/match/view/window/space minor modes, linewise, surround and text-object
+operations (`mi`/`ma`), and the `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`,
+`:reload`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`, `:noh`, `:set`) are implemented
+in Zig. Vim and Helix are mutually exclusive: enabling one disables and
+persists the other off. See `docs/helix.md` for the supported surface and
+deliberate gaps.
 
 Declarative built-ins are scanned from `vscode/extensions/theme-defaults`
 and `vscode/extensions/markdown-basics`: their themes, languages, grammars
