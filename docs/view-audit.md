@@ -168,8 +168,11 @@ For each row:
   editor-type/drop and the outline picker remain pending.
 - `a471dda` gutter: paint marginClassName decorations. Registered the
   `MarginViewLineDecorationsOverlay` and mapped the known diff/edit classes to
-  gutter row tints, with a View test. Glyph tooltips, focus-only tracking and
-  all line-decoration classes remain pending.
+  gutter row tints, with a View test.
+- `7e064be` gutter: map remaining line-decoration classes. `insert-sign`,
+  `delete-sign`, `comment-range-glyph` and `first-line` paint the marker cell
+  after quick-diff, with a regression test. Glyph tooltips, focus-only tracking
+  and automatic marker-width reservation remain pending.
 
 ## Next slice
 
