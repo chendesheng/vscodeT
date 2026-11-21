@@ -100,7 +100,7 @@ pub const Resource = struct {
         return .{
             .scheme = try allocator.dupe(u8, uri.scheme),
             .authority = try allocator.dupe(u8, try std_uri.authority(uri, scratch)),
-            .path = try allocator.dupe(u8, try std_uri.path(uri, scratch)),
+            .path = try allocator.dupe(u8, try std_uri.fsPath(uri, scratch)),
             .query = try allocator.dupe(u8, try std_uri.query(uri, scratch)),
             .fragment = try allocator.dupe(u8, try std_uri.fragment(uri, scratch)),
         };

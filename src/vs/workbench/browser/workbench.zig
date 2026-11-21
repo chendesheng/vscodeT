@@ -10125,7 +10125,7 @@ test "Workbench: same-file navigation reuses the current editor across path form
         base: []const u8,
         fn definition(context: *anyopaque, allocator_: Allocator, _: *@import("../../editor/common/model/textModel.zig").TextModel, _: Position, _: CancellationToken) ![]languages.LocationLink {
             const self: *@This() = @ptrCast(@alignCast(context));
-            const uri = try std.fmt.allocPrint(allocator_, "file://{s}/./{s}", .{ self.dir, self.base });
+            const uri = try std.fmt.allocPrint(allocator_, "file:///{s}/./{s}", .{ self.dir, self.base });
             const links = try allocator_.alloc(languages.LocationLink, 1);
             links[0] = .{
                 .uri = uri,
