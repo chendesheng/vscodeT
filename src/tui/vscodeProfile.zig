@@ -22,6 +22,7 @@
 //! environment variable for "read another profile".
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const platform = @import("../vs/base/common/platform.zig");
 const environment_service = @import("../vs/platform/environment/common/environmentService.zig");
@@ -226,125 +227,149 @@ fn freePathList(allocator: Allocator, paths: *std.array_list.Managed([]const u8)
     paths.deinit();
 }
 
+/// Test roots are spelled the way the host spells an absolute path. The
+/// `Environment.os` field still selects the layout branch under test, but path
+/// construction uses the host separator, matching production `std.fs.path`.
+fn native(posix: []const u8, windows_path: []const u8) []const u8 {
+    return if (builtin.os.tag == .windows) windows_path else posix;
+}
+
+fn expectPath(allocator: Allocator, parts: []const []const u8, actual: []const u8) !void {
+    const expected = try std.fs.path.join(allocator, parts);
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, actual);
+}
+
 test "vscodeProfile: macOS defaults use Code/User and the TUI user data folder" {
     const allocator = std.testing.allocator;
+    const home = native("/Users/me", "C:\\Users\\me");
     var profile = try discover(allocator, .{
         .os = .Macintosh,
-        .home = "/Users/me",
+        .home = home,
     });
     defer profile.deinit();
 
-    try std.testing.expectEqualStrings(
-        "/Users/me/Library/Application Support/Code/User",
-        profile.vscode_user_dir.?,
-    );
-    try std.testing.expectEqualStrings(
-        "/Users/me/Library/Application Support/vscode-textbuffer",
+    try expectPath(allocator, &.{ home, "Library", "Application Support", "Code", "User" }, profile.vscode_user_dir.?);
+    try expectPath(
+        allocator,
+        &.{ home, "Library", "Application Support", "vscode-textbuffer" },
         profile.user_data_dir.?,
     );
     try std.testing.expectEqual(@as(usize, 2), profile.settings_paths.len);
-    try std.testing.expectEqualStrings(
-        "/Users/me/Library/Application Support/Code/User/settings.json",
+    try expectPath(
+        allocator,
+        &.{ home, "Library", "Application Support", "Code", "User", "settings.json" },
         profile.settings_paths[0],
     );
-    try std.testing.expectEqualStrings(
-        "/Users/me/Library/Application Support/vscode-textbuffer/User/settings.json",
+    try expectPath(
+        allocator,
+        &.{ home, "Library", "Application Support", "vscode-textbuffer", "User", "settings.json" },
         profile.tuiSettingsPath().?,
     );
-    try std.testing.expectEqualStrings(
-        "/Users/me/Library/Application Support/vscode-textbuffer/User/keybindings.json",
+    try expectPath(
+        allocator,
+        &.{ home, "Library", "Application Support", "vscode-textbuffer", "User", "keybindings.json" },
         profile.tuiKeybindingsPath().?,
     );
-    try std.testing.expectEqualStrings(
-        "/Users/me/.vscode/extensions",
-        profile.extensions_dir.?,
-    );
-    try std.testing.expectEqualStrings(
-        "/Users/me/Library/Application Support/vscode-textbuffer/logs",
+    try expectPath(allocator, &.{ home, ".vscode", "extensions" }, profile.extensions_dir.?);
+    try expectPath(
+        allocator,
+        &.{ home, "Library", "Application Support", "vscode-textbuffer", "logs" },
         profile.logs_dir.?,
     );
 }
 
 test "vscodeProfile: Linux honours XDG_CONFIG_HOME" {
     const allocator = std.testing.allocator;
+    const home = native("/home/me", "C:\\Users\\me");
+    const xdg = native("/home/me/.config-custom", "C:\\Users\\me\\.config-custom");
     var profile = try discover(allocator, .{
         .os = .Linux,
-        .home = "/home/me",
-        .xdg_config_home = "/home/me/.config-custom",
+        .home = home,
+        .xdg_config_home = xdg,
     });
     defer profile.deinit();
 
-    try std.testing.expectEqualStrings(
-        "/home/me/.config-custom/Code/User/settings.json",
+    try expectPath(
+        allocator,
+        &.{ xdg, "Code", "User", "settings.json" },
         profile.settings_paths[0],
     );
-    try std.testing.expectEqualStrings(
-        "/home/me/.config-custom/vscode-textbuffer/User/keybindings.json",
+    try expectPath(
+        allocator,
+        &.{ xdg, "vscode-textbuffer", "User", "keybindings.json" },
         profile.tuiKeybindingsPath().?,
     );
 }
 
 test "vscodeProfile: Windows uses APPDATA and USERPROFILE extensions" {
     const allocator = std.testing.allocator;
+    const appdata = "C:\\Users\\me\\AppData\\Roaming";
     var profile = try discover(allocator, .{
         .os = .Windows,
         .home = "C:\\Users\\me",
-        .appdata = "C:\\Users\\me\\AppData\\Roaming",
+        .appdata = appdata,
     });
     defer profile.deinit();
 
-    const expected = try std.fs.path.join(allocator, &.{ "C:\\Users\\me\\AppData\\Roaming", "Code", "User", "settings.json" });
-    defer allocator.free(expected);
-    try std.testing.expectEqualStrings(expected, profile.settings_paths[0]);
-    const tui_expected = try std.fs.path.join(allocator, &.{ "C:\\Users\\me\\AppData\\Roaming", "vscode-textbuffer", "User", "settings.json" });
-    defer allocator.free(tui_expected);
-    try std.testing.expectEqualStrings(tui_expected, profile.tuiSettingsPath().?);
+    try expectPath(allocator, &.{ appdata, "Code", "User", "settings.json" }, profile.settings_paths[0]);
+    try expectPath(
+        allocator,
+        &.{ appdata, "vscode-textbuffer", "User", "settings.json" },
+        profile.tuiSettingsPath().?,
+    );
 }
 
 test "vscodeProfile: upstream portable and appdata variables win" {
     const allocator = std.testing.allocator;
+    const portable_root = native("/portable", "C:\\portable");
     var portable = try discover(allocator, .{
         .os = .Macintosh,
-        .home = "/Users/me",
-        .env_portable = "/portable",
-        .cli_user_data_dir = "/ignored",
+        .home = native("/Users/me", "C:\\Users\\me"),
+        .env_portable = portable_root,
+        .cli_user_data_dir = native("/ignored", "C:\\ignored"),
     });
     defer portable.deinit();
-    try std.testing.expectEqualStrings("/portable/user-data", portable.user_data_dir.?);
-    try std.testing.expectEqualStrings(
-        "/portable/user-data/User/settings.json",
+    try expectPath(allocator, &.{ portable_root, "user-data" }, portable.user_data_dir.?);
+    try expectPath(
+        allocator,
+        &.{ portable_root, "user-data", "User", "settings.json" },
         portable.tuiSettingsPath().?,
     );
-    try std.testing.expectEqualStrings("/portable/extensions", portable.extensions_dir.?);
+    try expectPath(allocator, &.{ portable_root, "extensions" }, portable.extensions_dir.?);
 
+    const appdata_root = native("/var/appdata", "C:\\var\\appdata");
     var appdata = try discover(allocator, .{
         .os = .Linux,
-        .home = "/home/me",
-        .env_appdata = "/var/appdata",
+        .home = native("/home/me", "C:\\Users\\me"),
+        .env_appdata = appdata_root,
     });
     defer appdata.deinit();
-    try std.testing.expectEqualStrings("/var/appdata/vscode-textbuffer", appdata.user_data_dir.?);
+    try expectPath(allocator, &.{ appdata_root, "vscode-textbuffer" }, appdata.user_data_dir.?);
 }
 
 test "vscodeProfile: --user-data-dir resolves against VSCODE_CWD" {
     const allocator = std.testing.allocator;
+    const cwd = native("/work", "C:\\work");
+    const custom_exts = native("/custom-exts", "C:\\custom-exts");
     var profile = try discover(allocator, .{
         .os = .Linux,
-        .home = "/home/me",
-        .cwd = "/work",
+        .home = native("/home/me", "C:\\Users\\me"),
+        .cwd = cwd,
         .cli_user_data_dir = "profile-data",
-        .cli_extensions_dir = "/custom-exts",
+        .cli_extensions_dir = custom_exts,
         .cli_logs_path = "logs",
     });
     defer profile.deinit();
 
-    try std.testing.expectEqualStrings("/work/profile-data", profile.user_data_dir.?);
-    try std.testing.expectEqualStrings(
-        "/work/profile-data/User/settings.json",
+    try expectPath(allocator, &.{ cwd, "profile-data" }, profile.user_data_dir.?);
+    try expectPath(
+        allocator,
+        &.{ cwd, "profile-data", "User", "settings.json" },
         profile.tuiSettingsPath().?,
     );
-    try std.testing.expectEqualStrings("/custom-exts", profile.extensions_dir.?);
-    try std.testing.expectEqualStrings("/work/logs", profile.logs_dir.?);
+    try std.testing.expectEqualStrings(custom_exts, profile.extensions_dir.?);
+    try expectPath(allocator, &.{ cwd, "logs" }, profile.logs_dir.?);
 }
 
 test "vscodeProfile: no home still yields explicit user-data-dir paths only" {
@@ -356,12 +381,13 @@ test "vscodeProfile: no home still yields explicit user-data-dir paths only" {
     try std.testing.expect(empty.extensions_dir == null);
     try std.testing.expectEqual(@as(usize, 0), empty.settings_paths.len);
 
+    const explicit_dir = native("/data/tui", "C:\\data\\tui");
     var explicit = try discover(allocator, .{
         .os = .Linux,
-        .cli_user_data_dir = "/data/tui",
+        .cli_user_data_dir = explicit_dir,
     });
     defer explicit.deinit();
-    try std.testing.expectEqualStrings("/data/tui", explicit.user_data_dir.?);
+    try std.testing.expectEqualStrings(explicit_dir, explicit.user_data_dir.?);
     try std.testing.expectEqual(@as(usize, 1), explicit.settings_paths.len);
-    try std.testing.expectEqualStrings("/data/tui/User/settings.json", explicit.tuiSettingsPath().?);
+    try expectPath(allocator, &.{ explicit_dir, "User", "settings.json" }, explicit.tuiSettingsPath().?);
 }
