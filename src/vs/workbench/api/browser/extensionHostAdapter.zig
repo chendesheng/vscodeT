@@ -668,6 +668,11 @@ pub const Extensions = struct {
     /// repaint (an edit, selection, or status entry changed).
     pub fn pump(self: *Extensions) bool {
         self.needs_render = false;
+        // A closed tab frees its editor before this pump observes the active
+        // document change. Retire the mirror first: the frames dispatched by
+        // `host.pump` below can carry editor requests, and their handlers must
+        // not dereference the freed editor.
+        self.removeClosedActiveDocument();
         _ = self.host.pump();
         if (self.diagnostics_actor) |actor| actor.flush() catch {};
         self.syncActiveDocument() catch {};
@@ -677,6 +682,15 @@ pub const Extensions = struct {
         const result = self.needs_render;
         self.needs_render = false;
         return result;
+    }
+
+    /// Retires the document mirror when its editor was freed by a tab close.
+    /// Called before dispatching host frames, because handlers for those
+    /// frames dereference the active editor.
+    fn removeClosedActiveDocument(self: *Extensions) void {
+        const active = self.active orelse return;
+        if (self.workbench.ownsEditor(active.editor)) return;
+        self.removeActiveDocument() catch {};
     }
 
     fn syncActiveDocument(self: *Extensions) !void {
@@ -892,7 +906,12 @@ pub const Extensions = struct {
     fn setContentListener(self: *Extensions, editor: ?*Editor) void {
         if (self.content_listener_editor == editor) return;
         if (self.content_listener_editor) |old| {
-            old.removeWorkingCopyContentListener(.{ .context = self, .callback = onEditorContent });
+            detachEditorListenerIfOwned(
+                self.workbench,
+                old,
+                .content,
+                .{ .context = self, .callback = onEditorContent },
+            );
         }
         self.content_listener_editor = null;
         if (editor) |value| {
@@ -910,12 +929,12 @@ pub const Extensions = struct {
     fn setScrollListener(self: *Extensions, editor: ?*Editor) void {
         if (self.scroll_listener_editor == editor) return;
         if (self.scroll_listener_editor) |old| {
-            // A closed tab frees its editor before `pump` notices the active
-            // document change. Only detach the listener while the workbench
-            // still owns the editor; touching a freed editor is a UAF.
-            if (self.workbench.ownsEditor(old)) {
-                old.removeScrollListener(.{ .context = self, .callback = onEditorScroll });
-            }
+            detachEditorListenerIfOwned(
+                self.workbench,
+                old,
+                .scroll,
+                .{ .context = self, .callback = onEditorScroll },
+            );
         }
         self.scroll_listener_editor = null;
         if (editor) |value| {
@@ -973,6 +992,30 @@ pub const Extensions = struct {
         try self.sendSelection(arena_instance.allocator(), self.selection_source);
     }
 };
+
+const EditorListenerKind = enum { scroll, content };
+
+/// Detaches one of the extension bridge's editor listeners, but only while the
+/// workbench still owns the editor.
+///
+/// Closing a tab frees its editor immediately, while the bridge only observes
+/// the active-document change on the next `pump`. The raw pointer kept by
+/// `Extensions` is therefore stale until then, and the workbench's live tab
+/// views are the only safe way to test it: dereferencing the freed editor to
+/// remove the listener is a use-after-free (the `removeChangeListener` crash
+/// in `codeEditorWidgetTerminal.zig`).
+fn detachEditorListenerIfOwned(
+    workbench: *const Workbench,
+    editor: *Editor,
+    kind: EditorListenerKind,
+    listener: ChangeListener,
+) void {
+    if (!workbench.ownsEditor(editor)) return;
+    switch (kind) {
+        .scroll => editor.removeScrollListener(listener),
+        .content => editor.removeWorkingCopyContentListener(listener),
+    }
+}
 
 /// Maps command ids issued by Node extensions to the workbench LSP
 /// actions. Returns true when the command was recognized, even when the
@@ -1480,6 +1523,73 @@ fn integerField(object: std.json.ObjectMap, name: []const u8) ?usize {
     const value = object.get(name) orelse return null;
     if (value != .integer or value.integer < 0) return null;
     return @intCast(value.integer);
+}
+
+fn countListenerCall(context: *anyopaque) void {
+    const calls: *usize = @ptrCast(@alignCast(context));
+    calls.* += 1;
+}
+
+test "Extensions: listener detach ignores editors the workbench no longer owns" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "owned.txt", .data = "alpha" });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPathFile(io, "owned.txt", &path_buffer);
+
+    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 40, 9);
+    defer workbench.deinit();
+
+    var content_calls: usize = 0;
+    var scroll_calls: usize = 0;
+    const content_listener = ChangeListener{ .context = &content_calls, .callback = countListenerCall };
+    const scroll_listener = ChangeListener{ .context = &scroll_calls, .callback = countListenerCall };
+
+    // An editor that the workbench still owns is detached normally.
+    const owned = workbench.activeTab().?.editor;
+    owned.addWorkingCopyContentListener(content_listener);
+    owned.addScrollListener(scroll_listener);
+    detachEditorListenerIfOwned(workbench, owned, .content, content_listener);
+    detachEditorListenerIfOwned(workbench, owned, .scroll, scroll_listener);
+    try owned.typeCharacter("x");
+    owned.emitCurrentViewState();
+    try std.testing.expectEqual(@as(usize, 0), content_calls);
+    try std.testing.expectEqual(@as(usize, 0), scroll_calls);
+    // A clean editor closes without the dirty confirmation.
+    try owned.save();
+
+    // A live editor outside the tab views stands in for one freed by a tab
+    // close. Detaching must skip it: the real pointer is already freed by the
+    // close, and dereferencing it to remove the listener is the crash this
+    // guard prevents (`removeChangeListener` in codeEditorWidgetTerminal.zig).
+    var stale = try Editor.createFromText(allocator, io, "beta", "stale.txt", 40, 9);
+    defer {
+        stale.deinit();
+        allocator.destroy(stale);
+    }
+    stale.addWorkingCopyContentListener(content_listener);
+    stale.addScrollListener(scroll_listener);
+    detachEditorListenerIfOwned(workbench, stale, .content, content_listener);
+    detachEditorListenerIfOwned(workbench, stale, .scroll, scroll_listener);
+    try stale.typeCharacter("y");
+    stale.emitCurrentViewState();
+    try std.testing.expect(content_calls > 0);
+    try std.testing.expect(scroll_calls > 0);
+
+    // The exact crash sequence: Ctrl-W frees the active editor, and the next
+    // pump's `removeActiveDocument` detaches its listeners. The freed pointer
+    // must only be compared against the live tab views; dereferencing it here
+    // crashed in `removeChangeListener`.
+    try workbench.activeTab().?.ensureControllers();
+    const closed = workbench.activeTab().?.editor;
+    const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
+    const TabKeyResult = @import("../../browser/workbench.zig").TabKeyResult;
+    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expect(!workbench.ownsEditor(closed));
+    detachEditorListenerIfOwned(workbench, closed, .content, content_listener);
+    detachEditorListenerIfOwned(workbench, closed, .scroll, scroll_listener);
 }
 
 test "Extensions: insert-mode Backspace and Delete run the core editor commands" {
