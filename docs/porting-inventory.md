@@ -1211,8 +1211,9 @@ omission; clean editors
 now reload on external changes
 (`Workbench.handleFileChanges` → `Editor.reloadFromDisk`), with dirty editors
 preserved and marked as conflicted (status message, cleared by save/reload or the `workbench.action.files.revert` command); the workbench now
-starts a `UniversalWatcher` for absolute workspace folders and forwards its
-changes into that handler. The working-copy model includes the registry/editor service, save participants
+runs the ported `WorkspaceWatcher` contribution in the `AfterRestored` phase
+through the async `UniversalWatcherClient` for absolute workspace folders and
+forwards its changes into that handler. The working-copy model includes the registry/editor service, save participants
 and in-memory history/backups; disk persistence and the browser conflict
 notification UI are documented terminal omissions.
 

@@ -31,6 +31,14 @@ zig build bench-open   # Debug open/edit benchmarks (skipped by zig build test)
 The TUI targets a reasonable default **Debug** build; no ReleaseFast step is
 required for the measurements below.
 
+- Workspace watching starts in the `AfterRestored` phase, after the first
+  frame, and `fileService.watch` is asynchronous: the recursive kqueue/inotify
+  scan runs on a watcher worker thread. Opening a folder therefore no longer
+  walks the whole workspace on the UI thread before first paint. The remaining
+  pre-paint costs are theme discovery, workbench setup, and the native git
+  initialization; those are separate upstream service ports. `main.log`
+  records `startup:` stage timings (`workbench-init`, `themes`,
+  `workspace-git`, `first-frame`, `after-restored`) for diagnosing them.
 - Opening a file performs one view rebuild and one full wrapping pass. The
   workbench reserves the overview-ruler/scrollbar columns before that pass, and
   a path that is already open reuses its existing tab/editor instead of
@@ -199,12 +207,23 @@ written to a discarded alternate screen.
 
 ## File watcher
 
-The workspace watcher is the ported parcel watcher. macOS uses its kqueue
-backend, which needs one descriptor per watched file and directory, so the
-backend stops adding watches at 75% of `RLIMIT_NOFILE` instead of starving
-later `spawn` calls (the extension host) of descriptors. `files.watcherExclude`
-is not wired yet: a workspace with large build caches is only partially
-watched.
+The workspace watcher is the ported parcel watcher, started through the
+upstream-shaped async client in `src/vs/platform/files/node/watcher/watcherClient.zig`.
+`WorkspaceWatcher` is registered in the `AfterRestored` workbench phase, after
+the first frame; `fileService.watch` only queues the request, and the recursive
+scan runs on a watcher worker thread instead of the UI thread. This mirrors
+VS Code's watcher utility process without an Electron process: the worker
+thread is the terminal transport, and the watcher implementation itself is
+unchanged. Stopping the watcher cancels an in-progress recursive scan
+cooperatively, so quitting does not wait for a large tree walk.
+
+`files.watcherExclude` (upstream defaults plus the user setting) and
+`files.watcherInclude` are wired. macOS uses the kqueue backend, which needs
+one descriptor per watched directory and stops adding watches at 75% of
+`RLIMIT_NOFILE`. Large build caches should be added to `files.watcherExclude`;
+that setting reduces the worker's scan and descriptor count without blocking
+the UI. The FSEvents backend that VS Code's `@parcel/watcher` uses on macOS is
+still not ported.
 
 ## Extension host (experimental)
 
@@ -599,11 +618,17 @@ console API for raw mode, sizing and input polling.
   uses kqueue (the upstream parcel kqueue backend; FSEvents/CoreServices is not
   ported), and Windows uses overlapped `ReadDirectoryChangesW`. Brute-force
   snapshot polling backs the polling mode. The `@parcel/watcher` N-API binding,
-  JS wrapper, prebuilds and Electron IPC watcher clients are not ported; the
-  terminal embeds one in-process `UniversalWatcher`. The only wired consumer is
-  automatic settings reload; Explorer and Search still do not refresh on
-  external changes. `src/vs/workbench/services/configuration/browser/configurationService.zig` owns the settings requests
-  and `src/tui/app.zig` polls the watcher's fd alongside stdin.
+  JS wrapper, prebuilds and Electron IPC watcher clients are not ported. The
+  terminal uses `UniversalWatcherClient`, a worker-thread adaptation of
+  upstream's watcher process; `WorkspaceWatcher` (port of
+  `src/vs/workbench/contrib/files/browser/workspaceWatcher.ts`) owns the
+  `files.watcherExclude`/`files.watcherInclude` requests and is instantiated in
+  the `AfterRestored` phase. The workspace watcher reloads clean open editors
+  and marks SCM dirty; Explorer and Search still do not refresh on external
+  changes. The settings watcher remains an in-process non-recursive
+  `UniversalWatcher` owned by
+  `src/vs/workbench/services/configuration/browser/configurationService.zig`,
+  and `src/tui/app.zig` polls its fd alongside stdin.
   `zig build test-watcher -Dwatcher-only=true` runs the watcher-only suite;
   `zig build check-watcher -Dwatcher-only=true -Dtarget=x86_64-windows` and
   `zig build check-watcher -Dwatcher-only=true -Dtarget=aarch64-macos` type-check the other
