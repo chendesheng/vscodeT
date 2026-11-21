@@ -171,8 +171,11 @@ For each row:
   gutter row tints, with a View test.
 - `7e064be` gutter: map remaining line-decoration classes. `insert-sign`,
   `delete-sign`, `comment-range-glyph` and `first-line` paint the marker cell
-  after quick-diff, with a regression test. Glyph tooltips, focus-only tracking
-  and automatic marker-width reservation remain pending.
+  after quick-diff, with a regression test.
+- `96bfa0a` gutter: reserve the marker cell automatically. `prepareFrame`
+  reserves/releases the marker cell for mapped `linesDecorationsClassName`
+  decorations; quick-diff configuration still owns its width. Extended the
+  marker-cell test. Glyph tooltips and focus-only tracking remain pending.
 
 ## Next slice
 
