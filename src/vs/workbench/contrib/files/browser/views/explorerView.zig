@@ -63,6 +63,18 @@ const scrollbar_thumb_style = PaintStyle{
     .bg = ui.cell.packColor(.{ .r = 105, .g = 108, .b = 122 }),
 };
 
+/// Background shared by the Explorer container and its rows. Upstream rows have
+/// a transparent background and inherit the list background through CSS; the
+/// terminal paints rows directly, so they must carry it explicitly. A row paint
+/// that leaves `bg` unset resets those cells to the terminal default and reads
+/// as a different rectangle behind the labels.
+fn sidebarBackground(palette: ?*const theme_colors_mod.ThemeColors) PaintStyle {
+    return if (palette) |theme|
+        .{ .bg = ui.cell.packColor(theme.color("sideBar.background", .{ 30, 30, 33 })) }
+    else
+        .{};
+}
+
 pub const Action = union(enum) {
     none,
     handled,
@@ -413,10 +425,7 @@ pub const Sidebar = struct {
         const height = ui.cell.snap(rect.h);
         if (width == 0 or height == 0) return;
 
-        const background = if (self.theme) |palette|
-            ui.cell.PaintStyle{ .bg = ui.cell.packColor(palette.color("sideBar.background", .{ 30, 30, 33 })) }
-        else
-            ui.cell.PaintStyle{};
+        const background = sidebarBackground(self.theme);
         grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), background);
 
         // Upstream the Explorer view pane container has no section header: the
@@ -554,6 +563,9 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
     else
         text_style;
     if (sidebar.theme) |palette| {
+        // Unselected rows must repeat the side bar background on every painted
+        // cell; the row is otherwise transparent over the container fill.
+        const row_background = sidebarBackground(sidebar.theme).bg;
         paint = if (selected) .{
             .fg = ui.cell.packColor(palette.color(
                 if (row.focused) "list.activeSelectionForeground" else "list.inactiveSelectionForeground",
@@ -565,8 +577,10 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
             )),
         } else if (item.is_directory) .{
             .fg = ui.cell.packColor(palette.color("symbolIcon.folderForeground", .{ 170, 190, 210 })),
+            .bg = row_background,
         } else .{
             .fg = ui.cell.packColor(palette.color("sideBar.foreground", .{ 190, 190, 190 })),
+            .bg = row_background,
         };
     }
 
@@ -592,8 +606,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
                 palette.color("tree.indentGuidesStroke", .{ 80, 80, 80 })
             else
                 ui.Color{ .r = 80, .g = 80, .b = 80 };
-            var guide_paint = PaintStyle{ .fg = ui.cell.packColor(guide_color) };
-            if (selected) guide_paint.bg = paint.bg;
+            const guide_paint = PaintStyle{ .fg = ui.cell.packColor(guide_color), .bg = paint.bg };
             row.grid.putCodepoint(col, row.y, '│', 1, guide_paint);
         } else {
             row.grid.putSpace(col, row.y, paint);
@@ -772,6 +785,61 @@ test "explorer tree sidebar: nerd font icons and hover indent guides" {
     const hovered_child = try expanded_grid.rowText(allocator, 1);
     defer allocator.free(hovered_child);
     try std.testing.expect(std.mem.indexOf(u8, hovered_child, "│") != null);
+}
+
+test "explorer tree sidebar: row text keeps the theme side bar background" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const color_theme = @import("../../../../services/themes/common/colorThemeData.zig");
+    const color_utils = @import("../../../../../platform/theme/common/colorUtils.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "alpha");
+    var file = try tmp.dir.createFile(io, "z.txt", .{});
+    try file.writeStreamingAll(io, "z");
+    file.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test", &.{
+        .{ "sideBar.background", "#123456" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+    sidebar.setThemeColors(&palette);
+
+    var grid = try ui.CellGrid.init(allocator, 24, 6);
+    defer grid.deinit();
+    var home = ui.KeyEvent{ .key = .home };
+    _ = try sidebar.handleKey(&home);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true, .{ .show_header = false });
+
+    const file_row = try grid.rowText(allocator, 1);
+    defer allocator.free(file_row);
+    try std.testing.expect(std.mem.indexOf(u8, file_row, "z.txt") != null);
+
+    // Every cell of the unselected file row keeps the side bar background.
+    // Painting the label with an unset background resets those cells to the
+    // terminal default and shows a differently colored rectangle behind it.
+    const side_bar_bg = ui.cell.packColor(palette.color("sideBar.background", .{ 0, 0, 0 }));
+    for (0..24) |col| {
+        try std.testing.expectEqual(side_bar_bg, grid.bg[grid.index(col, 1)]);
+    }
+
+    // The selected first row keeps the active selection background.
+    const selection_bg = ui.cell.packColor(palette.color("list.activeSelectionBackground", .{ 55, 65, 80 }));
+    try std.testing.expectEqual(selection_bg, grid.bg[grid.index(0, 0)]);
 }
 
 test "explorer tree sidebar: wheel scrolls the tree viewport" {
