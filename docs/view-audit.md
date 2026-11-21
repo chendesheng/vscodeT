@@ -110,6 +110,10 @@ For each row:
 - `210ce82` find: expose the upstream bar controls. Added the visible replace
   toggle, previous, next, close, preserve-case, replace-one and replace-all
   controls; added click tests; updated the README and ledger.
+- `5a796b8` gutter: theme the line numbers and quick-diff markers. Added a
+  terminal gutter `Theme`, active-line detection, themed quick-diff markers and
+  a margin theme test. Gutter geometry, glyph margin, margin decorations and
+  fold-option handling remain pending.
 
 ## Next slice
 
