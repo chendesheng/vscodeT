@@ -62,6 +62,14 @@ pub const MirrorTextModel = struct {
         return self._versionId;
     }
 
+    pub fn getLineCount(self: *const MirrorTextModel) usize {
+        return self._lines.items.len;
+    }
+
+    pub fn getLineContent(self: *const MirrorTextModel, lineNumber: usize) []const u8 {
+        return self._lines.items[lineNumber - 1];
+    }
+
     pub fn getText(self: *MirrorTextModel) ![]const u8 {
         if (self._cachedTextValue == null) {
             var result = ArrayList(u8).init(self.allocator);

@@ -168,6 +168,11 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 self._backgroundTokenizer = tokenizationSupport.?.createBackgroundTokenizer(self.textModel(), store);
             }
             if (self._backgroundTokenizer == null and !self.textModel().isTooLargeForTokenization()) {
+                if (TokenizationRegistry.instance.getBackgroundTokenizerFactory()) |factory| {
+                    self._backgroundTokenizer = factory.create(factory.context, self.textModel(), store);
+                }
+            }
+            if (self._backgroundTokenizer == null and !self.textModel().isTooLargeForTokenization()) {
                 self._defaultBackgroundTokenizer = DefaultBackgroundTokenizer.init(tokenizer, store);
                 self._defaultBackgroundTokenizer.?.handleChanges();
             }
@@ -257,14 +262,33 @@ pub const TokenizerSyntaxTokenBackend = struct {
         if (self._defaultBackgroundTokenizer) |*tokenizer| tokenizer.handleChanges();
     }
 
-    /// Drives the ported `DefaultBackgroundTokenizer` from the terminal main
-    /// loop. Upstream schedules it through `runWhenGlobalIdle`/`setTimeout0`.
+    /// Drives the ported `DefaultBackgroundTokenizer` and any async background
+    /// tokenizer from the terminal main loop. Upstream schedules the default
+    /// tokenizer through `runWhenGlobalIdle`/`setTimeout0` and delivers worker
+    /// results through the browser message queue.
     pub fn pollBackgroundTokenization(self: *TokenizerSyntaxTokenBackend) bool {
-        if (self._defaultBackgroundTokenizer) |*tokenizer| return tokenizer.poll();
+        var changed = false;
+        if (self._backgroundTokenizer) |tokenizer| {
+            if (tokenizer.poll()) changed = true;
+        }
+        if (self._defaultBackgroundTokenizer) |*tokenizer| {
+            if (tokenizer.poll()) changed = true;
+        }
+        return changed;
+    }
+
+    /// Drains completed async worker deltas without advancing the fallback
+    /// tokenizer. The TUI calls this on every loop tick (including while input
+    /// is pending) so the worker result channel cannot fill up during typing.
+    pub fn drainBackgroundTokenization(self: *TokenizerSyntaxTokenBackend) bool {
+        if (self._backgroundTokenizer) |tokenizer| return tokenizer.poll();
         return false;
     }
 
     pub fn backgroundTokenizationPending(self: *TokenizerSyntaxTokenBackend) bool {
+        if (self._backgroundTokenizer) |tokenizer| {
+            if (tokenizer.isPending()) return true;
+        }
         if (self._defaultBackgroundTokenizer) |*tokenizer| return tokenizer.isPending();
         return false;
     }
@@ -272,7 +296,9 @@ pub const TokenizerSyntaxTokenBackend = struct {
     pub fn handleDidChangeContent(self: *TokenizerSyntaxTokenBackend, e: ModelContentChangedEvent) void {
         if (e.isFlush) {
             self.todo_resetTokenization(false);
-        } else if (!e.isEolChange) {
+            return;
+        }
+        if (!e.isEolChange) {
             for (e.changes.items) |c| {
                 const res = countEOL(c.text.items());
                 self._tokens.acceptEdit(c.range, res.eolCount, res.firstLineLength) catch {};
@@ -282,6 +308,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
             if (self._tokenizer) |tokenizer| tokenizer.getStore().acceptChanges(e.changes.items) catch {};
             if (self._defaultBackgroundTokenizer) |*tokenizer| tokenizer.handleChanges();
         }
+        if (self._backgroundTokenizer) |tokenizer| tokenizer.onDidChangeContent(&e);
     }
 
     fn setTokensAndFire(self: *TokenizerSyntaxTokenBackend, tokens: []ContiguousMultilineTokens) void {

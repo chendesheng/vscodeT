@@ -13,6 +13,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
+const time_compat = @import("../../../../base/common/timeCompat.zig");
 const color_module = @import("../../../../base/common/color.zig");
 const Color = color_module.Color;
 
@@ -327,13 +328,41 @@ pub const TokenTheme = struct {
 /// The process-wide token theme used by the editor's tokenizer. The theme
 /// service owns the theme and replaces this pointer on theme changes.
 var active_token_theme: ?*TokenTheme = null;
+/// The async background tokenizer runs on a worker thread and shares this
+/// theme. Tokens are only read while holding the shared lock; the theme
+/// service swaps and frees themes while holding the exclusive lock.
+var active_token_theme_lock: std.Io.RwLock = .init;
 
 pub fn setActiveTokenTheme(theme: ?*TokenTheme) void {
+    active_token_theme_lock.lockUncancelable(time_compat.io);
     active_token_theme = theme;
+    active_token_theme_lock.unlock(time_compat.io);
 }
 
+/// Legacy unlocked lookup, kept for synchronous callers that own the theme
+/// for the duration of the call. Tokenization must use the lock pair below.
 pub fn getActiveTokenTheme() ?*TokenTheme {
     return active_token_theme;
+}
+
+/// Acquires the shared theme lock and returns the active theme (or null).
+/// The caller must call `unlockActiveTokenTheme`.
+pub fn lockActiveTokenTheme() ?*TokenTheme {
+    active_token_theme_lock.lockSharedUncancelable(time_compat.io);
+    return active_token_theme;
+}
+
+pub fn unlockActiveTokenTheme() void {
+    active_token_theme_lock.unlockShared(time_compat.io);
+}
+
+/// Clears the active pointer (when it still names `theme`) and frees the
+/// theme while no tokenizer can be reading it.
+pub fn deinitActiveTokenTheme(theme: *TokenTheme) void {
+    active_token_theme_lock.lockUncancelable(time_compat.io);
+    if (active_token_theme == theme) active_token_theme = null;
+    theme.deinit();
+    active_token_theme_lock.unlock(time_compat.io);
 }
 
 pub fn toStandardTokenType(token_type: []const u8) StandardTokenType {

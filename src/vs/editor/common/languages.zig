@@ -8,6 +8,7 @@ const TextModel = @import("./model/textModel.zig").TextModel;
 const TokenPacked = @import("./tokens/lineTokens.zig").TokenPacked;
 const LanguageId = @import("./encodedTokenAttributes.zig").LanguageId;
 const Range = @import("./core/range.zig").Range;
+const ModelContentChangedEvent = @import("./textModelEvents.zig").ModelContentChangedEvent;
 const CancellationToken = @import("../../base/common/cancellation.zig").CancellationToken;
 
 pub const NULL_LANGUAGE_ID = "nullLanguage";
@@ -254,6 +255,12 @@ pub const IBackgroundTokenizer = struct {
         requestTokens: *const fn (context: *anyopaque, startLineNumber: usize, endLineNumberExclusive: usize) void,
         reportMismatchingTokens: ?*const fn (context: *anyopaque, lineNumber: usize) void = null,
         dispose: ?*const fn (context: *anyopaque) void = null,
+        // Terminal adaptations of upstream's web-worker callbacks. The editor
+        // main loop drives `poll` and drains the worker responses; upstream
+        // delivers them through the browser message queue instead.
+        poll: ?*const fn (context: *anyopaque) bool = null,
+        isPending: ?*const fn (context: *anyopaque) bool = null,
+        onDidChangeContent: ?*const fn (context: *anyopaque, e: *const ModelContentChangedEvent) void = null,
     };
 
     pub fn requestTokens(self: IBackgroundTokenizer, startLineNumber: usize, endLineNumberExclusive: usize) void {
@@ -267,6 +274,30 @@ pub const IBackgroundTokenizer = struct {
     pub fn dispose(self: IBackgroundTokenizer) void {
         if (self.vtable.dispose) |disposeFn| disposeFn(self.context);
     }
+
+    pub fn poll(self: IBackgroundTokenizer) bool {
+        const pollFn = self.vtable.poll orelse return false;
+        return pollFn(self.context);
+    }
+
+    pub fn isPending(self: IBackgroundTokenizer) bool {
+        const pendingFn = self.vtable.isPending orelse return false;
+        return pendingFn(self.context);
+    }
+
+    pub fn onDidChangeContent(self: IBackgroundTokenizer, e: *const ModelContentChangedEvent) void {
+        if (self.vtable.onDidChangeContent) |notify| notify(self.context, e);
+    }
+};
+
+/// Creates a background tokenizer for a model. Upstream installs this factory
+/// in the workbench TextMate feature; the terminal registry owns the process
+/// worker instead, so the editor backend can ask for it without importing the
+/// workbench.
+// @internal
+pub const IBackgroundTokenizerFactory = struct {
+    context: *anyopaque,
+    create: *const fn (context: *anyopaque, textModel: *TextModel, store: IBackgroundTokenizationStore) ?IBackgroundTokenizer,
 };
 
 // @internal

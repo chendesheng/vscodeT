@@ -148,9 +148,9 @@ pub const SyntaxTheme = struct {
     }
 
     pub fn deinit(self: *SyntaxTheme) void {
-        tokenization.setActiveTokenTheme(null);
+        tokenization.deinitActiveTokenTheme(&self.theme);
         TokenizationRegistry.instance.clearColorMap();
-        self.theme.deinit();
+        self.theme = undefined;
     }
 };
 

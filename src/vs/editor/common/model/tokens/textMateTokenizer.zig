@@ -19,6 +19,7 @@ const StandardTokenType = @import("../../encodedTokenAttributes.zig").StandardTo
 const tokenization = @import("../../languages/supports/tokenization.zig");
 const toStandardTokenType = tokenization.toStandardTokenType;
 const vscode_syntax = @import("vscode-syntax");
+const time_compat = @import("../../../../base/common/timeCompat.zig");
 
 var initialized = false;
 var onig_lib: tm_main.OnigLib = undefined;
@@ -32,6 +33,14 @@ const DynamicGrammar = struct {
     data: []const u8,
 };
 var dynamic_grammars: ?std.array_list.Managed(DynamicGrammar) = null;
+/// The async TextMate worker loads grammars on its own thread while the
+/// renderer may still register declarative grammars. Old grammar data is kept
+/// alive on replacement so a lookup racing with registration never observes
+/// freed bytes.
+var dynamic_grammars_mutex: std.Io.Mutex = .init;
+/// Serializes raw-grammar parsing and the lazy markdown fence setup, which
+/// share the process-wide `fence_grammar` table.
+var grammar_load_mutex: std.Io.Mutex = .init;
 
 fn ensureInitialized() !void {
     if (initialized) return;
@@ -47,12 +56,14 @@ fn ensureInitialized() !void {
 /// Registers a grammar contributed by a declarative extension. The language
 /// and scope mappings take precedence over the bundled grammar table.
 pub fn registerGrammar(language: []const u8, scope: []const u8, data: []const u8) void {
+    dynamic_grammars_mutex.lockUncancelable(time_compat.io);
+    defer dynamic_grammars_mutex.unlock(time_compat.io);
     if (dynamic_grammars == null) dynamic_grammars = std.array_list.Managed(DynamicGrammar).init(std.heap.page_allocator);
     const list = &dynamic_grammars.?;
     for (list.items) |*entry| {
         if (!std.mem.eql(u8, entry.language, language)) continue;
-        std.heap.page_allocator.free(entry.scope);
-        std.heap.page_allocator.free(entry.data);
+        // Keep the old allocations alive: a worker thread may still be
+        // parsing them. Grammar re-registration is rare and process-lifetime.
         entry.scope = std.heap.page_allocator.dupe(u8, scope) catch return;
         entry.data = std.heap.page_allocator.dupe(u8, data) catch return;
         return;
@@ -64,6 +75,8 @@ pub fn registerGrammar(language: []const u8, scope: []const u8, data: []const u8
 }
 
 fn dynamicGrammarForLanguage(language: []const u8) ?DynamicGrammar {
+    dynamic_grammars_mutex.lockUncancelable(time_compat.io);
+    defer dynamic_grammars_mutex.unlock(time_compat.io);
     if (dynamic_grammars) |list| {
         for (list.items) |entry| {
             if (std.mem.eql(u8, entry.language, language)) return entry;
@@ -73,6 +86,8 @@ fn dynamicGrammarForLanguage(language: []const u8) ?DynamicGrammar {
 }
 
 fn dynamicGrammarForScope(scope: []const u8) ?DynamicGrammar {
+    dynamic_grammars_mutex.lockUncancelable(time_compat.io);
+    defer dynamic_grammars_mutex.unlock(time_compat.io);
     if (dynamic_grammars) |list| {
         for (list.items) |entry| {
             if (std.mem.eql(u8, entry.scope, scope)) return entry;
@@ -82,6 +97,8 @@ fn dynamicGrammarForScope(scope: []const u8) ?DynamicGrammar {
 }
 
 fn loadGrammar(_: *anyopaque, scope: []const u8) anyerror!?*tm_raw.RawGrammar {
+    grammar_load_mutex.lockUncancelable(time_compat.io);
+    defer grammar_load_mutex.unlock(time_compat.io);
     const dynamic_data = if (dynamicGrammarForScope(scope)) |entry| entry.data else null;
     const data = dynamic_data orelse (vscode_syntax.dataForScope(scope) orelse return null);
     const raw = try std.heap.page_allocator.create(tm_raw.RawGrammar);
@@ -185,18 +202,23 @@ const TextMateSupport = struct {
     fn tokenizeEncoded(ctx: *anyopaque, allocator: Allocator, line: []const u8, hasEOL: bool, state: IState) anyerror!EncodedTokenizationResult {
         _ = hasEOL;
         const self: *TextMateSupport = @ptrCast(@alignCast(ctx));
-        const input: *TextMateState = @ptrCast(@alignCast(state.context));
-        const previous = if (input.first_line) null else input.stack;
+        const input: ?*TextMateState = if (state.vtable == &TextMateState.vtable)
+            @ptrCast(@alignCast(state.context))
+        else
+            null;
+        const previous = if (input) |textmate_state| (if (textmate_state.first_line) null else textmate_state.stack) else null;
         const result = try self.grammar.tokenizeLine(line, previous, 0);
 
         const next = try allocator.create(TextMateState);
         next.* = .{ .stack = result.rule_stack, .first_line = false };
+        const active_theme = tokenization.lockActiveTokenTheme();
+        defer tokenization.unlockActiveTokenTheme();
         return .{
             .tokens = try tokensFromScopes(
                 allocator,
                 line,
                 result.tokens,
-                tokenization.getActiveTokenTheme(),
+                active_theme,
             ),
             .endState = .{ .context = next, .vtable = &TextMateState.vtable },
         };
@@ -225,14 +247,68 @@ pub fn create(allocator: Allocator, languageId: []const u8) !?ITokenizationSuppo
     const scope = grammarScope(languageId) orelse return null;
     try ensureInitialized();
     const grammar = (try registry.?.loadGrammarWithEmbeddedLanguages(scope, 0, &.{})) orelse return null;
+    return try createFromGrammar(allocator, languageId, grammar);
+}
 
+/// Builds a tokenization support around a grammar owned by the caller. The
+/// async worker thread uses this with its own `WorkerRegistry`, matching
+/// upstream's per-web-worker grammar registry.
+pub fn createFromGrammar(allocator: Allocator, languageId: []const u8, grammar: *tm_main.IGrammar) !ITokenizationSupport {
     const context = try allocator.create(TextMateSupport);
+    errdefer allocator.destroy(context);
     context.* = .{
         .allocator = allocator,
         .grammar = grammar,
         .language_id = try allocator.dupe(u8, languageId),
     };
     return .{ .context = context, .vtable = &TextMateSupport.vtable };
+}
+
+/// Grammar registry used by the background tokenizer thread. It mirrors the
+/// workbench's per-worker `TMGrammarFactory`: a separate Oniguruma/grammar
+/// registry so renderer tokenization and worker tokenization never share
+/// mutable grammar state.
+pub const WorkerRegistry = struct {
+    allocator: Allocator,
+    onig_lib: *tm_main.OnigLib,
+    registry: *tm_main.Registry,
+
+    pub fn init(allocator: Allocator) !WorkerRegistry {
+        const onig = try allocator.create(tm_main.OnigLib);
+        errdefer allocator.destroy(onig);
+        onig.* = tm_main.OnigLib.init(allocator);
+        const worker_registry = try tm_main.Registry.init(allocator, .{
+            .onig_lib = onig.interface(),
+            .context = &loader_context,
+            .load_grammar = loadGrammar,
+        });
+        return .{ .allocator = allocator, .onig_lib = onig, .registry = worker_registry };
+    }
+
+    pub fn deinit(self: *WorkerRegistry) void {
+        self.registry.dispose();
+        self.allocator.destroy(self.onig_lib);
+    }
+
+    pub fn loadGrammarForLanguage(self: *WorkerRegistry, languageId: []const u8, encodedLanguageId: u32) !?*tm_main.IGrammar {
+        const scope = grammarScope(languageId) orelse return null;
+        return self.registry.loadGrammarWithEmbeddedLanguages(scope, encodedLanguageId, &.{});
+    }
+};
+
+/// Returns the vscode-textmate state stack wrapped by `state`.
+pub fn stackOfState(state: IState) ?*tm_main.StateStack {
+    if (state.vtable != &TextMateState.vtable) return null;
+    const textmate_state: *TextMateState = @ptrCast(@alignCast(state.context));
+    return textmate_state.stack;
+}
+
+/// Wraps a vscode-textmate state stack as an `IState` allocated with
+/// `allocator`, for applying worker state deltas on the renderer thread.
+pub fn stateFromStack(allocator: Allocator, stack: ?*tm_main.StateStack, first_line: bool) !IState {
+    const state = try allocator.create(TextMateState);
+    state.* = .{ .stack = stack, .first_line = first_line };
+    return .{ .context = state, .vtable = &TextMateState.vtable };
 }
 
 test "textmate tokenizer: VS Code grammars and fallbacks are available" {
@@ -272,6 +348,13 @@ test "textmate tokenizer: markdown fallback grammar tokenizes headings" {
         }
     }
     try std.testing.expect(saw_heading);
+}
+
+/// Whether a TextMate grammar scope is known for this language. The async
+/// background tokenizer only takes over models with a grammar; all other
+/// languages keep the synchronous default background tokenizer.
+pub fn hasGrammar(languageId: []const u8) bool {
+    return grammarScope(languageId) != null;
 }
 
 pub fn ensureTokenizer(languageId: []const u8) void {

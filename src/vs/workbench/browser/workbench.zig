@@ -109,6 +109,8 @@ const theme_configuration_mod = @import("../services/themes/common/themeConfigur
 const host_color_scheme_mod = @import("../services/themes/common/hostColorSchemeService.zig");
 const color_utils = @import("../../platform/theme/common/colorUtils.zig");
 const syntax_theme_mod = @import("../../editor/standalone/browser/standaloneThemeService.zig");
+const textmate_background_mod = @import("../services/textMate/browser/backgroundTokenization/threadedBackgroundTokenizerFactory.zig");
+const TokenizationRegistry = @import("../../editor/common/tokenizationRegistry.zig").TokenizationRegistry;
 const theme_colors_mod = @import("./themeColors.zig");
 const SettingsWatcher = configuration_mod.SettingsWatcher;
 const lifecycle_mod = @import("../../base/common/lifecycle.zig");
@@ -559,6 +561,9 @@ pub const Workbench = struct {
     theme_service: ?*theme_service_mod.ThemeService,
     syntax_theme: syntax_theme_mod.SyntaxTheme,
     syntax_theme_ready: bool,
+    /// Process-wide async TextMate tokenizer. Created lazily by
+    /// `enableAsyncTokenization`, so tests keep the synchronous fallback.
+    textmate_background: ?*textmate_background_mod.Factory = null,
     theme_scheme_host: TerminalColorSchemeHost,
     theme_palette: ?*theme_colors_mod.ThemeColors,
     quick_access: *QuickAccessService,
@@ -660,6 +665,7 @@ pub const Workbench = struct {
         self.theme_service = null;
         self.syntax_theme = .{};
         self.syntax_theme_ready = false;
+        self.textmate_background = null;
         self.theme_scheme_host = .{};
         self.theme_palette = null;
         self.rows = @max(rows, 1);
@@ -804,6 +810,7 @@ pub const Workbench = struct {
         self.theme_service = null;
         self.syntax_theme = .{};
         self.syntax_theme_ready = false;
+        self.textmate_background = null;
         self.theme_scheme_host = .{};
         self.theme_palette = null;
         self.rows = @max(rows, 1);
@@ -981,6 +988,7 @@ pub const Workbench = struct {
         self.theme_service = null;
         self.syntax_theme = .{};
         self.syntax_theme_ready = false;
+        self.textmate_background = null;
         self.theme_scheme_host = .{};
         self.theme_palette = null;
         self.rows = @max(rows, 1);
@@ -1607,8 +1615,29 @@ pub const Workbench = struct {
         if (self.search_view) |view| view.focusReplace();
     }
 
+    /// Enables the threaded TextMate background tokenizer. The TUI calls
+    /// this after construction; tests leave it off so they keep the
+    /// synchronous default background tokenizer.
+    pub fn enableAsyncTokenization(self: *Workbench) void {
+        if (self.textmate_background != null) return;
+        const factory = textmate_background_mod.Factory.init(self.allocator) catch return;
+        self.textmate_background = factory;
+        TokenizationRegistry.instance.setBackgroundTokenizerFactory(factory.interface());
+
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                tab.editor.model.tokenization().resetTokenization();
+                if (tab.diff) |diff| diff.widget.original_editor.model.tokenization().resetTokenization();
+            }
+        }
+    }
+
     pub fn deinit(self: *Workbench) void {
         self.cancelAsyncJobs();
+        if (self.textmate_background) |factory| {
+            TokenizationRegistry.instance.setBackgroundTokenizerFactory(null);
+            factory.shutdown();
+        }
         if (self.dialog) |dialog| {
             dialog.deinit();
             self.dialog = null;
@@ -1692,6 +1721,10 @@ pub const Workbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
+        if (self.textmate_background) |factory| {
+            factory.deinit();
+            self.textmate_background = null;
+        }
         self.images.deinit();
         if (self.word_completion_registration) |registration| registration.dispose();
         if (self.word_completion_provider) |provider| self.allocator.destroy(provider);
@@ -3154,6 +3187,22 @@ pub const Workbench = struct {
         return tab.editor.pollJsonLanguage();
     }
 
+    /// Applies completed worker deltas for every open editor. Called on every
+    /// TUI loop tick so the worker result channel is drained even while input
+    /// is buffered.
+    pub fn drainBackgroundTokenization(self: *Workbench) bool {
+        var changed = false;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.editor.drainBackgroundTokenization()) changed = true;
+                if (tab.diff) |diff| {
+                    if (diff.widget.original_editor.drainBackgroundTokenization()) changed = true;
+                }
+            }
+        }
+        return changed;
+    }
+
     /// Advances the ported background tokenizer for every open editor, like
     /// upstream's per-model background tokenization. Returns true when the
     /// active editor's tokens changed and the view should repaint.
@@ -3164,6 +3213,9 @@ pub const Workbench = struct {
             for (pane.tabs.items) |tab| {
                 const changed = tab.editor.pollBackgroundTokenization();
                 if (changed and active == tab) active_changed = true;
+                if (tab.diff) |diff| {
+                    _ = diff.widget.original_editor.pollBackgroundTokenization();
+                }
             }
         }
         return active_changed;
@@ -3173,6 +3225,9 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 if (tab.editor.backgroundTokenizationPending()) return true;
+                if (tab.diff) |diff| {
+                    if (diff.widget.original_editor.backgroundTokenizationPending()) return true;
+                }
             }
         }
         return false;
@@ -9362,6 +9417,21 @@ fn frameText(allocator: Allocator, frame: *const ui.Frame) ![]u8 {
         try text.append('\n');
     }
     return text.toOwnedSlice();
+}
+
+test "Workbench: threaded tokenizer shuts down after tabs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "tokenized.zig", "const value = 1; // comment\n");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 10);
+    defer workbench.deinit();
+    workbench.enableAsyncTokenization();
+    try std.testing.expect(workbench.textmate_background != null);
 }
 
 test "Workbench: sticky scroll paints scope headers" {

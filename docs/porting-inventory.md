@@ -279,7 +279,7 @@ that make the later phases tractable.
 
 | Area | Existing Zig modules | State |
 | --- | --- | --- |
-| Text model and tokens | `vs/editor/common/model/...`, piece-tree buffer, `textModelTokens`, token stores, `textMateTokenizer` | Ported and wired into `TextModel` |
+| Text model and tokens | `vs/editor/common/model/...`, piece-tree buffer, `textModelTokens`, token stores, `textMateTokenizer`, threaded background tokenizer (`services/textMate/browser/backgroundTokenization`) | Ported and wired into `TextModel`; the threaded path is enabled by the TUI and the synchronous default tokenizer remains its fallback |
 | View model | `vs/editor/common/viewModel/viewModelLines.zig`, `viewModelDecorations.zig`, `modelLineProjection.zig`, `vs/editor/common/coordinatesConverter.zig` | Ported |
 | View layout and line rendering | `vs/editor/common/viewLayout/lineDecorations.zig`, `viewLineRenderer.zig`, `lineHeights.zig`, `linesLayout.zig`, `vs/editor/common/viewModel/inlineDecorations.zig` | Ported |
 | Editor options and layout | `vs/editor/common/config/editorOptions.zig` (option value types, `IComputedEditorOptions`, `EditorLayoutInfoComputer`, `EditorWrappingInfoComputer`), `vs/editor/browser/config/editorConfiguration.zig` (`ComputedEditorOptions`) | Ported: upstream defaults, layout/minimap/wrapping computation and the 21-case `editorLayoutProvider.test.ts`; `IEditorConfiguration.options` is typed |

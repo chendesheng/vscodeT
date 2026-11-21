@@ -122,6 +122,10 @@ pub const TokenizationTextModelPart = struct {
         self.tokens.handleDidChangeAttached();
     }
 
+    pub fn drainBackgroundTokenization(self: *TokenizationTextModelPart) bool {
+        return self.tokens.drainBackgroundTokenization();
+    }
+
     pub fn pollBackgroundTokenization(self: *TokenizationTextModelPart) bool {
         return self.tokens.pollBackgroundTokenization();
     }

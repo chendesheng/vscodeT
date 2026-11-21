@@ -2237,6 +2237,12 @@ pub const Editor = struct {
         self.status_len = 0;
     }
 
+    /// Applies completed async worker deltas without advancing the fallback
+    /// tokenizer.
+    pub fn drainBackgroundTokenization(self: *Editor) bool {
+        return self.model.drainBackgroundTokenization();
+    }
+
     /// Advances the ported default background tokenizer by one ~1 ms chunk.
     /// Returns true when tokens changed and the view should repaint.
     pub fn pollBackgroundTokenization(self: *Editor) bool {

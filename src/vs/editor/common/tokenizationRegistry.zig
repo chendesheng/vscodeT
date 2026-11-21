@@ -4,6 +4,7 @@ const StringHashMap = std.StringHashMap;
 const Emitter = @import("../../base/common/event.zig").Emitter;
 const ColorId = @import("./encodedTokenAttributes.zig").ColorId;
 const ITokenizationSupport = @import("./languages.zig").ITokenizationSupport;
+const IBackgroundTokenizerFactory = @import("./languages.zig").IBackgroundTokenizerFactory;
 const TokenizationSupportChangedEvent = @import("./languages.zig").TokenizationSupportChangedEvent;
 const LazyTokenizationSupport = @import("./languages.zig").LazyTokenizationSupport;
 const Color = @import("../../base/common/color.zig").Color;
@@ -15,6 +16,10 @@ pub const TokenizationRegistry = struct {
     _factories: StringHashMap(*LazyTokenizationSupport),
     _onDidChange: Emitter(TokenizationSupportChangedEvent),
     _colorMap: ?[]const Color,
+    /// Process-wide async background tokenizer, set by the workbench TextMate
+    /// feature. Null keeps the ported synchronous `DefaultBackgroundTokenizer`
+    /// fallback (tests, async tokenization disabled, too-large models).
+    _backgroundTokenizerFactory: ?IBackgroundTokenizerFactory,
     allocator: Allocator,
 
     pub fn init(allocator: Allocator) TokenizationRegistry {
@@ -23,11 +28,13 @@ pub const TokenizationRegistry = struct {
             ._factories = StringHashMap(*LazyTokenizationSupport).init(allocator),
             ._onDidChange = Emitter(TokenizationSupportChangedEvent).init(allocator),
             ._colorMap = null,
+            ._backgroundTokenizerFactory = null,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *TokenizationRegistry) void {
+        self._backgroundTokenizerFactory = null;
         var supportIter = self._tokenizationSupports.valueIterator();
         while (supportIter.next()) |support| support.dispose();
         var supportKeys = self._tokenizationSupports.keyIterator();
@@ -77,6 +84,14 @@ pub const TokenizationRegistry = struct {
 
     pub fn get(self: *TokenizationRegistry, languageId: []const u8) ?ITokenizationSupport {
         return self._tokenizationSupports.get(languageId);
+    }
+
+    pub fn setBackgroundTokenizerFactory(self: *TokenizationRegistry, factory: ?IBackgroundTokenizerFactory) void {
+        self._backgroundTokenizerFactory = factory;
+    }
+
+    pub fn getBackgroundTokenizerFactory(self: *TokenizationRegistry) ?IBackgroundTokenizerFactory {
+        return self._backgroundTokenizerFactory;
     }
 
     pub fn registerFactory(self: *TokenizationRegistry, languageId: []const u8, factory: *LazyTokenizationSupport) !void {

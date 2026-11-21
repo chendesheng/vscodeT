@@ -430,6 +430,7 @@ pub fn main(init: std.process.Init) !void {
     workbench.setImageProtocol(image_probe.capability);
     workbench.setCellPixelSize(size.cell_width_px, size.cell_height_px);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
+    workbench.enableAsyncTokenization();
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);
 
@@ -659,7 +660,7 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.bracketGuidesTimeout(now_ms)) |guides_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(guides_timeout, 250))));
         }
-        if (workbench.backgroundTokenizationPending()) timeout = 0;
+        if (workbench.backgroundTokenizationPending()) timeout = @min(timeout, 4);
         if (workbench.hasLatencySensitiveReads()) timeout = @min(timeout, 4);
 
         workbench.flushTerminals();
@@ -716,6 +717,8 @@ pub fn main(init: std.process.Init) !void {
             try tui.clearScreen(out);
             resized = true;
         }
+
+        if (workbench.drainBackgroundTokenization()) needs_render = true;
 
         if (!ready) {
             // Only spend deferred analysis when no input is buffered, so rapid

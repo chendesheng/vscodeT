@@ -121,6 +121,8 @@ comptime {
     _ = @import("./vs/editor/common/services/languageService.zig");
     _ = @import("./vs/editor/common/services/languagesAssociations.zig");
     _ = @import("./vs/workbench/services/language/common/languageService.zig");
+    _ = @import("./vs/workbench/services/textMate/browser/indexTransformer.zig");
+    _ = @import("./vs/workbench/services/textMate/test/browser/backgroundTokenization.test.zig");
     _ = @import("./vs/editor/test/common/services/languageService.test.zig");
     _ = @import("./vs/editor/common/services/unicodeTextModelHighlighter.zig");
     _ = @import("./vs/base/common/map.zig");

@@ -571,6 +571,10 @@ pub const TextModel = struct {
         return self._attachedEditorCount;
     }
 
+    pub fn drainBackgroundTokenization(self: *TextModel) bool {
+        return self._tokenizationTextModelPart.drainBackgroundTokenization();
+    }
+
     /// Main-loop tick for the ported default background tokenizer.
     pub fn pollBackgroundTokenization(self: *TextModel) bool {
         return self._tokenizationTextModelPart.pollBackgroundTokenization();

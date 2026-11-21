@@ -102,15 +102,17 @@ required for the measurements below.
 - Visible-line tokens are forced synchronously for the viewport. An incremental
   scroll tokenizes only the new lines; a jump tokenizes the visible range from
   a guessed start state instead of walking every line from the first invalid
-  one. The remaining lines are tokenized by the ported
-  `DefaultBackgroundTokenizer` in ~1 ms chunks from idle main-loop ticks. The
-  first open of a language still loads its TextMate grammar once per process.
-- Idle maintenance repaints are coalesced: background tokenization yields
-  ~1 ms chunks, and while it is running the main loop repaints at most once
-  per 8 ms (the final chunk always paints). Folding/bracket-guide passes and
-  input are not delayed. The extension-host pump also skips rebuilding the
-  editor-tabs spec list when the tab set, active tab and dirty flags are
-  unchanged.
+  one. The remaining lines are tokenized by the upstream-shaped threaded
+  TextMate worker (one dedicated thread, state/token deltas applied on the
+  TUI loop). The ported `DefaultBackgroundTokenizer` remains the fallback for
+  disabled async tokenization, too-large models, tests and non-TextMate
+  tokenizers. The first open of a language still loads its TextMate grammar
+  once per process on the worker.
+- Idle maintenance repaints are coalesced: while background tokenization is
+  running the main loop repaints at most once per 8 ms (the final delta always
+  paints). Folding/bracket-guide passes and input are not delayed. The
+  extension-host pump also skips rebuilding the editor-tabs spec list when the
+  tab set, active tab and dirty flags are unchanged.
 - The TUI process uses a stack-trace-free `DebugAllocator` in Debug builds.
   The debug allocator's unwinding used to be 70-94% of active CPU in the
   end-to-end profile; safety checks and the leak report at exit are kept, and
@@ -980,6 +982,9 @@ Tokenizer status:
   and `getWordAtPosition`/`getWordUntilPosition`.
 - Ported tests: upstream `lineTokens.test.ts`, `tokensStore.test.ts`,
   `model.modes.test.ts`, and the default-word cases from `model.test.ts`.
+  The threaded path is covered by
+  `workbench/services/textMate/test/browser/backgroundTokenization.test.zig`
+  and the `MonotonousIndexTransformer` port tests.
 
 Bracket-pair colorization:
 
@@ -1045,11 +1050,18 @@ Bracket-pair colorization:
   inline decoration classes yet.
 - Not ported: tree-sitter tokenization, font-token annotations, and custom
   `wordPattern` language configurations.
-- Background tokenization is synchronous (1 ms chunks) because this port has
-  no browser idle loop. The TUI never calls `onBeforeAttached`, so the default
-  background tokenizer is dormant; editable views force tokens for the visible
-  range instead. Do not attach a model without first making the background
-  tokenizer tick-based, or it will tokenize the whole document in one call.
+- Background tokenization is ported from the upstream workbench path, not
+  just the fallback: `ThreadedBackgroundTokenizerFactory` owns one dedicated
+  worker thread, `TextMateWorkerTokenizerController` keeps the renderer state
+  store and pending edits, and the worker streams serialized token blocks and
+  state-stack deltas back with `std.Io.Queue` (the terminal stand-in for
+  `postMessage`). The renderer applies deltas on its main loop and shares the
+  compiled token theme with the worker through a read/write lock instead of
+  upstream's serialized `$acceptTheme` copy. TUI startup
+  enables it with `Workbench.enableAsyncTokenization`; tests keep the
+  synchronous `DefaultBackgroundTokenizer` unless they opt in. The default
+  tokenizer remains the fallback when async tokenization is disabled, the
+  model is too large for syncing, or the tokenizer has no TextMate grammar.
 
 View model:
 

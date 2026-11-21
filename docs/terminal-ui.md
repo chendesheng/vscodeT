@@ -871,6 +871,11 @@ Library constraints:
     new lines, an edit walks from the first invalid line, and a jump tokenizes
     the visible range from a guessed start state instead of every line in
     between. The model version guards the forced interval.
+  - TextMate background tokenization runs on a dedicated worker thread, like
+    upstream's web worker. The renderer keeps pending edits, applies state
+    deltas before token blocks, and polls completed results from its main
+    loop; the fallback `DefaultBackgroundTokenizer` still handles tests,
+    too-large models and tokenizers without a TextMate grammar.
 - The workbench status bar is a separate one-row `ui.Surface` owned by the
   ported `StatusbarPart`. `StatusbarPart.render` rebuilds a flex document
   (root row, left `flex_grow` container, right `row_reverse` container with a
