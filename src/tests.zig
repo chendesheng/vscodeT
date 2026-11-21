@@ -59,6 +59,7 @@ comptime {
     _ = @import("./vs/workbench/services/search/test/node/fileSearch.test.zig");
     _ = @import("./vs/workbench/services/search/test/node/fileSearchWorker.test.zig");
     _ = @import("./vs/workbench/services/search/test/node/ripgrepTextSearchEngineUtils.test.zig");
+    _ = @import("./vs/workbench/services/search/test/node/textSearch.integrationTest.zig");
     _ = @import("./vs/workbench/services/search/test/common/search.test.zig");
     _ = @import("./vs/workbench/services/search/test/common/ignoreFile.test.zig");
     _ = @import("./vs/workbench/contrib/search/test/browser/searchResult.test.zig");
