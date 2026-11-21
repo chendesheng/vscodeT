@@ -83,6 +83,12 @@ required for the measurements below.
   one. The remaining lines are tokenized by the ported
   `DefaultBackgroundTokenizer` in ~1 ms chunks from idle main-loop ticks. The
   first open of a language still loads its TextMate grammar once per process.
+- Idle maintenance repaints are coalesced: background tokenization yields
+  ~1 ms chunks, and while it is running the main loop repaints at most once
+  per 8 ms (the final chunk always paints). Folding/bracket-guide passes and
+  input are not delayed. The extension-host pump also skips rebuilding the
+  editor-tabs spec list when the tab set, active tab and dirty flags are
+  unchanged.
 - The TUI process uses a stack-trace-free `DebugAllocator` in Debug builds.
   The debug allocator's unwinding used to be 70-94% of active CPU in the
   end-to-end profile; safety checks and the leak report at exit are kept, and

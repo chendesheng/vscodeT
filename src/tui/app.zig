@@ -580,6 +580,8 @@ pub fn main(init: std.process.Init) !void {
     });
 
     var needs_render = false;
+    // Last frame that was only caused by a background-tokenization chunk.
+    var last_token_render_ms: i64 = 0;
     // A read can end in the middle of an escape sequence. Keep those bytes
     // and wait for the rest instead of decoding the tail as typed text.
     var awaiting_input_continuation = false;
@@ -699,9 +701,19 @@ pub fn main(init: std.process.Init) !void {
             // Run at most one heavy pass per idle tick.
             var maintenance = workbench.pollFolding(now_ms);
             if (!maintenance) maintenance = workbench.pollBracketGuides(now_ms);
-            if (workbench.pollBackgroundTokenization()) maintenance = true;
+            const token_maintenance = workbench.pollBackgroundTokenization();
+            if (token_maintenance) maintenance = true;
             if (maintenance) needs_render = true;
-            if (resized or needs_render) {
+            // Background tokenization yields ~1 ms chunks. Repainting every
+            // chunk made the frame cost part of tokenization; coalesce those
+            // repaints to roughly one per 8 ms. The final chunk always paints
+            // (the pending flag is false), and input/folding/guide passes are
+            // not delayed.
+            const coalesce_token_frame = token_maintenance and
+                !resized and
+                workbench.backgroundTokenizationPending() and
+                now_ms - last_token_render_ms < 8;
+            if (resized or (needs_render and !coalesce_token_frame)) {
                 if (workbench.activeTab()) |current| {
                     current.onEditorChanged(now_ms);
                     workbench.onSearchEditorChanged();
@@ -712,6 +724,7 @@ pub fn main(init: std.process.Init) !void {
                 try workbench.syncCursor(out);
                 try out.flush();
                 needs_render = false;
+                if (token_maintenance) last_token_render_ms = now_ms;
             }
             continue;
         }

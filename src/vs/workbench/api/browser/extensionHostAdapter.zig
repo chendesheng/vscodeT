@@ -97,6 +97,10 @@ pub const Extensions = struct {
     activated: bool = false,
     activation_tracker: extension_service.ActivationTracker,
     needs_render: bool = false,
+    /// Signature of the last tab set sent to the editor-tabs actor. The pump
+    /// runs on every loop iteration, so an unchanged tab rail must not rebuild
+    /// its arena/spec list or call the actor.
+    tabs_signature: u64 = 0,
     /// The active editor whose scroll events are mirrored to the host.
     scroll_listener_editor: ?*Editor = null,
     /// The active editor whose content changes are mirrored to the host. This
@@ -747,6 +751,24 @@ pub const Extensions = struct {
 
     fn syncTabs(self: *Extensions) !void {
         const active_tab = self.workbench.activeTab() orelse return;
+        // The tab rail is mostly static; pumping it on every loop iteration
+        // rebuilt the spec list and called the actor even when nothing moved.
+        var hasher = std.hash.Wyhash.init(0);
+        var tab_count: usize = 0;
+        for (self.workbench.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                tab_count += 1;
+                const editor_ptr: usize = @intFromPtr(tab.editor);
+                hasher.update(std.mem.asBytes(&editor_ptr));
+                hasher.update(&[_]u8{@intFromBool(tab.editor.dirty_state)});
+            }
+        }
+        const active_ptr: usize = @intFromPtr(active_tab.editor);
+        hasher.update(std.mem.asBytes(&active_ptr));
+        hasher.update(std.mem.asBytes(&tab_count));
+        const signature = hasher.final();
+        if (signature == self.tabs_signature) return;
+
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
@@ -763,6 +785,9 @@ pub const Extensions = struct {
         }
         if (self.editor_tabs_actor) |*actor| {
             try actor.sync(arena, try std_uri.fsPath(active_tab.editor.model.uri(), arena), specs.items);
+            // Only remember a delivered state; do not skip a later retry when
+            // there was no actor yet.
+            self.tabs_signature = signature;
         }
     }
 

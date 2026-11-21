@@ -35,6 +35,11 @@ before/after numbers.
 - The TUI process uses `DebugAllocator(.{ .stack_trace_frames = 0 })` in Debug
   builds. The safety and leak checks stay; the unwinding goes away. Tests still
   use the fully instrumented testing allocator.
+- Background-tokenization repaints are coalesced to ~8 ms while chunks are
+  still pending, and the extension-host pump skips the editor-tabs spec/RPC
+  work when the tab set, active tab and dirty flags are unchanged. These two
+  were hotspots 5 and 6 of the 2026-11-20 report; they are not part of the
+  editor-only benchmark below.
 
 ## Method
 
