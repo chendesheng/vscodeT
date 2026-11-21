@@ -16,6 +16,8 @@ const protocol = @import("../common/extHost.protocol.zig");
 const time_compat = @import("../../../base/common/timeCompat.zig");
 const std_uri = @import("../../../base/common/stdUri.zig");
 const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const LastContentChange = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").LastContentChange;
+const ChangeListener = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").ChangeListener;
 const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const Workbench = @import("../../browser/workbench.zig").Workbench;
 const SplitDirection = @import("../../browser/workbench.zig").SplitDirection;
@@ -23,6 +25,7 @@ const statusbar = @import("../../services/statusbar/browser/statusbar.zig");
 const statusbar_part = @import("../../browser/parts/statusbar/statusbarPart.zig");
 const configuration = @import("../../../platform/configuration/common/configuration.zig");
 const Range = @import("../../../editor/common/core/range.zig").Range;
+const view_events = @import("../../../editor/common/viewEvents.zig");
 const Selection = @import("../../../editor/common/core/selection.zig").Selection;
 const Position = @import("../../../editor/common/core/position.zig").Position;
 const CursorColumns = @import("../../../editor/common/core/cursorColumns.zig").CursorColumns;
@@ -46,6 +49,10 @@ const markers_mod = @import("../../../platform/markers/common/markers.zig");
 const TextModel = @import("../../../editor/common/model/textModel.zig").TextModel;
 const position_converter = @import("../common/positionConverter.zig");
 const go_to_commands = @import("../../../editor/contrib/gotoSymbol/browser/goToCommands.zig");
+const cursor_move = @import("../../../editor/common/cursor/cursorMoveCommands.zig");
+const folding = @import("../../../editor/contrib/folding/browser/folding.zig");
+const RevealSpec = @import("./mainThreadTextEditors.zig").RevealSpec;
+const TextEditorRevealType = @import("./mainThreadTextEditors.zig").TextEditorRevealType;
 
 const EntryAccessor = statusbar_part.EntryAccessor;
 
@@ -98,6 +105,9 @@ pub const Extensions = struct {
     activated: bool = false,
     activation_tracker: extension_service.ActivationTracker,
     needs_render: bool = false,
+    /// The active editor whose scroll events are mirrored to the host.
+    scroll_listener_editor: ?*Editor = null,
+    visible_ranges_dirty: bool = false,
     pasting: bool = false,
     language_features_actor: ?MainThreadLanguageFeatures = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
@@ -227,6 +237,7 @@ pub const Extensions = struct {
     }
 
     pub fn deinit(self: *Extensions) void {
+        self.setScrollListener(null);
         if (self.diagnostics_actor) |actor| {
             actor.deinit();
             self.diagnostics_actor = null;
@@ -527,9 +538,27 @@ pub const Extensions = struct {
         return "1";
     }
 
-    fn textEditorRevealHost(context: *anyopaque) anyerror!void {
+    fn textEditorRevealHost(
+        context: *anyopaque,
+        range: RevealSpec,
+        reveal_type: TextEditorRevealType,
+    ) anyerror!void {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        if (self.active) |active| active.editor.ensureCursorVisible();
+        if (self.active) |active| {
+            const vertical_type: view_events.VerticalRevealType = switch (reveal_type) {
+                .default => .Simple,
+                .in_center => .Center,
+                .in_center_if_outside_viewport => .CenterIfOutsideViewport,
+                .at_top => .Top,
+            };
+            const start = std.math.clamp(range.start_line, 1, active.editor.model.getLineCount());
+            const end = std.math.clamp(range.end_line, start, active.editor.model.getLineCount());
+            _ = active.editor.revealRange(
+                Range.init(start, 1, end, active.editor.model.getLineMaxColumn(end)),
+                vertical_type,
+            );
+        }
+        self.sendVisibleRanges() catch {};
         self.needs_render = true;
     }
 
@@ -675,6 +704,7 @@ pub const Extensions = struct {
         self.syncActiveDocument() catch {};
         self.activateActiveLanguage();
         self.syncSelection() catch {};
+        if (self.visible_ranges_dirty) self.sendVisibleRanges() catch {};
         const result = self.needs_render;
         self.needs_render = false;
         return result;
@@ -725,6 +755,7 @@ pub const Extensions = struct {
         _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback);
 
         self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language };
+        self.setScrollListener(tab.editor);
         self.captureSelections(tab.editor);
         try self.syncTabs();
         self.needs_render = true;
@@ -759,6 +790,7 @@ pub const Extensions = struct {
         const delta = try documents_and_editors.removedDocumentDelta(arena, active.uri);
         var args = [_]rpc.Arg{.{ .json = delta }};
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback) catch {};
+        self.setScrollListener(null);
         self.allocator.free(active.uri);
         self.allocator.free(active.language_id);
         self.active = null;
@@ -938,16 +970,39 @@ pub const Extensions = struct {
         const post_type = try editor.getSelections();
         defer editor.allocator.free(post_type);
         self.pending_type_selection = if (post_type.len > 0) post_type[0] else null;
-        const change = editor.takeLastContentChange();
-        defer if (change) |value| editor.allocator.free(value.text);
+        const changes = try editor.takeContentChanges(self.allocator);
+        defer {
+            for (changes) |change| self.allocator.free(change.text);
+            self.allocator.free(changes);
+        }
         const active = &(self.active orelse return);
         active.version += 1;
-        if (change) |value| {
-            try self.sendModelChanged(arena, value.text, value.range.getStartPosition(), value.range.getEndPosition());
+        if (changes.len > 0) {
+            try self.sendModelChanges(arena, changes);
         } else {
             try self.sendModelChanged(arena, text, start, start);
         }
         try self.sendSelection(arena, .command);
+        self.needs_render = true;
+    }
+
+    /// Mirrors the result of a command that may edit or move the cursor. Used
+    /// by the generic command bridge and by the ported `cursorMove`, scroll and
+    /// fold commands. Multi-change batches are handled by `takeContentChanges`
+    /// once the editor has collected the whole model event.
+    fn syncAfterEditorCommand(self: *Extensions, arena: Allocator, editor: *Editor) !void {
+        const active = &(self.active orelse return);
+        const changes = try editor.takeContentChanges(self.allocator);
+        defer {
+            for (changes) |change| self.allocator.free(change.text);
+            self.allocator.free(changes);
+        }
+        if (changes.len > 0) {
+            active.version += 1;
+            try self.sendModelChanges(arena, changes);
+        }
+        try self.syncSelection();
+        self.sendVisibleRanges() catch {};
         self.needs_render = true;
     }
 
@@ -957,10 +1012,12 @@ pub const Extensions = struct {
         defer editor.allocator.free(post_selections);
         self.pending_type_selection = if (post_selections.len > 0) post_selections[0] else null;
         active.version += 1;
-        if (editor.takeLastContentChange()) |change| {
-            defer editor.allocator.free(change.text);
-            try self.sendModelChanged(arena, change.text, change.range.getStartPosition(), change.range.getEndPosition());
+        const changes = try editor.takeContentChanges(self.allocator);
+        defer {
+            for (changes) |change| self.allocator.free(change.text);
+            self.allocator.free(changes);
         }
+        if (changes.len > 0) try self.sendModelChanges(arena, changes);
         try self.sendSelection(arena, .command);
         self.needs_render = true;
     }
@@ -987,9 +1044,12 @@ pub const Extensions = struct {
         try editor.applyTextEdits(text_edits.items, &.{});
         const active = &(self.active orelse return);
         active.version += 1;
-        for (text_edits.items) |edit| {
-            try self.sendModelChanged(arena, edit.text, edit.range.getStartPosition(), edit.range.getStartPosition());
+        const changes = try editor.takeContentChanges(self.allocator);
+        defer {
+            for (changes) |change| self.allocator.free(change.text);
+            self.allocator.free(changes);
         }
+        if (changes.len > 0) try self.sendModelChanges(arena, changes);
         try self.sendSelection(arena, .keyboard);
         self.needs_render = true;
     }
@@ -1014,18 +1074,79 @@ pub const Extensions = struct {
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelChanged", &args, null, manager.noop_callback) catch {};
     }
 
+    fn sendModelChanges(self: *Extensions, arena: Allocator, changes: []const LastContentChange) !void {
+        const active = self.active orelse return;
+        var specs = std.array_list.Managed(documents_and_editors.ChangeSpec).init(arena);
+        for (changes) |change| {
+            try specs.append(.{
+                .text = change.text,
+                .start = .{ .line = change.range.startLineNumber, .column = change.range.startColumn },
+                .end = .{ .line = change.range.endLineNumber, .column = change.range.endColumn },
+            });
+        }
+        const event = try documents_and_editors.modelChangesEvent(arena, active.editor.model, specs.items, active.version);
+        var args = [_]rpc.Arg{
+            .{ .json = try manager.fileUri(arena, active.uri) },
+            .{ .json = event },
+            .{ .json = .{ .bool = false } },
+        };
+        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelChanged", &args, null, manager.noop_callback) catch {};
+    }
+
     fn sendSelection(self: *Extensions, arena: Allocator, source: SelectionSource) !void {
         const active = self.active orelse return;
         const selections = try active.editor.getSelections();
         defer active.editor.allocator.free(selections);
-        const value = try documents_and_editors.editorPropertiesChanged(arena, "1", active.editor.model, selections, source.wireName());
+        const value = try documents_and_editors.editorPropertiesChanged(
+            arena,
+            "1",
+            active.editor.model,
+            selections,
+            source.wireName(),
+            currentVisibleRange(active.editor),
+        );
         if (value != .array or value.array.items.len < 2) return;
         var args = [_]rpc.Arg{
             .{ .json = value.array.items[0] },
             .{ .json = value.array.items[1] },
         };
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
+        self.visible_ranges_dirty = false;
         self.captureSelections(active.editor);
+    }
+
+    fn onEditorScroll(context: *anyopaque) void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.visible_ranges_dirty = true;
+        self.needs_render = true;
+    }
+
+    fn setScrollListener(self: *Extensions, editor: ?*Editor) void {
+        if (self.scroll_listener_editor == editor) return;
+        if (self.scroll_listener_editor) |old| {
+            old.removeScrollListener(.{ .context = self, .callback = onEditorScroll });
+        }
+        self.scroll_listener_editor = null;
+        if (editor) |value| {
+            value.addScrollListener(.{ .context = self, .callback = onEditorScroll });
+            self.scroll_listener_editor = value;
+        }
+    }
+
+    fn sendVisibleRanges(self: *Extensions) !void {
+        const active = self.active orelse return;
+        const range = currentVisibleRange(active.editor) orelse return;
+        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_instance.deinit();
+        const arena = arena_instance.allocator();
+        const value = try documents_and_editors.editorVisibleRangesChanged(arena, "1", active.editor.model, range);
+        if (value != .array or value.array.items.len < 2) return;
+        var args = [_]rpc.Arg{
+            .{ .json = value.array.items[0] },
+            .{ .json = value.array.items[1] },
+        };
+        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
+        self.visible_ranges_dirty = false;
     }
 
     /// Records the selections the extension host now has, without a round
@@ -1112,9 +1233,235 @@ pub fn runLspCommand(workbench: *Workbench, command: []const u8) bool {
     return true;
 }
 
+fn currentVisibleRange(editor: *Editor) ?Range {
+    if (editor.viewLineCount() == 0) return null;
+    const top = editor.topViewLine();
+    const bottom = @min(top + editor.textHeight() -| 1, editor.viewLineCount());
+    const start_line = editor.modelLineNumber(top);
+    const end_line = editor.modelLineNumber(bottom);
+    if (start_line < 1 or end_line < 1) return null;
+    return Range.init(start_line, 1, end_line, editor.model.getLineMaxColumn(end_line));
+}
+
+fn isFoldCommand(command: []const u8) bool {
+    return std.mem.eql(u8, command, "editor.fold") or
+        std.mem.eql(u8, command, "editor.unfold") or
+        std.mem.eql(u8, command, "editor.toggleFold") or
+        std.mem.eql(u8, command, "editor.foldRecursively") or
+        std.mem.eql(u8, command, "editor.unfoldRecursively") or
+        std.mem.eql(u8, command, "editor.foldAll") or
+        std.mem.eql(u8, command, "editor.unfoldAll") or
+        std.mem.eql(u8, command, "editor.createFoldingRangeFromSelection") or
+        std.mem.eql(u8, command, "editor.removeManualFoldingRanges");
+}
+
+fn commandObject(args: []const std.json.Value) ?std.json.ObjectMap {
+    if (args.len == 0 or args[0] != .object) return null;
+    return args[0].object;
+}
+
+fn objectString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn objectBool(object: std.json.ObjectMap, name: []const u8) bool {
+    const value = object.get(name) orelse return false;
+    return value == .bool and value.bool;
+}
+
+fn objectUsize(object: std.json.ObjectMap, name: []const u8) ?usize {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .integer => |number| if (number >= 0) @intCast(number) else null,
+        .float => |number| if (number >= 0) @intFromFloat(@floor(number)) else null,
+        else => null,
+    };
+}
+
+fn objectI64(object: std.json.ObjectMap, name: []const u8) ?i64 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .integer => |number| number,
+        .float => |number| @intFromFloat(@floor(number)),
+        else => null,
+    };
+}
+
+fn selectionLines(editor: *Editor, object: ?std.json.ObjectMap) ![]usize {
+    if (object) |map| {
+        if (map.get("selectionLines")) |value| {
+            if (value == .array) {
+                var result = std.array_list.Managed(usize).init(editor.allocator);
+                errdefer result.deinit();
+                for (value.array.items) |item| {
+                    if (item != .integer or item.integer < 0) continue;
+                    try result.append(@min(@as(usize, @intCast(item.integer)) + 1, editor.model.getLineCount()));
+                }
+                if (result.items.len > 0) return try result.toOwnedSlice();
+                result.deinit();
+            }
+        }
+    }
+    const selections = try editor.getSelections();
+    defer editor.allocator.free(selections);
+    var result = try editor.allocator.alloc(usize, selections.len);
+    for (selections, 0..) |selection, index| {
+        result[index] = selection.startLineNumber;
+    }
+    return result;
+}
+
+fn applyEditorScroll(editor: *Editor, args: []const std.json.Value) bool {
+    const object = commandObject(args) orelse return false;
+    const to = objectString(object, "to") orelse return false;
+    const direction: Editor.ScrollDirection = if (std.mem.eql(u8, to, "up"))
+        .up
+    else if (std.mem.eql(u8, to, "down"))
+        .down
+    else
+        return false;
+    const by = objectString(object, "by") orelse "wrappedLine";
+    const unit: Editor.ScrollUnit = if (std.mem.eql(u8, by, "line"))
+        .line
+    else if (std.mem.eql(u8, by, "page"))
+        .page
+    else if (std.mem.eql(u8, by, "halfPage"))
+        .half_page
+    else if (std.mem.eql(u8, by, "editor"))
+        .editor
+    else
+        .wrapped_line;
+    const value = objectUsize(object, "value") orelse 1;
+    return editor.scrollEditor(
+        direction,
+        unit,
+        value,
+        objectBool(object, "revealCursor"),
+        objectBool(object, "select"),
+    );
+}
+
+fn applyRevealLine(editor: *Editor, args: []const std.json.Value) bool {
+    const object = commandObject(args) orelse return false;
+    const line_value = object.get("lineNumber") orelse return false;
+    const zero_based: i64 = switch (line_value) {
+        .integer => |value| value,
+        .float => |value| @intFromFloat(@floor(value)),
+        .string => |value| std.fmt.parseInt(i64, std.mem.trim(u8, value, " \t"), 10) catch return false,
+        else => return false,
+    };
+    const line = @min(@max(@as(usize, @intCast(@max(zero_based, 0))) + 1, 1), editor.model.getLineCount());
+    const at = objectString(object, "at") orelse "";
+    const reveal_type: view_events.VerticalRevealType = if (std.mem.eql(u8, at, "top"))
+        .Top
+    else if (std.mem.eql(u8, at, "center"))
+        .Center
+    else if (std.mem.eql(u8, at, "bottom"))
+        .Bottom
+    else
+        .Simple;
+    return editor.revealLine(line, reveal_type);
+}
+
+fn applyCursorMove(editor: *Editor, args: []const std.json.Value) !bool {
+    const object = commandObject(args) orelse return false;
+    const to = objectString(object, "to") orelse return false;
+    const by = objectString(object, "by");
+    const select = objectBool(object, "select");
+    const raw_value = objectUsize(object, "value");
+    const value = if (raw_value == null or raw_value.? == 0) @as(?usize, 1) else raw_value;
+    const no_history = objectBool(object, "noHistory");
+    const parsed = cursor_move.CursorMoveCommands.parse(to, by, select, value, no_history) orelse return false;
+    return editor.cursorMove(parsed);
+}
+
+fn applyFoldCommand(editor: *Editor, command: []const u8, args: []const std.json.Value) !bool {
+    if (args.len == 0) {
+        if (std.mem.eql(u8, command, "editor.foldAll")) {
+            try editor.foldAll();
+            return true;
+        }
+        if (std.mem.eql(u8, command, "editor.unfoldAll")) {
+            try editor.unfoldAll();
+            return true;
+        }
+        if (std.mem.eql(u8, command, "editor.createFoldingRangeFromSelection")) {
+            try editor.createFoldingRangeFromSelection();
+            return true;
+        }
+        if (std.mem.eql(u8, command, "editor.removeManualFoldingRanges")) {
+            try editor.removeManualFoldingRanges();
+            return true;
+        }
+    }
+
+    const object = commandObject(args);
+    const levels = if (object) |map| objectUsize(map, "levels") else null;
+    const direction_name = if (object) |map| objectString(map, "direction") else null;
+    const direction: ?folding.Direction = if (direction_name) |name|
+        if (std.mem.eql(u8, name, "up")) .up else .down
+    else
+        null;
+    const lines = try selectionLines(editor, object);
+    defer editor.allocator.free(lines);
+
+    if (std.mem.eql(u8, command, "editor.fold")) {
+        try editor.foldLines(lines, levels, direction);
+    } else if (std.mem.eql(u8, command, "editor.unfold")) {
+        try editor.unfoldLines(lines, levels, direction);
+    } else if (std.mem.eql(u8, command, "editor.toggleFold")) {
+        try editor.toggleFoldLines(lines, levels orelse 1);
+    } else if (std.mem.eql(u8, command, "editor.foldRecursively")) {
+        try editor.foldLines(lines, std.math.maxInt(usize), .down);
+    } else if (std.mem.eql(u8, command, "editor.unfoldRecursively")) {
+        try editor.unfoldLines(lines, std.math.maxInt(usize), .down);
+    } else if (std.mem.eql(u8, command, "editor.foldAll")) {
+        try editor.foldAll();
+    } else if (std.mem.eql(u8, command, "editor.unfoldAll")) {
+        try editor.unfoldAll();
+    } else if (std.mem.eql(u8, command, "editor.createFoldingRangeFromSelection")) {
+        try editor.createFoldingRangeFromSelection();
+    } else if (std.mem.eql(u8, command, "editor.removeManualFoldingRanges")) {
+        try editor.removeManualFoldingRanges();
+    } else {
+        return false;
+    }
+    return true;
+}
+
 fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: std.json.Value, arena: Allocator) anyerror!?std.json.Value {
     const self: *Extensions = @ptrCast(@alignCast(context));
     const args: []const std.json.Value = if (command_args == .array) command_args.array.items else &.{};
+    if (std.mem.eql(u8, command, "editorScroll")) {
+        if (self.active) |active| {
+            _ = applyEditorScroll(active.editor, args);
+            try self.syncAfterEditorCommand(arena, active.editor);
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, command, "revealLine")) {
+        if (self.active) |active| {
+            _ = applyRevealLine(active.editor, args);
+            self.needs_render = true;
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, command, "cursorMove")) {
+        if (self.active) |active| {
+            _ = try applyCursorMove(active.editor, args);
+            try self.syncAfterEditorCommand(arena, active.editor);
+        }
+        return null;
+    }
+    if (isFoldCommand(command)) {
+        if (self.active) |active| {
+            _ = try applyFoldCommand(active.editor, command, args);
+            try self.syncAfterEditorCommand(arena, active.editor);
+        }
+        return null;
+    }
     if (std.mem.eql(u8, command, "default:type")) {
         const editor = if (self.active) |active| active.editor else return null;
         if (args.len > 0 and args[0] == .object) {
@@ -1143,6 +1490,11 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         try self.applyCommandEdit(arena, editor);
         return null;
     }
+    if (std.mem.eql(u8, command, "search.action.focusSearchList")) {
+        self.workbench.findInFiles() catch {};
+        self.needs_render = true;
+        return null;
+    }
     if (std.mem.eql(u8, command, "workbench.action.splitEditorRight") or std.mem.eql(u8, command, "workbench.action.splitEditorDown")) {
         const direction: SplitDirection = if (std.mem.eql(u8, command, "workbench.action.splitEditorRight")) .horizontal else .vertical;
         self.workbench.splitActive(direction) catch {};
@@ -1152,6 +1504,27 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
     if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
         _ = self.workbench.closeActive() catch false;
         self.needs_render = true;
+        return null;
+    }
+    if (std.mem.eql(u8, command, "moveActiveEditor")) {
+        if (args.len > 0 and args[0] == .object) {
+            const object = args[0].object;
+            const to = objectString(object, "to") orelse "";
+            const by = objectString(object, "by") orelse "tab";
+            const value = objectUsize(object, "value") orelse 1;
+            self.workbench.moveActiveEditor(to, by, value) catch {};
+            self.needs_render = true;
+        }
+        return null;
+    }
+    if (std.mem.startsWith(u8, command, "workbench.action.openEditorAtIndex")) {
+        if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) {
+            self.workbench.activateIndex(@intCast(args[0].integer)) catch {};
+            self.needs_render = true;
+        } else if (std.mem.eql(u8, command, "workbench.action.openEditorAtIndex1")) {
+            self.workbench.activateIndex(0) catch {};
+            self.needs_render = true;
+        }
         return null;
     }
     if (runLspCommand(self.workbench, command)) {
@@ -1203,6 +1576,19 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
                     (std.mem.eql(u8, mode.string, "Insert") or std.mem.eql(u8, mode.string, "Replace"));
             }
         }
+        return null;
+    }
+    if (self.workbench.commands.get(command) != null) {
+        self.workbench.commands.execute(command) catch |err| {
+            if (self.active) |active| active.editor.setMessage("{s}: {s}", .{ command, @errorName(err) });
+        };
+        self.syncActiveDocument() catch {};
+        if (self.active) |active| {
+            try self.syncAfterEditorCommand(arena, active.editor);
+        } else {
+            try self.syncSelection();
+        }
+        self.needs_render = true;
         return null;
     }
     return null;
@@ -2058,6 +2444,73 @@ test "Extensions: VSCodeVim navigation commands reach the workbench actions" {
     workbench.quick_access.inputService().hide();
 }
 
+test "Extensions: VSCodeVim z commands scroll the viewport" {
+    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var contents = std.array_list.Managed(u8).init(allocator);
+    defer contents.deinit();
+    var line: usize = 1;
+    var line_buffer: [32]u8 = undefined;
+    while (line <= 60) : (line += 1) {
+        const text = try std.fmt.bufPrint(&line_buffer, "line {d}\n", .{line});
+        try contents.appendSlice(text);
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "vim-scroll.txt", .data = contents.items });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPathFile(io, "vim-scroll.txt", &path_buffer);
+
+    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 24);
+    defer workbench.deinit();
+    var extension_host = try Extensions.init(allocator, io, workbench, &.{
+        .{ .path = ".cache-ext/vim/extension", .is_under_development = true },
+    }, ".cache-ext/data-vim-scroll-test");
+    defer extension_host.deinit();
+
+    const startup_deadline = time_compat.milliTimestamp() + 10_000;
+    while (time_compat.milliTimestamp() < startup_deadline) {
+        _ = extension_host.pump();
+        if (extension_host.active != null and extension_host.vim_active) break;
+        time_compat.sleepMillis(10);
+    }
+    try std.testing.expect(extension_host.vim_active);
+    _ = extension_host.handleKey(&.{ .key = .escape });
+    _ = extension_host.pump();
+
+    const tab = workbench.activeTab().?;
+    try tab.editor.setCursorPosition(Position.init(40, 1));
+    _ = extension_host.pump();
+    const initial_top = tab.editor.topViewLine();
+
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'z' } });
+    _ = extension_host.pump();
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'z' } });
+    const center_deadline = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < center_deadline) {
+        _ = extension_host.pump();
+        if (tab.editor.topViewLine() != initial_top) break;
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(tab.editor.topViewLine() != initial_top);
+    try std.testing.expect(tab.editor.topViewLine() <= 40);
+
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 'z' } });
+    _ = extension_host.pump();
+    _ = extension_host.handleKey(&.{ .key = .{ .char = 't' } });
+    const top_deadline = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < top_deadline) {
+        _ = extension_host.pump();
+        if (tab.editor.topViewLine() == 40) break;
+        time_compat.sleepMillis(20);
+    }
+    try std.testing.expectEqual(@as(usize, 40), tab.editor.topViewLine());
+}
+
 test "Extensions: VSCodeVim gf opens the file under the cursor at a line" {
     if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
     const io = time_compat.io;
@@ -2112,4 +2565,45 @@ test "Extensions: VSCodeVim gf opens the file under the cursor at a line" {
     const opened = workbench.activeTab().?;
     try std.testing.expect(std.mem.endsWith(u8, opened.editor.path, "target.txt"));
     try std.testing.expectEqual(@as(usize, 2), opened.editor.modelCursorPosition().lineNumber);
+}
+
+test "Extensions: editorScroll, revealLine and cursorMove command arguments" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight", "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const scroll_args = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "[{\"to\":\"down\",\"by\":\"line\",\"value\":2}]",
+        .{},
+    );
+    try std.testing.expect(applyEditorScroll(editor, scroll_args.array.items));
+    try std.testing.expectEqual(@as(usize, 3), editor.topViewLine());
+
+    const reveal_args = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "[{\"lineNumber\":0,\"at\":\"top\"}]",
+        .{},
+    );
+    try std.testing.expect(applyRevealLine(editor, reveal_args.array.items));
+    try std.testing.expectEqual(@as(usize, 1), editor.topViewLine());
+
+    try editor.setCursorPosition(Position.init(1, 1));
+    const move_args = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "[{\"to\":\"down\",\"by\":\"line\",\"select\":false,\"value\":1}]",
+        .{},
+    );
+    try std.testing.expect(try applyCursorMove(editor, move_args.array.items));
+    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
 }

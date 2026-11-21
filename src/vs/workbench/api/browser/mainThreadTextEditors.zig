@@ -19,12 +19,34 @@ pub const EditSpec = struct {
     text: []const u8,
 };
 
+pub const RevealSpec = struct {
+    start_line: usize,
+    end_line: usize,
+};
+
+/// Port of `TextEditorRevealType` from `extHost.protocol.ts`.
+pub const TextEditorRevealType = enum(u8) {
+    default = 0,
+    in_center = 1,
+    in_center_if_outside_viewport = 2,
+    at_top = 3,
+
+    pub fn fromValue(value: i64) TextEditorRevealType {
+        return switch (value) {
+            1 => .in_center,
+            2 => .in_center_if_outside_viewport,
+            3 => .at_top,
+            else => .default,
+        };
+    }
+};
+
 pub const Host = struct {
     context: *anyopaque,
     set_selections: *const fn (context: *anyopaque, selections: []Selection) anyerror!void,
     apply_edits: *const fn (context: *anyopaque, version: u32, edits: []const EditSpec) anyerror!void,
     show_document: *const fn (context: *anyopaque, uri: std.json.Value, options: std.json.Value) anyerror!?[]const u8,
-    reveal: *const fn (context: *anyopaque) anyerror!void,
+    reveal: *const fn (context: *anyopaque, range: RevealSpec, reveal_type: TextEditorRevealType) anyerror!void,
 };
 
 pub const MainThreadTextEditors = struct {
@@ -75,7 +97,13 @@ pub const MainThreadTextEditors = struct {
             return .empty;
         }
         if (std.mem.eql(u8, method, "$tryRevealRange")) {
-            try self.host.reveal(self.host.context);
+            const range = valueArg(args, 1) orelse return .empty;
+            const spec = revealSpecFromJson(range) orelse return .empty;
+            const reveal_type: TextEditorRevealType = if (args.len > 2 and args[2] == .json and args[2].json == .integer)
+                TextEditorRevealType.fromValue(args[2].json.integer)
+            else
+                .default;
+            try self.host.reveal(self.host.context, spec, reveal_type);
             return .empty;
         }
         if (std.mem.eql(u8, method, "$trySetOptions") or
@@ -102,6 +130,14 @@ fn selectionFromJson(value: std.json.Value) ?Selection {
     const end_line = intField(object, "positionLineNumber") orelse return null;
     const end_column = intField(object, "positionColumn") orelse return null;
     return Selection.init(start_line, start_column, end_line, end_column);
+}
+
+fn revealSpecFromJson(value: std.json.Value) ?RevealSpec {
+    if (value != .object) return null;
+    const start_line = intField(value.object, "startLineNumber") orelse return null;
+    const end_line = intField(value.object, "endLineNumber") orelse return null;
+    if (start_line < 1 or end_line < 1) return null;
+    return .{ .start_line = start_line, .end_line = end_line };
 }
 
 fn editSpecFromJson(value: std.json.Value) ?EditSpec {
@@ -135,4 +171,23 @@ fn methodKind(method: []const u8) protocol.MethodKind {
 fn valueArg(args: []const rpc.Arg, index: usize) ?std.json.Value {
     if (index >= args.len or args[index] != .json) return null;
     return args[index].json;
+}
+
+test "MainThreadTextEditors: reveal type and range parsing" {
+    try std.testing.expectEqual(TextEditorRevealType.default, TextEditorRevealType.fromValue(0));
+    try std.testing.expectEqual(TextEditorRevealType.in_center, TextEditorRevealType.fromValue(1));
+    try std.testing.expectEqual(TextEditorRevealType.in_center_if_outside_viewport, TextEditorRevealType.fromValue(2));
+    try std.testing.expectEqual(TextEditorRevealType.at_top, TextEditorRevealType.fromValue(3));
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const value = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"startLineNumber\":2,\"startColumn\":1,\"endLineNumber\":4,\"endColumn\":3}",
+        .{},
+    );
+    const spec = revealSpecFromJson(value).?;
+    try std.testing.expectEqual(@as(usize, 2), spec.start_line);
+    try std.testing.expectEqual(@as(usize, 4), spec.end_line);
 }

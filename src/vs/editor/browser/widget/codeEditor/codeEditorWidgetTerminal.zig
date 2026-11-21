@@ -325,6 +325,7 @@ pub const Editor = struct {
     conflict: bool = false,
     working_copy_dirty_listeners: std.array_list.Managed(ChangeListener),
     working_copy_content_listeners: std.array_list.Managed(ChangeListener),
+    scroll_listeners: std.array_list.Managed(ChangeListener),
     working_copy_save_listeners: std.array_list.Managed(ChangeListener),
     on_did_change_dirty: Emitter(void),
     screen_width: usize,
@@ -360,7 +361,10 @@ pub const Editor = struct {
     prev_edit_operation_type: EditOperationType,
     pending_selection: [8]Selection,
     pending_selection_count: usize,
-    last_content_change: ?LastContentChange = null,
+    /// Every content change from the latest model event. The extension-host
+    /// bridge mirrors the whole batch so multi-range commands (indent, comment,
+    /// format) cannot leave the host document stale.
+    last_content_changes: std.array_list.Managed(LastContentChange),
     tokens_need_refresh: bool,
     decoration_generation: usize,
     /// The model stays attached for the lifetime of the terminal editor, so
@@ -657,6 +661,7 @@ pub const Editor = struct {
             .conflict = false,
             .working_copy_dirty_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .working_copy_content_listeners = std.array_list.Managed(ChangeListener).init(allocator),
+            .scroll_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .working_copy_save_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .on_did_change_dirty = Emitter(void).init(allocator),
             .screen_width = @max(width, 1),
@@ -673,6 +678,7 @@ pub const Editor = struct {
             .prev_edit_operation_type = .Other,
             .pending_selection = undefined,
             .pending_selection_count = 0,
+            .last_content_changes = std.array_list.Managed(LastContentChange).init(allocator),
             .tokens_need_refresh = false,
             .decoration_generation = 0,
             .keybindings = null,
@@ -1107,6 +1113,49 @@ pub const Editor = struct {
         return self.formatJson();
     }
 
+    /// Port of `FormatSelectionAction`: run the range formatter for each
+    /// selection. The first provider that returns edits wins, matching the
+    /// document formatter's provider ordering.
+    pub fn formatSelection(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
+        const features = self.language_features orelse return;
+        const selections = try self.getSelections();
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return;
+
+        const providers = try features.document_range_formatting_edit_provider.ordered(self.allocator, self.model, false);
+        defer self.allocator.free(providers);
+        if (providers.len == 0) return;
+
+        for (selections) |selection| {
+            const range = Range.init(
+                selection.startLineNumber,
+                selection.startColumn,
+                selection.endLineNumber,
+                selection.endColumn,
+            );
+            for (providers) |provider| {
+                var arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena.deinit();
+                const edits = provider.provide_document_range_formatting_edits(
+                    provider.context,
+                    arena.allocator(),
+                    self.model,
+                    range,
+                    .{ .tab_size = @intCast(self.cursor_config.tabSize), .insert_spaces = self.cursor_config.insertSpaces },
+                    CancellationToken.None,
+                ) catch continue;
+                if (edits.len == 0) continue;
+                const text_edits = try self.allocator.alloc(TextEdit, edits.len);
+                defer self.allocator.free(text_edits);
+                for (edits, 0..) |edit, index| text_edits[index] = .{ .range = edit.range, .text = edit.text };
+                try self.applyTextEdits(text_edits, &.{});
+                break;
+            }
+        }
+        self.setMessage("Formatted selection", .{});
+    }
+
     /// Applies declarative language contributions to an editor created before
     /// the extension scan completed.
     pub fn applyDeclarativeExtensions(self: *Editor, registry: *const extensions_registry.Registry) !void {
@@ -1174,6 +1223,7 @@ pub const Editor = struct {
         self.allocator.destroy(self.undo_redo);
         self.working_copy_dirty_listeners.deinit();
         self.working_copy_content_listeners.deinit();
+        self.scroll_listeners.deinit();
         self.working_copy_save_listeners.deinit();
         self.associations_arena.deinit();
         self.language_service.deinit();
@@ -1183,7 +1233,8 @@ pub const Editor = struct {
         if (self.keybindings) |service| service.deinit();
         self.shortcut_commands.deinit();
         self.on_did_change_dirty.deinit();
-        if (self.last_content_change) |change| self.allocator.free(change.text);
+        for (self.last_content_changes.items) |change| self.allocator.free(change.text);
+        self.last_content_changes.deinit();
         self.allocator.free(self.path);
     }
 
@@ -1223,12 +1274,14 @@ pub const Editor = struct {
             }
         }
         if (event.contentChangedEvent.changes.items.len > 0) {
-            const change = event.contentChangedEvent.changes.items[0];
-            if (self.last_content_change) |old| self.allocator.free(old.text);
-            self.last_content_change = null;
-            if (self.allocator.dupe(u8, change.text.items())) |text| {
-                self.last_content_change = .{ .range = change.range, .text = text };
-            } else |_| {}
+            for (self.last_content_changes.items) |old| self.allocator.free(old.text);
+            self.last_content_changes.clearRetainingCapacity();
+            for (event.contentChangedEvent.changes.items) |change| {
+                const text = self.allocator.dupe(u8, change.text.items()) catch continue;
+                self.last_content_changes.append(.{ .range = change.range, .text = text }) catch {
+                    self.allocator.free(text);
+                };
+            }
         }
         // Apply the change to the wrapping model incrementally. Upstream's
         // ViewModelLines does this on every content event; the terminal
@@ -1252,10 +1305,13 @@ pub const Editor = struct {
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
     }
 
-    pub fn takeLastContentChange(self: *Editor) ?LastContentChange {
-        const change = self.last_content_change;
-        self.last_content_change = null;
-        return change;
+    /// Transfers ownership of the queued change batch to the caller. Each
+    /// `LastContentChange.text` and the returned slice must be freed by it.
+    pub fn takeContentChanges(self: *Editor, allocator: Allocator) ![]LastContentChange {
+        const result = try allocator.alloc(LastContentChange, self.last_content_changes.items.len);
+        for (self.last_content_changes.items, 0..) |change, index| result[index] = change;
+        self.last_content_changes.clearRetainingCapacity();
+        return result;
     }
 
     /// Recomputes the dirty bit and emits the change event when it flips.
@@ -1598,19 +1654,67 @@ pub const Editor = struct {
 
     pub fn foldAtCursor(self: *Editor) !void {
         self.refreshFoldingIfDirty();
-        try self.folding.foldLine(self.modelCursorPosition().lineNumber);
+        try self.folding.foldLevels(self.modelCursorPosition().lineNumber, null, null);
         try self.applyFoldingVisibility();
     }
 
     pub fn unfoldAtCursor(self: *Editor) !void {
         self.refreshFoldingIfDirty();
-        self.folding.unfoldLine(self.modelCursorPosition().lineNumber);
+        try self.folding.unfoldLevels(self.modelCursorPosition().lineNumber, null, .down);
         try self.applyFoldingVisibility();
     }
 
     pub fn toggleFoldAtCursor(self: *Editor) !void {
         self.refreshFoldingIfDirty();
-        try self.folding.toggleLine(self.modelCursorPosition().lineNumber, 1);
+        try self.folding.toggleLevels(self.modelCursorPosition().lineNumber, 1);
+        try self.applyFoldingVisibility();
+    }
+
+    /// Port of the `editor.fold` command's `levels`/`direction` arguments.
+    pub fn foldLines(
+        self: *Editor,
+        lines: []const usize,
+        levels: ?usize,
+        direction: ?folding.Direction,
+    ) !void {
+        self.refreshFoldingIfDirty();
+        for (lines) |line| try self.folding.foldLevels(line, levels, direction);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn unfoldLines(
+        self: *Editor,
+        lines: []const usize,
+        levels: ?usize,
+        direction: ?folding.Direction,
+    ) !void {
+        self.refreshFoldingIfDirty();
+        for (lines) |line| try self.folding.unfoldLevels(line, levels, direction);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn toggleFoldLines(self: *Editor, lines: []const usize, levels: usize) !void {
+        self.refreshFoldingIfDirty();
+        for (lines) |line| try self.folding.toggleLevels(line, levels);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn createFoldingRangeFromSelection(self: *Editor) !void {
+        self.refreshFoldingIfDirty();
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        try self.folding.createManualRanges(selections);
+        try self.applyFoldingVisibility();
+    }
+
+    pub fn removeManualFoldingRanges(self: *Editor) !void {
+        const selections = try self.getSelectionsCopy();
+        defer self.allocator.free(selections);
+        try self.folding.removeManualRanges(selections);
+        // Upstream calls `triggerFoldingModelChanged` after removing manual
+        // ranges; recompute provider ranges so a manual range that shadowed a
+        // provider range does not leave the region absent.
+        try self.refreshFolding();
         try self.applyFoldingVisibility();
     }
 
@@ -2011,6 +2115,15 @@ pub const Editor = struct {
             .scrollHeightChanged = true,
             .scrollTopChanged = scroll_top_changed,
         } });
+        for (self.scroll_listeners.items) |listener| listener.callback(listener.context);
+    }
+
+    pub fn addScrollListener(self: *Editor, listener: ChangeListener) void {
+        self.scroll_listeners.append(listener) catch {};
+    }
+
+    pub fn removeScrollListener(self: *Editor, listener: ChangeListener) void {
+        removeChangeListener(&self.scroll_listeners, listener);
     }
 
     pub fn ensureCursorVisible(self: *Editor) void {
@@ -2055,6 +2168,259 @@ pub const Editor = struct {
         if (next == self.top_view_line) return false;
         self.top_view_line = next;
         self.emitScrollChanged(true);
+        return true;
+    }
+
+    pub const ScrollDirection = enum { up, down };
+
+    pub const ScrollUnit = enum {
+        line,
+        wrapped_line,
+        page,
+        half_page,
+        editor,
+    };
+
+    /// Port of the vertical part of `EditorScrollImpl._computeDesiredScrollTop`
+    /// in `src/vs/editor/browser/coreCommands.ts`.
+    pub fn scrollEditor(
+        self: *Editor,
+        direction: ScrollDirection,
+        unit: ScrollUnit,
+        value: usize,
+        reveal_cursor: bool,
+        select: bool,
+    ) bool {
+        const steps = @max(value, 1);
+        const height = self.textHeight();
+        var changed = false;
+        switch (unit) {
+            .line => {
+                const top_model_line = self.modelLineNumber(self.top_view_line);
+                const signed: isize = if (direction == .up)
+                    -@as(isize, @intCast(steps))
+                else
+                    @as(isize, @intCast(steps));
+                const target_model = std.math.clamp(
+                    @as(isize, @intCast(top_model_line)) + signed,
+                    1,
+                    @as(isize, @intCast(self.model.getLineCount())),
+                );
+                const view_position = self.viewPositionOfModelPosition(Position.init(@intCast(target_model), 1));
+                changed = self.setTopViewLine(view_position.lineNumber);
+            },
+            .wrapped_line => {
+                const delta: isize = if (direction == .up)
+                    -@as(isize, @intCast(steps))
+                else
+                    @as(isize, @intCast(steps));
+                changed = self.scrollViewLines(delta);
+            },
+            .page, .half_page => {
+                const base = if (unit == .page) height else @max(@as(usize, 1), (height + 1) / 2);
+                const lines = base * steps;
+                const delta: isize = if (direction == .up)
+                    -@as(isize, @intCast(lines))
+                else
+                    @as(isize, @intCast(lines));
+                changed = self.scrollViewLines(delta);
+            },
+            .editor => {
+                changed = switch (direction) {
+                    .up => self.setTopViewLine(1),
+                    .down => self.setTopViewLine(self.maxTopViewLine()),
+                };
+            },
+        }
+        if (reveal_cursor and changed) self.moveCursorsIntoViewport(select);
+        return changed;
+    }
+
+    /// Port of ViewLines' `_computeScrollTopToRevealRange`, expressed in view
+    /// lines. The terminal has no sub-line scrolling, so the desired top is
+    /// clamped to a 1-based view line before it reaches `setTopViewLine`.
+    pub fn revealViewLines(
+        self: *Editor,
+        start_view_line: usize,
+        end_view_line: usize,
+        vertical_type: view_events.VerticalRevealType,
+    ) bool {
+        const count = self.viewLineCount();
+        if (count == 0) return false;
+        const start = std.math.clamp(start_view_line, 1, count);
+        const end = std.math.clamp(end_view_line, start, count);
+        const height = self.textHeight();
+        const top = self.top_view_line;
+        const top0: isize = @intCast(top - 1);
+        const box_start: isize = @intCast(start - 1);
+        const box_end: isize = @intCast(end);
+        const box_length = box_end - box_start;
+        const viewport_end = top0 + @as(isize, @intCast(height));
+
+        var desired: isize = top0;
+        switch (vertical_type) {
+            .Top => desired = box_start,
+            .Bottom => {
+                const padded_end = box_end + 1;
+                desired = @max(0, padded_end - @as(isize, @intCast(height)));
+            },
+            .Center, .CenterIfOutsideViewport => {
+                const fully_visible = start >= top and end <= top + height -| 1;
+                if (vertical_type == .CenterIfOutsideViewport and fully_visible) {
+                    desired = top0;
+                } else if (box_length > @as(isize, @intCast(height))) {
+                    desired = box_start;
+                } else {
+                    const middle = (@as(f64, @floatFromInt(box_start)) + @as(f64, @floatFromInt(box_end))) / 2.0;
+                    desired = @intFromFloat(@max(0.0, @floor(middle - @as(f64, @floatFromInt(height)) / 2.0)));
+                }
+            },
+            .NearTop, .NearTopIfOutsideViewport => {
+                const fully_visible = start >= top and end <= top + height -| 1;
+                if (vertical_type == .NearTopIfOutsideViewport and fully_visible) {
+                    desired = top0;
+                } else {
+                    const gap = @max(@as(isize, 5), @as(isize, @intCast((height + 4) / 5)));
+                    const desired_gap = box_start - gap;
+                    const min_top = box_end - @as(isize, @intCast(height));
+                    desired = @max(min_top, desired_gap);
+                    if (desired < 0) desired = 0;
+                }
+            },
+            .Simple => {
+                // Upstream's `_computeMinimumScrolling`; `Simple` includes one
+                // extra line below so revealing a line does not leave it under
+                // the scrollbar.
+                const padded_end = box_end + 1;
+                if (padded_end - box_start >= @as(isize, @intCast(height))) {
+                    desired = box_start;
+                } else if (box_start < top0) {
+                    desired = box_start;
+                } else if (padded_end > viewport_end) {
+                    desired = @max(0, padded_end - @as(isize, @intCast(height)));
+                } else {
+                    desired = top0;
+                }
+            },
+        }
+        return self.setTopViewLine(@intCast(desired + 1));
+    }
+
+    /// Converts a model range to view lines, matching
+    /// `ViewModelImpl.revealRange` -> ViewLines' reveal request.
+    pub fn revealRange(self: *Editor, range: Range, vertical_type: view_events.VerticalRevealType) bool {
+        const converter = self.converter.interface();
+        const view_range = converter.convertModelRangeToViewRange(converter.context, range, .None);
+        return self.revealViewLines(
+            view_range.startLineNumber,
+            view_range.endLineNumber,
+            vertical_type,
+        );
+    }
+
+    pub fn revealLine(self: *Editor, line_number: usize, vertical_type: view_events.VerticalRevealType) bool {
+        const line = std.math.clamp(line_number, 1, self.model.getLineCount());
+        const range = Range.init(line, 1, line, self.model.getLineMaxColumn(line));
+        return self.revealRange(range, vertical_type);
+    }
+
+    /// The completely visible see view range, with an exclusive end line like
+    /// upstream's `getCompletelyVisibleViewRange`.
+    pub fn visibleViewRange(self: *Editor) Range {
+        const start = self.top_view_line;
+        const end = @min(start + self.textHeight(), self.viewLineCount() + 1);
+        return Range.init(start, 1, end, 1);
+    }
+
+    pub fn visibleModelRange(self: *Editor) Range {
+        const converter = self.converter.interface();
+        return converter.convertViewRangeToModelRange(converter.context, self.visibleViewRange());
+    }
+
+    /// Matches `CursorMoveImpl._runCursorMove` after a `cursorMove` command:
+    /// keep every resulting cursor visible using the Simple reveal strategy.
+    fn revealCursorStates(self: *Editor) void {
+        const states = self.cursorsRef().getAll(self.allocator) catch return;
+        defer self.allocator.free(states);
+        if (states.len == 0) return;
+        var start = states[0].viewState.selection.startLineNumber;
+        var end = states[0].viewState.selection.endLineNumber;
+        for (states[1..]) |state| {
+            start = @min(start, state.viewState.selection.startLineNumber);
+            end = @max(end, state.viewState.selection.endLineNumber);
+        }
+        _ = self.revealViewLines(start, end, .Simple);
+    }
+
+    /// Port of `CursorMoveCommands.viewportMove(.viewport_if_outside)` used by
+    /// `editorScroll`'s `revealCursor` option.
+    fn moveCursorsIntoViewport(self: *Editor, select: bool) void {
+        const cursors = self.cursorsRef().getAll(self.allocator) catch return;
+        defer self.allocator.free(cursors);
+        if (cursors.len == 0) return;
+        const visible_view = self.visibleViewRange();
+        const visible_model = self.visibleModelRange();
+        const states = CursorMoveCommands.viewportMove(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            visible_view,
+            visible_model,
+            .viewport_if_outside,
+            select,
+            1,
+        ) catch return;
+        defer self.allocator.free(states);
+        self.cursorsRef().setStates(states) catch return;
+        self.cursorsRef().normalize() catch {};
+        self.emitCursorStateChanged(.NotSet);
+    }
+
+    /// Port of `CursorMoveImpl` and the portable `CursorMoveCommands`. The
+    /// adapter parses the raw command arguments; this method owns the cursor,
+    /// history and reveal behavior.
+    pub fn cursorMove(self: *Editor, parsed: CursorMoveCommands.ParsedArguments) !bool {
+        const cursors = try self.cursorsRef().getAll(self.allocator);
+        defer self.allocator.free(cursors);
+        if (cursors.len == 0) return false;
+
+        const model = self.model_adapter.interface();
+        const view = self.view_lines.interface();
+        const states = switch (parsed.direction) {
+            .viewport_top, .viewport_center, .viewport_bottom, .viewport_if_outside => try CursorMoveCommands.viewportMove(
+                self.allocator,
+                &self.cursor_config,
+                model,
+                view,
+                cursors,
+                self.visibleViewRange(),
+                self.visibleModelRange(),
+                parsed.direction,
+                parsed.select,
+                parsed.value,
+            ),
+            else => try CursorMoveCommands.simpleMove(
+                self.allocator,
+                &self.cursor_config,
+                model,
+                view,
+                cursors,
+                parsed.direction,
+                parsed.select,
+                parsed.value,
+                parsed.unit,
+            ),
+        };
+        defer self.allocator.free(states);
+        if (states.len == 0) return false;
+
+        self.model.pushStackElement();
+        try self.cursorsRef().setStates(states);
+        try self.cursorsRef().normalize();
+        self.emitCursorStateChanged(.NotSet);
+        self.revealCursorStates();
         return true;
     }
 
@@ -5536,4 +5902,96 @@ test "Editor: read-only guards, line-number map and gutter width" {
     try std.testing.expectEqual(@as(usize, 4), editor.gutterWidth());
     try std.testing.expectEqual(@as(usize, 2), editor.foldCellColumn());
     try std.testing.expectEqual(@as(usize, 3), editor.quickDiffCellColumn());
+}
+
+test "Editor: reveal centers, tops and bottoms a line" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text =
+        "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\n" ++
+        "line10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19";
+    var editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 7);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    // textHeight is six rows. Line 10's box middle is 9.5, so the desired
+    // zero-based top is floor(9.5 - 3) = 6 (one-based top 7).
+    try std.testing.expect(editor.revealLine(10, .Center));
+    try std.testing.expectEqual(@as(usize, 7), editor.topViewLine());
+
+    // Top places the line at the first view row.
+    try std.testing.expect(editor.revealLine(10, .Top));
+    try std.testing.expectEqual(@as(usize, 10), editor.topViewLine());
+
+    // Bottom keeps one row below the revealed line, matching upstream's
+    // Simple/Bottom padding.
+    try std.testing.expect(editor.revealLine(10, .Bottom));
+    try std.testing.expectEqual(@as(usize, 6), editor.topViewLine());
+
+    // A visible line under Default does not move the viewport.
+    try std.testing.expect(!editor.revealLine(10, .Simple));
+    try std.testing.expectEqual(@as(usize, 6), editor.topViewLine());
+
+    // An off-screen line scrolls minimally, again leaving the padded row.
+    try std.testing.expect(editor.setTopViewLine(1));
+    try std.testing.expect(editor.revealLine(10, .Simple));
+    try std.testing.expectEqual(@as(usize, 6), editor.topViewLine());
+}
+
+test "Editor: cursorMove by wrapped line and viewport center" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten";
+    var editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 7);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(2, 1));
+    const down = CursorMoveCommands.parse("down", "wrappedLine", false, 1, false).?;
+    try std.testing.expect(try editor.cursorMove(down));
+    try std.testing.expectEqual(@as(usize, 3), editor.modelCursorPosition().lineNumber);
+
+    const select_down = CursorMoveCommands.parse("down", "line", true, 1, false).?;
+    try std.testing.expect(try editor.cursorMove(select_down));
+    try std.testing.expect(editor.modelSelection().isEmpty() == false);
+
+    try editor.setCursorPosition(Position.init(1, 1));
+    try std.testing.expect(editor.setTopViewLine(5));
+    const center = CursorMoveCommands.parse("viewPortCenter", "line", false, 1, false).?;
+    try std.testing.expect(try editor.cursorMove(center));
+    // Visible model lines are 5..10; the center is line 8.
+    try std.testing.expectEqual(@as(usize, 8), editor.modelCursorPosition().lineNumber);
+}
+
+test "Editor: manual fold ranges are created and removed" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(
+        allocator,
+        io,
+        "class A {\n  void f() {\n    x();\n  }\n}",
+        "test.zig",
+        40,
+        10,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    editor.refreshFoldingIfDirty();
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 4, 1)});
+    try editor.createFoldingRangeFromSelection();
+    try std.testing.expectEqual(folding.FoldState.collapsed, editor.foldStateAtModelLine(1));
+    const folded_count = editor.viewLineCount();
+    try std.testing.expect(folded_count < 5);
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 1)});
+    try editor.removeManualFoldingRanges();
+    try std.testing.expectEqual(folding.FoldState.expanded, editor.foldStateAtModelLine(1));
+    try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
 }

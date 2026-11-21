@@ -166,21 +166,35 @@ pub fn modelChangedEvent(
     change: ChangeSpec,
     version: u32,
 ) !std.json.Value {
-    var changes = std.json.Array.init(arena);
-    var item: std.json.ObjectMap = .empty;
-    try item.put(arena, "rangeOffset", .{ .integer = 0 });
-    try item.put(arena, "rangeLength", .{ .integer = 0 });
-    try item.put(arena, "text", .{ .string = try arena.dupe(u8, change.text) });
-    var range: std.json.ObjectMap = .empty;
-    try range.put(arena, "startLineNumber", .{ .integer = @intCast(change.start.line) });
-    try range.put(arena, "startColumn", .{ .integer = @intCast(utf16Column(model, change.start.line, change.start.column)) });
-    try range.put(arena, "endLineNumber", .{ .integer = @intCast(change.end.line) });
-    try range.put(arena, "endColumn", .{ .integer = @intCast(utf16Column(model, change.end.line, change.end.column)) });
-    try item.put(arena, "range", .{ .object = range });
-    try changes.append(.{ .object = item });
+    return modelChangesEvent(arena, model, &.{change}, version);
+}
+
+/// `$acceptModelChanged` payload for a whole model event. Upstream sends all
+/// change ranges from one edit batch in one event, so the extension host can
+/// apply multi-range commands atomically.
+pub fn modelChangesEvent(
+    arena: Allocator,
+    model: *TextModel,
+    changes: []const ChangeSpec,
+    version: u32,
+) !std.json.Value {
+    var change_array = std.json.Array.init(arena);
+    for (changes) |change| {
+        var item: std.json.ObjectMap = .empty;
+        try item.put(arena, "rangeOffset", .{ .integer = 0 });
+        try item.put(arena, "rangeLength", .{ .integer = 0 });
+        try item.put(arena, "text", .{ .string = try arena.dupe(u8, change.text) });
+        var range: std.json.ObjectMap = .empty;
+        try range.put(arena, "startLineNumber", .{ .integer = @intCast(change.start.line) });
+        try range.put(arena, "startColumn", .{ .integer = @intCast(utf16Column(model, change.start.line, change.start.column)) });
+        try range.put(arena, "endLineNumber", .{ .integer = @intCast(change.end.line) });
+        try range.put(arena, "endColumn", .{ .integer = @intCast(utf16Column(model, change.end.line, change.end.column)) });
+        try item.put(arena, "range", .{ .object = range });
+        try change_array.append(.{ .object = item });
+    }
 
     var event: std.json.ObjectMap = .empty;
-    try event.put(arena, "changes", .{ .array = changes });
+    try event.put(arena, "changes", .{ .array = change_array });
     try event.put(arena, "eol", .{ .string = "\n" });
     try event.put(arena, "versionId", .{ .integer = @intCast(version) });
     try event.put(arena, "isUndoing", .{ .bool = false });
@@ -197,6 +211,7 @@ pub fn editorPropertiesChanged(
     model: *TextModel,
     selections: []const Selection,
     source: []const u8,
+    visible_range: ?@import("../../../editor/common/core/range.zig").Range,
 ) !std.json.Value {
     var event: std.json.ObjectMap = .empty;
     try event.put(arena, "selections", .{ .array = try selectionsJson(arena, model, selections) });
@@ -204,11 +219,47 @@ pub fn editorPropertiesChanged(
     var properties: std.json.ObjectMap = .empty;
     try properties.put(arena, "options", .null);
     try properties.put(arena, "selections", .{ .object = event });
-    try properties.put(arena, "visibleRanges", .null);
+    if (visible_range) |range| {
+        try properties.put(arena, "visibleRanges", .{ .array = try visibleRangeJson(arena, model, range) });
+    } else {
+        try properties.put(arena, "visibleRanges", .null);
+    }
     var args = std.json.Array.init(arena);
     try args.append(.{ .string = try arena.dupe(u8, editor_id) });
     try args.append(.{ .object = properties });
     return .{ .array = args };
+}
+
+/// Properties-changed payload carrying only a viewport delta. Upstream sends
+/// this from `MainThreadTextEditor` when the editor scrolls without changing
+/// its selection.
+pub fn editorVisibleRangesChanged(
+    arena: Allocator,
+    editor_id: []const u8,
+    model: *TextModel,
+    visible_range: @import("../../../editor/common/core/range.zig").Range,
+) !std.json.Value {
+    var properties: std.json.ObjectMap = .empty;
+    try properties.put(arena, "options", .null);
+    try properties.put(arena, "selections", .null);
+    try properties.put(arena, "visibleRanges", .{ .array = try visibleRangeJson(arena, model, visible_range) });
+    var args = std.json.Array.init(arena);
+    try args.append(.{ .string = try arena.dupe(u8, editor_id) });
+    try args.append(.{ .object = properties });
+    return .{ .array = args };
+}
+
+fn visibleRangeJson(arena: Allocator, model: *TextModel, range: @import("../../../editor/common/core/range.zig").Range) !std.json.Array {
+    var array = std.json.Array.init(arena);
+    var item: std.json.ObjectMap = .empty;
+    const start_line = @min(@max(range.startLineNumber, 1), model.getLineCount());
+    const end_line = @min(@max(range.endLineNumber, start_line), model.getLineCount());
+    try item.put(arena, "startLineNumber", .{ .integer = @intCast(start_line) });
+    try item.put(arena, "startColumn", .{ .integer = 1 });
+    try item.put(arena, "endLineNumber", .{ .integer = @intCast(end_line) });
+    try item.put(arena, "endColumn", .{ .integer = @intCast(model.getLineMaxColumn(end_line)) });
+    try array.append(.{ .object = item });
+    return array;
 }
 
 fn utf16Column(model: *TextModel, line_number: usize, column: usize) usize {

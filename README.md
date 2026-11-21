@@ -249,7 +249,16 @@ the status bar shows its mode entry. VSCodeVim's `gd`/`gD`
 `<C-]>` (`editor.action.revealDefinition`), `gh` (`editor.action.showHover`),
 `gO` (`outline.focus`, mapped to the terminal symbol picker) and
 `gf file[:line]` reach the same workbench actions. `gf` opens the file under
-the cursor and honors an optional line number. VSCodeVim's `j`/`k`/`Up`/`Down`
+the cursor and honors an optional line number. VSCodeVim's scroll and fold
+families reach the ported viewport and folding controllers: `zz`/`zt`/`zb`,
+`z.`/`z-`/`z<CR>`, `za`/`zc`/`zo`/`zM`/`zR`/`zC`/`zO`/`zf`/`zd`, and
+`Ctrl-E`/`Ctrl-Y`/`Ctrl-D`/`Ctrl-U`/`Ctrl-F`/`Ctrl-B`. `<C-w>` pane
+navigation (`h`/`j`/`k`/`l`/`w`), split (`v`/`s`), close/only, resize and
+equalize operations are wired to the terminal editor groups. Screen-line
+motions (`gj`/`gk`, `H`/`M`/`L`, `g0`/`g^`/`g$`/`g_`/`gm`, and `z h/l/H/L`)
+use the ported `cursorMove` command. The extension host receives real
+`visibleRanges` and scroll deltas, so VSCodeVim's scroll and scrolloff checks
+see the terminal viewport. VSCodeVim's `j`/`k`/`Up`/`Down`
 are not column-preserving across differing tab indentation: its
 `desiredColumn` is a UTF-16 character offset, so the rendered column and the
 status bar `Col` can shift by one or more cells. That is VSCodeVim behavior

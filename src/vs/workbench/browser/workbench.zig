@@ -831,6 +831,28 @@ pub const Workbench = struct {
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
+            .{ .id = "workbench.action.splitEditorOrthogonal", .label = "Split Editor Orthogonal", .category = "View", .context = self, .run = commandSplitEditorOrthogonal },
+            .{ .id = "workbench.action.navigateLeft", .label = "Focus Group Left", .category = "View", .context = self, .run = commandNavigateLeft },
+            .{ .id = "workbench.action.navigateRight", .label = "Focus Group Right", .category = "View", .context = self, .run = commandNavigateRight },
+            .{ .id = "workbench.action.navigateUp", .label = "Focus Group Up", .category = "View", .context = self, .run = commandNavigateUp },
+            .{ .id = "workbench.action.navigateDown", .label = "Focus Group Down", .category = "View", .context = self, .run = commandNavigateDown },
+            .{ .id = "workbench.action.navigateEditorGroups", .label = "Cycle Editor Groups", .category = "View", .context = self, .run = commandCycleGroup },
+            .{ .id = "workbench.action.evenEditorWidths", .label = "Reset Editor Group Sizes", .category = "View", .context = self, .run = commandEvenEditorWidths },
+            .{ .id = "workbench.action.increaseViewWidth", .label = "Increase Editor Width", .category = "View", .context = self, .run = commandIncreaseViewWidth },
+            .{ .id = "workbench.action.decreaseViewWidth", .label = "Decrease Editor Width", .category = "View", .context = self, .run = commandDecreaseViewWidth },
+            .{ .id = "workbench.action.increaseViewHeight", .label = "Increase Editor Height", .category = "View", .context = self, .run = commandIncreaseViewHeight },
+            .{ .id = "workbench.action.decreaseViewHeight", .label = "Decrease Editor Height", .category = "View", .context = self, .run = commandDecreaseViewHeight },
+            .{ .id = "workbench.action.maximizeEditor", .label = "Maximize Editor Group", .category = "View", .context = self, .run = commandMaximizeEditor },
+            .{ .id = "workbench.action.closePanel", .label = "Close Panel", .category = "View", .context = self, .run = commandClosePanel },
+            .{ .id = "workbench.action.closeAllEditors", .label = "Close All Editors", .category = "View", .context = self, .run = commandCloseAllEditors },
+            .{ .id = "workbench.action.closeOtherEditors", .label = "Close Other Editors", .category = "View", .context = self, .run = commandCloseOtherEditors },
+            .{ .id = "workbench.action.joinAllGroups", .label = "Join All Groups", .category = "View", .context = self, .run = commandJoinAllGroups },
+            .{ .id = "workbench.action.lastEditorInGroup", .label = "Last Editor in Group", .category = "View", .context = self, .run = commandLastEditorInGroup },
+            .{ .id = "workbench.action.previousEditor", .label = "Previous Editor", .category = "View", .context = self, .run = commandPreviousEditor },
+            .{ .id = "workbench.action.openEditorAtIndex1", .label = "Open Editor 1", .category = "View", .context = self, .run = commandOpenEditorAtIndex1 },
+            .{ .id = "workbench.action.revertAndCloseActiveEditor", .label = "Revert and Close Editor", .category = "View", .context = self, .run = commandRevertAndCloseActiveEditor },
+            .{ .id = "workbench.action.createTerminalEditor", .label = "Create Terminal Editor", .category = "View", .context = self, .run = commandCreateTerminalEditor },
+            .{ .id = "workbench.view.explorer", .label = "View: Show Explorer", .category = "View", .context = self, .run = commandViewExplorer },
             .{ .id = "workbench.view.scm", .label = "View: Show Source Control", .category = "View", .context = self, .run = commandViewScm },
             .{ .id = "git.refresh", .label = "Refresh", .category = "Source Control", .context = self, .run = commandGitRefresh },
             .{ .id = "git.openChange", .label = "Open Change", .category = "Source Control", .context = self, .run = commandGitOpenChange },
@@ -889,7 +911,12 @@ pub const Workbench = struct {
             .{ .id = "editor.action.selectToBracket", .label = "Select to Bracket", .category = "Selection", .context = self, .requires_editor = true, .run = commandSelectToBracket },
             .{ .id = "editor.action.removeBrackets", .label = "Remove Brackets", .category = "Editor", .context = self, .requires_editor = true, .run = commandRemoveBrackets },
             .{ .id = "editor.action.smartSelect.expand", .label = "Expand Selection", .category = "Selection", .context = self, .requires_editor = true, .run = commandExpandSelection },
+            .{ .id = "editor.action.smartSelect.grow", .label = "Expand Selection", .category = "Selection", .context = self, .requires_editor = true, .run = commandExpandSelection },
             .{ .id = "editor.action.smartSelect.shrink", .label = "Shrink Selection", .category = "Selection", .context = self, .requires_editor = true, .run = commandShrinkSelection },
+            .{ .id = "editor.action.formatSelection", .label = "Format Selection", .category = "Editor", .context = self, .requires_editor = true, .run = commandFormatSelection },
+            .{ .id = "editor.action.indentationToSpaces", .label = "Convert Indentation to Spaces", .category = "Editor", .context = self, .requires_editor = true, .run = commandIndentationToSpaces },
+            .{ .id = "editor.action.indentationToTabs", .label = "Convert Indentation to Tabs", .category = "Editor", .context = self, .requires_editor = true, .run = commandIndentationToTabs },
+            .{ .id = "editor.action.wordHighlight.trigger", .label = "Trigger Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightTrigger },
             .{ .id = "editor.action.inPlaceReplace.up", .label = "Replace with Previous Value", .category = "Editor", .context = self, .requires_editor = true, .run = commandInPlaceReplacePrevious },
             .{ .id = "editor.action.inPlaceReplace.down", .label = "Replace with Next Value", .category = "Editor", .context = self, .requires_editor = true, .run = commandInPlaceReplaceNext },
             .{ .id = "editor.action.reindentlines", .label = "Reindent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandReindentLines },
@@ -3307,6 +3334,233 @@ pub const Workbench = struct {
         }
     }
 
+    pub const GroupDirection = enum { left, right, up, down };
+
+    /// `<C-w>h/j/k/l`: focus the nearest pane in a direction using the laid-out
+    /// grid rectangles. This mirrors VS Code's directional group navigation
+    /// without needing the browser grid's DOM geometry.
+    pub fn navigateGroup(self: *Workbench, direction: GroupDirection) !void {
+        self.layoutAll();
+        const current = self.activePane() orelse return;
+        const source = current.rect;
+        const source_left = ui.cell.snap(source.x);
+        const source_top = ui.cell.snap(source.y);
+        const source_right = ui.cell.snap(source.right());
+        const source_bottom = ui.cell.snap(source.bottom());
+
+        var best: ?*GroupPane = null;
+        var best_distance: usize = std.math.maxInt(usize);
+        for (self.part.group_views.items) |pane| {
+            if (pane == current or pane.tabs.items.len == 0) continue;
+            const rect = pane.rect;
+            const left = ui.cell.snap(rect.x);
+            const top = ui.cell.snap(rect.y);
+            const right = ui.cell.snap(rect.right());
+            const bottom = ui.cell.snap(rect.bottom());
+            const overlaps_x = left < source_right and right > source_left;
+            const overlaps_y = top < source_bottom and bottom > source_top;
+            const distance: ?usize = switch (direction) {
+                .left => if (right <= source_left and overlaps_y) source_left - right else null,
+                .right => if (left >= source_right and overlaps_y) left - source_right else null,
+                .up => if (bottom <= source_top and overlaps_x) source_top - bottom else null,
+                .down => if (top >= source_bottom and overlaps_x) top - source_bottom else null,
+            };
+            if (distance) |value| {
+                if (value < best_distance) {
+                    best_distance = value;
+                    best = pane;
+                }
+            }
+        }
+        const target = best orelse return;
+        self.service.activateGroup(target.group);
+        if (target.activeTab() == null and target.tabs.items.len > 0) {
+            try target.activateTab(target.tabs.items[0]);
+        }
+        target.syncActivePane();
+        if (self.activeTab()) |tab| try tab.ensureControllers();
+        self.revealActiveEditor();
+    }
+
+    pub fn cycleGroup(self: *Workbench) !void {
+        try self.switchGroup(1);
+    }
+
+    /// Port of `workbench.action.maximizeEditor`: expand the active group.
+    pub fn maximizeActiveGroup(self: *Workbench) void {
+        const pane = self.activePane() orelse return;
+        if (self.expanded_pane == pane) return;
+        self.service.activateGroup(pane.group);
+        pane.syncActivePane();
+        self.expanded_pane = pane;
+        self.layoutAll();
+        self.breadcrumbs_dirty = true;
+    }
+
+    pub fn minimizeActiveGroup(self: *Workbench) void {
+        if (self.expanded_pane == null) return;
+        self.expanded_pane = null;
+        self.layoutAll();
+        self.breadcrumbs_dirty = true;
+    }
+
+    pub fn closePanel(self: *Workbench) void {
+        self.hideTerminal();
+    }
+
+    /// Close every editor in every group, stopping at the first dirty-close
+    /// confirmation instead of silently discarding the remaining editors.
+    pub fn closeAllEditors(self: *Workbench) !void {
+        while (self.tabCount() > 0) {
+            var closed = false;
+            for (self.part.group_views.items) |pane| {
+                if (pane.tabs.items.len == 0) continue;
+                if (!try self.closeTab(pane, pane.tabs.items[0])) break;
+                closed = true;
+                break;
+            }
+            if (!closed) break;
+        }
+    }
+
+    /// Port of `workbench.action.closeOtherEditors`: close every tab in the
+    /// active group except the active one.
+    pub fn closeOtherEditors(self: *Workbench) !void {
+        const pane = self.activePane() orelse return;
+        const active = pane.activeTab() orelse return;
+        while (pane.tabs.items.len > 1) {
+            var candidate: ?*Tab = null;
+            for (pane.tabs.items) |tab| {
+                if (tab != active) {
+                    candidate = tab;
+                    break;
+                }
+            }
+            const tab = candidate orelse break;
+            if (!try self.closeTab(pane, tab)) break;
+        }
+    }
+
+    /// Port of `workbench.action.joinAllGroups`: move every tab into the
+    /// active group, then drop the empty groups.
+    pub fn joinAllGroups(self: *Workbench) !void {
+        const target = self.activePane() orelse return;
+        for (self.part.group_views.items) |pane| {
+            if (pane == target) continue;
+            while (pane.tabs.items.len > 0) {
+                const tab = pane.tabs.items[0];
+                _ = try pane.group.model.closeEditor(tab.input, .MOVE, false);
+                _ = pane.removeTab(tab);
+                _ = try target.group.model.openEditor(tab.input, .{ .pinned = true, .active = false });
+                try target.addTab(tab);
+            }
+            pane.syncActivePane();
+        }
+        var index: usize = 0;
+        while (index < self.part.group_views.items.len) {
+            const pane = self.part.group_views.items[index];
+            if (pane == target or pane.tabs.items.len > 0) {
+                index += 1;
+                continue;
+            }
+            _ = self.part.collapseView(pane);
+        }
+        target.syncActivePane();
+        self.layoutAll();
+        if (self.activeTab()) |tab| try tab.ensureControllers();
+    }
+
+    pub fn lastEditorInGroup(self: *Workbench) !void {
+        const pane = self.activePane() orelse return;
+        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
+        defer ordered.deinit();
+        try pane.orderedTabs(self.allocator, &ordered);
+        if (ordered.items.len == 0) return;
+        const tab = ordered.items[ordered.items.len - 1];
+        try pane.activateTab(tab);
+        try tab.ensureControllers();
+        self.focusEditor();
+        tab.focusEditor();
+        try tab.refresh();
+    }
+
+    pub fn previousEditor(self: *Workbench) !void {
+        try self.switchTab(-1);
+    }
+
+    pub fn revertAndCloseActiveEditor(self: *Workbench) !void {
+        const pane = self.activePane() orelse return;
+        const tab = pane.activeTab() orelse return;
+        tab.editor.reloadFromDisk() catch {};
+        _ = try self.closeActive();
+    }
+
+    /// Port of `moveActiveEditor` for `:tabmove`.
+    pub fn moveActiveEditor(self: *Workbench, to: []const u8, by: []const u8, value: usize) !void {
+        if (!std.mem.eql(u8, by, "tab")) return;
+        const pane = self.activePane() orelse return;
+        const tab = pane.activeTab() orelse return;
+        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
+        defer ordered.deinit();
+        try pane.orderedTabs(self.allocator, &ordered);
+        const current = pane.activeIndex(ordered.items);
+        const count = ordered.items.len;
+        if (count == 0) return;
+
+        const target: usize = if (std.mem.eql(u8, to, "first"))
+            0
+        else if (std.mem.eql(u8, to, "last"))
+            count - 1
+        else if (std.mem.eql(u8, to, "left"))
+            current -| 1
+        else if (std.mem.eql(u8, to, "right"))
+            @min(current + 1, count - 1)
+        else if (std.mem.eql(u8, to, "position"))
+            @min(value -| 1, count - 1)
+        else
+            return;
+        _ = try pane.group.model.moveEditor(tab.input, @intCast(target));
+        pane.syncActivePane();
+        self.layoutAll();
+    }
+
+    /// Port of `workbench.action.evenEditorWidths` for the terminal grid.
+    pub fn equalizeEditorGroups(self: *Workbench) void {
+        equalizeGrid(self.part.root);
+        self.layoutAll();
+    }
+
+    fn equalizeGrid(node: *LayoutNode) void {
+        switch (node.kind) {
+            .leaf => {},
+            .split => |*split| {
+                split.ratio = 0.5;
+                equalizeGrid(split.first);
+                equalizeGrid(split.second);
+            },
+        }
+    }
+
+    /// Approximate the editor-part resize actions by changing the sidebar and
+    /// panel sizes that determine the editor area.
+    pub fn resizeEditorArea(self: *Workbench, width_delta: isize, height_delta: isize) !void {
+        if (width_delta != 0 and self.sidebarShown()) {
+            const current: isize = @intCast(self.layout_model.size(.sidebar));
+            const next = @min(@max(current - width_delta, 10), @as(isize, @intCast(@max(self.cols / 2, 10))));
+            try self.layout_model.setSize(.sidebar, @intCast(next));
+        }
+        if (height_delta != 0 and self.terminalVisible()) {
+            const current: isize = @intCast(self.layout_model.size(.panel));
+            const next = @min(@max(current - height_delta, 3), @as(isize, @intCast(@max(self.rows / 2, 3))));
+            try self.layout_model.setSize(.panel, @intCast(next));
+        }
+        self.layoutAll();
+    }
+
+    pub fn showExplorer(self: *Workbench) !void {
+        if (try self.showActivityById("explorer")) self.focusSidebar();
+    }
+
     /// Splits the active group and moves the active tab into the new group.
     pub fn splitActive(self: *Workbench, direction: SplitDirection) !void {
         self.part.active_sash = null;
@@ -5440,6 +5694,117 @@ fn commandSplitEditor(context: *anyopaque) anyerror!void {
     try self.splitActive(.horizontal);
 }
 
+fn commandSplitEditorOrthogonal(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.splitActive(.vertical);
+}
+
+fn commandNavigateLeft(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.navigateGroup(.left);
+}
+
+fn commandNavigateRight(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.navigateGroup(.right);
+}
+
+fn commandNavigateUp(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.navigateGroup(.up);
+}
+
+fn commandNavigateDown(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.navigateGroup(.down);
+}
+
+fn commandCycleGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.cycleGroup();
+}
+
+fn commandEvenEditorWidths(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.equalizeEditorGroups();
+}
+
+fn commandIncreaseViewWidth(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.resizeEditorArea(4, 0);
+}
+
+fn commandDecreaseViewWidth(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.resizeEditorArea(-4, 0);
+}
+
+fn commandIncreaseViewHeight(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.resizeEditorArea(0, 2);
+}
+
+fn commandDecreaseViewHeight(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.resizeEditorArea(0, -2);
+}
+
+fn commandMaximizeEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.maximizeActiveGroup();
+}
+
+fn commandClosePanel(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.closePanel();
+}
+
+fn commandCloseAllEditors(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.closeAllEditors();
+}
+
+fn commandCloseOtherEditors(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.closeOtherEditors();
+}
+
+fn commandJoinAllGroups(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.joinAllGroups();
+}
+
+fn commandLastEditorInGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.lastEditorInGroup();
+}
+
+fn commandPreviousEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.previousEditor();
+}
+
+fn commandOpenEditorAtIndex1(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.activateIndex(0);
+}
+
+fn commandRevertAndCloseActiveEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.revertAndCloseActiveEditor();
+}
+
+fn commandCreateTerminalEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.newTerminal();
+    try self.showTerminal();
+}
+
+fn commandViewExplorer(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showExplorer();
+}
+
 fn commandToggleSidebar(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.toggleSidebar();
@@ -5676,6 +6041,27 @@ fn commandFoldAll(context: *anyopaque) anyerror!void {
 fn commandUnfoldAll(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
     try tab.editor.unfoldAll();
+}
+
+fn commandFormatSelection(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.formatSelection();
+}
+
+fn commandIndentationToSpaces(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.indentationToSpaces();
+}
+
+fn commandIndentationToTabs(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.editor.indentationToTabs();
+}
+
+fn commandWordHighlightTrigger(context: *anyopaque) anyerror!void {
+    const tab = try commandTab(context);
+    try tab.ensureControllers();
+    tab.controllers.?.word_highlighter.trigger();
 }
 
 fn commandWordHighlightNext(context: *anyopaque) anyerror!void {
@@ -6262,6 +6648,33 @@ test "Workbench: split moves the active tab into a second group" {
     // Splitting again moves the active tab to a third group.
     try workbench.splitActive(.vertical);
     try std.testing.expectEqual(@as(usize, 3), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+}
+
+test "Workbench: directional group navigation and join all groups" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "nav_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "nav_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
+
+    try workbench.navigateGroup(.left);
+    try std.testing.expectEqualStrings("nav_a.txt", workbench.activeTab().?.input.getName());
+    try workbench.navigateGroup(.right);
+    try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
+
+    try workbench.joinAllGroups();
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
 }
 

@@ -190,6 +190,152 @@ pub const FoldingModel = struct {
         return try result.toOwnedSlice();
     }
 
+    /// Port of `toggleCollapseState(foldingModel, levels, lineNumbers)`.
+    pub fn toggleCollapseStateLevels(self: *FoldingModel, levels: usize, line_numbers: []const usize) !void {
+        var indexes = ArrayList(usize).init(self.allocator);
+        defer indexes.deinit();
+        for (line_numbers) |line| {
+            const region = self.getRegionAtLine(line) orelse continue;
+            const collapse = !region.isCollapsed;
+            try indexes.append(region.regionIndex);
+            if (levels > 1) {
+                const inside = try self.getRegionsInside(region, levels - 1);
+                defer self.allocator.free(inside);
+                for (inside) |child| {
+                    if (child.isCollapsed != collapse) try indexes.append(child.regionIndex);
+                }
+            }
+        }
+        self.toggleCollapseState(indexes.items);
+    }
+
+    /// Port of `setCollapseStateLevelsDown`: collapse/expand the region at
+    /// each line and its descendants up to `levels`.
+    pub fn setCollapseStateLevelsDown(
+        self: *FoldingModel,
+        collapse: bool,
+        levels: usize,
+        line_numbers: []const usize,
+    ) !void {
+        var indexes = ArrayList(usize).init(self.allocator);
+        defer indexes.deinit();
+        for (line_numbers) |line| {
+            const region = self.getRegionAtLine(line) orelse continue;
+            if (region.isCollapsed != collapse) try indexes.append(region.regionIndex);
+            if (levels > 1) {
+                const inside = try self.getRegionsInside(region, levels - 1);
+                defer self.allocator.free(inside);
+                for (inside) |child| {
+                    if (child.isCollapsed != collapse) try indexes.append(child.regionIndex);
+                }
+            }
+        }
+        self.setCollapsed(indexes.items, collapse);
+    }
+
+    /// Port of `setCollapseStateLevelsUp`: collapse/expand the parents of each
+    /// line up to `levels`, including the region at the line.
+    pub fn setCollapseStateLevelsUp(
+        self: *FoldingModel,
+        collapse: bool,
+        levels: usize,
+        line_numbers: []const usize,
+    ) !void {
+        var indexes = ArrayList(usize).init(self.allocator);
+        defer indexes.deinit();
+        for (line_numbers) |line| {
+            const regions = try self.getAllRegionsAtLine(line);
+            defer self.allocator.free(regions);
+            for (regions, 0..) |region, level| {
+                if (level + 1 > levels) break;
+                if (region.isCollapsed != collapse) try indexes.append(region.regionIndex);
+            }
+        }
+        self.setCollapsed(indexes.items, collapse);
+    }
+
+    /// Port of `setCollapseStateUp`: toggle the innermost matching region at
+    /// each line, falling back to the first matching parent.
+    pub fn setCollapseStateUp(self: *FoldingModel, collapse: bool, line_numbers: []const usize) !void {
+        var indexes = ArrayList(usize).init(self.allocator);
+        defer indexes.deinit();
+        for (line_numbers) |line| {
+            const regions = try self.getAllRegionsAtLine(line);
+            defer self.allocator.free(regions);
+            for (regions) |region| {
+                if (region.isCollapsed != collapse) {
+                    try indexes.append(region.regionIndex);
+                    break;
+                }
+            }
+        }
+        self.setCollapsed(indexes.items, collapse);
+    }
+
+    /// Port of `FoldRangeFromSelectionAction`: merge manual user-defined
+    /// collapsed ranges into the current model.
+    pub fn addManualRanges(self: *FoldingModel, ranges: []const FoldRange) !void {
+        const current = if (self.regions) |*regions| regions else null;
+        const new_regions = try folding_ranges.sanitizeAndMerge(
+            self.allocator,
+            if (current) |regions| .{ .regions = regions } else .{ .ranges = &.{} },
+            .{ .ranges = ranges },
+            self.text_model.getLineCount(),
+            null,
+        );
+        defer self.allocator.free(new_regions);
+        const merged = try FoldingRegions.fromFoldRanges(self.allocator, new_regions);
+        self.updatePost(merged);
+    }
+
+    /// Port of `FoldingModel.removeManualRanges`: remove user-defined ranges
+    /// selected by the cursors, while keeping every provider range.
+    pub fn removeManualRanges(self: *FoldingModel, ranges: []const Selection) !void {
+        const regions = if (self.regions) |*r| r else return;
+        var remove_indexes = std.AutoHashMap(usize, void).init(self.allocator);
+        defer remove_indexes.deinit();
+        var remove_all = false;
+        for (ranges) |range| {
+            if (!range.isEmpty()) continue;
+            var index = regions.findRange(range.startLineNumber) catch -1;
+            while (index != -1 and regions.getSource(@intCast(index)) == .provider) {
+                index = regions.getParentIndex(@intCast(index)) catch -1;
+            }
+            if (index == -1) {
+                remove_all = true;
+            } else {
+                try remove_indexes.put(@intCast(index), {});
+            }
+        }
+        const intersects = struct {
+            fn call(selection_ranges: []const Selection, fold_range: FoldRange) bool {
+                for (selection_ranges) |selection| {
+                    if (selection.isEmpty()) continue;
+                    if (selection.startLineNumber <= fold_range.endLineNumber and
+                        fold_range.startLineNumber <= selection.endLineNumber)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }.call;
+
+        var kept = ArrayList(FoldRange).init(self.allocator);
+        defer kept.deinit();
+        for (0..regions.length()) |index| {
+            const fold_range = regions.toFoldRange(index);
+            if (fold_range.source == .provider) {
+                try kept.append(fold_range);
+                continue;
+            }
+            if (remove_all or remove_indexes.contains(index) or intersects(ranges, fold_range)) continue;
+            try kept.append(fold_range);
+        }
+        const merged = try FoldingRegions.fromFoldRanges(self.allocator, kept.items);
+        self.updatePost(merged);
+    }
+
     pub fn toggleCollapseState(self: *FoldingModel, indexes: []const usize) void {
         const regions = if (self.regions) |*r| r else return;
         for (indexes) |index| {

@@ -16,6 +16,8 @@ const FoldingRules = @import("../../../common/languages/languageConfiguration.zi
 const ProjectedViewModelLines = @import("../../../common/viewModel/viewModelLines.zig").ProjectedViewModelLines;
 const FoldingModel = @import("./foldingModel.zig").FoldingModel;
 const FoldingRegion = @import("./foldingModel.zig").FoldingRegion;
+const FoldRange = @import("./foldingRanges.zig").FoldRange;
+const FoldSource = @import("./foldingRanges.zig").FoldSource;
 const HiddenRangeModel = @import("./hiddenRangeModel.zig").HiddenRangeModel;
 const indent_range_provider = @import("./indentRangeProvider.zig");
 
@@ -24,6 +26,8 @@ pub const FoldState = enum {
     expanded,
     collapsed,
 };
+
+pub const Direction = enum { up, down };
 
 pub const Controller = struct {
     allocator: Allocator,
@@ -158,6 +162,65 @@ pub const Controller = struct {
         const region = self.folding_model.getRegionAtLine(line) orelse return;
         if (!region.isCollapsed) return;
         self.folding_model.setCollapsed(&[_]usize{region.regionIndex}, false);
+        self.hidden_model.updateHiddenRanges();
+    }
+
+    /// Port of the `editor.fold` command with optional `levels`/`direction`.
+    /// With neither argument, upstream uses `setCollapseStateUp`.
+    pub fn foldLevels(self: *Controller, line: usize, levels: ?usize, direction: ?Direction) !void {
+        if (levels == null and direction == null) {
+            try self.folding_model.setCollapseStateUp(true, &[_]usize{line});
+        } else if (direction == .up) {
+            try self.folding_model.setCollapseStateLevelsUp(true, levels orelse 1, &[_]usize{line});
+        } else {
+            try self.folding_model.setCollapseStateLevelsDown(true, levels orelse 1, &[_]usize{line});
+        }
+        self.hidden_model.updateHiddenRanges();
+    }
+
+    /// Port of the `editor.unfold` command with optional `levels`/`direction`.
+    pub fn unfoldLevels(self: *Controller, line: usize, levels: ?usize, direction: ?Direction) !void {
+        if (direction == .up) {
+            try self.folding_model.setCollapseStateLevelsUp(false, levels orelse 1, &[_]usize{line});
+        } else {
+            try self.folding_model.setCollapseStateLevelsDown(false, levels orelse 1, &[_]usize{line});
+        }
+        self.hidden_model.updateHiddenRanges();
+    }
+
+    pub fn toggleLevels(self: *Controller, line: usize, levels: usize) !void {
+        try self.folding_model.toggleCollapseStateLevels(levels, &[_]usize{line});
+        self.hidden_model.updateHiddenRanges();
+    }
+
+    /// Port of `FoldRangeFromSelectionAction`: create collapsed user-defined
+    /// ranges from multi-line selections and move each cursor to line start.
+    pub fn createManualRanges(self: *Controller, selections: []const Selection) !void {
+        var ranges = std.array_list.Managed(FoldRange).init(self.allocator);
+        defer ranges.deinit();
+        for (selections) |selection| {
+            var end_line = selection.endLineNumber;
+            if (selection.endColumn == 1 and end_line > 1) end_line -= 1;
+            if (end_line <= selection.startLineNumber) continue;
+            try ranges.append(.{
+                .startLineNumber = selection.startLineNumber,
+                .endLineNumber = end_line,
+                .isCollapsed = true,
+                .source = .user_defined,
+            });
+        }
+        if (ranges.items.len == 0) return;
+        std.mem.sort(FoldRange, ranges.items, {}, struct {
+            fn lessThan(_: void, a: FoldRange, b: FoldRange) bool {
+                return a.startLineNumber < b.startLineNumber;
+            }
+        }.lessThan);
+        try self.folding_model.addManualRanges(ranges.items);
+        self.hidden_model.updateHiddenRanges();
+    }
+
+    pub fn removeManualRanges(self: *Controller, selections: []const Selection) !void {
+        try self.folding_model.removeManualRanges(selections);
         self.hidden_model.updateHiddenRanges();
     }
 
