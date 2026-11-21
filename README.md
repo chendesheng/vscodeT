@@ -148,8 +148,10 @@ Known phase-1 limits:
 - No terminal selection/copy, find, link opening, shell-integration
   decorations or runtime theme switching. The TUI has no system clipboard;
   copy is planned as an OSC 52 bridge to the outer terminal.
-- Kitty images, WebGL/ligature/unicode addons, persistent/remote terminals and
-  accessibility mode are not ported.
+- The integrated terminal panel does not forward kitty images; the workbench
+  editor uses them for image previews (see **Image preview**). WebGL/ligature/
+  unicode addons, persistent/remote terminals and accessibility mode are not
+  ported.
 - The terminal cursor uses the outer terminal's cursor shape; bar/underline
   cursor settings are approximated.
 
@@ -987,12 +989,12 @@ Markdown:
   ...), a fence without a language falls back to the editor's language, and an
   unknown language renders as plain code.
 - Terminal substitutions: a link shows its text underlined and, when the URL
-  differs, the URL in dim text because cells cannot open a link; images show
-  their alt text (there is no image protocol); tables render as box-drawing
-  grids with width-capped columns; raw HTML is dropped (there is no HTML
-  sanitizer or renderer); one blank line separates sibling blocks in place of
-  browser margins; tabs expand to four spaces. MDX, math and frontmatter are
-  disabled; there is no clickable-link or image support.
+  differs, the URL in dim text because cells cannot open a link; hover images
+  show their alt text; tables render as box-drawing grids with width-capped
+  columns; raw HTML is dropped (there is no HTML sanitizer or renderer); one
+  blank line separates sibling blocks in place of browser margins; tabs expand
+  to four spaces. MDX, math and frontmatter are disabled; there is no clickable
+  link support.
 
 Markdown preview:
 
@@ -1012,13 +1014,53 @@ Markdown preview:
   the preview scrolls to that heading. The rendered block model carries source
   line ranges for the ported `scroll-sync` mapping, including multi-line code
   blocks.
+- Local raster images render as image blocks through the same kitty
+  Unicode-placeholder path as the image preview: PNG is sent unchanged and
+  JPEG/GIF/BMP/TIFF are decoded by `zigimg`. Missing, remote, `data:` and SVG
+  images keep their alt text, as does any image when the terminal has no
+  placeholder support. Because a cell grid has no replaced inline element, an
+  image occupies its own rows at the content left edge; text before and after
+  continues on the surrounding rows.
 - Terminal substitutions: the preview is a fixed 50/50 side pane rather than a
-  webview; there is no HTML/CSS/script execution, image rendering, external
-  link opening, security selector, preview lock, in-place preview
-  (`markdown.showPreview`), or `markdown.styles`/font/line-height setting.
-  External links are not clickable and the `Ctrl-K V` chord is not bound (the
-  command palette is available instead). Preview visibility and scroll are not
-  serialized in sessions.
+  webview; there is no HTML/CSS/script execution, external link opening,
+  security selector, preview lock, in-place preview (`markdown.showPreview`),
+  or `markdown.styles`/font/line-height setting. External links are not
+  clickable and the `Ctrl-K V` chord is not bound (the command palette is
+  available instead). Preview visibility and scroll are not serialized in
+  sessions.
+
+Image preview:
+
+- Opening a file that matches the image preview pattern
+  (`*.{jpg,jpe,jpeg,png,bmp,gif,ico,webp,avif,svg}`) creates a read-only image
+  tab instead of loading binary content into a text buffer. `.svg` opens in the
+  text editor because the terminal has no SVG rasterizer; an already-open image
+  is reused, and image tabs are restored from `--session`.
+- Images render with the kitty graphics protocol's Unicode placeholders
+  (`U+10EEEE` plus row/column diacritics; the 24-bit image id is the cell
+  foreground). The terminal is probed once at startup; kitty and Ghostty are
+  recognized, using the 0.50+ feature query when available. Terminals without
+  placeholder support keep a message and an **Open in Text Editor** button.
+- PNG is transmitted as-is. JPEG, GIF (first frame), BMP and TIFF are decoded by
+  the pinned `zigimg` package (commit `bbdbb86`, MIT) and re-encoded as PNG;
+  WebP, AVIF and ICO report
+  an unsupported format, LFS pointer files report the upstream message, and
+  remote/`data:` resources are not fetched.
+- Fit/zoom/scroll: click zooms in, Ctrl/Alt+click zooms out, Ctrl/Alt+wheel
+  zooms and a plain wheel scrolls. `+`/`=`/`-`/`0` and
+  arrows/PageUp/PageDown/Home/End are TUI-specific keyboard alternatives. The
+  command palette exposes **Zoom In**, **Zoom Out**, **Select Zoom Level** and
+  **Open in Text Editor**, and the status bar shows the zoom label, image
+  dimensions and file size.
+- Image files reload when they change on disk, keeping the current zoom and
+  scroll. The current view state is not persisted across sessions. Opening a
+  binary image in the text editor replaces invalid UTF-8 sequences with
+  U+FFFD, so it cannot break the text model.
+- Omitted or unsupported: clipboard image copy, image context menus, pinch
+  zoom, browser scrollbars and pixelated rendering, remote/animated/video/audio
+  previews, image diffs, SVG/WebP/AVIF/ICO rendering, images over 32 MiB or
+  16 megapixels, and placements wider/taller than the 297-entry placeholder
+  table. The terminal position lookup expects truecolor.
 
 
 TUI editor:

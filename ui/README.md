@@ -16,7 +16,8 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
 - A whole-cell layout pass with the CSS box model: content `width`/`height`,
   margin, padding and border widths, box-drawing borders with an optional
   cell-border protocol path (the host probes the terminal; unsupported
-  terminals keep the glyph fallback and its reserved cells), and
+  terminals keep the glyph fallback and its reserved cells), kitty image
+  placeholders (see below), and
   absolute `left`/`top` anchoring the margin box. Block flow, inline text flow
   and flex formatting contexts share the derived tree. Backgrounds paint the
   border box and `overflow: hidden` clips to the padding box.
@@ -42,6 +43,13 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   press/release activation. It composites into a host `CellGrid` and dims the
   cells behind it.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
+- Kitty graphics support in `ui/image.zig`: capability probe, PNG/RGBA
+  transmission, virtual placements, image deletion and Unicode-placeholder
+  cells (`U+10EEEE` + row/column diacritics + the image id in the foreground
+  color). `Runtime` owns the id space and queues escape codes for the host to
+  flush before the frame body; `putPlaceholder` writes ordinary cells so the
+  frame diff, clipping and scrolling need no special image layer. The library
+  does not decode image files; callers pass encoded payloads.
 - Keyboard and mouse events and focus: per-node listeners with
   capture/target/bubble, `Document.activeElement`, `focus`/`blur` plus
   `focusin`/`focusout`, and `Tab` traversal driven by `Element.focusable` /

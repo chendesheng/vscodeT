@@ -511,10 +511,13 @@ supported) and secondary cursors should be cell runs; this keeps IME viable.
 
 The host passes `measure_width: fn (u21) u2` so the renderer agrees with the
 editor's `CursorColumns.nextVisibleColumn` for CJK and emoji. Color depth and
-synchronized-output support are `Surface` options. Cell-border support is the
-one probed capability: `ui/cell_border.zig` sends the DCS query followed
-by DA1 and returns the answer, and the host calls `Surface.setCellBorders`.
-Mode 2027, DECRQSS and cell pixel size remain later additions. The POC assumes
+synchronized-output support are `Surface` options. Two terminal capabilities
+are probed: `ui/cell_border.zig` sends the cell-border DCS query followed by
+DA1, and `ui/image.zig` sends the kitty graphics/feature queries followed by
+DA1. The host calls `Surface.setCellBorders` and
+`ui.image.Runtime.setProtocol`. `TIOCGWINSZ`'s `ws_xpixel`/`ws_ypixel` provide
+the cell pixel size used for image row counts (defaults 8x16 when a terminal
+reports zeros). Mode 2027 and DECRQSS remain later additions. The POC assumes
 truecolor and a terminal that accepts synchronized output (both are ignored
 safely if not).
 
@@ -655,6 +658,50 @@ Between cells the encoder clears only the segments whose stroke disappears and
 then sets the changed groups, so moving along a rectangle edge emits one small
 command per cell rather than a full set. Joints are always square, so no joint
 state needs clearing.
+
+### 6.9 Terminal images (kitty Unicode placeholders)
+
+The workbench renders images with the kitty graphics protocol's Unicode
+placeholders, implemented in `ui/image.zig`. The image is transmitted once
+(PNG `f=100`, or raw RGBA `f=32`), a virtual placement declares its
+`columns x rows` grid (`a=p,U=1,i=...,c=...,r=...`), and every cell of that grid
+is an ordinary one-cell grapheme: `U+10EEEE` plus a row diacritic and a column
+diacritic from the kitty table (297 entries, `rowcolumn_diacritics`). The cell's
+foreground RGB is the 24-bit image id; the cell background is the pane
+background kitty blends transparent image pixels against. Nothing about the
+image is stored in the cell planes beyond that normal cluster and colors, so
+scrolling, clipping,
+compositing and frame diffing work unchanged: a placeholder scrolled out of the
+viewport is simply not painted, and a partially visible image uses the full
+grid's row/column indices for the cells that remain.
+
+`ui.image.Runtime` owns the id allocator, the pending escape-code buffer and
+the cell pixel size. Hosts flush it before the frame body inside the same
+synchronized update (`Workbench.render` opens `CSI ? 2026 h`,
+writes image commands and the frame diff, then closes it). A view keeps a
+`tui/terminalImage.zig` handle: the encoded payload stays in memory so a resize
+or `CSI 2J` can invalidate and re-upload the image; zooming only changes the
+virtual placement. Image ids are 24-bit because the foreground color carries
+them, and placements are capped to the diacritic table's 297 rows/columns.
+
+The capability probe sends a 1x1 graphics query, the 0.50 feature query
+(`e=T,U=1`) and DA1. Unicode placeholders are enabled when the feature reply
+contains `U=1`; terminals known to implement them but too old for that query
+(kitty before 0.50, current Ghostty) are recognized by `KITTY_WINDOW_ID` or
+`TERM_PROGRAM=ghostty`. There is no direct-placement fallback, sixel or iTerm2
+path: unsupported terminals keep the caller's text fallback (Markdown alt text
+or an image-pane message). Input decoding swallows `ESC _ G ... ST` replies
+while keeping a bare `ESC _` (Alt+Shift+-) as a key.
+
+The pane/view split mirrors the Markdown contribution: `mediaPreview/common`
+validates the path pattern and LFS pointers, `mediaPreview/common/mediaImage.zig`
+decodes with the pinned `zigimg` package (PNG passes through; JPEG/GIF/BMP/TIFF
+are converted to RGBA and encoded as PNG for the terminal), `imageViewer.zig`
+and `imagePreviewEditor.zig` hold fit/zoom/scroll/load state, and
+`src/tui/imagePreview.zig` paints the message chrome through a `Surface` and the
+image through placeholder cells. Browser-only behavior (clipboard image copy,
+context menus, pinch zoom, CSS scrollbars, pixelated rendering) is omitted as
+documented in `README.md`.
 
 ## 7. Library API (POC slice)
 
@@ -971,9 +1018,10 @@ Library constraints:
   bordered, scrollable box as a content widget. Markdown is parsed by the
   pinned `taggon/markdown-zig` CommonMark + GFM package (commit `85bcc67`,
   MIT) and rendered to styled cells by `hoverMarkdownRenderer.zig`; there is
-  no HTML/CSS engine, so links show their URL in dim text, images show their
-  alt text, tables render as width-capped box-drawing grids, and raw HTML is
-  ignored. Nested/task lists, setext/indented code, autolinks and reference
+  no HTML/CSS engine, so links show their URL in dim text, hover images show
+  their alt text, tables render as width-capped box-drawing grids, and raw HTML
+  is ignored. The Markdown *preview* adds local image blocks through the kitty
+  placeholder path described in §6.9. Nested/task lists, setext/indented code, autolinks and reference
   links are supported; wide table rows are clipped to the hover width. Fenced
   code blocks use the editor's TextMate tokenizer: the fence info string is
   resolved through common aliases, a missing language falls back to the editor
@@ -1265,8 +1313,9 @@ pipeline.
 Phase-1 limitations are explicit: no selection/copy (no system clipboard in the
 TUI; planned OSC 52 bridge), find, links, shell-integration decorations,
 profile picker, split panes, panel sash drag, Windows ConPTY, terminal editors,
-persistent/remote sessions, kitty images, ligatures, WebGL or runtime theme
-switching. Cursor shape is the outer terminal's; bar/underline settings are
+persistent/remote sessions, ligatures, WebGL or runtime theme switching. The
+integrated terminal panel does not forward kitty images; only the editor's
+Markdown/image previews use them. Cursor shape is the outer terminal's; bar/underline settings are
 approximated by the cursor position and block/inverse paint.
 
 ### 8.2 Source Control, quick diff and diff editor
