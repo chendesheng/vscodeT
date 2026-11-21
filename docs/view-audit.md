@@ -146,8 +146,11 @@ For each row:
   editor-type/drop remain pending.
 - `9cd5b9f` statusbar: add compact-group hover and drop the flex gap. The
   referenced half of a compact pair now uses `statusBarItem.compactHoverBackground`,
-  and entries are separated by padding alone. The actions context menu and
-  tooltip pin/Escape remain pending.
+  and entries are separated by padding alone.
+- `95c3c9b` statusbar: wire the context menu actions. Right-click opens the
+  Hide/Manage Extension actions through the quick pick; left-click keeps the
+  command/focus path. Added a context-menu hide test. Tooltip pin/Escape
+  remains pending.
 
 ## Next slice
 
