@@ -5,7 +5,9 @@ internals to a terminal UI. It started as a port of the editor's pieceTree text
 buffer; the target is now the whole pinned VS Code tree in the `vscode/`
 submodule: editor core, view/view-model/controller layers, workbench services,
 and the Node extension host bridge. Upstream files are never modified; behavior
-is ported into `src/vs/...` at matching upstream paths.
+is ported into `src/vs/...` at matching upstream paths, and built-in extension
+sources (currently the Git extension) into `src/extensions/...`, mirroring
+`vscode/extensions/...`.
 
 Requires Zig 0.17 or newer.
 
@@ -767,17 +769,17 @@ console API for raw mode, sizing and input polling.
   terminal container. `hideIfEmpty` containers keep their tab while active and
   drop it again once empty. Panel position (top/left/right), floating panels,
   alignment, maximize and the overflow switcher are not ported.
-- Source Control is a read-only Git/SCM port. `src/tui/gitCli.zig` implements
+- Source Control is a read-only Git/SCM port. `src/extensions/git/src/git.zig` implements
   the ported `IGitExtensionDelegate` over the Git command line (argv, never a
   shell; explicit cwd; bounded stdout/stderr; per-command deadline), and
   `src/vs/workbench/contrib/git/{common,browser}/gitService.zig` keep the
   upstream repository state/ref/diff/commit contract. The terminal provider
-  (`src/tui/gitScmProvider.zig`) exposes the upstream `Merge Changes`,
+  (`src/extensions/git/src/repository.zig`) exposes the upstream `Merge Changes`,
   `Staged Changes` and `Changes` groups (untracked files mixed into `Changes`,
   matching `git.untrackedChanges=mixed`), v2 status letters, rename/delete and
   unmerged entries, and registers primary (`working ↔ index`) and secondary
   (`index ↔ HEAD`) quick-diff providers. The SCM sidebar
-  (`src/tui/scmView.zig`) shows `SOURCE CONTROL`, a repository/branch row,
+  (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`) shows `SOURCE CONTROL`, a repository/branch row,
   group counts and relative-path resource rows. `Up`/`Down` select, `Enter` or
   a click opens the change, `r` refreshes and `Escape` returns to the editor.
   The branch/count status entry (`⎇ branch ↑n ↓m (count)`) opens the SCM view,

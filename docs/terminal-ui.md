@@ -1453,7 +1453,7 @@ are listed in the README as remaining async-port work.
 ### 8.2 Source Control, quick diff and diff editor
 
 The terminal workbench ports the read-only Git/SCM pipeline without the
-extension host. `src/tui/gitCli.zig` is the `IGitExtensionDelegate` host: it
+extension host. `src/extensions/git/src/git.zig` is the `IGitExtensionDelegate` host: it
 runs Git with argv (never a shell), an explicit working directory, bounded
 stdout/stderr and a deadline, parses `status --porcelain=v2 -z --branch -uall`
 into the ported `GitRepositoryState`, and serves `HEAD`/index/working blobs from
@@ -1461,7 +1461,7 @@ a status-invalidated cache. `src/vs/workbench/contrib/git/` keeps the upstream
 service/repository contract (one delegate, state getter plus change event
 instead of observables), `src/vs/workbench/contrib/scm/common/` ports the SCM
 service/provider/resource subset and the quick-diff service, and
-`src/tui/gitScmProvider.zig` maps the repository state to the upstream
+`src/extensions/git/src/repository.zig` maps the repository state to the upstream
 `Merge Changes`/`Staged Changes`/`Changes` groups and to the primary/secondary
 quick-diff providers.
 

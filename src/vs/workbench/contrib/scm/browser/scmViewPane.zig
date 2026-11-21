@@ -11,10 +11,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
-const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
+const theme_colors_mod = @import("../../../browser/themeColors.zig");
 
-const scm = @import("../vs/workbench/contrib/scm/common/scm.zig");
-const IDisposable = @import("../vs/base/common/lifecycle.zig").IDisposable;
+const scm = @import("../common/scm.zig");
+const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 
 pub const ISCMService = scm.ISCMService;
 pub const ISCMRepository = scm.ISCMRepository;
@@ -455,7 +455,7 @@ const TestHost = struct {
 
 test "scmView: welcome text without providers" {
     const allocator = testing.allocator;
-    var service = @import("../vs/workbench/contrib/scm/common/scmService.zig").SCMService.init(allocator);
+    var service = @import("../common/scmService.zig").SCMService.init(allocator);
     defer service.deinit();
     var host = TestHost{};
     var interface = service.interface();
@@ -473,7 +473,7 @@ test "scmView: welcome text without providers" {
 
 test "scmView: rows, selection, opening and rendering" {
     const allocator = testing.allocator;
-    var service = @import("../vs/workbench/contrib/scm/common/scmService.zig").SCMService.init(allocator);
+    var service = @import("../common/scmService.zig").SCMService.init(allocator);
     defer service.deinit();
 
     var provider = TestScmProvider{};
@@ -517,7 +517,7 @@ test "scmView: rows, selection, opening and rendering" {
     try testing.expectEqual(@as(usize, 0), view.selection);
 
     // The welcome text appears without providers.
-    var empty_service = @import("../vs/workbench/contrib/scm/common/scmService.zig").SCMService.init(allocator);
+    var empty_service = @import("../common/scmService.zig").SCMService.init(allocator);
     defer empty_service.deinit();
     var empty_interface = empty_service.interface();
     var empty_view = ScmView.init(allocator, &empty_interface, .{
@@ -550,14 +550,14 @@ test "scmView: rows, selection, opening and rendering" {
 const TestScmGroup = struct {
     base: scm.ISCMResourceGroup = undefined,
     resources_data: [1]scm.ISCMResource = undefined,
-    resources_changed: @import("../vs/base/common/event.zig").Emitter(void) = undefined,
-    changed: @import("../vs/base/common/event.zig").Emitter(void) = undefined,
+    resources_changed: @import("../../../../base/common/event.zig").Emitter(void) = undefined,
+    changed: @import("../../../../base/common/event.zig").Emitter(void) = undefined,
     provider: *TestScmProvider = undefined,
 
     fn init(self: *TestScmGroup, allocator: Allocator, provider: *TestScmProvider) !void {
         self.provider = provider;
-        self.resources_changed = @import("../vs/base/common/event.zig").Emitter(void).init(allocator);
-        self.changed = @import("../vs/base/common/event.zig").Emitter(void).init(allocator);
+        self.resources_changed = @import("../../../../base/common/event.zig").Emitter(void).init(allocator);
+        self.changed = @import("../../../../base/common/event.zig").Emitter(void).init(allocator);
         self.resources_data[0] = .{
             .context = self,
             .resource_group = &self.base,
@@ -592,14 +592,14 @@ const TestScmProvider = struct {
     base: scm.ISCMProvider = undefined,
     group: TestScmGroup = undefined,
     group_pointer: [1]*scm.ISCMResourceGroup = undefined,
-    groups_changed: @import("../vs/base/common/event.zig").Emitter(void) = undefined,
-    resources_changed: @import("../vs/base/common/event.zig").Emitter(void) = undefined,
+    groups_changed: @import("../../../../base/common/event.zig").Emitter(void) = undefined,
+    resources_changed: @import("../../../../base/common/event.zig").Emitter(void) = undefined,
 
     fn init(self: *TestScmProvider, allocator: Allocator) !void {
         try self.group.init(allocator, self);
         self.group_pointer[0] = &self.group.base;
-        self.groups_changed = @import("../vs/base/common/event.zig").Emitter(void).init(allocator);
-        self.resources_changed = @import("../vs/base/common/event.zig").Emitter(void).init(allocator);
+        self.groups_changed = @import("../../../../base/common/event.zig").Emitter(void).init(allocator);
+        self.resources_changed = @import("../../../../base/common/event.zig").Emitter(void).init(allocator);
         self.base = .{
             .context = self,
             .id = "git",

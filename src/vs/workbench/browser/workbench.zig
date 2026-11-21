@@ -209,15 +209,15 @@ const terminal_panel = @import("../contrib/terminal/browser/terminalTabbedView.z
 const terminal_input_mod = @import("../contrib/terminal/browser/terminalInput.zig");
 const terminal_view = @import("../contrib/terminal/browser/terminalRenderer.zig");
 const diff_widget_mod = @import("../../editor/browser/widget/diffEditor/diffEditorWidget.zig");
-const git_cli_mod = @import("../../../tui/gitCli.zig");
+const git_mod = @import("../../../extensions/git/src/git.zig");
 const git_service_mod = @import("../contrib/git/browser/gitService.zig");
 const git_common_mod = @import("../contrib/git/common/gitService.zig");
 const scm_service_mod = @import("../contrib/scm/common/scmService.zig");
 const scm_common = @import("../contrib/scm/common/scm.zig");
 const quick_diff_service_mod = @import("../contrib/scm/common/quickDiffService.zig");
 const quick_diff_controller_mod = @import("../../../tui/quickDiffController.zig");
-const git_scm_provider_mod = @import("../../../tui/gitScmProvider.zig");
-const scm_view_mod = @import("../../../tui/scmView.zig");
+const repository_mod = @import("../../../extensions/git/src/repository.zig");
+const scm_view_mod = @import("../contrib/scm/browser/scmViewPane.zig");
 const text_diff_editor_mod = @import("./parts/editor/textDiffEditor.zig");
 const storage_mod = @import("../../platform/storage/common/storage.zig");
 const TerminalService = terminal_service_mod.TerminalService;
@@ -598,7 +598,7 @@ pub const Workbench = struct {
     terminal_service: ?*TerminalService = null,
     terminal_input: terminal_input_mod.Encoder = .{},
     suppress_global_command: bool = false,
-    git_cli: ?*git_cli_mod.GitCli = null,
+    git: ?*git_mod.Git = null,
     git_delegate: ?*git_common_mod.IGitExtensionDelegate = null,
     git_service: ?*git_service_mod.GitService = null,
     scm_service: ?*scm_service_mod.SCMService = null,
@@ -606,7 +606,7 @@ pub const Workbench = struct {
     quick_diff_service: ?*quick_diff_service_mod.QuickDiffService = null,
     quick_diff_controller: ?*quick_diff_controller_mod.Controller = null,
     scm_view: ?*scm_view_mod.ScmView = null,
-    git_scm_provider: ?*git_scm_provider_mod.GitScmProvider = null,
+    repository: ?*repository_mod.Repository = null,
     git_root: ?[]u8 = null,
     scm_interface: ?*scm_common.ISCMService = null,
     git_status_accessor: ?EntryAccessor = null,
@@ -667,7 +667,7 @@ pub const Workbench = struct {
         self.terminal_service = null;
         self.terminal_input = .{};
         self.suppress_global_command = false;
-        self.git_cli = null;
+        self.git = null;
         self.git_delegate = null;
         self.git_service = null;
         self.scm_service = null;
@@ -676,7 +676,7 @@ pub const Workbench = struct {
         self.quick_diff_service = null;
         self.quick_diff_controller = null;
         self.scm_view = null;
-        self.git_scm_provider = null;
+        self.repository = null;
         self.git_root = null;
         self.git_status_accessor = null;
         self.git_badge_count = 0;
@@ -811,7 +811,7 @@ pub const Workbench = struct {
         self.terminal_service = null;
         self.terminal_input = .{};
         self.suppress_global_command = false;
-        self.git_cli = null;
+        self.git = null;
         self.git_delegate = null;
         self.git_service = null;
         self.scm_service = null;
@@ -820,7 +820,7 @@ pub const Workbench = struct {
         self.quick_diff_service = null;
         self.quick_diff_controller = null;
         self.scm_view = null;
-        self.git_scm_provider = null;
+        self.repository = null;
         self.git_root = null;
         self.git_status_accessor = null;
         self.git_badge_count = 0;
@@ -988,7 +988,7 @@ pub const Workbench = struct {
         self.terminal_service = null;
         self.terminal_input = .{};
         self.suppress_global_command = false;
-        self.git_cli = null;
+        self.git = null;
         self.git_delegate = null;
         self.git_service = null;
         self.scm_service = null;
@@ -997,7 +997,7 @@ pub const Workbench = struct {
         self.quick_diff_service = null;
         self.quick_diff_controller = null;
         self.scm_view = null;
-        self.git_scm_provider = null;
+        self.repository = null;
         self.git_root = null;
         self.git_status_accessor = null;
         self.git_badge_count = 0;
@@ -2059,7 +2059,7 @@ pub const Workbench = struct {
                 .gutter_pattern = .{ .added = true, .modified = true },
             });
         }
-        if (self.git_scm_provider != null) self.refreshGitStatus();
+        if (self.repository != null) self.refreshGitStatus();
     }
 
     fn editorSettingsReader(self: *Workbench) terminal_editor_config.Reader {
@@ -3230,9 +3230,9 @@ pub const Workbench = struct {
             self.allocator.destroy(service);
             self.scm_service = null;
         }
-        if (self.git_scm_provider) |provider| {
+        if (self.repository) |provider| {
             provider.destroy();
-            self.git_scm_provider = null;
+            self.repository = null;
         }
         if (self.git_service) |service| {
             service.deinit();
@@ -3243,9 +3243,9 @@ pub const Workbench = struct {
             self.allocator.destroy(delegate);
             self.git_delegate = null;
         }
-        if (self.git_cli) |cli| {
+        if (self.git) |cli| {
             cli.deinit();
-            self.git_cli = null;
+            self.git = null;
         }
         if (self.quick_diff_storage) |storage| {
             storage.deinit();
@@ -3260,13 +3260,13 @@ pub const Workbench = struct {
     /// controller for the workspace folder. A missing git binary, a disabled
     /// `git.enabled` or a non-repository leaves the editor untouched.
     pub fn initGit(self: *Workbench) !void {
-        if (self.git_cli != null) return;
+        if (self.git != null) return;
         const root_value = self.workspaceFolderPath() orelse return;
         if (self.configuration) |configuration| {
             if (!configuration.getBool("git.enabled", true)) return;
         }
 
-        var options = git_cli_mod.Options{
+        var options = git_mod.Options{
             .git_path = null,
             .enabled = true,
             .timeout_ms = 5000,
@@ -3293,8 +3293,8 @@ pub const Workbench = struct {
             }
         }
 
-        const cli = git_cli_mod.GitCli.init(self.allocator, options) catch return;
-        self.git_cli = cli;
+        const cli = git_mod.Git.init(self.allocator, options) catch return;
+        self.git = cli;
         errdefer self.deinitGit();
         if (cli.isDisabled()) return;
 
@@ -3318,7 +3318,7 @@ pub const Workbench = struct {
         scm_service.* = scm_service_mod.SCMService.init(self.allocator);
         self.scm_service = scm_service;
 
-        const provider = try git_scm_provider_mod.GitScmProvider.create(
+        const provider = try repository_mod.Repository.create(
             self.allocator,
             cli,
             concrete,
@@ -3328,7 +3328,7 @@ pub const Workbench = struct {
                 .open_change = providerOpenChange,
             },
         );
-        self.git_scm_provider = provider;
+        self.repository = provider;
         _ = try scm_service.registerSCMProvider(provider.interface());
 
         const storage = try self.allocator.create(storage_mod.InMemoryStorageService);
@@ -3462,7 +3462,7 @@ pub const Workbench = struct {
         if (self.quick_diff_controller) |controller| {
             if (controller.poll(now_ms)) changed = true;
         }
-        if (self.git_scm_provider == null) return changed;
+        if (self.repository == null) return changed;
         const scm_visible = self.sidebarShown() and std.mem.eql(
             u8,
             self.activity_bar_part.active_id orelse "",
@@ -3478,13 +3478,13 @@ pub const Workbench = struct {
     }
 
     pub fn gitWantsTick(self: *const Workbench) bool {
-        return self.git_scm_provider != null;
+        return self.repository != null;
     }
 
     /// Re-reads git status, the SCM rows, the quick-diff baselines, the
     /// branch/status entry and the activity badge.
     pub fn refreshGitStatus(self: *Workbench) void {
-        const provider = self.git_scm_provider orelse return;
+        const provider = self.repository orelse return;
         provider.refresh() catch {};
         if (self.scm_view) |view| view.refresh();
         if (self.quick_diff_controller) |controller| _ = controller.refreshAll();
@@ -3494,7 +3494,7 @@ pub const Workbench = struct {
 
     fn syncGitStatus(self: *Workbench) void {
         const accessor = self.git_status_accessor orelse return;
-        const provider = self.git_scm_provider orelse {
+        const provider = self.repository orelse {
             accessor.update(.{ .name = "Source Control", .text = "" });
             return;
         };
@@ -3522,7 +3522,7 @@ pub const Workbench = struct {
     }
 
     fn syncGitActivity(self: *Workbench) void {
-        const provider = self.git_scm_provider orelse return;
+        const provider = self.repository orelse return;
         var badge_mode: []const u8 = "all";
         if (self.configuration) |configuration| {
             if (configuration.getValue("scm.countBadge", .{})) |value| {
@@ -3564,11 +3564,11 @@ pub const Workbench = struct {
         left_ref: DiffRef,
         right_ref: DiffRef,
     ) !void {
-        const provider = self.git_scm_provider orelse return error.NoRepository;
+        const provider = self.repository orelse return error.NoRepository;
         const root = self.git_root orelse return error.NoRepository;
         _ = provider;
         const relative = relativeToRoot(path, root) orelse return error.OutsideRepository;
-        const git = self.git_cli orelse return error.NoGit;
+        const git = self.git orelse return error.NoGit;
 
         const left_label = diffRefLabel(left_ref);
         const right_label = diffRefLabel(right_ref);
@@ -3666,7 +3666,7 @@ pub const Workbench = struct {
 
     fn resolveDiffTexts(
         self: *Workbench,
-        git: *git_cli_mod.GitCli,
+        git: *git_mod.Git,
         path: []const u8,
         relative: []const u8,
         left_ref: DiffRef,
@@ -3680,7 +3680,7 @@ pub const Workbench = struct {
 
     fn diffTextFor(
         self: *Workbench,
-        git: *git_cli_mod.GitCli,
+        git: *git_mod.Git,
         path: []const u8,
         relative: []const u8,
         ref: DiffRef,
@@ -3692,7 +3692,7 @@ pub const Workbench = struct {
                 return value.toOwnedSlice();
             }
         }
-        const kind: git_cli_mod.RefKind = switch (ref) {
+        const kind: git_mod.RefKind = switch (ref) {
             .head => .head,
             .index => .index,
             .working => .working,
@@ -3713,7 +3713,7 @@ pub const Workbench = struct {
         return null;
     }
 
-    fn openScmChange(self: *Workbench, provider: *git_scm_provider_mod.GitScmProvider, resource: *git_scm_provider_mod.GitScmResource) !void {
+    fn openScmChange(self: *Workbench, provider: *repository_mod.Repository, resource: *repository_mod.GitScmResource) !void {
         _ = provider;
         switch (resource.kind) {
             .merge => try self.openPath(resource.absolute_path),
@@ -3722,7 +3722,7 @@ pub const Workbench = struct {
             .working => {
                 // If the path is staged as well, compare index->working; an
                 // unstaged path compares HEAD->working.
-                const staged = self.git_scm_provider.?.repository.stateRef().index_changes;
+                const staged = self.repository.?.repository.stateRef().index_changes;
                 var is_staged = false;
                 for (staged) |change| {
                     if (std.mem.eql(u8, change.path, resource.relative_path)) {
@@ -3750,15 +3750,15 @@ pub const Workbench = struct {
         }
     }
 
-    fn providerOpenChange(context: *anyopaque, provider: *git_scm_provider_mod.GitScmProvider, resource: *git_scm_provider_mod.GitScmResource) anyerror!void {
+    fn providerOpenChange(context: *anyopaque, provider: *repository_mod.Repository, resource: *repository_mod.GitScmResource) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         return self.openScmChange(provider, resource);
     }
 
     fn scmOpenChange(context: *anyopaque, resource: *scm_common.ISCMResource) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        const provider = self.git_scm_provider orelse return;
-        const git_resource = @as(*git_scm_provider_mod.GitScmResource, @ptrCast(@alignCast(resource.context)));
+        const provider = self.repository orelse return;
+        const git_resource = @as(*repository_mod.GitScmResource, @ptrCast(@alignCast(resource.context)));
         return self.openScmChange(provider, git_resource);
     }
 
@@ -8327,8 +8327,8 @@ fn commandGitOpenChange(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const view = self.scm_view orelse return;
     const resource = view.selectedResource() orelse return;
-    const provider = self.git_scm_provider orelse return;
-    const git_resource: *git_scm_provider_mod.GitScmResource = @ptrCast(@alignCast(resource.context));
+    const provider = self.repository orelse return;
+    const git_resource: *repository_mod.GitScmResource = @ptrCast(@alignCast(resource.context));
     try self.openScmChange(provider, git_resource);
 }
 
@@ -12691,11 +12691,11 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try workbench.initSidebar(root);
     try workbench.initGit();
 
-    try std.testing.expect(workbench.git_scm_provider != null);
+    try std.testing.expect(workbench.repository != null);
     try std.testing.expect(workbench.scm_view != null);
     try std.testing.expect(workbench.quick_diff_controller != null);
     const initial_tabs = workbench.tabCount();
-    const provider = workbench.git_scm_provider.?;
+    const provider = workbench.repository.?;
     try std.testing.expect(provider.count() >= 3);
     try std.testing.expect(workbench.scm_view.?.resourceCount() >= 3);
 

@@ -1,9 +1,11 @@
-// Port of `src/vs/workbench/contrib/git/common/gitService.ts` (CLI host).
+// Port of `vscode/extensions/git/src/git.ts` (terminal CLI host).
 //
-// This is the terminal host replacement for the `vscode.git` extension-host
-// delegate. The terminal workbench has no extension host and therefore no SCM
-// actor to proxy git operations through. Git is driven directly through its
-// command line instead:
+// This is the terminal host replacement for the `Git` class of the `vscode.git`
+// extension and for the `IGitExtensionDelegate` proxy that normally sits in
+// `src/vs/workbench/api/browser/mainThreadGitExtensionService.ts`. The terminal
+// workbench has no extension host and therefore no SCM actor to proxy git
+// operations through, so spawning/parsing and the delegate implementation
+// collapse into this file. Git is driven directly through its command line:
 //
 // - every invocation is an argv array (never a shell),
 // - the repository root is passed as an explicit `cwd`,
@@ -20,7 +22,7 @@
 // - Resources are local paths instead of `URI` (see the common git service).
 // - `IGitRepositoryState` owns its strings; `GitRepository.updateState` clones
 //   them into the repository arena.
-// - `GitCli.Cache` keeps blob contents keyed by `<root>\x00<ref>\x00<path>`.
+// - `Git.Cache` keeps blob contents keyed by `<root>\x00<ref>\x00<path>`.
 //   The key is logically `<ref>:<path>`, scoped by root so that two open
 //   repositories with the same relative path never collide.
 // - A missing git binary or `git.enabled=false` disables the provider and is
@@ -31,8 +33,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-const git_common = @import("../vs/workbench/contrib/git/common/gitService.zig");
-const git_browser = @import("../vs/workbench/contrib/git/browser/gitService.zig");
+const git_common = @import("../../../vs/workbench/contrib/git/common/gitService.zig");
+const git_browser = @import("../../../vs/workbench/contrib/git/browser/gitService.zig");
 
 pub const GitRepositoryState = git_common.GitRepositoryState;
 pub const GitChange = git_common.GitChange;
@@ -153,7 +155,7 @@ const RunFailure = error{
 
 /// Terminal command-line git adapter. One instance owns the repository list,
 /// the delegate vtable and the blob cache.
-pub const GitCli = struct {
+pub const Git = struct {
     allocator: Allocator,
     exe: []u8,
     io: std.Io,
@@ -175,8 +177,8 @@ pub const GitCli = struct {
     on_disabled: ?*const fn (context: ?*anyopaque, reason: []const u8) void = null,
     on_disabled_context: ?*anyopaque = null,
 
-    pub fn init(allocator: Allocator, options: Options) !*GitCli {
-        const self = try allocator.create(GitCli);
+    pub fn init(allocator: Allocator, options: Options) !*Git {
+        const self = try allocator.create(Git);
         errdefer allocator.destroy(self);
 
         const exe = if (options.git_path) |path| blk: {
@@ -234,7 +236,7 @@ pub const GitCli = struct {
         return self;
     }
 
-    pub fn deinit(self: *GitCli) void {
+    pub fn deinit(self: *Git) void {
         for (self.repo_list.items) |repository| repository.destroy();
         self.repo_list.deinit();
         self.repository_interfaces.deinit();
@@ -245,31 +247,31 @@ pub const GitCli = struct {
         allocator.destroy(self);
     }
 
-    pub fn interface(self: *GitCli) IGitExtensionDelegate {
+    pub fn interface(self: *Git) IGitExtensionDelegate {
         return self.delegate_interface;
     }
 
     /// Borrowed slice; invalidated by the next successful `openRepository`.
-    pub fn repositories(self: *const GitCli) []const IGitRepository {
+    pub fn repositories(self: *const Git) []const IGitRepository {
         return self.repository_interfaces.items;
     }
 
     /// The concrete repository for `root`, if it was opened through this
     /// delegate. Used by the TUI SCM provider to refresh status through
     /// `GitRepository.updateState`.
-    pub fn repositoryForRoot(self: *GitCli, root: []const u8) ?*git_browser.GitRepository {
+    pub fn repositoryForRoot(self: *Git, root: []const u8) ?*git_browser.GitRepository {
         return self.findRepository(root);
     }
 
-    pub fn isDisabled(self: *const GitCli) bool {
+    pub fn isDisabled(self: *const Git) bool {
         return self.disabled;
     }
 
-    pub fn disabledReason(self: *const GitCli) ?[]const u8 {
+    pub fn disabledReason(self: *const Git) ?[]const u8 {
         return self.disabled_reason;
     }
 
-    fn disable(self: *GitCli, reason: []const u8) void {
+    fn disable(self: *Git, reason: []const u8) void {
         self.disabled = true;
         self.disabled_reason = reason;
         if (self.disabled_reported) return;
@@ -277,13 +279,13 @@ pub const GitCli = struct {
         if (self.on_disabled) |callback| callback(self.on_disabled_context, reason);
     }
 
-    fn reportNoRepository(self: *GitCli) void {
+    fn reportNoRepository(self: *Git) void {
         if (self.no_repo_reported) return;
         self.no_repo_reported = true;
         if (self.on_disabled) |callback| callback(self.on_disabled_context, "not a git repository");
     }
 
-    fn directoryExists(self: *const GitCli, path: []const u8) bool {
+    fn directoryExists(self: *const Git, path: []const u8) bool {
         std.Io.Dir.cwd().access(self.io, path, .{}) catch return false;
         return true;
     }
@@ -292,7 +294,7 @@ pub const GitCli = struct {
     /// bounded stdout/stderr, and the configured deadline. `stdin` is always
     /// ignored by `std.process.run`.
     fn run(
-        self: *GitCli,
+        self: *Git,
         argv: []const []const u8,
         cwd: []const u8,
         stdout_limit: usize,
@@ -321,7 +323,7 @@ pub const GitCli = struct {
         };
     }
 
-    fn runRevParse(self: *GitCli, start: []const u8, argument: []const u8, stdout_limit: usize) !?[]u8 {
+    fn runRevParse(self: *Git, start: []const u8, argument: []const u8, stdout_limit: usize) !?[]u8 {
         var argv = std.array_list.Managed([]const u8).init(self.allocator);
         defer argv.deinit();
         try argv.appendSlice(&.{ self.exe, "-C", start, "rev-parse", argument });
@@ -341,7 +343,7 @@ pub const GitCli = struct {
 
     /// Resolves `start` to the absolute repository root, or null when git is
     /// unavailable / `start` is not inside a repository. Never panics.
-    pub fn discover(self: *GitCli, start: []const u8) !?[]u8 {
+    pub fn discover(self: *Git, start: []const u8) !?[]u8 {
         if (self.disabled) return null;
         std.Io.Dir.cwd().access(self.io, start, .{}) catch return null;
 
@@ -390,7 +392,7 @@ pub const GitCli = struct {
         return root;
     }
 
-    fn absoluteRoot(self: *GitCli, start: []const u8, raw: []const u8) ![]u8 {
+    fn absoluteRoot(self: *Git, start: []const u8, raw: []const u8) ![]u8 {
         const trimmed = std.mem.trimEnd(u8, raw, "\r\n");
         if (std.fs.path.isAbsolute(trimmed)) return self.allocator.dupe(u8, trimmed);
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(self.io, ".", self.allocator);
@@ -398,7 +400,7 @@ pub const GitCli = struct {
         return std.fs.path.resolveAlloc(self.allocator, &.{ cwd, start, trimmed });
     }
 
-    fn rootFromCommonDir(self: *GitCli, start: []const u8, raw: []const u8) ![]u8 {
+    fn rootFromCommonDir(self: *Git, start: []const u8, raw: []const u8) ![]u8 {
         const trimmed = std.mem.trimEnd(u8, raw, "\r\n");
         if (trimmed.len == 0) return error.GitFailed;
 
@@ -422,7 +424,7 @@ pub const GitCli = struct {
     /// Reads the repository status. The returned state owns every string;
     /// callers free it with `state.deinit(allocator)`. This also invalidates
     /// the blob cache, as required by the quick-diff refresh path.
-    pub fn status(self: *GitCli, root: []const u8) !GitRepositoryState {
+    pub fn status(self: *Git, root: []const u8) !GitRepositoryState {
         if (self.disabled) return error.NoGit;
         if (!self.directoryExists(root)) return error.NoGit;
         self.invalidate();
@@ -462,7 +464,7 @@ pub const GitCli = struct {
 
     /// Recomputes the status for `repository` and installs it through
     /// `GitRepository.updateState`, then frees the temporary state.
-    pub fn refresh(self: *GitCli, repository: *git_browser.GitRepository) !void {
+    pub fn refresh(self: *Git, repository: *git_browser.GitRepository) !void {
         var state = try self.status(repository.rootPath());
         defer state.deinit(self.allocator);
         try repository.updateState(state);
@@ -473,7 +475,7 @@ pub const GitCli = struct {
     /// oversized blobs and pathological paths. Git failures are reported as
     /// null so a diff request can degrade to an empty side; only allocation
     /// failures propagate.
-    pub fn readRef(self: *GitCli, root: []const u8, path: []const u8, ref: RefKind) !?[]u8 {
+    pub fn readRef(self: *Git, root: []const u8, path: []const u8, ref: RefKind) !?[]u8 {
         if (!isSafeRelativePath(path)) return null;
         return switch (ref) {
             .head => self.readGitBlob(root, "HEAD", path),
@@ -482,12 +484,12 @@ pub const GitCli = struct {
         };
     }
 
-    fn blobOutputLimit(self: *const GitCli) usize {
+    fn blobOutputLimit(self: *const Git) usize {
         if (self.max_file_size == std.math.maxInt(usize)) return std.math.maxInt(usize);
         return self.max_file_size + 1;
     }
 
-    fn readGitBlob(self: *GitCli, root: []const u8, which: []const u8, path: []const u8) !?[]u8 {
+    fn readGitBlob(self: *Git, root: []const u8, which: []const u8, path: []const u8) !?[]u8 {
         if (!self.directoryExists(root)) return null;
         const revision = if (std.mem.eql(u8, which, "HEAD"))
             try std.fmt.allocPrint(self.allocator, "HEAD:{s}", .{path})
@@ -510,7 +512,7 @@ pub const GitCli = struct {
         return try ownTextBlob(self.allocator, result.stdout, self.max_file_size);
     }
 
-    fn readWorkingFile(self: *GitCli, root: []const u8, path: []const u8) !?[]u8 {
+    fn readWorkingFile(self: *Git, root: []const u8, path: []const u8) !?[]u8 {
         const full_path = std.fs.path.join(self.allocator, &.{ root, path }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
         };
@@ -543,7 +545,7 @@ pub const GitCli = struct {
     /// Cache-aware `readRef`. The returned slice is borrowed from the blob
     /// cache and stays valid until `invalidate` (status refresh) or `deinit`.
     /// Callers must not free it.
-    pub fn readRefCached(self: *GitCli, root: []const u8, path: []const u8, ref: RefKind) !?[]u8 {
+    pub fn readRefCached(self: *Git, root: []const u8, path: []const u8, ref: RefKind) !?[]u8 {
         const key = try std.fmt.allocPrint(self.allocator, "{s}\x00{s}\x00{s}", .{ root, ref.cacheName(), path });
         defer self.allocator.free(key);
         if (self.cache.get(key)) |cached| return cached;
@@ -558,14 +560,14 @@ pub const GitCli = struct {
     }
 
     /// Drops every cached blob. Called by every status refresh.
-    pub fn invalidate(self: *GitCli) void {
+    pub fn invalidate(self: *Git) void {
         self.cache.invalidate();
     }
 
     /// Discovers the repository for `path` and returns a fresh, reusable
     /// repository interface. Returns null when disabled or outside a
     /// repository.
-    pub fn openRepository(self: *GitCli, path: []const u8) !?IGitRepository {
+    pub fn openRepository(self: *Git, path: []const u8) !?IGitRepository {
         if (self.disabled) return null;
         const root = try self.discover(path) orelse return null;
         defer self.allocator.free(root);
@@ -594,7 +596,7 @@ pub const GitCli = struct {
         return repository.interface();
     }
 
-    fn findRepository(self: *GitCli, root: []const u8) ?*git_browser.GitRepository {
+    fn findRepository(self: *Git, root: []const u8) ?*git_browser.GitRepository {
         for (self.repo_list.items) |repository| {
             if (equalRoots(repository.rootPath(), root, builtin.os.tag == .windows)) return repository;
         }
@@ -604,7 +606,7 @@ pub const GitCli = struct {
     /// `git for-each-ref`. Returned refs are owned by `allocator`; the caller
     /// owns each name/commit/remote string and the slice.
     pub fn getRefs(
-        self: *GitCli,
+        self: *Git,
         allocator: Allocator,
         root: []const u8,
         query: GitRefQuery,
@@ -692,7 +694,7 @@ pub const GitCli = struct {
     /// `git diff --numstat` between two refs (three-dot, like the upstream
     /// repository). Result strings are owned by `allocator`.
     pub fn diffBetweenWithStats(
-        self: *GitCli,
+        self: *Git,
         allocator: Allocator,
         root: []const u8,
         ref1: []const u8,
@@ -706,7 +708,7 @@ pub const GitCli = struct {
 
     /// `git diff --numstat <ref>` (working tree against `ref`).
     pub fn diffBetweenWithStats2(
-        self: *GitCli,
+        self: *Git,
         allocator: Allocator,
         root: []const u8,
         ref: []const u8,
@@ -716,7 +718,7 @@ pub const GitCli = struct {
     }
 
     fn diffNumStat(
-        self: *GitCli,
+        self: *Git,
         allocator: Allocator,
         root: []const u8,
         refspec: []const u8,
@@ -749,7 +751,7 @@ pub const GitCli = struct {
     /// is real rather than a stub. A commit with nothing staged resolves
     /// without an error, mirroring upstream.
     pub fn commitFiles(
-        self: *GitCli,
+        self: *Git,
         root: []const u8,
         files: []const []const u8,
         message: []const u8,
@@ -791,12 +793,12 @@ pub const GitCli = struct {
     }
 
     fn repositoriesThunk(context: *anyopaque) []const IGitRepository {
-        const self: *GitCli = @ptrCast(@alignCast(context));
+        const self: *Git = @ptrCast(@alignCast(context));
         return self.repositories();
     }
 
     fn openRepositoryThunk(context: *anyopaque, path: []const u8) anyerror!?IGitRepository {
-        const self: *GitCli = @ptrCast(@alignCast(context));
+        const self: *Git = @ptrCast(@alignCast(context));
         return self.openRepository(path);
     }
 
@@ -807,7 +809,7 @@ pub const GitCli = struct {
         query: GitRefQuery,
         token: CancellationToken,
     ) anyerror![]GitRef {
-        const self: *GitCli = @ptrCast(@alignCast(context));
+        const self: *Git = @ptrCast(@alignCast(context));
         return self.getRefs(allocator, root, query, token);
     }
 
@@ -819,7 +821,7 @@ pub const GitCli = struct {
         ref2: []const u8,
         path: ?[]const u8,
     ) anyerror![]GitDiffChange {
-        const self: *GitCli = @ptrCast(@alignCast(context));
+        const self: *Git = @ptrCast(@alignCast(context));
         return self.diffBetweenWithStats(allocator, root, ref1, ref2, path);
     }
 
@@ -830,7 +832,7 @@ pub const GitCli = struct {
         ref: []const u8,
         path: ?[]const u8,
     ) anyerror![]GitDiffChange {
-        const self: *GitCli = @ptrCast(@alignCast(context));
+        const self: *Git = @ptrCast(@alignCast(context));
         return self.diffBetweenWithStats2(allocator, root, ref, path);
     }
 
@@ -841,7 +843,7 @@ pub const GitCli = struct {
         message: []const u8,
         options: GitCommitOptions,
     ) anyerror!void {
-        const self: *GitCli = @ptrCast(@alignCast(context));
+        const self: *Git = @ptrCast(@alignCast(context));
         return self.commitFiles(root, files, message, options);
     }
 };
@@ -1502,7 +1504,7 @@ test "blob cache: same pointer and invalidate forces a re-read" {
 
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "file.txt", .data = "first\n" });
 
-    var cli = try GitCli.init(allocator, .{ .io = std.testing.io, .max_file_size_kb = 1 });
+    var cli = try Git.init(allocator, .{ .io = std.testing.io, .max_file_size_kb = 1 });
     defer cli.deinit();
 
     const first = (try cli.readRefCached(root, "file.txt", .working)).?;
@@ -1540,7 +1542,7 @@ test "readRef: binary, invalid UTF-8 and oversized files are skipped" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "exact.txt", .data = &exact_data });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "oversized.txt", .data = &oversized_data });
 
-    var cli = try GitCli.init(allocator, .{ .io = std.testing.io, .max_file_size_kb = 1 });
+    var cli = try Git.init(allocator, .{ .io = std.testing.io, .max_file_size_kb = 1 });
     defer cli.deinit();
 
     try std.testing.expect((try cli.readRef(root, "binary.dat", .working)) == null);
@@ -1577,18 +1579,18 @@ test "discover: non-repository and disabled provider do not crash" {
         allocator.free(root);
     }
 
-    var cli = try GitCli.init(allocator, .{ .io = std.testing.io, .timeout_ms = 2000 });
+    var cli = try Git.init(allocator, .{ .io = std.testing.io, .timeout_ms = 2000 });
     defer cli.deinit();
     try std.testing.expect((try cli.discover(root)) == null);
     try std.testing.expect(!cli.isDisabled());
     try std.testing.expectError(error.NoGit, cli.status(root));
 
-    var disabled = try GitCli.init(allocator, .{ .io = std.testing.io, .enabled = false });
+    var disabled = try Git.init(allocator, .{ .io = std.testing.io, .enabled = false });
     defer disabled.deinit();
     try std.testing.expect(disabled.isDisabled());
     try std.testing.expect((try disabled.discover(root)) == null);
 
-    var missing = try GitCli.init(allocator, .{
+    var missing = try Git.init(allocator, .{
         .io = std.testing.io,
         .git_path = "/definitely/not-installed/git",
         .timeout_ms = 2000,
@@ -1602,17 +1604,17 @@ test "discover: git roots are normalized to native separators" {
     // Git for Windows prints `--show-toplevel` with `/`; the workspace folder
     // is spelled with `\`, so both must compare equal after discovery.
     var posix = [_]u8{ '/', 'a', '/', 'b' };
-    try std.testing.expectEqualStrings("/a/b", GitCli.normalizeRoot(&posix, false));
+    try std.testing.expectEqualStrings("/a/b", Git.normalizeRoot(&posix, false));
 
     var windows = [_]u8{ 'C', ':', '/', 'a', '/', 'b' };
-    try std.testing.expectEqualStrings("C:\\a\\b", GitCli.normalizeRoot(&windows, true));
+    try std.testing.expectEqualStrings("C:\\a\\b", Git.normalizeRoot(&windows, true));
 }
 
 test "discover: repository lookup accepts either separator on Windows" {
-    try std.testing.expect(GitCli.equalRoots("C:/a/b", "C:\\a\\b", true));
-    try std.testing.expect(!GitCli.equalRoots("C:/a/b", "C:/a/c", true));
-    try std.testing.expect(!GitCli.equalRoots("C:/a/b", "C:\\a\\c", true));
-    try std.testing.expect(!GitCli.equalRoots("/a/b", "\\a\\b", false));
+    try std.testing.expect(Git.equalRoots("C:/a/b", "C:\\a\\b", true));
+    try std.testing.expect(!Git.equalRoots("C:/a/b", "C:/a/c", true));
+    try std.testing.expect(!Git.equalRoots("C:/a/b", "C:\\a\\c", true));
+    try std.testing.expect(!Git.equalRoots("/a/b", "\\a\\b", false));
 }
 
 fn runTestGit(allocator: Allocator, cwd: []const u8, args: []const []const u8) !std.process.RunResult {
@@ -1669,7 +1671,7 @@ test "integration: temp repository status and readRef" {
     try tmp.dir.deleteFile(std.testing.io, "gone.txt");
     if (!try gitOk(allocator, root, &.{ "add", "b.txt" })) return error.SkipZigTest;
 
-    var cli = try GitCli.init(allocator, .{ .io = std.testing.io, .timeout_ms = 20_000 });
+    var cli = try Git.init(allocator, .{ .io = std.testing.io, .timeout_ms = 20_000 });
     defer cli.deinit();
 
     const discovered = (try cli.discover(root)) orelse return error.SkipZigTest;
@@ -1768,7 +1770,7 @@ test "integration: openRepository reuses a repository and refresh updates state"
     if (!try gitOk(allocator, root, &.{ "add", "tracked.txt" })) return error.SkipZigTest;
     if (!try gitOk(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" })) return error.SkipZigTest;
 
-    var cli = try GitCli.init(allocator, .{ .io = std.testing.io, .timeout_ms = 20_000 });
+    var cli = try Git.init(allocator, .{ .io = std.testing.io, .timeout_ms = 20_000 });
     defer cli.deinit();
 
     const first = (try cli.openRepository(root)) orelse return error.SkipZigTest;

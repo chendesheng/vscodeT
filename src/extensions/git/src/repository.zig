@@ -1,10 +1,11 @@
-// TUI adapter that exposes the git service as a Source Control provider.
+// Port of `vscode/extensions/git/src/repository.ts` (terminal SCM subset).
 //
-// There is no `vscode.git` extension-host SCM actor in this port, so the
-// terminal implements `ISCMProvider` over the command-line git service. The
+// There is no `vscode.git` extension-host SCM actor in this port, so this
+// terminal `Repository` implements `ISCMProvider` directly over the
+// command-line git service instead of calling `scm.createSourceControl`. The
 // upstream `git` extension's resource groups, status letters and quick-diff
 // providers are reproduced here; the group/resource rows are painted by
-// `src/tui/scmView.zig`.
+// `src/vs/workbench/contrib/scm/browser/scmViewPane.zig`.
 //
 // Groups: `Merge Changes`, `Staged Changes`, `Changes` (working-tree changes
 // with untracked files mixed in, matching `git.untrackedChanges=mixed`).
@@ -12,14 +13,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-const scm = @import("../vs/workbench/contrib/scm/common/scm.zig");
-const quick_diff = @import("../vs/workbench/contrib/scm/common/quickDiff.zig");
-const git_common = @import("../vs/workbench/contrib/git/common/gitService.zig");
-const git_browser = @import("../vs/workbench/contrib/git/browser/gitService.zig");
-const git_cli_mod = @import("./gitCli.zig");
-const Emitter = @import("../vs/base/common/event.zig").Emitter;
+const scm = @import("../../../vs/workbench/contrib/scm/common/scm.zig");
+const quick_diff = @import("../../../vs/workbench/contrib/scm/common/quickDiff.zig");
+const git_common = @import("../../../vs/workbench/contrib/git/common/gitService.zig");
+const git_browser = @import("../../../vs/workbench/contrib/git/browser/gitService.zig");
+const git_mod = @import("./git.zig");
+const Emitter = @import("../../../vs/base/common/event.zig").Emitter;
 
-pub const GitCli = git_cli_mod.GitCli;
+pub const Git = git_mod.Git;
 pub const GitRepository = git_browser.GitRepository;
 pub const GitRepositoryState = git_common.GitRepositoryState;
 pub const GitChange = git_common.GitChange;
@@ -29,13 +30,13 @@ pub const Original = quick_diff.Original;
 pub const Host = struct {
     context: *anyopaque,
     /// Opens the change represented by `resource` (usually a diff tab).
-    open_change: *const fn (context: *anyopaque, provider: *GitScmProvider, resource: *GitScmResource) anyerror!void,
+    open_change: *const fn (context: *anyopaque, provider: *Repository, resource: *GitScmResource) anyerror!void,
 };
 
 pub const ResourceKind = enum { merge, index, working, untracked };
 
 pub const GitScmResource = struct {
-    provider: *GitScmProvider,
+    provider: *Repository,
     relative_path: []u8,
     absolute_path: []u8,
     kind: ResourceKind,
@@ -54,7 +55,7 @@ pub const GitScmResource = struct {
 };
 
 pub const GitScmGroup = struct {
-    provider: *GitScmProvider,
+    provider: *Repository,
     index: usize,
     id: []const u8,
     label: []const u8,
@@ -74,10 +75,10 @@ pub const GitScmGroup = struct {
     }
 };
 
-pub const GitScmProvider = struct {
+pub const Repository = struct {
     allocator: Allocator,
     /// Null in focused tests that only validate group/resource projection.
-    git: ?*GitCli,
+    git: ?*Git,
     repository: *GitRepository,
     root: []u8,
     id: []u8,
@@ -96,12 +97,12 @@ pub const GitScmProvider = struct {
 
     pub fn create(
         allocator: Allocator,
-        git: ?*GitCli,
+        git: ?*Git,
         repository: *GitRepository,
         root: []const u8,
         host: Host,
-    ) !*GitScmProvider {
-        const self = try allocator.create(GitScmProvider);
+    ) !*Repository {
+        const self = try allocator.create(Repository);
         errdefer allocator.destroy(self);
 
         const root_copy = try allocator.dupe(u8, root);
@@ -206,7 +207,7 @@ pub const GitScmProvider = struct {
         return self;
     }
 
-    pub fn destroy(self: *GitScmProvider) void {
+    pub fn destroy(self: *Repository) void {
         const allocator = self.allocator;
         allocator.free(@constCast(self.primary_quick_diff.id));
         allocator.free(@constCast(self.secondary_quick_diff.id));
@@ -227,22 +228,22 @@ pub const GitScmProvider = struct {
         allocator.destroy(self);
     }
 
-    pub fn interface(self: *GitScmProvider) *scm.ISCMProvider {
+    pub fn interface(self: *Repository) *scm.ISCMProvider {
         return &self.base;
     }
 
-    pub fn quickDiffProviders(self: *GitScmProvider) [2]*QuickDiffProvider {
+    pub fn quickDiffProviders(self: *Repository) [2]*QuickDiffProvider {
         return .{ &self.primary_quick_diff, &self.secondary_quick_diff };
     }
 
-    pub fn count(self: *const GitScmProvider) usize {
+    pub fn count(self: *const Repository) usize {
         var total: usize = 0;
         for (&self.groups) |*group| total += group.resources.items.len;
         return total;
     }
 
     /// Recomputes the status and rebuilds the group resource lists.
-    pub fn refresh(self: *GitScmProvider) !void {
+    pub fn refresh(self: *Repository) !void {
         if (self.git) |git| {
             git.refresh(self.repository) catch {};
         }
@@ -254,7 +255,7 @@ pub const GitScmProvider = struct {
         self.on_resources.fire({}) catch {};
     }
 
-    fn rebuild(self: *GitScmProvider) void {
+    fn rebuild(self: *Repository) void {
         for (&self.groups) |*group| {
             for (group.resources.items) |resource| resource.destroy();
             group.resources.clearRetainingCapacity();
@@ -291,7 +292,7 @@ pub const GitScmProvider = struct {
         self.base.detail = self.branch;
     }
 
-    fn appendResource(self: *GitScmProvider, group_index: usize, kind: ResourceKind, change: GitChange) !void {
+    fn appendResource(self: *Repository, group_index: usize, kind: ResourceKind, change: GitChange) !void {
         const resource = try self.allocator.create(GitScmResource);
         errdefer self.allocator.destroy(resource);
         const relative = try self.allocator.dupe(u8, change.path);
@@ -339,7 +340,7 @@ pub const GitScmProvider = struct {
         try group.resources.append(resource);
     }
 
-    fn relativePath(self: *const GitScmProvider, path: []const u8) ?[]const u8 {
+    fn relativePath(self: *const Repository, path: []const u8) ?[]const u8 {
         const root = std.mem.trimEnd(u8, self.root, "/\\");
         if (path.len <= root.len + 1) return null;
         if (!std.mem.startsWith(u8, path, root)) return null;
@@ -349,7 +350,7 @@ pub const GitScmProvider = struct {
 };
 
 fn providerGroups(context: *anyopaque) []const *scm.ISCMResourceGroup {
-    const self: *GitScmProvider = @ptrCast(@alignCast(context));
+    const self: *Repository = @ptrCast(@alignCast(context));
     return &self.group_slice;
 }
 
@@ -380,10 +381,10 @@ fn getOriginal(
     context: *anyopaque,
     allocator: Allocator,
     path: []const u8,
-    kind: git_cli_mod.RefKind,
+    kind: git_mod.RefKind,
     label: []const u8,
 ) !?Original {
-    const self: *GitScmProvider = @ptrCast(@alignCast(context));
+    const self: *Repository = @ptrCast(@alignCast(context));
     const git = self.git orelse return null;
     const relative = self.relativePath(path) orelse return null;
     const content = try git.readRef(self.root, relative, kind) orelse return null;
@@ -440,7 +441,7 @@ const FakeDelegate = struct {
 const TestHost = struct {
     opened: usize = 0,
 
-    fn openChange(context: *anyopaque, _: *GitScmProvider, _: *GitScmResource) anyerror!void {
+    fn openChange(context: *anyopaque, _: *Repository, _: *GitScmResource) anyerror!void {
         const self: *TestHost = @ptrCast(@alignCast(context));
         self.opened += 1;
     }
@@ -459,7 +460,7 @@ fn makeState(allocator: Allocator) !GitRepositoryState {
     return state;
 }
 
-test "gitScmProvider: groups, status letters and resource opening" {
+test "repository: groups, status letters and resource opening" {
     const allocator = testing.allocator;
     var fake = FakeDelegate{};
     fake.init();
@@ -469,7 +470,7 @@ test "gitScmProvider: groups, status letters and resource opening" {
     state.deinit(allocator);
 
     var host = TestHost{};
-    const provider = try GitScmProvider.create(allocator, null, repository, test_root, .{
+    const provider = try Repository.create(allocator, null, repository, test_root, .{
         .context = &host,
         .open_change = TestHost.openChange,
     });
@@ -498,7 +499,7 @@ test "gitScmProvider: groups, status letters and resource opening" {
     try testing.expectEqual(@as(usize, 2), provider.quickDiffProviders().len);
 }
 
-test "gitScmProvider: refresh rebuilds from the repository state" {
+test "repository: refresh rebuilds from the repository state" {
     const allocator = testing.allocator;
     var fake = FakeDelegate{};
     fake.init();
@@ -508,7 +509,7 @@ test "gitScmProvider: refresh rebuilds from the repository state" {
     state.deinit(allocator);
 
     var host = TestHost{};
-    const provider = try GitScmProvider.create(allocator, null, repository, test_root, .{
+    const provider = try Repository.create(allocator, null, repository, test_root, .{
         .context = &host,
         .open_change = TestHost.openChange,
     });

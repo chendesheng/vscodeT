@@ -77,7 +77,7 @@ with the documented omissions listed at the end of this document.
   service/repository/delegate types and the one-delegate, state-plus-event
   service shape. Resources are local paths rather than URIs and synchronous
   calls replace Promises.
-- `src/tui/gitCli.zig` is the terminal delegate: `rev-parse` discovery,
+- `src/extensions/git/src/git.zig` is the terminal delegate: `rev-parse` discovery,
   `status --porcelain=v2 -z --branch -uall` parsing (branch headers,
   ordinary/rename/unmerged/untracked records, spaces/UTF-8, malformed input,
   10k cap), `HEAD`/index/working blob reads with binary/size skips, a
@@ -90,9 +90,9 @@ with the documented omissions listed at the end of this document.
   port the per-provider originals, the 200 ms recompute trigger, the
   primary/secondary overlap split, and the `dirty-diff-*` whole-line/gutter/
   overview decorations.
-- `src/tui/gitScmProvider.zig` exposes the upstream `Merge Changes`,
+- `src/extensions/git/src/repository.zig` exposes the upstream `Merge Changes`,
   `Staged Changes` and `Changes` groups, v2 status letters and the
-  working/index and index/HEAD quick-diff providers. `src/tui/scmView.zig` is
+  working/index and index/HEAD quick-diff providers. `src/vs/workbench/contrib/scm/browser/scmViewPane.zig` is
   the terminal `SOURCE CONTROL` view; `src/tui/quickDiffController.zig` attaches
   quick diff to file editors.
 - `src/vs/editor/browser/widget/diffEditor/` ports the view model,

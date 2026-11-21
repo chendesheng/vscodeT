@@ -77,17 +77,17 @@ whose hooks are named below.
 
 ```text
 git (argv, cwd = repo root)
-  -> src/tui/gitCli.zig: rev-parse, status --porcelain=v2 -z --branch -uall,
+  -> src/extensions/git/src/git.zig: rev-parse, status --porcelain=v2 -z --branch -uall,
      show HEAD:<p>, show :<p>, read working file, blob cache
   -> contrib/git (common interfaces + browser service): state + change events
-  -> src/tui/gitScmProvider.zig: SCM groups/resources + quick-diff providers
+  -> src/extensions/git/src/repository.zig: SCM groups/resources + quick-diff providers
   -> contrib/scm common service -> contrib/scm browser quick-diff model/decorator
   -> TextModel decorations (+ decoration generation)
   -> terminalViewHost: LinesDecorationsOverlay / DecorationsOverlay,
      ViewDecorationsChanged
   -> src/tui/editorView.zig + margin: quick-diff cell, whole-line backgrounds,
      inline classes
-  -> src/tui/scmView.zig --open--> Workbench.openDiff
+  -> src/vs/workbench/contrib/scm/browser/scmViewPane.zig --open--> Workbench.openDiff
   -> DiffEditorViewModel (line diff) -> aligned display texts
   -> two snapshot Editors/Views -> DiffEditorWidget
   -> Tab.paint composites both views + the center gutter
@@ -219,7 +219,7 @@ Portable:
 
 TUI host:
 
-- `src/tui/gitCli.zig` — implements `IGitExtensionDelegate`:
+- `src/extensions/git/src/git.zig` — implements `IGitExtensionDelegate`:
   - `git.path` override + PATH lookup; `git.enabled` gate; a dedicated
     `std.Io.Threaded` spawn helper (no shell), explicit cwd, bounded
     stdout/stderr, POSIX deadline/kill (Windows wait).
@@ -266,7 +266,7 @@ TUI host:
   keeps decoration ids.
 - `src/vs/workbench/contrib/scm/browser/scm.contribution.zig` (small) —
   settings defaults/schema subset and quick-diff visibility commands.
-- `src/tui/gitScmProvider.zig` — implements `ISCMProvider` over the git
+- `src/extensions/git/src/repository.zig` — implements `ISCMProvider` over the git
   service: groups `Merge Changes`, `Staged Changes`, `Changes` (untracked
   mixed in, matching `git.untrackedChanges=mixed`), status letters, counts and
   branch name; `getOriginal` for working/index/HEAD; registers the primary
@@ -296,7 +296,7 @@ TUI host:
 
 ### 5.5 Source Control sidebar and workbench chrome
 
-- `src/tui/scmView.zig` — terminal view over `ISCMService`: `SOURCE CONTROL`
+- `src/vs/workbench/contrib/scm/browser/scmViewPane.zig` — terminal view over `ISCMService`: `SOURCE CONTROL`
   header, branch/repository row, group headers with counts, relative-path
   resource rows with status letters, selection, windowed scrolling, one-cell
   scrollbar, dim when unfocused, welcome text when no provider, refresh.
@@ -514,7 +514,7 @@ Add and register in `src/tests.zig`:
   in-file: read-only guards, line-number map/status, gutter width.
 - `src/vs/workbench/contrib/git/test/common/gitService.test.zig`: delegate
   set-once, forwarding, repository state change, lookup.
-- `src/tui/gitCli.zig` in-file: v2 status parser (branch headers, ordinary,
+- `src/extensions/git/src/git.zig` in-file: v2 status parser (branch headers, ordinary,
   rename/copy, unmerged, untracked, spaces/UTF-8, malformed/truncated),
   grouping, 10000 cap; temp-repo integration (init/commit/modify/stage/rename/
   delete/untracked; HEAD/index/working reads; binary/oversized skip) with git

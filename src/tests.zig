@@ -74,10 +74,10 @@ comptime {
     _ = @import("./vs/workbench/contrib/search/browser/searchViewTerminal.zig");
     _ = @import("./vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig");
     _ = @import("./vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
-    _ = @import("./tui/gitCli.zig");
-    _ = @import("./tui/gitScmProvider.zig");
+    _ = @import("./extensions/git/src/git.zig");
+    _ = @import("./extensions/git/src/repository.zig");
     _ = @import("./tui/quickDiffController.zig");
-    _ = @import("./tui/scmView.zig");
+    _ = @import("./vs/workbench/contrib/scm/browser/scmViewPane.zig");
     _ = @import("./tui/vscodeProfile.zig");
     _ = @import("./vs/workbench/browser/parts/editor/textDiffEditor.zig");
     _ = @import("./tui/benchmark.zig");
