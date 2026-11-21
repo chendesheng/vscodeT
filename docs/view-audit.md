@@ -104,6 +104,12 @@ For each row:
 - `113764e` port: add block decorations view part. Ported the ViewPart,
   wired it through `TerminalViewHost`, painted blocks under the text, added
   six focused tests and the `test-view` build step.
+- `86348cc` docs: add the view audit ledger.
+- `54d88ee` find: theme the terminal find bar. Resolved `editorWidget.*`,
+  `input.*` and `inputOption.*` through the host palette; added a theme test.
+- `210ce82` find: expose the upstream bar controls. Added the visible replace
+  toggle, previous, next, close, preserve-case, replace-one and replace-all
+  controls; added click tests; updated the README and ledger.
 
 ## Next slice
 
