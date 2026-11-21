@@ -1,5 +1,6 @@
-// Port of the text-search types and preview behavior from
-// `src/vs/workbench/services/search/common/search.ts`.
+// Port of the text- and file-search types from
+// `src/vs/workbench/services/search/common/search.ts`, plus the preview
+// behavior used by the Search view.
 //
 // Terminal adaptation: resources are canonical path strings instead of URIs,
 // and the search service is an incremental job rather than an asynchronous
@@ -9,6 +10,7 @@
 const std = @import("std");
 const glob = @import("../../../../base/common/glob.zig");
 const strings = @import("../../../../base/common/strings.zig");
+const filters = @import("../../../../base/common/filters.zig");
 const Allocator = std.mem.Allocator;
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 
@@ -79,8 +81,212 @@ pub const PatternInfo = struct {
     word_separators: ?[]const u8 = null,
 };
 
+/// Port of upstream `IFolderQuery`. The terminal only needs the folder and its
+/// display name for quick open; the ignore/symlink overrides are kept so a
+/// folder query built by tests or a future caller can mirror upstream's
+/// `disregardIgnoreFiles`/`ignoreSymlinks` options.
 pub const FolderQuery = struct {
     folder: []const u8,
+    folder_name: ?[]const u8 = null,
+    include_pattern: ?[]const u8 = null,
+    ignore_glob_case: bool = false,
+    disregard_ignore_files: ?bool = null,
+    disregard_parent_ignore_files: ?bool = null,
+    disregard_global_ignore_files: ?bool = null,
+    ignore_symlinks: ?bool = null,
+};
+
+/// File-search configuration read once per quick-open session. Upstream reads
+/// these from `search.*` settings through `QueryBuilder.getFolderQueryForRoot`.
+pub const FileSearchSettings = struct {
+    use_ignore_files: bool = true,
+    use_parent_ignore_files: bool = true,
+    use_global_ignore_files: bool = true,
+    follow_symlinks: bool = true,
+};
+
+/// A workspace folder snapshot passed to the file-search worker.
+pub const FolderInfo = struct {
+    resource: []const u8,
+    name: []const u8,
+};
+
+pub const FileQueryOptions = struct {
+    file_pattern: []const u8 = "",
+    include_pattern: ?[]const u8 = null,
+    exclude_entries: []const glob.ExcludeEntry = &.{},
+    max_results: usize = 0,
+    sort_by_score: bool = false,
+    extra_file_resources: []const []const u8 = &.{},
+    ignore_glob_case: bool = false,
+    should_glob_match_file_pattern: bool = false,
+    ignore_symlinks: ?bool = null,
+    exists: bool = false,
+    settings: FileSearchSettings = .{},
+};
+
+/// Owned file-query subset used by quick open, mirroring upstream
+/// `IFileQuery`. Resources are canonical path strings.
+pub const FileQuery = struct {
+    allocator: Allocator,
+    folder_queries: []FolderQuery,
+    file_pattern: []u8,
+    include_pattern: ?[]u8,
+    exclude_entries: []glob.ExcludeEntry,
+    max_results: usize = 0,
+    sort_by_score: bool = false,
+    extra_file_resources: [][]u8,
+    ignore_glob_case: bool = false,
+    should_glob_match_file_pattern: bool = false,
+    ignore_symlinks: bool = false,
+    exists: bool = false,
+    settings: FileSearchSettings = .{},
+
+    pub fn init(
+        allocator: Allocator,
+        folders: []const FolderInfo,
+        options: FileQueryOptions,
+    ) !FileQuery {
+        const folder_queries = try allocator.alloc(FolderQuery, folders.len);
+        errdefer allocator.free(folder_queries);
+        var copied_folders: usize = 0;
+        errdefer for (folder_queries[0..copied_folders]) |folder_query| {
+            allocator.free(@constCast(folder_query.folder));
+            if (folder_query.folder_name) |name| allocator.free(@constCast(name));
+        };
+        for (folders, 0..) |folder, index| {
+            const resource = try allocator.dupe(u8, folder.resource);
+            errdefer allocator.free(resource);
+            // Only multi-root queries prefix search paths with the folder
+            // name, mirroring `QueryBuilder.commonQuery`'s includeFolderName.
+            const name = if (folders.len > 1)
+                try allocator.dupe(u8, folder.name)
+            else
+                null;
+            errdefer if (name) |value| allocator.free(value);
+            folder_queries[index] = .{
+                .folder = resource,
+                .folder_name = name,
+                .ignore_symlinks = options.ignore_symlinks,
+            };
+            copied_folders += 1;
+        }
+
+        const pattern = try allocator.dupe(u8, options.file_pattern);
+        errdefer allocator.free(pattern);
+        const include = if (options.include_pattern) |value|
+            try allocator.dupe(u8, value)
+        else
+            null;
+        errdefer if (include) |value| allocator.free(value);
+
+        const exclude_entries = try allocator.alloc(glob.ExcludeEntry, options.exclude_entries.len);
+        errdefer allocator.free(exclude_entries);
+        var copied_entries: usize = 0;
+        errdefer for (exclude_entries[0..copied_entries]) |entry| {
+            allocator.free(entry.pattern);
+            if (entry.when) |when| allocator.free(when);
+        };
+        for (options.exclude_entries, 0..) |entry, index| {
+            const entry_pattern = try allocator.dupe(u8, entry.pattern);
+            errdefer allocator.free(entry_pattern);
+            const when = if (entry.when) |value| try allocator.dupe(u8, value) else null;
+            exclude_entries[index] = .{
+                .pattern = entry_pattern,
+                .enabled = entry.enabled,
+                .when = when,
+            };
+            copied_entries += 1;
+        }
+
+        const extra_files = try allocator.alloc([]u8, options.extra_file_resources.len);
+        errdefer allocator.free(extra_files);
+        var copied_extra: usize = 0;
+        errdefer for (extra_files[0..copied_extra]) |path| allocator.free(path);
+        for (options.extra_file_resources, 0..) |path, index| {
+            extra_files[index] = try allocator.dupe(u8, path);
+            copied_extra += 1;
+        }
+
+        return .{
+            .allocator = allocator,
+            .folder_queries = folder_queries,
+            .file_pattern = pattern,
+            .include_pattern = include,
+            .exclude_entries = exclude_entries,
+            .max_results = options.max_results,
+            .sort_by_score = options.sort_by_score,
+            .extra_file_resources = extra_files,
+            .ignore_glob_case = options.ignore_glob_case,
+            .should_glob_match_file_pattern = options.should_glob_match_file_pattern,
+            .ignore_symlinks = options.ignore_symlinks orelse !options.settings.follow_symlinks,
+            .exists = options.exists,
+            .settings = options.settings,
+        };
+    }
+
+    pub fn deinit(self: *FileQuery) void {
+        for (self.folder_queries) |folder_query| {
+            self.allocator.free(@constCast(folder_query.folder));
+            if (folder_query.folder_name) |name| self.allocator.free(@constCast(name));
+        }
+        self.allocator.free(self.folder_queries);
+        self.allocator.free(self.file_pattern);
+        if (self.include_pattern) |include| self.allocator.free(include);
+        for (self.exclude_entries) |entry| {
+            self.allocator.free(entry.pattern);
+            if (entry.when) |when| self.allocator.free(when);
+        }
+        self.allocator.free(self.exclude_entries);
+        for (self.extra_file_resources) |path| self.allocator.free(path);
+        self.allocator.free(self.extra_file_resources);
+    }
+};
+
+/// Port of upstream `IRawFileMatch`. `basename` is a slice of `relative_path`;
+/// the other slices are owned by the producer (the file walker or the worker
+/// cache).
+pub const RawFileMatch = struct {
+    base: []u8,
+    relative_path: []u8,
+    search_path: []u8,
+    basename: []const u8 = "",
+
+    pub fn deinit(self: *RawFileMatch, allocator: Allocator) void {
+        allocator.free(self.base);
+        allocator.free(self.relative_path);
+        allocator.free(self.search_path);
+    }
+};
+
+/// Port of upstream `ISearchEngineStats` for the file walker.
+pub const FileSearchStats = struct {
+    file_walk_time_ms: i64 = 0,
+    cmd_time_ms: i64 = 0,
+    directories_walked: usize = 0,
+    files_walked: usize = 0,
+    cmd_result_count: usize = 0,
+    exclude_exception_runs: usize = 0,
+    exclude_exception_time_ms: i64 = 0,
+};
+
+/// Port of upstream `IFileMatch` for a file-quick-open result. All slices are
+/// owned by the result.
+pub const FileMatch = struct {
+    allocator: Allocator,
+    path: []u8,
+    label: []u8,
+    description: []u8,
+    label_matches: []filters.Match,
+    description_matches: []filters.Match,
+
+    pub fn deinit(self: *FileMatch) void {
+        self.allocator.free(self.path);
+        self.allocator.free(self.label);
+        self.allocator.free(self.description);
+        self.allocator.free(self.label_matches);
+        self.allocator.free(self.description_matches);
+    }
 };
 
 /// Options that upstream's query builder attaches to a text query. The
