@@ -184,7 +184,6 @@ const scm_view_mod = @import("../../../tui/scmView.zig");
 const text_diff_editor_mod = @import("./parts/editor/textDiffEditor.zig");
 const storage_mod = @import("../../platform/storage/common/storage.zig");
 const TerminalService = terminal_service_mod.TerminalService;
-const TerminalSize = struct { cols: u16, rows: u16 };
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
@@ -393,7 +392,6 @@ pub const Workbench = struct {
     is_pasting: bool = false,
     terminal_service: ?*TerminalService = null,
     terminal_input: terminal_input_mod.Encoder = .{},
-    terminal_size: ?TerminalSize = null,
     suppress_global_command: bool = false,
     git_cli: ?*git_cli_mod.GitCli = null,
     git_delegate: ?*git_common_mod.IGitExtensionDelegate = null,
@@ -449,7 +447,6 @@ pub const Workbench = struct {
         self.is_pasting = false;
         self.terminal_service = null;
         self.terminal_input = .{};
-        self.terminal_size = null;
         self.suppress_global_command = false;
         self.git_cli = null;
         self.git_delegate = null;
@@ -571,7 +568,6 @@ pub const Workbench = struct {
         self.is_pasting = false;
         self.terminal_service = null;
         self.terminal_input = .{};
-        self.terminal_size = null;
         self.suppress_global_command = false;
         self.git_cli = null;
         self.git_delegate = null;
@@ -709,7 +705,6 @@ pub const Workbench = struct {
         self.is_pasting = false;
         self.terminal_service = null;
         self.terminal_input = .{};
-        self.terminal_size = null;
         self.suppress_global_command = false;
         self.git_cli = null;
         self.git_delegate = null;
@@ -1933,18 +1928,12 @@ pub const Workbench = struct {
     pub fn showTerminal(self: *Workbench) !void {
         const service = try self.ensureTerminalService();
         if (service.count() == 0) _ = try service.create();
-        try self.layout_model.setVisible(.panel, true);
-        self.focus = .terminal;
-        self.statusbar.main_part.clearFocus();
-        if (self.breadcrumbs_control) |control| control.setFocused(false);
-        if (self.search_view) |view| view.blur();
-        self.layoutAll();
+        self.revealTerminalPanel();
     }
 
     pub fn hideTerminal(self: *Workbench) void {
         self.layout_model.setVisible(.panel, false) catch {};
         self.focus = .editor;
-        self.terminal_size = null;
         self.layoutAll();
     }
 
@@ -1957,10 +1946,21 @@ pub const Workbench = struct {
     }
 
     pub fn newTerminal(self: *Workbench) !void {
-        try self.showTerminal();
-        const service = self.terminal_service orelse return;
+        const service = try self.ensureTerminalService();
         _ = try service.create();
+        self.revealTerminalPanel();
+    }
+
+    /// Reveals the panel and moves focus to the terminal. Creation is the
+    /// caller's job: upstream's toggle reveals an existing terminal and only
+    /// the new-terminal command creates one, so `showTerminal` and
+    /// `newTerminal` must not both create.
+    fn revealTerminalPanel(self: *Workbench) void {
+        self.layout_model.setVisible(.panel, true) catch {};
         self.focus = .terminal;
+        self.statusbar.main_part.clearFocus();
+        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.search_view) |view| view.blur();
         self.layoutAll();
     }
 
@@ -2084,25 +2084,34 @@ pub const Workbench = struct {
         const service = self.terminal_service orelse return false;
         const rect = self.panelRect();
         const hit = terminal_panel.hitTest(service, rect, event.x, event.y);
+        // Tab-strip actions are click gestures. The app enables all-motion
+        // reporting (mode 1003), so motion, releases, wheel notches and
+        // non-left buttons must not create, close or switch terminals.
+        const left_press = event.kind == .down and event.button == .left;
         switch (hit) {
             .none => return false,
             .tab => |index| {
+                if (!left_press) return true;
                 _ = service.setActive(index);
                 self.focus = .terminal;
                 return true;
             },
             .new_terminal => {
+                if (!left_press) return true;
                 self.newTerminal() catch {};
                 return true;
             },
             .kill_terminal => {
+                if (!left_press) return true;
                 self.killTerminal() catch {};
                 return true;
             },
             .content => {},
         }
 
-        self.focus = .terminal;
+        // A click focuses the terminal; hovering and wheel scrolling leave the
+        // editor's focus alone, as xterm.js only focuses on a press.
+        if (left_press) self.focus = .terminal;
         const instance = service.active() orelse return true;
         const content = terminal_panel.contentRect(rect);
         const local = ui.MouseEvent{
@@ -2199,21 +2208,19 @@ pub const Workbench = struct {
         self.syncTerminalSize();
     }
 
+    /// Applies the panel's measured cell dimensions to every terminal, like
+    /// upstream `TerminalGroup.layout`. The view owns the measurement: the tab
+    /// strip reserves one row and the rest is already in terminal cells. Each
+    /// instance ignores an unchanged size, so a terminal created while the
+    /// panel is visible is laid out on the reveal pass without a size cache.
     fn syncTerminalSize(self: *Workbench) void {
         const service = self.terminal_service orelse return;
-        if (!self.terminalVisible()) {
-            self.terminal_size = null;
-            return;
-        }
-        const rect = terminal_panel.contentRect(self.panelRect());
-        const cols: u16 = @intCast(@min(ui.cell.snap(rect.w), std.math.maxInt(u16)));
-        const rows: u16 = @intCast(@min(ui.cell.snap(rect.h), std.math.maxInt(u16)));
+        if (!self.terminalVisible()) return;
+        const l = terminal_panel.layout(self.panelRect());
+        const cols: u16 = @intCast(@min(l.content_width, std.math.maxInt(u16)));
+        const rows: u16 = @intCast(@min(l.content_height, std.math.maxInt(u16)));
         if (cols == 0 or rows == 0) return;
-        if (self.terminal_size) |size| {
-            if (size.cols == cols and size.rows == rows) return;
-        }
-        self.terminal_size = .{ .cols = cols, .rows = rows };
-        service.resizeAll(cols, rows);
+        service.layoutAll(cols, rows);
     }
 
     fn paneExists(self: *const Workbench, pane: *GroupPane) bool {
@@ -6457,7 +6464,6 @@ fn commandRevertAndCloseActiveEditor(context: *anyopaque) anyerror!void {
 fn commandCreateTerminalEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.newTerminal();
-    try self.showTerminal();
 }
 
 fn commandViewExplorer(context: *anyopaque) anyerror!void {
@@ -10102,4 +10108,144 @@ test "Workbench: same-file navigation reuses the current editor across path form
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings(path, workbench.activeTab().?.editor.path);
     try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+}
+
+/// Test seam for the terminal service: a real, immediately-exiting process, so
+/// no interactive shell is needed to exercise creation and layout.
+fn launchTestTerminal(service: *TerminalService, allocator: Allocator) anyerror!*terminal_service_mod.TerminalInstance {
+    const instance = try terminal_service_mod.TerminalInstance.create(allocator, service.io, service.next_id, .{
+        .shell = "/bin/true",
+        .profile_name = "true",
+    });
+    service.next_id += 1;
+    return instance;
+}
+
+test "Workbench: new terminal creates one tab and hover does not act" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 20);
+    defer workbench.deinit();
+    const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
+    workbench.terminal_service = service;
+
+    workbench.newTerminal() catch |err| switch (err) {
+        error.PtyOpenFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
+
+    // Toggling the panel with a terminal present must not create another.
+    try workbench.showTerminal();
+    try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
+
+    const layout = terminal_panel.layout(workbench.panelRect());
+    const expected_cols: u16 = @intCast(layout.content_width);
+    const expected_rows: u16 = @intCast(layout.content_height);
+    const first = service.at(0).?;
+    try std.testing.expectEqual(expected_cols, first.cols);
+    try std.testing.expectEqual(expected_rows, first.rows);
+
+    const plus_x = layout.content_x + layout.content_width - 3;
+    var move = ui.MouseEvent{ .kind = .move, .x = plus_x, .y = layout.tab_y };
+    try std.testing.expect(workbench.handleTerminalMouse(&move));
+    try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
+
+    var right = ui.MouseEvent{ .kind = .down, .button = .right, .x = plus_x, .y = layout.tab_y };
+    try std.testing.expect(workbench.handleTerminalMouse(&right));
+    try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
+
+    var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = plus_x, .y = layout.tab_y };
+    try std.testing.expect(workbench.handleTerminalMouse(&click));
+    try std.testing.expectEqual(@as(usize, 2), workbench.terminalCount());
+    // A terminal created while the panel is visible adopts the panel size.
+    const second = service.at(1).?;
+    try std.testing.expectEqual(expected_cols, second.cols);
+    try std.testing.expectEqual(expected_rows, second.rows);
+
+    // The tab strip switches on a left press only.
+    try std.testing.expectEqual(@as(usize, 1), service.group.active);
+    var tab_move = ui.MouseEvent{ .kind = .move, .x = layout.content_x + 1, .y = layout.tab_y };
+    try std.testing.expect(workbench.handleTerminalMouse(&tab_move));
+    try std.testing.expectEqual(@as(usize, 1), service.group.active);
+    var tab_right = ui.MouseEvent{ .kind = .down, .button = .right, .x = layout.content_x + 1, .y = layout.tab_y };
+    try std.testing.expect(workbench.handleTerminalMouse(&tab_right));
+    try std.testing.expectEqual(@as(usize, 1), service.group.active);
+    var tab_click = ui.MouseEvent{ .kind = .down, .button = .left, .x = layout.content_x + 1, .y = layout.tab_y };
+    try std.testing.expect(workbench.handleTerminalMouse(&tab_click));
+    try std.testing.expectEqual(@as(usize, 0), service.group.active);
+}
+
+test "Workbench: wheel scrolls the terminal viewport without moving focus" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 20);
+    defer workbench.deinit();
+    const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
+    workbench.terminal_service = service;
+    workbench.newTerminal() catch |err| switch (err) {
+        error.PtyOpenFailed => return error.SkipZigTest,
+        else => return err,
+    };
+
+    const instance = service.at(0).?;
+    const layout = terminal_panel.layout(workbench.panelRect());
+    const content = terminal_panel.contentRect(workbench.panelRect());
+    const local_rect = ui.Rect{ .x = 0, .y = 0, .w = content.w, .h = content.h };
+
+    var line_buffer: [64]u8 = undefined;
+    var index: usize = 0;
+    while (index < 60) : (index += 1) {
+        const line = try std.fmt.bufPrint(&line_buffer, "line-{d}\r\n", .{index});
+        instance.emulator.feed(line);
+    }
+
+    var grid = try ui.CellGrid.init(allocator, ui.cell.snap(content.w), ui.cell.snap(content.h));
+    defer grid.deinit();
+    try terminal_view.paint(&instance.emulator, &grid, local_rect);
+    const active_top = try grid.rowText(allocator, 0);
+    defer allocator.free(active_top);
+
+    // Wheel-up over the content scrolls into the scrollback but must not steal
+    // keyboard focus from the editor.
+    workbench.focus = .editor;
+    var wheel_up = ui.MouseEvent{
+        .kind = .wheel,
+        .x = layout.content_x + 1,
+        .y = layout.content_y + 1,
+        .delta_y = -3,
+    };
+    try std.testing.expect(workbench.handleTerminalMouse(&wheel_up));
+    try std.testing.expect(workbench.focus == .editor);
+    try terminal_view.paint(&instance.emulator, &grid, local_rect);
+    const scrolled_top = try grid.rowText(allocator, 0);
+    defer allocator.free(scrolled_top);
+    try std.testing.expect(!std.mem.eql(u8, active_top, scrolled_top));
+
+    // Wheel-down returns to the active viewport.
+    var wheel_down = ui.MouseEvent{
+        .kind = .wheel,
+        .x = layout.content_x + 1,
+        .y = layout.content_y + 1,
+        .delta_y = 3,
+    };
+    try std.testing.expect(workbench.handleTerminalMouse(&wheel_down));
+    try terminal_view.paint(&instance.emulator, &grid, local_rect);
+    const returned_top = try grid.rowText(allocator, 0);
+    defer allocator.free(returned_top);
+    try std.testing.expectEqualStrings(active_top, returned_top);
+
+    // A click focuses the terminal; the wheel alone does not.
+    var click = ui.MouseEvent{
+        .kind = .down,
+        .button = .left,
+        .x = layout.content_x + 1,
+        .y = layout.content_y + 1,
+    };
+    try std.testing.expect(workbench.handleTerminalMouse(&click));
+    try std.testing.expect(workbench.focus == .terminal);
 }

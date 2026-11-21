@@ -59,6 +59,13 @@ extern "kernel32" fn WaitForMultipleObjects(
     wait_all: windows.BOOL,
     milliseconds: windows.DWORD,
 ) callconv(.winapi) windows.DWORD;
+extern "kernel32" fn WriteFile(
+    file: windows.HANDLE,
+    buffer: [*]const u8,
+    bytes_to_write: windows.DWORD,
+    bytes_written: ?*windows.DWORD,
+    overlapped: ?*anyopaque,
+) callconv(.winapi) windows.BOOL;
 
 /// Platform-specific state saved by `enableRawMode`.
 pub const RawModeState = if (is_windows) WindowsRawMode else posix.termios;
@@ -283,19 +290,56 @@ pub fn rememberOrigTermios(state: RawModeState) void {
     g_orig_state = state;
 }
 
-pub const panic = std.debug.FullPanic(myPanic);
+/// Reverses every terminal mode the TUI enables. The crash paths print the
+/// stack trace after this sequence, so it must leave the alternate screen and
+/// restore raw mode before the trace: otherwise the trace is written to the
+/// alternate screen, which the terminal discards when the process dies.
+pub const crash_restore_sequence = "\x1b[0m\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1049l\x1b[?7h\x1b[?25h\r\n";
 
-pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+/// Restores the terminal before a panic or segfault report. This also runs in a
+/// signal handler, so it must not allocate or touch the IO locks; the escape
+/// sequence is written with a direct file-descriptor write. The sequence is
+/// emitted before termios/console modes are restored: Windows only interprets
+/// it while virtual-terminal processing is enabled, and on POSIX the explicit
+/// `\r\n` keeps its exact bytes while output post-processing is still off.
+pub fn restoreTerminalForCrash() void {
+    if (is_windows) {
+        const handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (handle != windows.INVALID_HANDLE_VALUE) {
+            var written: windows.DWORD = 0;
+            _ = WriteFile(handle, crash_restore_sequence.ptr, @intCast(crash_restore_sequence.len), &written, null);
+        }
+    } else {
+        var remaining: []const u8 = crash_restore_sequence;
+        while (remaining.len > 0) {
+            const written = std.c.write(@intCast(posix.STDOUT_FILENO), remaining.ptr, remaining.len);
+            if (written <= 0) break;
+            remaining = remaining[@intCast(written)..];
+        }
+    }
+
     if (g_orig_state) |state| {
         disableRawMode(state) catch {};
     }
+}
 
-    const io = Io.Threaded.global_single_threaded.io();
-    Io.File.stdout().writeStreamingAll(io, "\x1b[?1006l\x1b[?1003l\x1b[?1049l\x1b[?7h") catch {};
+pub const panic = std.debug.FullPanic(myPanic);
 
+pub fn myPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    restoreTerminalForCrash();
     std.debug.defaultPanic(msg, first_trace_addr);
+}
 
-    std.process.exit(1);
+test "crash restore sequence leaves the alternate screen and re-enables terminal modes" {
+    const sequence = crash_restore_sequence;
+    try std.testing.expect(std.mem.indexOf(u8, sequence, "\x1b[?1049l") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sequence, "\x1b[?2004l") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sequence, "\x1b[?1006l") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sequence, "\x1b[?1003l") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sequence, "\x1b[?7h") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sequence, "\x1b[?25h") != null);
+    // The trace starts on a fresh line after the restored screen.
+    try std.testing.expect(std.mem.endsWith(u8, sequence, "\r\n"));
 }
 
 var resized = std.atomic.Value(bool).init(false);

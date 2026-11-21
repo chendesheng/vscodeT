@@ -19,14 +19,23 @@ const emulator_mod = @import("./terminalEmulator.zig");
 pub const TerminalEmulator = emulator_mod.TerminalEmulator;
 pub const ProcessState = terminal.ProcessState;
 
+/// Port of `TerminalInstance.Constants` in `terminalInstance.ts`. These are the
+/// no-container fallback dimensions (`_initDimensions`); the view always lays
+/// the instance out with its measured cells as soon as the container exists.
+pub const Constants = struct {
+    pub const DefaultCols: u16 = 80;
+    pub const DefaultRows: u16 = 30;
+};
+
 pub const Options = struct {
     shell: []const u8,
     args: []const []const u8 = &.{},
     cwd: ?[]const u8 = null,
     env: []const pty.EnvVar = &.{},
     inherit_env: bool = true,
-    cols: u16 = 80,
-    rows: u16 = 24,
+    /// Fallback dimensions until `layout` receives the view's cell size.
+    cols: u16 = Constants.DefaultCols,
+    rows: u16 = Constants.DefaultRows,
     scrollback_lines: usize = 1000,
     colors: emulator_mod.Colors = .{},
     profile_name: []const u8 = "shell",
@@ -176,6 +185,20 @@ pub const TerminalInstance = struct {
         self.rows = @max(rows, 1);
         try self.emulator.resize(self.cols, self.rows);
         try self.process.resize(self.cols, self.rows);
+    }
+
+    /// Port of `TerminalInstance.layout`: apply the view's dimensions to the
+    /// emulator and the pty. The browser method converts a DOM pixel dimension
+    /// with `getXtermScaledDimensions`; the TUI view layout is already in
+    /// terminal cells, so the panel passes its measured content size directly.
+    /// Zero dimensions (a hidden or not-yet-attached container upstream) are
+    /// ignored, and an unchanged size is a no-op like xterm's own resize.
+    pub fn layout(self: *TerminalInstance, cols: u16, rows: u16) void {
+        if (cols == 0 or rows == 0) return;
+        if (self.cols == cols and self.rows == rows) return;
+        self.resize(cols, rows) catch {
+            self.title_error = true;
+        };
     }
 
     pub fn scroll(self: *TerminalInstance, delta: isize) void {

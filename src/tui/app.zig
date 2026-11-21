@@ -36,13 +36,54 @@ const WordBasedCompletionProvider = @import("../vs/editor/contrib/suggest/browse
 const TuiHoverProvider = @import("../vs/editor/contrib/hover/browser/terminalHoverProvider.zig").TuiHoverProvider;
 const ArrayList = std.array_list.Managed;
 
+/// Process-wide `std.log` sink. The TUI owns the terminal, so engine
+/// diagnostics (libghostty-vt's parser included) must never reach stderr while
+/// the alternate screen is active; they are routed through the workbench
+/// logger instead.
+var std_log_sink: ?log_module.ILogger = null;
+/// True while the alternate screen owns the terminal.
+var screen_owns_terminal = false;
+
+/// `std.log` hook installed as `std_options.logFn` in `src/main.zig`. While the
+/// workbench log file is available every engine log line goes there (the file
+/// logger's level decides which levels are kept). With no log file, logs are
+/// dropped as soon as the TUI owns the screen; before that stderr is still a
+/// useful destination.
+pub fn logStd(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    const mapped: log_module.LogLevel = switch (level) {
+        .debug => .debug,
+        .info => .info,
+        .warn => .warning,
+        .err => .err,
+    };
+    if (std_log_sink) |sink| {
+        if (!log_module.canLog(sink.getLevel(), mapped)) return;
+        var buffer: [4096]u8 = undefined;
+        const scoped_format: []const u8 = if (scope == .default)
+            format
+        else
+            @tagName(scope) ++ ": " ++ format;
+        const text = std.fmt.bufPrint(&buffer, scoped_format, args) catch return;
+        log_module.log(sink, mapped, text) catch {};
+        return;
+    }
+    if (screen_owns_terminal) return;
+    std.log.defaultLog(level, scope, format, args);
+}
+
 /// Mirrors the previous `std.debug.print` error reporting, now also written to
-/// the main log file.
+/// the main log file. While the alternate screen is active the message goes to
+/// the log only: a direct stderr write would paint over the cell grid.
 fn report(log_service: ?log_module.ILogger, comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt ++ "\n", args);
-    const logger_value = log_service orelse return;
     var buffer: [1024]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, fmt, args) catch return;
+    if (!screen_owns_terminal) std.debug.print("{s}\n", .{text});
+    const logger_value = log_service orelse return;
     logger_value.err(.{ .string = text }, &.{}) catch {};
 }
 
@@ -194,6 +235,10 @@ pub fn main(init: std.process.Init) !void {
     }
     defer if (file_logger) |value| value.destroy();
     const log_service: ?log_module.ILogger = if (file_logger) |value| value.logger() else null;
+    // Route `std.log` (the embedded terminal engine uses it) into the workbench
+    // log instead of the tty. Cleared before the file logger is destroyed.
+    std_log_sink = log_service;
+    defer std_log_sink = null;
     defer infoLog(log_service, "exit", .{});
     infoLog(log_service, "starting: preview={} session={s} paths={d}", .{
         args.preview,
@@ -234,6 +279,8 @@ pub fn main(init: std.process.Init) !void {
 
     try tui.enterAltScreen(out);
     defer tui.exitAltScreen(out) catch {};
+    screen_owns_terminal = true;
+    defer screen_owns_terminal = false;
 
     try tui.disableLineWrap(out);
     defer tui.enableLineWrap(out) catch {};
@@ -293,7 +340,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (args.session == null and folders.items.len == 0 and files.items.len == 0) {
-        std.debug.print("no files or folders to open\n", .{});
+        report(log_service, "no files or folders to open", .{});
         return;
     }
 
@@ -1983,4 +2030,22 @@ test "app: editing keys resolve through the keybinding registry" {
     // The default language configuration inserts spaces up to the tab stop;
     // the caret sits after "ab" once the newline is removed.
     try std.testing.expectEqualStrings("ab  c", line.items);
+}
+
+test "app: std.log routes engine diagnostics to the log file" {
+    const allocator = std.testing.allocator;
+    const buffer_log = @import("../vs/platform/log/common/bufferLog.zig");
+    var sink: buffer_log.BufferLogger = undefined;
+    sink.init(allocator, .debug);
+    defer sink.deinit();
+
+    const previous = std_log_sink;
+    defer std_log_sink = previous;
+    std_log_sink = sink.interface();
+
+    logStd(.warn, .osc_iterm2, "unimplemented OSC 1337: {s}", .{"RemoteHost"});
+
+    try std.testing.expectEqual(@as(usize, 1), sink.buffer.items.len);
+    try std.testing.expectEqual(log_module.LogLevel.warning, sink.buffer.items[0].level);
+    try std.testing.expectEqualStrings("osc_iterm2: unimplemented OSC 1337: RemoteHost", sink.buffer.items[0].message);
 }

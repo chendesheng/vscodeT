@@ -133,7 +133,12 @@ node-pty, and libghostty-vt replaces xterm.js. No upstream files are modified.
 The panel handles interactive programs (alternate screen, colors, cursor
 addressing), UTF-8 and grapheme clusters, scrollback, resize (pty `TIOCSWINSZ`),
 mouse reporting, focus reporting and bracketed paste. `Ctrl+Q` remains the TUI
-quit shortcut even while the terminal is focused.
+quit shortcut even while the terminal is focused. Width and height come from
+the panel view's cell layout: `terminalTabbedView.layout` reserves the tab-strip
+row and hands the remaining cells to `TerminalInstance.layout` for every tab,
+mirroring upstream's `TerminalGroup.layout` → `TerminalInstance.layout` flow.
+Tab-strip actions (`+`, `x`, tab switching) only run on a left-button press;
+idle motion, wheel and non-left buttons never create, close or switch tabs.
 
 Known phase-1 limits:
 
@@ -175,6 +180,20 @@ the terminal host has no time-zone database.
 Console loggers, the URI-keyed `ILoggerService` registry and the log-output
 picker are not ported: the TUI owns the terminal (alternate screen, raw mode)
 and has a single log file instead of per-channel resources.
+
+Because the alternate screen belongs to the TUI, nothing may write log output
+to stderr while it is active. `src/main.zig` installs `std_options.logFn`, and
+`src/tui/app.zig` routes `std.log` lines — including libghostty-vt's parser
+diagnostics such as unimplemented OSC sequences — through the same `ILogger`
+into `main.log`. The file logger's level filters them as usual (its `info`
+default drops engine `debug` lines); if no log file is available, engine logs
+are dropped while the TUI is running instead of painting over the cell grid.
+
+Crash reports are the exception: `panic` and the SIGSEGV/SIGBUS/SIGILL/SIGFPE
+handler leave the alternate screen, re-enable wrapping/cursor visibility and
+restore raw mode before the Zig stack trace is printed to stderr. The trace
+therefore stays on the normal screen after the editor exits instead of being
+written to a discarded alternate screen.
 
 ## File watcher
 

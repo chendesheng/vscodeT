@@ -109,8 +109,6 @@ pub const TerminalService = struct {
             .cwd = cwd,
             .env = env,
             .inherit_env = self.config.inherit_env,
-            .cols = 80,
-            .rows = 24,
             .scrollback_lines = self.config.scrollback,
             .colors = self.options.colors,
             .profile_name = profile_name,
@@ -147,13 +145,12 @@ pub const TerminalService = struct {
         return self.group.setActive(index);
     }
 
-    /// Resizes every instance. The panel calls this after layout because all
-    /// terminals share the panel size.
-    pub fn resizeAll(self: *TerminalService, cols: u16, rows: u16) void {
+    /// Port of `TerminalGroup.layout`: every instance in the group shares the
+    /// panel's cell dimensions. Each instance treats an unchanged size as a
+    /// no-op, so the workbench can call this on every layout pass.
+    pub fn layoutAll(self: *TerminalService, cols: u16, rows: u16) void {
         for (self.group.instances.items) |instance| {
-            instance.resize(cols, rows) catch {
-                instance.title_error = true;
-            };
+            instance.layout(cols, rows);
         }
     }
 
