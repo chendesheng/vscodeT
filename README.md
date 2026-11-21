@@ -912,8 +912,9 @@ console API for raw mode, sizing and input polling.
   editor group; files on the command line still open as tabs. Opening only
   files uses an empty workspace, as upstream does.
 - The editor is rendered through the library (`src/tui/editorView.zig`): text,
-  syntax colors, right-aligned line numbers, wrapped-line markers, selections,
-  the current line and a hardware cursor. The workbench status bar is a
+  syntax colors, right-aligned line numbers, wrapped-line markers, selections
+  (the theme `editor.selectionBackground` with dimmed covered text), the current
+  line and a hardware cursor. The workbench status bar is a
   full-width bottom row built from the ported
   `StatusbarModel`/`StatusbarPart`/`StatusbarService`
   (`src/vs/workbench/browser/parts/statusbar/`) and the ported editor-status

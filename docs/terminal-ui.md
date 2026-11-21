@@ -858,8 +858,13 @@ Library constraints:
     to iterate visible view lines.
   - Creates a gutter column (right-aligned line numbers) and a text column; one
     line element per view line, one text node per rendered part.
-  - Paints selections as inverted cells and the cursor line with a background;
-    the hardware cursor is moved to the caret cell after layout.
+  - Paints selections with the theme `editor.selectionBackground` and dims the
+    covered glyphs (high-contrast themes use `editor.selectionForeground`): a
+    cell cannot alpha-composite the browser's selection layer over the text, so
+    the background is explicit and the foreground is blended toward it.
+    Indentation guides keep the selection background and their guide color. The
+    cursor line uses a background and the hardware cursor is moved to the caret
+    cell after layout.
   - Turns the cached bracket-matching data into model decorations and paints
     them through `LineDecoration.filter`/`extractWrapped`, the same per-wrapped-
     line route as find ranges. Highlights are hidden while a widget owns focus
@@ -1547,12 +1552,13 @@ pane is not keyboard-focusable.
   right-aligned line numbers, empty lines, tabs, CJK/emoji wide characters,
   wrapped lines, long-line clipping, gutters for lines past 9 and 99.
 - Snapshot tests in `src/tui/` assert text rows and per-cell styles for ASCII,
-  CJK, tabs, wrapping and long-line clipping; selection inversion; the hardware
-  cursor cell; an unchanged refresh writing no bytes; mouse click/shift-click/
-  drag/wheel caret and viewport effects; find-control hover highlighting and
-  click activation; input click-to-caret; plus keyboard scrolling and Ctrl-Q
-  through the library dispatcher. Content-widget tests cover model-position
-  anchoring, wrapped anchors, above/below flipping and cell clamping; the hover
+  CJK, tabs, wrapping and long-line clipping; selection background/dimming and
+  the guide cells inside a selection; the hardware cursor cell; an unchanged
+  refresh writing no bytes; mouse click/shift-click/drag/wheel caret and
+  viewport effects; find-control hover highlighting and click activation; input
+  click-to-caret; plus keyboard scrolling and Ctrl-Q through the library
+  dispatcher. Content-widget tests cover model-position anchoring, wrapped
+  anchors, above/below flipping and cell clamping; the hover
   contribution tests cover the upstream `contentHover.test.ts` placement cases,
   markdown/decoration participants, rendering the box and highlight, focus with
   Escape, and wheel scrolling of long hover content without moving the
