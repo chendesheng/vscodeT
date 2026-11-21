@@ -632,6 +632,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/search/test/browser/anythingQuickAccess.test.zig");
     _ = @import("./vs/workbench/services/history/common/history.zig");
     _ = @import("./vs/workbench/services/history/test/browser/historyService.test.zig");
+    _ = @import("./vs/workbench/browser/parts/editor/textEditor.zig");
     _ = @import("./vs/workbench/test/browser/quickAccess.test.zig");
     _ = @import("./vs/workbench/browser/commands.zig");
     _ = @import("./vs/platform/quickinput/browser/quickInputList.zig");

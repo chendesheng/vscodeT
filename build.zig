@@ -541,6 +541,17 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
 
+    // Focused runner for the native Vim and editor-history suites. The full
+    // suite occasionally blocks in unrelated long-running search tests.
+    const vim_tests = b.addTest(.{
+        .name = "vim_tests",
+        .root_module = tests.root_module,
+        .filters = &.{ "Vim:", "historyService:", "TextEditorPaneSelection" },
+    });
+    const run_vim_tests = b.addRunArtifact(vim_tests);
+    const vim_test_step = b.step("test-vim", "Run Vim and editor-history tests");
+    vim_test_step.dependOn(&run_vim_tests.step);
+
     // Terminal-only test root: keeps the integrated-terminal tests runnable
     // without compiling the whole editor. `zig build test` covers them too.
     const terminal_tests = b.addTest(.{

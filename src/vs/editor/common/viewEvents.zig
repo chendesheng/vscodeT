@@ -50,6 +50,7 @@ pub const ViewCursorStateChangedEvent = struct {
     selections: []const Selection,
     modelSelections: []const Selection,
     reason: CursorChangeReason,
+    source: @import("./cursorEvents.zig").TextEditorSelectionSource = .USER,
 };
 
 pub const ViewDecorationsChangedEvent = struct {

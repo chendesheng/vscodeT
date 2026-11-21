@@ -96,6 +96,17 @@ pub const BuiltinExtensionRegistry = struct {
     }
 };
 
+const NoHistory = struct {
+    fn goBack(_: *anyopaque) anyerror!bool {
+        return false;
+    }
+    fn goForward(_: *anyopaque) anyerror!bool {
+        return false;
+    }
+    fn record(_: *anyopaque) void {}
+};
+const no_history = NoHistory{};
+
 test "BuiltinExtensionRegistry: activation is isolated and disposable" {
     const allocator = std.testing.allocator;
     var registry = BuiltinExtensionRegistry.init(allocator);
@@ -206,6 +217,12 @@ test "BuiltinExtensionRegistry: activation is isolated and disposable" {
             .switch_tab_fn = no_window.switchTab,
         },
         .workspace = .{ .context = undefined, .get_bool_fn = no_workspace.getBool, .get_string_fn = no_workspace.getString },
+        .history = .{
+            .context = undefined,
+            .go_back_fn = NoHistory.goBack,
+            .go_forward_fn = NoHistory.goForward,
+            .record_navigation_fn = NoHistory.record,
+        },
     };
 
     registry.activateAll(base);

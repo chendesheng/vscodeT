@@ -8,6 +8,8 @@
 // keeps the resource/editor-id matching fields only.
 
 const std = @import("std");
+const Position = @import("../../editor/common/core/position.zig").Position;
+const Selection = @import("../../editor/common/core/selection.zig").Selection;
 
 pub const GroupIdentifier = u32;
 
@@ -35,6 +37,61 @@ pub const Verbosity = enum {
     SHORT,
     MEDIUM,
     LONG,
+};
+
+/// Mirrors upstream `EditorPaneSelectionChangeReason`.
+pub const EditorPaneSelectionChangeReason = enum {
+    PROGRAMMATIC,
+    USER,
+    EDIT,
+    NAVIGATION,
+    JUMP,
+};
+
+pub const EditorPaneSelectionChangeEvent = struct {
+    reason: EditorPaneSelectionChangeReason,
+};
+
+/// Mirrors upstream `EditorPaneSelectionCompareResult`.
+pub const EditorPaneSelectionCompareResult = enum {
+    IDENTICAL,
+    SIMILAR,
+    DIFFERENT,
+};
+
+/// The subset of upstream `IEditorOptions` needed to restore a pane selection.
+pub const EditorOptions = struct {
+    pinned: ?bool = null,
+    sticky: ?bool = null,
+    index: ?usize = null,
+    selection: ?Selection = null,
+    center_selection_if_outside_viewport: bool = false,
+};
+
+/// Port of upstream `IEditorPaneSelection`.
+pub const IEditorPaneSelection = struct {
+    context: *anyopaque,
+    /// Terminal adapter for upstream's `instanceof TextEditorPaneSelection`.
+    kind: []const u8 = "unknown",
+    compare_fn: *const fn (context: *anyopaque, other: *const IEditorPaneSelection) EditorPaneSelectionCompareResult,
+    restore_fn: *const fn (context: *anyopaque, options: EditorOptions) EditorOptions,
+    log_fn: ?*const fn (context: *anyopaque) []const u8 = null,
+    /// Terminal ownership hook; upstream selections are garbage-collected.
+    dispose_fn: ?*const fn (context: *anyopaque) void = null,
+
+    pub fn compare(self: IEditorPaneSelection, other: *const IEditorPaneSelection) EditorPaneSelectionCompareResult {
+        return self.compare_fn(self.context, other);
+    }
+    pub fn restore(self: IEditorPaneSelection, options: EditorOptions) EditorOptions {
+        return self.restore_fn(self.context, options);
+    }
+    pub fn log(self: IEditorPaneSelection) ?[]const u8 {
+        const log_fn = self.log_fn orelse return null;
+        return log_fn(self.context);
+    }
+    pub fn dispose(self: IEditorPaneSelection) void {
+        if (self.dispose_fn) |dispose_fn| dispose_fn(self.context);
+    }
 };
 
 /// Mirrors upstream `EditorCloseContext`.

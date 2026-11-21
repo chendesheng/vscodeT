@@ -109,6 +109,7 @@ pub const VimEngine = struct {
     last_insert_position: ?Position = null,
     line_undo: ?LineUndo = null,
     visual_block: ?BlockSelection = null,
+    block_insert: bool = false,
     marks: [26]?Position = std.mem.zeroes([26]?Position),
     pending_mark_set: bool = false,
     pending_mark_jump_exact: ?bool = null,
@@ -120,6 +121,7 @@ pub const VimEngine = struct {
     owns_registers: bool = false,
     status_buf: [192]u8 = undefined,
     ignore_case: bool = false,
+    history: ?extension_api.IHistoryService = null,
 
     pub fn init(
         allocator: Allocator,
@@ -199,6 +201,14 @@ pub const VimEngine = struct {
             ) catch "";
         }
         return "";
+    }
+
+    pub fn setHistoryService(self: *VimEngine, history: extension_api.IHistoryService) void {
+        self.history = history;
+    }
+
+    fn recordJump(self: *VimEngine) void {
+        if (self.history) |history| history.recordNavigation();
     }
 
     pub fn handleKey(self: *VimEngine, event: *const KeyInputEvent) !bool {
@@ -456,6 +466,7 @@ pub const VimEngine = struct {
         if (self.pending_g) {
             self.pending_g = false;
             if (char == 'g') {
+                self.recordJump();
                 const line = self.takeCount();
                 if (self.mode == .visual or self.mode == .visual_line) {
                     try self.extendSelection(Position.init(line, 1));
@@ -463,8 +474,10 @@ pub const VimEngine = struct {
                     try self.gotoLine(line);
                 }
             } else if (char == 'f') {
+                self.recordJump();
                 try self.gotoFileUnderCursor();
             } else if (char == 'd') {
+                self.recordJump();
                 _ = try self.commands.execute("editor.action.revealDefinition");
             } else if (char == 'h') {
                 _ = try self.commands.execute("editor.action.showHover");
@@ -517,6 +530,7 @@ pub const VimEngine = struct {
             const exact = self.pending_mark_jump_exact.?;
             self.pending_mark_jump_exact = null;
             const mark = self.marks[index] orelse return true;
+            self.recordJump();
             try self.editor.setCursor(if (exact) mark else self.firstNonBlank(mark.lineNumber));
             return true;
         }
@@ -564,23 +578,48 @@ pub const VimEngine = struct {
             'g' => self.pending_g = true,
             'z' => self.pending_z = true,
             'G' => {
+                self.recordJump();
                 const line = if (self.count_active) self.takeCount() else self.editor.model.getLineCount();
                 try self.gotoLine(line);
             },
-            '%' => try self.matchBracketMotion(),
-            '{' => try self.moveParagraph(false, self.takeCount(), self.mode == .visual or self.mode == .visual_line),
-            '}' => try self.moveParagraph(true, self.takeCount(), self.mode == .visual or self.mode == .visual_line),
+            '%' => {
+                self.recordJump();
+                try self.matchBracketMotion();
+            },
+            '{' => {
+                self.recordJump();
+                try self.moveParagraph(false, self.takeCount(), self.mode == .visual or self.mode == .visual_line);
+            },
+            '}' => {
+                self.recordJump();
+                try self.moveParagraph(true, self.takeCount(), self.mode == .visual or self.mode == .visual_line);
+            },
             '+' => try self.gotoLine(@min(self.editor.cursorPosition().lineNumber + self.takeCount(), self.editor.model.getLineCount())),
             '-' => try self.gotoLine(self.editor.cursorPosition().lineNumber -| self.takeCount()),
             '_' => try self.editor.setCursor(self.firstNonBlank(@min(self.editor.cursorPosition().lineNumber + self.takeCount() - 1, self.editor.model.getLineCount()))),
             'm' => self.pending_mark_set = true,
             '\'' => self.pending_mark_jump_exact = false,
             '`' => self.pending_mark_jump_exact = true,
-            'H' => try self.moveToScreenLine(.top),
-            'M' => try self.moveToScreenLine(.middle),
-            'L' => try self.moveToScreenLine(.bottom),
-            '*' => try self.searchWord(true),
-            '#' => try self.searchWord(false),
+            'H' => {
+                self.recordJump();
+                try self.moveToScreenLine(.top);
+            },
+            'M' => {
+                self.recordJump();
+                try self.moveToScreenLine(.middle);
+            },
+            'L' => {
+                self.recordJump();
+                try self.moveToScreenLine(.bottom);
+            },
+            '*' => {
+                self.recordJump();
+                try self.searchWord(true);
+            },
+            '#' => {
+                self.recordJump();
+                try self.searchWord(false);
+            },
             'd' => try self.startOperator(.delete),
             'c' => try self.startOperator(.change),
             'y' => try self.startOperator(.yank),
@@ -630,8 +669,14 @@ pub const VimEngine = struct {
                 self.mode = .search_backward;
                 self.search_forward = false;
             },
-            'n' => try self.searchAgain(self.takeCount(), self.search_forward),
-            'N' => try self.searchAgain(self.takeCount(), !self.search_forward),
+            'n' => {
+                self.recordJump();
+                try self.searchAgain(self.takeCount(), self.search_forward);
+            },
+            'N' => {
+                self.recordJump();
+                try self.searchAgain(self.takeCount(), !self.search_forward);
+            },
             '@' => {},
             '"' => self.pending_register = 0,
             else => return false,
@@ -649,7 +694,20 @@ pub const VimEngine = struct {
             'b' => try self.scrollPage(false),
             'e' => _ = self.editor.scrollViewLines(1),
             'y' => _ = self.editor.scrollViewLines(-1),
-            ']' => _ = try self.commands.execute("editor.action.revealDefinition"),
+            ']' => {
+                self.recordJump();
+                _ = try self.commands.execute("editor.action.revealDefinition");
+            },
+            'o' => {
+                if (self.history) |history| {
+                    _ = try history.goBack();
+                } else return false;
+            },
+            'i' => {
+                if (self.history) |history| {
+                    _ = try history.goForward();
+                } else return false;
+            },
             'v' => try self.startVisualBlock(),
             else => return false,
         }
@@ -1099,6 +1157,20 @@ pub const VimEngine = struct {
 
     fn finishInsert(self: *VimEngine) !void {
         self.last_insert_position = self.editor.cursorPosition();
+        if (self.block_insert) {
+            self.block_insert = false;
+            if (self.insert_group) {
+                self.editor.endUndoGroup();
+                self.insert_group = false;
+            }
+            self.mode = .normal;
+            const selections = try self.editor.getSelections(self.allocator);
+            defer self.allocator.free(selections);
+            const first = if (selections.len > 0) selections[0].getPosition() else self.editor.cursorPosition();
+            try self.editor.setSelections(&[_]Selection{Selection.init(first.lineNumber, first.column, first.lineNumber, first.column)});
+            try self.moveLeft(1, false);
+            return;
+        }
         if (self.insert_group) {
             self.editor.endUndoGroup();
             self.insert_group = false;
@@ -1226,6 +1298,7 @@ pub const VimEngine = struct {
                     try self.last_search.appendSlice(self.search_buffer.items);
                 }
                 self.mode = .normal;
+                self.recordJump();
                 self.last_search_match = null;
                 try self.searchAgain(1, forward);
             },
@@ -1554,6 +1627,8 @@ pub const VimEngine = struct {
                     'd' => return self.applyBlockOperator(.delete),
                     'y' => return self.applyBlockOperator(.yank),
                     'c' => return self.applyBlockOperator(.change),
+                    'I' => return self.startBlockInsert(false),
+                    'A' => return self.startBlockInsert(true),
                     else => return false,
                 }
                 try self.applyBlockSelections();
@@ -1581,6 +1656,28 @@ pub const VimEngine = struct {
             .start_col = @min(block.anchor.column, block.cursor.column),
             .end_col = @max(block.anchor.column, block.cursor.column) + 1,
         };
+    }
+
+    fn startBlockInsert(self: *VimEngine, append: bool) !bool {
+        const bounds = self.blockBounds();
+        const selections = try self.allocator.alloc(Selection, bounds.end_line - bounds.start_line + 1);
+        defer self.allocator.free(selections);
+        var line = bounds.start_line;
+        while (line <= bounds.end_line) : (line += 1) {
+            const max_column = self.lineMaxColumn(line);
+            const column = if (append) @min(bounds.end_col, max_column) else @min(bounds.start_col, max_column);
+            selections[line - bounds.start_line] = Selection.init(line, column, line, column);
+        }
+        try self.rememberLine(bounds.start_line);
+        self.editor.beginUndoGroup();
+        try self.editor.setSelections(selections);
+        self.insert_group = true;
+        self.block_insert = true;
+        self.last_insert_position = Position.init(bounds.start_line, selections[0].positionColumn);
+        self.mode = .insert;
+        self.visual_block = null;
+        self.resetPending();
+        return true;
     }
 
     fn applyBlockOperator(self: *VimEngine, operator: Operator) !bool {

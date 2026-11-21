@@ -48,6 +48,7 @@ const VimExtensionState = struct {
         }
         const engine = try VimEngine.init(self.allocator, editor, self.context.window, self.context.commands, &self.registers);
         errdefer engine.deinit();
+        engine.setHistoryService(self.context.history);
         try self.engines.put(key, engine);
         return engine;
     }

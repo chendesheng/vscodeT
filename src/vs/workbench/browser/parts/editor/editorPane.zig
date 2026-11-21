@@ -24,6 +24,11 @@ const editorBrowser = @import("../../../../editor/browser/editorBrowser.zig");
 const Position = @import("../../../../editor/common/core/position.zig").Position;
 const Range = @import("../../../../editor/common/core/range.zig").Range;
 const Selection = @import("../../../../editor/common/core/selection.zig").Selection;
+const editor_common = @import("../../../common/editor.zig");
+const ViewEventHandler = @import("../../../../editor/common/viewEventHandler.zig").ViewEventHandler;
+const view_events = @import("../../../../editor/common/viewEvents.zig");
+const cursor_events = @import("../../../../editor/common/cursorEvents.zig");
+const text_editor_selection = @import("./textEditor.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 const languages = @import("../../../../editor/common/languages.zig");
 const hoverTypes = @import("../../../../editor/contrib/hover/browser/hoverTypes.zig");
@@ -62,6 +67,9 @@ pub const Tab = struct {
     last_width: usize = 0,
     last_height: usize = 0,
     preview_rect: ?ui.Rect = null,
+    selection_listeners: ?*std.array_list.Managed(SelectionListener) = null,
+    selection_handler: ViewEventHandler = .{},
+    selection_handler_added: bool = false,
 
     pub fn init(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Tab {
         return initWithDeclarative(allocator, io, path, width, height, null);
@@ -501,7 +509,73 @@ pub const Tab = struct {
         return preview;
     }
 
+    pub const SelectionListener = struct {
+        context: *anyopaque,
+        callback: *const fn (context: *anyopaque, reason: editor_common.EditorPaneSelectionChangeReason) void,
+    };
+
+    fn onSelectionEvent(context: *anyopaque, event: *const view_events.ViewCursorStateChangedEvent) bool {
+        const self: *Tab = @ptrCast(@alignCast(context));
+        const reason: editor_common.EditorPaneSelectionChangeReason = switch (event.source) {
+            .PROGRAMMATIC => .PROGRAMMATIC,
+            .NAVIGATION => .NAVIGATION,
+            .JUMP => .JUMP,
+            .USER => .USER,
+        };
+        if (self.selection_listeners) |listeners| {
+            for (listeners.items) |listener| listener.callback(listener.context, reason);
+        }
+        return false;
+    }
+
+    pub fn getSelection(self: *Tab, allocator: Allocator) !?editor_common.IEditorPaneSelection {
+        if (self.isImage()) return null;
+        const selections = try self.editor.getSelections();
+        defer self.editor.allocator.free(selections);
+        if (selections.len == 0) return null;
+        const snapshot = try text_editor_selection.TextEditorPaneSelection.create(allocator, selections[0]);
+        return snapshot.interface();
+    }
+
+    pub fn addSelectionListener(self: *Tab, listener: SelectionListener) !void {
+        if (self.selection_listeners == null) {
+            const listeners = try self.allocator.create(std.array_list.Managed(SelectionListener));
+            listeners.* = std.array_list.Managed(SelectionListener).init(self.allocator);
+            self.selection_listeners = listeners;
+        }
+        try self.selection_listeners.?.append(listener);
+        if (!self.selection_handler_added) {
+            self.selection_handler = ViewEventHandler.init(self, .{ .onCursorStateChanged = onSelectionEvent });
+            self.editor.addViewEventHandler(&self.selection_handler);
+            self.selection_handler_added = true;
+        }
+    }
+
+    pub fn removeSelectionListener(self: *Tab, listener: SelectionListener) void {
+        if (self.selection_listeners) |listeners| {
+            for (listeners.items, 0..) |item, index| {
+                if (item.context == listener.context and item.callback == listener.callback) {
+                    _ = listeners.orderedRemove(index);
+                    break;
+                }
+            }
+        }
+        if (self.selection_handler_added and (self.selection_listeners == null or self.selection_listeners.?.items.len == 0)) {
+            self.editor.removeViewEventHandler(&self.selection_handler);
+            self.selection_handler_added = false;
+        }
+    }
+
     pub fn deinit(self: *Tab) void {
+        if (self.selection_handler_added) {
+            self.editor.removeViewEventHandler(&self.selection_handler);
+            self.selection_handler_added = false;
+        }
+        if (self.selection_listeners) |listeners| {
+            listeners.deinit();
+            self.allocator.destroy(listeners);
+            self.selection_listeners = null;
+        }
         if (self.image_preview) |pane| {
             pane.deinit();
             self.image_preview = null;

@@ -8,22 +8,163 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const editor_common = @import("../../../common/editor.zig");
+
+pub const GoFilter = enum { NONE, EDITS, NAVIGATION };
+pub const GoScope = enum { DEFAULT, EDITOR_GROUP, EDITOR };
+
+pub const EditorNavigationStackEntry = struct {
+    group_id: editor_common.GroupIdentifier,
+    path: []u8,
+    selection: ?editor_common.IEditorPaneSelection = null,
+    top_view_line: usize = 1,
+
+    fn deinit(self: *EditorNavigationStackEntry, allocator: Allocator) void {
+        allocator.free(self.path);
+        if (self.selection) |selection| selection.dispose();
+        allocator.destroy(self);
+    }
+};
+
+pub const EditorNavigationStack = struct {
+    allocator: Allocator,
+    entries: std.array_list.Managed(*EditorNavigationStackEntry),
+    index: isize = -1,
+    max: usize = 50,
+
+    pub fn init(allocator: Allocator) EditorNavigationStack {
+        return .{ .allocator = allocator, .entries = std.array_list.Managed(*EditorNavigationStackEntry).init(allocator) };
+    }
+
+    pub fn deinit(self: *EditorNavigationStack) void {
+        self.entries.deinit();
+    }
+
+    pub fn clear(self: *EditorNavigationStack) void {
+        self.entries.clearRetainingCapacity();
+        self.index = -1;
+    }
+
+    pub fn canGoBack(self: *const EditorNavigationStack) bool {
+        return self.index > 0;
+    }
+
+    pub fn canGoForward(self: *const EditorNavigationStack) bool {
+        return self.index >= 0 and @as(usize, @intCast(self.index)) + 1 < self.entries.items.len;
+    }
+
+    pub fn goBack(self: *EditorNavigationStack) ?*EditorNavigationStackEntry {
+        if (!self.canGoBack()) return null;
+        self.index -= 1;
+        return self.entries.items[@intCast(self.index)];
+    }
+
+    pub fn goForward(self: *EditorNavigationStack) ?*EditorNavigationStackEntry {
+        if (!self.canGoForward()) return null;
+        self.index += 1;
+        return self.entries.items[@intCast(self.index)];
+    }
+
+    pub fn current(self: *const EditorNavigationStack) ?*EditorNavigationStackEntry {
+        if (self.index < 0) return null;
+        return self.entries.items[@intCast(self.index)];
+    }
+
+    fn sameEntry(a: *const EditorNavigationStackEntry, path: []const u8, group_id: editor_common.GroupIdentifier, selection: ?editor_common.IEditorPaneSelection) bool {
+        if (a.group_id != group_id or !std.mem.eql(u8, a.path, path)) return false;
+        if (a.selection == null and selection == null) return true;
+        if (a.selection == null or selection == null) return false;
+        return a.selection.?.compare(&selection.?) == .IDENTICAL;
+    }
+
+    pub fn record(self: *EditorNavigationStack, entry: *EditorNavigationStackEntry) void {
+        if (self.index >= 0) {
+            const current_entry = self.entries.items[@intCast(self.index)];
+            if (sameEntry(current_entry, entry.path, entry.group_id, entry.selection)) {
+                current_entry.top_view_line = entry.top_view_line;
+                if (current_entry.selection) |old| old.dispose();
+                current_entry.selection = entry.selection;
+                entry.selection = null;
+                return;
+            }
+        }
+        const keep = if (self.index < 0) 0 else @as(usize, @intCast(self.index)) + 1;
+        while (self.entries.items.len > keep) _ = self.entries.pop();
+        if (self.entries.items.len >= self.max) {
+            _ = self.entries.orderedRemove(0);
+            if (self.index >= 0) self.index -= 1;
+        }
+        self.entries.append(entry) catch return;
+        self.index = @intCast(self.entries.items.len - 1);
+    }
+
+    pub fn removePath(self: *EditorNavigationStack, path: []const u8) void {
+        var index: usize = 0;
+        while (index < self.entries.items.len) {
+            if (std.mem.eql(u8, self.entries.items[index].path, path)) {
+                _ = self.entries.orderedRemove(index);
+                if (self.index >= @as(isize, @intCast(index))) self.index -= 1;
+            } else index += 1;
+        }
+    }
+};
+
+pub const ClosedEditor = struct {
+    path: []u8,
+    group_id: editor_common.GroupIdentifier,
+    index: usize,
+    sticky: bool,
+    pinned: bool,
+    batch_id: u64,
+};
 
 pub const HistoryService = struct {
     allocator: Allocator,
     paths: std.array_list.Managed([]u8),
     max: usize = 50,
+    /// All navigation entries are owned by this pool and shared by the
+    /// default, group and editor scoped stacks.
+    entries: std.array_list.Managed(*EditorNavigationStackEntry),
+    default_stacks: EditorNavigationStacks,
+    group_stacks: std.AutoHashMap(editor_common.GroupIdentifier, *EditorNavigationStacks),
+    editor_stacks: std.StringHashMap(*EditorNavigationStacks),
+    closed_editors: std.array_list.Managed(ClosedEditor),
+    closed_batch_id: u64 = 0,
 
     pub fn init(allocator: Allocator) HistoryService {
         return .{
             .allocator = allocator,
             .paths = std.array_list.Managed([]u8).init(allocator),
+            .entries = std.array_list.Managed(*EditorNavigationStackEntry).init(allocator),
+            .default_stacks = EditorNavigationStacks.init(allocator),
+            .group_stacks = std.AutoHashMap(editor_common.GroupIdentifier, *EditorNavigationStacks).init(allocator),
+            .editor_stacks = std.StringHashMap(*EditorNavigationStacks).init(allocator),
+            .closed_editors = std.array_list.Managed(ClosedEditor).init(allocator),
         };
     }
 
     pub fn deinit(self: *HistoryService) void {
         for (self.paths.items) |path| self.allocator.free(path);
         self.paths.deinit();
+        self.default_stacks.deinit();
+        var group_values = self.group_stacks.valueIterator();
+        while (group_values.next()) |stacks| {
+            stacks.*.deinit();
+            self.allocator.destroy(stacks.*);
+        }
+        self.group_stacks.deinit();
+        var editor_keys = self.editor_stacks.keyIterator();
+        while (editor_keys.next()) |key| self.allocator.free(key.*);
+        var editor_values = self.editor_stacks.valueIterator();
+        while (editor_values.next()) |stacks| {
+            stacks.*.deinit();
+            self.allocator.destroy(stacks.*);
+        }
+        self.editor_stacks.deinit();
+        for (self.closed_editors.items) |closed| self.allocator.free(closed.path);
+        self.closed_editors.deinit();
+        for (self.entries.items) |entry| entry.deinit(self.allocator);
+        self.entries.deinit();
     }
 
     /// Moves `path` to the front, deduplicating by exact path.
@@ -52,9 +193,146 @@ pub const HistoryService = struct {
         return self.paths.items;
     }
 
+    fn stacksForScope(self: *HistoryService, scope: GoScope, group_id: editor_common.GroupIdentifier, path: []const u8) !*EditorNavigationStacks {
+        switch (scope) {
+            .DEFAULT => return &self.default_stacks,
+            .EDITOR_GROUP => {
+                if (self.group_stacks.get(group_id)) |stacks| return stacks;
+                const stacks = try self.allocator.create(EditorNavigationStacks);
+                stacks.* = EditorNavigationStacks.init(self.allocator);
+                try self.group_stacks.put(group_id, stacks);
+                return stacks;
+            },
+            .EDITOR => {
+                if (self.editor_stacks.get(path)) |stacks| return stacks;
+                const key = try self.allocator.dupe(u8, path);
+                errdefer self.allocator.free(key);
+                const stacks = try self.allocator.create(EditorNavigationStacks);
+                errdefer self.allocator.destroy(stacks);
+                stacks.* = EditorNavigationStacks.init(self.allocator);
+                errdefer stacks.deinit();
+                try self.editor_stacks.put(key, stacks);
+                return stacks;
+            },
+        }
+    }
+
+    pub fn recordNavigation(
+        self: *HistoryService,
+        group_id: editor_common.GroupIdentifier,
+        path: []const u8,
+        selection: ?editor_common.IEditorPaneSelection,
+        top_view_line: usize,
+        reason: editor_common.EditorPaneSelectionChangeReason,
+    ) !void {
+        const entry = try self.allocator.create(EditorNavigationStackEntry);
+        errdefer self.allocator.destroy(entry);
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+        entry.* = .{ .group_id = group_id, .path = owned_path, .selection = selection, .top_view_line = top_view_line };
+        try self.entries.append(entry);
+        self.default_stacks.record(entry, reason);
+        const group_stacks = try self.stacksForScope(.EDITOR_GROUP, group_id, path);
+        group_stacks.record(entry, reason);
+        const editor_stacks = try self.stacksForScope(.EDITOR, group_id, path);
+        editor_stacks.record(entry, reason);
+    }
+
+    pub fn goBack(self: *HistoryService, scope: GoScope, filter: GoFilter, group_id: editor_common.GroupIdentifier, path: []const u8) ?*EditorNavigationStackEntry {
+        const stacks = self.stacksForScope(scope, group_id, path) catch return null;
+        return stacks.goBack(filter);
+    }
+
+    pub fn goForward(self: *HistoryService, scope: GoScope, filter: GoFilter, group_id: editor_common.GroupIdentifier, path: []const u8) ?*EditorNavigationStackEntry {
+        const stacks = self.stacksForScope(scope, group_id, path) catch return null;
+        return stacks.goForward(filter);
+    }
+
+    pub fn removeNavigationPath(self: *HistoryService, path: []const u8) void {
+        self.default_stacks.removePath(path);
+        var group_values = self.group_stacks.valueIterator();
+        while (group_values.next()) |stacks| stacks.*.removePath(path);
+        var editor_values = self.editor_stacks.valueIterator();
+        while (editor_values.next()) |stacks| stacks.*.removePath(path);
+    }
+
+    pub fn recordClosedEditor(self: *HistoryService, closed: ClosedEditor) !void {
+        if (self.closed_editors.items.len >= 20) {
+            const old = self.closed_editors.orderedRemove(0);
+            self.allocator.free(old.path);
+        }
+        try self.closed_editors.append(closed);
+    }
+
     pub fn clear(self: *HistoryService) void {
         for (self.paths.items) |path| self.allocator.free(path);
         self.paths.clearRetainingCapacity();
+        self.default_stacks.clear();
+        var group_values = self.group_stacks.valueIterator();
+        while (group_values.next()) |stacks| stacks.*.clear();
+        var editor_values = self.editor_stacks.valueIterator();
+        while (editor_values.next()) |stacks| stacks.*.clear();
+        for (self.closed_editors.items) |closed| self.allocator.free(closed.path);
+        self.closed_editors.clearRetainingCapacity();
+    }
+};
+
+pub const EditorNavigationStacks = struct {
+    allocator: Allocator,
+    selections: EditorNavigationStack,
+    edits: EditorNavigationStack,
+    navigations: EditorNavigationStack,
+
+    pub fn init(allocator: Allocator) EditorNavigationStacks {
+        return .{
+            .allocator = allocator,
+            .selections = EditorNavigationStack.init(allocator),
+            .edits = EditorNavigationStack.init(allocator),
+            .navigations = EditorNavigationStack.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *EditorNavigationStacks) void {
+        self.selections.deinit();
+        self.edits.deinit();
+        self.navigations.deinit();
+    }
+
+    pub fn clear(self: *EditorNavigationStacks) void {
+        self.selections.clear();
+        self.edits.clear();
+        self.navigations.clear();
+    }
+
+    fn stackFor(self: *EditorNavigationStacks, filter: GoFilter) *EditorNavigationStack {
+        return switch (filter) {
+            .NONE => &self.selections,
+            .EDITS => &self.edits,
+            .NAVIGATION => &self.navigations,
+        };
+    }
+
+    pub fn record(self: *EditorNavigationStacks, entry: *EditorNavigationStackEntry, reason: editor_common.EditorPaneSelectionChangeReason) void {
+        self.selections.record(entry);
+        switch (reason) {
+            .EDIT => self.edits.record(entry),
+            .NAVIGATION, .JUMP => self.navigations.record(entry),
+            else => {},
+        }
+    }
+
+    pub fn goBack(self: *EditorNavigationStacks, filter: GoFilter) ?*EditorNavigationStackEntry {
+        return self.stackFor(filter).goBack();
+    }
+
+    pub fn goForward(self: *EditorNavigationStacks, filter: GoFilter) ?*EditorNavigationStackEntry {
+        return self.stackFor(filter).goForward();
+    }
+
+    pub fn removePath(self: *EditorNavigationStacks, path: []const u8) void {
+        self.selections.removePath(path);
+        self.edits.removePath(path);
+        self.navigations.removePath(path);
     }
 };
 

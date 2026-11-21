@@ -62,7 +62,8 @@ Normal/edit:
 - Text objects: `iw aw iW aW`.
 - `%`, `g_`, `g0`/`g^`/`g$`, `*`/`#`, `U`, `gv`, `gi`, and `.`
   dot-repeat for the last change. Local marks use `m` and the mark-jump
-  keys.
+  keys. Visual-block `I`/`A` prefix/suffix every selected line in one undo
+  group. `Ctrl-O`/`Ctrl-I` use the workbench editor navigation history.
 - Visual character/line/block operators and `o` to swap the selection anchor.
 - `u`, `Ctrl-R`.
 - Insert mode: text, Enter, Tab, Backspace, Delete, arrows, `Ctrl-W`, `Ctrl-U`,
@@ -82,14 +83,38 @@ Command surface:
 - `<C-w>` window prefix and `gt`/`gT`.
 - `:` and `/` prompts render in the Vim status entry.
 
+## Editor navigation history
+
+`Ctrl-O` and `Ctrl-I` use the ported VS Code editor navigation history, not a
+Vim-owned jump stack:
+
+- `IHistoryService`-shaped `goBack`/`goForward` exposed through the built-in
+  extension API.
+- `EditorNavigationStack` stores group, path, pane selection and viewport.
+- Separate `NONE`, `EDITS` and `NAVIGATION` filtered stacks.
+- Default, per-editor-group and per-editor scoped stacks.
+- The stack is persisted under the user-data directory in `history.json` and
+  reloaded on startup; stale paths are ignored.
+- Recently closed editors (up to 20) are recorded and can be reopened through
+  `workbench.action.reopenClosedEditor`. Closing a group in one operation keeps
+  a shared batch id.
+
+Vim records jump points explicitly (`G`, `gg`, `%`, paragraphs, `H`/`M`/`L`,
+search, marks and definition jumps) before moving. Plain horizontal/word
+motions do not enter the history.
+
+The full upstream history service also tracks selection reason events and
+persisted recent-file history. This port implements the pane-selection
+abstraction and event source, the filtered/scoped stacks and JSON persistence;
+it does not port upstream's SQLite storage or cross-window propagation.
+
 ## Deliberate non-goals
 
 - Vimscript evaluation, `.vimrc`, plugins and Neovim integration.
-- Macro recording/replay (`q`/`@`) and the jumplist. Local marks are
-  supported; global marks are not.
+- Macro recording/replay (`q`/`@`). Local marks are supported; global marks
+  are not.
 - Multi-cursor operators.
-- Block insert/append (`I`/`A` in visual block) and sentence motions
-  (`(`/`)`).
+- Sentence motions (`(`/`)`.
 - System clipboard registers fall back to the unnamed register.
 
 These are documented gaps, not hidden behavior. Do not add VSCodeVim back as a

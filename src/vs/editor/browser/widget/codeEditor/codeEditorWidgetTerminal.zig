@@ -36,6 +36,7 @@ const CursorConfiguration = cursorCommon.CursorConfiguration;
 const CursorContext = @import("../../../common/cursor/cursorContext.zig").CursorContext;
 const CursorState = cursorCommon.CursorState;
 const CursorChangeReason = @import("../../../common/cursorEvents.zig").CursorChangeReason;
+const TextEditorSelectionSource = @import("../../../common/cursorEvents.zig").TextEditorSelectionSource;
 const PartialCursorState = cursorCommon.PartialCursorState;
 const SingleCursorState = cursorCommon.SingleCursorState;
 const EditOperationType = cursorCommon.EditOperationType;
@@ -360,6 +361,10 @@ pub const Editor = struct {
     /// these slices for their next render pass.
     cursor_event_view_selections: []Selection = &.{},
     cursor_event_model_selections: []Selection = &.{},
+    /// Source attached to the next cursor/selection event. Callers that are
+    /// restoring history or performing a navigation set this first; it resets
+    /// to USER after the event is emitted.
+    cursor_selection_source: TextEditorSelectionSource = .USER,
     status: [MAX_STATUS]u8,
     status_len: usize,
     prev_edit_operation_type: EditOperationType,
@@ -1698,6 +1703,10 @@ pub const Editor = struct {
 
     pub fn foldingTimeout(self: *const Editor, now_ms: i64) ?u32 {
         return self.folding_delayer.nextTimeout(now_ms);
+    }
+
+    pub fn setTextEditorSelectionSource(self: *Editor, source: TextEditorSelectionSource) void {
+        self.cursor_selection_source = source;
     }
 
     pub fn addViewEventHandler(self: *Editor, handler: *ViewEventHandler) void {
@@ -3517,7 +3526,9 @@ pub const Editor = struct {
             .selections = view,
             .modelSelections = model,
             .reason = reason,
+            .source = self.cursor_selection_source,
         } });
+        self.cursor_selection_source = .USER;
     }
 
     pub fn getModelSelections(self: *Editor) ![]Selection {

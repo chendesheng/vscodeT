@@ -418,6 +418,12 @@ pub fn main(init: std.process.Init) !void {
 
     try workbench.setUserSettingsPaths(profile.settings_paths);
     try workbench.setKeybindingsPaths(profile.keybindings_paths);
+    if (profile.user_data_dir) |user_data| {
+        if (std.fs.path.join(allocator, &.{ user_data, "history.json" })) |history_path| {
+            defer allocator.free(history_path);
+            workbench.setHistoryStatePath(history_path) catch {};
+        } else |_| {}
+    }
 
     // Native Vim is a compiled-in built-in extension. The runtime registers
     // Vim: Enable/Disable/Toggle even when the startup setting is false.

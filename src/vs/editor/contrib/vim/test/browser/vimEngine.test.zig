@@ -14,6 +14,7 @@ const Harness = struct {
     engine: *VimEngine,
     commands: CommandState,
     window: WindowState,
+    history: HistoryState,
 
     fn init(allocator: std.mem.Allocator, text: []const u8) !*Harness {
         return initWithWidth(allocator, text, 60);
@@ -34,6 +35,7 @@ const Harness = struct {
             .engine = undefined,
             .commands = .{},
             .window = .{},
+            .history = .{},
         };
         self.engine = try VimEngine.init(
             allocator,
@@ -42,6 +44,7 @@ const Harness = struct {
             self.commands.interface(),
             null,
         );
+        self.engine.setHistoryService(self.history.interface());
         return self;
     }
 
@@ -96,6 +99,35 @@ const CommandState = struct {
         const self: *CommandState = @ptrCast(@alignCast(context));
         self.last = id;
         return true;
+    }
+};
+
+const HistoryState = struct {
+    back: usize = 0,
+    forward: usize = 0,
+    records: usize = 0,
+
+    fn interface(self: *HistoryState) extension_api.IHistoryService {
+        return .{
+            .context = self,
+            .go_back_fn = goBack,
+            .go_forward_fn = goForward,
+            .record_navigation_fn = record,
+        };
+    }
+    fn goBack(context: *anyopaque) anyerror!bool {
+        const self: *HistoryState = @ptrCast(@alignCast(context));
+        self.back += 1;
+        return true;
+    }
+    fn goForward(context: *anyopaque) anyerror!bool {
+        const self: *HistoryState = @ptrCast(@alignCast(context));
+        self.forward += 1;
+        return true;
+    }
+    fn record(context: *anyopaque) void {
+        const self: *HistoryState = @ptrCast(@alignCast(context));
+        self.records += 1;
     }
 };
 
@@ -574,4 +606,41 @@ test "Vim: vG extends the visual selection to the last line" {
     try h.sendChar('G');
     try h.sendChar('d');
     try h.expectValue("");
+}
+
+test "Vim: visual block I and A insert on every selected line" {
+    const prefix = try Harness.init(std.testing.allocator, "ab\ncd");
+    defer prefix.deinit();
+    try prefix.sendCtrl('v');
+    try prefix.sendChar('j');
+    try prefix.sendChar('I');
+    try prefix.sendText("X");
+    try prefix.send(.escape);
+    try prefix.expectValue("Xab\nXcd");
+    try prefix.sendChar('u');
+    try prefix.expectValue("ab\ncd");
+
+    const suffix = try Harness.init(std.testing.allocator, "ab\ncd");
+    defer suffix.deinit();
+    try suffix.sendCtrl('v');
+    try suffix.sendChar('j');
+    try suffix.sendChar('A');
+    try suffix.sendText("X");
+    try suffix.send(.escape);
+    try suffix.expectValue("aXb\ncXd");
+}
+
+test "Vim: Ctrl-O and Ctrl-I delegate to the shared history" {
+    const h = try Harness.init(std.testing.allocator, "one\ntwo\nthree");
+    defer h.deinit();
+    try h.sendCtrl('o');
+    try h.sendCtrl('i');
+    try std.testing.expectEqual(@as(usize, 1), h.history.back);
+    try std.testing.expectEqual(@as(usize, 1), h.history.forward);
+
+    try h.sendChar('G');
+    try std.testing.expect(h.history.records > 0);
+    const before = h.history.records;
+    try h.sendChar('h');
+    try std.testing.expectEqual(before, h.history.records);
 }

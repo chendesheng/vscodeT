@@ -1,6 +1,15 @@
 const Position = @import("./core/position.zig").Position;
 const Selection = @import("./core/selection.zig").Selection;
 
+/// Upstream `TextEditorSelectionSource`; defaults to `USER` when no source is
+/// supplied. The workbench maps these to editor-pane selection reasons.
+pub const TextEditorSelectionSource = enum {
+    PROGRAMMATIC,
+    NAVIGATION,
+    JUMP,
+    USER,
+};
+
 /// Describes the reason the cursor has changed its position.
 pub const CursorChangeReason = enum(u3) {
     NotSet = 0,

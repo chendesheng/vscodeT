@@ -72,6 +72,12 @@ pub const BuiltinExtensionHost = struct {
                 .get_bool_fn = getBool,
                 .get_string_fn = getString,
             },
+            .history = .{
+                .context = self,
+                .go_back_fn = historyGoBack,
+                .go_forward_fn = historyGoForward,
+                .record_navigation_fn = historyRecord,
+            },
         };
         return self;
     }
@@ -457,4 +463,19 @@ fn getString(context: *anyopaque, key: []const u8) ?[]const u8 {
         .string => |text| text,
         else => null,
     };
+}
+
+fn historyGoBack(context: *anyopaque) anyerror!bool {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    return self.workbench.goBackInHistory();
+}
+
+fn historyGoForward(context: *anyopaque) anyerror!bool {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    return self.workbench.goForwardInHistory();
+}
+
+fn historyRecord(context: *anyopaque) void {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    self.workbench.recordNavigationWithReason(.NAVIGATION);
 }

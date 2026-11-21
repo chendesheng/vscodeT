@@ -213,6 +213,25 @@ pub const IWindowService = struct {
     }
 };
 
+/// Port of the workbench `IHistoryService` subset exposed to built-ins.
+/// `recordNavigation` is the TUI adapter for upstream `notifyNavigation`.
+pub const IHistoryService = struct {
+    context: *anyopaque,
+    go_back_fn: *const fn (context: *anyopaque) anyerror!bool,
+    go_forward_fn: *const fn (context: *anyopaque) anyerror!bool,
+    record_navigation_fn: *const fn (context: *anyopaque) void,
+
+    pub fn goBack(self: IHistoryService) !bool {
+        return self.go_back_fn(self.context);
+    }
+    pub fn goForward(self: IHistoryService) !bool {
+        return self.go_forward_fn(self.context);
+    }
+    pub fn recordNavigation(self: IHistoryService) void {
+        self.record_navigation_fn(self.context);
+    }
+};
+
 pub const IWorkspaceService = struct {
     context: *anyopaque,
     get_bool_fn: *const fn (context: *anyopaque, key: []const u8, default: bool) bool,
@@ -265,6 +284,7 @@ pub const IExtensionContext = struct {
     editors: IEditorService,
     window: IWindowService,
     workspace: IWorkspaceService,
+    history: IHistoryService,
 };
 
 pub const IBuiltinExtension = struct {
