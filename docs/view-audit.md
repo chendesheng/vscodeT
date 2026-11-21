@@ -153,8 +153,10 @@ For each row:
   remains pending.
 - `dcde701` tabs: open the context menu on right-click. The quick-pick menu
   offers Close, Close Others, Close All and Pin/Unpin; added a menu-close test.
-  Tab options, labels/actions, overflow and the control-layer variants remain
-  pending.
+- `dbabf31` tabs: show duplicate-label directory descriptions. Duplicate names
+  append a dimmed parent directory; `workbench.editor.labelFormat` selects the
+  short/medium/long form. Added a duplicate-label test. Tab actions/overflow
+  and the control-layer variants remain pending.
 
 ## Next slice
 
