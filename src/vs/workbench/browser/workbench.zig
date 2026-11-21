@@ -2262,6 +2262,20 @@ pub const Workbench = struct {
         return pane.activeTab();
     }
 
+    /// Whether `editor` still belongs to an open tab. The extension-host
+    /// bridge stores a raw pointer to the editor that owns its scroll
+    /// listener; closing a tab frees that editor before the next `pump`
+    /// observes the active-editor change, so callers validate the pointer
+    /// against the live tab views instead of dereferencing it.
+    pub fn ownsEditor(self: *const Workbench, editor: *const Editor) bool {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.editor == editor) return true;
+            }
+        }
+        return false;
+    }
+
     pub fn tabCount(self: *Workbench) usize {
         var count: usize = 0;
         for (self.part.group_views.items) |pane| count += pane.tabs.items.len;
@@ -7223,6 +7237,34 @@ test "Workbench: opens two files, switches tabs and closes them" {
     try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
+}
+
+test "Workbench: ownsEditor follows tab ownership across close" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "owned-a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "owned-b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 40, 9);
+    defer workbench.deinit();
+
+    const closed = workbench.activeTab().?.editor;
+    const kept = workbench.part.group_views.items[0].tabs.items[0].editor;
+    try std.testing.expect(workbench.ownsEditor(closed));
+    try std.testing.expect(workbench.ownsEditor(kept));
+
+    try workbench.activeTab().?.ensureControllers();
+    const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
+    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    // `closed` is only compared, never dereferenced: the tab close freed it.
+    try std.testing.expect(!workbench.ownsEditor(closed));
+    try std.testing.expect(workbench.ownsEditor(kept));
 }
 
 test "Workbench: reopening an open file reuses its tab and editor" {

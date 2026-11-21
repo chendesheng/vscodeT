@@ -203,3 +203,95 @@ test "markerService: statistics" {
     try std.testing.expectEqual(@as(usize, 1), stats.infos);
     try std.testing.expectEqual(@as(usize, 1), stats.unknowns);
 }
+
+/// Forwards to `std.testing.allocator` and overwrites freed memory, so a
+/// listener that dereferences a marker freed before `onMarkerChanged` fails the
+/// test instead of reading stale-but-plausible bytes.
+const PoisonAllocator = struct {
+    child: std.mem.Allocator,
+
+    fn allocator(self: *PoisonAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable = std.mem.Allocator.VTable{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *PoisonAllocator = @ptrCast(@alignCast(ctx));
+        return self.child.vtable.alloc(self.child.ptr, len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *PoisonAllocator = @ptrCast(@alignCast(ctx));
+        return self.child.vtable.resize(self.child.ptr, memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *PoisonAllocator = @ptrCast(@alignCast(ctx));
+        return self.child.vtable.remap(self.child.ptr, memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *PoisonAllocator = @ptrCast(@alignCast(ctx));
+        @memset(memory, 0xAA);
+        self.child.vtable.free(self.child.ptr, memory, alignment, ret_addr);
+    }
+};
+
+test "markerService: replaced markers stay valid during onMarkerChanged" {
+    var poisoned = PoisonAllocator{ .child = std.testing.allocator };
+    const allocator = poisoned.allocator();
+    var service = MarkerService.init(allocator);
+    defer service.deinit();
+    const resource = fileResource("/live");
+
+    try service.changeOne("owner", resource, &.{data("old", markers.MarkerSeverity.Error)}, null);
+    const before = try service.read(allocator, .{ .resource = resource });
+    defer allocator.free(before);
+    try std.testing.expectEqual(@as(usize, 1), before.len);
+
+    const Probe = struct {
+        old: *markers.Marker,
+        expected_message: []const u8,
+        failed: bool = false,
+
+        fn changed(_: marker_service.MarkerChangeEvent, probe: *@This()) !void {
+            // Upstream's marker objects survive the change through the event;
+            // a listener may still inspect the marker it saw before the change.
+            // `MarkerService.fire` swallows listener errors, so record a
+            // mismatch for the test body to assert after the event returns.
+            const message = probe.old.message;
+            if (message.len != probe.expected_message.len or !std.mem.eql(u8, message, probe.expected_message)) {
+                probe.failed = true;
+                return;
+            }
+            const owner = probe.old.owner;
+            if (owner.len != 5 or !std.mem.eql(u8, owner, "owner")) probe.failed = true;
+            const path = probe.old.resource.path;
+            if (path.len != 5 or !std.mem.eql(u8, path, "/live")) probe.failed = true;
+        }
+    };
+    var probe = Probe{ .old = before[0], .expected_message = "old" };
+    const listener = try service.on_marker_changed.listen(&probe, Probe.changed);
+    defer service.on_marker_changed.unlisten(listener);
+
+    try service.changeOne("owner", resource, &.{data("new", markers.MarkerSeverity.Warning)}, null);
+    try std.testing.expect(!probe.failed);
+    const after = try service.read(allocator, .{ .resource = resource });
+    defer allocator.free(after);
+    try std.testing.expectEqual(@as(usize, 1), after.len);
+    try std.testing.expectEqualStrings("new", after[0].message);
+
+    // Clearing the resource empties and retires its bucket; the marker and its
+    // borrowed resource must also stay readable for the duration of the event.
+    probe.old = after[0];
+    probe.expected_message = "new";
+    probe.failed = false;
+    try service.changeOne("owner", resource, &.{}, null);
+    try std.testing.expect(!probe.failed);
+}

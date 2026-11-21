@@ -4,7 +4,10 @@
 // - resources are canonical key strings plus owned components;
 // - `onMarkerChanged` is synchronous (upstream's MicrotaskEmitter merges per
 //   tick). `MainThreadDiagnostics` restores batching with an explicit flush;
-// - `read` returns borrowed marker pointers valid until the next change.
+// - `read` returns borrowed marker pointers valid until the next change. A
+//   change retires removed markers and buckets and frees them only after its
+//   `onMarkerChanged` listeners return, because upstream listeners may still
+//   inspect the replaced markers during that event.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -30,6 +33,7 @@ const Bucket = struct {
     markers: std.array_list.Managed(*Marker),
     truncated_owners: std.StringHashMap(void),
     owners: std.StringHashMap(void),
+    retired_next: ?*Bucket = null,
 };
 
 const OwnerBucket = struct {
@@ -58,6 +62,12 @@ pub const MarkerService = struct {
     filters: std.StringHashMap(*FilterState),
     on_marker_changed: Emitter(MarkerChangeEvent),
     ext_host_id: []const u8 = "workbench",
+    /// Markers and buckets removed by the current change. Upstream relies on
+    /// garbage collection so a listener can still inspect the old markers
+    /// while `onMarkerChanged` fires; the port keeps them on these lists and
+    /// frees them only after the listeners return.
+    retired_markers: ?*Marker = null,
+    retired_buckets: ?*Bucket = null,
 
     pub fn init(allocator: Allocator) MarkerService {
         return .{
@@ -86,6 +96,7 @@ pub const MarkerService = struct {
         var filters = self.filters.valueIterator();
         while (filters.next()) |state_ptr| self.destroyFilter(state_ptr.*);
         self.filters.deinit();
+        self.releaseRetired();
         self.on_marker_changed.deinit();
     }
 
@@ -101,6 +112,35 @@ pub const MarkerService = struct {
         var resource = bucket.resource;
         resource.deinit(self.allocator);
         self.allocator.destroy(bucket);
+    }
+
+    fn retireMarker(self: *MarkerService, marker: *Marker) void {
+        marker.retired_next = self.retired_markers;
+        self.retired_markers = marker;
+    }
+
+    fn retireBucket(self: *MarkerService, bucket: *Bucket) void {
+        for (bucket.markers.items) |marker| self.retireMarker(marker);
+        bucket.markers.clearRetainingCapacity();
+        bucket.retired_next = self.retired_buckets;
+        self.retired_buckets = bucket;
+    }
+
+    /// Frees markers and empty buckets whose event has finished firing. Any
+    /// listener that retained a `read` pointer must not dereference it after
+    /// `onMarkerChanged` returns, matching the `read` lifetime contract.
+    fn releaseRetired(self: *MarkerService) void {
+        while (self.retired_markers) |marker| {
+            self.retired_markers = marker.retired_next;
+            marker.retired_next = null;
+            marker.deinit(self.allocator);
+            self.allocator.destroy(marker);
+        }
+        while (self.retired_buckets) |bucket| {
+            self.retired_buckets = bucket.retired_next;
+            bucket.retired_next = null;
+            self.destroyBucket(bucket);
+        }
     }
 
     fn destroyFilter(self: *MarkerService, state: *FilterState) void {
@@ -168,8 +208,7 @@ pub const MarkerService = struct {
         while (index < bucket.markers.items.len) {
             if (std.mem.eql(u8, bucket.markers.items[index].owner, owner)) {
                 const marker = bucket.markers.orderedRemove(index);
-                marker.deinit(self.allocator);
-                self.allocator.destroy(marker);
+                self.retireMarker(marker);
             } else {
                 index += 1;
             }
@@ -187,7 +226,7 @@ pub const MarkerService = struct {
                 _ = owner_bucket.resources.remove(bucket.key);
             }
         }
-        self.destroyBucket(bucket);
+        self.retireBucket(bucket);
     }
 
     fn fire(self: *MarkerService, keys: []const []const u8) void {
@@ -213,6 +252,7 @@ pub const MarkerService = struct {
             self.maybeRemoveBucket(bucket);
             const keys = [_][]const u8{key};
             self.fire(&keys);
+            self.releaseRetired();
             return;
         }
 
@@ -240,6 +280,7 @@ pub const MarkerService = struct {
 
         const keys = [_][]const u8{key};
         self.fire(&keys);
+        self.releaseRetired();
     }
 
     fn createMarker(self: *MarkerService, owner: []const u8, bucket: *Bucket, data: MarkerData) !*Marker {
@@ -306,6 +347,7 @@ pub const MarkerService = struct {
         }
 
         self.fire(changes.items);
+        self.releaseRetired();
         for (changes.items) |key| self.allocator.free(key);
     }
 

@@ -1125,7 +1125,12 @@ pub const Extensions = struct {
     fn setScrollListener(self: *Extensions, editor: ?*Editor) void {
         if (self.scroll_listener_editor == editor) return;
         if (self.scroll_listener_editor) |old| {
-            old.removeScrollListener(.{ .context = self, .callback = onEditorScroll });
+            // A closed tab frees its editor before `pump` notices the active
+            // document change. Only detach the listener while the workbench
+            // still owns the editor; touching a freed editor is a UAF.
+            if (self.workbench.ownsEditor(old)) {
+                old.removeScrollListener(.{ .context = self, .callback = onEditorScroll });
+            }
         }
         self.scroll_listener_editor = null;
         if (editor) |value| {

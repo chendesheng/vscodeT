@@ -111,6 +111,12 @@ pub const MarkersView = struct {
         var fingerprint = self.captureSelection();
         defer if (fingerprint) |*value| value.deinit(self.allocator);
 
+        // Rows borrow marker records from the service. Clear them before the
+        // model rebuild: on an allocation failure the rows would otherwise
+        // keep pointers to markers the service retires when this event ends.
+        self.rows.clearRetainingCapacity();
+        self.marker_rows.clearRetainingCapacity();
+
         if (self.service) |service| {
             try self.model.refresh(service);
         } else {

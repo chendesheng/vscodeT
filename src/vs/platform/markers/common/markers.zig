@@ -146,6 +146,9 @@ pub const Marker = struct {
     model_version_id: ?u32,
     tags: []u32,
     origin: ?[]u8 = null,
+    /// Internal link used by `MarkerService` to keep removed markers alive
+    /// until its `onMarkerChanged` listeners return. Not marker data.
+    retired_next: ?*Marker = null,
 
     pub fn deinit(self: *Marker, allocator: Allocator) void {
         allocator.free(self.owner);
