@@ -717,11 +717,13 @@ them, and placements are capped to the diacritic table's 297 rows/columns.
 The capability probe sends a 1x1 graphics query, the 0.50 feature query
 (`e=T,U=1`) and DA1. Unicode placeholders are enabled when the feature reply
 contains `U=1`; terminals known to implement them but too old for that query
-(kitty before 0.50, current Ghostty) are recognized by `KITTY_WINDOW_ID` or
-`TERM_PROGRAM=ghostty`. There is no direct-placement fallback, sixel or iTerm2
-path: unsupported terminals keep the caller's text fallback (Markdown alt text
-or an image-pane message). Input decoding swallows `ESC _ G ... ST` replies
-while keeping a bare `ESC _` (Alt+Shift+-) as a key.
+(kitty before 0.50, Ghostty and Rex) are recognized by `KITTY_WINDOW_ID`,
+`TERM_PROGRAM=ghostty|rex` or `TERM=xterm-ghostty|xterm-rex`. Rex answers the
+feature query with `EINVAL` but is libghostty-based and accepts virtual
+placements, so it takes the hint path. There is no direct-placement fallback,
+sixel or iTerm2 path: unsupported terminals keep the caller's text fallback
+(Markdown alt text or an image-pane message). Input decoding swallows
+`ESC _ G ... ST` replies while keeping a bare `ESC _` (Alt+Shift+-) as a key.
 
 The pane/view split mirrors the Markdown contribution: `mediaPreview/common`
 validates the path pattern and LFS pointers, `mediaPreview/common/mediaImage.zig`

@@ -155,12 +155,38 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
     return parsed;
 }
 
+/// Terminals that implement Unicode placeholders but predate the kitty 0.50
+/// feature query, so `ui.image.probe` cannot confirm them from its reply.
+/// Ghostty and Rex share the libghostty terminal engine; kitty before 0.50 is
+/// recognized through `KITTY_WINDOW_ID`.
 fn terminalPlaceholderHint(environ: *const std.process.Environ.Map) bool {
     if (environ.get("KITTY_WINDOW_ID") != null) return true;
     if (environ.get("TERM_PROGRAM")) |program| {
         if (std.ascii.eqlIgnoreCase(program, "ghostty")) return true;
+        if (std.ascii.eqlIgnoreCase(program, "rex")) return true;
+    }
+    if (environ.get("TERM")) |term| {
+        if (std.ascii.eqlIgnoreCase(term, "xterm-ghostty")) return true;
+        if (std.ascii.eqlIgnoreCase(term, "xterm-rex")) return true;
     }
     return false;
+}
+
+test "app: Ghostty and Rex environments enable Unicode placeholders" {
+    var environ: std.process.Environ.Map = .init(std.testing.allocator);
+    defer environ.deinit();
+
+    try environ.put("TERM", "xterm-256color");
+    try std.testing.expect(!terminalPlaceholderHint(&environ));
+
+    try environ.put("TERM_PROGRAM", "rex");
+    try std.testing.expect(terminalPlaceholderHint(&environ));
+
+    try environ.put("TERM_PROGRAM", "vscode");
+    try std.testing.expect(!terminalPlaceholderHint(&environ));
+
+    try environ.put("TERM", "xterm-rex");
+    try std.testing.expect(terminalPlaceholderHint(&environ));
 }
 
 const ProbeHost = struct {
