@@ -9472,6 +9472,59 @@ test "Workbench: opening a search match selects its range" {
     try std.testing.expectEqual(@as(usize, 6), selections[0].endColumn);
 }
 
+test "Workbench: opening a search result from another file does not restart the query" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const first = try seedFile(allocator, io, &tmp, "first.txt", "alpha beta\n");
+    defer allocator.free(first);
+    const second = try seedFile(allocator, io, &tmp, "second.txt", "gamma alpha\n");
+    defer allocator.free(second);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{first}, 80, 20);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    workbench.onSearchEditorChanged();
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while (view.model.isSearching() and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
+
+    var second_row: ?usize = null;
+    for (view.rows.items, 0..) |row, index| {
+        switch (row) {
+            .match => |match| {
+                if (std.mem.eql(u8, match.parent_file.path, second)) {
+                    second_row = index;
+                    break;
+                }
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(second_row != null);
+    view.selected = second_row.?;
+    view.results_focused = true;
+    const enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expectEqual(@as(@TypeOf(view.handleKey(&enter)), .handled), view.handleKey(&enter));
+
+    // The app reports the newly active editor after the click. Switching to
+    // another file is not a content change, so it must not schedule a query.
+    workbench.onSearchEditorChanged();
+    _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp() + 600);
+    try std.testing.expect(!view.model.isSearching());
+    try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
+}
+
 test "Workbench: search replace all updates an open editor" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

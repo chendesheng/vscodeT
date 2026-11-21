@@ -438,6 +438,9 @@ pub const SearchView = struct {
     }
 
     pub fn startSearch(self: *SearchView) !void {
+        // Enter submits the current value; it must cancel a pending
+        // search-on-type debounce instead of letting it start a second query.
+        self.controller.debounce_at = null;
         try self.controller.triggerQueryChange(false, false);
         self.rebuildRows();
     }

@@ -674,11 +674,19 @@ pub const SearchView = struct {
 
     pub fn onEditorChanged(self: *SearchView, info: ?EditorInfo) void {
         const current = info orelse return;
-        if (current.version == self.last_editor_version and
-            std.mem.eql(u8, self.last_editor_path.items, current.path)) return;
+        const same_path = std.mem.eql(u8, self.last_editor_path.items, current.path);
+        if (same_path and current.version == self.last_editor_version) return;
+
         self.last_editor_version = current.version;
         self.last_editor_path.clearRetainingCapacity();
         self.last_editor_path.appendSlice(current.path) catch {};
+
+        // Upstream binds a result's text model and refreshes only that file's
+        // matches when its content changes. Opening/navigating to a result is
+        // not a content change and must not restart the query. The terminal
+        // panel still refreshes the whole search for edits, but only after the
+        // same editor's version changes; switching editors is ignored here.
+        if (!same_path) return;
         if (self.suppress_refresh) return;
         if (self.model.query == null) return;
         if (self.model.result.isEmpty()) return;
