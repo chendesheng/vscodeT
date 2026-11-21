@@ -130,7 +130,11 @@ For each row:
 - `fe65946` gutter: paint the glyph-margin host. Added the ported
   `GlyphMarginOverlay`, a dynamic one-cell glyph gutter, known-class glyph
   mapping and the `.gutter_glyph_margin` hit target; added overlay and View
-  tests. Multiple lanes/compaction, glyph tooltips, margin decorations and all
+  tests.
+- `22999be` gutter: compact glyph-margin lanes. Build the
+  `GlyphMarginLanesModel` from `glyphMargin` options, resize the gutter to the
+  compacted lane count (1-3), and paint one glyph per active lane. Added a
+  multi-lane compaction test. Glyph tooltips, margin decorations and all
   line-decoration classes remain pending.
 
 ## Next slice
