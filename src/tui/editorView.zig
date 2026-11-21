@@ -4963,3 +4963,32 @@ test "View: margin decorations paint the gutter row" {
         grid.bg[grid.index(0, 1)],
     );
 }
+
+test "View: line decoration classes paint the marker cell" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    editor.setLineDecorationsWidth(1);
+    var options = ModelDecorationOptions.init("insert-line", .AlwaysGrowsWhenTypingAtEdges);
+    options.linesDecorationsClassName = "insert-sign";
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(2, 1, 2, 1), .options = &options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 67);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '+'), grid.cluster[grid.index(editor.gutterWidth() - 1, 1)]);
+    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 72, .g = 126, .b = 2 }), grid.fg[grid.index(editor.gutterWidth() - 1, 1)]);
+}

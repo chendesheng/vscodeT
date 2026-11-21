@@ -361,7 +361,8 @@ pub const TerminalMargin = struct {
             }
 
             if (marker_width > 0) {
-                paint.marker = quickDiffMarkerWithTheme(line_decorations.renderedLine(view_line), self.theme);
+                paint.marker = quickDiffMarkerWithTheme(line_decorations.renderedLine(view_line), self.theme) orelse
+                    lineDecorationMarkerWithTheme(line_decorations.renderedLine(view_line), self.theme);
             }
         } else if (number_width > 0) {
             const glyph = "\u{21AA}";
@@ -699,6 +700,26 @@ pub fn quickDiffMarkerWithTheme(
         }
     }
     return result;
+}
+
+/// Terminal mapping for the remaining upstream `linesDecorationsClassName`
+/// families. Unknown classes stay invisible, like an upstream class without a
+/// CSS rule.
+pub fn lineDecorationMarkerWithTheme(
+    decorations: ?*const @import("../glyphMargin/glyphMargin.zig").VisibleLineDecorationsToRender,
+    theme: Theme,
+) ?QuickDiffMarker {
+    const line = decorations orelse return null;
+    for (line.getDecorations()) |decoration| {
+        var tokens = std.mem.tokenizeScalar(u8, decoration.class_name, ' ');
+        while (tokens.next()) |token| {
+            if (std.mem.eql(u8, token, "insert-sign")) return .{ .glyph = '+', .color = theme.added_primary };
+            if (std.mem.eql(u8, token, "delete-sign")) return .{ .glyph = '-', .color = theme.deleted_primary };
+            if (std.mem.eql(u8, token, "comment-range-glyph")) return .{ .glyph = '|', .color = theme.modified_primary };
+            if (std.mem.eql(u8, token, "first-line")) return .{ .glyph = '>', .color = theme.line_number_active };
+        }
+    }
+    return null;
 }
 
 const QuickDiffKind = enum { added, modified, deleted };
