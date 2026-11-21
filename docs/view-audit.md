@@ -50,15 +50,15 @@ For each row:
 
 | View | Local | Upstream | Verdict | Evidence / next action |
 |------|-------|----------|---------|------------------------|
-| View orchestrator | `vs/editor/browser/view.zig`, `view/viewPart.zig`, `viewLayer.zig`, `viewOverlays.zig`, `renderingContext.zig` | `editor/browser/view.ts`, `view/*.ts` | Pending audit | Check ViewPart lifecycle and event fan-out; no collapsed terminal-only path. |
-| View lines / whitespace / word wrap | `vs/editor/browser/viewParts/viewLines/` | `editor/browser/viewParts/viewLines/` | Pending audit | Check render pipeline, wrapping, whitespace/control chars, invalidation. |
-| Current line highlight | `vs/editor/browser/viewParts/currentLineHighlight/` | same | Pending audit | Options, theme, paint order. |
+| View orchestrator | `vs/editor/browser/view.zig`, `view/viewPart.zig`, `viewLayer.zig`, `viewOverlays.zig`, `renderingContext.zig` | `editor/browser/view.ts`, `view/*.ts` | **F** | Ported `View`/`ViewPart`/content-overlay lifecycle, event fan-out, focus, render scheduling and the accumulated render path. Tests cover part registration, configuration/focus fan-out, line widths/offsets, render scheduling and the `ViewFocusChanged` event. The terminal frame driver substitutes for the browser animation frame only. |
+| View lines / whitespace / word wrap | `vs/editor/browser/viewParts/viewLines/` | `editor/browser/viewParts/viewLines/` | **T** | `ViewLines`/line renderer keep the upstream view-line data and wrapping/whitespace/control-character decisions; the cell grid replaces DOM line nodes and subpixel geometry. Wrapped-line/whitespace behavior is covered by the view-line tests. |
+| Current line highlight | `vs/editor/browser/viewParts/currentLineHighlight/` | same | **F** | Both content and margin overlays are registered; `renderLineHighlight` (`line`/`gutter`/`all`/`none`), empty-selection, wrapped-line and focus-only rules are ported, and the theme resolves `editor.lineHighlightBackground`. Covered by overlay + View tests (`892f580`, `f04dff1`). |
 | Indent guides | `vs/editor/browser/viewParts/indentGuides/` | same | Pending audit | Model rules, theme pools, active scope. |
-| Selections | `vs/editor/browser/viewParts/selections/` | same | Pending audit | Multi-selection, rounded-corner substitution, theme. |
-| View cursors | `vs/editor/browser/viewParts/viewCursors/` | same | Pending audit | Plurality, focus/composition, hardware cursor boundary, theme. |
+| Selections | `vs/editor/browser/viewParts/selections/` | same | **T** | Multi-selection range/style computation, insets and focus rules are ported; the cell grid cannot paint rounded corners, so the inner/outer corner pieces collapse to rectangle ranges. Theme resolution and range tests are present. |
+| View cursors | `vs/editor/browser/viewParts/viewCursors/` | same | **T** | Plurality, primary/secondary styling and focus are ported; the terminal paints block cells and keeps the hardware cursor as the terminal boundary, with no browser IME/composition or subpixel caret. Covered by cursor tests. |
 | Decoration overlays | `vs/editor/browser/viewParts/decorations/` + `src/tui/editorView.zig` | `editor/browser/viewParts/decorations/decorations.ts` | Pending audit | Find/word/bracket/diagnostic classes, theme, z-order. |
-| Scrollbar | `vs/editor/browser/viewParts/editorScrollbar/editorScrollbar.zig` | `editor/browser/viewParts/editorScrollbar/editorScrollbar.ts` | Pending audit | 3-lane geometry accepted; check sensitivity, wheel, drag, theme, hit. |
-| Overview ruler | `vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig` | `editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.ts` | Pending audit | Lane mapping/colors, cursor markers, z-order, theme. |
+| Scrollbar | `vs/editor/browser/viewParts/editorScrollbar/editorScrollbar.zig` | `editor/browser/viewParts/editorScrollbar/editorScrollbar.ts` | **T** | The accepted 3-lane cell geometry replaces the pixel scrollbar; wheel/drag/hit and `scrollbarSlider.*` theme resolution are ported and tested. Arrow buttons/rounded slider CSS are omitted as browser-only. |
+| Overview ruler | `vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig` | `editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.ts` | **T** | The upstream line-to-row projection, lane choice and z-index/group paint order are kept; the canvas collapses to one terminal column and one-cell minimum heights. Lane, multi-line, z-order, cursor and collapse tests pass. |
 | Content widgets | `vs/editor/browser/viewParts/contentWidgets/` | same | Pending audit | Anchoring, above/below, clamping, hit/focus. |
 | Overlay widgets | `vs/editor/browser/viewParts/overlayWidgets/` | same | Pending audit | Corner preferences, size, paint order, focus. |
 | Block decorations | `vs/editor/browser/viewParts/blockDecorations/blockDecorations.zig` | `editor/browser/viewParts/blockDecorations/blockDecorations.ts` | **F** | Ported in `113764e`; block ranges, padding, `blockIsAfterEnd`/`blockDoesNotCollapse`; terminal maps moved classes to one-cell borders. Covered by `block decorations:` tests and `View: block decorations paint a bordered range under the text`. |
@@ -184,6 +184,10 @@ For each row:
   the workspace get a `~` root; the workbench caches HOME through
   `Environ.Map`. Added a model test. Editor-type/drop and the outline picker
   remain pending.
+- Audited the core editor views: view orchestrator (**F**), view lines (**T**),
+  current-line highlight (**F**), selections (**T**), view cursors (**T**),
+  scrollbar (**T**) and overview ruler (**T**), with the evidence recorded in
+  their ledger rows.
 
 ## Next slice
 
