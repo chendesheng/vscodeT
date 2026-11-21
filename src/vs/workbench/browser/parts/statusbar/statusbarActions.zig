@@ -1,8 +1,8 @@
 // Port of `src/vs/workbench/browser/parts/statusbar/statusbarActions.ts`.
 //
 // The browser actions are menu items in the status-bar context menu. The TUI
-// has no context-menu service, so the portable actions are exposed as values
-// that the model/view can run; wiring them into a terminal menu is a follow-up.
+// shows them through the existing quick pick on a right-click: Hide is always
+// offered and Manage Extension is added for extension-owned entries.
 
 const std = @import("std");
 

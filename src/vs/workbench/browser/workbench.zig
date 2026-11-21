@@ -72,6 +72,8 @@ const SidebarPart = sidebar_part_mod.SidebarPart;
 const layout_service_mod = @import("../services/layout/browser/layoutService.zig");
 const LayoutModel = @import("./layout.zig").LayoutModel;
 const statusbar_mod = @import("./parts/statusbar/statusbarPart.zig");
+const statusbar_actions = @import("./parts/statusbar/statusbarActions.zig");
+const statusbar_model_mod = @import("./parts/statusbar/statusbarModel.zig");
 const StatusbarService = statusbar_mod.StatusbarService;
 const EntryAccessor = statusbar_mod.EntryAccessor;
 const statusbar_types = @import("../services/statusbar/browser/statusbar.zig");
@@ -7172,6 +7174,18 @@ pub const Workbench = struct {
             },
             .down => {
                 self.leaveEditorHover();
+                if (event.button == .right) {
+                    if (part.hitAt(event.x, event.y) catch null) |hit| {
+                        switch (hit) {
+                            .entry => |handle| {
+                                part.setHovered(handle);
+                                self.showStatusbarContextMenu(handle) catch {};
+                            },
+                            .part => part.clearHover(),
+                        }
+                    }
+                    return true;
+                }
                 part.clearHover();
                 self.focusStatusBar();
                 if (part.hitAt(event.x, event.y) catch null) |hit| {
@@ -7193,6 +7207,31 @@ pub const Workbench = struct {
             },
             .up, .click, .wheel => return true,
         }
+    }
+
+    /// Terminal form of the upstream status-bar context menu: the hide and
+    /// manage-extension actions are presented through the quick pick.
+    pub fn showStatusbarContextMenu(self: *Workbench, handle: statusbar_model_mod.EntryHandle) !void {
+        const entry = self.statusbar.main_part.model.findByHandle(handle) orelse return;
+        _ = self.breadcrumbs_arena.reset(.retain_capacity);
+        const arena = self.breadcrumbs_arena.allocator();
+        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        try items.append(.{ .item = .{
+            .id = try std.fmt.allocPrint(arena, "hide:{s}", .{entry.id}),
+            .label = try std.fmt.allocPrint(arena, "Hide '{s}'", .{entry.item.name()}),
+        } });
+        if (entry.item.entry.extension_id != null) {
+            try items.append(.{ .item = .{
+                .id = try std.fmt.allocPrint(arena, "manage:{s}", .{entry.id}),
+                .label = "Manage Extension",
+            } });
+        }
+        try self.quick_access.inputService().showPick(
+            items.items,
+            .{ .placeholder = "Status Bar" },
+            onStatusbarMenuPick,
+            self,
+        );
     }
 
     fn ensureStatusbarService(self: *Workbench) !*keybinding_service.KeybindingService {
@@ -8770,6 +8809,27 @@ fn breadcrumbFocusEditor(context: *anyopaque) void {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     self.workbench.focusEditor();
     if (self.workbench.activeTab()) |tab| tab.focusEditor();
+}
+
+fn onStatusbarMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.activeItem() orelse return;
+    if (std.mem.startsWith(u8, item.id, "hide:")) {
+        self.statusbar.main_part.model.hide(item.id[5..]);
+        return;
+    }
+    if (std.mem.startsWith(u8, item.id, "manage:")) {
+        const entry = self.statusbar.main_part.model.findEntry(item.id[7..]) orelse return;
+        if (entry.item.entry.extension_id) |extension_id| {
+            if (self.statusbar.main_part.command_executor) |executor| {
+                var action = statusbar_actions.ManageExtensionAction{
+                    .extension_id = extension_id,
+                    .executor = executor,
+                };
+                try action.run();
+            }
+        }
+    }
 }
 
 fn onBreadcrumbPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
@@ -12142,6 +12202,31 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     defer after.deinit();
     try workbench.render(&after.writer);
     try std.testing.expect(view.scroll > scroll_before);
+}
+
+test "Workbench: status bar context menu hides an entry" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "status_menu.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+
+    const model = &workbench.statusbar.main_part.model;
+    const entry = if (model.findEntry("status.editor.mode")) |found| found else &model.entries()[0];
+    const id = entry.id;
+    try workbench.showStatusbarContextMenu(entry.handle);
+    try std.testing.expect(workbench.isQuickAccessOpen());
+    const picker = workbench.quick_access.inputService().pickerRef();
+    try std.testing.expect(std.mem.startsWith(u8, picker.activeItem().?.label, "Hide"));
+
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expect(model.isHidden(id));
 }
 
 test "Workbench: status bar spans the window and shows editor state" {
