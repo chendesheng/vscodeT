@@ -34,6 +34,7 @@ pub const KindColors = struct {
 /// usable in isolation and in tests.
 pub const Theme = struct {
     standard_hover_background: ui.Color = .{ .r = 55, .g = 55, .b = 55 },
+    compact_hover_background: ui.Color = .{ .r = 75, .g = 75, .b = 75 },
     prominent: KindColors = .{
         .background = .{ .r = 0, .g = 61, .b = 102 },
         .foreground = .{ .r = 255, .g = 255, .b = 255 },
@@ -94,6 +95,8 @@ pub const ItemOptions = struct {
 
 pub const ItemState = struct {
     hovered: bool = false,
+    /// A compact-group partner of the hovered entry.
+    compact_hovered: bool = false,
     focused: bool = false,
 };
 
@@ -196,7 +199,9 @@ pub const StatusbarItem = struct {
             else
                 .auto,
             .flex_shrink = 0,
-            .background = if (self.entry.kind == .standard and !state.hovered)
+            .background = if (state.compact_hovered and !state.hovered)
+                self.theme.compact_hover_background
+            else if (self.entry.kind == .standard and !state.hovered)
                 null
             else
                 self.labelBackground(state.hovered),
@@ -346,4 +351,15 @@ test "StatusbarItem: theme controls kind and hover colors" {
     var standard = StatusbarItem.init(.{ .name = "Ready", .text = "" });
     standard.setTheme(theme);
     try std.testing.expect(standard.labelBackground(true).eql(theme.standard_hover_background));
+}
+
+test "StatusbarItem: compact hover uses the compact background" {
+    const allocator = std.testing.allocator;
+    var doc = try ui.Document.init(allocator, .{ .cols = 20, .rows = 1 });
+    defer doc.deinit();
+
+    var item = StatusbarItem.init(.{ .name = "Ready", .text = "ready" });
+    item.setTheme(.{ .compact_hover_background = .{ .r = 9, .g = 8, .b = 7 } });
+    const nodes = try item.build(&doc, .{}, .{ .compact_hovered = true });
+    try std.testing.expect(nodes.container.style().background.?.eql(.{ .r = 9, .g = 8, .b = 7 }));
 }

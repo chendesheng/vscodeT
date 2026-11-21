@@ -445,7 +445,6 @@ pub const StatusbarPart = struct {
             .width = .{ .percent = 100 },
             .height = .{ .cells = 1 },
             .overflow = .hidden,
-            .gap = .{ .column = 1 },
             .background = background,
             .color = foreground,
             .underline = options.part_focused and !self.isEntryFocused(),
@@ -483,7 +482,7 @@ pub const StatusbarPart = struct {
         for (self.model.entries_list.items) |*entry| {
             if (entry.alignment != .left) continue;
             if (self.model.isHidden(entry.id) or entry.item.text().len == 0) continue;
-            try self.appendItem(doc, left, entry, max_width_cells, &compact_left, &compact_right);
+            try self.appendItem(doc, left, entry, max_width_cells, &compact_left, &compact_right, self.isCompactHovered(entry.handle));
         }
 
         var index = self.model.entries_list.items.len;
@@ -492,7 +491,7 @@ pub const StatusbarPart = struct {
             const entry = &self.model.entries_list.items[index];
             if (entry.alignment != .right) continue;
             if (self.model.isHidden(entry.id) or entry.item.text().len == 0) continue;
-            try self.appendItem(doc, right, entry, max_width_cells, &compact_left, &compact_right);
+            try self.appendItem(doc, right, entry, max_width_cells, &compact_left, &compact_right, self.isCompactHovered(entry.handle));
         }
 
         doc.setRoot(root);
@@ -520,6 +519,7 @@ pub const StatusbarPart = struct {
         max_width_cells: usize,
         compact_left: *const std.AutoHashMap(EntryHandle, void),
         compact_right: *const std.AutoHashMap(EntryHandle, void),
+        compact_hovered: bool,
     ) !void {
         const nodes = try entry.item.build(doc, .{
             .max_width_cells = max_width_cells,
@@ -530,6 +530,7 @@ pub const StatusbarPart = struct {
             .has_background = entry.item.kind() != .standard,
         }, .{
             .hovered = self.hovered == entry.handle,
+            .compact_hovered = compact_hovered,
             .focused = self.model.focused_handle == entry.handle,
         });
         _ = try parent.appendChild(nodes.container);
@@ -556,6 +557,28 @@ pub const StatusbarPart = struct {
                 try compact_left.put(entry.handle, {});
             }
         }
+    }
+
+    /// Upstream `statusBarItem.compactHoverBackground`: hovering one half of a
+    /// compact group also lights the referenced entry.
+    fn isCompactHovered(self: *StatusbarPart, handle: EntryHandle) bool {
+        const hovered_handle = self.hovered orelse return false;
+        const hovered = self.model.findByHandle(hovered_handle) orelse return false;
+        const entry = self.model.findByHandle(handle) orelse return false;
+
+        switch (hovered.priority.primary) {
+            .location => |location| {
+                if (location.compact and std.mem.eql(u8, location.location.id, entry.id)) return true;
+            },
+            .number => {},
+        }
+        switch (entry.priority.primary) {
+            .location => |location| {
+                if (location.compact and std.mem.eql(u8, location.location.id, hovered.id)) return true;
+            },
+            .number => {},
+        }
+        return false;
     }
 
     fn paintTooltip(self: *StatusbarPart, grid: *ui.CellGrid) void {
@@ -663,6 +686,7 @@ fn statusbarTheme(palette: ?*const theme_colors_mod.ThemeColors) item_mod.Theme 
     const colors = palette orelse return item_mod.Theme.dark();
     return .{
         .standard_hover_background = colors.color("statusBarItem.hoverBackground", .{ 55, 55, 55 }),
+        .compact_hover_background = colors.color("statusBarItem.compactHoverBackground", .{ 75, 75, 75 }),
         .prominent = .{
             .background = colors.color("statusBarItem.prominentBackground", .{ 0, 61, 102 }),
             .foreground = colors.color("statusBarItem.prominentForeground", .{ 255, 255, 255 }),
