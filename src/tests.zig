@@ -104,6 +104,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/scm/browser/quickDiffModel.zig");
     _ = @import("./vs/workbench/contrib/scm/browser/quickDiffDecorator.zig");
     _ = @import("./vs/workbench/contrib/scm/browser/scmHistory.zig");
+    _ = @import("./vs/workbench/contrib/scm/browser/scmHistoryViewPane.zig");
     _ = @import("./vs/workbench/contrib/scm/test/browser/quickDiffModel.test.zig");
     _ = @import("./vs/workbench/contrib/scm/test/browser/scmHistory.test.zig");
     _ = @import("./vs/workbench/services/views/common/viewContainerModel.zig");
