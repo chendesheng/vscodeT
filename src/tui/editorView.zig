@@ -1837,6 +1837,7 @@ pub const View = struct {
             .line_numbers = &self.terminal_view_host.line_numbers,
             .line_decorations = &self.terminal_view_host.line_decorations,
             .glyph_margin = self.terminal_view_host.glyphMargin(),
+            .line_highlight = self.terminal_view_host.currentLineMargin(),
             .folding = self.terminal_view_host.foldingDecorations(),
         });
         try updateStatus(self, doc, chrome_host_ptr, status_root, rows);
@@ -2136,6 +2137,7 @@ fn marginTheme(palette: ?*const theme_colors_mod.ThemeColors) margin_mod.Theme {
         .continuation = themedColor(palette, "editorLineNumber.foreground", .{ 90, 90, 90 }),
         .filler = themedColor(palette, "editorLineNumber.foreground", .{ 70, 70, 70 }),
         .folding_control = themedColor(palette, "editorGutter.foldingControlForeground", .{ 110, 110, 110 }),
+        .current_line_background = themedColor(palette, "editor.lineHighlightBackground", .{ 40, 40, 40 }),
         .added_primary = themedColor(palette, "editorGutter.addedBackground", .{ 72, 126, 2 }),
         .modified_primary = themedColor(palette, "editorGutter.modifiedBackground", .{ 137, 85, 3 }),
         .deleted_primary = themedColor(palette, "editorGutter.deletedBackground", .{ 173, 7, 7 }),
@@ -4899,4 +4901,34 @@ test "View: fold control sits before the quick-diff cell" {
     var marker_click = testMouse(.down, editor.quickDiffCellColumn(), 0);
     _ = try view.dispatchMouse(&marker_click);
     try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+}
+
+test "View: gutter-only line highlight paints the margin" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 30, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    view.terminal_view_host.options.set(.renderLineHighlight, .gutter);
+    const option_count = @typeInfo(editor_options.EditorOption).@"enum".field_names.len;
+    var changed: [option_count]bool = @splat(false);
+    changed[@backingInt(editor_options.EditorOption.renderLineHighlight)] = true;
+    const event = view_events.ViewConfigurationChangedEvent.init(
+        editor_options.ConfigurationChangedEvent.init(&changed),
+    );
+    _ = view.terminal_view_host.viewRef().onConfigurationChanged(&event);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    try std.testing.expect(view.terminal_view_host.currentLineMargin().renderedLine(1).?.in_margin);
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 40, .g = 40, .b = 40 }), grid.bg[grid.index(0, 0)]);
+    try std.testing.expect(grid.bg[grid.index(editor.gutterWidth(), 0)] != ui.cell.packColor(.{ .r = 40, .g = 40, .b = 40 }));
 }

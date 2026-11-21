@@ -181,6 +181,7 @@ pub const TerminalViewHost = struct {
     glyph_margin_dirty: bool = true,
     selections_overlay: SelectionsOverlay,
     current_line: CurrentLineHighlightOverlay,
+    current_line_margin: CurrentLineHighlightOverlay,
     view_cursors: ViewCursors,
     lines_adapter: LinesAdapter,
     offsets: std.ArrayListUnmanaged(f64) = .empty,
@@ -214,6 +215,7 @@ pub const TerminalViewHost = struct {
             .glyph_lanes = undefined,
             .selections_overlay = undefined,
             .current_line = undefined,
+            .current_line_margin = undefined,
             .view_cursors = undefined,
             .lines_adapter = undefined,
         };
@@ -249,6 +251,7 @@ pub const TerminalViewHost = struct {
         self.glyph_margin.init(allocator, &self.context, &self.glyph_lanes);
         self.selections_overlay.init(allocator, &self.context);
         self.current_line.initContent(allocator, &self.context);
+        self.current_line_margin.initMargin(allocator, &self.context);
         self.view_cursors.init(allocator, &self.context);
 
         // The ported `View` coordinates the render pass. Register the overlays
@@ -258,6 +261,7 @@ pub const TerminalViewHost = struct {
         try self.view.addContentOverlay(&self.decorations_overlay.base);
         try self.view.addContentOverlay(&self.selections_overlay.base);
         try self.view.addContentOverlay(&self.current_line.base);
+        try self.view.addContentOverlay(&self.current_line_margin.base);
         try self.view.addContentOverlay(&self.glyph_margin.base);
         try self.view.addViewPart(&self.block_decorations.base);
 
@@ -307,6 +311,7 @@ pub const TerminalViewHost = struct {
         self.scratch_text.deinit();
         self.view_cursors.deinit();
         self.current_line.deinit();
+        self.current_line_margin.deinit();
         self.selections_overlay.deinit();
         self.block_decorations.deinit();
         self.glyph_margin.deinit();
@@ -428,6 +433,18 @@ pub const TerminalViewHost = struct {
     /// The ported glyph-margin overlay.
     pub fn glyphMargin(self: *TerminalViewHost) *GlyphMarginOverlay {
         return &self.glyph_margin;
+    }
+
+    /// The ported content-line highlight overlay; the margin consumes its
+    /// `in_margin` decision for `renderLineHighlight: gutter|all`.
+    pub fn currentLine(self: *TerminalViewHost) *const CurrentLineHighlightOverlay {
+        return &self.current_line;
+    }
+
+    /// The margin half of the current-line overlay (`renderLineHighlight:
+    /// gutter|all`); its `in_margin` flag drives the gutter row background.
+    pub fn currentLineMargin(self: *TerminalViewHost) *const CurrentLineHighlightOverlay {
+        return &self.current_line_margin;
     }
 
     /// Applies pending decoration-dependent gutter state before the frame
