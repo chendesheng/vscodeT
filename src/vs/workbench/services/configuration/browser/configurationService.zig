@@ -14,6 +14,12 @@
 // one of these files changes. `updateValue` (setting editing), language
 // override identifiers (`[typescript]` blocks), policy/application/remote
 // scopes and trusted-workspace filtering are not ported.
+//
+// Async terminal adaptation: `readSources` reads the raw settings files and is
+// safe on a worker thread; `applySources` parses/merges/commits and fires
+// `onDidChangeConfiguration` on the TUI thread. `SettingsWatcher` uses this
+// split for file-watcher reloads, while startup and tests keep the synchronous
+// `reload`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -185,19 +191,101 @@ pub const ConfigurationService = struct {
     /// Reads all scopes into temporary models first, so a failed read leaves
     /// the previously loaded configuration intact.
     fn load(self: *ConfigurationService) !void {
+        var sources = try self.readSources(self.allocator, self.io);
+        defer sources.deinit();
+        try self.applySources(&sources);
+    }
+
+    /// Raw settings-file contents, read on the async Io by the watcher. The
+    /// parsing/merge/commit stays on the TUI thread so `onDidChangeConfiguration`
+    /// and the model swap happen on the event loop, matching upstream's
+    /// `fileService.readFile` + configuration-cache flow.
+    pub const FolderSettings = struct {
+        text: ?[]u8,
+    };
+
+    pub const Sources = struct {
+        allocator: Allocator,
+        user: []?[]u8,
+        workspace: ?[]u8,
+        folders: []FolderSettings,
+
+        pub fn deinit(self: *Sources) void {
+            for (self.user) |maybe_text| {
+                if (maybe_text) |text| self.allocator.free(text);
+            }
+            self.allocator.free(self.user);
+            if (self.workspace) |text| self.allocator.free(text);
+            for (self.folders) |folder| {
+                if (folder.text) |text| self.allocator.free(text);
+            }
+            self.allocator.free(self.folders);
+            self.* = undefined;
+        }
+    };
+
+    /// Reads the user, workspace and folder settings files. Safe to run on a
+    /// worker thread: it allocates with `allocator` and touches no model state.
+    pub fn readSources(self: *const ConfigurationService, allocator: Allocator, io: Io) !Sources {
+        const user = try allocator.alloc(?[]u8, self.user_settings_paths.len);
+        @memset(user, null);
+        errdefer {
+            for (user) |maybe_text| if (maybe_text) |text| allocator.free(text);
+            allocator.free(user);
+        }
+        for (self.user_settings_paths, 0..) |path, index| {
+            user[index] = try readSettingsFileOpt(allocator, io, path);
+        }
+
+        const workspace_path = self.workspace.getWorkspace().configuration;
+        const workspace_text: ?[]u8 = if (workspace_path) |path|
+            try readSettingsFileOpt(allocator, io, path)
+        else
+            null;
+        errdefer if (workspace_text) |text| allocator.free(text);
+
+        const workspace_folders = self.workspace.getWorkspace().folders.items;
+        const folders = try allocator.alloc(FolderSettings, workspace_folders.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (folders[0..initialized]) |folder| {
+                if (folder.text) |text| allocator.free(text);
+            }
+            allocator.free(folders);
+        }
+        for (workspace_folders, 0..) |folder, index| {
+            const path = try std.fs.path.join(allocator, &.{ folder.resource, ".vscode", "settings.json" });
+            defer allocator.free(path);
+            folders[index] = .{
+                .text = try readSettingsFileOpt(allocator, io, path),
+            };
+            initialized += 1;
+        }
+
+        return .{ .allocator = allocator, .user = user, .workspace = workspace_text, .folders = folders };
+    }
+
+    /// Parses the already-read sources and commits the new effective models on
+    /// the TUI thread. The sources remain owned by the caller.
+    pub fn applySources(self: *ConfigurationService, sources: *const Sources) !void {
         var new_defaults = try self.registry.buildDefaultModel(self.allocator);
         errdefer new_defaults.deinit();
-        var new_user = try self.readUserModel();
+        var new_user = try self.userModelFromSources(sources);
         errdefer new_user.deinit();
-        var new_workspace = try self.readWorkspaceModel();
+        var new_workspace = try self.workspaceModelFromText(sources.workspace);
         errdefer new_workspace.deinit();
 
         var new_folders = std.StringHashMap(*ConfigurationModel).init(self.allocator);
         errdefer deinitFolderModels(self.allocator, &new_folders);
-        for (self.workspace.getWorkspace().folders.items) |folder| {
+        const workspace_folders = self.workspace.getWorkspace().folders.items;
+        for (workspace_folders, 0..) |folder, index| {
+            if (index >= sources.folders.len) break;
             const model = try self.allocator.create(ConfigurationModel);
             errdefer self.allocator.destroy(model);
-            model.* = try self.readFolderModel(folder.resource);
+            model.* = if (sources.folders[index].text) |text|
+                try ConfigurationModel.fromJson(self.allocator, text)
+            else
+                try ConfigurationModel.initEmpty(self.allocator);
             errdefer model.deinit();
             try new_folders.put(folder.resource, model);
         }
@@ -239,6 +327,51 @@ pub const ConfigurationService = struct {
         self.workspace_consolidated = new_workspace_consolidated;
 
         self.fireChangeEvent();
+    }
+
+    fn userModelFromSources(self: *ConfigurationService, sources: *const Sources) !ConfigurationModel {
+        if (sources.user.len == 0) return ConfigurationModel.initEmpty(self.allocator);
+        if (sources.user.len == 1) {
+            return if (sources.user[0]) |text|
+                ConfigurationModel.fromJson(self.allocator, text)
+            else
+                ConfigurationModel.initEmpty(self.allocator);
+        }
+
+        var models = std.array_list.Managed(*ConfigurationModel).init(self.allocator);
+        defer models.deinit();
+        defer {
+            for (models.items) |model| {
+                model.deinit();
+                self.allocator.destroy(model);
+            }
+        }
+        for (sources.user) |maybe_text| {
+            const text = maybe_text orelse continue;
+            const model = try self.allocator.create(ConfigurationModel);
+            errdefer self.allocator.destroy(model);
+            model.* = try ConfigurationModel.fromJson(self.allocator, text);
+            try models.append(model);
+        }
+        if (models.items.len == 0) return ConfigurationModel.initEmpty(self.allocator);
+        const pointers = try self.allocator.alloc(*const ConfigurationModel, models.items.len);
+        defer self.allocator.free(pointers);
+        for (models.items, 0..) |model, index| pointers[index] = model;
+        return ConfigurationModel.merge(self.allocator, pointers);
+    }
+
+    fn workspaceModelFromText(self: *ConfigurationService, text: ?[]const u8) !ConfigurationModel {
+        const content = text orelse return ConfigurationModel.initEmpty(self.allocator);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const sanitized = try configurationModels.stripJsonc(arena.allocator(), content);
+        const raw = std.json.parseFromSliceLeaky(Value, arena.allocator(), sanitized, .{
+            .duplicate_field_behavior = .use_last,
+        }) catch return ConfigurationModel.initEmpty(self.allocator);
+        if (raw != .object) return ConfigurationModel.initEmpty(self.allocator);
+        const settings = raw.object.get("settings") orelse
+            return ConfigurationModel.initEmpty(self.allocator);
+        return ConfigurationModel.fromValue(self.allocator, settings);
     }
 
     pub fn interface(self: *ConfigurationService) configuration.IConfigurationService {
@@ -521,15 +654,7 @@ pub const ConfigurationService = struct {
     }
 
     fn readSettingsFile(self: *ConfigurationService, path: []const u8) !?[]u8 {
-        return Io.Dir.cwd().readFileAlloc(
-            self.io,
-            path,
-            self.allocator,
-            .limited(max_settings_file_size),
-        ) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return null,
-        };
+        return readSettingsFileOpt(self.allocator, self.io, path);
     }
 
     fn fireChangeEvent(self: *ConfigurationService) void {
@@ -641,6 +766,37 @@ pub const ReloadCallback = struct {
     callback: *const fn (context: *anyopaque) void,
 };
 
+/// Reads one settings file. Missing/unreadable files are treated as absent;
+/// only allocation failures escape, matching the synchronous readers above.
+fn readSettingsFileOpt(allocator: Allocator, io: Io, path: []const u8) !?[]u8 {
+    return Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_settings_file_size)) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+}
+
+const AsyncReloadResult = union(enum) {
+    sources: ConfigurationService.Sources,
+    err: anyerror,
+};
+
+const AsyncReloadJob = struct {
+    watcher: *SettingsWatcher,
+    future: Io.Future(AsyncReloadResult),
+    done: std.atomic.Value(bool) = .init(false),
+    io: Io,
+
+    fn deinit(self: *AsyncReloadJob, allocator: Allocator) void {
+        allocator.destroy(self);
+    }
+};
+
+fn runAsyncReload(job: *AsyncReloadJob) AsyncReloadResult {
+    defer job.done.store(true, .release);
+    const service = job.watcher.configuration_service;
+    return .{ .sources = service.readSources(job.watcher.allocator, job.io) catch |err| return .{ .err = err } };
+}
+
 pub const SettingsWatcher = struct {
     allocator: Allocator,
     io: Io,
@@ -653,6 +809,12 @@ pub const SettingsWatcher = struct {
     on_reload: ?ReloadCallback = null,
     reload_count: usize = 0,
     last_reload_failed: bool = false,
+    /// When set, settings files are read on this Io and the models are applied
+    /// on the TUI thread by `poll`. Null keeps the synchronous test/startup
+    /// path.
+    async_io: ?Io = null,
+    reload_job: ?*AsyncReloadJob = null,
+    reload_pending: bool = false,
 
     pub fn init(
         allocator: Allocator,
@@ -678,6 +840,7 @@ pub const SettingsWatcher = struct {
     }
 
     pub fn deinit(self: *SettingsWatcher) void {
+        self.cancelReload();
         self.setExtraPaths(&.{}) catch {};
         self.extra_paths.deinit();
         self.watcher.deinit();
@@ -693,8 +856,67 @@ pub const SettingsWatcher = struct {
         try self.update();
     }
 
+    pub fn setAsyncIo(self: *SettingsWatcher, io: Io) void {
+        self.async_io = io;
+    }
+
     pub fn setOnReload(self: *SettingsWatcher, callback: ?ReloadCallback) void {
         self.on_reload = callback;
+    }
+
+    fn requestAsyncReload(self: *SettingsWatcher) void {
+        const async_io = self.async_io orelse return;
+        if (self.reload_job != null) {
+            self.reload_pending = true;
+            return;
+        }
+        const job = self.allocator.create(AsyncReloadJob) catch return;
+        job.* = .{
+            .watcher = self,
+            .future = undefined,
+            .io = async_io,
+        };
+        job.future = async_io.async(runAsyncReload, .{job});
+        self.reload_job = job;
+    }
+
+    fn pollReload(self: *SettingsWatcher) bool {
+        const job = self.reload_job orelse return false;
+        if (!job.done.load(.acquire)) return false;
+        const result = job.future.await(job.io);
+        self.reload_job = null;
+        job.deinit(self.allocator);
+        switch (result) {
+            .sources => |sources_value| {
+                var sources = sources_value;
+                defer sources.deinit();
+                self.configuration_service.applySources(&sources) catch {
+                    self.last_reload_failed = true;
+                    return true;
+                };
+                self.last_reload_failed = false;
+                self.reload_count += 1;
+                if (self.on_reload) |callback| callback.callback(callback.context);
+            },
+            .err => self.last_reload_failed = true,
+        }
+        if (self.reload_pending) {
+            self.reload_pending = false;
+            self.requestAsyncReload();
+        }
+        return true;
+    }
+
+    pub fn cancelReload(self: *SettingsWatcher) void {
+        self.reload_pending = false;
+        const job = self.reload_job orelse return;
+        self.reload_job = null;
+        const result = job.future.cancel(job.io);
+        if (result == .sources) {
+            var sources = result.sources;
+            sources.deinit();
+        }
+        job.deinit(self.allocator);
     }
 
     pub fn update(self: *SettingsWatcher) !void {
@@ -719,7 +941,9 @@ pub const SettingsWatcher = struct {
     }
 
     pub fn poll(self: *SettingsWatcher, now_ms: i64) !bool {
-        return self.watcher.poll(now_ms);
+        var changed = try self.watcher.poll(now_ms);
+        if (self.pollReload()) changed = true;
+        return changed;
     }
 
     pub fn waitHandle(self: *const SettingsWatcher) @import("../../../../platform/files/node/watcher/parcel/watcherLib/root.zig").WaitHandle {
@@ -732,6 +956,10 @@ pub const SettingsWatcher = struct {
 
     fn onFileChanges(changes: []const FileChange, self: *SettingsWatcher) !void {
         if (changes.len == 0) return;
+        if (self.async_io != null) {
+            self.requestAsyncReload();
+            return;
+        }
         self.configuration_service.reload() catch {
             self.last_reload_failed = true;
             return;

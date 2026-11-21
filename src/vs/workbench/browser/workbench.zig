@@ -34,8 +34,12 @@
 //! on the workbench's dedicated `std.Io.Threaded` via `Io.async`. No generic
 //! Task/Promise type is introduced: each owner keeps an `Io.Future` plus a
 //! completion flag, and `pollAsyncReads`/`pollFileWatcher`/`markdownPreviewTick`
-//! apply results on the TUI thread. `openPath` stays synchronous for startup,
-//! session restore and tests.
+//! apply results on the TUI thread. Watcher-triggered settings/keybindings/
+//! theme reloads and clean-editor external changes use the same model:
+//! `SettingsWatcher` reads sources off-thread, theme preparation returns a
+//! detached `ColorThemeData`, and reload jobs resolve the tab by path when the
+//! result lands. `openPath` stays synchronous for startup, session restore and
+//! tests.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -375,6 +379,87 @@ const OpenJob = struct {
     options: Workbench.OpenOptions,
 };
 
+const ThemeLoadOutcome = union(enum) {
+    theme: *@import("../services/themes/common/colorThemeData.zig").ColorThemeData,
+    err: anyerror,
+};
+
+/// One worker-thread color-theme load. The prepared theme is installed on the
+/// TUI thread by `pollThemeJob`.
+const ThemeLoadJob = struct {
+    allocator: Allocator,
+    io: Io,
+    service: *theme_service_mod.ThemeService,
+    future: Io.Future(ThemeLoadOutcome),
+    done: std.atomic.Value(bool) = .init(false),
+    request: theme_service_mod.ThemeService.PrepareRequest,
+};
+
+fn runThemeLoadJob(job: *ThemeLoadJob) ThemeLoadOutcome {
+    defer job.done.store(true, .release);
+    const theme = theme_service_mod.ThemeService.prepareTheme(
+        job.allocator,
+        job.service.colors,
+        &job.request,
+        job.io,
+    ) catch |err| return .{ .err = err };
+    return .{ .theme = theme };
+}
+
+const KeybindingsOutcome = union(enum) {
+    bindings: *user_keybindings_mod.UserKeybindings,
+    err: anyerror,
+};
+
+const KeybindingsJob = struct {
+    allocator: Allocator,
+    io: Io,
+    future: Io.Future(KeybindingsOutcome),
+    done: std.atomic.Value(bool) = .init(false),
+    paths: [][]u8,
+
+    fn deinit(self: *KeybindingsJob, allocator: Allocator) void {
+        for (self.paths) |path| allocator.free(path);
+        allocator.free(self.paths);
+        allocator.destroy(self);
+    }
+};
+
+fn runKeybindingsJob(job: *KeybindingsJob) KeybindingsOutcome {
+    defer job.done.store(true, .release);
+    var path_views = std.array_list.Managed([]const u8).init(job.allocator);
+    defer path_views.deinit();
+    for (job.paths) |path| path_views.append(path) catch return .{ .err = error.OutOfMemory };
+    const bindings = user_keybindings_mod.UserKeybindings.load(job.allocator, job.io, path_views.items) catch |err| {
+        return .{ .err = err };
+    };
+    return .{ .bindings = bindings };
+}
+
+const ReloadOutcome = union(enum) {
+    content: editor_widget.ReloadedContent,
+    err: anyerror,
+};
+
+/// One external-change reload on the async Io. The job stores only the path;
+/// the tab is resolved again when the result lands, so closing a tab while the
+/// read is in flight cannot leave a dangling pointer.
+const ReloadJob = struct {
+    allocator: Allocator,
+    io: Io,
+    future: Io.Future(ReloadOutcome),
+    done: std.atomic.Value(bool) = .init(false),
+    path: []u8,
+};
+
+fn runReloadJob(job: *ReloadJob) ReloadOutcome {
+    defer job.done.store(true, .release);
+    const content = editor_widget.Editor.readReloadedContent(job.allocator, job.io, job.path) catch |err| {
+        return .{ .err = err };
+    };
+    return .{ .content = content };
+}
+
 pub const Workbench = struct {
     allocator: Allocator,
     io: Io,
@@ -389,6 +474,12 @@ pub const Workbench = struct {
     /// supersedes it; the generation is checked again when the result lands.
     pending_open: ?*OpenJob = null,
     open_generation: u64 = 0,
+    reload_jobs: std.array_list.Managed(*ReloadJob),
+    theme_job: ?*ThemeLoadJob = null,
+    keybindings_job: ?*KeybindingsJob = null,
+    keybindings_reload_pending: bool = false,
+    theme_candidates: [3]?[]u8 = .{ null, null, null },
+    theme_candidate_index: usize = 0,
     cols: usize,
     rows: usize,
 
@@ -551,6 +642,12 @@ pub const Workbench = struct {
         self.async_io = self.async_io_state.io();
         self.pending_open = null;
         self.open_generation = 0;
+        self.reload_jobs = std.array_list.Managed(*ReloadJob).init(allocator);
+        self.theme_job = null;
+        self.theme_candidates = .{ null, null, null };
+        self.theme_candidate_index = 0;
+        self.keybindings_job = null;
+        self.keybindings_reload_pending = false;
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -689,6 +786,12 @@ pub const Workbench = struct {
         self.async_io = self.async_io_state.io();
         self.pending_open = null;
         self.open_generation = 0;
+        self.reload_jobs = std.array_list.Managed(*ReloadJob).init(allocator);
+        self.theme_job = null;
+        self.theme_candidates = .{ null, null, null };
+        self.theme_candidate_index = 0;
+        self.keybindings_job = null;
+        self.keybindings_reload_pending = false;
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -860,6 +963,12 @@ pub const Workbench = struct {
         self.async_io = self.async_io_state.io();
         self.pending_open = null;
         self.open_generation = 0;
+        self.reload_jobs = std.array_list.Managed(*ReloadJob).init(allocator);
+        self.theme_job = null;
+        self.theme_candidates = .{ null, null, null };
+        self.theme_candidate_index = 0;
+        self.keybindings_job = null;
+        self.keybindings_reload_pending = false;
         self.cols = @max(cols, 1);
         self.tab_service = null;
         self.global_service = null;
@@ -1606,6 +1715,7 @@ pub const Workbench = struct {
             self.allocator.destroy(service);
         }
         self.frame.deinit();
+        self.reload_jobs.deinit();
         self.async_io_state.deinit();
         self.allocator.destroy(self);
     }
@@ -1932,6 +2042,7 @@ pub const Workbench = struct {
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
         if (self.settings_watcher) |watcher| {
             watcher.setOnReload(.{ .context = self, .callback = onSettingsReloaded });
+            watcher.setAsyncIo(self.async_io);
             watcher.setExtraPaths(self.keybindings_paths) catch {};
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
@@ -1943,8 +2054,8 @@ pub const Workbench = struct {
         self.applyLayoutSettings();
         self.applyConfiguredLanguageAssociationsToAllEditors();
         self.applyEditorSettingsToAllTabs();
-        self.reloadKeybindings();
-        self.applyThemeSettings();
+        self.requestKeybindingsReload();
+        self.applyThemeSettingsAsync();
         self.applyBreadcrumbsSettings();
         self.applyMarkdownPreviewConfig();
         if (self.quick_diff_controller) |controller| {
@@ -2049,7 +2160,7 @@ pub const Workbench = struct {
                         tab.editor.markConflict();
                         continue;
                     }
-                    tab.editor.reloadFromDisk() catch {};
+                    self.requestFileReload(change.resource);
                 }
             }
         }
@@ -2114,6 +2225,7 @@ pub const Workbench = struct {
 
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
         var changed = false;
+        if (self.pollReloadJobs()) changed = true;
         if (self.sidebar) |sidebar| {
             if (sidebar.pollLoad()) changed = true;
         }
@@ -4254,6 +4366,78 @@ pub const Workbench = struct {
         self.allocator.destroy(job);
     }
 
+    /// Starts one external-change reload per path. Results are applied by
+    /// `pollReloadJobs` after resolving the tab again.
+    fn requestFileReload(self: *Workbench, path: []const u8) void {
+        for (self.reload_jobs.items) |job| {
+            if (self.samePath(job.path, path)) return;
+        }
+        const path_copy = self.allocator.dupe(u8, path) catch return;
+        const job = self.allocator.create(ReloadJob) catch {
+            self.allocator.free(path_copy);
+            return;
+        };
+        job.* = .{
+            .allocator = self.allocator,
+            .io = self.async_io,
+            .future = undefined,
+            .path = path_copy,
+        };
+        job.future = self.async_io.async(runReloadJob, .{job});
+        self.reload_jobs.append(job) catch {
+            const result = job.future.cancel(self.async_io);
+            if (result == .content) {
+                var content = result.content;
+                content.deinit(self.allocator);
+            }
+            self.allocator.free(job.path);
+            self.allocator.destroy(job);
+        };
+    }
+
+    fn pollReloadJobs(self: *Workbench) bool {
+        var changed = false;
+        var index = self.reload_jobs.items.len;
+        while (index > 0) {
+            index -= 1;
+            const job = self.reload_jobs.items[index];
+            if (!job.done.load(.acquire)) continue;
+            const result = job.future.await(self.async_io);
+            _ = self.reload_jobs.orderedRemove(index);
+            switch (result) {
+                .content => |content_value| {
+                    var content = content_value;
+                    defer content.deinit(self.allocator);
+                    if (self.findOpenInput(job.path)) |input| {
+                        if (input.editor.isDirty()) {
+                            input.editor.markConflict();
+                        } else {
+                            input.editor.applyReloadedContent(&content) catch {};
+                        }
+                        changed = true;
+                    }
+                },
+                .err => {},
+            }
+            self.allocator.free(job.path);
+            self.allocator.destroy(job);
+        }
+        return changed;
+    }
+
+    fn cancelReloadJobs(self: *Workbench) void {
+        for (self.reload_jobs.items) |job| {
+            const result = job.future.cancel(self.async_io);
+            if (result == .content) {
+                var content = result.content;
+                content.deinit(self.allocator);
+            }
+            self.allocator.free(job.path);
+            self.allocator.destroy(job);
+        }
+        self.reload_jobs.clearRetainingCapacity();
+    }
+
     fn freeOpenOutcome(self: *Workbench, outcome: OpenOutcome) void {
         switch (outcome) {
             .text => |value| {
@@ -4357,6 +4541,8 @@ pub const Workbench = struct {
             }
         }
         if (self.pollImagePreviews()) changed = true;
+        if (self.pollThemeJob()) changed = true;
+        if (self.pollKeybindingsJob()) changed = true;
         return changed;
     }
 
@@ -4387,7 +4573,8 @@ pub const Workbench = struct {
     /// poll timeout so the result is applied promptly without busy-spinning
     /// the idle maintenance work.
     pub fn hasLatencySensitiveReads(self: *Workbench) bool {
-        if (self.pending_open != null or self.hasPendingImageLoads()) return true;
+        if (self.pending_open != null or self.reload_jobs.items.len != 0 or self.theme_job != null or
+            self.keybindings_job != null or self.hasPendingImageLoads()) return true;
         if (self.sidebar) |sidebar| {
             if (sidebar.hasPendingLoad()) return true;
         }
@@ -4413,6 +4600,9 @@ pub const Workbench = struct {
 
     fn cancelAsyncJobs(self: *Workbench) void {
         self.cancelPendingOpen();
+        self.cancelReloadJobs();
+        self.cancelThemeJob();
+        self.cancelKeybindingsJob();
         if (self.sidebar) |sidebar| sidebar.cancelLoad();
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -5603,6 +5793,12 @@ pub const Workbench = struct {
     /// hosts are disposed before the keymap owner so no service keeps borrowed
     /// items past their lifetime.
     pub fn reloadKeybindings(self: *Workbench) void {
+        self.disposeKeybindingServices();
+        self.ensureUserKeybindings() catch {};
+        self.applyKeybindingConsumers();
+    }
+
+    fn disposeKeybindingServices(self: *Workbench) void {
         if (self.global_service) |service| {
             service.deinit();
             self.global_service = null;
@@ -5621,7 +5817,9 @@ pub const Workbench = struct {
             bindings.deinit();
             self.user_keybindings = null;
         }
-        self.ensureUserKeybindings() catch {};
+    }
+
+    fn applyKeybindingConsumers(self: *Workbench) void {
         const removals = self.userRemovalOverrides();
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -5629,6 +5827,70 @@ pub const Workbench = struct {
             }
         }
         if (self.search_view) |view| view.reloadKeybindings(removals);
+    }
+
+    /// Watcher-triggered keybindings reload. The JSONC files are read/parsed on
+    /// the async Io, then installed on the TUI thread.
+    fn requestKeybindingsReload(self: *Workbench) void {
+        if (self.keybindings_job != null) {
+            self.keybindings_reload_pending = true;
+            return;
+        }
+        const paths = self.allocator.alloc([]u8, self.keybindings_paths.len) catch return;
+        var initialized: usize = 0;
+        for (self.keybindings_paths, 0..) |path, index| {
+            paths[index] = self.allocator.dupe(u8, path) catch {
+                for (paths[0..initialized]) |owned| self.allocator.free(owned);
+                self.allocator.free(paths);
+                return;
+            };
+            initialized += 1;
+        }
+        const job = self.allocator.create(KeybindingsJob) catch {
+            for (paths) |path| self.allocator.free(path);
+            self.allocator.free(paths);
+            return;
+        };
+        job.* = .{
+            .allocator = self.allocator,
+            .io = self.async_io,
+            .future = undefined,
+            .paths = paths,
+        };
+        job.future = self.async_io.async(runKeybindingsJob, .{job});
+        self.keybindings_job = job;
+    }
+
+    fn pollKeybindingsJob(self: *Workbench) bool {
+        const job = self.keybindings_job orelse return false;
+        if (!job.done.load(.acquire)) return false;
+        const result = job.future.await(self.async_io);
+        self.keybindings_job = null;
+        switch (result) {
+            .bindings => |bindings| {
+                self.disposeKeybindingServices();
+                self.user_keybindings = bindings;
+                self.applyKeybindingConsumers();
+            },
+            .err => {},
+        }
+        job.deinit(self.allocator);
+        if (self.keybindings_reload_pending) {
+            self.keybindings_reload_pending = false;
+            self.requestKeybindingsReload();
+        }
+        return true;
+    }
+
+    fn cancelKeybindingsJob(self: *Workbench) void {
+        self.keybindings_reload_pending = false;
+        const job = self.keybindings_job orelse return;
+        self.keybindings_job = null;
+        const result = job.future.cancel(job.io);
+        if (result == .bindings) {
+            result.bindings.deinit();
+        }
+        job.deinit(self.allocator);
     }
 
     fn ensureThemeService(self: *Workbench) !*theme_service_mod.ThemeService {
@@ -5681,6 +5943,136 @@ pub const Workbench = struct {
             loaded = service.activateSettingsId(theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK) catch false;
         }
         if (!loaded) loaded = service.activateSettingsId("vs-dark") catch false;
+
+        self.finishThemeApply(loaded);
+    }
+
+    /// Watcher-triggered variant: resolves the same candidate sequence as
+    /// `applyThemeSettings`, loads the selected theme on the async Io and
+    /// installs it from `pollThemeJob`. Mirrors upstream's asynchronous
+    /// `workbenchThemeService` reload.
+    pub fn applyThemeSettingsAsync(self: *Workbench) void {
+        self.ensureConfiguration() catch {};
+        const configuration = self.configuration orelse return;
+        const service = self.ensureThemeService() catch return;
+
+        self.cancelThemeJob();
+        const theme_configuration = theme_configuration_mod.ThemeConfiguration.init(
+            configuration.interface(),
+            self.theme_scheme_host.interface(),
+        );
+        const requested = theme_configuration.getColorTheme() orelse
+            theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK;
+        const values = [_][]const u8{
+            requested,
+            theme_service_mod.ThemeSettingDefaults.COLOR_THEME_DARK,
+            "vs-dark",
+        };
+        var count: usize = 0;
+        for (values) |value| {
+            const id = service.findThemeSettingsId(value) orelse continue;
+            if (count >= self.theme_candidates.len) break;
+            var duplicate = false;
+            for (self.theme_candidates[0..count]) |existing| {
+                if (existing) |candidate| {
+                    if (std.mem.eql(u8, candidate, id)) duplicate = true;
+                }
+            }
+            if (duplicate) continue;
+            const copy = self.allocator.dupe(u8, id) catch continue;
+            self.theme_candidates[count] = copy;
+            count += 1;
+        }
+        self.theme_candidate_index = 0;
+        self.startThemeCandidate();
+    }
+
+    fn startThemeCandidate(self: *Workbench) void {
+        const service = self.theme_service orelse return;
+        while (self.theme_candidate_index < self.theme_candidates.len) {
+            const maybe_id = self.theme_candidates[self.theme_candidate_index];
+            self.theme_candidate_index += 1;
+            const id = maybe_id orelse continue;
+            var request = theme_service_mod.ThemeService.PrepareRequest.init(service, id, self.allocator) catch continue;
+            const job = self.allocator.create(ThemeLoadJob) catch {
+                request.deinit();
+                continue;
+            };
+            job.* = .{
+                .allocator = self.allocator,
+                .io = self.async_io,
+                .service = service,
+                .future = undefined,
+                .request = request,
+            };
+            job.future = self.async_io.async(runThemeLoadJob, .{job});
+            self.theme_job = job;
+            return;
+        }
+        self.freeThemeCandidates();
+        self.finishThemeApply(false);
+    }
+
+    /// Drains a completed theme load and installs it on the TUI thread.
+    fn pollThemeJob(self: *Workbench) bool {
+        const job = self.theme_job orelse return false;
+        if (!job.done.load(.acquire)) return false;
+        const result = job.future.await(self.async_io);
+        self.theme_job = null;
+        const service = self.theme_service orelse return false;
+        switch (result) {
+            .theme => |theme_value| {
+                var theme = theme_value;
+                var applied = true;
+                service.applyPreparedTheme(job.request.id, theme) catch {
+                    applied = false;
+                    theme.deinit();
+                };
+                job.request.deinit();
+                self.allocator.destroy(job);
+                self.freeThemeCandidates();
+                self.finishThemeApply(applied);
+                return true;
+            },
+            .err => {
+                job.request.deinit();
+                self.allocator.destroy(job);
+                self.startThemeCandidate();
+                return true;
+            },
+        }
+    }
+
+    fn cancelThemeJob(self: *Workbench) void {
+        if (self.theme_job) |job| {
+            self.theme_job = null;
+            const result = job.future.cancel(job.io);
+            switch (result) {
+                .theme => |theme_value| {
+                    var theme = theme_value;
+                    theme.deinit();
+                },
+                .err => {},
+            }
+            job.request.deinit();
+            self.allocator.destroy(job);
+        }
+        self.freeThemeCandidates();
+        self.theme_candidate_index = 0;
+    }
+
+    fn freeThemeCandidates(self: *Workbench) void {
+        for (&self.theme_candidates) |*maybe_id| {
+            if (maybe_id.*) |id| {
+                self.allocator.free(id);
+                maybe_id.* = null;
+            }
+        }
+    }
+
+    fn finishThemeApply(self: *Workbench, loaded: bool) void {
+        const configuration = self.configuration orelse return;
+        const service = self.theme_service orelse return;
 
         service.applyColorCustomizations(
             self.allocator,
@@ -11406,6 +11798,11 @@ test "Workbench: external file changes reload clean editors only" {
 
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "after" });
     workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
+    var reload_guard: usize = 0;
+    while (!workbench.pollReloadJobs() and reload_guard < 2000) : (reload_guard += 1) {
+        std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(reload_guard < 2000);
     var reloaded = try tab.editor.model.getValue(.TextDefined, true);
     defer reloaded.deinit();
     try std.testing.expectEqualStrings("after", reloaded.items);

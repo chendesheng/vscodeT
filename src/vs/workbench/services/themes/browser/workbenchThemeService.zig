@@ -4,8 +4,14 @@
 // Terminal adaptations: themes are registered explicitly (no extension point),
 // there are no file/product icon themes and no configuration watcher; the
 // active color theme is persisted by id in the storage service.
+//
+// Async terminal adaptation: `prepareTheme` reads/parses a theme and its
+// `include` chain on a worker Io; `applyPreparedTheme` swaps the active theme,
+// persists the id and fires `onDidColorThemeChange` on the TUI thread. The
+// synchronous `activate` path remains for startup and tests.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const color_utils = @import("../../../../platform/theme/common/colorUtils.zig");
 const theme_service = @import("../../../../platform/theme/common/themeService.zig");
@@ -46,12 +52,13 @@ pub fn colorSchemeForUiTheme(ui_theme: []const u8) ColorScheme {
 /// built-in theme root.
 const FileResourceReader = struct {
     root: []const u8,
+    io: Io,
     arena: std.heap.ArenaAllocator,
 
     fn read(context: *anyopaque, path: []const u8) anyerror![]const u8 {
         const self: *FileResourceReader = @ptrCast(@alignCast(context));
         const full_path = try std.fs.path.join(self.arena.allocator(), &.{ self.root, path });
-        return std.Io.Dir.cwd().readFileAlloc(time_compat.io, full_path, self.arena.allocator(), .unlimited);
+        return std.Io.Dir.cwd().readFileAlloc(self.io, full_path, self.arena.allocator(), .unlimited);
     }
 
     fn interface(self: *FileResourceReader) ResourceReader {
@@ -172,6 +179,7 @@ pub const ThemeService = struct {
             const root = entry.root orelse return error.MissingThemeRoot;
             var reader = FileResourceReader{
                 .root = root,
+                .io = time_compat.io,
                 .arena = std.heap.ArenaAllocator.init(self.allocator),
             };
             defer reader.arena.deinit();
@@ -181,6 +189,87 @@ pub const ThemeService = struct {
         self.active.deinit();
         self.active = theme;
         try self.applyThemeId(id);
+    }
+
+    /// Copied registration data for a worker-thread theme load. The request
+    /// owns its strings and can outlive the caller's stack frame.
+    pub const PrepareRequest = struct {
+        allocator: Allocator,
+        id: []u8,
+        label: []u8,
+        theme_type: ColorScheme,
+        root: ?[]u8,
+        path: ?[]u8,
+
+        pub fn init(self: *ThemeService, id: []const u8, allocator: Allocator) !PrepareRequest {
+            const entry = self.themes.get(id) orelse return error.UnknownTheme;
+            const id_copy = try allocator.dupe(u8, id);
+            errdefer allocator.free(id_copy);
+            const label_copy = try allocator.dupe(u8, entry.label);
+            errdefer allocator.free(label_copy);
+            const root_copy = if (entry.root) |root| try allocator.dupe(u8, root) else null;
+            errdefer if (root_copy) |root| allocator.free(root);
+            const path_copy = if (entry.path) |path| try allocator.dupe(u8, path) else null;
+            return .{
+                .allocator = allocator,
+                .id = id_copy,
+                .label = label_copy,
+                .theme_type = entry.theme_type,
+                .root = root_copy,
+                .path = path_copy,
+            };
+        }
+
+        pub fn deinit(self: *PrepareRequest) void {
+            if (self.path) |path| self.allocator.free(path);
+            if (self.root) |root| self.allocator.free(root);
+            self.allocator.free(self.label);
+            self.allocator.free(self.id);
+            self.* = undefined;
+        }
+    };
+
+    /// Loads a theme (including its `include` chain) on the supplied Io. This
+    /// mirrors upstream's asynchronous theme-data creation: parsing and file
+    /// reads happen off the TUI thread, while `applyPreparedTheme` swaps the
+    /// active theme and fires `onDidColorThemeChange` on the event loop.
+    pub fn prepareTheme(
+        allocator: Allocator,
+        colors: *color_utils.ColorRegistry,
+        request: *const PrepareRequest,
+        io: Io,
+    ) !*ColorThemeData {
+        const theme = try ColorThemeData.createUnloadedTheme(allocator, colors, request.id, &.{});
+        errdefer theme.deinit();
+        theme.theme_type = request.theme_type;
+        theme.label = try theme.arena.allocator().dupe(u8, request.label);
+        if (request.path) |location| {
+            theme.location = try theme.arena.allocator().dupe(u8, location);
+            const root = request.root orelse return error.MissingThemeRoot;
+            var reader = FileResourceReader{
+                .root = root,
+                .io = io,
+                .arena = std.heap.ArenaAllocator.init(allocator),
+            };
+            defer reader.arena.deinit();
+            try theme.ensureLoaded(reader.interface());
+        }
+        return theme;
+    }
+
+    /// Installs a theme produced by `prepareTheme` on the TUI thread. Only the
+    /// id allocation can fail; once the active theme is swapped, storage and
+    /// the change event are non-fatal (like upstream's fire-and-forget event).
+    pub fn applyPreparedTheme(self: *ThemeService, id: []const u8, theme: *ColorThemeData) !void {
+        const id_copy = try self.allocator.dupe(u8, id);
+        self.allocator.free(self.active_id);
+        self.active_id = id_copy;
+        self.active.deinit();
+        self.active = theme;
+        if (self.storage) |service| {
+            service.store(STORAGE_KEY, .{ .string = id }, .profile, .user) catch {};
+        }
+        self.onDidColorThemeChange.fire({}) catch {};
     }
 
     /// Applies the configured theme value. Returns false when the value is not

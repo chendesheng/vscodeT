@@ -290,6 +290,19 @@ pub const LoadedText = struct {
     }
 };
 
+/// Content read from disk for an external-change reload. `text` is owned by
+/// the reader until `Editor.applyReloadedContent` returns; the job pattern in
+/// `Workbench` reads/decodes on the async Io and applies on the TUI thread.
+pub const ReloadedContent = struct {
+    text: []u8,
+    encoding: encoding_mod.Encoding,
+
+    pub fn deinit(self: *ReloadedContent, allocator: Allocator) void {
+        allocator.free(self.text);
+        self.* = undefined;
+    }
+};
+
 pub const Editor = struct {
     allocator: Allocator,
     io: Io,
@@ -4180,36 +4193,49 @@ pub const Editor = struct {
         try self.executeCommands(&[_]?ICommand{command.interface()});
     }
 
-    /// Reloads the editor content from disk (used for external file changes).
-    /// The cursor moves to the start; the reload itself is not undoable in the
-    /// terminal editor because no working-copy model tracks the old state.
-    pub fn reloadFromDisk(self: *Editor) !void {
-        if (self.read_only) return error.ReadOnly;
-        const bytes = try Io.Dir.cwd().readFileAlloc(self.io, self.path, self.allocator, .unlimited);
-        defer self.allocator.free(bytes);
+    /// Reads and decodes a file for an external-change reload. Runs on a worker
+    /// thread; does not touch the editor/model.
+    pub fn readReloadedContent(allocator: Allocator, io: Io, path: []const u8) !ReloadedContent {
+        const bytes = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
+        defer allocator.free(bytes);
         const encoding = if (encoding_mod.detectBOM(bytes)) |bom| bom.encoding else .utf8;
-        const decoded = try encoding_mod.decode(self.allocator, bytes, encoding);
-        defer self.allocator.free(decoded);
-        self.encoding = encoding;
+        const decoded = try encoding_mod.decode(allocator, bytes, encoding);
+        return .{ .text = decoded, .encoding = encoding };
+    }
+
+    /// Applies a reloaded file on the TUI thread. Replacement starts a new edit
+    /// history, like VS Code's `_setValueFromTextBuffer` clearing the command
+    /// manager; the caller keeps ownership of `content.text`.
+    pub fn applyReloadedContent(self: *Editor, content: *const ReloadedContent) !void {
+        if (self.read_only) return error.ReadOnly;
+        self.encoding = content.encoding;
 
         var current = try self.model.getValue(.TextDefined, true);
         defer current.deinit();
-        if (std.mem.eql(u8, current.items, decoded)) return;
+        if (std.mem.eql(u8, current.items, content.text)) return;
 
         const last_line = self.model.getLineCount();
         const last_column = self.model.getLineMaxColumn(last_line);
         var operations = [_]IdentifiedSingleEditOperation{.init(
             Range.init(1, 1, last_line, last_column),
-            if (decoded.len == 0) null else String.initBorrowed(decoded),
+            if (content.text.len == 0) null else String.initBorrowed(content.text),
         )};
         _ = try self.model.applyEdits(&operations, false);
-        // Replacing the whole buffer starts a new edit history, like VS Code's
-        // `_setValueFromTextBuffer` calling `_commandManager.clear()`.
         self.model.clearUndoRedo();
         self.saved_version = self.model.getAlternativeVersionId();
         self.clearConflict();
         self.refreshDirtyState();
         try self.setCursorPosition(Position.init(1, 1));
+    }
+
+    /// Reloads the editor content from disk (used for external file changes).
+    /// Synchronous wrapper for tests/commands; the watcher path uses
+    /// `readReloadedContent` on the async Io and `applyReloadedContent` here.
+    pub fn reloadFromDisk(self: *Editor) !void {
+        if (self.read_only) return error.ReadOnly;
+        var content = try readReloadedContent(self.allocator, self.io, self.path);
+        defer content.deinit(self.allocator);
+        try self.applyReloadedContent(&content);
     }
 
     /// Marks an external-change conflict (the file changed while dirty).

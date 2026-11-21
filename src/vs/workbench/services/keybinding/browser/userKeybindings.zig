@@ -6,6 +6,10 @@
 // paths (VS Code profile first, TUI override last) and rebuilds the items when
 // the settings watcher reports a change.
 //
+// `Workbench` loads this object on the async Io for watcher-triggered reloads
+// and installs the parsed items on the TUI thread; the synchronous path is
+// kept for startup.
+//
 // Parsed items are `ResolvedKeybindingItem`s with `isDefault = false`:
 // - non-removal entries become user bindings (resolved against the terminal's
 //   Ctrl-only key map, exactly like the default rules);

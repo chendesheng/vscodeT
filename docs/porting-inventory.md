@@ -1211,8 +1211,10 @@ preview loads and remote Markdown image fetches run through a workbench-owned
 `std.Io.Threaded` and `Io.async` (results applied on the TUI poll tick), and the
 terminal request service (`base/parts/request/common/request.zig`,
 `platform/request/node/requestService.zig`) ports the `std.http` network path;
-heuristic charset guessing is a documented terminal
-omission; clean editors
+watcher-triggered settings/keybindings/color-theme reloads and clean-editor
+external-change reloads split file reads onto the same async Io and apply their
+models/content on the TUI poll tick; heuristic charset guessing is a documented
+terminal omission; clean editors
 now reload on external changes
 (`Workbench.handleFileChanges` → `Editor.reloadFromDisk`), with dirty editors
 preserved and marked as conflicted (status message, cleared by save/reload or the `workbench.action.files.revert` command); the workbench now

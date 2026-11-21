@@ -50,11 +50,14 @@ required for the measurements below.
   results on the TUI thread and clamps the input timeout while a short read is
   pending. Background workers (search, watcher, JSON server, extension host)
   keep their own threads, matching upstream's worker model. The synchronous
-  `openPath` remains for startup/session restore and tests. Settings/theme
-  reloads and clean-editor external-change reloads triggered by the watcher
-  still read synchronously on the poll tick; converting those services is a
-  follow-up. Mouse-click preview opens and extension-host `openPath` calls also
-  still use the synchronous path.
+  `openPath` remains for startup/session restore and tests. Watcher-triggered
+  settings, user-keybindings, color-theme and clean-editor external-change
+  reloads also read their files on the async Io: configuration sources,
+  keybindings, theme files and editor contents are prepared on a worker and
+  installed on the TUI poll tick, matching upstream's asynchronous
+  configuration/theme/text-file reload flows. Startup scans and mouse-click
+  preview opens plus extension-host `openPath` calls still use the synchronous
+  path.
 - Opening a file performs one view rebuild and one full wrapping pass. The
   workbench reserves the overview-ruler/scrollbar columns before that pass, and
   a path that is already open reuses its existing tab/editor instead of

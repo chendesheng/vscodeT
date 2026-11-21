@@ -1431,6 +1431,17 @@ services/panes that own the results are freed. Background workers (search,
 watcher JSON server, extension host) continue to use dedicated threads, which
 is the terminal counterpart of upstream's worker processes.
 
+Watcher-triggered reloads use the same model. `SettingsWatcher` reads the raw
+user/workspace/folder settings sources on the async Io and applies/merges them
+with `ConfigurationService.applySources` on the TUI thread before invoking the
+reload callback. `Workbench.onSettingsReloaded` then starts asynchronous
+user-keybindings and color-theme loads: `UserKeybindings.load` runs on the
+worker, and `ThemeService.prepareTheme` reads the theme plus its `include`
+chain into a detached `ColorThemeData` that `applyPreparedTheme` installs on the
+event loop. Clean-editor external changes use `Editor.readReloadedContent` on
+the worker and `applyReloadedContent` on the poll tick; the tab is resolved by
+path again at completion, so closing it during the read is safe.
+
 Known boundaries: provider methods remain synchronous and are only called from
 the TUI thread today; save/close/quit keeps a synchronous write pipeline;
 startup workspace/theme/extension scans happen before the first frame. These
