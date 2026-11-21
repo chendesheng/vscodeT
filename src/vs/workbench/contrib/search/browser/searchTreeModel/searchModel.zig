@@ -26,6 +26,7 @@ pub const SearchModel = struct {
     replace_active: bool = false,
     preserve_case: bool = false,
     current_limit_hit: bool = false,
+    pending_message: ?@import("../../../../services/search/common/search.zig").SearchMessage = null,
     on_replace_term_changed: Emitter(void),
 
     pub fn init(allocator: Allocator, service: ISearchService) !*SearchModel {
@@ -45,6 +46,7 @@ pub const SearchModel = struct {
         _ = self.cancelSearch();
         if (self.query) |*query| query.deinit();
         if (self.replace_pattern) |*pattern| pattern.deinit();
+        if (self.pending_message) |message| self.allocator.free(message.text);
         self.result.deinit();
         self.on_replace_term_changed.deinit();
         self.allocator.free(self.replace_string);
@@ -103,6 +105,8 @@ pub const SearchModel = struct {
         self.query = query;
         self.result.setQuery(&self.query.?);
         self.current_limit_hit = false;
+        if (self.pending_message) |message| self.allocator.free(message.text);
+        self.pending_message = null;
         self.rebuildReplacePattern();
         self.current_job = self.service.start_text_search(
             self.service.context,
@@ -123,16 +127,32 @@ pub const SearchModel = struct {
         defer {
             for (step.results) |*file| file.deinit();
             self.allocator.free(step.results);
+            for (step.messages) |message| self.allocator.free(message.text);
+            if (step.messages.len > 0) self.allocator.free(step.messages);
         }
         if (step.results.len > 0) {
             try self.result.add(step.results, false);
         }
-        if (step.done) {
+        var failed = false;
+        for (step.messages, 0..) |message, index| {
+            if (self.pending_message) |old| self.allocator.free(old.text);
+            self.pending_message = null;
+            if (index == 0) {
+                self.pending_message = message;
+            } else {
+                self.allocator.free(message.text);
+            }
+            if (message.kind == .err) failed = true;
+        }
+        if (failed) {
+            job.cancel(job.context);
+        }
+        if (step.done or failed) {
             self.current_limit_hit = step.limit_hit;
             job.deinit(job.context);
             self.current_job = null;
         }
-        return step.results.len > 0 or step.done;
+        return step.results.len > 0 or step.done or failed;
     }
 
     pub fn isSearching(self: *const SearchModel) bool {
@@ -141,6 +161,13 @@ pub const SearchModel = struct {
 
     pub fn limitHit(self: *const SearchModel) bool {
         return self.current_limit_hit;
+    }
+
+    /// Transfers the latest runtime message to the view.
+    pub fn takeMessage(self: *SearchModel) ?@import("../../../../services/search/common/search.zig").SearchMessage {
+        const message = self.pending_message;
+        self.pending_message = null;
+        return message;
     }
 
     pub fn cancelSearch(self: *SearchModel) bool {
@@ -155,6 +182,8 @@ pub const SearchModel = struct {
 
     pub fn clear(self: *SearchModel) void {
         _ = self.cancelSearch();
+        if (self.pending_message) |message| self.allocator.free(message.text);
+        self.pending_message = null;
         self.result.clear();
         if (self.query) |*query| {
             self.result.setQuery(null);

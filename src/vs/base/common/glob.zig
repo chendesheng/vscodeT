@@ -581,6 +581,25 @@ pub const GlobList = struct {
         return false;
     }
 
+    /// Whether the last matching rule for `relative_path` is negated. Used by
+    /// exclude filters to keep a `!` exception from being overridden by an
+    /// excluded parent directory.
+    pub fn matchesNegated(self: *const GlobList, relative_path: []const u8) bool {
+        const path = normalizePath(relative_path);
+        var matched = false;
+        var negated = false;
+        for (self.rules.items) |rule| {
+            for (rule.patterns) |pattern| {
+                if (pattern.matches(path)) {
+                    matched = true;
+                    negated = rule.negated;
+                    break;
+                }
+            }
+        }
+        return matched and negated;
+    }
+
     /// Returns whether `relative_path` matches the expression. An empty
     /// expression matches nothing.
     pub fn matches(self: *const GlobList, relative_path: []const u8) bool {

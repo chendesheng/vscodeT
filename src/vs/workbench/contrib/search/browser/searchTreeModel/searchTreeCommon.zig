@@ -263,6 +263,7 @@ pub const FileMatch = struct {
     parent_folder: *FolderMatch,
     matches_list: std.array_list.Managed(*Match),
     match_map: std.StringHashMap(*Match),
+    contexts: std.AutoHashMap(usize, []u8),
     selected: ?*Match = null,
     on_change: Emitter(ChangeEvent),
     on_dispose: Emitter(void),
@@ -284,6 +285,7 @@ pub const FileMatch = struct {
             .parent_folder = parent_folder,
             .matches_list = std.array_list.Managed(*Match).init(allocator),
             .match_map = std.StringHashMap(*Match).init(allocator),
+            .contexts = std.AutoHashMap(usize, []u8).init(allocator),
             .on_change = Emitter(ChangeEvent).init(allocator),
             .on_dispose = Emitter(void).init(allocator),
         };
@@ -295,6 +297,9 @@ pub const FileMatch = struct {
         for (self.matches_list.items) |match| match.deinit();
         self.matches_list.deinit();
         self.match_map.deinit();
+        var context_iterator = self.contexts.valueIterator();
+        while (context_iterator.next()) |value| self.allocator.free(value.*);
+        self.contexts.deinit();
         self.on_change.deinit();
         self.on_dispose.deinit();
         self.allocator.free(self.path);
@@ -316,6 +321,20 @@ pub const FileMatch = struct {
                 try self.add(match, false);
             }
         }
+    }
+
+    pub fn addContexts(self: *FileMatch, contexts: []const search.TextSearchContext) !void {
+        for (contexts) |context| {
+            const copy = try self.allocator.dupe(u8, context.text);
+            errdefer self.allocator.free(copy);
+            const result = try self.contexts.getOrPut(context.line_number);
+            if (result.found_existing) self.allocator.free(result.value_ptr.*);
+            result.value_ptr.* = copy;
+        }
+    }
+
+    pub fn contextForLine(self: *const FileMatch, line_number: usize) ?[]const u8 {
+        return self.contexts.get(line_number);
     }
 
     pub fn add(self: *FileMatch, match: *Match, trigger: bool) !void {
@@ -495,9 +514,16 @@ pub const FolderMatch = struct {
         return null;
     }
 
-    pub fn addFileMatch(self: *FolderMatch, path: []const u8, results: []const TextSearchMatch, silent: bool) !void {
+    pub fn addFileMatch(
+        self: *FolderMatch,
+        path: []const u8,
+        results: []const TextSearchMatch,
+        contexts: []const search.TextSearchContext,
+        silent: bool,
+    ) !void {
         if (self.getDownstreamFileMatch(path)) |existing| {
             try existing.createMatches(results);
+            try existing.addContexts(contexts);
             if (!silent) existing.notify(true, false);
             return;
         }
@@ -517,7 +543,7 @@ pub const FolderMatch = struct {
                         built = next_path;
                         current = try current.createIntermediate(built);
                     }
-                    return current.addFileMatch(path, results, silent);
+                    return current.addFileMatch(path, results, contexts, silent);
                 }
             }
         }
@@ -528,6 +554,7 @@ pub const FolderMatch = struct {
         const file = try FileMatch.create(self.allocator, path, self);
         errdefer file.deinit();
         try file.createMatches(results);
+        try file.addContexts(contexts);
         try self.addFile(file);
         if (!silent and file.count() > 0) file.notify(true, false);
     }
@@ -742,7 +769,7 @@ pub const TextSearchHeading = struct {
     pub fn add(self: *TextSearchHeading, files: []const search.SearchFileResult, silent: bool) !void {
         for (files) |file| {
             const folder = self.getFolderMatch(file.resource) orelse continue;
-            try folder.addFileMatch(file.resource, file.results, silent);
+            try folder.addFileMatch(file.resource, file.results, file.contexts, silent);
         }
         self.notifyChange(.{ .elements = &.{}, .added = true });
     }

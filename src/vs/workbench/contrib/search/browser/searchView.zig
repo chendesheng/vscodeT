@@ -332,7 +332,7 @@ pub const SearchView = struct {
         self.model.setReplaceString(self.widget.value(self.widget.context, .replace)) catch {};
         self.model.setPreserveCase(self.widget.option(self.widget.context, .preserve_case));
         const accepted = self.model.search(query) catch |err| {
-            self.setSingleMessage(@errorName(err), .err);
+            self.setSingleMessage(searchErrorMessage(err), .err);
             self.viewer.refreshView();
             return;
         };
@@ -354,6 +354,14 @@ pub const SearchView = struct {
 
     /// Advances the incremental job and timers. Returns true when the TUI
     /// should repaint.
+    fn searchErrorMessage(err: anyerror) []const u8 {
+        return switch (err) {
+            error.InvalidSearchPattern => "Invalid regular expression",
+            error.InvalidSearchQuery => "Invalid search query",
+            else => @errorName(err),
+        };
+    }
+
     pub fn tick(self: *SearchView, now: i64) !bool {
         var changed = false;
         if (self.debounce_at) |deadline| {
@@ -369,7 +377,7 @@ pub const SearchView = struct {
             if (now >= deadline) {
                 self.refresh_at = null;
                 self.triggerQueryChange(true, false) catch |err| {
-                    self.setSingleMessage(@errorName(err), .err);
+                    self.setSingleMessage(searchErrorMessage(err), .err);
                 };
                 changed = true;
             }
@@ -386,7 +394,7 @@ pub const SearchView = struct {
             const was_searching = true;
             const step_changed = self.model.poll(16) catch |err| blk: {
                 _ = self.model.cancelSearch();
-                self.setSingleMessage(@errorName(err), .err);
+                self.setSingleMessage(searchErrorMessage(err), .err);
                 break :blk true;
             };
             if (step_changed) {
@@ -398,6 +406,15 @@ pub const SearchView = struct {
                 self.state = .idle;
                 self.search_started_at = null;
                 self.finalizeSearch();
+                changed = true;
+            }
+            if (self.model.takeMessage()) |message| {
+                const kind: MessageKind = switch (message.kind) {
+                    .info => .info,
+                    .warning => .warning,
+                    .err => .err,
+                };
+                self.setOwnedMessage(message.text, kind);
                 changed = true;
             }
         }

@@ -2021,6 +2021,7 @@ pub const Workbench = struct {
             .context = self,
             .read = searchReadFile,
             .extra_files = searchExtraFiles,
+            .open_files = searchOpenFiles,
             .free_paths = searchFreePaths,
         });
         const view = try SearchView.init(
@@ -7851,6 +7852,28 @@ fn searchReadFile(context: *anyopaque, allocator: Allocator, path: []const u8) a
     }
     _ = allocator;
     return null;
+}
+
+fn searchOpenFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    var paths = std.array_list.Managed([]u8).init(allocator);
+    errdefer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit();
+    }
+    for (self.part.group_views.items) |pane| {
+        for (pane.tabs.items) |tab| {
+            var duplicate = false;
+            for (paths.items) |existing| {
+                if (std.mem.eql(u8, existing, tab.editor.path)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) try paths.append(try allocator.dupe(u8, tab.editor.path));
+        }
+    }
+    return try paths.toOwnedSlice();
 }
 
 fn searchExtraFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
