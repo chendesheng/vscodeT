@@ -1117,6 +1117,8 @@ pub const Workbench = struct {
         self.history_navigating = false;
         self.history_tab = null;
         self.history_selection_listener = null;
+        self.history_content_listener = null;
+        self.in_closed_batch = false;
         self.history = HistoryService.init(self.allocator);
         errdefer self.history.deinit();
 
