@@ -18,7 +18,8 @@
 //!   when the terminal supports cell borders, and the active tab's background
 //!   and bold text otherwise.
 //! - Tab hover, `tab.border` and `tab.lastPinnedBorder` are painted from the
-//!   theme; right-click does not close or activate a tab.
+//!   theme; right-click opens the terminal context menu instead of closing or
+//!   activating a tab.
 //! - Tab action space is always reserved (`tabActionReserveSpace`), but only
 //!   the active/hovered tab and the dirty dot paint a glyph. Clicking the dot
 //!   or the close glyph closes the tab.
