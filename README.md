@@ -295,7 +295,7 @@ pairs and off-side folding even when the built-in grammar was already bundled.
 
 JSON and JSONC editors use the bundled VS Code JSON language server when
 `host/dist/jsonServer.mjs` is present. Syntax diagnostics are pulled after
-edits and shown in the `Problems` side-panel view and status-bar counts; `Ctrl-Space` completion
+edits and shown in the `Problems` panel view and status-bar counts; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
 bundled grammar and reports no diagnostics. Hover, formatting and document
 symbols are forwarded to the same server, and the `json.schemas` setting is
@@ -335,7 +335,7 @@ language-feature bridge: hover, completion, definition, declaration,
 implementation, type definition, references, document symbols, code actions and
 document/range/on-type formatting register in `LanguageFeaturesService`, and
 diagnostics feed the marker service, which paints squiggly underlines,
-overview-ruler marks, the `Problems` side-panel view and the workspace
+overview-ruler marks, the `Problems` panel view and the workspace
 error/warning/info status counts. Selecting a problem highlights its code range
 in the editor while the Problems view owns focus. Hover, completion, the
 navigation actions, breadcrumb symbols and document formatting are wired to the
@@ -602,15 +602,25 @@ console API for raw mode, sizing and input polling.
   terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
   also supports view and global badges. It
-  switches between
-  Explorer, Search, Source Control, Problems and Settings containers; Explorer
-  is wired to the file tree, Search to the workspace text-search panel, Source
-  Control to the git SCM view, Problems to the diagnostics list, and Settings
-  remains a placeholder. `Alt-1..5` switches containers while the side panel
-  has focus; `Ctrl-Shift-M` toggles Problems.
+  switches between Explorer, Search, Source Control and Settings containers;
+  Explorer is wired to the file tree, Search to the workspace text-search
+  panel, Source Control to the git SCM view, and Settings remains a
+  placeholder. `Alt-1..4` switches containers while the side panel has focus.
   The model owns order, visibility, the active container and compact width.
-  There is still no registered view-container contribution registry, live
-  Explorer/Search file-change integration, context menu or drag-and-drop.
+  Containers are registered in the ported view-container registry
+  (`src/vs/workbench/common/views.zig`), but there is still no extension
+  contribution point, live Explorer/Search file-change integration, context
+  menu or drag-and-drop.
+- The bottom panel is a ported pane-composite part
+  (`src/vs/workbench/browser/parts/panel/panelPart.zig`) with a one-row
+  composite bar. Problems and Terminal are registered at the upstream
+  `ViewContainerLocation.Panel` (`markers.contribution.ts` order 0,
+  `terminal.contribution.ts` order 3), so Problems opens as a panel tab next
+  to the terminal, not as a side-bar view. `Ctrl-J` toggles the panel,
+  `Ctrl-Shift-M` opens/focuses Problems and `Alt-Shift-T` toggles the
+  terminal container. `hideIfEmpty` containers keep their tab while active and
+  drop it again once empty. Panel position (top/left/right), floating panels,
+  alignment, maximize and the overflow switcher are not ported.
 - Source Control is a read-only Git/SCM port. `src/tui/gitCli.zig` implements
   the ported `IGitExtensionDelegate` over the Git command line (argv, never a
   shell; explicit cwd; bounded stdout/stderr; per-command deadline), and

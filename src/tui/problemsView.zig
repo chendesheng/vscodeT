@@ -3,6 +3,10 @@
 // `CellGrid`. The portable row/selection state lives in
 // `src/vs/workbench/contrib/markers/browser/markersView.zig`.
 //
+// Upstream hosts this view inside the panel container, whose title already
+// names the view and carries the counts, so `RenderOptions.show_header` lets
+// the workbench skip the standalone "PROBLEMS" header row and divider.
+//
 // Terminal adaptation: there is no filter widget, tree/table toggle, context
 // menu, quick-fix light bulb, related-information children or file decoration
 // service. The view is a flat list of file group rows and marker rows; moving
@@ -167,7 +171,14 @@ pub const ProblemsView = struct {
         return null;
     }
 
-    pub fn render(self: *ProblemsView, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
+    pub const RenderOptions = struct {
+        /// The panel title carries the view name and counts, so the embedded
+        /// view starts directly with the list. Standalone callers keep the
+        /// upstream-shaped "PROBLEMS" header row and divider.
+        show_header: bool = true,
+    };
+
+    pub fn render(self: *ProblemsView, grid: *ui.CellGrid, rect: ui.Rect, focused: bool, options: RenderOptions) !void {
         const x = ui.cell.snap(rect.x);
         const y = ui.cell.snap(rect.y);
         const width = ui.cell.snap(rect.w);
@@ -180,44 +191,47 @@ pub const ProblemsView = struct {
         };
         grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), background);
 
-        const header_style = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
-            .attrs = if (focused) ui.cell.Attr.bold else 0,
-        };
-        drawText(grid, x + 1, y, width -| 2, "PROBLEMS", header_style);
-
-        var count_buf: [64]u8 = undefined;
-        var count_len: usize = 0;
-        const base_counts = std.fmt.bufPrint(&count_buf, "\u{2716} {d}  \u{26A0} {d}", .{
-            self.view.counts.errors,
-            self.view.counts.warnings,
-        }) catch "";
-        count_len = base_counts.len;
-        if (self.view.counts.infos > 0) {
-            const info = std.fmt.bufPrint(count_buf[count_len..], "  \u{2139} {d}", .{self.view.counts.infos}) catch "";
-            count_len += info.len;
-        }
-        const counts = count_buf[0..count_len];
-        if (counts.len > 0 and width > counts.len + 1) {
-            const count_style = ui.cell.PaintStyle{
-                .fg = ui.cell.packColor(.{ .r = 170, .g = 170, .b = 170 }),
-                .bg = background.bg,
+        const header_rows: usize = if (options.show_header) 2 else 0;
+        if (options.show_header) {
+            const header_style = ui.cell.PaintStyle{
+                .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
+                .attrs = if (focused) ui.cell.Attr.bold else 0,
             };
-            drawText(grid, x + width -| counts.len -| 1, y, counts.len, counts, count_style);
-        }
+            drawText(grid, x + 1, y, width -| 2, "PROBLEMS", header_style);
 
-        if (height > 1) {
-            const divider_style = ui.cell.PaintStyle{
-                .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
-            };
-            var divider: usize = 0;
-            while (divider < width) : (divider += 1) {
-                grid.putCodepoint(x + divider, y + 1, '\u{2500}', 1, divider_style);
+            var count_buf: [64]u8 = undefined;
+            var count_len: usize = 0;
+            const base_counts = std.fmt.bufPrint(&count_buf, "\u{2716} {d}  \u{26A0} {d}", .{
+                self.view.counts.errors,
+                self.view.counts.warnings,
+            }) catch "";
+            count_len = base_counts.len;
+            if (self.view.counts.infos > 0) {
+                const info = std.fmt.bufPrint(count_buf[count_len..], "  \u{2139} {d}", .{self.view.counts.infos}) catch "";
+                count_len += info.len;
+            }
+            const counts = count_buf[0..count_len];
+            if (counts.len > 0 and width > counts.len + 1) {
+                const count_style = ui.cell.PaintStyle{
+                    .fg = ui.cell.packColor(.{ .r = 170, .g = 170, .b = 170 }),
+                    .bg = background.bg,
+                };
+                drawText(grid, x + width -| counts.len -| 1, y, counts.len, counts, count_style);
+            }
+
+            if (height > 1) {
+                const divider_style = ui.cell.PaintStyle{
+                    .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
+                };
+                var divider: usize = 0;
+                while (divider < width) : (divider += 1) {
+                    grid.putCodepoint(x + divider, y + 1, '\u{2500}', 1, divider_style);
+                }
             }
         }
 
-        const list_top = y + 2;
-        const list_height = height -| 2;
+        const list_top = y + header_rows;
+        const list_height = height -| header_rows;
         if (self.view.markerCount() == 0) {
             const empty_style = ui.cell.PaintStyle{
                 .fg = ui.cell.packColor(.{ .r = 150, .g = 150, .b = 150 }),
@@ -389,7 +403,7 @@ test "problemsView: empty state and list rendering" {
 
     var grid = try ui.CellGrid.init(allocator, 40, 10);
     defer grid.deinit();
-    try view.render(&grid, .{ .x = 0, .y = 0, .w = 40, .h = 10 }, true);
+    try view.render(&grid, .{ .x = 0, .y = 0, .w = 40, .h = 10 }, true, .{});
     const empty = try grid.rowText(allocator, 2);
     defer allocator.free(empty);
     try testing.expect(std.mem.indexOf(u8, empty, "No problems") != null);
@@ -398,7 +412,7 @@ test "problemsView: empty state and list rendering" {
     try service.changeOne("owner", resource, &.{
         .{ .severity = markers.MarkerSeverity.Error, .message = "broken", .start_line_number = 3, .start_column = 1 },
     }, null);
-    try view.render(&grid, .{ .x = 0, .y = 0, .w = 40, .h = 10 }, true);
+    try view.render(&grid, .{ .x = 0, .y = 0, .w = 40, .h = 10 }, true, .{});
     const header = try grid.rowText(allocator, 0);
     defer allocator.free(header);
     try testing.expect(std.mem.indexOf(u8, header, "PROBLEMS") != null);

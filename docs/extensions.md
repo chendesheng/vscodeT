@@ -1286,7 +1286,7 @@ The baseline bridge is ported: `languageSelector.zig`,
 `mainThreadDiagnostics.zig`. Hover, completion, definition/declaration/type
 definition/implementation, references, document symbols, outline and formatting
 are wired to the TUI, diagnostics render as squiggly underlines, overview-ruler
-marks, the Problems side-panel view and the workspace `Problems` status
+marks, the Problems panel view and the workspace `Problems` status
 counts, and synchronous provider calls are bounded by a timeout. The remaining `MainThreadLanguageFeatures` methods still
 reject.
 
@@ -1922,7 +1922,7 @@ syntax diagnostics, forwards completion requests, and requests hierarchical
 document symbols.
 
 The TUI polls only the active editor, publishes JSON diagnostics into
-`MarkerService` so the Problems side-panel view and `Problems` workspace counts
+`MarkerService` so the Problems panel view and `Problems` workspace counts
 include them, registers the server completion provider on JSON/JSONC tabs, forwards
 mouse hover through `TuiHoverProvider` (schemas referenced by `$schema` are
 resolved by the server), applies `textDocument/formatting` edits through

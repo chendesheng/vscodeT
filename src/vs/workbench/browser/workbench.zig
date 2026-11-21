@@ -117,8 +117,18 @@ const QuickPick = @import("../../platform/quickinput/browser/quickInput.zig").Qu
 const dialogs = @import("../../platform/dialogs/common/dialogs.zig");
 const markers_common = @import("../contrib/markers/common/markers.zig");
 const MarkersStatusBar = @import("../contrib/markers/browser/markersStatusBar.zig").MarkersStatusBar;
+const pane_composite_mod = @import("./parts/paneCompositePart.zig");
+
+/// Upstream `Markers.MARKERS_CONTAINER_ID` and `TERMINAL_VIEW_ID`.
+const PROBLEMS_CONTAINER_ID = markers_common.Markers.MARKERS_CONTAINER_ID;
+const TERMINAL_CONTAINER_ID = "terminal";
 const problems_view_mod = @import("../../../tui/problemsView.zig");
 const ProblemsView = problems_view_mod.ProblemsView;
+const panel_part_mod = @import("./parts/panel/panelPart.zig");
+const PanelPart = panel_part_mod.PanelPart;
+const views_mod = @import("../common/views.zig");
+const view_descriptor_service_mod = @import("../services/views/browser/viewDescriptorService.zig");
+const ViewDescriptorService = view_descriptor_service_mod.ViewDescriptorService;
 const range_highlight_mod = @import("./codeeditor.zig");
 const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 
@@ -157,6 +167,7 @@ const topmost_line_monitor = @import("../contrib/markdown/browser/topmostLineMon
 const MarkdownPreviewConfig = @import("../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
 const std_uri = @import("../../base/common/stdUri.zig");
 const MarkerService = @import("../../platform/markers/common/markerService.zig").MarkerService;
+const MarkerChangeEvent = @import("../../platform/markers/common/markerService.zig").MarkerChangeEvent;
 const MarkerDecorationsService = @import("../../editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
 const markers_mod = @import("../../platform/markers/common/markers.zig");
 const WordBasedCompletionProvider = @import("../../editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
@@ -187,7 +198,7 @@ const TerminalService = terminal_service_mod.TerminalService;
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
-pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal };
+pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, problems };
 
 /// Handles for the context keys the workbench maintains. User keybindings use
 /// them in `when` clauses; keys the terminal cannot know stay undefined, which
@@ -200,6 +211,9 @@ const ContextKeyHandles = struct {
     side_bar_focus: context_key_mod.IContextKey,
     status_bar_focus: context_key_mod.IContextKey,
     terminal_focus: context_key_mod.IContextKey,
+    panel_focus: context_key_mod.IContextKey,
+    panel_visible: context_key_mod.IContextKey,
+    active_panel: context_key_mod.IContextKey,
     in_quick_open: context_key_mod.IContextKey,
     in_files_picker: context_key_mod.IContextKey,
     explorer_viewlet_visible: context_key_mod.IContextKey,
@@ -321,12 +335,16 @@ pub const Workbench = struct {
     layout_model: LayoutModel,
     activity_bar_part: ActivityBarPart,
     sidebar_part: SidebarPart,
+    panel_part: PanelPart,
+    view_containers_registry: views_mod.ViewContainersRegistry,
+    view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
     activity_service: ActivityService,
     editor_status: ?*EditorStatus = null,
     status_hint_accessor: ?EntryAccessor = null,
     markers_status: ?*MarkersStatusBar = null,
     problems_view: ?*ProblemsView = null,
+    marker_listener: ?@import("../../base/common/event.zig").Emitter(MarkerChangeEvent).ListenerId = null,
     range_highlights: ?*RangeHighlightDecorations = null,
     search_badge_buf: [32]u8 = undefined,
     search_badge_count: usize = 0,
@@ -828,6 +846,7 @@ pub const Workbench = struct {
 
     fn initShellModels(self: *Workbench) !void {
         self.problems_view = null;
+        self.marker_listener = null;
         self.markers_status = null;
         self.range_highlights = null;
         self.layout_model = LayoutModel.init(self.allocator);
@@ -836,6 +855,13 @@ pub const Workbench = struct {
         errdefer self.activity_bar_part.deinit();
         self.sidebar_part = SidebarPart.init(self.allocator);
         errdefer self.sidebar_part.deinit();
+        self.panel_part = PanelPart.init(self.allocator);
+        errdefer self.panel_part.deinit();
+        self.view_containers_registry = views_mod.ViewContainersRegistry.init(self.allocator);
+        errdefer self.view_containers_registry.deinit();
+        self.view_descriptor_service = ViewDescriptorService.init(self.allocator, &self.view_containers_registry);
+        errdefer self.view_descriptor_service.deinit();
+        try self.view_descriptor_service.attach();
         self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
         self.activity_service = ActivityService.init(self.allocator);
@@ -845,22 +871,90 @@ pub const Workbench = struct {
         try self.layout_model.setVisible(.sidebar, false);
         try self.layout_model.setVisible(.activitybar, true);
         try self.layout_model.setVisible(.statusbar, true);
-        try self.layout_model.setSize(.panel, 10);
-        try self.layout_model.setVisible(.panel, false);
 
         for (activity_bar_mod.default_activities) |activity| {
             try self.activity_bar_part.addActivity(activity);
         }
         try self.activity_bar_part.setVisible(true);
 
-        try self.sidebar_part.pane.addComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
-        try self.sidebar_part.pane.addComposite(.{ .id = "search", .name = "Search", .order = 2 });
-        try self.sidebar_part.pane.addComposite(.{ .id = "scm", .name = "Source Control", .order = 3 });
-        try self.sidebar_part.pane.addComposite(.{ .id = markers_common.PROBLEMS_ACTIVITY_ID, .name = markers_common.PROBLEMS_TITLE, .order = 4 });
-        try self.sidebar_part.pane.addComposite(.{ .id = "settings", .name = "Settings", .order = 5 });
+        try self.registerViewContainers();
         try self.sidebar_part.setWidth(28);
 
         try self.initStatusHint();
+    }
+
+    /// Registers the portable view containers at their upstream locations and
+    /// fills the side bar and panel composite bars from the registry.
+    fn registerViewContainers(self: *Workbench) !void {
+        const registry = &self.view_containers_registry;
+        // Side-bar ids stay the activity ids the terminal activity bar routes
+        // on; Explorer is the default container.
+        _ = try registry.register(.{
+            .id = "explorer",
+            .title = "Explorer",
+            .glyph = 'E',
+            .order = 0,
+        }, .sidebar, .{ .is_default = true });
+        _ = try registry.register(.{
+            .id = "search",
+            .title = "Search",
+            .glyph = 'F',
+            .order = 1,
+        }, .sidebar, .{});
+        _ = try registry.register(.{
+            .id = "scm",
+            .title = "Source Control",
+            .glyph = 'G',
+            .order = 2,
+        }, .sidebar, .{});
+        _ = try registry.register(.{
+            .id = "settings",
+            .title = "Settings",
+            .glyph = 'S',
+            .order = 4,
+        }, .sidebar, .{});
+
+        // Panel containers: Problems order 0, Terminal order 3, matching
+        // `markers.contribution.ts` and `terminal.contribution.ts`.
+        _ = try registry.register(.{
+            .id = PROBLEMS_CONTAINER_ID,
+            .title = markers_common.PROBLEMS_TITLE,
+            .glyph = '!',
+            .hide_if_empty = true,
+            .order = 0,
+        }, .panel, .{});
+        _ = try registry.register(.{
+            .id = TERMINAL_CONTAINER_ID,
+            .title = "Terminal",
+            .glyph = '>',
+            .hide_if_empty = true,
+            .order = 3,
+        }, .panel, .{ .is_default = true, .do_not_register_open_command = true });
+
+        try self.fillPaneComposites(&self.sidebar_part.pane, .sidebar);
+        try self.fillPaneComposites(&self.panel_part.pane, .panel);
+
+        const panel_containers = try self.view_descriptor_service.getViewContainersByLocation(.panel, self.allocator);
+        defer self.allocator.free(panel_containers);
+        for (panel_containers) |container| {
+            if (container.hide_if_empty) {
+                _ = try self.panel_part.pane.setPaneCompositeVisible(container.id, false);
+            }
+        }
+    }
+
+    fn fillPaneComposites(self: *Workbench, part: *pane_composite_mod.PaneCompositePart, location: views_mod.ViewContainerLocation) !void {
+        const containers = try self.view_descriptor_service.getViewContainersByLocation(location, self.allocator);
+        defer self.allocator.free(containers);
+        views_mod.sortByOrder(containers);
+        for (containers) |container| {
+            try part.addPaneComposite(.{
+                .id = container.id,
+                .name = container.title,
+                .order = container.order,
+                .glyph = container.glyph,
+            });
+        }
     }
 
     fn initStatusHint(self: *Workbench) !void {
@@ -895,7 +989,10 @@ pub const Workbench = struct {
         }
         self.activity_service.deinit();
         self.statusbar.deinit();
+        self.panel_part.deinit();
         self.sidebar_part.deinit();
+        self.view_descriptor_service.deinit();
+        self.view_containers_registry.deinit();
         self.activity_bar_part.deinit();
         self.layout_model.deinit();
     }
@@ -996,6 +1093,10 @@ pub const Workbench = struct {
             .{ .id = "workbench.view.scm", .label = "View: Show Source Control", .category = "View", .context = self, .run = commandViewScm },
             .{ .id = markers_common.Markers.SHOW_MARKERS_VIEW_ACTION_ID, .label = "View: Show Problems", .category = "View", .context = self, .run = commandShowProblems },
             .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .label = "View: Toggle Problems", .category = "View", .context = self, .run = commandToggleProblems },
+            .{ .id = "workbench.action.togglePanel", .label = "View: Toggle Panel Visibility", .category = "View", .context = self, .run = commandTogglePanel },
+            .{ .id = "workbench.action.focusPanel", .label = "View: Focus Panel", .category = "View", .context = self, .run = commandFocusPanel },
+            .{ .id = "workbench.action.previousPanelView", .label = "View: Previous Panel View", .category = "View", .context = self, .run = commandPreviousPanelView },
+            .{ .id = "workbench.action.nextPanelView", .label = "View: Next Panel View", .category = "View", .context = self, .run = commandNextPanelView },
             .{ .id = "git.refresh", .label = "Refresh", .category = "Source Control", .context = self, .run = commandGitRefresh },
             .{ .id = "git.openChange", .label = "Open Change", .category = "Source Control", .context = self, .run = commandGitOpenChange },
             .{ .id = "git.openFile", .label = "Open File", .category = "Source Control", .context = self, .run = commandGitOpenFile },
@@ -1264,6 +1365,10 @@ pub const Workbench = struct {
         if (self.word_completion_registration) |registration| registration.dispose();
         if (self.word_completion_provider) |provider| self.allocator.destroy(provider);
         if (self.marker_decorations) |service| service.deinit();
+        if (self.marker_listener) |listener| {
+            if (self.marker_service) |service| service.on_marker_changed.unlisten(listener);
+            self.marker_listener = null;
+        }
         if (self.marker_service) |service| {
             service.deinit();
             self.allocator.destroy(service);
@@ -1296,20 +1401,30 @@ pub const Workbench = struct {
         return if (self.statusBarVisible()) self.rows - 1 else self.rows;
     }
 
-    /// The bottom panel is visible only while it has a terminal. Hiding the
-    /// layout state keeps the editor area full height when the last tab closes.
+    /// The bottom panel is visible with an active container. `hideIfEmpty`
+    /// containers hide their title (not the panel) while they are empty; the
+    /// panel itself stays open until the workbench closes it.
+    pub fn panelShown(self: *const Workbench) bool {
+        return self.panel_part.isVisible() and self.panel_part.pane.active_id != null;
+    }
+
+    pub fn activePanelId(self: *const Workbench) []const u8 {
+        return self.panel_part.pane.active_id orelse "";
+    }
+
+    /// The Terminal container is active and has at least one instance.
     pub fn terminalVisible(self: *const Workbench) bool {
-        return self.layout_model.isVisible(.panel) and
-            self.terminal_service != null and
-            self.terminal_service.?.count() > 0;
+        if (!self.panelShown()) return false;
+        if (!std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID)) return false;
+        return self.terminal_service != null and self.terminal_service.?.count() > 0;
     }
 
     fn panelHeight(self: *const Workbench) usize {
-        if (!self.terminalVisible()) return 0;
+        if (!self.panelShown()) return 0;
         const available = self.workbenchRows();
-        const wanted = if (self.layout_model.size(.panel) == 0) 10 else self.layout_model.size(.panel);
+        const wanted = if (self.panel_part.getSize() == 0) 10 else self.panel_part.getSize();
         const max_height = @max(@min(available / 2, available -| 1), 1);
-        return @min(@max(wanted, 1), max_height);
+        return @min(@max(wanted, 2), max_height);
     }
 
     fn editorRows(self: *const Workbench) usize {
@@ -1317,7 +1432,7 @@ pub const Workbench = struct {
     }
 
     pub fn panelRect(self: *const Workbench) ui.Rect {
-        if (!self.terminalVisible()) return .{};
+        if (!self.panelShown()) return .{};
         const x = self.editorAreaX();
         const width = self.editorAreaWidth();
         const height = self.panelHeight();
@@ -1327,6 +1442,12 @@ pub const Workbench = struct {
             .w = @floatFromInt(width),
             .h = @floatFromInt(height),
         };
+    }
+
+    /// Panel content below the one-row title (composite bar).
+    pub fn panelContentRect(self: *const Workbench) ui.Rect {
+        if (!self.panelShown()) return .{};
+        return panel_part_mod.contentRect(self.panelRect());
     }
 
     fn editorAreaX(self: *const Workbench) usize {
@@ -1429,6 +1550,8 @@ pub const Workbench = struct {
     /// CLI folder arguments replace the empty workspace.
     pub fn setWorkspaceFolders(self: *Workbench, folders: []const []const u8) !void {
         const replacement = try WorkspaceContextService.initWithFolders(self.allocator, "workspace", folders);
+        var replacement_owned = false;
+        errdefer if (!replacement_owned) replacement.deinit();
         if (self.sidebar) |sidebar| {
             sidebar.deinit();
             self.sidebar = null;
@@ -1447,13 +1570,16 @@ pub const Workbench = struct {
             configuration.deinit();
             self.configuration = null;
         }
+        // Stop the quick-open index while the old workspace is still alive:
+        // its worker may be walking it.
+        try self.quick_access.setWorkspace(replacement);
         self.workspace.deinit();
         self.workspace = replacement;
+        replacement_owned = true;
         try self.ensureConfiguration();
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
         self.disposeBreadcrumbs();
         self.layoutAll();
-        try self.quick_access.setWorkspace(self.workspace);
         self.startFilesWatcher() catch {};
     }
 
@@ -1774,13 +1900,7 @@ pub const Workbench = struct {
         if (std.mem.eql(u8, activity.id, "search")) {
             if (self.search_view) |view| view.focus();
         }
-        if (std.mem.eql(u8, activity.id, markers_common.PROBLEMS_ACTIVITY_ID)) {
-            try self.ensureProblemsView();
-            if (self.problems_view) |view| view.refresh();
-            self.updateProblemsHighlight();
-        } else if (self.range_highlights) |highlights| {
-            highlights.removeHighlightRange();
-        }
+        if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         self.layoutAll();
     }
 
@@ -1803,6 +1923,7 @@ pub const Workbench = struct {
     pub fn focusSidebar(self: *Workbench) void {
         if (!self.sidebarShown()) return;
         self.focus = .sidebar;
+        self.updateProblemsHighlight();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
         self.statusbar.main_part.clearFocus();
         if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) {
@@ -1821,6 +1942,7 @@ pub const Workbench = struct {
     pub fn focusStatusBar(self: *Workbench) void {
         if (!self.statusBarVisible()) return;
         self.focus = .statusbar;
+        self.updateProblemsHighlight();
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
         if (self.statusbar.main_part.focusedHandle() == null) {
@@ -1851,31 +1973,150 @@ pub const Workbench = struct {
         self.problems_view = view;
     }
 
+    /// Upstream `workbench.actions.view.problems`: open the Problems container
+    /// in the panel and move focus to the list.
     pub fn showProblems(self: *Workbench) !void {
-        if (!try self.showActivityById(markers_common.PROBLEMS_ACTIVITY_ID)) return;
-        self.focusSidebar();
+        try self.ensureProblemsView();
         if (self.problems_view) |view| view.refresh();
+        if (!try self.panel_part.openPaneComposite(PROBLEMS_CONTAINER_ID)) return;
+        try self.syncPanelContainerVisibility();
+        self.focus = .problems;
+        self.statusbar.main_part.clearFocus();
+        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.search_view) |view| view.blur();
         self.updateProblemsHighlight();
+        self.layoutAll();
     }
 
     pub fn toggleProblems(self: *Workbench) !void {
-        const active = self.activity_bar_part.active_id orelse "";
-        if (self.sidebarShown() and self.focus == .sidebar and
-            std.mem.eql(u8, active, markers_common.PROBLEMS_ACTIVITY_ID))
-        {
-            try self.toggleSidebar();
+        // Upstream `ToggleMarkersViewAction` toggles on
+        // `viewsService.isViewVisible`, i.e. whether the container is the
+        // visible panel container, not whether the list owns focus.
+        if (self.problemsVisible()) {
+            // `viewsService.closeView` on the only view of a panel container
+            // hides the part through `hideActivePaneComposite`.
+            self.closeActivePanelContainer();
             return;
         }
         try self.showProblems();
     }
 
+    fn closeActivePanelContainer(self: *Workbench) void {
+        self.panel_part.hideActivePaneComposite() catch {};
+        self.panel_part.setHovered(null);
+        if (self.focus == .terminal or self.focus == .problems) {
+            self.focus = .editor;
+        }
+        self.updateProblemsHighlight();
+        self.layoutAll();
+    }
+
+    fn problemsVisible(self: *const Workbench) bool {
+        return self.panelShown() and std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID);
+    }
+
     fn problemsFocused(self: *const Workbench) bool {
-        if (self.focus != .sidebar or !self.sidebarShown()) return false;
-        return std.mem.eql(
-            u8,
-            self.activity_bar_part.active_id orelse "",
-            markers_common.PROBLEMS_ACTIVITY_ID,
-        );
+        return self.focus == .problems and self.problemsVisible();
+    }
+
+    /// Hides the panel without clearing the active container, like upstream
+    /// `TogglePanelAction`.
+    pub fn hidePanel(self: *Workbench) void {
+        self.panel_part.setHovered(null);
+        self.panel_part.setVisible(false) catch {};
+        if (self.focus == .terminal or self.focus == .problems) {
+            self.focus = .editor;
+        }
+        self.updateProblemsHighlight();
+        self.layoutAll();
+    }
+
+    /// Reveals `id` in the panel and moves focus to it.
+    pub fn openPanelContainer(self: *Workbench, id: []const u8) !bool {
+        if (!try self.panel_part.openPaneComposite(id)) return false;
+        try self.syncPanelContainerVisibility();
+        if (std.mem.eql(u8, id, PROBLEMS_CONTAINER_ID)) {
+            try self.ensureProblemsView();
+            if (self.problems_view) |view| view.refresh();
+            self.focus = .problems;
+        } else if (std.mem.eql(u8, id, TERMINAL_CONTAINER_ID)) {
+            self.focus = .terminal;
+        }
+        self.statusbar.main_part.clearFocus();
+        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.search_view) |view| view.blur();
+        self.updateProblemsHighlight();
+        self.layoutAll();
+        return true;
+    }
+
+    /// Builds the Problems badge for the panel title. The caller owns the
+    /// buffers, so the returned slice is valid for one render or hit test.
+    fn panelBadges(self: *Workbench, buf: *[48]u8, badges: *[1]panel_part_mod.Badge) []const panel_part_mod.Badge {
+        const service = self.marker_service orelse return &.{};
+        const stats = service.getStatistics();
+        if (stats.errors + stats.warnings + stats.infos == 0) return &.{};
+        const text = std.fmt.bufPrint(buf, "\u{2716} {d} \u{26A0} {d}", .{
+            stats.errors,
+            stats.warnings,
+        }) catch return &.{};
+        badges[0] = .{ .id = PROBLEMS_CONTAINER_ID, .text = text };
+        return badges[0..1];
+    }
+
+    /// Panel container used when the panel is revealed without an explicit
+    /// id: the last active composite, else the first visible one.
+    fn defaultPanelContainerId(self: *Workbench) ?[]const u8 {
+        if (self.panel_part.pane.last_active_id) |id| return id;
+        if (self.panel_part.pane.active_id) |id| return id;
+        for (self.panel_part.pane.bar.items.items) |item| {
+            if (item.visible) return item.id;
+        }
+        return if (self.view_descriptor_service.getDefaultViewContainer(.panel)) |container| container.id else null;
+    }
+
+    /// Cycles the visible panel containers, like
+    /// `workbench.action.previousPanelView`/`nextPanelView`.
+    fn cyclePanelView(self: *Workbench, delta: isize) !bool {
+        if (!self.panelShown()) return false;
+        const items = self.panel_part.pane.bar.items.items;
+        var visible_count: usize = 0;
+        for (items) |item| {
+            if (item.visible) visible_count += 1;
+        }
+        if (visible_count < 2) return false;
+        var current: isize = -1;
+        for (items, 0..) |item, index| {
+            if (!item.visible) continue;
+            if (std.mem.eql(u8, item.id, self.activePanelId())) {
+                current = @intCast(index);
+                break;
+            }
+        }
+        if (current < 0) return false;
+        var step: isize = 1;
+        while (step <= @as(isize, @intCast(items.len))) : (step += 1) {
+            const next_index = @mod(current + delta * step, @as(isize, @intCast(items.len)));
+            const item = items[@intCast(next_index)];
+            if (!item.visible) continue;
+            _ = try self.openPanelContainer(item.id);
+            return true;
+        }
+        return false;
+    }
+
+    /// Keeps the composite-bar title items in sync with `hideIfEmpty`: a
+    /// container is listed while it has content, or while it is the active
+    /// container (opening an empty Problems view re-shows its title).
+    fn syncPanelContainerVisibility(self: *Workbench) !void {
+        const stats = if (self.marker_service) |service| service.getStatistics() else markers_mod.MarkerStatistics{};
+        const problems_has_content = stats.errors + stats.warnings + stats.infos > 0;
+        const problems_active = std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID);
+        _ = try self.panel_part.pane.setPaneCompositeVisible(PROBLEMS_CONTAINER_ID, problems_has_content or problems_active);
+
+        const terminals = if (self.terminal_service) |service| service.count() else 0;
+        const terminal_active = std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID);
+        _ = try self.panel_part.pane.setPaneCompositeVisible(TERMINAL_CONTAINER_ID, terminals > 0 or terminal_active);
     }
 
     /// Keeps the editor range highlight in sync with the Problems selection.
@@ -1928,13 +2169,11 @@ pub const Workbench = struct {
     pub fn showTerminal(self: *Workbench) !void {
         const service = try self.ensureTerminalService();
         if (service.count() == 0) _ = try service.create();
-        self.revealTerminalPanel();
+        _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
     }
 
     pub fn hideTerminal(self: *Workbench) void {
-        self.layout_model.setVisible(.panel, false) catch {};
-        self.focus = .editor;
-        self.layoutAll();
+        self.hidePanel();
     }
 
     pub fn toggleTerminal(self: *Workbench) !void {
@@ -1948,27 +2187,16 @@ pub const Workbench = struct {
     pub fn newTerminal(self: *Workbench) !void {
         const service = try self.ensureTerminalService();
         _ = try service.create();
-        self.revealTerminalPanel();
-    }
-
-    /// Reveals the panel and moves focus to the terminal. Creation is the
-    /// caller's job: upstream's toggle reveals an existing terminal and only
-    /// the new-terminal command creates one, so `showTerminal` and
-    /// `newTerminal` must not both create.
-    fn revealTerminalPanel(self: *Workbench) void {
-        self.layout_model.setVisible(.panel, true) catch {};
-        self.focus = .terminal;
-        self.statusbar.main_part.clearFocus();
-        if (self.breadcrumbs_control) |control| control.setFocused(false);
-        if (self.search_view) |view| view.blur();
-        self.layoutAll();
+        _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
     }
 
     pub fn killTerminal(self: *Workbench) !void {
         const service = self.terminal_service orelse return;
+        const was_active = std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID);
         service.killActive();
         if (service.count() == 0) {
-            self.hideTerminal();
+            try self.syncPanelContainerVisibility();
+            if (was_active) self.hideTerminal();
             return;
         }
         self.focus = .terminal;
@@ -1992,14 +2220,15 @@ pub const Workbench = struct {
     }
 
     pub fn resizeTerminalPanel(self: *Workbench, delta: isize) void {
-        if (!self.terminalVisible()) return;
+        if (!self.panelShown()) return;
         const current = self.panelHeight();
         const available = self.workbenchRows();
         const max_height = @max(@min(available / 2, available -| 1), 1);
         const next_value = @as(isize, @intCast(current)) + delta;
-        const next: usize = @intCast(@min(@max(next_value, 1), @as(isize, @intCast(max_height))));
+        const min_height: isize = @intCast(panel_part_mod.title_height + 1);
+        const next: usize = @intCast(@min(@max(next_value, min_height), @as(isize, @intCast(max_height))));
         if (next == current) return;
-        self.layout_model.setSize(.panel, next) catch {};
+        self.panel_part.setSize(next) catch {};
         self.layoutAll();
     }
 
@@ -2019,8 +2248,18 @@ pub const Workbench = struct {
     }
 
     pub fn handleTerminalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
-        if (!self.terminalFocused()) return false;
         if (self.dialog != null or self.quick_access.isOpen()) return false;
+        if (!self.terminalFocused()) {
+            // A re-shown but empty Terminal container still owns the panel
+            // focus; swallow keys instead of leaking them to the editor
+            // underneath the panel.
+            if (self.focus == .terminal and self.panelShown() and
+                std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID))
+            {
+                return true;
+            }
+            return false;
+        }
         const service = self.terminal_service orelse return false;
         const instance = service.active() orelse return false;
 
@@ -2082,7 +2321,7 @@ pub const Workbench = struct {
     pub fn handleTerminalMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (!self.terminalVisible()) return false;
         const service = self.terminal_service orelse return false;
-        const rect = self.panelRect();
+        const rect = self.panelContentRect();
         const hit = terminal_panel.hitTest(service, rect, event.x, event.y);
         // Tab-strip actions are click gestures. The app enables all-motion
         // reporting (mode 1003), so motion, releases, wheel notches and
@@ -2216,7 +2455,7 @@ pub const Workbench = struct {
     fn syncTerminalSize(self: *Workbench) void {
         const service = self.terminal_service orelse return;
         if (!self.terminalVisible()) return;
-        const l = terminal_panel.layout(self.panelRect());
+        const l = terminal_panel.layout(self.panelContentRect());
         const cols: u16 = @intCast(@min(l.content_width, std.math.maxInt(u16)));
         const rows: u16 = @intCast(@min(l.content_height, std.math.maxInt(u16)));
         if (cols == 0 or rows == 0) return;
@@ -2320,6 +2559,9 @@ pub const Workbench = struct {
         self.word_completion_registration = try features.completion_provider.register(.{ .language = "*" }, word_provider.interface());
         if (self.markers_status) |status| status.attach(marker_service);
         if (self.problems_view) |view| view.setService(marker_service);
+        // Keep the panel title badge and the `hideIfEmpty` tab in sync with
+        // marker changes, like the markers view container in upstream.
+        self.marker_listener = try marker_service.on_marker_changed.listen(self, onMarkersChanged);
         self.document_symbol_listener = try features.document_symbol_provider.on_did_change.listen(self, onDocumentSymbolsChanged);
         self.outline_registration = try self.outline_service.registerOutlineCreator(.{
             .context = self,
@@ -2338,6 +2580,11 @@ pub const Workbench = struct {
 
     fn onDocumentSymbolsChanged(_: usize, self: *Workbench) !void {
         self.outline_service.notifyOutlineChanged();
+    }
+
+    fn onMarkersChanged(_: MarkerChangeEvent, self: *Workbench) !void {
+        try self.syncPanelContainerVisibility();
+        if (self.problems_view) |view| view.refresh();
     }
 
     /// Applies declarative language/grammar contributions to the open tabs and
@@ -3710,7 +3957,7 @@ pub const Workbench = struct {
     }
 
     pub fn closePanel(self: *Workbench) void {
-        self.hideTerminal();
+        self.hidePanel();
     }
 
     /// Close every editor in every group, stopping at the first dirty-close
@@ -3854,10 +4101,11 @@ pub const Workbench = struct {
             const next = @min(@max(current - width_delta, 10), @as(isize, @intCast(@max(self.cols / 2, 10))));
             try self.layout_model.setSize(.sidebar, @intCast(next));
         }
-        if (height_delta != 0 and self.terminalVisible()) {
-            const current: isize = @intCast(self.layout_model.size(.panel));
-            const next = @min(@max(current - height_delta, 3), @as(isize, @intCast(@max(self.rows / 2, 3))));
-            try self.layout_model.setSize(.panel, @intCast(next));
+        if (height_delta != 0 and self.panelShown()) {
+            const current: isize = @intCast(self.panel_part.getSize());
+            const min_height: isize = @intCast(panel_part_mod.title_height + 1);
+            const next = @min(@max(current - height_delta, min_height), @as(isize, @intCast(@max(self.rows / 2, 3))));
+            try self.panel_part.setSize(@intCast(next));
         }
         self.layoutAll();
     }
@@ -4231,6 +4479,9 @@ pub const Workbench = struct {
             .side_bar_focus = try service.createKey("sideBarFocus", .{ .boolean = false }),
             .status_bar_focus = try service.createKey("statusBarFocus", .{ .boolean = false }),
             .terminal_focus = try service.createKey("terminalFocus", .{ .boolean = false }),
+            .panel_focus = try service.createKey("panelFocus", .{ .boolean = false }),
+            .panel_visible = try service.createKey("panelVisible", .{ .boolean = false }),
+            .active_panel = try service.createKey("activePanel", .{ .string = "" }),
             .in_quick_open = try service.createKey("inQuickOpen", .{ .boolean = false }),
             .in_files_picker = try service.createKey("inFilesPicker", .{ .boolean = false }),
             .explorer_viewlet_visible = try service.createKey("explorerViewletVisible", .{ .boolean = false }),
@@ -4267,6 +4518,9 @@ pub const Workbench = struct {
         keys.input_focus.set(.{ .boolean = sidebar_focused and search_active and !search_results_focused });
         keys.status_bar_focus.set(.{ .boolean = self.focus == .statusbar });
         keys.terminal_focus.set(.{ .boolean = self.focus == .terminal });
+        keys.panel_focus.set(.{ .boolean = (self.focus == .terminal or self.focus == .problems) and self.panelShown() });
+        keys.panel_visible.set(.{ .boolean = self.panelShown() });
+        keys.active_panel.set(.{ .string = if (self.panelShown()) self.activePanelId() else "" });
         keys.in_quick_open.set(.{ .boolean = self.quick_access.isOpen() });
         keys.in_files_picker.set(.{ .boolean = self.quick_access.isOpen() and !self.quick_access.isPickOpen() });
         keys.explorer_viewlet_visible.set(.{ .boolean = self.sidebarShown() and explorer_active });
@@ -5062,12 +5316,6 @@ pub const Workbench = struct {
             }
             return true;
         }
-        if (std.mem.eql(u8, active_id, markers_common.PROBLEMS_ACTIVITY_ID)) {
-            if (self.problems_view) |view| {
-                _ = view.handleKey(@constCast(event)) catch {};
-            }
-            return true;
-        }
         if (std.mem.eql(u8, active_id, "search")) {
             if (self.search_view) |view| {
                 switch (view.handleKey(event)) {
@@ -5120,10 +5368,6 @@ pub const Workbench = struct {
             if (self.scm_view) |view| _ = view.handleMouse(@constCast(event), self.sidebarRect()) catch false;
             return true;
         }
-        if (std.mem.eql(u8, active_id, markers_common.PROBLEMS_ACTIVITY_ID)) {
-            if (self.problems_view) |view| _ = view.handleMouse(@constCast(event), self.sidebarRect()) catch false;
-            return true;
-        }
         if (std.mem.eql(u8, active_id, "search")) {
             if (self.search_view) |view| _ = view.handleMouse(event);
             return true;
@@ -5140,6 +5384,68 @@ pub const Workbench = struct {
                 self.openPreviewPath(path) catch {};
                 self.focus = .editor;
             }
+        }
+        return true;
+    }
+
+    /// The panel title and the active panel view's input. Terminal content is
+    /// left to `handleTerminalMouse` so the emulator keeps mouse reporting.
+    pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        if (!self.panelShown()) return false;
+        const rect = self.panelRect();
+        const rect_x = ui.cell.snap(rect.x);
+        const rect_y = ui.cell.snap(rect.y);
+        const rect_width = ui.cell.snap(rect.w);
+        const rect_height = ui.cell.snap(rect.h);
+        if (rect_width == 0 or rect_height == 0) return false;
+        if (event.x < rect_x or event.x >= rect_x + rect_width) {
+            self.panel_part.setHovered(null);
+            return false;
+        }
+        if (event.y < rect_y or event.y >= rect_y + rect_height) {
+            self.panel_part.setHovered(null);
+            return false;
+        }
+
+        if (event.y == rect_y) {
+            if (event.kind == .move) {
+                self.panel_part.setHovered(panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y));
+                return true;
+            }
+            if (event.kind == .down and event.button == .left) {
+                if (panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y)) |id| {
+                    _ = self.openPanelContainer(id) catch {};
+                }
+            }
+            return true;
+        }
+
+        self.panel_part.setHovered(null);
+        if (std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) {
+            if (event.kind == .down) {
+                self.focus = .problems;
+                self.updateProblemsHighlight();
+            }
+            const content = panel_part_mod.contentRect(rect);
+            if (self.problems_view) |view| _ = view.handleMouse(@constCast(event), content) catch false;
+            return true;
+        }
+        return false;
+    }
+
+    /// Key routing for the Problems list in the panel. Terminal keys stay with
+    /// `handleTerminalKey`.
+    pub fn handlePanelKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
+        if (!self.panelShown()) return false;
+        if (self.focus != .problems) return false;
+        if (!std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) return false;
+        if (event.key == .escape) {
+            self.focusEditor();
+            if (self.activeTab()) |tab| tab.focusEditor();
+            return true;
+        }
+        if (self.problems_view) |view| {
+            _ = view.handleKey(@constCast(event)) catch {};
         }
         return true;
     }
@@ -5409,12 +5715,6 @@ pub const Workbench = struct {
                 } else {
                     self.renderPlaceholder(self.sidebarRect(), focused);
                 }
-            } else if (std.mem.eql(u8, active_id, markers_common.PROBLEMS_ACTIVITY_ID)) {
-                if (self.problems_view) |view| {
-                    try view.render(&self.frame.next, self.sidebarRect(), focused);
-                } else {
-                    self.renderPlaceholder(self.sidebarRect(), focused);
-                }
             } else {
                 self.renderPlaceholder(self.sidebarRect(), focused);
             }
@@ -5451,16 +5751,8 @@ pub const Workbench = struct {
                 self.renderDividers(self.part.root);
             }
         }
-        if (self.terminalVisible()) {
-            if (self.terminal_service) |service| {
-                try terminal_panel.render(
-                    &self.frame.next,
-                    service,
-                    self.panelRect(),
-                    self.focus == .terminal,
-                    self.theme_palette,
-                );
-            }
+        if (self.panelShown()) {
+            try self.renderPanel();
         }
         if (self.statusBarVisible()) {
             if (self.theme_palette) |palette| self.statusbar.main_part.setThemeColors(palette);
@@ -5482,6 +5774,49 @@ pub const Workbench = struct {
         if (encoded.len > 0) try writer.writeAll(encoded);
 
         self.frame.swap();
+    }
+
+    /// Paints the panel title (composite bar) and the active container's
+    /// content. The terminal keeps its own tab strip inside the content area,
+    /// like the upstream panel's container hosting the terminal view.
+    fn renderPanel(self: *Workbench) !void {
+        const rect = self.panelRect();
+        const focused = self.focus == .terminal or self.focus == .problems;
+        var badge_buf: [48]u8 = undefined;
+        var badges: [1]panel_part_mod.Badge = undefined;
+        const badge_slice = self.panelBadges(&badge_buf, &badges);
+        try panel_part_mod.renderTitle(
+            &self.panel_part,
+            &self.frame.next,
+            rect,
+            focused,
+            self.theme_palette,
+            badge_slice,
+        );
+
+        const content = panel_part_mod.contentRect(rect);
+        const active_id = self.activePanelId();
+        if (std.mem.eql(u8, active_id, TERMINAL_CONTAINER_ID)) {
+            if (self.terminal_service) |service| {
+                try terminal_panel.render(
+                    &self.frame.next,
+                    service,
+                    content,
+                    self.focus == .terminal,
+                    self.theme_palette,
+                );
+            } else {
+                self.renderPlaceholder(content, focused);
+            }
+        } else if (std.mem.eql(u8, active_id, PROBLEMS_CONTAINER_ID)) {
+            if (self.problems_view) |view| {
+                try view.render(&self.frame.next, content, self.focus == .problems, .{ .show_header = false });
+            } else {
+                self.renderPlaceholder(content, focused);
+            }
+        } else {
+            self.renderPlaceholder(content, focused);
+        }
     }
 
     fn renderPane(self: *Workbench, pane: *GroupPane) !void {
@@ -5561,19 +5896,14 @@ pub const Workbench = struct {
         };
         const active_id = self.activity_bar_part.active_id orelse "";
         const is_scm = std.mem.eql(u8, active_id, "scm");
-        const is_problems = std.mem.eql(u8, active_id, markers_common.PROBLEMS_ACTIVITY_ID);
         const header = if (std.mem.eql(u8, active_id, "search"))
             " SEARCH "
         else if (is_scm)
             " SOURCE CONTROL "
-        else if (is_problems)
-            " PROBLEMS "
         else
             " SETTINGS ";
         const title = if (is_scm)
             "Source Control is unavailable (no Git repository)"
-        else if (is_problems)
-            "Problems view could not be created"
         else
             "Settings view is not ported yet";
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
@@ -5886,7 +6216,7 @@ pub const Workbench = struct {
             if (!self.terminalVisible()) return null;
             const service = self.terminal_service orelse return null;
             const instance = service.active() orelse return null;
-            const cursor = terminal_view.cursorCell(&instance.emulator, terminal_panel.contentRect(self.panelRect())) orelse return null;
+            const cursor = terminal_view.cursorCell(&instance.emulator, terminal_panel.contentRect(self.panelContentRect())) orelse return null;
             return .{ .row = cursor.row, .col = cursor.col };
         }
         if (self.focus != .editor) return null;
@@ -6269,6 +6599,41 @@ fn commandShowProblems(context: *anyopaque) anyerror!void {
 fn commandToggleProblems(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.toggleProblems();
+}
+
+fn commandTogglePanel(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.panelShown()) {
+        self.hidePanel();
+        return;
+    }
+    const id = self.defaultPanelContainerId() orelse return;
+    _ = try self.openPanelContainer(id);
+}
+
+fn commandFocusPanel(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (!self.panelShown()) {
+        const id = self.defaultPanelContainerId() orelse return;
+        _ = try self.openPanelContainer(id);
+        return;
+    }
+    if (std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) {
+        self.focus = .problems;
+    } else if (std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID)) {
+        self.focus = .terminal;
+    }
+    self.updateProblemsHighlight();
+}
+
+fn commandPreviousPanelView(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = try self.cyclePanelView(-1);
+}
+
+fn commandNextPanelView(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = try self.cyclePanelView(1);
 }
 
 fn commandGitRefresh(context: *anyopaque) anyerror!void {
@@ -8000,20 +8365,19 @@ test "Workbench: activity bar switches view containers" {
     try workbench.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SOURCE CONTROL") != null);
 
-    const problems_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
-    try std.testing.expect(workbench.handleSidebarMouse(&problems_click));
-    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
-    out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "PROBLEMS") != null);
-
-    const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 5 };
+    const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
     try std.testing.expect(workbench.handleSidebarMouse(&settings_click));
-    try std.testing.expectEqual(@as(usize, 4), workbench.activeActivity());
+    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
 
     out.clearRetainingCapacity();
     try workbench.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SETTINGS") != null);
+
+    // Problems is a panel container: no activity-bar entry and no sidebar
+    // container (upstream registers it in `ViewContainerLocation.Panel`).
+    try std.testing.expectEqual(@as(usize, 4), workbench.activity_bar_part.count());
+    try std.testing.expect(!try workbench.showActivityById("problems"));
+    try std.testing.expect(!workbench.panelShown());
 
     const alt_1 = ui.KeyEvent{ .key = .{ .char = '1' }, .mods = .{ .alt = true } };
     try std.testing.expect(try workbench.handleSidebarKey(&alt_1));
@@ -8055,6 +8419,9 @@ test "Workbench: Problems panel, status count and range highlight" {
     try std.testing.expect(std.mem.indexOf(u8, status.item.text(), "1") != null);
 
     try workbench.showProblems();
+    try std.testing.expect(workbench.panelShown());
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.activePanelId());
+    try std.testing.expectEqual(Focus.problems, workbench.focus);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try workbench.render(&out.writer);
@@ -8064,9 +8431,101 @@ test "Workbench: Problems panel, status count and range highlight" {
     try std.testing.expect(workbench.range_highlights.?.highlighted);
 
     const enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(try workbench.handleSidebarKey(&enter));
+    try std.testing.expect(try workbench.handlePanelKey(&enter));
     try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
     try std.testing.expect(!workbench.range_highlights.?.highlighted);
+}
+
+test "Workbench: panel composite bar hosts Problems beside the Terminal" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "panel.txt", "one\ntwo");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 90, 20);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.enableLanguageFeatures();
+    try std.testing.expect(!workbench.panelShown());
+
+    const service = workbench.marker_service orelse return error.TestUnexpectedResult;
+    const tab = workbench.activeTab() orelse return error.TestExpectedTab;
+    var resource = markers_mod.Resource.fromUri(allocator, tab.editor.model.uri()) catch return error.TestUnexpectedResult;
+    defer resource.deinit(allocator);
+    try service.changeOne("test", resource, &.{
+        .{
+            .severity = markers_mod.MarkerSeverity.Warning,
+            .message = "careful",
+            .start_line_number = 1,
+            .start_column = 1,
+            .end_line_number = 1,
+            .end_column = 2,
+        },
+    }, null);
+
+    // Markers alone do not reveal the panel, but they do publish the
+    // `hideIfEmpty` Problems title; the Problems command opens the panel.
+    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(workbench.panel_part.pane.bar.findItemConst(PROBLEMS_CONTAINER_ID).?.visible);
+    try workbench.showProblems();
+    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.panel_part.pane.bar.findItemConst(PROBLEMS_CONTAINER_ID).?.visible);
+
+    // Toggling Problems while it owns focus hides the panel; toggling again
+    // reveals the same container.
+    try workbench.toggleProblems();
+    try std.testing.expect(!workbench.panelShown());
+    try workbench.toggleProblems();
+    try std.testing.expect(workbench.panelShown());
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.activePanelId());
+
+    // Ctrl-J closes and re-opens the panel with its last active container.
+    const ctrl_j = ui.KeyEvent{ .key = .{ .char = 'j' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_j));
+    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_j));
+    try std.testing.expect(workbench.panelShown());
+
+    // Ctrl-Shift-M toggles Problems through the registered keybinding.
+    const ctrl_shift_m = ui.KeyEvent{ .key = .{ .char = 'm' }, .mods = .{ .ctrl = true, .shift = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_shift_m));
+    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_shift_m));
+    try std.testing.expect(workbench.panelShown());
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.activePanelId());
+
+    // The Terminal container shares the panel title; upstream order puts
+    // Problems (order 0) before Terminal (order 3).
+    const terminal_service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
+    workbench.terminal_service = terminal_service;
+    workbench.newTerminal() catch |err| switch (err) {
+        error.PtyOpenFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqualStrings(TERMINAL_CONTAINER_ID, workbench.activePanelId());
+    try std.testing.expect(workbench.terminalVisible());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const problems_index = std.mem.indexOf(u8, out.written(), "PROBLEMS") orelse return error.TestUnexpectedResult;
+    const terminal_index = std.mem.indexOf(u8, out.written(), "TERMINAL") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(problems_index < terminal_index);
+
+    // Clearing the markers drops the inactive Problems title again while the
+    // panel and the Terminal tab stay.
+    try service.changeOne("test", resource, &.{}, null);
+    try std.testing.expect(!workbench.panel_part.pane.bar.findItemConst(PROBLEMS_CONTAINER_ID).?.visible);
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "TERMINAL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "PROBLEMS") == null);
 }
 
 test "Workbench: opens a folder workspace with no initial tabs" {
@@ -8930,6 +9389,7 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.toggleSidebarVisibility", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyB) } },
     .{ .id = "workbench.action.focusStatusBar", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyS) } },
     .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyM) } },
+    .{ .id = "workbench.action.togglePanel", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyJ) } },
     .{ .id = "breadcrumbs.focusAndSelect", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Period) } },
     .{ .id = "breadcrumbs.focus", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Semicolon) } },
     .{ .id = "workbench.action.terminal.toggleTerminal", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyT) } },
@@ -10183,7 +10643,7 @@ test "Workbench: new terminal creates one tab and hover does not act" {
     try workbench.showTerminal();
     try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
 
-    const layout = terminal_panel.layout(workbench.panelRect());
+    const layout = terminal_panel.layout(workbench.panelContentRect());
     const expected_cols: u16 = @intCast(layout.content_width);
     const expected_rows: u16 = @intCast(layout.content_height);
     const first = service.at(0).?;

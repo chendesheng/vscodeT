@@ -11,6 +11,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const pane = @import("../paneCompositePart.zig");
+const views = @import("../../../common/views.zig");
 
 pub const Position = enum { left, right };
 
@@ -31,7 +32,12 @@ pub const SidebarPart = struct {
     pub fn init(allocator: Allocator) SidebarPart {
         return .{
             .allocator = allocator,
-            .pane = pane.PaneCompositePart.init(allocator),
+            .pane = pane.PaneCompositePart.init(
+                allocator,
+                "workbench.contributions.viewlets",
+                "workbench.parts.sidebar",
+                .sidebar,
+            ),
             .on_did_change = Emitter(void).init(allocator),
         };
     }
@@ -61,21 +67,32 @@ pub const SidebarPart = struct {
     }
 
     pub fn openPaneComposite(self: *SidebarPart, id: []const u8) !bool {
-        const opened = try self.pane.setActive(id);
-        if (opened) {
+        const opened = try self.pane.openPaneComposite(id, true);
+        if (opened == null) return false;
+        if (!self.visible) {
             self.visible = true;
             try self.on_did_change.fire({});
         }
-        return opened;
+        return true;
     }
 
     pub fn activePaneComposite(self: *const SidebarPart) ?pane.PaneCompositeDescriptor {
-        return self.pane.active();
+        return self.pane.getActivePaneComposite();
     }
 
     pub fn hideActivePaneComposite(self: *SidebarPart) !void {
-        try self.pane.hideActive();
+        try self.pane.hideActivePaneComposite();
         self.visible = false;
         try self.on_did_change.fire({});
+    }
+
+    /// Registered side-bar containers in pane-composite order.
+    pub fn visibleComposites(self: *const SidebarPart, allocator: Allocator) ![]pane.PaneCompositeDescriptor {
+        return self.pane.visibleComposites(allocator);
+    }
+
+    /// The location this part hosts, for the view-descriptor service.
+    pub fn location(_: *const SidebarPart) views.ViewContainerLocation {
+        return .sidebar;
     }
 };

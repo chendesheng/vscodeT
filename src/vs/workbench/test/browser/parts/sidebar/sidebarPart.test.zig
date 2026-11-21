@@ -24,8 +24,8 @@ test "SidebarPart: visibility, position and active pane composite" {
     var part = SidebarPart.init(std.testing.allocator);
     defer part.deinit();
 
-    try part.pane.addComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
-    try part.pane.addComposite(.{ .id = "search", .name = "Search", .order = 2 });
+    try part.pane.addPaneComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
+    try part.pane.addPaneComposite(.{ .id = "search", .name = "Search", .order = 2 });
 
     try std.testing.expect(!part.visible);
     try std.testing.expect(try part.openPaneComposite("search"));
@@ -46,13 +46,14 @@ test "PaneCompositePart: visible ids follow descriptor order" {
     var part = sidebar_mod.SidebarPart.init(std.testing.allocator);
     defer part.deinit();
 
-    try part.pane.addComposite(.{ .id = "search", .name = "Search", .order = 2 });
-    try part.pane.addComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
-    try part.pane.addComposite(.{ .id = "settings", .name = "Settings", .order = 3, .visible = false });
+    try part.pane.addPaneComposite(.{ .id = "search", .name = "Search", .order = 2 });
+    try part.pane.addPaneComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
+    try part.pane.addPaneComposite(.{ .id = "settings", .name = "Settings", .order = 3 });
+    try std.testing.expect(try part.pane.hidePaneComposite("settings"));
 
-    const ids = try part.pane.visibleIds(std.testing.allocator);
-    defer std.testing.allocator.free(ids);
-    try std.testing.expectEqual(@as(usize, 2), ids.len);
-    try std.testing.expectEqualStrings("explorer", ids[0]);
-    try std.testing.expectEqualStrings("search", ids[1]);
+    const descriptors = try part.pane.visibleComposites(std.testing.allocator);
+    defer std.testing.allocator.free(descriptors);
+    try std.testing.expectEqual(@as(usize, 2), descriptors.len);
+    try std.testing.expectEqualStrings("explorer", descriptors[0].id);
+    try std.testing.expectEqualStrings("search", descriptors[1].id);
 }

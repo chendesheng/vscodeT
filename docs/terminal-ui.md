@@ -927,14 +927,20 @@ Library constraints:
   range as an underline in the severity color (hint/unnecessary dimmed) and the
   existing overview-ruler lane carries the marker color. The workbench
   `status.problems` entry shows workspace-wide error/warning/info counts from
-  `MarkerService.getStatistics()`, and the Problems side-panel view groups
+  `MarkerService.getStatistics()`, and the Problems panel view groups
   markers by file with selection, preview/open and scrolling. Selecting a
   marker previews its range in the editor and paints the upstream
   `rangeHighlight` background while Problems owns focus; Enter opens the range
-  and focuses the editor. Because the terminal bottom panel is the integrated
-  terminal, Problems lives in the side panel; filters, table/tree mode, related
-  information, quick fixes and file decorations are not ported. The minimap
-  metadata produced by the marker decorator is ignored.
+  and focuses the editor. Problems is registered at
+  `ViewContainerLocation.Panel` like upstream, so it opens in the bottom panel
+  beside the terminal; the panel part (`parts/panel/panelPart.zig`) builds the
+  one-row composite bar as a `ui.Document` element tree in a one-row
+  `ui.Surface` (the same DOM-to-cells path as the status bar), the Problems
+  tab carries the error/warning badge and `hideIfEmpty` drops the tab while
+  the container is empty and inactive.
+  Filters, table/tree mode, related information, quick fixes and file
+  decorations are not ported. The minimap metadata produced by the marker
+  decorator is ignored.
 
 - Word-occurrence highlighting is the third decoration consumer:
   `src/vs/editor/contrib/wordHighlighter` tracks the caret/selection, waits
@@ -1086,11 +1092,14 @@ Library constraints:
   terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
   also supports view and global badges. It switches fixed Explorer, Search,
-  Source Control, Problems and Settings containers; Settings remains a
-  placeholder and Problems renders the diagnostics list. The model owns
-  activity order, visibility, the active container and compact width.
-  There is still no registered view-container contribution registry; live
-  file-change refresh, resizing and context menus are not ported.
+  Source Control and Settings containers; Settings remains a placeholder.
+  Problems is not an activity-bar container: it lives in the panel
+  (`ViewContainerLocation.Panel`) like upstream. The model owns activity
+  order, visibility, the active container and compact width. Containers are
+  declared in the ported view-container registry
+  (`src/vs/workbench/common/views.zig`) and placed through
+  `ViewDescriptorService`; live file-change refresh, resizing and context
+  menus are not ported, and there is no extension contribution point yet.
 - The Search panel is split into a portable search service/tree and a terminal
   view. `searchService.zig` walks workspace folders in bounded steps, reads
   open-editor content through a host callback, applies the ported regex/word

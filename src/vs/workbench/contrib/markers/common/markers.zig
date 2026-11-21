@@ -1,8 +1,8 @@
 // Port of `src/vs/workbench/contrib/markers/common/markers.ts`.
 //
-// Terminal adaptation: the Problems view is a side-panel container because the
-// terminal bottom panel is the integrated terminal. The upstream view ids and
-// command ids are kept so actions and status entries match VS Code metadata.
+// The container id, view id and command ids match upstream: the Problems
+// container is registered at `ViewContainerLocation.Panel`, so it opens as a
+// bottom-panel tab beside the terminal.
 
 pub const Markers = struct {
     pub const MARKERS_CONTAINER_ID = "workbench.panel.markers";
@@ -16,8 +16,6 @@ pub const Markers = struct {
     pub const MARKERS_VIEW_FOCUS_COMMAND = "workbench.action.problems.focus";
 };
 
-/// Terminal activity/composite id for the Problems container.
-pub const PROBLEMS_ACTIVITY_ID = "problems";
 pub const PROBLEMS_TITLE = "Problems";
 
 /// Severity mask used by the Problems view. Upstream reads

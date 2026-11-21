@@ -717,6 +717,7 @@ pub fn main(init: std.process.Init) !void {
                     if (try workbench.handleGlobalKey(event)) continue;
                     if (try workbench.handleQuickAccessKey(event)) continue;
                     if (try workbench.handleTerminalKey(event)) continue;
+                    if (try workbench.handlePanelKey(event)) continue;
                     if (try workbench.handleSidebarKey(event)) continue;
                     if (try workbench.handleStatusbarKey(event)) continue;
 
@@ -764,6 +765,7 @@ pub fn main(init: std.process.Init) !void {
                     if (workbench.handleQuickAccessMouse(event)) continue;
                     if (workbench.handleStatusbarMouse(event)) continue;
                     if (workbench.handleSashMouse(event)) continue;
+                    if (workbench.handlePanelMouse(event)) continue;
                     if (workbench.handleSidebarMouse(event)) continue;
                     if (workbench.handleTabMouse(event)) continue;
                     if (workbench.handleTerminalMouse(event)) continue;
