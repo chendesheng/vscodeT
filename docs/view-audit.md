@@ -162,6 +162,10 @@ For each row:
   `renderLineHighlight: gutter|all`; added a View regression test. Focus-only
   tracking, glyph tooltips, margin decorations and line-decoration classes
   remain pending.
+- `2243776` breadcrumbs: emit widget item/focus events. Added the upstream
+  `onDidSelectItem`/`onDidFocusItem`/`onDidChangeFocus` emitters and fired them
+  from selection, focus-next/previous and focus changes. Home labels,
+  editor-type/drop and the outline picker remain pending.
 
 ## Next slice
 
