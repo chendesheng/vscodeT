@@ -3,7 +3,7 @@
 //
 // Activation bookkeeping, performance marks and browser-URI translation are
 // no-ops/identity here. `$onDidActivateExtension` notifies the adapter so boot
-// can wait for `onStartupFinished` extensions such as VSCodeVim.
+// can wait for `onStartupFinished` extensions.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");

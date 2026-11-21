@@ -11,7 +11,7 @@ const View = @import("./editorView.zig").View;
 const Workbench = @import("../vs/workbench/browser/workbench.zig").Workbench;
 const extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
-const extensions_scanner = @import("../vs/platform/extensionManagement/common/extensionsScannerService.zig");
+const VimRuntime = @import("../vs/workbench/contrib/vim/browser/vimRuntime.zig").VimRuntime;
 const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
 const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
 const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorSerializer;
@@ -150,29 +150,6 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, paths: *Array
     if (parsed.preview and parsed.session != null) return error.PreviewWithSession;
     if (parsed.preview and paths.items.len != 1) return error.InvalidPreviewPaths;
     return parsed;
-}
-
-/// Extension discovery follows VS Code: the profile-resolved
-/// `extensionsPath` is scanned with upstream's `scanAllUserExtensions`
-/// location scan. The user extension host loads VSCodeVim; the built-in
-/// TypeScript extension is provisioned separately under `host/dist/extensions`.
-fn findVimExtension(
-    allocator: std.mem.Allocator,
-    io: Io,
-    extensions_path: []const u8,
-    log_service: ?log_module.ILogger,
-) !?[]u8 {
-    const scanned = try extensions_scanner.scanExtensionsFromLocation(allocator, io, extensions_path, .user);
-    defer {
-        for (scanned) |*extension| extension.deinit(allocator);
-        allocator.free(scanned);
-    }
-
-    const found = extensions_scanner.findExtension(scanned, "vscodevim.vim") orelse {
-        infoLog(log_service, "VSCodeVim not installed under {s}", .{extensions_path});
-        return null;
-    };
-    return try allocator.dupe(u8, found.location);
 }
 
 const ProbeHost = struct {
@@ -406,6 +383,16 @@ pub fn main(init: std.process.Init) !void {
     try workbench.setUserSettingsPaths(profile.settings_paths);
     try workbench.setKeybindingsPaths(profile.keybindings_paths);
 
+    // Native Vim is a compiled-in built-in extension. The runtime registers
+    // Vim: Enable/Disable/Toggle even when the startup setting is false.
+    const vim_runtime = try VimRuntime.init(allocator, workbench);
+    defer vim_runtime.deinit();
+    const vim_enabled = if (workbench.configuration) |configuration|
+        configuration.getBool("vim.enabled", false)
+    else
+        false;
+    if (vim_enabled) try vim_runtime.enable();
+
     // Color themes: the built-in theme-defaults contributions first, then the
     // profile's extensions path (later registrations win). A missing submodule leaves only the fallback
     // syntax theme installed by the workbench.
@@ -470,20 +457,6 @@ pub fn main(init: std.process.Init) !void {
     defer if (extension_host) |ext| ext.deinit();
     var extension_paths = std.array_list.Managed(extensions.Extensions.ExtensionPath).init(allocator);
     defer extension_paths.deinit();
-    const extension_path = if (profile.extensions_dir) |dir|
-        findVimExtension(allocator, io, dir, log_service) catch |err| blk: {
-            report(log_service, "extension discovery failed: {s}", .{@errorName(err)});
-            break :blk null;
-        }
-    else
-        null;
-    // Keep the Vim path alive until the extension host has copied it into its
-    // descriptions; freeing it at the end of this block leaves a dangling
-    // slice in `extension_paths` and the host init fails with FileNotFound.
-    defer if (extension_path) |path| allocator.free(path);
-    if (extension_path) |path| {
-        try extension_paths.append(.{ .path = path, .is_under_development = true });
-    }
     const typescript_extension_path = "host/dist/extensions/typescript-language-features";
     if (std.Io.Dir.cwd().access(io, typescript_extension_path, .{})) |_| {
         try extension_paths.append(.{ .path = typescript_extension_path, .is_builtin = true });
@@ -505,7 +478,7 @@ pub fn main(init: std.process.Init) !void {
             infoLog(log_service, "extension host disabled: no user data directory", .{});
         }
     } else {
-        infoLog(log_service, "extension host disabled: no VSCodeVim or TypeScript extension found", .{});
+        infoLog(log_service, "extension host disabled: no TypeScript extension found", .{});
     }
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
@@ -692,9 +665,7 @@ pub fn main(init: std.process.Init) !void {
         for (events.items) |*item| {
             if (extension_host) |ext| {
                 // The next pump reports a selection delta tagged with the
-                // source of this event. VSCodeVim accepts a pointer change
-                // unconditionally; a keyboard delta it caused itself is
-                // filtered by its internal-selection tracker.
+                // source of this event.
                 ext.selection_source = switch (item.*) {
                     .key => .keyboard,
                     .mouse => .mouse,
@@ -714,12 +685,21 @@ pub fn main(init: std.process.Init) !void {
                     }
                     workbench.clearStatusHover();
 
-                    if (try workbench.handleGlobalKey(event)) continue;
                     if (try workbench.handleQuickAccessKey(event)) continue;
                     if (try workbench.handleTerminalKey(event)) continue;
                     if (try workbench.handlePanelKey(event)) continue;
                     if (try workbench.handleSidebarKey(event)) continue;
                     if (try workbench.handleStatusbarKey(event)) continue;
+
+                    if (vim_runtime.host) |host| {
+                        const editor_focused = workbench.focus == .editor;
+                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() else false;
+                        if (!workbench.is_pasting and editor_focused and normal_tab and host.dispatchKey(event)) {
+                            needs_render = true;
+                            continue;
+                        }
+                    }
+                    if (try workbench.handleGlobalKey(event)) continue;
 
                     switch (try workbench.handleTabKey(event)) {
                         .quit => return,
@@ -727,14 +707,6 @@ pub fn main(init: std.process.Init) !void {
                         .unhandled => {},
                     }
                     if (try workbench.handleBreadcrumbsKey(event)) continue;
-
-                    if (extension_host) |ext| {
-                        if (ext.handleKey(event)) {
-                            _ = ext.pump();
-                            needs_render = true;
-                            continue;
-                        }
-                    }
 
                     const current = workbench.activeTab() orelse continue;
                     if (current.isDiff()) {
@@ -774,6 +746,7 @@ pub fn main(init: std.process.Init) !void {
                     const current = workbench.activeTab() orelse continue;
                     if (event.kind == .down) {
                         workbench.focusEditor();
+                        if (vim_runtime.host) |host| host.resetKeyInput();
                     }
                     if (!current.isDiff() and current.handleMarkdownPreviewMouse(&adjusted, now_ms)) {
                         if (event.kind == .move) workbench.leaveEditorHover();
@@ -800,7 +773,7 @@ pub fn main(init: std.process.Init) !void {
                         current.editor.setMessage("mouse failed: {s}", .{@errorName(err)});
                     };
                     // Deliver the click/drag caret change before the next key
-                    // reaches VSCodeVim, whose cursor follows the selection.
+                    // reaches an extension that follows the selection.
                     if (extension_host) |ext| {
                         if (ext.pump()) needs_render = true;
                     }

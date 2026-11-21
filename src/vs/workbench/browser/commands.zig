@@ -81,6 +81,18 @@ pub const CommandRegistry = struct {
         _ = try self.platform.execute(id);
     }
 
+    /// Removes a command from both the picker metadata and the execution
+    /// registry. Used by built-in extension disposal.
+    pub fn unregister(self: *CommandRegistry, id: []const u8) void {
+        for (self.infos.items, 0..) |info, index| {
+            if (std.mem.eql(u8, info.id, id)) {
+                _ = self.infos.orderedRemove(index);
+                break;
+            }
+        }
+        self.platform.unregister(id);
+    }
+
     pub fn get(self: *const CommandRegistry, id: []const u8) ?CommandInfo {
         for (self.infos.items) |info| {
             if (std.mem.eql(u8, info.id, id)) return info;

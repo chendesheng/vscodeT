@@ -612,6 +612,15 @@ comptime {
     _ = @import("./vs/platform/quickinput/browser/quickInputList.zig");
     _ = @import("./vs/workbench/browser/quickaccess.zig");
     _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig");
+    _ = @import("./vs/workbench/api/common/keyInput.zig");
+    _ = @import("./vs/workbench/api/common/extensionApi.zig");
+    _ = @import("./vs/workbench/api/common/builtinExtension.zig");
+    _ = @import("./vs/workbench/api/browser/builtinExtensionHost.zig");
+    _ = @import("./vs/editor/contrib/vim/browser/vimEngine.zig");
+    _ = @import("./vs/workbench/contrib/vim/browser/vimExtension.zig");
+    _ = @import("./vs/editor/contrib/vim/test/browser/vimEngine.test.zig");
+    _ = @import("./vs/workbench/contrib/vim/test/browser/vimExtension.test.zig");
+    _ = @import("./vs/workbench/contrib/vim/test/browser/vimRuntime.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionService.zig");

@@ -128,13 +128,13 @@ test "findExtension compares identifiers case-insensitively" {
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeExtension(&tmp, io, "VSCodeVim.Vim-1.32.4",
-        \\{"name":"Vim","publisher":"VSCodeVim","version":"1.32.4"}
+    try writeExtension(&tmp, io, "Example.Extension-1.0.0",
+        \\{"name":"Extension","publisher":"Example","version":"1.0.0"}
     );
 
     const actual = try scan(&tmp, io);
     defer deinit(actual);
 
-    try std.testing.expect(scanner.findExtension(actual, "vscodevim.vim") != null);
-    try std.testing.expect(scanner.findExtension(actual, "vscodevim.viml") == null);
+    try std.testing.expect(scanner.findExtension(actual, "example.extension") != null);
+    try std.testing.expect(scanner.findExtension(actual, "example.extension-other") == null);
 }

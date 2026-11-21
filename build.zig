@@ -552,10 +552,10 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const terminal_test_step = b.step("test-terminal", "Run integrated-terminal tests");
     terminal_test_step.dependOn(&run_terminal_tests.step);
 
-    // The extension-host interop test needs Node, the esbuild bundle in
-    // host/dist and the extracted VSCodeVim fixture. Keep it out of the
-    // hermetic `test` step; docs/extensions.md §15 defines this target. The
-    // build option `e2e` replaces the old environment gate.
+    // The Node extension-host interop test needs Node and the esbuild bundle
+    // in host/dist. Keep it out of the hermetic `test` step;
+    // docs/extensions.md defines this target. The build option `e2e` replaces
+    // the old environment gate.
     const e2e_tests = b.addTest(.{
         .name = "e2e_tests",
         .root_module = createTestRootModule(
@@ -573,7 +573,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
             true,
             bench_file,
         ),
-        .filters = &.{ "Extensions:", "VSCodeVim" },
+        .filters = &.{"Extensions:"},
     });
     const run_e2e_tests = b.addRunArtifact(e2e_tests);
     const e2e_test_step = b.step("test-e2e", "Run the extension-host interop tests");

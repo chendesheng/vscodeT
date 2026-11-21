@@ -1,3 +1,5 @@
+> Historical: VSCodeVim was removed; Vim is now the compiled-in `vscode-textbuffer.vim` extension. See `docs/vim.md`.
+
 
 ### ReleaseFast startup (active 121/1548 = 7.8%)
 | inclusive % | self % | symbol |

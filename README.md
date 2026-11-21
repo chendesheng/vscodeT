@@ -65,7 +65,7 @@ required for the measurements below.
   `-Dbench-file=<path>` to benchmark another file (default
   `src/tui/app.zig`).
 - An end-to-end profile of the default Debug build and ReleaseFast, including
-  VSCodeVim interaction latency and CPU hotspots, is in
+  historical VSCodeVim interaction latency and CPU hotspots, is in
   [docs/performance-profile-2026-11-20.md](docs/performance-profile-2026-11-20.md).
 
 ## Upstream VS Code checkout
@@ -223,7 +223,7 @@ fails at runtime.
 cd host && npm ci                          # esbuild, @vscode/ripgrep, @vscode/spdlog
 cd .. && zig build host                    # bundles from the pinned vscode/ submodule
 zig build run -- [--user-data-dir <dir>] [--extensions-dir <dir>] [--logsPath <dir>] [<file>...]
-zig build test-e2e                        # boots the host and edits through VSCodeVim
+zig build test-e2e                        # boots the Node host and runs TypeScript extension interop
 ```
 
 `host/build.js` always reads the embedded pinned `vscode/` checkout. `zig build`
@@ -250,42 +250,31 @@ The JSON server bundle reuses the runtime dependencies of the pinned
 `vscode/extensions/json-language-features/server`; install them there first
 with `npm install` if the bundle step cannot resolve `vscode-languageserver`.
 
-`--extensions-dir` is VS Code's extensions folder (the parent of
-`vscodevim.vim-*/`). Without it, discovery follows VS Code's `extensionsPath`:
-`--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, then
-`~/.vscode/extensions` for the Stable product. The folder is scanned the way
-`scanAllUserExtensions` does it: direct child directories with a `package.json`
-are read and dot-directories are skipped. VSCodeVim is selected by its
-identifier and, when provisioned, VS Code's built-in
-`typescript-language-features` extension joins it in the same pinned host. The
-TUI starts the host, mirrors the active tab as a document/editor, routes
-printable keys through the `type` command, and applies the extension's edits
-and selections back to the editor. A host `default:type` newline goes through
-the same Enter/auto-indent path as the TUI key handler, and the bridge mirrors
-the actual edit (including inserted indentation) to the extension host.
-VSCodeVim 1.32.4 insert/normal/visual
-editing, `Esc`, motions, `x`/`dd`/`yy`/`p`, undo/redo (`u`, `Ctrl-R`),
-`o`/`O` (with the editor's language auto-indent), insert-mode `Tab`/`Shift-Tab` (editor indentation, not VSCodeVim's normal-mode tab command), insert-mode `Backspace`/`Delete` (the core `deleteLeft`/`deleteRight` commands VSCodeVim delegates to), `:e`/`:w`/`:q`, `:bd`, `:bnext`, and `:split`/`:vsplit` work in this loop;
-the status bar shows its mode entry. VSCodeVim's `gd`/`gD`
-(`editor.action.goToDeclaration`, which VS Code aliases to definition),
-`<C-]>` (`editor.action.revealDefinition`), `gh` (`editor.action.showHover`),
-`gO` (`outline.focus`, mapped to the terminal symbol picker) and
-`gf file[:line]` reach the same workbench actions. `gf` opens the file under
-the cursor and honors an optional line number. VSCodeVim's scroll and fold
-families reach the ported viewport and folding controllers: `zz`/`zt`/`zb`,
-`z.`/`z-`/`z<CR>`, `za`/`zc`/`zo`/`zM`/`zR`/`zC`/`zO`/`zf`/`zd`, and
-`Ctrl-E`/`Ctrl-Y`/`Ctrl-D`/`Ctrl-U`/`Ctrl-F`/`Ctrl-B`. `<C-w>` pane
-navigation (`h`/`j`/`k`/`l`/`w`), split (`v`/`s`), close/only, resize and
-equalize operations are wired to the terminal editor groups. Screen-line
-motions (`gj`/`gk`, `H`/`M`/`L`, `g0`/`g^`/`g$`/`g_`/`gm`, and `z h/l/H/L`)
-use the ported `cursorMove` command. The extension host receives real
-`visibleRanges` and scroll deltas, so VSCodeVim's scroll and scrolloff checks
-see the terminal viewport. VSCodeVim's `j`/`k`/`Up`/`Down`
-are not column-preserving across differing tab indentation: its
-`desiredColumn` is a UTF-16 character offset, so the rendered column and the
-status bar `Col` can shift by one or more cells. That is VSCodeVim behavior
-([VSCodeVim#8840](https://github.com/VSCodeVim/Vim/issues/8840)) and matches VS
-Code; the editor's own vertical cursor movement preserves the rendered column.
+The Node host is used for provisioned built-in Node extensions such as
+`typescript-language-features`. VSCodeVim is no longer discovered or loaded.
+
+Vim is a compiled-in built-in extension (`vscode-textbuffer.vim`), enabled
+with `"vim.enabled": true` in the user settings or after startup with the
+`Vim: Enable` / `Vim: Toggle` commands. It does not use the Node extension
+host. The editor core knows only the generic built-in extension and
+key-input interfaces; the Vim extension registers its own key handler through
+them. The normal/insert/visual modes, counts, operators, text objects,
+registers, undo/redo (`u`/`Ctrl-R`), search (`/`, `?`, `n`, `N`) and the basic
+`:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`,
+`:vsp`, `:noh`) are implemented in Zig.
+
+Vim uses the editor's own state instead of a parallel history:
+
+- `u`/`Ctrl-R` call `Editor.undo()`/`Editor.redo()`. One insert session or
+  operator change is one editor undo group; no diff tracker is kept.
+- `j`/`k` use the editor's `leftoverVisibleColumns`, so the visible column is
+  preserved across tabs, wide characters and short lines.
+- Visual selections and cursor positions live in the editor's selection state.
+  Vim keeps only command state (pending count/operator, registers, search).
+
+The status bar shows `-- NORMAL --`, `-- INSERT --`, `-- VISUAL --`, pending
+keys and the `:`/`/` prompt. See `docs/vim.md` for the supported feature list
+and the deliberate non-goals (Vimscript, plugins and `.vimrc`).
 
 Declarative built-ins are scanned from `vscode/extensions/theme-defaults`
 and `vscode/extensions/markdown-basics`: their themes, languages, grammars
@@ -347,15 +336,14 @@ because the terminal editor has no asynchronous provider boundary.
 Host stderr is written to `<data dir>/extension-host.log` (normally
 `<user-data-dir>/logs/extension-host.log`) so it cannot
 corrupt the TUI frame. Startup failures that disable the host are logged to
-the main log (`<user-data-dir>/logs/main.log`). `test-e2e` is skipped unless `host/dist/extensionHost.mjs`
-and the extracted fixture at `.cache-ext/vim/extension` are present. Caret and
-selection changes the TUI makes itself (click, drag, TUI-handled keys, find)
-are pushed to the host with upstream's `source` string, so VSCodeVim's cursor
-follows a mouse click instead of snapping back on the next Vim key. Still
-missing: the contribution scanner, configuration writes, full `tabGroups`, the
-rest of the built-in command set VSCodeVim delegates to, and the extension
-keybinding registry. See `docs/extensions.md` for the port status and the
-remaining work.
+the main log (`<user-data-dir>/logs/main.log`). `test-e2e` is skipped unless
+`host/dist/extensionHost.mjs` and the TypeScript extension fixture are present.
+Caret and selection changes the TUI makes itself (click, drag, TUI-handled
+keys, find) are pushed to the host with upstream's `source` string so Node
+language extensions stay in step. Still missing: the contribution scanner,
+configuration writes, full `tabGroups`, the rest of the built-in command set,
+and the extension keybinding registry. See `docs/extensions.md` for the port
+status and the remaining work.
 
 ## Continuous integration
 
@@ -377,6 +365,10 @@ console API for raw mode, sizing and input polling.
 - [Extension system](docs/extensions.md) — reuse VS Code's Node extension host
   unmodified, port the workbench side (RPC codec, `MainThread*` actors,
   scanner, contribution points, TUI wiring) to Zig.
+- [Built-in extensions](docs/builtin-extensions.md) — the compiled-in extension
+  contract, raw key-input contribution point and lifecycle.
+- [Native Vim](docs/vim.md) — editor-state ownership, supported Vim surface and
+  deliberate gaps.
 - [TUI porting inventory](docs/porting-inventory.md) — file-by-file mapping of
   `src/tui/` to the VS Code internals it should port, with a UI/view code map
   (what is still collapsed into `view.zig`/`editor.zig` and where it belongs)

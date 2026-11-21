@@ -962,11 +962,11 @@ document mirror, the command surface and the typed-text path", but roughly
 | 424-447, 718-735 | tab model sync/close/move (move is a no-op) | extend `mainThreadEditorTabs.zig` |
 | 542-627 | `$initializeWorkspace`, `$initializeConfiguration`, `$startExtensionHost`, startup activation wait | new `mainThreadWorkspace.zig`; extend `mainThreadConfiguration.zig` + `extensionHostManager.zig` |
 | 1071-1161 (+914-948) | `executeHostCommand` switch: split/close/save/next/prev/`vscode.open`/`_setContext`/`insertLineAfter`/`default:type`/`deleteLeft` | `mainThreadCommands.ts` (81-95) + `editorActions.ts`, `editorCommands.ts`, `fileCommands.ts`, `linesOperations.ts`, `contextKeyService.ts`; extend `platform/commands` with args/results |
-| 751-873, 875-899, 1144-1161 | VSCodeVim key table, direct `$executeContributedCommand`, `vim.active`/`vim.mode` booleans | workbench keybinding service `setExtensionKeybindings` (ported but unused) + context keys; no per-extension key table in the host |
+| 751-873, 875-899, 1144-1161 | VSCodeVim key table, direct `$executeContributedCommand`, `vim.active`/`vim.mode` booleans | **Removed.** Native Vim registers a generic key-input handler through the built-in extension API; the Node host has no Vim-specific key table. |
 | 523-540 | configuration change push duplicates `MainThreadConfiguration.push` | dedupe into the actor |
 | 901-912 | unregistered-actor stubs `$getTools`/`$ensureActivation` | `extensionHostManager` default-actor policy |
 | 458-462 | `documentsCreateHost` returns a fake `/tmp/untitled` | untitled/working-copy service (port `untitledTextFileEditorModel` or a host temp resource) |
-| 1026-1040 | `isStaleAutoIndentSelection` workaround | keep with a comment; upstream computes the selection from the applied edit, so this disappears when the typed-text path uses the command/edit result |
+| 1026-1040 | `isStaleAutoIndentSelection` workaround | **Removed** with VSCodeVim support; native Vim uses the editor cursor state directly. |
 
 Genuinely host in this file: `windowOpenUriHost`, `documentsOpen`/`Save`,
 show/reveal (call `Workbench`), diagnostics model lookup (a tab lookup until

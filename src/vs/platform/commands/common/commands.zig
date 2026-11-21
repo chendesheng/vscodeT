@@ -52,6 +52,17 @@ pub const CommandRegistry = struct {
         return null;
     }
 
+    /// Removes a command registration. Used by built-in extension disposal;
+    /// command ids are unique, so a single match is removed.
+    pub fn unregister(self: *CommandRegistry, id: []const u8) void {
+        for (self.commands.items, 0..) |command, index| {
+            if (std.mem.eql(u8, command.id, id)) {
+                _ = self.commands.orderedRemove(index);
+                return;
+            }
+        }
+    }
+
     /// Runs the command with `id`; returns false when it is not registered.
     pub fn execute(self: *const CommandRegistry, id: []const u8) !bool {
         const command = self.get(id) orelse return false;

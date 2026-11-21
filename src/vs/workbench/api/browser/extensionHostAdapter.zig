@@ -3,7 +3,7 @@
 // The portable pieces (transport, RPC, generated protocol table, host boot)
 // live under `src/vs/workbench/services/extensions/`. This file owns only the
 // terminal-specific state: the active tab's document mirror, the command
-// surface VSCodeVim calls back into, and the key path that sends typed text
+// surface Node extensions call back into, and the typed-text path
 // through the `type` command.
 const std = @import("std");
 const build_options = @import("build_options");
@@ -61,15 +61,13 @@ const ActiveDocument = struct {
     editor: *Editor,
     uri: []u8,
     id: []const u8 = "1",
-    version: u32 = 1,
     language_id: []u8,
 };
 
 /// Source of a cursor-selection change, using upstream's
 /// `ICursorSelectionChangedEvent.source` strings. The extension host maps
-/// `"mouse"`/`"keyboard"` to `TextEditorSelectionChangeKind`; VSCodeVim
-/// accepts a mouse change even though it did not make it itself, which is what
-/// keeps its own cursor in step with a click.
+/// `"mouse"`/`"keyboard"` to `TextEditorSelectionChangeKind` so an extension can
+/// tell a user-initiated selection change from its own edit.
 pub const SelectionSource = enum {
     keyboard,
     mouse,
@@ -89,27 +87,23 @@ pub const Extensions = struct {
     io: Io,
     workbench: *Workbench,
     host: *manager.HostManager,
-    /// Loadable extensions: the user extension (usually VSCodeVim) first, then
-    /// any built-in extensions. The host receives all of them in one init-data
-    /// payload; activation events select which one runs.
+    /// Loadable Node extensions. The host receives all of them in one
+    /// init-data payload; activation events select which one runs.
     descriptions: []manager.ExtensionDescription,
     extension_ptrs: []const *const manager.ExtensionDescription,
     user_data_dir: []u8,
     active: ?ActiveDocument = null,
-    /// Cursor produced by the last host-driven type. VSCodeVim computes its
-    /// own cursor from the requested text, which does not include automatic
-    /// indentation; ignore that one stale selection update.
-    pending_type_selection: ?Selection = null,
-    vim_active: bool = false,
-    vim_mode_insert: bool = false,
     decoration_count: usize = 0,
     activated: bool = false,
     activation_tracker: extension_service.ActivationTracker,
     needs_render: bool = false,
     /// The active editor whose scroll events are mirrored to the host.
     scroll_listener_editor: ?*Editor = null,
+    /// The active editor whose content changes are mirrored to the host. This
+    /// is the single content-event path for host edits, terminal typing and
+    /// built-in extensions such as native Vim.
+    content_listener_editor: ?*Editor = null,
     visible_ranges_dirty: bool = false,
-    pasting: bool = false,
     language_features_actor: ?MainThreadLanguageFeatures = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
     storage_actor: ?MainThreadStorage = null,
@@ -239,6 +233,7 @@ pub const Extensions = struct {
 
     pub fn deinit(self: *Extensions) void {
         self.setScrollListener(null);
+        self.setContentListener(null);
         if (self.diagnostics_actor) |actor| {
             actor.deinit();
             self.diagnostics_actor = null;
@@ -501,18 +496,6 @@ pub const Extensions = struct {
             selection.endColumn = columnFromUtf16ForModel(editor.model, selection.endLineNumber, selection.endColumn);
         }
         if (selections.len > 0) {
-            if (self.pending_type_selection) |pending| {
-                if (sameSelection(pending, selections[0])) {
-                    self.pending_type_selection = null;
-                } else if (isStaleAutoIndentSelection(editor, pending, selections[0])) {
-                    var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
-                    defer arena_instance.deinit();
-                    self.sendSelection(arena_instance.allocator(), .command) catch {};
-                    return;
-                } else {
-                    self.pending_type_selection = null;
-                }
-            }
             editor.setSelections(selections) catch {};
             self.needs_render = true;
         }
@@ -650,21 +633,6 @@ pub const Extensions = struct {
             error.StartExtensionHostRejected,
         );
 
-        // VSCodeVim activates on `onStartupFinished`; wait for that before the
-        // first document delta so its listeners see the initial model. Other
-        // extensions (TypeScript) activate on `onLanguage` below, after the
-        // document delta has been queued.
-        var wait_for_startup_extension = false;
-        for (self.descriptions) |description| {
-            if (std.mem.eql(u8, description.identifier, "vscodevim.vim")) wait_for_startup_extension = true;
-        }
-        if (wait_for_startup_extension) {
-            const deadline = time_compat.milliTimestamp() + 10_000;
-            while (!self.activated and time_compat.milliTimestamp() < deadline) {
-                _ = self.host.pump();
-                time_compat.sleepMillis(5);
-            }
-        }
         try self.syncActiveDocument();
         self.activateActiveLanguage();
     }
@@ -757,6 +725,7 @@ pub const Extensions = struct {
 
         self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language };
         self.setScrollListener(tab.editor);
+        self.setContentListener(tab.editor);
         self.captureSelections(tab.editor);
         try self.syncTabs();
         self.needs_render = true;
@@ -792,148 +761,11 @@ pub const Extensions = struct {
         var args = [_]rpc.Arg{.{ .json = delta }};
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback) catch {};
         self.setScrollListener(null);
+        self.setContentListener(null);
         self.allocator.free(active.uri);
         self.allocator.free(active.language_id);
         self.active = null;
         self.needs_render = true;
-    }
-
-    pub fn handleKey(self: *Extensions, event: *const ui.KeyEvent) bool {
-        if (!self.vim_active) return false;
-        if (self.workbench.activeTab() == null) return false;
-        switch (event.key) {
-            .paste_start => {
-                self.pasting = true;
-                return false;
-            },
-            .paste_end => {
-                self.pasting = false;
-                return false;
-            },
-            .f12 => return false,
-            .text => |text| {
-                if (self.pasting) return false;
-                if (event.mods.ctrl or event.mods.alt) return false;
-                var view = std.unicode.Utf8View.init(text) catch return false;
-                var iterator = view.iterator();
-                while (iterator.nextCodepoint()) |codepoint| {
-                    if (codepoint == '\n' or codepoint == '\r') {
-                        self.typeText("\n");
-                    } else {
-                        var buffer: [4]u8 = undefined;
-                        const length = std.unicode.utf8Encode(codepoint, &buffer) catch continue;
-                        self.typeText(buffer[0..length]);
-                    }
-                }
-                return true;
-            },
-            .char => |char| {
-                if (event.mods.ctrl and !event.mods.alt) {
-                    // Ctrl-Space belongs to the editor suggest controller, not
-                    // to VSCodeVim's key handler; otherwise completion never
-                    // reaches the language provider.
-                    if (char == 's' or char == 'q' or char == ' ') return false;
-                    var command_buffer: [32]u8 = undefined;
-                    const command = std.fmt.bufPrint(&command_buffer, "extension.vim_ctrl+{c}", .{std.ascii.toLower(@intCast(char))}) catch return false;
-                    self.executeCommand(command, &.{});
-                    return true;
-                }
-                if (event.mods.alt) return false;
-                var buffer: [4]u8 = undefined;
-                const length = std.unicode.utf8Encode(char, &buffer) catch return false;
-                self.typeText(buffer[0..length]);
-                return true;
-            },
-            .enter => {
-                self.typeText("\n");
-                return true;
-            },
-            .escape => {
-                self.executeCommand("extension.vim_escape", &.{});
-                return true;
-            },
-            .insert => {
-                self.executeCommand("extension.vim_insert", &.{});
-                return true;
-            },
-            .backspace => {
-                if (event.mods.shift and !event.mods.ctrl) {
-                    self.executeCommand("extension.vim_shift+backspace", &.{});
-                    return true;
-                }
-                self.executeCommand("extension.vim_backspace", &.{});
-                return true;
-            },
-            .delete => {
-                self.executeCommand("extension.vim_delete", &.{});
-                return true;
-            },
-            .tab => {
-                // VSCodeVim disables its Tab binding in insert mode; the
-                // editor owns it there so insertSpaces/tabSize apply instead
-                // of inserting the literal "<tab>" notation.
-                if (self.vim_mode_insert) {
-                    if (self.workbench.activeTab()) |tab| tab.editor.insertTab() catch {};
-                    return true;
-                }
-                self.executeCommand("extension.vim_tab", &.{});
-                return true;
-            },
-            .backtab => {
-                if (self.vim_mode_insert) {
-                    if (self.workbench.activeTab()) |tab| tab.editor.outdent() catch {};
-                    return true;
-                }
-                self.executeCommand("extension.vim_shift+tab", &.{});
-                return true;
-            },
-            .left => {
-                self.executeCommand("extension.vim_left", &.{});
-                return true;
-            },
-            .right => {
-                self.executeCommand("extension.vim_right", &.{});
-                return true;
-            },
-            .up => {
-                self.executeCommand("extension.vim_up", &.{});
-                return true;
-            },
-            .down => {
-                self.executeCommand("extension.vim_down", &.{});
-                return true;
-            },
-            .home => {
-                self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+home" else "extension.vim_home", &.{});
-                return true;
-            },
-            .end => {
-                self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+end" else "extension.vim_end", &.{});
-                return true;
-            },
-            .page_up => {
-                self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+pageup" else "extension.vim_ctrl+b", &.{});
-                return true;
-            },
-            .page_down => {
-                self.executeCommand(if (event.mods.ctrl) "extension.vim_ctrl+pagedown" else "extension.vim_ctrl+f", &.{});
-                return true;
-            },
-        }
-        return false;
-    }
-
-    fn typeText(self: *Extensions, text: []const u8) void {
-        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena_instance.deinit();
-        const arena = arena_instance.allocator();
-        var arg: std.json.ObjectMap = .empty;
-        arg.put(arena, "text", .{ .string = text }) catch return;
-        var args = [_]rpc.Arg{
-            .{ .json = .{ .string = "type" } },
-            .{ .json = .{ .object = arg } },
-        };
-        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &args, null, manager.noop_callback) catch return;
     }
 
     fn executeCommand(self: *Extensions, command: []const u8, command_args: []const std.json.Value) void {
@@ -963,62 +795,22 @@ pub const Extensions = struct {
     }
 
     fn applyType(self: *Extensions, arena: Allocator, editor: *Editor, text: []const u8) !void {
-        const before = try editor.getSelections();
-        defer editor.allocator.free(before);
-        const start = if (before.len > 0) before[0].getStartPosition() else Position.init(1, 1);
-        self.pending_type_selection = null;
         try editor.typeCharacter(text);
-        const post_type = try editor.getSelections();
-        defer editor.allocator.free(post_type);
-        self.pending_type_selection = if (post_type.len > 0) post_type[0] else null;
-        const changes = try editor.takeContentChanges(self.allocator);
-        defer {
-            for (changes) |change| self.allocator.free(change.text);
-            self.allocator.free(changes);
-        }
-        const active = &(self.active orelse return);
-        active.version += 1;
-        if (changes.len > 0) {
-            try self.sendModelChanges(arena, changes);
-        } else {
-            try self.sendModelChanged(arena, text, start, start);
-        }
+        // The content listener mirrors real edits; a cursor-only type (for
+        // example overtyping an auto-closing pair) fires no model event.
         try self.sendSelection(arena, .command);
         self.needs_render = true;
     }
 
-    /// Mirrors the result of a command that may edit or move the cursor. Used
-    /// by the generic command bridge and by the ported `cursorMove`, scroll and
-    /// fold commands. Multi-change batches are handled by `takeContentChanges`
-    /// once the editor has collected the whole model event.
-    fn syncAfterEditorCommand(self: *Extensions, arena: Allocator, editor: *Editor) !void {
-        const active = &(self.active orelse return);
-        const changes = try editor.takeContentChanges(self.allocator);
-        defer {
-            for (changes) |change| self.allocator.free(change.text);
-            self.allocator.free(changes);
-        }
-        if (changes.len > 0) {
-            active.version += 1;
-            try self.sendModelChanges(arena, changes);
-        }
+    /// Mirrors the selection/scroll result of a command. Content changes are
+    /// handled once, by the active editor's content listener.
+    fn syncAfterEditorCommand(self: *Extensions, _: Allocator, _: *Editor) !void {
         try self.syncSelection();
         self.sendVisibleRanges() catch {};
         self.needs_render = true;
     }
 
-    fn applyCommandEdit(self: *Extensions, arena: Allocator, editor: *Editor) !void {
-        const active = &(self.active orelse return);
-        const post_selections = try editor.getSelections();
-        defer editor.allocator.free(post_selections);
-        self.pending_type_selection = if (post_selections.len > 0) post_selections[0] else null;
-        active.version += 1;
-        const changes = try editor.takeContentChanges(self.allocator);
-        defer {
-            for (changes) |change| self.allocator.free(change.text);
-            self.allocator.free(changes);
-        }
-        if (changes.len > 0) try self.sendModelChanges(arena, changes);
+    fn applyCommandEdit(self: *Extensions, arena: Allocator, _: *Editor) !void {
         try self.sendSelection(arena, .command);
         self.needs_render = true;
     }
@@ -1043,36 +835,8 @@ pub const Extensions = struct {
         }
         if (text_edits.items.len == 0) return;
         try editor.applyTextEdits(text_edits.items, &.{});
-        const active = &(self.active orelse return);
-        active.version += 1;
-        const changes = try editor.takeContentChanges(self.allocator);
-        defer {
-            for (changes) |change| self.allocator.free(change.text);
-            self.allocator.free(changes);
-        }
-        if (changes.len > 0) try self.sendModelChanges(arena, changes);
         try self.sendSelection(arena, .keyboard);
         self.needs_render = true;
-    }
-
-    fn sendModelChanged(self: *Extensions, arena: Allocator, text: []const u8, start: Position, end: Position) !void {
-        const active = self.active orelse return;
-        const event = try documents_and_editors.modelChangedEvent(
-            arena,
-            active.editor.model,
-            .{
-                .text = text,
-                .start = .{ .line = start.lineNumber, .column = start.column },
-                .end = .{ .line = end.lineNumber, .column = end.column },
-            },
-            active.version,
-        );
-        var args = [_]rpc.Arg{
-            .{ .json = try manager.fileUri(arena, active.uri) },
-            .{ .json = event },
-            .{ .json = .{ .bool = false } },
-        };
-        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelChanged", &args, null, manager.noop_callback) catch {};
     }
 
     fn sendModelChanges(self: *Extensions, arena: Allocator, changes: []const LastContentChange) !void {
@@ -1085,7 +849,7 @@ pub const Extensions = struct {
                 .end = .{ .line = change.range.endLineNumber, .column = change.range.endColumn },
             });
         }
-        const event = try documents_and_editors.modelChangesEvent(arena, active.editor.model, specs.items, active.version);
+        const event = try documents_and_editors.modelChangesEvent(arena, active.editor.model, specs.items, active.editor.model.getVersionId());
         var args = [_]rpc.Arg{
             .{ .json = try manager.fileUri(arena, active.uri) },
             .{ .json = event },
@@ -1114,6 +878,27 @@ pub const Extensions = struct {
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
         self.visible_ranges_dirty = false;
         self.captureSelections(active.editor);
+    }
+
+    fn onEditorContent(context: *anyopaque) void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const active = self.active orelse return;
+        if (active.editor.last_content_changes.items.len == 0) return;
+        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_instance.deinit();
+        self.sendModelChanges(arena_instance.allocator(), active.editor.last_content_changes.items) catch {};
+    }
+
+    fn setContentListener(self: *Extensions, editor: ?*Editor) void {
+        if (self.content_listener_editor == editor) return;
+        if (self.content_listener_editor) |old| {
+            old.removeWorkingCopyContentListener(.{ .context = self, .callback = onEditorContent });
+        }
+        self.content_listener_editor = null;
+        if (editor) |value| {
+            value.addWorkingCopyContentListener(.{ .context = self, .callback = onEditorContent });
+            self.content_listener_editor = value;
+        }
     }
 
     fn onEditorScroll(context: *anyopaque) void {
@@ -1165,30 +950,6 @@ pub const Extensions = struct {
         self.last_selections.appendSlice(selections) catch {};
     }
 
-    /// VSCodeVim computes its post-type cursor from the requested text. When
-    /// auto-indent inserted extra whitespace, that cursor lands before the
-    /// indentation; keep the editor's real cursor instead.
-    fn isStaleAutoIndentSelection(editor: *Editor, pending: Selection, incoming: Selection) bool {
-        if (incoming.startLineNumber != pending.startLineNumber or
-            incoming.startColumn >= pending.startColumn or
-            incoming.startColumn != incoming.endColumn)
-        {
-            return false;
-        }
-        const line = editor.model.getLineContent(incoming.startLineNumber) catch return false;
-        defer line.deinit();
-        const prefix_end = @min(incoming.startColumn - 1, line.items.len);
-        for (line.items[0..prefix_end]) |ch| {
-            if (ch != ' ' and ch != '\t') return false;
-        }
-        return true;
-    }
-
-    fn sameSelection(a: Selection, b: Selection) bool {
-        return a.startLineNumber == b.startLineNumber and a.startColumn == b.startColumn and
-            a.endLineNumber == b.endLineNumber and a.endColumn == b.endColumn;
-    }
-
     fn sameSelections(a: []const Selection, b: []const Selection) bool {
         if (a.len != b.len) return false;
         for (a, b) |left, right| {
@@ -1200,8 +961,8 @@ pub const Extensions = struct {
     /// Reports a caret or selection change the TUI applied itself (mouse
     /// press/drag, arrow key, find, tab switch) to the extension host,
     /// mirroring `MainThreadTextEditor`'s properties-changed delta. Without it
-    /// VSCodeVim keeps its own cursor and the next Vim key snaps the caret
-    /// back to where it was before the click.
+    /// Keep the extension host's selection mirror in step with a caret move
+    /// the TUI made itself.
     fn syncSelection(self: *Extensions) !void {
         const active = self.active orelse return;
         const selections = try active.editor.getSelections();
@@ -1213,7 +974,7 @@ pub const Extensions = struct {
     }
 };
 
-/// Maps command ids issued by extensions/VSCodeVim to the workbench LSP
+/// Maps command ids issued by Node extensions to the workbench LSP
 /// actions. Returns true when the command was recognized, even when the
 /// action produced no result.
 pub fn runLspCommand(workbench: *Workbench, command: []const u8) bool {
@@ -1243,9 +1004,14 @@ fn currentVisibleRange(editor: *Editor) ?Range {
     if (editor.viewLineCount() == 0) return null;
     const top = editor.topViewLine();
     const bottom = @min(top + editor.textHeight() -| 1, editor.viewLineCount());
-    const start_line = editor.modelLineNumber(top);
-    const end_line = editor.modelLineNumber(bottom);
-    if (start_line < 1 or end_line < 1) return null;
+    const line_count = editor.model.getLineCount();
+    // The view model can lag the model for one event: deleting the last line
+    // leaves a view line that still maps to the deleted model line. Upstream
+    // reads the visible range from the view model after that update has
+    // settled; clamp to the model here so a selection push cannot query a
+    // line that no longer exists.
+    const start_line = @min(@max(editor.modelLineNumber(top), 1), line_count);
+    const end_line = @min(@max(editor.modelLineNumber(bottom), start_line), line_count);
     return Range.init(start_line, 1, end_line, editor.model.getLineMaxColumn(end_line));
 }
 
@@ -1477,9 +1243,8 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         }
         return null;
     }
-    // VSCodeVim's insert-mode Backspace/Delete actions do not edit the
-    // document themselves: they delegate to the editor's core
-    // `deleteLeft`/`deleteRight` command.
+    // Some extensions delegate Backspace/Delete to the editor's core
+    // `deleteLeft`/`deleteRight` commands.
     if (std.mem.eql(u8, command, "deleteLeft") or std.mem.eql(u8, command, "deleteRight")) {
         const editor = if (self.active) |active| active.editor else return null;
         _ = try runEditorCommand(editor, command);
@@ -1534,9 +1299,8 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         return null;
     }
     if (runLspCommand(self.workbench, command)) {
-        // VSCodeVim reads `activeTextEditor` immediately after the command
-        // resolves. Publish the new document/selection on the same channel
-        // before the command reply so `gd` sees the target cursor.
+        // Publish the new document/selection before the command reply so an
+        // extension that reads `activeTextEditor` immediately sees the target.
         self.syncActiveDocument() catch {};
         self.syncSelection() catch {};
         self.needs_render = true;
@@ -1569,19 +1333,8 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         return null;
     }
     if (std.mem.eql(u8, command, "_setContext") or std.mem.eql(u8, command, "setContext")) {
-        if (args.len >= 2 and args[0] == .string) {
-            const key_value = args[0];
-            if (std.mem.eql(u8, key_value.string, "vim.active")) {
-                if (args[1] == .bool) {
-                    self.vim_active = args[1].bool;
-                    if (!self.vim_active) self.vim_mode_insert = false;
-                }
-            } else if (std.mem.eql(u8, key_value.string, "vim.mode")) {
-                const mode = args[1];
-                self.vim_mode_insert = mode == .string and
-                    (std.mem.eql(u8, mode.string, "Insert") or std.mem.eql(u8, mode.string, "Replace"));
-            }
-        }
+        // Context keys are accepted for extension compatibility; the Node API
+        // surface does not yet expose a terminal context-key registry.
         return null;
     }
     if (self.workbench.commands.get(command) != null) {
@@ -1601,8 +1354,8 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
 }
 
 /// Applies a core editor command the extension host delegates back to the
-/// TUI. VSCodeVim's insert-mode Backspace and Delete actions are wrappers
-/// around these core commands; the caller mirrors the resulting edit.
+/// TUI. Extensions may delegate Backspace/Delete to these core commands; the
+/// caller mirrors the resulting edit.
 fn runEditorCommand(editor: *Editor, command: []const u8) !bool {
     if (std.mem.eql(u8, command, "deleteLeft")) {
         try editor.deleteLeft();
@@ -1738,8 +1491,8 @@ test "Extensions: insert-mode Backspace and Delete run the core editor commands"
         allocator.destroy(editor);
     }
 
-    // VSCodeVim's BackspaceInInsertMode delegates to `deleteLeft`; the key is
-    // not an edit by itself, so the TUI must run the command.
+    // Some editor actions delegate to `deleteLeft`; the key is not an edit by
+    // itself, so the TUI must run the command.
     try editor.setSelections(&[_]Selection{Selection.init(1, 4, 1, 4)});
     try std.testing.expect(try runEditorCommand(editor, "deleteLeft"));
     const after_backspace = try editor.model.getValue(.TextDefined, false);
@@ -1756,196 +1509,6 @@ test "Extensions: insert-mode Backspace and Delete run the core editor commands"
     try std.testing.expectEqual(Position.init(1, 1), editor.modelCursorPosition());
 
     try std.testing.expect(!try runEditorCommand(editor, "unhandled.command"));
-}
-
-test "Extensions: VSCodeVim inserts text into the active TUI editor" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(time_compat.io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    const io = time_compat.io;
-    const tmp = std.testing.tmpDir(.{});
-    var tmp_value = tmp;
-    defer tmp_value.cleanup();
-    try tmp_value.dir.writeFile(io, .{ .sub_path = "vim.txt", .data = "hello\n" });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const relative_len = try tmp_value.dir.realPathFile(io, "vim.txt", &path_buffer);
-    const relative = path_buffer[0..relative_len];
-
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
-
-    var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = ".cache-ext/vim/extension", .is_under_development = true }}, ".cache-ext/data-tui-test");
-    defer extension_host.deinit();
-
-    const deadline = time_compat.milliTimestamp() + 10_000;
-    while (time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        if (extension_host.active != null) break;
-        time_compat.sleepMillis(10);
-    }
-    try std.testing.expect(extension_host.active != null);
-
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'i' } });
-    _ = extension_host.pump();
-    time_compat.sleepMillis(1000);
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'X' } });
-    const until = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < until) {
-        _ = extension_host.pump();
-        var line = try workbench.activeTab().?.editor.model.getLineContent(1);
-        defer line.deinit();
-        if (std.mem.startsWith(u8, line.items, "Xhello")) break;
-        time_compat.sleepMillis(10);
-    }
-    var line = try workbench.activeTab().?.editor.model.getLineContent(1);
-    defer line.deinit();
-    try std.testing.expectEqualStrings("Xhello", line.items);
-
-    // The TUI routes Backspace to VSCodeVim while it is active. In insert mode
-    // VSCodeVim delegates the edit back through the core `deleteLeft` command;
-    // the bridge must run it instead of swallowing the key.
-    _ = extension_host.handleKey(&.{ .key = .backspace });
-    const backspace_until = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < backspace_until) {
-        _ = extension_host.pump();
-        var current = try workbench.activeTab().?.editor.model.getLineContent(1);
-        defer current.deinit();
-        if (std.mem.eql(u8, current.items, "hello")) break;
-        time_compat.sleepMillis(10);
-    }
-    var after_backspace = try workbench.activeTab().?.editor.model.getLineContent(1);
-    defer after_backspace.deinit();
-    try std.testing.expectEqualStrings("hello", after_backspace.items);
-
-    // Restore the typed prefix for the normal-mode `x` check below.
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'X' } });
-    const retype_until = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < retype_until) {
-        _ = extension_host.pump();
-        var current = try workbench.activeTab().?.editor.model.getLineContent(1);
-        defer current.deinit();
-        if (std.mem.startsWith(u8, current.items, "Xhello")) break;
-        time_compat.sleepMillis(10);
-    }
-
-    _ = extension_host.handleKey(&.{ .key = .escape });
-    const mode_deadline = time_compat.milliTimestamp() + 3_000;
-    while (extension_host.vim_mode_insert and time_compat.milliTimestamp() < mode_deadline) {
-        _ = extension_host.pump();
-        time_compat.sleepMillis(10);
-    }
-    _ = extension_host.pump();
-    time_compat.sleepMillis(100);
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'x' } });
-    const delete_until = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < delete_until) {
-        _ = extension_host.pump();
-        var current = try workbench.activeTab().?.editor.model.getLineContent(1);
-        defer current.deinit();
-        if (std.mem.eql(u8, current.items, "hello")) break;
-        time_compat.sleepMillis(10);
-    }
-    var deleted = try workbench.activeTab().?.editor.model.getLineContent(1);
-    defer deleted.deinit();
-    try std.testing.expectEqualStrings("hello", deleted.items);
-
-    // Regression: a pointer click moves the TUI caret without VSCodeVim
-    // seeing it. `pump` must report the selection change (source "mouse"),
-    // otherwise the next Vim key starts from its stale cursor and the caret
-    // jumps back to where it was before the click.
-    try workbench.activeTab().?.editor.setCursorPosition(Position.init(1, 4));
-    extension_host.selection_source = .mouse;
-    _ = extension_host.pump();
-    time_compat.sleepMillis(1000);
-    _ = extension_host.handleKey(&.{ .key = .right });
-    const arrow_until = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < arrow_until) {
-        _ = extension_host.pump();
-        if (workbench.activeTab().?.editor.modelCursorPosition().column == 5) break;
-        time_compat.sleepMillis(10);
-    }
-    const clicked = workbench.activeTab().?.editor.modelCursorPosition();
-    try std.testing.expectEqual(@as(usize, 1), clicked.lineNumber);
-    try std.testing.expectEqual(@as(usize, 5), clicked.column);
-}
-
-test "Extensions: VSCodeVim vertical motion uses its character column" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const content = "\twhile (pos < source.length && depth > 0) {\n\t\tconst ch = source[pos];\n";
-    try tmp.dir.writeFile(io, .{ .sub_path = "tabs.js", .data = content });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_length = try tmp.dir.realPathFile(io, "tabs.js", &path_buffer);
-
-    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 80, 24);
-    defer workbench.deinit();
-    var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = ".cache-ext/vim/extension", .is_under_development = true }}, ".cache-ext/data-tui-test");
-    defer extension_host.deinit();
-
-    const deadline = time_compat.milliTimestamp() + 15_000;
-    while (time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        if (extension_host.active != null and extension_host.vim_active) break;
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(extension_host.active != null);
-    try std.testing.expect(extension_host.vim_active);
-    time_compat.sleepMillis(500);
-    _ = extension_host.pump();
-
-    const editor = workbench.activeTab().?.editor;
-    var line1 = try editor.model.getLineContent(1);
-    defer line1.deinit();
-    var line2 = try editor.model.getLineContent(2);
-    defer line2.deinit();
-    try editor.setCursorPosition(Position.init(1, 27));
-    extension_host.selection_source = .mouse;
-    _ = extension_host.pump();
-    time_compat.sleepMillis(1000);
-    _ = extension_host.pump();
-    try std.testing.expectEqual(@as(usize, 30), CursorColumns.toStatusbarColumn(line1.items, 27, editor.tabSize()));
-
-    // The editor's own vertical movement preserves the rendered column: one
-    // tab on line 1 and two tabs on line 2 both put visible column 29 before
-    // `h` and before `]`.
-    try editor.moveDown(false);
-    const native = editor.modelCursorPosition();
-    try std.testing.expectEqual(@as(usize, 2), native.lineNumber);
-    try std.testing.expectEqual(@as(usize, 24), native.column);
-    try std.testing.expectEqual(@as(usize, 30), CursorColumns.toStatusbarColumn(line2.items, native.column, editor.tabSize()));
-
-    // VSCodeVim 1.32.4 instead applies its character-based `desiredColumn`
-    // (26) to line 2, which has only 25 code units. Normal mode then clamps
-    // to the last character, landing before `;` (column 25) and one rendered
-    // column to the right. That is upstream behavior (VSCodeVim#8840) and
-    // reproduces in VS Code; the bridge must keep applying its selection.
-    try editor.setCursorPosition(Position.init(1, 27));
-    extension_host.selection_source = .mouse;
-    _ = extension_host.pump();
-    time_compat.sleepMillis(1000);
-    _ = extension_host.pump();
-    const before = editor.modelCursorPosition();
-    try std.testing.expectEqual(Position.init(1, 27), before);
-
-    _ = extension_host.handleKey(&.{ .key = .down });
-    const move_deadline = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < move_deadline) {
-        _ = extension_host.pump();
-        if (editor.modelCursorPosition().lineNumber == 2) break;
-        time_compat.sleepMillis(10);
-    }
-    const after = editor.modelCursorPosition();
-    try std.testing.expectEqual(@as(usize, 2), after.lineNumber);
-    try std.testing.expectEqual(@as(usize, 25), after.column);
-    try std.testing.expectEqual(@as(usize, 31), CursorColumns.toStatusbarColumn(line2.items, after.column, editor.tabSize()));
 }
 
 test "Extensions: language feature registration reaches the workbench registries" {
@@ -2024,7 +1587,7 @@ test "Extensions: language feature registration reaches the workbench registries
     defer allocator.free(reference_providers);
     try std.testing.expect(reference_providers.len > 0);
 
-    // VSCodeVim's command names reach the same workbench actions.
+    // Extension command names reach the same workbench actions.
     try std.testing.expect(runLspCommand(workbench, "editor.action.goToDeclaration"));
     try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
     try std.testing.expect(runLspCommand(workbench, "editor.action.revealDeclaration"));
@@ -2299,62 +1862,6 @@ test "Extensions: real TypeScript extension drives the language features" {
     try std.testing.expect(formatted);
 }
 
-test "Extensions: TypeScript and VSCodeVim share one host" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "both.ts", .data = "const value: number = \"text\";\n" });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_length = try tmp.dir.realPathFile(io, "both.ts", &path_buffer);
-
-    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 80, 24);
-    defer workbench.deinit();
-    try workbench.enableLanguageFeatures();
-    var extension_host = try Extensions.init(
-        allocator,
-        io,
-        workbench,
-        &.{
-            .{ .path = ".cache-ext/vim/extension", .is_under_development = true },
-            .{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true },
-        },
-        ".cache-ext/data-ts-vim-test",
-    );
-    defer extension_host.deinit();
-    try std.testing.expectEqual(@as(usize, 2), extension_host.descriptions.len);
-
-    const marker_service = workbench.marker_service.?;
-    const model = workbench.activeTab().?.editor.model;
-    var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
-    defer resource.deinit(allocator);
-
-    // The TypeScript extension in the same host also publishes diagnostics.
-    var found = false;
-    const diagnostics_deadline = time_compat.milliTimestamp() + 30_000;
-    while (time_compat.milliTimestamp() < diagnostics_deadline) {
-        _ = extension_host.pump();
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const list = marker_service.read(arena.allocator(), .{ .resource = resource }) catch &.{};
-        for (list) |marker| {
-            if (std.mem.indexOf(u8, marker.message, "not assignable") != null) {
-                found = true;
-                break;
-            }
-        }
-        if (found) break;
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(found);
-}
-
 test "Extensions: showDocument applies a line selection" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -2369,208 +1876,6 @@ test "Extensions: showDocument applies a line selection" {
     applyShowDocumentSelection(editor, options);
     try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
     try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
-}
-
-test "Extensions: VSCodeVim navigation commands reach the workbench actions" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "vim-lsp.json", .data = "{\n  \"a\": 1\n}\n" });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp.dir.realPathFile(io, "vim-lsp.json", &path_buffer);
-
-    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 24);
-    defer workbench.deinit();
-    try workbench.enableLanguageFeatures();
-
-    var extension_host = try Extensions.init(allocator, io, workbench, &.{
-        .{ .path = "host/test-fixtures/language-features", .is_under_development = true },
-        .{ .path = ".cache-ext/vim/extension", .is_under_development = true },
-    }, ".cache-ext/data-vim-lsp-test");
-    defer extension_host.deinit();
-
-    const startup_deadline = time_compat.milliTimestamp() + 10_000;
-    while (time_compat.milliTimestamp() < startup_deadline) {
-        _ = extension_host.pump();
-        if (extension_host.active != null) break;
-        time_compat.sleepMillis(10);
-    }
-    try std.testing.expect(extension_host.active != null);
-    const vim_deadline = time_compat.milliTimestamp() + 10_000;
-    while (!extension_host.vim_active and time_compat.milliTimestamp() < vim_deadline) {
-        _ = extension_host.pump();
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(extension_host.vim_active);
-    _ = extension_host.handleKey(&.{ .key = .escape });
-    _ = extension_host.pump();
-    time_compat.sleepMillis(1000);
-
-    const tab = workbench.activeTab().?;
-    try tab.editor.setCursorPosition(Position.init(3, 1));
-    _ = extension_host.pump();
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'g' } });
-    _ = extension_host.pump();
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'd' } });
-    const definition_deadline = time_compat.milliTimestamp() + 10_000;
-    while (time_compat.milliTimestamp() < definition_deadline) {
-        _ = extension_host.pump();
-        if (tab.editor.modelCursorPosition().lineNumber == 1) break;
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
-
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'g' } });
-    _ = extension_host.pump();
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'h' } });
-    const hover_deadline = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < hover_deadline) {
-        _ = extension_host.pump();
-        if (tab.controllers != null and tab.controllers.?.hover.isVisible()) break;
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(tab.controllers != null and tab.controllers.?.hover.isVisible());
-
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'g' } });
-    _ = extension_host.pump();
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'O' } });
-    const symbol_deadline = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < symbol_deadline) {
-        _ = extension_host.pump();
-        if (workbench.quick_access.isOpen()) break;
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(workbench.quick_access.isOpen());
-    workbench.quick_access.inputService().hide();
-}
-
-test "Extensions: VSCodeVim z commands scroll the viewport" {
-    if (std.c.getenv("ZIG_E2E_EXTENSION_HOST") == null) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var contents = std.array_list.Managed(u8).init(allocator);
-    defer contents.deinit();
-    var line: usize = 1;
-    var line_buffer: [32]u8 = undefined;
-    while (line <= 60) : (line += 1) {
-        const text = try std.fmt.bufPrint(&line_buffer, "line {d}\n", .{line});
-        try contents.appendSlice(text);
-    }
-    try tmp.dir.writeFile(io, .{ .sub_path = "vim-scroll.txt", .data = contents.items });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp.dir.realPathFile(io, "vim-scroll.txt", &path_buffer);
-
-    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 24);
-    defer workbench.deinit();
-    var extension_host = try Extensions.init(allocator, io, workbench, &.{
-        .{ .path = ".cache-ext/vim/extension", .is_under_development = true },
-    }, ".cache-ext/data-vim-scroll-test");
-    defer extension_host.deinit();
-
-    const startup_deadline = time_compat.milliTimestamp() + 10_000;
-    while (time_compat.milliTimestamp() < startup_deadline) {
-        _ = extension_host.pump();
-        if (extension_host.active != null and extension_host.vim_active) break;
-        time_compat.sleepMillis(10);
-    }
-    try std.testing.expect(extension_host.vim_active);
-    _ = extension_host.handleKey(&.{ .key = .escape });
-    _ = extension_host.pump();
-
-    const tab = workbench.activeTab().?;
-    try tab.editor.setCursorPosition(Position.init(40, 1));
-    _ = extension_host.pump();
-    const initial_top = tab.editor.topViewLine();
-
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'z' } });
-    _ = extension_host.pump();
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'z' } });
-    const center_deadline = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < center_deadline) {
-        _ = extension_host.pump();
-        if (tab.editor.topViewLine() != initial_top) break;
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(tab.editor.topViewLine() != initial_top);
-    try std.testing.expect(tab.editor.topViewLine() <= 40);
-
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'z' } });
-    _ = extension_host.pump();
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 't' } });
-    const top_deadline = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < top_deadline) {
-        _ = extension_host.pump();
-        if (tab.editor.topViewLine() == 40) break;
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expectEqual(@as(usize, 40), tab.editor.topViewLine());
-}
-
-test "Extensions: VSCodeVim gf opens the file under the cursor at a line" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, ".cache-ext/vim/extension", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "target.txt", .data = "one\ntwo\nthree\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "source.txt", .data = "target.txt:2\n" });
-    var source_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const source_len = try tmp.dir.realPathFile(io, "source.txt", &source_buffer);
-
-    var workbench = try Workbench.init(allocator, io, &.{source_buffer[0..source_len]}, 80, 24);
-    defer workbench.deinit();
-
-    var extension_host = try Extensions.init(allocator, io, workbench, &.{
-        .{ .path = ".cache-ext/vim/extension", .is_under_development = true },
-    }, ".cache-ext/data-vim-gf-test");
-    defer extension_host.deinit();
-
-    const startup_deadline = time_compat.milliTimestamp() + 10_000;
-    while (time_compat.milliTimestamp() < startup_deadline) {
-        _ = extension_host.pump();
-        if (extension_host.active != null) break;
-        time_compat.sleepMillis(10);
-    }
-    try std.testing.expect(extension_host.active != null);
-    const vim_deadline = time_compat.milliTimestamp() + 10_000;
-    while (!extension_host.vim_active and time_compat.milliTimestamp() < vim_deadline) {
-        _ = extension_host.pump();
-        time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(extension_host.vim_active);
-
-    const tab = workbench.activeTab().?;
-    try tab.editor.setCursorPosition(Position.init(1, 1));
-    _ = extension_host.pump();
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'g' } });
-    _ = extension_host.pump();
-    _ = extension_host.handleKey(&.{ .key = .{ .char = 'f' } });
-    const deadline = time_compat.milliTimestamp() + 10_000;
-    while (time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        if (workbench.activeTab()) |opened| {
-            if (std.mem.endsWith(u8, opened.editor.path, "target.txt") and
-                opened.editor.modelCursorPosition().lineNumber == 2) break;
-        }
-        time_compat.sleepMillis(20);
-    }
-    const opened = workbench.activeTab().?;
-    try std.testing.expect(std.mem.endsWith(u8, opened.editor.path, "target.txt"));
-    try std.testing.expectEqual(@as(usize, 2), opened.editor.modelCursorPosition().lineNumber);
 }
 
 test "Extensions: editorScroll, revealLine and cursorMove command arguments" {

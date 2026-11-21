@@ -5,18 +5,17 @@ the real Node host over a Unix socket, `rpcProtocol.zig` implements the wire
 codec, the generated `extHost.protocol.zig` table has all 171 identifiers,
 and `src/vs/workbench/api/browser/extensionHostAdapter.zig` mirrors the active tab, routes text through
 `type`/`default:type`, applies edits and selections, publishes status bar
-entries, resolves the extensions folder through VS Code's `extensionsPath`
-(`--extensions-dir`, `VSCODE_EXTENSIONS`, `VSCODE_PORTABLE`, product home) and
-scans it with the `scanAllUserExtensions` location scan to find VSCodeVim.
+entries and loads the provisioned built-in Node extension assets (currently
+`typescript-language-features`). User extension-folder discovery and the
+VSCodeVim fixture are removed.
 Declarative scanning now loads the bundled `theme-defaults` and
 `markdown-basics` contributions: the theme files (including the
 `dark_plus.json` → `dark_vs.json` include chain), the markdown language and
-grammar, and its JSONC language configuration. `zig build test-e2e` activates VSCodeVim 1.32.4 and asserts insert
-mode, a normal-mode `x`, and the resulting TUI editor text. Declarative
+grammar, and its JSONC language configuration. `zig build test-e2e` covers the Node extension host with the TypeScript extension. Declarative
 scanning now loads `theme-defaults` and `markdown-basics`. VS Code's real
 `typescript-language-features` extension is provisioned as a built-in runtime
 asset (`host/build-typescript-extension.js`) and loaded into the same host as
-VSCodeVim; TS/JS diagnostics, completion, hover, formatting and document
+Node extensions; TS/JS diagnostics, completion, hover, formatting and document
 symbols are wired through the ported language-feature bridge (§15.7). The remaining
 `MainThread*` actors, the general contribution scanner, configuration writes,
 `tabGroups`, extension keybindings and the built-in command set are still
@@ -1559,63 +1558,31 @@ If a new widget is needed, it is a view over an upstream-shaped model under
 `src/vs/`, with only terminal rendering in `src/tui/`. That rule applies to
 the extension manager UI itself as much as to contributed features.
 
-### 11.7 VSCodeVim compatibility
+### 11.7 Native Vim built-in extension
 
-VSCodeVim 1.32.4 is a useful stress target because it uses both the extension
-API and editor behavior heavily: engines `^1.74.0`, activation on
-`onStartupFinished` and `onCommand:type`, 75 contributed keybindings, 113
-contributed settings, a Vimscript language (`.vim`/`.vimrc`) and grammar, a
-`type` command override, and roughly 80 `executeCommand` call sites in
-`src/`.
+Vim is no longer implemented by loading VSCodeVim through the Node extension
+host. It is a compiled-in built-in extension (`vscode-textbuffer.vim`) that
+receives the generic `IExtensionContext` from
+`src/vs/workbench/api/common/extensionApi.zig` and registers a key handler via
+`src/vs/workbench/api/common/keyInput.zig`. The workbench core has no Vim
+symbol; the contract is the same one any other built-in/native extension can
+use.
 
-The §7-§10 baseline can activate it and support a basic
-edit/selection/decoration loop. It is **not** enough for a usable Vim. The
-following slice is required before claiming VSCodeVim support:
+With `"vim.enabled": true`:
 
-| Blocker | Baseline state | Required addition |
-|---|---|---|
-| Text input and `type` override | Ported in `src/vs/workbench/api/browser/extensionHostAdapter.zig`: printable keys, coalesced text runs and Enter go through `$executeContributedCommand("type", …)`; `default:type` inserts into the TUI editor. `default:replacePreviousChar` is still a no-op. | Keep the IME replacement path and fire `onCommand:type` before dispatch when the contribution registry lands. |
-| `window.tabGroups` | All TUI tabs are published in one active group; `:w`, `:bd`, `:bnext`, `gt`, `:tabmove` and `<C-w>` navigation work against the real terminal groups. | Real per-group `tabGroups` publication, preview updates and buffer numbers. |
-| Configuration writes | `$updateConfigurationOption` is accepted but only acknowledged; the value is not stored or re-pushed. | `Configuration.update` for `Global` (and `Workspace` where the TUI persists settings), including language overrides and persistence. VSCodeVim uses it for `:set`, `editor.*` options, status-bar color customizations and `vim.vimrc.path`. |
-| Built-in command surface | `default:type`, `default:replacePreviousChar` (no-op), `_setContext`/`setContext`, `vscode.open`, `$tryOpenDocument`/`$trySaveDocument`, `$tryShowTextDocument` (including the optional selection for `gf file:line`), `$tryRevealRange`, `workbench.action.files.save`, `workbench.action.closeActiveEditor`, `nextEditorInGroup`/`previousEditorInGroup`, `splitEditorRight`/`Down`, `splitEditor`/`splitEditorOrthogonal`, `navigateLeft`/`Right`/`Up`/`Down`/`navigateEditorGroups`, `closeAllEditors`/`closeOtherEditors`/`joinAllGroups`/`maximizeEditor`/`closePanel`, `lastEditorInGroup`/`previousEditor`/`openEditorAtIndex*`/`revertAndCloseActiveEditor`, `evenEditorWidths`/`increase|decreaseViewWidth|Height`, `moveActiveEditor`, `editorScroll`, `revealLine`, `cursorMove`, `insertLineBefore`/`After`, fold commands (`editor.fold`/`unfold`/`toggleFold`/`foldAll`/`unfoldAll`/`foldRecursively`/`unfoldRecursively`/`createFoldingRangeFromSelection`/`removeManualFoldingRanges`), `indentationToSpaces`/`Tabs`, `formatSelection`, comment/indent/multicursor/smart-select actions, `editor.action.revealDefinition`, `editor.action.goToDeclaration`, `editor.action.revealDeclaration`, `editor.action.goToTypeDefinition`, `editor.action.goToImplementation`, `editor.action.goToReferences`, `editor.action.referenceSearch.trigger`, `editor.action.findReferences`, `editor.action.showHover`, `editor.action.wordHighlight.trigger`, `outline.focus`/`workbench.action.gotoSymbol`, `workbench.action.findInFiles`, `workbench.view.explorer`, and `deleteLeft`/`deleteRight` (VSCodeVim's insert-mode Backspace/Delete) are wired. | Snippets, untitled-file commands, link opening, inline suggestions/interactive history, suggestion selection and snippet-placeholder navigation. |
-| Extension keybindings | The adapter maps VSCodeVim's printable, Escape, Backspace/Delete, arrows, Home/End, Page keys and Ctrl+letter commands directly. | Feed all 75 contributed rules into `KeybindingsRegistry.setExtensionKeybindings`, resolve against the terminal context, and ensure the TUI does not swallow keys before the extension rule. |
-| Debug breakpoints | Debug is deferred (§16); no `MainThreadDebugService`. | A breakpoint-only subset: `vscode.debug.breakpoints`, add/remove source and function breakpoints and the breakpoint change event. Without it the `:breakpoints` ex-commands fail; core editing still works. |
-| Editor events | §9.1 defines the push shapes. `src/vs/workbench/api/browser/extensionHostAdapter.zig` pushes selection changes through `$acceptEditorPropertiesChanged` whenever the TUI moved the caret itself (click, drag, TUI-handled key, find, tab switch), tagged with the upstream `source` string (`"mouse"`/`"keyboard"`) and deduplicated against the last selection the host applied or received. Scroll changes push `visibleRanges` deltas, so VSCodeVim's scrolloff and page-scroll checks see the terminal viewport. `options` are still sent as `null`. | Fire `onDidChangeActiveTextEditor`/`onDidChangeVisibleTextEditors` and push `options` deltas. |
-| Storage | In-memory mementos and working-copy history (§16). | Session support is enough to activate; persistence is needed for VSCodeVim history/registers across restarts. `globalStorageUri` plus local `workspace.fs` already covers its file-backed register storage. |
+- the extension registers a `KeyInputHandler` with builtin-extension priority;
+- keys that it does not consume fall through to the workbench shortcuts;
+- its commands, status entry and search use the same editor/command services as
+  other extensions;
+- `u`/`Ctrl-R` use `Editor.undo()`/`redo()`, and `j`/`k` use the editor's
+  `leftoverVisibleColumns`, so no Vim-owned undo history or cursor column is
+  maintained.
 
-Vertical motions are character-based in VSCodeVim 1.32.4: `MoveDown`/`MoveUp`
-apply `desiredColumn` in UTF-16 code units through `Position.getDown()`, so
-crossing lines with different tab indentation shifts the rendered column
-([VSCodeVim#8840](https://github.com/VSCodeVim/Vim/issues/8840),
-[VSCodeVim#8108](https://github.com/VSCodeVim/Vim/issues/8108)). This is
-upstream behavior and reproduces in VS Code; the port applies the extension's
-selection unchanged. The editor's own vertical movement
-(`CursorMoveCommands.simpleMove`) preserves the visible column and carries the
-signed desired-column leftover. VSCodeVim's `vim.foldfix` path is the upstream
-workaround because it delegates to the core `cursorMove` command, which is
-still in the missing-command list above.
-
-`workspace.applyEdit` appears only in VSCodeVim's tests, not its runtime, so
-`MainThreadBulkEdits` is not required for normal VSCodeVim use. LSP is also
-not involved: VSCodeVim is not a language client.
-
-Minimum compatibility slice, in order:
-
-1. `type` / `default:type` / `default:replacePreviousChar` and the
-   `onCommand:type` activation path.
-2. Full `window.tabGroups` state.
-3. Configuration writes for `Global` (and `Workspace` when supported).
-4. The built-in command set above.
-5. Extension keybinding routing.
-6. Active-editor event pushes (selection and visible-range pushes now exist; see the Editor events row above).
-7. Breakpoint subset for `:breakpoints`.
-
-Until those exist, expect VSCodeVim to activate and handle insert/normal
-editing, scroll/fold/window commands, `cursorMove` motions, buffer/tab
-commands, splits and formatting, but fail on configuration writes, snippets,
-untitled files, inline suggestions and breakpoints. Treat VSCodeVim as an
-end-to-end compatibility target, not as part of the first usable extension
-system.
+VSCodeVim discovery, key tables, `vim.active`/`vim.mode` context flags, its
+`type` override special cases and the `.cache-ext/vim` fixture dependency are
+removed. The Node host remains for Node extensions such as
+`typescript-language-features`. See `docs/vim.md` for the supported Vim
+surface and the deliberate non-goals.
 
 ## 12. Security and trust
 
@@ -1843,7 +1810,7 @@ case list, taken from the upstream tests and the protocol rules above:
   crash/restart handle invalidation, clean shutdown, and one test per
   baseline actor method family (`mainThreadCommands`, `mainThreadConfiguration`,
   `mainThreadDocuments`, `mainThreadEditors`, `mainThreadQuickOpen`).
-- **VSCodeVim smoke (e2e)**: once the §11.7 slice exists, install VSCodeVim
+- **Node extension smoke (e2e)**: install the TypeScript extension
   1.32.4 as a development extension and assert `onCommand:type`, insert/normal
   typing, `h`/`l`, `:q`, `:bd`, `:set`, a split command and `:breakpoints`.
   This is an end-to-end compatibility test, not part of the hermetic suite.
@@ -1949,9 +1916,9 @@ markers remain deferred.
 The built-in `typescript-language-features` extension is not reimplemented.
 `host/build-typescript-extension.js` copies VS Code's shipped extension bundle
 and its TypeScript SDK (`extensions/node_modules/typescript`) into
-`host/dist/extensions`; it autodetects a standard VS Code installation and uses
-that installation's bundled SDK. `extensionHostManager.buildInitData` now emits all loadable
-extensions (the TypeScript builtin plus the user VSCodeVim instance) in one
+`host/dist/extensions`; `VSCODE_APP_PATH`/`TYPESCRIPT_SDK` select another
+installation. `extensionHostManager.buildInitData` now emits all loadable
+extensions (the TypeScript builtin plus another Node extension) in one
 payload, with per-extension `isBuiltin` and activation events. The workbench
 sends `$activateByEvent("onLanguage:<id>")` after the document delta is queued;
 `extensions.zig` deduplicates those events in the portable
@@ -1996,11 +1963,11 @@ project loads.
 
 The e2e test opens a temp `.ts` file with the extension and asserts
 diagnostics, completion, hover, formatting and an accented-prefix diagnostic
-range, and that VSCodeVim + TypeScript load in one host. Additional gated tests
+range, and that multiple Node extensions load in one host. Additional gated tests
 drive the language-feature fixture's navigation providers through the command
-bridge and exercise VSCodeVim's `gd`, `gh`, `gO` and `gf file:line` commands. The provisioning step
+bridge and exercise native Vim's `gd`, `gh`, `gO` and `gf file:line` commands. The provisioning step
 is optional: without `host/dist/extensions/typescript-language-features` the
-host still runs VSCodeVim and TS/JS tabs keep the bundled grammar/indent
+host still runs TypeScript and TS/JS tabs keep the bundled grammar/indent
 behavior.
 
 The storage, status-bar, command and configuration actors are now ported as
@@ -2046,7 +2013,7 @@ generic fallback.
   but have no TUI command surface; definition/declaration/type-definition/
   implementation/references and document symbols are wired to the terminal
   quick pick.
-- VSCodeVim 1.32.4 is not supported by the baseline: it needs text-input
+- Native Vim is compiled in; VSCodeVim is not supported: the old extension needed text-input
   `type`/`default:type` dispatch, full `window.tabGroups`, configuration
   writes, extra built-in commands, extension keybinding routing and a
   breakpoint subset (§11.7).

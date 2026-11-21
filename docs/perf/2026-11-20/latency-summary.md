@@ -1,3 +1,5 @@
+> Historical: VSCodeVim was removed; Vim is now the compiled-in `vscode-textbuffer.vim` extension. See `docs/vim.md`.
+
 
 ## ReleaseFast + VSCodeVim
 | group | n | median ms | mean ms | min ms | max ms | frames/edit | last frame ms |

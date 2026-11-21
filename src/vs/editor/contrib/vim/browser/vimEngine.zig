@@ -1,0 +1,1375 @@
+// Native Vim editing engine.
+//
+// Deliberate Zig addition, not a VS Code upstream port. The engine receives the
+// built-in extension interfaces and owns Vim's command state only: pending
+// count/operator, registers, search pattern and mode. Cursor/selection, undo
+// and column state stay in the editor (`ITextEditor`).
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const ArrayList = std.array_list.Managed;
+const Position = @import("../../../common/core/position.zig").Position;
+const Range = @import("../../../common/core/range.zig").Range;
+const Selection = @import("../../../common/core/selection.zig").Selection;
+const TextModel = @import("../../../common/model/textModel.zig").TextModel;
+const extension_api = @import("../../../../workbench/api/common/extensionApi.zig");
+
+const ITextEditor = extension_api.ITextEditor;
+const IWindowService = extension_api.IWindowService;
+const ICommandService = extension_api.ICommandService;
+const KeyInputEvent = extension_api.KeyInputEvent;
+
+pub const Mode = enum {
+    normal,
+    insert,
+    replace,
+    visual,
+    visual_line,
+    operator_pending,
+    command_line,
+    search_forward,
+    search_backward,
+};
+
+const Operator = enum { none, delete, change, yank };
+
+const Find = struct { char: u21, forward: bool, till: bool };
+
+const Register = struct {
+    text: []u8,
+    linewise: bool,
+};
+
+pub const Registers = struct {
+    allocator: Allocator,
+    unnamed: ?Register = null,
+    named: std.AutoHashMap(u8, Register),
+
+    pub fn init(allocator: Allocator) Registers {
+        return .{ .allocator = allocator, .named = std.AutoHashMap(u8, Register).init(allocator) };
+    }
+
+    pub fn deinit(self: *Registers) void {
+        if (self.unnamed) |*register| self.allocator.free(register.text);
+        var iterator = self.named.valueIterator();
+        while (iterator.next()) |register| self.allocator.free(register.text);
+        self.named.deinit();
+    }
+
+    fn setUnnamed(self: *Registers, text: []const u8, linewise: bool) !void {
+        if (self.unnamed) |*old| self.allocator.free(old.text);
+        self.unnamed = .{ .text = try self.allocator.dupe(u8, text), .linewise = linewise };
+    }
+
+    fn set(self: *Registers, name: u8, text: []const u8, linewise: bool) !void {
+        if (name == 0 or name == '"') return self.setUnnamed(text, linewise);
+        const entry = try self.named.getOrPut(name);
+        if (entry.found_existing) self.allocator.free(entry.value_ptr.text);
+        entry.value_ptr.* = .{ .text = try self.allocator.dupe(u8, text), .linewise = linewise };
+    }
+
+    fn get(self: *Registers, name: u8) ?Register {
+        if (name == 0 or name == '"') return self.unnamed;
+        return self.named.get(name);
+    }
+};
+
+pub const VimEngine = struct {
+    allocator: Allocator,
+    editor: ITextEditor,
+    window: IWindowService,
+    commands: ICommandService,
+    mode: Mode = .normal,
+    count: usize = 0,
+    count_active: bool = false,
+    operator: Operator = .none,
+    operator_count: usize = 1,
+    pending_register: ?u8 = null,
+    pending_text_object: ?bool = null,
+    pending_g: bool = false,
+    pending_z: bool = false,
+    pending_window: bool = false,
+    pending_find: ?Find = null,
+    pending_replace: bool = false,
+    last_find: ?Find = null,
+    insert_group: bool = false,
+    insert_register: bool = false,
+    command_buffer: ArrayList(u8),
+    search_buffer: ArrayList(u8),
+    last_search: ArrayList(u8),
+    search_forward: bool = true,
+    registers: *Registers,
+    owns_registers: bool = false,
+    status_buf: [192]u8 = undefined,
+    ignore_case: bool = false,
+
+    pub fn init(
+        allocator: Allocator,
+        editor: ITextEditor,
+        window: IWindowService,
+        commands: ICommandService,
+        shared_registers: ?*Registers,
+    ) !*VimEngine {
+        const self = try allocator.create(VimEngine);
+        errdefer allocator.destroy(self);
+        const registers = if (shared_registers) |shared| shared else blk: {
+            const owned = try allocator.create(Registers);
+            owned.* = Registers.init(allocator);
+            break :blk owned;
+        };
+        self.* = .{
+            .allocator = allocator,
+            .editor = editor,
+            .window = window,
+            .commands = commands,
+            .command_buffer = ArrayList(u8).init(allocator),
+            .search_buffer = ArrayList(u8).init(allocator),
+            .last_search = ArrayList(u8).init(allocator),
+            .registers = registers,
+            .owns_registers = shared_registers == null,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *VimEngine) void {
+        // The owner closes any open editor undo group before destroying the
+        // editor; deinit must not touch an editor that may already be gone.
+        self.command_buffer.deinit();
+        self.search_buffer.deinit();
+        self.last_search.deinit();
+        if (self.owns_registers) {
+            self.registers.deinit();
+            self.allocator.destroy(self.registers);
+        }
+        self.allocator.destroy(self);
+    }
+
+    pub fn statusText(self: *VimEngine) []const u8 {
+        return switch (self.mode) {
+            .insert => "-- INSERT --",
+            .replace => "-- REPLACE --",
+            .visual => "-- VISUAL --",
+            .visual_line => "-- VISUAL LINE --",
+            .command_line => std.fmt.bufPrint(&self.status_buf, ":{s}", .{self.command_buffer.items}) catch ":",
+            .search_forward => std.fmt.bufPrint(&self.status_buf, "/{s}", .{self.search_buffer.items}) catch "/",
+            .search_backward => std.fmt.bufPrint(&self.status_buf, "?{s}", .{self.search_buffer.items}) catch "?",
+            .operator_pending => self.pendingStatus(),
+            .normal => self.pendingStatus(),
+        };
+    }
+
+    fn pendingStatus(self: *VimEngine) []const u8 {
+        if (self.count_active or self.pending_g or self.pending_z or self.pending_window or self.pending_find != null) {
+            return std.fmt.bufPrint(
+                &self.status_buf,
+                "{s}{s}{s}{s}{s}",
+                .{
+                    if (self.count_active) "count " else "",
+                    if (self.operator == .delete) "d" else if (self.operator == .change) "c" else if (self.operator == .yank) "y" else "",
+                    if (self.pending_g) "g" else "",
+                    if (self.pending_z) "z" else "",
+                    if (self.pending_window) "<C-w>" else "",
+                },
+            ) catch "";
+        }
+        return "";
+    }
+
+    pub fn handleKey(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        switch (self.mode) {
+            .insert, .replace => return self.handleInsert(event),
+            .command_line => return self.handleCommandLine(event),
+            .search_forward, .search_backward => return self.handleSearchInput(event),
+            else => return self.handleNormal(event),
+        }
+    }
+
+    fn handleNormal(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        switch (event.key) {
+            .text => |text| {
+                // The terminal decoder emits printable runs as `.text` (not
+                // one `.char` per key). Normal mode must interpret each
+                // codepoint as a Vim key; bracketed paste bypasses Vim in the
+                // app so it still inserts text.
+                var view = std.unicode.Utf8View.init(text) catch return false;
+                var iterator = view.iterator();
+                var consumed = false;
+                while (iterator.nextCodepoint()) |codepoint| {
+                    consumed = (try self.handleChar(codepoint)) or consumed;
+                }
+                return consumed;
+            },
+            .char => |char| {
+                if (event.mods.ctrl) return self.handleCtrl(char);
+                if (event.mods.alt) return false;
+                return self.handleChar(char);
+            },
+            .escape => {
+                self.resetPending();
+                if (self.mode == .visual or self.mode == .visual_line) {
+                    const position = self.editor.cursorPosition();
+                    try self.editor.setSelections(&[_]Selection{Selection.init(position.lineNumber, position.column, position.lineNumber, position.column)});
+                }
+                self.mode = .normal;
+                return true;
+            },
+            .enter => {
+                self.resetPending();
+                const position = self.editor.cursorPosition();
+                if (position.lineNumber < self.editor.model.getLineCount()) {
+                    try self.editor.setCursor(self.firstNonBlank(position.lineNumber + 1));
+                }
+                return true;
+            },
+            .backspace => {
+                try self.moveLeft(1, false);
+                return true;
+            },
+            .delete => return self.deleteChars(1, false),
+            .left => {
+                try self.moveLeft(self.takeCount(), self.mode == .visual or self.mode == .visual_line);
+                return true;
+            },
+            .right => {
+                try self.moveRight(self.takeCount(), self.mode == .visual or self.mode == .visual_line);
+                return true;
+            },
+            .up => {
+                try self.editor.moveLogicalLine(false, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                if (self.mode == .normal) try self.clampNormal();
+                return true;
+            },
+            .down => {
+                try self.editor.moveLogicalLine(true, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                if (self.mode == .normal) try self.clampNormal();
+                return true;
+            },
+            .home => {
+                try self.editor.setCursor(Position.init(self.editor.cursorPosition().lineNumber, 1));
+                return true;
+            },
+            .end => {
+                try self.editor.setCursor(self.lineEndPosition(self.editor.cursorPosition().lineNumber, true));
+                return true;
+            },
+            .page_up => {
+                _ = self.editor.scrollViewLines(-@as(isize, @intCast(self.editor.textHeight())));
+                return true;
+            },
+            .page_down => {
+                _ = self.editor.scrollViewLines(@intCast(self.editor.textHeight()));
+                return true;
+            },
+            .insert => return false,
+            .f12 => return false,
+            .tab => return false,
+            .backtab => return false,
+            .paste_start, .paste_end => return false,
+        }
+    }
+
+    fn handleChar(self: *VimEngine, char: u21) !bool {
+        if (self.mode == .visual or self.mode == .visual_line) {
+            switch (char) {
+                'd' => return self.applyVisualOperator(.delete),
+                'c' => return self.applyVisualOperator(.change),
+                'y' => return self.applyVisualOperator(.yank),
+                'o' => {
+                    const selections = try self.editor.getSelections(self.allocator);
+                    defer self.allocator.free(selections);
+                    if (selections.len > 0) {
+                        const anchor = selections[0].getSelectionStart();
+                        const position = selections[0].getPosition();
+                        try self.editor.setSelections(&[_]Selection{Selection.init(position.lineNumber, position.column, anchor.lineNumber, anchor.column)});
+                    }
+                    return true;
+                },
+                else => {},
+            }
+        }
+        if (self.pending_register != null) {
+            self.pending_register = @intCast(char);
+            return true;
+        }
+        if (self.pending_replace) {
+            self.pending_replace = false;
+            try self.replaceChars(char, self.takeCount());
+            return true;
+        }
+        if (self.pending_find) |find| {
+            self.pending_find = null;
+            self.last_find = .{ .char = char, .forward = find.forward, .till = find.till };
+            try self.findChar(char, find.forward, find.till, self.takeCount());
+            return true;
+        }
+        if (self.pending_text_object) |around| {
+            self.pending_text_object = null;
+            try self.applyTextObject(around, char);
+            return true;
+        }
+        if (self.pending_g) {
+            self.pending_g = false;
+            if (char == 'g') {
+                try self.gotoLine(self.takeCount());
+            } else if (char == 'f') {
+                try self.gotoFileUnderCursor();
+            } else if (char == 'd') {
+                _ = try self.commands.execute("editor.action.revealDefinition");
+            } else if (char == 'h') {
+                _ = try self.commands.execute("editor.action.showHover");
+            } else if (char == 'O') {
+                _ = try self.commands.execute("outline.focus");
+            } else if (char == 't') {
+                try self.window.switchTab(1);
+            } else if (char == 'T') {
+                try self.window.switchTab(-1);
+            }
+            return true;
+        }
+        if (self.pending_z) {
+            self.pending_z = false;
+            return self.handleZ(char);
+        }
+        if (self.pending_window) {
+            self.pending_window = false;
+            return self.handleWindowCommand(char);
+        }
+        if (self.operator != .none) {
+            return self.handleOperatorKey(char);
+        }
+
+        if (char >= '1' and char <= '9') {
+            self.count = self.count * 10 + (char - '0');
+            self.count_active = true;
+            return true;
+        }
+        if (char == '0' and self.count_active) {
+            self.count = self.count * 10;
+            return true;
+        }
+
+        switch (char) {
+            '0' => try self.editor.setCursor(Position.init(self.editor.cursorPosition().lineNumber, 1)),
+            '^' => try self.editor.setCursor(self.firstNonBlank(self.editor.cursorPosition().lineNumber)),
+            '$' => try self.editor.setCursor(self.lineEndPosition(self.editor.cursorPosition().lineNumber, true)),
+            'h' => try self.moveLeftOnLine(self.takeCount(), self.mode == .visual or self.mode == .visual_line),
+            'l' => try self.moveRightOnLine(self.takeCount(), self.mode == .visual or self.mode == .visual_line),
+            'j' => {
+                try self.editor.moveLogicalLine(true, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                if (self.mode == .normal) try self.clampNormal();
+            },
+            'k' => {
+                try self.editor.moveLogicalLine(false, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                if (self.mode == .normal) try self.clampNormal();
+            },
+            'w', 'W' => try self.moveWord(char, self.takeCount(), self.mode == .visual or self.mode == .visual_line),
+            'b', 'B' => try self.moveWordBack(char, self.takeCount(), self.mode == .visual or self.mode == .visual_line),
+            'e', 'E' => try self.moveWordEnd(char, self.takeCount(), self.mode == .visual or self.mode == .visual_line),
+            'f' => self.pending_find = .{ .char = 0, .forward = true, .till = false },
+            'F' => self.pending_find = .{ .char = 0, .forward = false, .till = false },
+            't' => self.pending_find = .{ .char = 0, .forward = true, .till = true },
+            'T' => self.pending_find = .{ .char = 0, .forward = false, .till = true },
+            ';' => {
+                if (self.last_find) |find| try self.findChar(find.char, find.forward, find.till, self.takeCount());
+            },
+            ',' => {
+                if (self.last_find) |find| try self.findChar(find.char, !find.forward, find.till, self.takeCount());
+            },
+            'g' => self.pending_g = true,
+            'z' => self.pending_z = true,
+            'G' => try self.gotoLine(self.takeCount()),
+            'd' => try self.startOperator(.delete),
+            'c' => try self.startOperator(.change),
+            'y' => try self.startOperator(.yank),
+            'x' => _ = try self.deleteChars(self.takeCount(), false),
+            'X' => _ = try self.deleteChars(self.takeCount(), true),
+            's' => try self.changeChars(self.takeCount()),
+            'S' => try self.changeLines(self.editor.cursorPosition().lineNumber, 1),
+            'D' => try self.deleteToLineEnd(),
+            'C' => try self.changeToLineEnd(),
+            'Y' => try self.yankLines(self.editor.cursorPosition().lineNumber, self.takeCount()),
+            'p' => try self.put(false, self.takeCount()),
+            'P' => try self.put(true, self.takeCount()),
+            'i' => try self.enterInsert(false),
+            'I' => {
+                try self.editor.setCursor(self.firstNonBlank(self.editor.cursorPosition().lineNumber));
+                try self.enterInsert(false);
+            },
+            'a' => try self.enterAppend(),
+            'A' => {
+                const line = self.editor.cursorPosition().lineNumber;
+                try self.editor.setCursor(self.lineEndPosition(line, false));
+                try self.enterInsert(false);
+            },
+            'o' => try self.openLine(false),
+            'O' => try self.openLine(true),
+            'u' => try self.editor.undo(),
+            'r' => self.pending_replace = true,
+            '~' => try self.toggleCase(self.takeCount()),
+            'J' => try self.joinLines(self.takeCount()),
+            'v' => try self.startVisual(false),
+            'V' => try self.startVisual(true),
+            ':' => {
+                self.command_buffer.clearRetainingCapacity();
+                self.mode = .command_line;
+            },
+            '/' => {
+                self.search_buffer.clearRetainingCapacity();
+                self.mode = .search_forward;
+                self.search_forward = true;
+            },
+            '?' => {
+                self.search_buffer.clearRetainingCapacity();
+                self.mode = .search_backward;
+                self.search_forward = false;
+            },
+            'n' => try self.searchAgain(self.takeCount(), self.search_forward),
+            'N' => try self.searchAgain(self.takeCount(), !self.search_forward),
+            '@' => {},
+            '"' => self.pending_register = 0,
+            else => return false,
+        }
+        return true;
+    }
+
+    fn handleCtrl(self: *VimEngine, char: u21) !bool {
+        switch (char) {
+            'r' => try self.editor.redo(),
+            'w' => self.pending_window = true,
+            'd' => _ = self.editor.scrollViewLines(@intCast(self.editor.textHeight() / 2)),
+            'u' => _ = self.editor.scrollViewLines(-@as(isize, @intCast(self.editor.textHeight() / 2))),
+            'f' => _ = self.editor.scrollViewLines(@intCast(self.editor.textHeight())),
+            'b' => _ = self.editor.scrollViewLines(-@as(isize, @intCast(self.editor.textHeight()))),
+            'e' => _ = self.editor.scrollViewLines(1),
+            'y' => _ = self.editor.scrollViewLines(-1),
+            ']' => _ = try self.commands.execute("editor.action.revealDefinition"),
+            else => return false,
+        }
+        return true;
+    }
+
+    fn startOperator(self: *VimEngine, operator: Operator) !void {
+        if (self.operator == operator and !self.count_active) {
+            // `dd`/`cc`/`yy`: apply immediately as a linewise operator.
+            const count = self.operator_count;
+            const line = self.editor.cursorPosition().lineNumber;
+            self.operator = .none;
+            self.operator_count = 1;
+            switch (operator) {
+                .delete => try self.deleteLines(line, count),
+                .change => try self.changeLines(line, count),
+                .yank => try self.yankLines(line, count),
+                .none => {},
+            }
+            return;
+        }
+        self.operator = operator;
+        self.operator_count = self.takeCount();
+        self.mode = .operator_pending;
+    }
+
+    fn handleOperatorKey(self: *VimEngine, char: u21) !bool {
+        if (char == 'i' or char == 'a') {
+            self.pending_text_object = char == 'a';
+            return true;
+        }
+        const motion_count = self.takeCount();
+        const count = self.operator_count * motion_count;
+        const operator = self.operator;
+        self.operator = .none;
+        self.operator_count = 1;
+        self.mode = .normal;
+        if (char == 'd' or char == 'c' or char == 'y') {
+            const line = self.editor.cursorPosition().lineNumber;
+            switch (operator) {
+                .delete => try self.deleteLines(line, count),
+                .change => try self.changeLines(line, count),
+                .yank => try self.yankLines(line, count),
+                .none => {},
+            }
+            return true;
+        }
+        // Vim's `cw`/`cW` change to the end of the word, not through the
+        // following whitespace like `dw`.
+        const motion_char = if (operator == .change and (char == 'w' or char == 'W'))
+            (if (char == 'w') @as(u21, 'e') else @as(u21, 'E'))
+        else
+            char;
+        const target = try self.motionTarget(motion_char, count);
+        if (target == null) return false;
+        try self.applyOperator(operator, target.?, false);
+        return true;
+    }
+
+    fn motionTarget(self: *VimEngine, char: u21, count: usize) !?Range {
+        const cursor = self.editor.cursorPosition();
+        switch (char) {
+            'h' => {
+                const position = try self.leftPositionOnLine(cursor, count);
+                if (position.equals(cursor)) return null;
+                return Range.fromPositions(position, cursor);
+            },
+            'l' => {
+                const position = try self.rightPositionOnLine(cursor, count);
+                if (position.equals(cursor)) return null;
+                return Range.fromPositions(cursor, position);
+            },
+            'j', 'k' => {
+                if (char == 'j') {
+                    const target = @min(cursor.lineNumber + count, self.editor.model.getLineCount());
+                    return @as(?Range, try self.linewiseRange(cursor.lineNumber, target - cursor.lineNumber + 1));
+                }
+                const target = cursor.lineNumber -| count;
+                return @as(?Range, try self.linewiseRange(target, cursor.lineNumber - target + 1));
+            },
+            'w', 'W' => {
+                const position = try self.wordPosition(cursor, count, char == 'W', .start);
+                return Range.fromPositions(cursor, position);
+            },
+            'b', 'B' => {
+                const position = try self.wordPosition(cursor, count, char == 'B', .back);
+                return Range.fromPositions(position, cursor);
+            },
+            'e', 'E' => {
+                const position = try self.wordPosition(cursor, count, char == 'E', .end);
+                return Range.fromPositions(cursor, try self.afterPosition(position));
+            },
+            '0' => return Range.fromPositions(Position.init(cursor.lineNumber, 1), cursor),
+            '^' => return Range.fromPositions(self.firstNonBlank(cursor.lineNumber), cursor),
+            '$' => return Range.fromPositions(cursor, Position.init(cursor.lineNumber, self.lineMaxColumn(cursor.lineNumber))),
+            'G' => {
+                const line = self.editor.model.getLineCount();
+                return @as(?Range, try self.linewiseRange(cursor.lineNumber, line - cursor.lineNumber + 1));
+            },
+            else => return null,
+        }
+    }
+
+    fn applyOperator(self: *VimEngine, operator: Operator, range: Range, linewise: bool) !void {
+        if (operator == .yank) {
+            const register = self.selectedRegister();
+            const text = try self.rangeText(range);
+            defer self.allocator.free(text);
+            try self.registers.set(register, text, linewise);
+            try self.editor.setCursor(range.startPosition());
+            return;
+        }
+        self.editor.beginUndoGroup();
+        var keep_group = false;
+        defer if (!keep_group) self.editor.endUndoGroup();
+        const text = try self.rangeText(range);
+        defer self.allocator.free(text);
+        try self.registers.set(self.selectedRegister(), text, linewise);
+        try self.editor.setCursor(range.startPosition());
+        try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = range, .text = "" }}, &[_]Position{range.startPosition()});
+        if (operator == .change) {
+            keep_group = true;
+            try self.enterInsert(true);
+        } else {
+            try self.clampNormal();
+        }
+    }
+
+    fn changeChars(self: *VimEngine, count: usize) !void {
+        const cursor = self.editor.cursorPosition();
+        const end = try self.rightPositionOnLine(cursor, count);
+        if (cursor.equals(end)) return;
+        self.editor.beginUndoGroup();
+        try self.applyChangeRange(Range.fromPositions(cursor, end));
+    }
+
+    fn changeLines(self: *VimEngine, line: usize, count: usize) !void {
+        const range = if (count <= 1)
+            // `cc` clears the line content but keeps the line break.
+            Range.init(line, 1, line, self.lineMaxColumn(line))
+        else
+            try self.linewiseRange(line, count);
+        self.editor.beginUndoGroup();
+        try self.applyChangeRange(range);
+    }
+
+    fn changeToLineEnd(self: *VimEngine) !void {
+        const cursor = self.editor.cursorPosition();
+        const end = Position.init(cursor.lineNumber, self.lineMaxColumn(cursor.lineNumber));
+        if (cursor.equals(end)) return;
+        self.editor.beginUndoGroup();
+        try self.applyChangeRange(Range.fromPositions(cursor, end));
+    }
+
+    /// Deletes `range` and enters insert mode inside the already-open undo
+    /// group. The group closes when insert mode is left.
+    fn applyChangeRange(self: *VimEngine, range: Range) !void {
+        const text = try self.rangeText(range);
+        defer self.allocator.free(text);
+        try self.registers.set(self.selectedRegister(), text, false);
+        try self.editor.setCursor(range.startPosition());
+        try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = range, .text = "" }}, &[_]Position{range.startPosition()});
+        self.insert_group = true;
+        self.mode = .insert;
+        self.resetPending();
+    }
+
+    fn deleteChars(self: *VimEngine, count: usize, backward: bool) !bool {
+        const cursor = self.editor.cursorPosition();
+        const start = if (backward) try self.leftPositionOnLine(cursor, count) else cursor;
+        const end = if (backward) cursor else try self.rightPositionOnLine(cursor, count);
+        if (start.equals(end)) return true;
+        try self.applyOperator(.delete, Range.fromPositions(start, end), false);
+        return true;
+    }
+
+    fn deleteToLineEnd(self: *VimEngine) !void {
+        const cursor = self.editor.cursorPosition();
+        const end = Position.init(cursor.lineNumber, self.lineMaxColumn(cursor.lineNumber));
+        try self.applyOperator(.delete, Range.fromPositions(cursor, end), false);
+    }
+
+    fn deleteLines(self: *VimEngine, line: usize, count: usize) !void {
+        const range = try self.linewiseRange(line, count);
+        try self.applyOperator(.delete, range, true);
+        try self.clampNormal();
+    }
+
+    fn yankLines(self: *VimEngine, line: usize, count: usize) !void {
+        const range = try self.linewiseRange(line, count);
+        try self.applyOperator(.yank, range, true);
+    }
+
+    fn linewiseRange(self: *VimEngine, line: usize, count: usize) !Range {
+        const line_count = self.editor.model.getLineCount();
+        const start = @min(@max(line, 1), line_count);
+        const boundary = start + @max(count, 1);
+        if (boundary <= line_count) {
+            // Boundary is the start of the first line after the range, so the
+            // newline of the last selected line is included.
+            return Range.init(start, 1, boundary, 1);
+        }
+        const end_column = self.editor.model.getLineMaxColumn(line_count);
+        if (start > 1) {
+            // Deleting the last line also removes the preceding line break.
+            const previous_end = self.editor.model.getLineMaxColumn(start - 1);
+            return Range.init(start - 1, previous_end, line_count, end_column);
+        }
+        return Range.init(start, 1, line_count, end_column);
+    }
+
+    fn enterAppend(self: *VimEngine) !void {
+        const cursor = self.editor.cursorPosition();
+        const line = try self.editor.model.getLineContent(cursor.lineNumber);
+        defer line.deinit();
+        if (line.items.len > 0) {
+            try self.editor.setCursor(try self.rightPosition(cursor, 1));
+        }
+        try self.enterInsert(false);
+    }
+
+    fn enterInsert(self: *VimEngine, group_active: bool) !void {
+        if (!group_active) self.editor.beginUndoGroup();
+        self.insert_group = true;
+        self.mode = .insert;
+        self.resetPending();
+    }
+
+    fn openLine(self: *VimEngine, above: bool) !void {
+        self.editor.beginUndoGroup();
+        const cursor = self.editor.cursorPosition();
+        if (above) {
+            try self.editor.setCursor(Position.init(cursor.lineNumber, 1));
+        } else {
+            try self.editor.setCursor(self.lineEndPosition(cursor.lineNumber, false));
+        }
+        try self.editor.newline();
+        self.insert_group = true;
+        self.mode = .insert;
+        self.resetPending();
+    }
+
+    fn finishInsert(self: *VimEngine) !void {
+        if (self.insert_group) {
+            self.editor.endUndoGroup();
+            self.insert_group = false;
+        }
+        self.mode = .normal;
+        try self.moveLeft(1, false);
+    }
+
+    fn handleInsert(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        switch (event.key) {
+            .text => |text| {
+                if (self.insert_register) {
+                    self.insert_register = false;
+                    try self.insertRegister(text);
+                    return true;
+                }
+                try self.editor.insertText(text);
+                return true;
+            },
+            .char => |char| {
+                if (event.mods.ctrl) {
+                    if (self.insert_register) {
+                        self.insert_register = false;
+                        try self.insertRegisterAt(char);
+                        return true;
+                    }
+                    switch (char) {
+                        'w' => try self.deleteWordBefore(),
+                        'u' => try self.deleteToLineStart(),
+                        'r' => self.insert_register = true,
+                        '[' => try self.finishInsert(),
+                        else => return false,
+                    }
+                    return true;
+                }
+                if (event.mods.alt) return false;
+                var buffer: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(char, &buffer) catch return false;
+                try self.editor.insertText(buffer[0..len]);
+                return true;
+            },
+            .escape => try self.finishInsert(),
+            .enter => try self.editor.newline(),
+            .tab => try self.editor.insertTab(),
+            .backtab => try self.editor.outdent(),
+            .backspace => try self.editor.deleteLeft(),
+            .delete => try self.editor.deleteRight(),
+            .up => try self.editor.moveLogicalLine(false, false, 1),
+            .down => try self.editor.moveLogicalLine(true, false, 1),
+            .left => try self.moveLeft(1, false),
+            .right => try self.moveRight(1, false),
+            .home => try self.editor.setCursor(Position.init(self.editor.cursorPosition().lineNumber, 1)),
+            .end => try self.editor.setCursor(self.lineEndPosition(self.editor.cursorPosition().lineNumber, false)),
+            .insert => {},
+            .f12 => return false,
+            .page_up => _ = self.editor.scrollViewLines(-@as(isize, @intCast(self.editor.textHeight()))),
+            .page_down => _ = self.editor.scrollViewLines(@intCast(self.editor.textHeight())),
+            .paste_start, .paste_end => return false,
+        }
+        return true;
+    }
+
+    fn handleCommandLine(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        switch (event.key) {
+            .escape => {
+                self.mode = .normal;
+                self.command_buffer.clearRetainingCapacity();
+            },
+            .enter => {
+                self.mode = .normal;
+                try self.executeCommandLine();
+            },
+            .backspace => {
+                if (self.command_buffer.items.len > 0) self.command_buffer.items.len -= 1;
+            },
+            .text => |text| try self.command_buffer.appendSlice(text),
+            .char => |char| {
+                if (event.mods.ctrl) return false;
+                var buffer: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(char, &buffer) catch return false;
+                try self.command_buffer.appendSlice(buffer[0..len]);
+            },
+            else => return false,
+        }
+        return true;
+    }
+
+    fn handleSearchInput(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        switch (event.key) {
+            .escape => {
+                self.mode = .normal;
+                self.search_buffer.clearRetainingCapacity();
+            },
+            .enter => {
+                const forward = self.mode == .search_forward;
+                if (self.search_buffer.items.len > 0) {
+                    self.last_search.clearRetainingCapacity();
+                    try self.last_search.appendSlice(self.search_buffer.items);
+                }
+                self.mode = .normal;
+                try self.searchAgain(1, forward);
+            },
+            .backspace => {
+                if (self.search_buffer.items.len > 0) self.search_buffer.items.len -= 1;
+            },
+            .text => |text| try self.search_buffer.appendSlice(text),
+            .char => |char| {
+                if (event.mods.ctrl) return false;
+                var buffer: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(char, &buffer) catch return false;
+                try self.search_buffer.appendSlice(buffer[0..len]);
+            },
+            else => return false,
+        }
+        return true;
+    }
+
+    fn executeCommandLine(self: *VimEngine) !void {
+        const command = std.mem.trim(u8, self.command_buffer.items, " \t");
+        if (command.len == 0) return;
+        if (std.mem.eql(u8, command, "w")) {
+            _ = try self.commands.execute("workbench.action.files.save");
+        } else if (std.mem.eql(u8, command, "q")) {
+            _ = try self.commands.execute("workbench.action.closeActiveEditor");
+        } else if (std.mem.eql(u8, command, "q!")) {
+            try self.window.forceCloseActive();
+        } else if (std.mem.eql(u8, command, "wq")) {
+            _ = try self.commands.execute("workbench.action.files.save");
+            _ = try self.commands.execute("workbench.action.closeActiveEditor");
+        } else if (std.mem.eql(u8, command, "bn")) {
+            try self.window.switchTab(1);
+        } else if (std.mem.eql(u8, command, "bp")) {
+            try self.window.switchTab(-1);
+        } else if (std.mem.eql(u8, command, "bd")) {
+            _ = try self.commands.execute("workbench.action.closeActiveEditor");
+        } else if (std.mem.eql(u8, command, "sp")) {
+            _ = try self.commands.execute("workbench.action.splitEditor");
+        } else if (std.mem.eql(u8, command, "vsp")) {
+            _ = try self.commands.execute("workbench.action.splitEditorOrthogonal");
+        } else if (std.mem.eql(u8, command, "noh")) {
+            self.last_search.clearRetainingCapacity();
+        } else if (std.mem.eql(u8, command, "$")) {
+            try self.editor.setCursor(self.firstNonBlank(self.editor.model.getLineCount()));
+        } else if (std.mem.eql(u8, command, "set ignorecase")) {
+            self.ignore_case = true;
+        } else if (std.mem.eql(u8, command, "set noignorecase")) {
+            self.ignore_case = false;
+        } else if (std.mem.startsWith(u8, command, "e ")) {
+            try self.window.openPath(std.mem.trim(u8, command[2..], " "));
+        } else if (std.fmt.parseInt(usize, command, 10)) |line| {
+            try self.editor.setCursor(self.firstNonBlank(@min(line, self.editor.model.getLineCount())));
+        } else |_| {
+            self.window.setMessage("Vim: unsupported command");
+        }
+    }
+
+    fn searchAgain(self: *VimEngine, count: usize, forward: bool) !void {
+        if (self.last_search.items.len == 0) return;
+        var value = try self.editor.model.getValue(.LF, false);
+        defer value.deinit();
+        const cursor_offset = self.editor.model.getOffsetAt(self.editor.cursorPosition());
+        var search_offset: usize = if (forward)
+            @min(cursor_offset + 1, value.items.len)
+        else
+            cursor_offset;
+        var found_offset: ?usize = null;
+        var remaining = @max(count, 1);
+        while (remaining > 0) : (remaining -= 1) {
+            const candidate = if (forward)
+                findForward(value.items, search_offset, self.last_search.items, self.ignore_case) orelse
+                    findForward(value.items, 0, self.last_search.items, self.ignore_case) orelse return
+            else
+                findBackward(value.items, search_offset, self.last_search.items, self.ignore_case) orelse
+                    findBackward(value.items, value.items.len, self.last_search.items, self.ignore_case) orelse return;
+            found_offset = candidate;
+            search_offset = if (forward) candidate + 1 else candidate;
+        }
+        const position = self.editor.model.getPositionAt(found_offset.?);
+        try self.editor.setCursor(position);
+        try self.clampNormal();
+        self.editor.revealRange(Range.init(position.lineNumber, position.column, position.lineNumber, position.column));
+    }
+
+    fn gotoLine(self: *VimEngine, line: usize) !void {
+        try self.editor.setCursor(self.firstNonBlank(@min(line, self.editor.model.getLineCount())));
+    }
+
+    fn gotoFileUnderCursor(self: *VimEngine) !void {
+        const position = self.editor.cursorPosition();
+        const line = try self.editor.model.getLineContent(position.lineNumber);
+        defer line.deinit();
+        var start = @min(position.column - 1, line.items.len);
+        while (start > 0 and !isWordByte(line.items[start - 1])) start -= 1;
+        var end = @min(position.column - 1, line.items.len);
+        while (end < line.items.len and isWordByte(line.items[end])) end += 1;
+        if (end <= start) return;
+        try self.window.openPath(line.items[start..end]);
+    }
+
+    fn handleZ(self: *VimEngine, char: u21) !bool {
+        const height = self.editor.textHeight();
+        switch (char) {
+            'z' => {
+                const top = self.editor.topViewLine() + height / 2;
+                _ = self.editor.setTopViewLine(top);
+            },
+            't' => _ = self.editor.setTopViewLine(self.editor.topViewLine()),
+            'b' => {
+                const top = self.editor.topViewLine() + height - 1;
+                _ = self.editor.setTopViewLine(top);
+            },
+            'a' => _ = try self.commands.execute("editor.toggleFold"),
+            'c' => _ = try self.commands.execute("editor.fold"),
+            'o' => _ = try self.commands.execute("editor.unfold"),
+            'M' => _ = try self.commands.execute("editor.foldAll"),
+            'R' => _ = try self.commands.execute("editor.unfoldAll"),
+            else => return false,
+        }
+        return true;
+    }
+
+    fn handleWindowCommand(self: *VimEngine, char: u21) !bool {
+        switch (char) {
+            'h' => _ = try self.commands.execute("workbench.action.navigateLeft"),
+            'l' => _ = try self.commands.execute("workbench.action.navigateRight"),
+            'j' => _ = try self.commands.execute("workbench.action.navigateDown"),
+            'k' => _ = try self.commands.execute("workbench.action.navigateUp"),
+            'w' => _ = try self.commands.execute("workbench.action.navigateEditorGroups"),
+            's' => _ = try self.commands.execute("workbench.action.splitEditor"),
+            'v' => _ = try self.commands.execute("workbench.action.splitEditorOrthogonal"),
+            'c' => _ = try self.commands.execute("workbench.action.closeActiveEditor"),
+            'q' => _ = try self.commands.execute("workbench.action.closeActiveEditor"),
+            else => return false,
+        }
+        return true;
+    }
+
+    fn applyVisualOperator(self: *VimEngine, operator: Operator) !bool {
+        const selections = try self.editor.getSelections(self.allocator);
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return true;
+        const selection = selections[0];
+        const linewise = self.mode == .visual_line;
+        var end_line = selection.endLineNumber;
+        if (linewise and end_line > selection.startLineNumber and selection.endColumn == 1) end_line -= 1;
+        const range = if (linewise)
+            try self.linewiseRange(selection.startLineNumber, end_line - selection.startLineNumber + 1)
+        else
+            Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn);
+        self.mode = .normal;
+        try self.applyOperator(operator, range, linewise);
+        return true;
+    }
+
+    fn startVisual(self: *VimEngine, linewise: bool) !void {
+        const cursor = self.editor.cursorPosition();
+        if (linewise) {
+            const line = cursor.lineNumber;
+            const end_line = @min(line + 1, self.editor.model.getLineCount());
+            try self.editor.setSelections(&[_]Selection{Selection.init(line, 1, end_line, 1)});
+            self.mode = .visual_line;
+        } else {
+            try self.editor.setSelections(&[_]Selection{Selection.init(cursor.lineNumber, cursor.column, cursor.lineNumber, cursor.column)});
+            self.mode = .visual;
+        }
+    }
+
+    fn applyTextObject(self: *VimEngine, around: bool, char: u21) !void {
+        if (char != 'w' and char != 'W') return;
+        const range = try self.wordObject(around, char == 'W');
+        const operator = self.operator;
+        self.operator = .none;
+        self.operator_count = 1;
+        self.mode = .normal;
+        try self.applyOperator(operator, range, false);
+    }
+
+    fn wordObject(self: *VimEngine, around: bool, big: bool) !Range {
+        var value = try self.editor.model.getValue(.LF, false);
+        defer value.deinit();
+        var offset = self.editor.model.getOffsetAt(self.editor.cursorPosition());
+        if (offset >= value.items.len) offset = value.items.len -| 1;
+        const word: *const fn (u8) u8 = if (big) wordClassBig else wordClass;
+        var start = offset;
+        while (start > 0 and word(value.items[start - 1]) == word(value.items[offset])) start -= 1;
+        var end = offset;
+        while (end < value.items.len and word(value.items[end]) == word(value.items[offset])) end += 1;
+        if (around) {
+            while (end < value.items.len and word(value.items[end]) == 0) end += 1;
+        }
+        return Range.fromPositions(self.editor.model.getPositionAt(start), self.editor.model.getPositionAt(end));
+    }
+
+    fn put(self: *VimEngine, before: bool, count: usize) !void {
+        const register = self.registers.get(self.pending_register orelse 0) orelse return;
+        self.pending_register = null;
+        var text = ArrayList(u8).init(self.allocator);
+        defer text.deinit();
+        var i: usize = 0;
+        while (i < count) : (i += 1) try text.appendSlice(register.text);
+
+        const cursor = self.editor.cursorPosition();
+        if (register.linewise) {
+            const line = if (before) cursor.lineNumber else @min(cursor.lineNumber + 1, self.editor.model.getLineCount() + 1);
+            const position = Position.init(line, 1);
+            try self.editor.setCursor(position);
+            self.editor.beginUndoGroup();
+            defer self.editor.endUndoGroup();
+            try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(position, position), .text = text.items }}, &[_]Position{Position.init(line, 1)});
+        } else {
+            const position = if (before) cursor else try self.rightPosition(cursor, 1);
+            try self.editor.setCursor(position);
+            self.editor.beginUndoGroup();
+            defer self.editor.endUndoGroup();
+            try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(position, position), .text = text.items }}, &[_]Position{position});
+        }
+    }
+
+    fn joinLines(self: *VimEngine, count: usize) !void {
+        const cursor = self.editor.cursorPosition();
+        const line_count = self.editor.model.getLineCount();
+        if (cursor.lineNumber >= line_count) return;
+        const lines = @min(count, line_count - cursor.lineNumber);
+        const start = Position.init(cursor.lineNumber, self.editor.model.getLineMaxColumn(cursor.lineNumber));
+        const end = Position.init(cursor.lineNumber + lines, 1);
+        self.editor.beginUndoGroup();
+        defer self.editor.endUndoGroup();
+        try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(start, end), .text = " " }}, &[_]Position{start});
+    }
+
+    fn toggleCase(self: *VimEngine, count: usize) !void {
+        const cursor = self.editor.cursorPosition();
+        const end = try self.rightPosition(cursor, count);
+        const range = Range.fromPositions(cursor, end);
+        const text = try self.rangeText(range);
+        defer self.allocator.free(text);
+        for (text) |*byte| {
+            if (std.ascii.isLower(byte.*)) byte.* = std.ascii.toUpper(byte.*) else if (std.ascii.isUpper(byte.*)) byte.* = std.ascii.toLower(byte.*);
+        }
+        self.editor.beginUndoGroup();
+        defer self.editor.endUndoGroup();
+        try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = range, .text = text }}, &[_]Position{cursor});
+    }
+
+    fn replaceChars(self: *VimEngine, char: u21, count: usize) !void {
+        const cursor = self.editor.cursorPosition();
+        const end = try self.rightPosition(cursor, count);
+        if (cursor.equals(end)) return;
+        var buffer: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(char, &buffer) catch return;
+        var replacement = ArrayList(u8).init(self.allocator);
+        defer replacement.deinit();
+        var remaining = count;
+        while (remaining > 0) : (remaining -= 1) try replacement.appendSlice(buffer[0..len]);
+        self.editor.beginUndoGroup();
+        defer self.editor.endUndoGroup();
+        try self.editor.applyEdits(
+            &[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(cursor, end), .text = replacement.items }},
+            &[_]Position{cursor},
+        );
+    }
+
+    fn findChar(self: *VimEngine, char: u21, forward: bool, till: bool, count: usize) !void {
+        const cursor = self.editor.cursorPosition();
+        const line = try self.editor.model.getLineContent(cursor.lineNumber);
+        defer line.deinit();
+        const needle: u8 = if (char <= 0xff) @intCast(char) else return;
+        var found: ?usize = null;
+        var remaining = count;
+        var index: usize = if (forward) cursor.column else cursor.column -| 2;
+        while (remaining > 0) : (remaining -= 1) {
+            if (forward) {
+                while (index < line.items.len) : (index += 1) {
+                    if (line.items[index] == needle) break;
+                }
+                if (index >= line.items.len) return;
+                found = index;
+                index += 1;
+            } else {
+                while (true) {
+                    if (line.items[index] == needle) break;
+                    if (index == 0) return;
+                    index -= 1;
+                }
+                found = index;
+                if (index == 0) break;
+                index -= 1;
+            }
+        }
+        var column = (found orelse return) + 1;
+        if (till) column = if (forward) column - 1 else column + 1;
+        try self.editor.setCursor(Position.init(cursor.lineNumber, column));
+    }
+
+    fn deleteWordBefore(self: *VimEngine) !void {
+        const cursor = self.editor.cursorPosition();
+        const start = try self.wordPosition(cursor, 1, false, .back);
+        try self.applyOperator(.delete, Range.fromPositions(start, cursor), false);
+    }
+
+    fn deleteToLineStart(self: *VimEngine) !void {
+        const cursor = self.editor.cursorPosition();
+        try self.applyOperator(.delete, Range.fromPositions(Position.init(cursor.lineNumber, 1), cursor), false);
+    }
+
+    fn insertRegister(self: *VimEngine, text: []const u8) !void {
+        if (text.len == 0) return;
+        const name = text[0];
+        if (self.registers.get(name)) |register| try self.editor.insertText(register.text);
+    }
+
+    fn insertRegisterAt(self: *VimEngine, char: u21) !void {
+        if (char > 0xff) return;
+        if (self.registers.get(@intCast(char))) |register| try self.editor.insertText(register.text);
+    }
+
+    fn selectedRegister(self: *VimEngine) u8 {
+        const register = self.pending_register orelse 0;
+        self.pending_register = null;
+        return register;
+    }
+
+    fn rangeText(self: *VimEngine, range: Range) ![]u8 {
+        var value = try self.editor.model.getValueInRange(range, .LF);
+        defer value.deinit();
+        return self.allocator.dupe(u8, value.items);
+    }
+
+    fn moveLeft(self: *VimEngine, count: usize, select: bool) !void {
+        const cursor = self.editor.cursorPosition();
+        const target = try self.leftPosition(cursor, count);
+        if (select) {
+            try self.extendSelection(target);
+        } else {
+            try self.editor.setCursor(target);
+        }
+    }
+
+    fn moveRight(self: *VimEngine, count: usize, select: bool) !void {
+        const cursor = self.editor.cursorPosition();
+        const target = try self.rightPosition(cursor, count);
+        if (select) {
+            try self.extendSelection(target);
+        } else {
+            try self.editor.setCursor(target);
+        }
+    }
+
+    fn moveLeftOnLine(self: *VimEngine, count: usize, select: bool) !void {
+        const cursor = self.editor.cursorPosition();
+        const target = try self.leftPositionOnLine(cursor, count);
+        if (select) try self.extendSelection(target) else try self.editor.setCursor(target);
+    }
+
+    fn moveRightOnLine(self: *VimEngine, count: usize, select: bool) !void {
+        const cursor = self.editor.cursorPosition();
+        const target = try self.rightPositionOnLine(cursor, count);
+        if (select) try self.extendSelection(target) else try self.editor.setCursor(target);
+    }
+
+    fn leftPositionOnLine(self: *VimEngine, position: Position, count: usize) !Position {
+        var column = position.column;
+        var remaining = count;
+        while (remaining > 0 and column > 1) : (remaining -= 1) {
+            column = try self.prevColumn(position.lineNumber, column);
+        }
+        return Position.init(position.lineNumber, column);
+    }
+
+    fn rightPositionOnLine(self: *VimEngine, position: Position, count: usize) !Position {
+        var column = position.column;
+        var remaining = count;
+        while (remaining > 0) : (remaining -= 1) {
+            const line = try self.editor.model.getLineContent(position.lineNumber);
+            defer line.deinit();
+            if (column > line.items.len) break;
+            const next = try self.nextColumn(position.lineNumber, column);
+            if (next == column) break;
+            column = next;
+        }
+        return Position.init(position.lineNumber, column);
+    }
+
+    fn extendSelection(self: *VimEngine, target: Position) !void {
+        const selections = try self.editor.getSelections(self.allocator);
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return;
+        const anchor = selections[0].getSelectionStart();
+        const end = if (self.mode == .visual) try self.afterPosition(target) else target;
+        try self.editor.setSelections(&[_]Selection{Selection.init(anchor.lineNumber, anchor.column, end.lineNumber, end.column)});
+    }
+
+    fn moveWord(self: *VimEngine, char: u21, count: usize, select: bool) !void {
+        const target = try self.wordPosition(self.editor.cursorPosition(), count, char == 'W', .start);
+        if (select) try self.extendSelection(target) else try self.editor.setCursor(target);
+    }
+
+    fn moveWordBack(self: *VimEngine, char: u21, count: usize, select: bool) !void {
+        const target = try self.wordPosition(self.editor.cursorPosition(), count, char == 'B', .back);
+        if (select) try self.extendSelection(target) else try self.editor.setCursor(target);
+    }
+
+    fn moveWordEnd(self: *VimEngine, char: u21, count: usize, select: bool) !void {
+        const target = try self.wordPosition(self.editor.cursorPosition(), count, char == 'E', .end);
+        if (select) try self.extendSelection(target) else try self.editor.setCursor(target);
+    }
+
+    const WordDirection = enum { start, back, end };
+
+    fn wordPosition(self: *VimEngine, start: Position, count: usize, big: bool, direction: WordDirection) !Position {
+        var value = try self.editor.model.getValue(.LF, false);
+        defer value.deinit();
+        const classifier: *const fn (u8) u8 = if (big) wordClassBig else wordClass;
+        var offset = self.editor.model.getOffsetAt(start);
+        var remaining = @max(count, 1);
+        while (remaining > 0) : (remaining -= 1) {
+            switch (direction) {
+                .start => {
+                    if (offset >= value.items.len) break;
+                    if (classifier(value.items[offset]) != 0) {
+                        const cls = classifier(value.items[offset]);
+                        while (offset < value.items.len and classifier(value.items[offset]) == cls) offset += 1;
+                    }
+                    while (offset < value.items.len and classifier(value.items[offset]) == 0) offset += 1;
+                },
+                .back => {
+                    if (offset > 0) offset -= 1;
+                    while (offset > 0 and classifier(value.items[offset]) == 0) offset -= 1;
+                    const cls = classifier(value.items[offset]);
+                    while (offset > 0 and classifier(value.items[offset - 1]) == cls) offset -= 1;
+                },
+                .end => {
+                    if (offset < value.items.len) offset += 1;
+                    while (offset < value.items.len and classifier(value.items[offset]) == 0) offset += 1;
+                    const cls = classifier(value.items[offset]);
+                    while (offset + 1 < value.items.len and classifier(value.items[offset + 1]) == cls) offset += 1;
+                },
+            }
+        }
+        return self.editor.model.getPositionAt(@min(offset, value.items.len));
+    }
+
+    fn leftPosition(self: *VimEngine, position: Position, count: usize) !Position {
+        var line_number = position.lineNumber;
+        var column = position.column;
+        var remaining = count;
+        while (remaining > 0) : (remaining -= 1) {
+            if (column > 1) {
+                column = try self.prevColumn(line_number, column);
+            } else if (line_number > 1) {
+                line_number -= 1;
+                column = self.lineMaxColumn(line_number);
+            } else break;
+        }
+        return Position.init(line_number, column);
+    }
+
+    fn rightPosition(self: *VimEngine, position: Position, count: usize) !Position {
+        var line_number = position.lineNumber;
+        var column = position.column;
+        var remaining = count;
+        while (remaining > 0) : (remaining -= 1) {
+            const line = try self.editor.model.getLineContent(line_number);
+            defer line.deinit();
+            if (column <= line.items.len) {
+                column = try self.nextColumn(line_number, column);
+            } else if (line_number < self.editor.model.getLineCount()) {
+                line_number += 1;
+                column = 1;
+            } else break;
+        }
+        return Position.init(line_number, column);
+    }
+
+    fn afterPosition(self: *VimEngine, position: Position) !Position {
+        return self.rightPosition(position, 1);
+    }
+
+    fn prevColumn(self: *VimEngine, line_number: usize, column: usize) !usize {
+        const line = try self.editor.model.getLineContent(line_number);
+        defer line.deinit();
+        var last: usize = 1;
+        var index: usize = 0;
+        while (index < line.items.len and index + 1 < column) {
+            last = index + 1;
+            index += std.unicode.utf8ByteSequenceLength(line.items[index]) catch 1;
+        }
+        return last;
+    }
+
+    fn nextColumn(self: *VimEngine, line_number: usize, column: usize) !usize {
+        const line = try self.editor.model.getLineContent(line_number);
+        defer line.deinit();
+        if (column > line.items.len) return column;
+        const len = std.unicode.utf8ByteSequenceLength(line.items[column - 1]) catch 1;
+        return @min(column + len, line.items.len + 1);
+    }
+
+    fn lineMaxColumn(self: *VimEngine, line_number: usize) usize {
+        return self.editor.model.getLineMaxColumn(@min(@max(line_number, 1), self.editor.model.getLineCount()));
+    }
+
+    fn lineEndPosition(self: *VimEngine, line_number: usize, normal: bool) Position {
+        const line = self.editor.model.getLineContent(line_number) catch return Position.init(line_number, 1);
+        defer line.deinit();
+        if (line.items.len == 0) return Position.init(line_number, 1);
+        if (!normal) return Position.init(line_number, line.items.len + 1);
+        var last: usize = 1;
+        var index: usize = 0;
+        while (index < line.items.len) {
+            last = index + 1;
+            index += std.unicode.utf8ByteSequenceLength(line.items[index]) catch 1;
+        }
+        return Position.init(line_number, last);
+    }
+
+    fn firstNonBlank(self: *VimEngine, line_number: usize) Position {
+        return Position.init(line_number, self.editor.model.getLineFirstNonWhitespaceColumn(line_number) catch 1);
+    }
+
+    fn clampNormal(self: *VimEngine) !void {
+        try self.editor.clampNormal();
+    }
+
+    /// External actions (pointer click, tab switch) invalidate a pending
+    /// operator/count and end visual mode without touching the selection the
+    /// editor is about to apply.
+    pub fn resetInteractionState(self: *VimEngine) void {
+        self.resetPending();
+        if (self.mode == .visual or self.mode == .visual_line) self.mode = .normal;
+    }
+
+    fn resetPending(self: *VimEngine) void {
+        self.count = 0;
+        self.count_active = false;
+        self.operator = .none;
+        self.operator_count = 1;
+        self.pending_register = null;
+        self.pending_text_object = null;
+        self.pending_g = false;
+        self.pending_z = false;
+        self.pending_window = false;
+        self.pending_find = null;
+        self.pending_replace = false;
+    }
+
+    fn takeCount(self: *VimEngine) usize {
+        const count = if (self.count_active) @max(self.count, 1) else 1;
+        self.count = 0;
+        self.count_active = false;
+        return count;
+    }
+};
+
+fn wordClass(byte: u8) u8 {
+    if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') return 0;
+    if (std.ascii.isAlphanumeric(byte) or byte == '_' or byte >= 128) return 1;
+    return 2;
+}
+
+fn wordClassBig(byte: u8) u8 {
+    if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') return 0;
+    return 1;
+}
+
+fn isWordByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '/' or byte == '.' or byte == '-';
+}
+
+fn findForward(haystack: []const u8, start: usize, needle: []const u8, ignore_case: bool) ?usize {
+    if (needle.len == 0 or start >= haystack.len) return null;
+    if (!ignore_case) return std.mem.indexOfPos(u8, haystack, start, needle);
+    var index = start;
+    while (index + needle.len <= haystack.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[index .. index + needle.len], needle)) return index;
+    }
+    return null;
+}
+
+fn findBackward(haystack: []const u8, start: usize, needle: []const u8, ignore_case: bool) ?usize {
+    if (needle.len == 0 or haystack.len < needle.len or start == 0) return null;
+    var index = @min(start, haystack.len - needle.len + 1);
+    while (index > 0) {
+        index -= 1;
+        const candidate = haystack[index .. index + needle.len];
+        if (if (ignore_case) std.ascii.eqlIgnoreCase(candidate, needle) else std.mem.eql(u8, candidate, needle)) return index;
+    }
+    return null;
+}

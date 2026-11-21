@@ -1,3 +1,5 @@
+> Historical note: the VSCodeVim measurements below describe the removed extension path. Vim is now a compiled-in built-in extension; see `docs/vim.md`.
+
 # Raw end-to-end profile artifacts — 2026-11-20
 
 Supporting data for

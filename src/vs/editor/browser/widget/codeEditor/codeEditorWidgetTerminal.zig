@@ -37,6 +37,7 @@ const CursorContext = @import("../../../common/cursor/cursorContext.zig").Cursor
 const CursorState = cursorCommon.CursorState;
 const CursorChangeReason = @import("../../../common/cursorEvents.zig").CursorChangeReason;
 const PartialCursorState = cursorCommon.PartialCursorState;
+const SingleCursorState = cursorCommon.SingleCursorState;
 const EditOperationType = cursorCommon.EditOperationType;
 const CursorCollection = @import("../../../common/cursor/cursorCollection.zig").CursorCollection;
 const TextModelCursorSimpleModel = @import("../../../common/cursor/textModelCursorSimpleModel.zig").TextModelCursorSimpleModel;
@@ -364,6 +365,10 @@ pub const Editor = struct {
     prev_edit_operation_type: EditOperationType,
     pending_selection: [8]Selection,
     pending_selection_count: usize,
+    /// Nesting depth of an explicit undo group. While non-zero, the editor's
+    /// internal stack pushes are suppressed so one user action becomes one
+    /// undo element; `beginUndoGroup`/`endUndoGroup` own the boundary.
+    undo_group_depth: usize,
     /// Every content change from the latest model event. The extension-host
     /// bridge mirrors the whole batch so multi-range commands (indent, comment,
     /// format) cannot leave the host document stale.
@@ -683,6 +688,7 @@ pub const Editor = struct {
             .prev_edit_operation_type = .Other,
             .pending_selection = undefined,
             .pending_selection_count = 0,
+            .undo_group_depth = 0,
             .last_content_changes = std.array_list.Managed(LastContentChange).init(allocator),
             .tokens_need_refresh = false,
             .decoration_generation = 0,
@@ -2056,9 +2062,9 @@ pub const Editor = struct {
         const self: *Editor = @ptrCast(@alignCast(context));
         if (self.read_only) return error.ReadOnly;
         if (self.model.getEOL() == eol) return;
-        self.model.pushStackElement();
+        self.pushUndoStop();
         try self.model.pushEOL(eol);
-        self.model.pushStackElement();
+        self.pushUndoStop();
     }
 
     fn statusSetEncoding(context: *anyopaque, encoding: encoding_mod.Encoding) void {
@@ -2502,7 +2508,7 @@ pub const Editor = struct {
         defer self.allocator.free(states);
         if (states.len == 0) return false;
 
-        self.model.pushStackElement();
+        self.pushUndoStop();
         try self.cursorsRef().setStates(states);
         try self.cursorsRef().normalize();
         self.emitCursorStateChanged(.NotSet);
@@ -2545,9 +2551,96 @@ pub const Editor = struct {
         );
     }
 
+    /// Closes the current undo element unless a Vim-style undo group is
+    /// active. Internal typing/newline/command boundaries call this; the group
+    /// boundary is the only stack push that matters inside the group.
+    fn pushUndoStop(self: *Editor) void {
+        if (self.undo_group_depth == 0) self.model.pushStackElement();
+    }
+
+    /// Starts one undo element. Nested calls are allowed; the outer group owns
+    /// the boundary. Callers must pair this with `endUndoGroup` (use `defer`).
+    pub fn beginUndoGroup(self: *Editor) void {
+        if (self.undo_group_depth == 0) self.model.pushStackElement();
+        self.undo_group_depth += 1;
+    }
+
+    /// Ends the innermost undo group and closes it when the outer group ends.
+    pub fn endUndoGroup(self: *Editor) void {
+        if (self.undo_group_depth == 0) return;
+        self.undo_group_depth -= 1;
+        if (self.undo_group_depth == 0) self.model.pushStackElement();
+    }
+
     fn closeTypingGroup(self: *Editor) void {
-        self.model.pushStackElement();
+        self.pushUndoStop();
         self.prev_edit_operation_type = .Other;
+    }
+
+    /// Moves one logical line at a time (Vim `j`/`k`), preserving the desired
+    /// visible column through the cursor's `leftoverVisibleColumns` state.
+    /// Unlike `cursorMove`, a motion does not open an undo boundary.
+    /// Puts a normal-mode caret back on the last character of its line while
+    /// preserving the desired visible column. Vim `j`/`k` may land one cell
+    /// after a short line; setting the position without carrying
+    /// `leftoverVisibleColumns` would lose the remembered column.
+    pub fn clampCursorToLastChar(self: *Editor) !void {
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try self.allocator.alloc(PartialCursorState, cursors.len);
+        for (cursors, 0..) |cursor, index| {
+            const selection = cursor.modelState.selection;
+            if (!selection.isEmpty()) {
+                states[index] = .{ .modelState = cursor.modelState, .viewState = cursor.viewState };
+                continue;
+            }
+            const position = cursor.modelState.position;
+            const line = self.model.getLineContent(position.lineNumber) catch {
+                states[index] = .{ .modelState = cursor.modelState, .viewState = cursor.viewState };
+                continue;
+            };
+            defer line.deinit();
+            var last_column: usize = 1;
+            var byte_index: usize = 0;
+            while (byte_index < line.items.len) {
+                last_column = byte_index + 1;
+                byte_index += std.unicode.utf8ByteSequenceLength(line.items[byte_index]) catch 1;
+            }
+            if (position.column <= last_column) {
+                states[index] = .{ .modelState = cursor.modelState, .viewState = cursor.viewState };
+                continue;
+            }
+            const old_visible = CursorColumns.visibleColumnFromColumn(line.items, position.column, self.cursor_config.tabSize);
+            const new_visible = CursorColumns.visibleColumnFromColumn(line.items, last_column, self.cursor_config.tabSize);
+            const desired = @as(isize, @intCast(old_visible)) + cursor.modelState.leftoverVisibleColumns;
+            const new_leftover = desired - @as(isize, @intCast(new_visible));
+            states[index] = cursorCommon.CursorState.fromModelState(SingleCursorState.init(
+                Range.init(position.lineNumber, last_column, position.lineNumber, last_column),
+                .Simple,
+                0,
+                Position.init(position.lineNumber, last_column),
+                new_leftover,
+            ));
+        }
+        try self.applyCursorStates(states);
+    }
+
+    pub fn moveLogicalLine(self: *Editor, down: bool, select: bool, count: usize) !void {
+        self.closeTypingGroup();
+        const cursors = try self.cursorStatesCopy();
+        defer self.allocator.free(cursors);
+        const states = try CursorMoveCommands.simpleMove(
+            self.allocator,
+            &self.cursor_config,
+            self.model_adapter.interface(),
+            self.view_lines.interface(),
+            cursors,
+            if (down) .down else .up,
+            select,
+            @max(count, 1),
+            .line,
+        );
+        try self.applyCursorStates(states);
     }
 
     pub fn viewCursorStates(self: *Editor) ![]CursorState {
@@ -2930,9 +3023,9 @@ pub const Editor = struct {
     }
 
     fn executeTypeResultFor(self: *Editor, result: EditOperationResult, before_selections: []const Selection) !void {
-        if (result.shouldPushStackElementBefore) self.model.pushStackElement();
+        if (result.shouldPushStackElementBefore) self.pushUndoStop();
         try self.executeReplaceCommandsFor(before_selections, result.commands);
-        if (result.shouldPushStackElementAfter) self.model.pushStackElement();
+        if (result.shouldPushStackElementAfter) self.pushUndoStop();
         self.prev_edit_operation_type = result.type;
     }
 
@@ -3021,7 +3114,7 @@ pub const Editor = struct {
         )) orelse return;
         defer result.deinit(self.allocator);
         try self.executeTypeResultFor(result, selections);
-        self.model.pushStackElement();
+        self.pushUndoStop();
     }
 
     /// `editor.action.insertLineAfter`: run Enter at each cursor's line end.
@@ -3061,7 +3154,7 @@ pub const Editor = struct {
         )) orelse return;
         defer result.deinit(self.allocator);
         try self.executeTypeResultFor(result, selections);
-        self.model.pushStackElement();
+        self.pushUndoStop();
     }
 
     pub fn insertTab(self: *Editor) !void {
@@ -3210,7 +3303,7 @@ pub const Editor = struct {
         if (edits.items.len == 0) return;
 
         try self.applyEditOperations(edits.items);
-        self.model.pushStackElement();
+        self.pushUndoStop();
     }
 
     pub fn reindentSelectedLines(self: *Editor) !void {
@@ -3232,7 +3325,7 @@ pub const Editor = struct {
         if (edits.items.len == 0) return;
 
         try self.applyEditOperations(edits.items);
-        self.model.pushStackElement();
+        self.pushUndoStop();
     }
 
     pub fn indentationToSpaces(self: *Editor) !void {
@@ -3318,7 +3411,7 @@ pub const Editor = struct {
             selections,
         );
         defer result.deinit(self.allocator);
-        if (result.shouldPushStackElementBefore) self.model.pushStackElement();
+        if (result.shouldPushStackElementBefore) self.pushUndoStop();
         try self.executeReplaceCommands(result.commands);
         self.prev_edit_operation_type = .DeletingLeft;
     }
@@ -3335,7 +3428,7 @@ pub const Editor = struct {
             selections,
         );
         defer result.deinit(self.allocator);
-        if (result.shouldPushStackElementBefore) self.model.pushStackElement();
+        if (result.shouldPushStackElementBefore) self.pushUndoStop();
         try self.executeReplaceCommands(result.commands);
         self.prev_edit_operation_type = .DeletingRight;
     }
@@ -3454,7 +3547,7 @@ pub const Editor = struct {
         try self.afterEdit();
         try self.updateSelections(selections);
         self.ensureCursorVisible();
-        self.model.pushStackElement();
+        self.pushUndoStop();
     }
 
     fn executeCommands(self: *Editor, commands: []const ?ICommand) !void {
@@ -3823,7 +3916,7 @@ pub const Editor = struct {
         try self.executeReplaceCommands(&commands);
         try self.cursorsRef().killSecondaryCursors();
         self.emitCursorStateChanged(.NotSet);
-        self.model.pushStackElement();
+        self.pushUndoStop();
     }
 
     pub fn toggleLineComment(self: *Editor) !void {
@@ -6164,4 +6257,74 @@ test "Editor: manual fold ranges are created and removed" {
     try editor.removeManualFoldingRanges();
     try std.testing.expectEqual(folding.FoldState.expanded, editor.foldStateAtModelLine(1));
     try std.testing.expectEqual(@as(usize, 5), editor.viewLineCount());
+}
+
+test "Editor: one undo group covers an insert session with newlines" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "a", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 2));
+    editor.beginUndoGroup();
+    try editor.insertText("b");
+    try editor.newline();
+    try editor.insertText("c");
+    editor.endUndoGroup();
+
+    var value = try editor.model.getValue(.LF, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("ab\nc", value.items);
+
+    try editor.undo();
+    var undone = try editor.model.getValue(.LF, false);
+    defer undone.deinit();
+    try std.testing.expectEqualStrings("a", undone.items);
+    try std.testing.expectEqual(Position.init(1, 2), editor.modelCursorPosition());
+
+    try editor.redo();
+    var redone = try editor.model.getValue(.LF, false);
+    defer redone.deinit();
+    try std.testing.expectEqualStrings("ab\nc", redone.items);
+}
+
+test "Editor: logical-line movement preserves the visible column" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "abcdef\nab\nabcdef", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 6));
+    try editor.moveLogicalLine(true, false, 1);
+    try std.testing.expectEqual(Position.init(2, 3), editor.modelCursorPosition());
+
+    try editor.moveLogicalLine(true, false, 1);
+    try std.testing.expectEqual(Position.init(3, 6), editor.modelCursorPosition());
+
+    try editor.moveLogicalLine(false, false, 1);
+    try std.testing.expectEqual(Position.init(2, 3), editor.modelCursorPosition());
+    try editor.moveLogicalLine(false, false, 1);
+    try std.testing.expectEqual(Position.init(1, 6), editor.modelCursorPosition());
+}
+
+test "Editor: logical-line selection carries the desired column" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var editor = try Editor.createFromText(allocator, io, "abcdef\nab\nabcdef", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setCursorPosition(Position.init(1, 6));
+    try editor.moveLogicalLine(true, true, 1);
+    const selection = editor.modelSelection();
+    try std.testing.expectEqual(Position.init(1, 6), selection.getStartPosition());
+    try std.testing.expectEqual(Position.init(2, 3), selection.getEndPosition());
 }

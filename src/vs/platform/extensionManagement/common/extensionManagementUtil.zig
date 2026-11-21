@@ -31,9 +31,9 @@ pub fn areSameExtensions(a: []const u8, b: []const u8) bool {
 
 test "getGalleryExtensionId lowercases publisher and name" {
     const allocator = std.testing.allocator;
-    const id = try getGalleryExtensionId(allocator, "VSCodeVim", "Vim");
+    const id = try getGalleryExtensionId(allocator, "Example", "Extension");
     defer allocator.free(id);
-    try std.testing.expectEqualStrings("vscodevim.vim", id);
+    try std.testing.expectEqualStrings("example.extension", id);
 }
 
 test "getGalleryExtensionId defaults a missing publisher" {
@@ -44,6 +44,6 @@ test "getGalleryExtensionId defaults a missing publisher" {
 }
 
 test "areSameExtensions ignores id case" {
-    try std.testing.expect(areSameExtensions("vscodevim.vim", "VSCodeVim.Vim"));
-    try std.testing.expect(!areSameExtensions("vscodevim.vim", "vscodevim.viml"));
+    try std.testing.expect(areSameExtensions("example.extension", "Example.Extension"));
+    try std.testing.expect(!areSameExtensions("example.extension", "example.extension-other"));
 }

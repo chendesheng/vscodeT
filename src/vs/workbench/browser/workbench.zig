@@ -4145,6 +4145,16 @@ pub const Workbench = struct {
         return self.closeTab(pane, tab);
     }
 
+    /// Closes the active tab without the dirty confirmation. `:q!` uses this;
+    /// all other close paths keep the confirmation.
+    pub fn forceCloseActive(self: *Workbench) !void {
+        self.part.active_sash = null;
+        self.clearTabDrag();
+        const pane = self.activePane() orelse return;
+        const tab = pane.activeTab() orelse return;
+        try self.performCloseTab(pane, tab);
+    }
+
     /// Closes `tab` from `pane`, applying upstream's dirty-close confirmation
     /// and the empty-pane collapse. Used by Ctrl-W, the tab close cell and
     /// middle click.

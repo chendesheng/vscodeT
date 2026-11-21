@@ -1,3 +1,5 @@
+> Historical note: the VSCodeVim measurements below describe the removed extension path. Vim is now a compiled-in built-in extension; see `docs/vim.md`.
+
 # End-to-end performance profile — 2026-11-20
 
 Status: measurement report only. No runtime code was changed for this run.
