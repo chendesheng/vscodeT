@@ -1,18 +1,21 @@
 // Port of `src/vs/editor/contrib/find/browser/findWidget.ts`.
 //
 // Terminal adaptation. The browser widget is an overlay with two input boxes,
-// toggle buttons, match count and replace buttons. Here it is a one- or
-// two-row bar in the top-right corner with a block-caret input box, text
-// toggles (`Aa`, `ab`, `.*`) and the match count. There are no focusable
-// buttons: the same actions are reachable from the keyboard, and the widget
-// keeps the keyboard while it is open.
+// a replace toggle, match count, previous/next/close buttons, find options and
+// replace buttons. Here it is a one- or two-row bar in the top-right corner
+// with block-caret input boxes, visible clickable controls (the terminal has
+// no focusable buttons) and a `Theme` bundle resolved by the host from the
+// `editorWidget.*`/`input.*`/`inputOption.*` ids.
 //
 // Kept from upstream: open/close and replace-row state, incremental search
 // while typing, Enter/Shift-Enter next/previous, Escape close, Alt-C/W/R
-// option toggles, replace and replace-all, and the match counter.
-// TUI-specific: the key map (documented in the README), and the layout.
-// Ctrl-H cannot be used for replace because terminals report it as Backspace;
-// the replace row is on Ctrl-R instead.
+// option toggles, replace/replace-all, the match counter, and the visible
+// replace toggle/previous/next/close/preserve-case/replace/replace-all
+// controls.
+// TUI-specific: the key map (documented in the README), the cell layout, and
+// the absence of the browser sash, view zone, input history and accessibility
+// tree. Ctrl-H cannot be used for replace because terminals report it as
+// Backspace; the replace row is on Ctrl-R instead.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -59,14 +62,20 @@ const FocusField = enum { find, replace };
 /// The mouse-operable controls in the bar. The terminal adaptation has no
 /// focusable buttons, but they are still clickable and show a hover state.
 const Control = enum {
+    toggle_replace,
     match_case,
     whole_word,
     regex,
     scope,
+    prev,
+    next,
+    close,
+    preserve_case,
+    replace_one,
     replace_all,
 };
 
-const control_count = 5;
+const control_count = 11;
 
 pub const FindWidget = struct {
     allocator: Allocator,
@@ -251,17 +260,30 @@ pub const FindWidget = struct {
             });
         }
 
-        // The find row mirrors upstream's `.find-part` flex row: label, the
-        // growing input, the match count and the option toggles.
-        const wide = width_cells > 30;
+        // The find row mirrors upstream's `.find-part`: replace toggle, find
+        // input, match count, previous/next, the Aa/ab/.*/Sel toggles and the
+        // close button. Narrow terminals drop the trailing action group.
+        const wide = width_cells >= 44;
+        const medium = width_cells >= 32;
+        var fixed = @as(usize, 10); // toggle + label + close + gaps + padding
+        if (medium) fixed += 16; // count + prev + next + their gaps
+        if (wide) fixed += 13; // toggles + gap
         const find_row = try appendRow(doc, root, false);
+        self.appendControl(
+            doc,
+            find_row,
+            if (self.state.is_replace_revealed) "\u{25BE}" else "\u{25B8}",
+            1,
+            .toggle_replace,
+            self.state.is_replace_revealed,
+        );
         _ = try appendLabel(doc, find_row, "Find", 4, self.theme.dim_foreground);
-        const find_width = if (wide) width_cells -| 30 else width_cells -| 6;
+        const find_width = @max(width_cells -| fixed, 1);
         const find_node = try self.buildInput(
             doc,
             find_row,
             &self.find_input,
-            @max(find_width, 1),
+            find_width,
             self.focused and self.focus_field == .find,
         );
         try find_node.addEventListener(.{
@@ -271,25 +293,29 @@ pub const FindWidget = struct {
         });
 
         var replace_node: ?*ui.Node = null;
-        if (wide) {
+        if (medium) {
             var count_buffer: [16]u8 = undefined;
             const count = formatCount(&count_buffer, self.state);
             _ = try appendRightAligned(doc, find_row, count, count_width, .{
                 .color = self.theme.dim_foreground,
             });
-
+            self.appendControl(doc, find_row, "\u{2191}", 1, .prev, false);
+            self.appendControl(doc, find_row, "\u{2193}", 1, .next, false);
+        }
+        if (wide) {
             const toggles = try appendToggleGroup(doc, find_row);
             self.appendToggle(doc, toggles, "Aa", self.state.matchCase(), .match_case);
             self.appendToggle(doc, toggles, "ab", self.state.wholeWord(), .whole_word);
             self.appendToggle(doc, toggles, ".*", self.state.isRegex(), .regex);
             self.appendToggle(doc, toggles, "Sel", self.state.search_scope != null, .scope);
         }
+        self.appendControl(doc, find_row, "\u{00D7}", 1, .close, false);
 
         if (self.state.is_replace_revealed) {
             // `.replace-part` is the second flex row.
             const replace_row = try appendRow(doc, root, true);
             _ = try appendLabel(doc, replace_row, "Repl", 4, self.theme.dim_foreground);
-            const replace_width = @max(@as(usize, 1), width_cells -| 11);
+            const replace_width = @max(@as(usize, 1), width_cells -| 16);
             replace_node = try self.buildInput(
                 doc,
                 replace_row,
@@ -302,8 +328,9 @@ pub const FindWidget = struct {
                 .focus = onReplaceFocus,
                 .blur = onBlur,
             });
-
-            _ = try self.appendReplaceAll(doc, replace_row);
+            self.appendControl(doc, replace_row, "AB", 2, .preserve_case, self.state.preserveCase());
+            self.appendControl(doc, replace_row, "\u{21C4}", 1, .replace_one, false);
+            self.appendControl(doc, replace_row, "All", 3, .replace_all, false);
         }
 
         self.focus_node_value = if (self.focus_field == .replace)
@@ -350,51 +377,50 @@ pub const FindWidget = struct {
         active: bool,
         control: Control,
     ) void {
+        self.appendControl(doc, parent, text, text.len, control, active);
+    }
+
+    /// One clickable control. The terminal bar has no focusable buttons; the
+    /// same actions are reachable from the keyboard and every control shows a
+    /// hover/active state.
+    fn appendControl(
+        self: *FindWidget,
+        doc: *ui.Document,
+        parent: *ui.Node,
+        text: []const u8,
+        width_cells: usize,
+        control: Control,
+        active: bool,
+    ) void {
         const hovered = self.hover_control != null and self.hover_control.? == control;
         const node = doc.createText(text) catch return;
         node.setStyle(.{
-            .color = if (active) self.theme.active_foreground else if (hovered) self.theme.foreground else self.theme.dim_foreground,
-            .background = if (active) self.theme.active_background else if (hovered) self.theme.hover_background else null,
+            .color = if (active)
+                self.theme.active_foreground
+            else if (hovered)
+                self.theme.foreground
+            else
+                self.theme.dim_foreground,
+            .background = if (active)
+                self.theme.active_background
+            else if (hovered)
+                self.theme.hover_background
+            else
+                null,
             .bold = active,
         });
         const holder = doc.createElement(.div) catch return;
         holder.setStyle(.{
-            .width = .{ .cells = @floatFromInt(text.len) },
+            .width = .{ .cells = @floatFromInt(width_cells) },
             .height = .{ .cells = 1 },
             .white_space = .pre,
             .flex_shrink = 0,
+            .display = .flex,
+            .justify_content = .center,
         });
         _ = holder.appendChild(node) catch return;
         _ = parent.appendChild(holder) catch {};
         self.control_nodes[@backingInt(control)] = holder;
-        holder.addEventListener(.{
-            .context = self,
-            .mouse_down = onControlDown,
-            .click = onControlClick,
-        }) catch {};
-    }
-
-    fn appendReplaceAll(
-        self: *FindWidget,
-        doc: *ui.Document,
-        parent: *ui.Node,
-    ) !void {
-        const hovered = self.hover_control != null and self.hover_control.? == .replace_all;
-        const node = try doc.createText("All");
-        node.setStyle(.{
-            .color = if (hovered) self.theme.foreground else self.theme.dim_foreground,
-            .background = if (hovered) self.theme.hover_background else null,
-        });
-        const holder = try doc.createElement(.div);
-        holder.setStyle(.{
-            .width = .{ .cells = 3 },
-            .height = .{ .cells = 1 },
-            .white_space = .pre,
-            .flex_shrink = 0,
-        });
-        _ = try holder.appendChild(node);
-        _ = try parent.appendChild(holder);
-        self.control_nodes[@backingInt(Control.replace_all)] = holder;
         holder.addEventListener(.{
             .context = self,
             .mouse_down = onControlDown,
@@ -415,10 +441,16 @@ pub const FindWidget = struct {
 
     fn activateControl(self: *FindWidget, control: Control) void {
         switch (control) {
+            .toggle_replace => self.toggleReplace(),
             .match_case => self.state.change(.{ .match_case = !self.state.matchCase() }, true, true),
             .whole_word => self.state.change(.{ .whole_word = !self.state.wholeWord() }, true, true),
             .regex => self.state.change(.{ .is_regex = !self.state.isRegex() }, true, true),
             .scope => self.toggleSearchScope(),
+            .prev => self.model.moveToPrevMatch() catch |err| self.report(err),
+            .next => self.model.moveToNextMatch() catch |err| self.report(err),
+            .close => self.close(),
+            .preserve_case => self.state.change(.{ .preserve_case = !self.state.preserveCase() }, true, true),
+            .replace_one => self.model.replace() catch |err| self.report(err),
             .replace_all => self.model.replaceAll() catch |err| self.report(err),
         }
     }

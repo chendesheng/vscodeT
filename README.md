@@ -945,9 +945,13 @@ console API for raw mode, sizing and input polling.
   between the find and replace inputs, Alt-C/Alt-W/Alt-R toggle match case,
   whole word and regex, Alt-P toggles preserve case, Alt-L limits the search to
   the current selection(s), Alt-Enter selects all matches, and Ctrl-Alt-Enter
-  replaces all. The bar shows the match position/count and option state, and its
-  bar/input/toggle colors resolve the `editorWidget.*`, `input.*` and
-  `inputOption.*` theme ids (the terminal fallback keeps the dark defaults). The
+  replaces all. The bar shows clickable replace-toggle, previous, next, close,
+  match position/count, `Aa`/`ab`/`.*`/`Sel`, preserve-case, replace-one and
+  replace-all controls (clicks do not take focus; the keyboard keeps its key
+  map), and its bar/input/toggle colors resolve the `editorWidget.*`,
+  `input.*` and `inputOption.*` theme ids (the terminal fallback keeps the dark
+  defaults). The browser sash, find widget view zone, input history and
+  accessibility tree are not ported. The
   find, search and quick-open inputs share the completed `InputBox` editing
   behavior: Shift selection, Ctrl-A, word-wise movement/deletion, undo/redo,
   mouse drag selection and caret-follow horizontal scrolling.

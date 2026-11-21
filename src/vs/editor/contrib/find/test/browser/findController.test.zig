@@ -371,8 +371,9 @@ test "FindController: find toggles hover and click from the mouse" {
     const iface = controller.widget().interface();
     const width_cells = iface.width(iface.context, 60);
     const left = 60 - width_cells;
-    // The Aa toggle is the first of the four 3-cell toggles at the right edge.
-    const toggle_x = left + width_cells - 12;
+    // The Aa toggle is the first of the four 2-cell toggles, just before the
+    // close cell at the right edge.
+    const toggle_x = left + width_cells - 14;
     const grid = view.surface.grid();
     const normal_bg = grid.bg[grid.index(toggle_x, 0)];
 
@@ -490,4 +491,101 @@ test "FindController: the host theme reaches the find bar" {
         ui.cell.packColor(theme.background),
         grid.bg[grid.index(grid.cols - 1, 0)],
     );
+}
+
+test "FindController: visible controls toggle replace and close the bar" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    try controller.open(false);
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const iface = controller.widget().interface();
+    const width_cells = iface.width(iface.context, 60);
+    const left = 60 - width_cells;
+
+    // The toggle is the first cell of the bar.
+    var down = ui.MouseEvent{ .kind = .down, .x = left + 1, .y = 0, .button = .left };
+    var up = ui.MouseEvent{ .kind = .up, .x = left + 1, .y = 0, .button = .left };
+    _ = try view.dispatchMouse(&down);
+    _ = try view.dispatchMouse(&up);
+    try std.testing.expect(controller.state.is_replace_revealed);
+
+    _ = try view.dispatchMouse(&down);
+    _ = try view.dispatchMouse(&up);
+    try std.testing.expect(!controller.state.is_replace_revealed);
+
+    // The close cell is the last cell of the find row.
+    down = .{ .kind = .down, .x = left + width_cells - 1, .y = 0, .button = .left };
+    up = .{ .kind = .up, .x = left + width_cells - 1, .y = 0, .button = .left };
+    _ = try view.dispatchMouse(&down);
+    _ = try view.dispatchMouse(&up);
+    try std.testing.expect(!controller.isOpen());
+}
+
+test "FindController: replace-row controls preserve case and replace one" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    try controller.open(false);
+    try view.refresh();
+    var type_event = ui.KeyEvent{ .key = .{ .text = "alpha" } };
+    try std.testing.expect(view.dispatchKey(&type_event));
+    try controller.startReplace();
+    try view.refresh();
+    var replace_text = ui.KeyEvent{ .key = .{ .text = "omega" } };
+    try std.testing.expect(view.dispatchKey(&replace_text));
+
+    const iface = controller.widget().interface();
+    const width_cells = iface.width(iface.context, 60);
+    const left = 60 - width_cells;
+    const row = 1;
+    // Replace row: label 4, input, AB 2, replace 1, All 3.
+    const preserve_x = left + width_cells - 9;
+    var down = ui.MouseEvent{ .kind = .down, .x = preserve_x, .y = row, .button = .left };
+    var up = ui.MouseEvent{ .kind = .up, .x = preserve_x, .y = row, .button = .left };
+    _ = try view.dispatchMouse(&down);
+    _ = try view.dispatchMouse(&up);
+    try std.testing.expect(controller.state.preserveCase());
+
+    const replace_x = left + width_cells - 6;
+    down = .{ .kind = .down, .x = replace_x, .y = row, .button = .left };
+    up = .{ .kind = .up, .x = replace_x, .y = row, .button = .left };
+    _ = try view.dispatchMouse(&down);
+    _ = try view.dispatchMouse(&up);
+
+    const first_line = try editor.model.getLineContent(1);
+    defer first_line.deinit();
+    try std.testing.expectEqualStrings("omega", first_line.items);
 }
