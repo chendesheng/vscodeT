@@ -154,6 +154,7 @@ pub const DecorationKind = enum {
     word_highlight,
     word_highlight_strong,
     search_range_highlight,
+    marker_selection_highlight,
 };
 
 pub const Decoration = struct {

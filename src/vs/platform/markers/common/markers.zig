@@ -79,6 +79,20 @@ pub const Resource = struct {
         });
     }
 
+    /// Terminal counterpart of `extUri.getComparisonKey(resource, true)`: the
+    /// fragment is ignored so markers on different fragments of one document
+    /// group together. Path casing is not folded; the terminal workbench has no
+    /// URI identity service.
+    pub fn comparisonKey(self: Resource, allocator: Allocator) ![]u8 {
+        return std_uri.resourceKeyFromComponents(allocator, .{
+            .scheme = self.scheme,
+            .authority = self.authority,
+            .path = self.path,
+            .query = self.query,
+            .fragment = "",
+        });
+    }
+
     pub fn fromUri(allocator: Allocator, uri: std.Uri) !Resource {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();

@@ -104,6 +104,12 @@ const quick_input_common = @import("../../platform/quickinput/common/quickInput.
 const QuickPickItem = quick_input_common.QuickPickItem;
 const QuickPick = @import("../../platform/quickinput/browser/quickInput.zig").QuickPick;
 const dialogs = @import("../../platform/dialogs/common/dialogs.zig");
+const markers_common = @import("../contrib/markers/common/markers.zig");
+const MarkersStatusBar = @import("../contrib/markers/browser/markersStatusBar.zig").MarkersStatusBar;
+const problems_view_mod = @import("../../../tui/problemsView.zig");
+const ProblemsView = problems_view_mod.ProblemsView;
+const range_highlight_mod = @import("./codeeditor.zig");
+const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 
 const search_view_mod = @import("../contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
@@ -141,7 +147,6 @@ const MarkdownPreviewConfig = @import("../contrib/markdown/browser/markdownPrevi
 const std_uri = @import("../../base/common/stdUri.zig");
 const MarkerService = @import("../../platform/markers/common/markerService.zig").MarkerService;
 const MarkerDecorationsService = @import("../../editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
-const markerChangeEvent = @import("../../platform/markers/common/markerService.zig").MarkerChangeEvent;
 const markers_mod = @import("../../platform/markers/common/markers.zig");
 const WordBasedCompletionProvider = @import("../../editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
 const Position = @import("../../editor/common/core/position.zig").Position;
@@ -259,8 +264,9 @@ pub const Workbench = struct {
     activity_service: ActivityService,
     editor_status: ?*EditorStatus = null,
     status_hint_accessor: ?EntryAccessor = null,
-    json_status_accessor: ?EntryAccessor = null,
-    json_status_buf: [96]u8 = undefined,
+    markers_status: ?*MarkersStatusBar = null,
+    problems_view: ?*ProblemsView = null,
+    range_highlights: ?*RangeHighlightDecorations = null,
     search_badge_buf: [32]u8 = undefined,
     search_badge_count: usize = 0,
     workspace: *WorkspaceContextService,
@@ -303,7 +309,6 @@ pub const Workbench = struct {
     language_features: ?*LanguageFeaturesService = null,
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
-    marker_listener: ?@import("../../base/common/event.zig").Emitter(markerChangeEvent).ListenerId = null,
     word_completion_provider: ?*WordBasedCompletionProvider = null,
     word_completion_registration: ?IDisposable = null,
     outline_registration: ?IDisposable = null,
@@ -414,7 +419,6 @@ pub const Workbench = struct {
         self.language_features = null;
         self.marker_service = null;
         self.marker_decorations = null;
-        self.marker_listener = null;
         self.word_completion_provider = null;
         self.word_completion_registration = null;
         self.outline_registration = null;
@@ -526,7 +530,6 @@ pub const Workbench = struct {
         self.language_features = null;
         self.marker_service = null;
         self.marker_decorations = null;
-        self.marker_listener = null;
         self.word_completion_provider = null;
         self.word_completion_registration = null;
         self.outline_registration = null;
@@ -654,7 +657,6 @@ pub const Workbench = struct {
         self.language_features = null;
         self.marker_service = null;
         self.marker_decorations = null;
-        self.marker_listener = null;
         self.word_completion_provider = null;
         self.word_completion_registration = null;
         self.outline_registration = null;
@@ -721,6 +723,9 @@ pub const Workbench = struct {
     }
 
     fn initShellModels(self: *Workbench) !void {
+        self.problems_view = null;
+        self.markers_status = null;
+        self.range_highlights = null;
         self.layout_model = LayoutModel.init(self.allocator);
         errdefer self.layout_model.deinit();
         self.activity_bar_part = ActivityBarPart.init(self.allocator);
@@ -747,7 +752,8 @@ pub const Workbench = struct {
         try self.sidebar_part.pane.addComposite(.{ .id = "explorer", .name = "Explorer", .order = 1 });
         try self.sidebar_part.pane.addComposite(.{ .id = "search", .name = "Search", .order = 2 });
         try self.sidebar_part.pane.addComposite(.{ .id = "scm", .name = "Source Control", .order = 3 });
-        try self.sidebar_part.pane.addComposite(.{ .id = "settings", .name = "Settings", .order = 4 });
+        try self.sidebar_part.pane.addComposite(.{ .id = markers_common.PROBLEMS_ACTIVITY_ID, .name = markers_common.PROBLEMS_TITLE, .order = 4 });
+        try self.sidebar_part.pane.addComposite(.{ .id = "settings", .name = "Settings", .order = 5 });
         try self.sidebar_part.setWidth(28);
 
         try self.initStatusHint();
@@ -758,13 +764,31 @@ pub const Workbench = struct {
             .name = "Quit hint",
             .text = "Ctrl-Q quit",
         }, "workbench.hint", .right, .{ .number = 0 });
-        self.json_status_accessor = try self.statusbar.addEntry(.{
-            .name = "Problems",
-            .text = "",
-        }, "workbench.jsonProblems", .left, .{ .number = 1 });
+        self.markers_status = try MarkersStatusBar.init(self.allocator, &self.statusbar);
+        const highlights = try self.allocator.create(RangeHighlightDecorations);
+        errdefer self.allocator.destroy(highlights);
+        highlights.* = RangeHighlightDecorations.init(self.allocator, .{
+            .context = self,
+            .active_resource = markerHighlightActiveResource,
+            .set_range_highlight = markerHighlightSetRange,
+        });
+        self.range_highlights = highlights;
     }
 
     fn deinitShellModels(self: *Workbench) void {
+        if (self.problems_view) |view| {
+            view.deinit();
+            self.problems_view = null;
+        }
+        if (self.range_highlights) |highlights| {
+            highlights.deinit();
+            self.allocator.destroy(highlights);
+            self.range_highlights = null;
+        }
+        if (self.markers_status) |status| {
+            status.deinit();
+            self.markers_status = null;
+        }
         self.activity_service.deinit();
         self.statusbar.deinit();
         self.sidebar_part.deinit();
@@ -854,6 +878,8 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.createTerminalEditor", .label = "Create Terminal Editor", .category = "View", .context = self, .run = commandCreateTerminalEditor },
             .{ .id = "workbench.view.explorer", .label = "View: Show Explorer", .category = "View", .context = self, .run = commandViewExplorer },
             .{ .id = "workbench.view.scm", .label = "View: Show Source Control", .category = "View", .context = self, .run = commandViewScm },
+            .{ .id = markers_common.Markers.SHOW_MARKERS_VIEW_ACTION_ID, .label = "View: Show Problems", .category = "View", .context = self, .run = commandShowProblems },
+            .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .label = "View: Toggle Problems", .category = "View", .context = self, .run = commandToggleProblems },
             .{ .id = "git.refresh", .label = "Refresh", .category = "Source Control", .context = self, .run = commandGitRefresh },
             .{ .id = "git.openChange", .label = "Open Change", .category = "Source Control", .context = self, .run = commandGitOpenChange },
             .{ .id = "git.openFile", .label = "Open File", .category = "Source Control", .context = self, .run = commandGitOpenFile },
@@ -1108,7 +1134,6 @@ pub const Workbench = struct {
         if (self.word_completion_provider) |provider| self.allocator.destroy(provider);
         if (self.marker_decorations) |service| service.deinit();
         if (self.marker_service) |service| {
-            if (self.marker_listener) |listener| service.on_marker_changed.unlisten(listener);
             service.deinit();
             self.allocator.destroy(service);
         }
@@ -1581,6 +1606,13 @@ pub const Workbench = struct {
         if (std.mem.eql(u8, activity.id, "search")) {
             if (self.search_view) |view| view.focus();
         }
+        if (std.mem.eql(u8, activity.id, markers_common.PROBLEMS_ACTIVITY_ID)) {
+            try self.ensureProblemsView();
+            if (self.problems_view) |view| view.refresh();
+            self.updateProblemsHighlight();
+        } else if (self.range_highlights) |highlights| {
+            highlights.removeHighlightRange();
+        }
         self.layoutAll();
     }
 
@@ -1594,6 +1626,9 @@ pub const Workbench = struct {
         try self.setSidebarVisible(visible);
         self.focus = if (visible) .sidebar else .editor;
         self.statusbar.main_part.clearFocus();
+        if (!visible) {
+            if (self.range_highlights) |highlights| highlights.removeHighlightRange();
+        }
         self.layoutAll();
     }
 
@@ -1609,6 +1644,7 @@ pub const Workbench = struct {
 
     pub fn focusEditor(self: *Workbench) void {
         self.focus = .editor;
+        if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
         self.statusbar.main_part.clearFocus();
         if (self.search_view) |view| view.blur();
@@ -1617,6 +1653,7 @@ pub const Workbench = struct {
     pub fn focusStatusBar(self: *Workbench) void {
         if (!self.statusBarVisible()) return;
         self.focus = .statusbar;
+        if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
         if (self.statusbar.main_part.focusedHandle() == null) {
             if (self.statusbar.main_part.lastFocusedHandle()) |handle| {
@@ -1628,6 +1665,81 @@ pub const Workbench = struct {
         }
         if (self.activeTab()) |tab| tab.focusEditor();
         if (self.search_view) |view| view.blur();
+    }
+
+    fn ensureProblemsView(self: *Workbench) !void {
+        if (self.problems_view) |view| {
+            view.setService(self.marker_service);
+            return;
+        }
+        const view = try ProblemsView.init(self.allocator, self.marker_service, .{
+            .context = self,
+            .preview_marker = problemsPreviewMarker,
+            .open_marker = problemsOpenMarker,
+            .selection_changed = problemsSelectionChanged,
+            .workspace_root = problemsWorkspaceRoot,
+            .focus_editor = problemsFocusEditor,
+        });
+        self.problems_view = view;
+    }
+
+    pub fn showProblems(self: *Workbench) !void {
+        if (!try self.showActivityById(markers_common.PROBLEMS_ACTIVITY_ID)) return;
+        self.focusSidebar();
+        if (self.problems_view) |view| view.refresh();
+        self.updateProblemsHighlight();
+    }
+
+    pub fn toggleProblems(self: *Workbench) !void {
+        const active = self.activity_bar_part.active_id orelse "";
+        if (self.sidebarShown() and self.focus == .sidebar and
+            std.mem.eql(u8, active, markers_common.PROBLEMS_ACTIVITY_ID))
+        {
+            try self.toggleSidebar();
+            return;
+        }
+        try self.showProblems();
+    }
+
+    fn problemsFocused(self: *const Workbench) bool {
+        if (self.focus != .sidebar or !self.sidebarShown()) return false;
+        return std.mem.eql(
+            u8,
+            self.activity_bar_part.active_id orelse "",
+            markers_common.PROBLEMS_ACTIVITY_ID,
+        );
+    }
+
+    /// Keeps the editor range highlight in sync with the Problems selection.
+    /// The highlight is only shown while Problems owns focus, matching the
+    /// upstream `updateRangeHighlights` rule.
+    pub fn updateProblemsHighlight(self: *Workbench) void {
+        const highlights = self.range_highlights orelse return;
+        if (!self.problemsFocused()) {
+            highlights.removeHighlightRange();
+            return;
+        }
+        const view = self.problems_view orelse {
+            highlights.removeHighlightRange();
+            return;
+        };
+        const marker = view.selectedMarker() orelse {
+            highlights.removeHighlightRange();
+            return;
+        };
+        if (!std.mem.eql(u8, marker.resource.scheme, "file")) {
+            highlights.removeHighlightRange();
+            return;
+        }
+        const tab = self.activeTab() orelse {
+            highlights.removeHighlightRange();
+            return;
+        };
+        if (!self.samePath(tab.editor.path, marker.resource.path)) {
+            highlights.removeHighlightRange();
+            return;
+        }
+        highlights.highlightRange(tab.editor.path, markerEditorRange(tab.editor, marker));
     }
 
     pub fn terminalFocused(self: *const Workbench) bool {
@@ -2012,7 +2124,8 @@ pub const Workbench = struct {
         self.marker_decorations = marker_decorations;
         self.word_completion_provider = word_provider;
         self.word_completion_registration = try features.completion_provider.register(.{ .language = "*" }, word_provider.interface());
-        self.marker_listener = try marker_service.on_marker_changed.listen(self, onMarkerChanged);
+        if (self.markers_status) |status| status.attach(marker_service);
+        if (self.problems_view) |view| view.setService(marker_service);
         self.document_symbol_listener = try features.document_symbol_provider.on_did_change.listen(self, onDocumentSymbolsChanged);
         self.outline_registration = try self.outline_service.registerOutlineCreator(.{
             .context = self,
@@ -2026,10 +2139,6 @@ pub const Workbench = struct {
                 tab.attachLanguageRegistry(features);
             }
         }
-        self.refreshStatus();
-    }
-
-    fn onMarkerChanged(_: markerChangeEvent, self: *Workbench) !void {
         self.refreshStatus();
     }
 
@@ -4472,6 +4581,12 @@ pub const Workbench = struct {
             }
             return true;
         }
+        if (std.mem.eql(u8, active_id, markers_common.PROBLEMS_ACTIVITY_ID)) {
+            if (self.problems_view) |view| {
+                _ = view.handleKey(@constCast(event)) catch {};
+            }
+            return true;
+        }
         if (std.mem.eql(u8, active_id, "search")) {
             if (self.search_view) |view| {
                 switch (view.handleKey(event)) {
@@ -4522,6 +4637,10 @@ pub const Workbench = struct {
         const active_id = self.activity_bar_part.active_id orelse "";
         if (std.mem.eql(u8, active_id, "scm")) {
             if (self.scm_view) |view| _ = view.handleMouse(@constCast(event), self.sidebarRect()) catch false;
+            return true;
+        }
+        if (std.mem.eql(u8, active_id, markers_common.PROBLEMS_ACTIVITY_ID)) {
+            if (self.problems_view) |view| _ = view.handleMouse(@constCast(event), self.sidebarRect()) catch false;
             return true;
         }
         if (std.mem.eql(u8, active_id, "search")) {
@@ -4773,49 +4892,6 @@ pub const Workbench = struct {
         if (self.editor_status) |status| {
             status.update(target) catch {};
         }
-        if (self.json_status_accessor) |accessor| {
-            const tab = self.activeTab();
-            if (self.marker_service) |marker_service| {
-                var arena = std.heap.ArenaAllocator.init(self.allocator);
-                defer arena.deinit();
-                var errors: usize = 0;
-                var warnings: usize = 0;
-                var tooltip: ?[]const u8 = null;
-                if (tab) |active| {
-                    const resource = markers_mod.Resource.fromUri(arena.allocator(), active.editor.model.uri()) catch null;
-                    if (resource) |value| {
-                        const list = marker_service.read(arena.allocator(), .{ .resource = value }) catch &.{};
-                        for (list) |marker| {
-                            switch (marker.severity) {
-                                markers_mod.MarkerSeverity.Error => errors += 1,
-                                markers_mod.MarkerSeverity.Warning => warnings += 1,
-                                else => {},
-                            }
-                            if (tooltip == null) tooltip = marker.message;
-                        }
-                    }
-                }
-                if (errors > 0 or warnings > 0) {
-                    const text = std.fmt.bufPrint(&self.json_status_buf, "{d} error(s), {d} warning(s)", .{ errors, warnings }) catch "Problems";
-                    accessor.update(.{ .name = "Problems", .text = text, .tooltip = tooltip });
-                } else {
-                    accessor.update(.{ .name = "Problems", .text = "" });
-                }
-            } else {
-                const errors = if (tab) |active| active.editor.json_error_count else 0;
-                const warnings = if (tab) |active| active.editor.json_warning_count else 0;
-                if (errors > 0 or warnings > 0) {
-                    const text = std.fmt.bufPrint(&self.json_status_buf, "{d} error(s), {d} warning(s)", .{ errors, warnings }) catch "JSON problems";
-                    accessor.update(.{
-                        .name = "JSON Problems",
-                        .text = text,
-                        .tooltip = if (tab) |active| active.editor.json_message else null,
-                    });
-                } else {
-                    accessor.update(.{ .name = "JSON Problems", .text = "" });
-                }
-            }
-        }
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
@@ -4836,6 +4912,12 @@ pub const Workbench = struct {
                 }
             } else if (std.mem.eql(u8, active_id, "scm")) {
                 if (self.scm_view) |view| {
+                    try view.render(&self.frame.next, self.sidebarRect(), focused);
+                } else {
+                    self.renderPlaceholder(self.sidebarRect(), focused);
+                }
+            } else if (std.mem.eql(u8, active_id, markers_common.PROBLEMS_ACTIVITY_ID)) {
+                if (self.problems_view) |view| {
                     try view.render(&self.frame.next, self.sidebarRect(), focused);
                 } else {
                     self.renderPlaceholder(self.sidebarRect(), focused);
@@ -4983,8 +5065,21 @@ pub const Workbench = struct {
         };
         const active_id = self.activity_bar_part.active_id orelse "";
         const is_scm = std.mem.eql(u8, active_id, "scm");
-        const header = if (std.mem.eql(u8, active_id, "search")) " SEARCH " else if (is_scm) " SOURCE CONTROL " else " SETTINGS ";
-        const title = if (is_scm) "Source Control is unavailable (no Git repository)" else "Settings view is not ported yet";
+        const is_problems = std.mem.eql(u8, active_id, markers_common.PROBLEMS_ACTIVITY_ID);
+        const header = if (std.mem.eql(u8, active_id, "search"))
+            " SEARCH "
+        else if (is_scm)
+            " SOURCE CONTROL "
+        else if (is_problems)
+            " PROBLEMS "
+        else
+            " SETTINGS ";
+        const title = if (is_scm)
+            "Source Control is unavailable (no Git repository)"
+        else if (is_problems)
+            "Problems view could not be created"
+        else
+            "Settings view is not ported yet";
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
         const header_style = ui.cell.PaintStyle{
             .fg = ui.cell.packColor(.{ .r = 220, .g = 220, .b = 220 }),
@@ -5583,11 +5678,94 @@ fn commandShowCommands(context: *anyopaque) anyerror!void {
     return self.quick_access.showCommandPicker();
 }
 
+fn markerHighlightActiveResource(context: *anyopaque) ?[]const u8 {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return null;
+    return tab.editor.path;
+}
+
+fn markerHighlightSetRange(context: *anyopaque, range: ?Range) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (range) |value| {
+        const tab = self.activeTab() orelse return;
+        const decorations = [_]editorBrowser.Decoration{.{ .range = value, .kind = .marker_selection_highlight }};
+        tab.view.setMarkerSelectionHighlights(&decorations) catch {};
+        return;
+    }
+    for (self.part.group_views.items) |pane| {
+        for (pane.tabs.items) |tab| tab.view.setMarkerSelectionHighlights(&.{}) catch {};
+    }
+}
+
+fn problemsWorkspaceRoot(context: *anyopaque) ?[]const u8 {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.workspaceFolderPath();
+}
+
+fn problemsPreviewMarker(context: *anyopaque, marker: *const markers_mod.Marker) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (!std.mem.eql(u8, marker.resource.scheme, "file")) return;
+    try self.openPathWithOptions(marker.resource.path, .{ .pinned = false });
+    const tab = self.activeTab() orelse return;
+    try tab.editor.setSelection(markerEditorRange(tab.editor, marker));
+    self.focusSidebar();
+    self.updateProblemsHighlight();
+}
+
+fn problemsOpenMarker(context: *anyopaque, marker: *const markers_mod.Marker) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (!std.mem.eql(u8, marker.resource.scheme, "file")) return;
+    try self.openPath(marker.resource.path);
+    if (self.activeTab()) |tab| {
+        try tab.editor.setSelection(markerEditorRange(tab.editor, marker));
+        tab.editor.ensureCursorVisible();
+    }
+    self.focusEditor();
+    if (self.activeTab()) |tab| tab.focusEditor();
+}
+
+fn problemsSelectionChanged(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.updateProblemsHighlight();
+}
+
+fn problemsFocusEditor(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.focusEditor();
+    if (self.activeTab()) |tab| tab.focusEditor();
+}
+
+fn markerEditorRange(editor: *Editor, marker: *const markers_mod.Marker) Range {
+    const model = editor.model;
+    const line_count = @max(model.getLineCount(), 1);
+    const start_line = @min(@max(@as(usize, marker.start_line_number), 1), line_count);
+    const end_line = @min(@max(@as(usize, marker.end_line_number), start_line), line_count);
+    const start_column = @min(
+        @max(@as(usize, marker.start_column), 1),
+        model.getLineMaxColumn(start_line),
+    );
+    const end_column = @min(
+        @max(@as(usize, marker.end_column), 1),
+        model.getLineMaxColumn(end_line),
+    );
+    return Range.init(start_line, start_column, end_line, end_column);
+}
+
 fn commandViewScm(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (!try self.showActivityById("scm")) return;
     self.focusSidebar();
     if (self.scm_view) |view| view.refresh();
+}
+
+fn commandShowProblems(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showProblems();
+}
+
+fn commandToggleProblems(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.toggleProblems();
 }
 
 fn commandGitRefresh(context: *anyopaque) anyerror!void {
@@ -7192,9 +7370,16 @@ test "Workbench: activity bar switches view containers" {
     try workbench.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SOURCE CONTROL") != null);
 
-    const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
-    try std.testing.expect(workbench.handleSidebarMouse(&settings_click));
+    const problems_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
+    try std.testing.expect(workbench.handleSidebarMouse(&problems_click));
     try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "PROBLEMS") != null);
+
+    const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 5 };
+    try std.testing.expect(workbench.handleSidebarMouse(&settings_click));
+    try std.testing.expectEqual(@as(usize, 4), workbench.activeActivity());
 
     out.clearRetainingCapacity();
     try workbench.render(&out.writer);
@@ -7203,6 +7388,55 @@ test "Workbench: activity bar switches view containers" {
     const alt_1 = ui.KeyEvent{ .key = .{ .char = '1' }, .mods = .{ .alt = true } };
     try std.testing.expect(try workbench.handleSidebarKey(&alt_1));
     try std.testing.expectEqual(@as(usize, 0), workbench.activeActivity());
+}
+
+test "Workbench: Problems panel, status count and range highlight" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "diag.txt", "one\ntwo\nthree");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 16);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.enableLanguageFeatures();
+    const service = workbench.marker_service orelse return error.TestUnexpectedResult;
+
+    const tab = workbench.activeTab() orelse return error.TestExpectedTab;
+    var resource = markers_mod.Resource.fromUri(allocator, tab.editor.model.uri()) catch return error.TestUnexpectedResult;
+    defer resource.deinit(allocator);
+    try service.changeOne("test", resource, &.{
+        .{
+            .severity = markers_mod.MarkerSeverity.Error,
+            .message = "boom",
+            .start_line_number = 2,
+            .start_column = 1,
+            .end_line_number = 2,
+            .end_column = 4,
+        },
+    }, null);
+
+    const status = workbench.statusbar.main_part.model.findEntry("status.problems") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, status.item.text(), "1") != null);
+
+    try workbench.showProblems();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "PROBLEMS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "diag.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "boom") != null);
+    try std.testing.expect(workbench.range_highlights.?.highlighted);
+
+    const enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(try workbench.handleSidebarKey(&enter));
+    try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+    try std.testing.expect(!workbench.range_highlights.?.highlighted);
 }
 
 test "Workbench: opens a folder workspace with no initial tabs" {
@@ -7819,6 +8053,7 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.replaceInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyH) } },
     .{ .id = "workbench.action.toggleSidebarVisibility", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyB) } },
     .{ .id = "workbench.action.focusStatusBar", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyS) } },
+    .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyM) } },
     .{ .id = "breadcrumbs.focusAndSelect", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Period) } },
     .{ .id = "breadcrumbs.focus", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Semicolon) } },
     .{ .id = "workbench.action.terminal.toggleTerminal", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyT) } },

@@ -96,7 +96,7 @@ const word_text_options = makeDecorationOptions("wordHighlightText", .Center, ov
 const word_options = makeDecorationOptions("wordHighlight", .Center, overview_word_color, 0);
 const word_strong_options = makeDecorationOptions("wordHighlightStrong", .Center, overview_word_strong_color, 0);
 const hover_options = makeDecorationOptions("hoverHighlight", null, null, 0);
-const search_range_options = makeDecorationOptions("rangeHighlight", null, null, 1);
+const range_highlight_options = makeDecorationOptions("rangeHighlight", null, null, 1);
 
 fn makeDecorationOptions(
     comptime class_name: []const u8,
@@ -125,7 +125,8 @@ fn decorationOptions(kind: editorBrowser.DecorationKind, show_in_overview: bool)
         .word_highlight_text => &word_text_options,
         .word_highlight => &word_options,
         .word_highlight_strong => &word_strong_options,
-        .search_range_highlight => &search_range_options,
+        .search_range_highlight => &range_highlight_options,
+        .marker_selection_highlight => &range_highlight_options,
     };
 }
 
@@ -158,6 +159,7 @@ const DecorationOwner = struct {
     const word: usize = 3;
     const hover: usize = 4;
     const search: usize = 5;
+    const marker_selection: usize = 6;
 };
 
 const CellFlag = struct {
@@ -394,6 +396,13 @@ pub const View = struct {
     /// Sets the range highlighted by the Search view.
     pub fn setSearchHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
         try self.replaceModelDecorations(DecorationOwner.search, decorations);
+    }
+
+    /// Sets (or clears) the Problems marker-selection range. This is the
+    /// terminal `rangeHighlight` decoration and uses its own owner so Search
+    /// highlights are not cleared by Problems.
+    pub fn setMarkerSelectionHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
+        try self.replaceModelDecorations(DecorationOwner.marker_selection, decorations);
     }
 
     pub fn clearDecorations(self: *View) !void {

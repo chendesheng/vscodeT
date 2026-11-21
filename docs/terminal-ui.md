@@ -910,8 +910,15 @@ Library constraints:
   names. Cells have no wavy underline or glyph margin, so the view paints the
   range as an underline in the severity color (hint/unnecessary dimmed) and the
   existing overview-ruler lane carries the marker color. The workbench
-  `Problems` status entry shows the active resource's error/warning counts. The
-  minimap metadata produced by the marker decorator is ignored.
+  `status.problems` entry shows workspace-wide error/warning/info counts from
+  `MarkerService.getStatistics()`, and the Problems side-panel view groups
+  markers by file with selection, preview/open and scrolling. Selecting a
+  marker previews its range in the editor and paints the upstream
+  `rangeHighlight` background while Problems owns focus; Enter opens the range
+  and focuses the editor. Because the terminal bottom panel is the integrated
+  terminal, Problems lives in the side panel; filters, table/tree mode, related
+  information, quick fixes and file decorations are not ported. The minimap
+  metadata produced by the marker decorator is ignored.
 
 - Word-occurrence highlighting is the third decoration consumer:
   `src/vs/editor/contrib/wordHighlighter` tracks the caret/selection, waits
@@ -1062,10 +1069,10 @@ Library constraints:
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
   terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
-  also supports view and global badges. It
-  switches fixed Explorer,
-  Search and Settings containers; Settings remains a placeholder. The model
-  owns activity order, visibility, the active container and compact width.
+  also supports view and global badges. It switches fixed Explorer, Search,
+  Source Control, Problems and Settings containers; Settings remains a
+  placeholder and Problems renders the diagnostics list. The model owns
+  activity order, visibility, the active container and compact width.
   There is still no registered view-container contribution registry; live
   file-change refresh, resizing and context menus are not ported.
 - The Search panel is split into a portable search service/tree and a terminal

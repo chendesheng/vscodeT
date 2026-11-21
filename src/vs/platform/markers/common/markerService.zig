@@ -338,7 +338,9 @@ pub const MarkerService = struct {
         return stats;
     }
 
-    fn isUnsupportedScheme(scheme: []const u8) bool {
+    /// Schemes excluded from statistics and the Problems view, matching
+    /// upstream `unsupportedSchemas`.
+    pub fn isUnsupportedScheme(scheme: []const u8) bool {
         const unsupported = [_][]const u8{
             "inmemory", "vscode-scm", "walkThrough", "walkThroughSnippet", "vscode-chat-code-block", "vscode-terminal",
         };

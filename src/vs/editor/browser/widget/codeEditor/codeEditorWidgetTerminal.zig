@@ -853,14 +853,15 @@ pub const Editor = struct {
         self.json_warning_count = 0;
         var first_message: ?[]const u8 = null;
         for (diagnostics) |diagnostic| {
-            if (diagnostic.severity <= 2) {
+            if (diagnostic.severity == 1) {
                 self.json_error_count += 1;
                 if (first_message == null) first_message = diagnostic.message;
-            } else {
+            } else if (diagnostic.severity == 2) {
                 self.json_warning_count += 1;
                 if (first_message == null) first_message = diagnostic.message;
             }
         }
+        self.publishJsonDiagnostics(diagnostics);
         if (self.json_message) |old_message| {
             self.allocator.free(old_message);
             self.json_message = null;
@@ -875,6 +876,43 @@ pub const Editor = struct {
         } else if (std.mem.startsWith(u8, self.message(), "JSON ")) {
             self.clearMessage();
         }
+    }
+
+    /// Publishes the JSON server's diagnostics to the shared marker service so
+    /// the Problems panel and the status count see them. LSP positions are
+    /// 0-based UTF-16; markers store 1-based UTF-8 editor columns.
+    fn publishJsonDiagnostics(self: *Editor, diagnostics: []const json_language.Diagnostic) void {
+        const service = self.marker_service orelse return;
+        const uri_text = self.json_uri orelse return;
+        const uri = std.Uri.parse(uri_text) catch return;
+        var resource = markers.Resource.fromUri(self.allocator, uri) catch return;
+        defer resource.deinit(self.allocator);
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        var data = std.array_list.Managed(markers.MarkerData).init(arena.allocator());
+        for (diagnostics) |diagnostic| {
+            const start_line = @as(usize, diagnostic.start_line) + 1;
+            const end_line = @as(usize, diagnostic.end_line) + 1;
+            const severity = switch (diagnostic.severity) {
+                1 => markers.MarkerSeverity.Error,
+                2 => markers.MarkerSeverity.Warning,
+                3 => markers.MarkerSeverity.Info,
+                else => markers.MarkerSeverity.Hint,
+            };
+            data.append(.{
+                .severity = severity,
+                .message = diagnostic.message,
+                .source = "json",
+                .start_line_number = @intCast(start_line),
+                .start_column = @intCast(jsonColumnToEditorColumn(self.model, start_line, diagnostic.start_character)),
+                .end_line_number = @intCast(end_line),
+                .end_column = @intCast(jsonColumnToEditorColumn(self.model, end_line, diagnostic.end_character)),
+                .model_version_id = self.model.getVersionId(),
+                .origin = "json",
+            }) catch continue;
+        }
+        service.changeOne("json", resource, data.items, null) catch {};
     }
 
     pub fn formatJson(self: *Editor) !void {
@@ -968,10 +1006,17 @@ pub const Editor = struct {
         marker_service: ?*MarkerService,
         marker_decorations: ?*MarkerDecorationsService,
     ) void {
+        const had_marker_service = self.marker_service != null;
         self.language_features = features;
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
         if (marker_decorations) |service| service.registerModel(self.model) catch {};
+        // Tabs created before `enableLanguageFeatures` have already pulled
+        // their JSON diagnostics; republish them now that the marker service
+        // exists.
+        if (!had_marker_service and marker_service != null and self.json_attached) {
+            self.pullJsonDiagnostics() catch {};
+        }
         self.registerJsonCompletion();
         self.registerJsonDocumentSymbols();
     }
@@ -5643,14 +5688,18 @@ test "Editor: JSON language features populate diagnostics and completion" {
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const length = try tmp.dir.realPathFile(time_compat.io, "broken.json", &buffer);
 
+    var marker_service = MarkerService.init(allocator);
+    defer marker_service.deinit();
     const editor = try Editor.createWithExtensions(allocator, time_compat.io, buffer[0..length], 40, 8, null, client);
     defer {
         editor.deinit();
         allocator.destroy(editor);
     }
+    editor.attachLanguageServices(null, &marker_service, null);
     try std.testing.expectEqualStrings("json", editor.languageId());
     try std.testing.expect(editor.json_error_count > 0);
     try std.testing.expect(std.mem.startsWith(u8, editor.message(), "JSON "));
+    try std.testing.expect(marker_service.getStatistics().errors > 0);
 }
 
 test "Editor: formats JSON through the language server" {

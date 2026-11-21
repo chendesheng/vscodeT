@@ -199,7 +199,8 @@ pub const default_activities = [_]Activity{
     .{ .id = "explorer", .name = "Explorer", .glyph = 'E', .order = 1 },
     .{ .id = "search", .name = "Search", .glyph = 'F', .order = 2 },
     .{ .id = "scm", .name = "Source Control", .glyph = 'G', .order = 3 },
-    .{ .id = "settings", .name = "Settings", .glyph = 'S', .order = 4 },
+    .{ .id = "problems", .name = "Problems", .glyph = '!', .order = 4 },
+    .{ .id = "settings", .name = "Settings", .glyph = 'S', .order = 5 },
 };
 
 /// The visible activity at a terminal row. Rows start under the top padding
@@ -289,9 +290,9 @@ test "activityBar: hit testing and cycling use the ported model" {
     try std.testing.expectEqual(@as(?usize, 0), hitAt(&part, 1, 1, rect));
     try std.testing.expectEqual(@as(?usize, 2), hitAt(&part, 1, 3, rect));
     try std.testing.expectEqual(@as(?usize, 3), hitAt(&part, 1, 4, rect));
-    try std.testing.expectEqual(@as(?usize, null), hitAt(&part, 1, 5, rect));
+    try std.testing.expectEqual(@as(?usize, null), hitAt(&part, 1, 6, rect));
     try std.testing.expectEqual(@as(usize, 3), part.next(2, 1));
-    try std.testing.expectEqual(@as(usize, 3), part.next(0, -1));
+    try std.testing.expectEqual(@as(usize, 4), part.next(0, -1));
 }
 
 test "activityBar: draws the active entry from the model" {

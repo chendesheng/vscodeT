@@ -1287,8 +1287,8 @@ The baseline bridge is ported: `languageSelector.zig`,
 `mainThreadDiagnostics.zig`. Hover, completion, definition/declaration/type
 definition/implementation, references, document symbols, outline and formatting
 are wired to the TUI, diagnostics render as squiggly underlines, overview-ruler
-marks and the `Problems` status count, and synchronous provider calls are
-bounded by a timeout. The remaining `MainThreadLanguageFeatures` methods still
+marks, the Problems side-panel view and the workspace `Problems` status
+counts, and synchronous provider calls are bounded by a timeout. The remaining `MainThreadLanguageFeatures` methods still
 reject.
 
 `MainThreadLanguageFeatures` is handle-based: the host registers a provider
@@ -1382,7 +1382,7 @@ other RPC request (§5.3); do not model it as an explicit JSON field.
 | Command palette (`Ctrl+Shift+P`) | extend `src/vs/workbench/browser/quickaccess.zig`; there is no separate `palette.zig` |
 | Quick pick / input box | extend `src/vs/platform/quickinput/browser/quickInputList.zig` (and `quickAccess.zig`) to back `MainThreadQuickOpen.$show`/`$input` |
 | Status bar | ported `src/vs/workbench/browser/parts/statusbar/{statusbarPart,statusbarModel,statusbarItem,statusbarActions}.zig` over `src/vs/workbench/services/statusbar/browser/statusbar.zig`; painted by `src/vs/workbench/browser/workbench.zig` on the bottom row |
-| Diagnostics | markers stored on the model, painted as gutter marks + status count |
+| Diagnostics | markers stored on the model, painted as gutter marks, Problems view + workspace status counts |
 | Contributed languages | ported `workbench/services/language/common/languageService.zig`; keep `src/vs/workbench/services/language/common/bundledLanguages.zig` only as the no-host fallback |
 | Contributed grammars | grammar registry feeding `textMateTokenizer.zig` |
 | Contributed themes | `workbench/services/themes/browser/workbenchThemeService.zig` + `ColorThemeData`; map foregrounds to the ANSI palette |
@@ -1489,7 +1489,8 @@ Built-in TUI commands and contributed commands share `CommandRegistry`/
 - Messages: `$showMessage` is modal in the TUI; map severity to the prompt
   style and return the chosen item handle (or `undefined` on dismiss).
 - Diagnostics: store markers per owner, merge them into the model's marker
-  set, paint gutter marks and the status count, and clear on `$clear`.
+  set, paint gutter marks, refill the Problems view and workspace status
+  counts, and clear on `$clear`.
 
 ### 11.5 Clipboard, window, dialogs and files
 
@@ -1921,8 +1922,9 @@ capabilities, opens JSON/JSONC documents, sends full-text changes, pulls
 syntax diagnostics, forwards completion requests, and requests hierarchical
 document symbols.
 
-The TUI polls only the active editor, publishes a `JSON Problems` status-bar
-entry, registers the server completion provider on JSON/JSONC tabs, forwards
+The TUI polls only the active editor, publishes JSON diagnostics into
+`MarkerService` so the Problems side-panel view and `Problems` workspace counts
+include them, registers the server completion provider on JSON/JSONC tabs, forwards
 mouse hover through `TuiHoverProvider` (schemas referenced by `$schema` are
 resolved by the server), applies `textDocument/formatting` edits through
 `Editor.formatJson` (command `editor.action.formatDocument`), and registers the

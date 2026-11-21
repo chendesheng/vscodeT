@@ -273,7 +273,7 @@ pairs and off-side folding even when the built-in grammar was already bundled.
 
 JSON and JSONC editors use the bundled VS Code JSON language server when
 `host/dist/jsonServer.mjs` is present. Syntax diagnostics are pulled after
-edits and shown in the status bar's `Problems` entry; `Ctrl-Space` completion
+edits and shown in the `Problems` side-panel view and status-bar counts; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
 bundled grammar and reports no diagnostics. Hover, formatting and document
 symbols are forwarded to the same server, and the `json.schemas` setting is
@@ -291,7 +291,7 @@ TypeScript and JavaScript editors use VS Code's real
 `typescript-language-features` extension when `host/dist/extensions` has been
 provisioned. The extension is activated by `onLanguage:<id>` after the document
 delta is queued; its own tsserver client provides semantic/syntax diagnostics
-(shown as squiggly underlines, overview marks and the `Problems` count),
+(shown as squiggly underlines, overview marks, the Problems view and the workspace count),
 `Ctrl-Space` completion, hover, `F12`/`Ctrl-]` go-to-definition,
 `Ctrl-F12` go-to-implementation, `Shift-F12` go-to-references, the
 `Go to Declaration`, `Go to Type Definition`, `Peek References` and
@@ -313,7 +313,9 @@ language-feature bridge: hover, completion, definition, declaration,
 implementation, type definition, references, document symbols, code actions and
 document/range/on-type formatting register in `LanguageFeaturesService`, and
 diagnostics feed the marker service, which paints squiggly underlines,
-overview-ruler marks and the `Problems` count. Hover, completion, the
+overview-ruler marks, the `Problems` side-panel view and the workspace
+error/warning/info status counts. Selecting a problem highlights its code range
+in the editor while the Problems view owns focus. Hover, completion, the
 navigation actions, breadcrumb symbols and document formatting are wired to the
 terminal editor. Code-action providers are transported but have no TUI command
 surface yet, and the remaining `MainThreadLanguageFeatures` methods stay
@@ -519,10 +521,11 @@ console API for raw mode, sizing and input polling.
   dot while matches are present (the exact count is in the panel); the service
   also supports view and global badges. It
   switches between
-  Explorer, Search, Source Control and Settings containers; Explorer is wired
-  to the file tree, Search to the workspace text-search panel, and Source
-  Control to the git SCM view, while Settings remains a placeholder.
-  `Alt-1..4` switches containers while the side panel has focus.
+  Explorer, Search, Source Control, Problems and Settings containers; Explorer
+  is wired to the file tree, Search to the workspace text-search panel, Source
+  Control to the git SCM view, Problems to the diagnostics list, and Settings
+  remains a placeholder. `Alt-1..5` switches containers while the side panel
+  has focus; `Ctrl-Shift-M` toggles Problems.
   The model owns order, visibility, the active container and compact width.
   There is still no registered view-container contribution registry, live
   Explorer/Search file-change integration, context menu or drag-and-drop.

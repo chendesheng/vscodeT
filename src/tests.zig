@@ -618,6 +618,16 @@ comptime {
     _ = @import("./vs/platform/markers/common/markers.zig");
     _ = @import("./vs/platform/markers/common/markerService.zig");
     _ = @import("./vs/platform/markers/test/common/markerService.test.zig");
+    _ = @import("./vs/workbench/contrib/markers/common/markers.zig");
+    _ = @import("./vs/workbench/contrib/markers/browser/markersModel.zig");
+    _ = @import("./vs/workbench/contrib/markers/browser/markersView.zig");
+    _ = @import("./vs/workbench/contrib/markers/browser/markersStatusBar.zig");
+    _ = @import("./vs/workbench/contrib/markers/test/browser/markersModel.test.zig");
+    _ = @import("./vs/workbench/contrib/markers/test/browser/markersView.test.zig");
+    _ = @import("./vs/workbench/contrib/markers/test/browser/markersStatusBar.test.zig");
+    _ = @import("./vs/workbench/test/browser/codeeditor.test.zig");
+    _ = @import("./vs/workbench/browser/codeeditor.zig");
+    _ = @import("./tui/problemsView.zig");
     _ = @import("./vs/editor/common/services/markerDecorations.zig");
     _ = @import("./vs/editor/common/services/markerDecorationsService.zig");
     _ = @import("./vs/editor/test/common/services/markerDecorationsService.test.zig");
