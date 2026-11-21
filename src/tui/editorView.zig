@@ -88,6 +88,7 @@ const mouse_handler_mod = @import("../vs/editor/browser/controller/mouseHandler.
 const TerminalMouseHandler = mouse_handler_mod.TerminalMouseHandler;
 const content_widgets_mod = @import("../vs/editor/browser/viewParts/contentWidgets/contentWidgets.zig");
 const editor_scrollbar_mod = @import("../vs/editor/browser/viewParts/editorScrollbar/editorScrollbar.zig");
+const margin_mod = @import("../vs/editor/browser/viewParts/margin/margin.zig");
 const view_line_mod = @import("../vs/editor/browser/viewParts/viewLines/viewLine.zig");
 const ViewLine = view_line_mod.ViewLine;
 const view_lines_mod = @import("../vs/editor/browser/viewParts/viewLines/viewLines.zig");
@@ -1002,6 +1003,7 @@ pub const View = struct {
     /// them because the registry colors are cached per document.
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
+        self.terminal_view_host.viewRef().marginPart().setTheme(marginTheme(palette));
         self.clearPaintStyles();
         self.refreshBracketHighlightColors();
         self.document_ready = false;
@@ -2095,6 +2097,22 @@ fn paintStyleThunk(
 ) anyerror!*const ui.style.PaintStyle {
     const view: *View = @ptrCast(@alignCast(context orelse return &default_paint_style));
     return view.paintStyleForPart(part, flag);
+}
+
+fn marginTheme(palette: ?*const theme_colors_mod.ThemeColors) margin_mod.Theme {
+    return .{
+        .line_number = themedColor(palette, "editorLineNumber.foreground", .{ 110, 110, 110 }),
+        .line_number_active = themedColor(palette, "editorLineNumber.activeForeground", .{ 204, 204, 204 }),
+        .continuation = themedColor(palette, "editorLineNumber.foreground", .{ 90, 90, 90 }),
+        .filler = themedColor(palette, "editorLineNumber.foreground", .{ 70, 70, 70 }),
+        .folding_control = themedColor(palette, "editorGutter.foldingControlForeground", .{ 110, 110, 110 }),
+        .added_primary = themedColor(palette, "editorGutter.addedBackground", .{ 72, 126, 2 }),
+        .modified_primary = themedColor(palette, "editorGutter.modifiedBackground", .{ 137, 85, 3 }),
+        .deleted_primary = themedColor(palette, "editorGutter.deletedBackground", .{ 173, 7, 7 }),
+        .added_secondary = themedColor(palette, "editorGutter.addedBackground", .{ 47, 75, 6 }),
+        .modified_secondary = themedColor(palette, "editorGutter.modifiedBackground", .{ 84, 54, 6 }),
+        .deleted_secondary = themedColor(palette, "editorGutter.deletedBackground", .{ 98, 11, 11 }),
+    };
 }
 
 fn themedColor(palette: ?*const theme_colors_mod.ThemeColors, id: []const u8, fallback: [3]u8) ui.Color {

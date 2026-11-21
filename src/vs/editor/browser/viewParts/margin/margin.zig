@@ -7,7 +7,9 @@
 // `FoldingDecorationProvider`, and the quick-diff marker cell from the ported
 // `LinesDecorationsOverlay` class lists. Hit testing and the fold toggle stay in
 // the host. A line-number map supplied by a diff snapshot can render a blank
-// number for filler rows.
+// number for filler rows. Line-number, active-line, folding-control and
+// quick-diff colors come from the terminal `Theme` bundle resolved by the TUI
+// from the `editorLineNumber.*` and `editorGutter.*` ids.
 const std = @import("std");
 const ui = @import("ui");
 
@@ -20,23 +22,30 @@ const lines_decorations_mod = @import("../linesDecorations/linesDecorations.zig"
 const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const FoldingDecorationProvider = @import("../../../contrib/folding/browser/foldingDecorations.zig").FoldingDecorationProvider;
 
-const gutter_color = [3]u8{ 110, 110, 110 };
-const continuation_color = [3]u8{ 90, 90, 90 };
-const tilde_color = [3]u8{ 70, 70, 70 };
+/// Terminal colors for the gutter. The TUI resolves the upstream color ids and
+/// passes this bundle; the editor-layer view part keeps the defaults so a
+/// standalone editor and tests need no theme service.
+pub const Theme = struct {
+    line_number: ui.Color = .{ .r = 110, .g = 110, .b = 110 },
+    line_number_active: ui.Color = .{ .r = 204, .g = 204, .b = 204 },
+    continuation: ui.Color = .{ .r = 90, .g = 90, .b = 90 },
+    filler: ui.Color = .{ .r = 70, .g = 70, .b = 70 },
+    folding_control: ui.Color = .{ .r = 110, .g = 110, .b = 110 },
+    added_primary: ui.Color = .{ .r = 72, .g = 126, .b = 2 },
+    modified_primary: ui.Color = .{ .r = 137, .g = 85, .b = 3 },
+    deleted_primary: ui.Color = .{ .r = 173, .g = 7, .b = 7 },
+    added_secondary: ui.Color = .{ .r = 47, .g = 75, .b = 6 },
+    modified_secondary: ui.Color = .{ .r = 84, .g = 54, .b = 6 },
+    deleted_secondary: ui.Color = .{ .r = 98, .g = 11, .b = 11 },
 
-/// Terminal defaults for the upstream `editorGutter.addedBackground`,
-/// `modifiedBackground` and `deletedBackground` theme colors, composited over
-/// the dark editor background because terminal cells have no alpha.
-const added_primary_color = [3]u8{ 72, 126, 2 };
-const modified_primary_color = [3]u8{ 137, 85, 3 };
-const deleted_primary_color = [3]u8{ 173, 7, 7 };
-const added_secondary_color = [3]u8{ 47, 75, 6 };
-const modified_secondary_color = [3]u8{ 84, 54, 6 };
-const deleted_secondary_color = [3]u8{ 98, 11, 11 };
+    pub fn dark() Theme {
+        return .{};
+    }
+};
 
 const QuickDiffMarker = struct {
     glyph: u8,
-    color: [3]u8,
+    color: ui.Color,
 };
 
 /// Port of the terminal-visible `Margin` paint subset.
@@ -54,6 +63,8 @@ pub const TerminalMargin = struct {
     next_rows: std.array_list.Managed(*Row),
     /// Last gutter layout; a change invalidates every retained row's geometry.
     geometry_ready: bool = false,
+    theme: Theme = Theme.dark(),
+    theme_dirty: bool = true,
     gutter_width: usize = 0,
     number_width: usize = 0,
     fold_column: usize = 0,
@@ -76,6 +87,7 @@ pub const TerminalMargin = struct {
         marker_text: *ui.Node,
         painted_top: usize,
         number_kind: NumberKind = .blank,
+        number_active: bool = false,
         /// Owned copy of the painted number/continuation text. The text node
         /// borrows it, so a custom line-number renderer of any length is kept.
         number_owned: ?[]u8 = null,
@@ -91,6 +103,7 @@ pub const TerminalMargin = struct {
         filler: bool,
         filler_visible: bool,
         number_kind: NumberKind = .blank,
+        number_active: bool = false,
         number_buf: [32]u8 = undefined,
         number_len: usize = 0,
         /// Text owned by the line-number overlay; only valid for the duration
@@ -114,6 +127,13 @@ pub const TerminalMargin = struct {
             .rows = std.array_list.Managed(*Row).init(allocator),
             .next_rows = std.array_list.Managed(*Row).init(allocator),
         };
+    }
+
+    /// Applies the host-resolved gutter colors. The retained rows are reset on
+    /// the next render so every text node picks up the new colors.
+    pub fn setTheme(self: *TerminalMargin, theme: Theme) void {
+        self.theme = theme;
+        self.theme_dirty = true;
     }
 
     pub fn deinit(self: *TerminalMargin) void {
@@ -152,6 +172,12 @@ pub const TerminalMargin = struct {
         const marker_width = editor.lineDecorationsWidth();
         const fold_column = editor.foldCellColumn();
         const number_width = fold_column;
+
+        if (self.theme_dirty) {
+            try self.resetRows(doc, host);
+            self.geometry_ready = false;
+            self.theme_dirty = false;
+        }
 
         if (!self.geometry_ready or self.gutter_width != gutter or
             self.number_width != number_width or
@@ -240,7 +266,6 @@ pub const TerminalMargin = struct {
         fold_column: usize,
         marker_width: usize,
     ) RowPaint {
-        _ = self;
         if (view_line > total) {
             return .{ .filler = true, .filler_visible = gutter >= 2 };
         }
@@ -258,7 +283,14 @@ pub const TerminalMargin = struct {
             } else if (line_numbers.renderedLine(view_line)) |rendered| {
                 paint.number_borrowed = rendered.text;
             }
-            if (paint.number_len > 0) paint.number_kind = .number;
+            if (paint.number_len > 0 or
+                (paint.number_borrowed != null and paint.number_borrowed.?.len > 0))
+            {
+                paint.number_kind = .number;
+            }
+            if (paint.number_kind == .number) {
+                paint.number_active = editor.modelLineNumber(view_line) == editor.modelCursorPosition().lineNumber;
+            }
 
             if (fold_column < gutter) {
                 const model_line = editor.modelLineNumber(view_line);
@@ -274,7 +306,7 @@ pub const TerminalMargin = struct {
             }
 
             if (marker_width > 0) {
-                paint.marker = quickDiffMarker(line_decorations.renderedLine(view_line));
+                paint.marker = quickDiffMarkerWithTheme(line_decorations.renderedLine(view_line), self.theme);
             }
         } else if (gutter >= 2) {
             const glyph = "\u{21AA}";
@@ -332,7 +364,7 @@ pub const TerminalMargin = struct {
             .display = if (paint.filler_visible) .block else .none,
         });
         const filler_text = try doc.createTextBorrowed("~");
-        filler_text.setStyle(.{ .color = color(tilde_color) });
+        filler_text.setStyle(.{ .color = self.theme.filler });
         _ = try filler_line.appendChild(filler_text);
 
         const fold_cell = try doc.createElement(.div);
@@ -346,7 +378,7 @@ pub const TerminalMargin = struct {
             .display = .none,
         });
         const fold_text = try doc.createTextBorrowed("");
-        fold_text.setStyle(.{ .color = color(gutter_color) });
+        fold_text.setStyle(.{ .color = self.theme.folding_control });
         _ = try fold_cell.appendChild(fold_text);
 
         const marker_cell = try doc.createElement(.div);
@@ -360,7 +392,7 @@ pub const TerminalMargin = struct {
             .display = .none,
         });
         const marker_text = try doc.createTextBorrowed("");
-        marker_text.setStyle(.{ .color = color(gutter_color) });
+        marker_text.setStyle(.{ .color = self.theme.line_number });
         _ = try marker_cell.appendChild(marker_text);
 
         _ = try row_node.appendChild(number_line);
@@ -432,15 +464,19 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
     }
 
     const number = paint.numberText();
-    if (row.number_kind != paint.number_kind or !std.mem.eql(u8, TerminalMargin.rowNumberText(row), number)) {
+    if (row.number_kind != paint.number_kind or
+        row.number_active != paint.number_active or
+        !std.mem.eql(u8, TerminalMargin.rowNumberText(row), number))
+    {
         const copy = try self.allocator.dupe(u8, number);
         if (row.number_owned) |owned| self.allocator.free(owned);
         row.number_owned = copy;
         row.number_kind = paint.number_kind;
+        row.number_active = paint.number_active;
         row.number_text.setTextBorrowed(copy);
         row.number_text.setStyle(.{ .color = switch (paint.number_kind) {
-            .continuation => color(continuation_color),
-            else => color(gutter_color),
+            .continuation => self.theme.continuation,
+            else => if (paint.number_active) self.theme.line_number_active else self.theme.line_number,
         } });
         changed = true;
     }
@@ -460,8 +496,7 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
         const marker_changed = blk: {
             const current = row.marker orelse break :blk paint.marker != null;
             const next = paint.marker orelse break :blk true;
-            break :blk current.glyph != next.glyph or
-                !std.mem.eql(u8, current.color[0..], next.color[0..]);
+            break :blk current.glyph != next.glyph or !current.color.eql(next.color);
         };
         if (marker_changed) {
             row.marker = paint.marker;
@@ -469,8 +504,8 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
                 setDisplay(row.marker_cell, true);
                 row.marker_buf[0] = marker.glyph;
                 row.marker_text.setTextBorrowed(row.marker_buf[0..1]);
-                row.marker_text.setStyle(.{ .color = color(marker.color) });
-                row.marker_cell.asElement().style.color = color(marker.color);
+                row.marker_text.setStyle(.{ .color = marker.color });
+                row.marker_cell.asElement().style.color = marker.color;
             } else {
                 setDisplay(row.marker_cell, false);
             }
@@ -489,27 +524,44 @@ fn setDisplay(node: *ui.Node, visible: bool) void {
 /// `primary` wins over `secondary`/`pattern`; pattern and secondary variants
 /// use the dimmed color because a cell has no alpha.
 pub fn quickDiffMarker(decorations: ?*const @import("../glyphMargin/glyphMargin.zig").VisibleLineDecorationsToRender) ?QuickDiffMarker {
+    return quickDiffMarkerWithTheme(decorations, Theme.dark());
+}
+
+/// The themed form used by the composer. The class names are the upstream
+/// `dirty-diff-*` classes; the colors are the `editorGutter.*` ids.
+pub fn quickDiffMarkerWithTheme(
+    decorations: ?*const @import("../glyphMargin/glyphMargin.zig").VisibleLineDecorationsToRender,
+    theme: Theme,
+) ?QuickDiffMarker {
     const line = decorations orelse return null;
     var result: ?QuickDiffMarker = null;
     var result_primary = false;
     for (line.getDecorations()) |decoration| {
         const parsed = parseQuickDiffClass(decoration.class_name) orelse continue;
         if (result == null or (parsed.primary and !result_primary)) {
-            result = .{ .glyph = parsed.glyph, .color = parsed.color };
+            const marker_color = switch (parsed.kind) {
+                .added => if (parsed.primary and !parsed.dimmed) theme.added_primary else theme.added_secondary,
+                .modified => if (parsed.primary and !parsed.dimmed) theme.modified_primary else theme.modified_secondary,
+                .deleted => if (parsed.primary and !parsed.dimmed) theme.deleted_primary else theme.deleted_secondary,
+            };
+            result = .{ .glyph = parsed.glyph, .color = marker_color };
             result_primary = parsed.primary;
         }
     }
     return result;
 }
 
+const QuickDiffKind = enum { added, modified, deleted };
+
 const ParsedQuickDiffClass = struct {
     glyph: u8,
-    color: [3]u8,
+    kind: QuickDiffKind,
     primary: bool,
+    dimmed: bool,
 };
 
 fn parseQuickDiffClass(classes: []const u8) ?ParsedQuickDiffClass {
-    var kind: enum { none, added, modified, deleted } = .none;
+    var kind: ?QuickDiffKind = null;
     var primary = false;
     var dimmed = false;
     var iterator = std.mem.tokenizeScalar(u8, classes, ' ');
@@ -526,28 +578,17 @@ fn parseQuickDiffClass(classes: []const u8) ?ParsedQuickDiffClass {
             dimmed = true;
         }
     }
-    return switch (kind) {
-        .none => null,
-        .added => .{
-            .glyph = '+',
-            .color = if (primary and !dimmed) added_primary_color else added_secondary_color,
-            .primary = primary,
+    const resolved = kind orelse return null;
+    return .{
+        .glyph = switch (resolved) {
+            .added => '+',
+            .modified => '~',
+            .deleted => '-',
         },
-        .modified => .{
-            .glyph = '~',
-            .color = if (primary and !dimmed) modified_primary_color else modified_secondary_color,
-            .primary = primary,
-        },
-        .deleted => .{
-            .glyph = '-',
-            .color = if (primary and !dimmed) deleted_primary_color else deleted_secondary_color,
-            .primary = primary,
-        },
+        .kind = resolved,
+        .primary = primary,
+        .dimmed = dimmed,
     };
-}
-
-fn color(rgb: [3]u8) ui.Color {
-    return .{ .r = rgb[0], .g = rgb[1], .b = rgb[2] };
 }
 
 // ---------------------------------------------------------------------------
@@ -577,19 +618,19 @@ test "margin: quick diff marker classes map to glyph and color" {
     defer added.deinit();
     const marker = quickDiffMarker(&added).?;
     try testing.expectEqual(@as(u8, '+'), marker.glyph);
-    try testing.expectEqual(added_primary_color, marker.color);
+    try testing.expect(marker.color.eql(Theme.dark().added_primary));
 
     var modified_pattern = try lineWith(allocator, "dirty-diff-glyph dirty-diff-modified primary pattern");
     defer modified_pattern.deinit();
     const pattern_marker = quickDiffMarker(&modified_pattern).?;
     try testing.expectEqual(@as(u8, '~'), pattern_marker.glyph);
-    try testing.expectEqual(modified_secondary_color, pattern_marker.color);
+    try testing.expect(pattern_marker.color.eql(Theme.dark().modified_secondary));
 
     var deleted = try lineWith(allocator, "dirty-diff-glyph dirty-diff-deleted secondary");
     defer deleted.deinit();
     const deleted_marker = quickDiffMarker(&deleted).?;
     try testing.expectEqual(@as(u8, '-'), deleted_marker.glyph);
-    try testing.expectEqual(deleted_secondary_color, deleted_marker.color);
+    try testing.expect(deleted_marker.color.eql(Theme.dark().deleted_secondary));
 
     try testing.expect(quickDiffMarker(null) == null);
     var unrelated = try lineWith(allocator, "fold-glyph");
@@ -605,6 +646,50 @@ test "margin: primary marker wins over secondary on the same line" {
     try rendered.add(.{ .class_name = "dirty-diff-modified primary", .z_index = 0, .tooltip = null });
     const marker = quickDiffMarker(&rendered).?;
     try testing.expectEqual(@as(u8, '~'), marker.glyph);
+}
+
+test "margin: theme colors the line numbers and the active line" {
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb", "test.txt", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+    try host.renderRange(1, 2);
+
+    var doc = try ui.Document.init(allocator, .{ .cols = 20, .rows = 4 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+
+    var margin = TerminalMargin.init(allocator);
+    defer margin.deinit();
+    margin.setTheme(.{
+        .line_number = .{ .r = 10, .g = 20, .b = 30 },
+        .line_number_active = .{ .r = 40, .g = 50, .b = 60 },
+        .folding_control = .{ .r = 70, .g = 80, .b = 90 },
+        .added_primary = .{ .r = 100, .g = 110, .b = 120 },
+    });
+    const folding = FoldingDecorationProvider{};
+    try margin.render(
+        &doc,
+        root,
+        editor,
+        &host.line_numbers,
+        &host.line_decorations,
+        &folding,
+        editor.gutterWidth(),
+        editor.textHeight(),
+        null,
+    );
+
+    try testing.expect(margin.rows.items.len >= 2);
+    try testing.expect(margin.rows.items[0].number_text.paintStyle().?.color.?.eql(.{ .r = 40, .g = 50, .b = 60 }));
+    try testing.expect(margin.rows.items[1].number_text.paintStyle().?.color.?.eql(.{ .r = 10, .g = 20, .b = 30 }));
 }
 
 test "margin: paints the line-number map, blank filler and the quick-diff cell" {
