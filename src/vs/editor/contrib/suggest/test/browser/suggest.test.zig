@@ -151,7 +151,7 @@ test "SuggestController: widget renders below the caret and filters" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const grid = view.surface.grid();
     const row = 3;
     const text = try grid.rowText(allocator, row);
@@ -451,7 +451,7 @@ test "SuggestController: resolved documentation appears in the details pane" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const grid = view.surface.grid();
     var found = false;
     var row: usize = 0;

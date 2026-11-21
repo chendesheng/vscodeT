@@ -4484,7 +4484,7 @@ test "Editor: create, edit, undo, and render" {
     defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     try std.testing.expect(out.written().len > 0);
 }
 
@@ -4723,7 +4723,7 @@ test "Editor: tokenized Zig lines render through the wrapped view" {
     defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     try std.testing.expect(out.written().len > 0);
 }
 
@@ -4753,7 +4753,7 @@ test "Editor: syntax stays visible after inserting blank lines" {
     defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const rendered = out.written();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;106;153;85m") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;197;134;192m") != null);
@@ -4833,7 +4833,7 @@ test "Editor: typing a function keeps following comments highlighted" {
     defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const rendered = out.written();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;106;153;85m") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;197;134;192m") != null);

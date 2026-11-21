@@ -10355,11 +10355,11 @@ test "Workbench: opening a new file rebuilds its view once" {
 
     try workbench.openPath(path_b);
     const tab = workbench.activeTab().?;
-    try std.testing.expectEqual(@as(usize, 0), tab.view.rebuildCount());
+    try std.testing.expectEqual(@as(usize, 0), tab.view.renderCount());
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try workbench.render(&out.writer);
-    try std.testing.expectEqual(@as(usize, 1), tab.view.rebuildCount());
+    try std.testing.expectEqual(@as(usize, 1), tab.view.renderCount());
 }
 
 test "Workbench: markdown preview icon and split render the document" {

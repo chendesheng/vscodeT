@@ -439,7 +439,7 @@ test "syntax theme: editor paints the dark+ colors" {
     defer view.deinit();
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const rendered = out.written();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;106;153;85m") != null);

@@ -239,6 +239,17 @@ pub const ViewLines = struct {
         self.dispose_fn = null;
     }
 
+    /// Drops the rendered window through the normal disposal path. Used when
+    /// the document and its retained roots survive but the viewport changed,
+    /// so line nodes and their boxes must be removed before re-rendering.
+    pub fn clearWindow(self: *ViewLines) void {
+        _ = self.visible_lines.onFlushed(&.{});
+        self.dom_doc = null;
+        self.dom_root = null;
+        self.dispose_context = null;
+        self.dispose_fn = null;
+    }
+
     pub fn windowStart(self: *const ViewLines) usize {
         return self.visible_lines.getStartLineNumber();
     }

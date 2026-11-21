@@ -1181,7 +1181,7 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
     // directly from `View.render`.
     view.setPointerShapes(true);
 
-    try view.render(out);
+    try view.renderAnsi(out);
     try out.flush();
 
     var input_buffer = try ArrayList(u8).initCapacity(allocator, 256);
@@ -1193,9 +1193,9 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
             editor.setViewport(size.width, size.height);
-            try view.resize();
+            view.invalidate();
             try tui.clearScreen(out);
-            try view.render(out);
+            try view.renderAnsi(out);
             try out.flush();
             continue;
         }
@@ -1233,7 +1233,7 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
             input_buffer.clearRetainingCapacity();
         }
         if (redraw) {
-            try view.render(out);
+            try view.renderAnsi(out);
             try out.flush();
         }
     }
@@ -1629,7 +1629,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const open_row = try view.surface.grid().rowText(allocator, 0);
     defer allocator.free(open_row);
@@ -1645,7 +1645,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     try std.testing.expect(!find.isOpen());
 
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const closed_row = try view.surface.grid().rowText(allocator, 0);
     defer allocator.free(closed_row);
     try std.testing.expect(std.mem.indexOf(u8, closed_row, "Find") == null);
@@ -1680,7 +1680,7 @@ test "app: the word under the caret highlights its occurrences" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
@@ -1699,7 +1699,7 @@ test "app: the word under the caret highlights its occurrences" {
     word_highlighter.onEditorChanged(100);
     try std.testing.expect(word_highlighter.onTick(150));
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const moved = ui.cell.unpackColor(view.surface.grid().bg[view.surface.grid().index(gutter + 0, 0)]);
     try std.testing.expectEqual(@as(u8, 32), moved.r);
@@ -1774,7 +1774,7 @@ test "app: hovering a word shows the rendered markdown hover" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const box = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
     const grid = view.surface.grid();
@@ -1802,7 +1802,7 @@ test "app: hovering a word shows the rendered markdown hover" {
     hover.onEditorMouseLeave(leave);
     try std.testing.expect(!hover.isVisible());
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const cleared = ui.cell.unpackColor(view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth() + 6, 0)]);
     // Back to the current-line background, not the hover highlight.
     try std.testing.expectEqual(@as(u8, 32), cleared.r);
@@ -1816,7 +1816,7 @@ test "app: hovering a word shows the rendered markdown hover" {
     _ = hover.onTick(time_compat.milliTimestamp() + 4000);
     try std.testing.expect(hover.isVisible());
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const entry = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
     var down = ui.MouseEvent{
@@ -1967,7 +1967,7 @@ test "app: hover renders a GFM table and task list" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const box = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
     const grid = view.surface.grid();
@@ -2067,7 +2067,7 @@ test "app: long hover content scrolls without moving the editor" {
     try view.refresh();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const widget = hover.widget().widget;
     try std.testing.expect(widget.content_rows > widget.visible_rows);

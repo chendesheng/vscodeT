@@ -60,7 +60,7 @@ required for the measurements below.
   configuration/theme/text-file reload flows. Startup scans and mouse-click
   preview opens plus extension-host `openPath` calls still use the synchronous
   path.
-- Opening a file performs one view rebuild and one full wrapping pass. The
+- Opening a file performs one view render and one full wrapping pass. The
   workbench reserves the overview-ruler/scrollbar columns before that pass, and
   a path that is already open reuses its existing tab/editor instead of
   re-reading and constructing a new one.

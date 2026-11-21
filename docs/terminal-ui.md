@@ -1046,7 +1046,7 @@ Library constraints:
   duplicated. No CSS border/shadow, horizontal `scrollWithEditor` coupling,
   context menu, go-to-definition from a sticky row or embedded-editor peek
   styling is ported.
-- Indentation guides are painted by `View.rebuild` from the ported
+- Indentation guides are painted by the terminal editor render pass from the ported
   `src/vs/editor/common/model/guidesTextModelPart.zig` indentation subset. The
   model computes a guide count per visible model line, including the upstream
   blank-line rule that inherits from the surrounding content, and the view
@@ -1203,8 +1203,9 @@ Library constraints:
   second discarded search (which leaked its capture array), and the
   word-separator cache owns its keys instead of borrowing editor slices.
 - `src/tui/app.zig` dispatches keys and mouse events to the editor, refreshes
-  the view and syncs the hardware cursor after each frame; resize recreates the
-  surface. The terminal runs in mouse mode 1003 with SGR coordinates (1006), so
+  the view and syncs the hardware cursor after each frame; a viewport change
+  resizes the `ui.Surface` in place and discards only the line window, while
+  the retained chrome roots survive. The terminal runs in mouse mode 1003 with SGR coordinates (1006), so
   press, release, idle/button-held motion and wheel arrive as `ui.MouseEvent`s.
   `View.dispatchMouse` hit-tests, applies press-to-focus, places the caret
   (Shift extends), drag-selects, synthesizes the release click on the common

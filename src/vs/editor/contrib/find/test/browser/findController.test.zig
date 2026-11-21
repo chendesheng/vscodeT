@@ -51,7 +51,7 @@ test "FindController: opens, searches incrementally and closes" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const open_row = try rowText(view, allocator, 0);
     defer allocator.free(open_row);
@@ -71,7 +71,7 @@ test "FindController: opens, searches incrementally and closes" {
     try std.testing.expectEqual(@as(usize, 6), selection.endColumn);
 
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const count_row = try rowText(view, allocator, 0);
     defer allocator.free(count_row);
     try std.testing.expect(std.mem.indexOf(u8, count_row, "1/2") != null);
@@ -90,7 +90,7 @@ test "FindController: opens, searches incrementally and closes" {
     try std.testing.expectEqual(@as(usize, 0), find_decorations.len);
 
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const closed_row = try rowText(view, allocator, 0);
     defer allocator.free(closed_row);
     try std.testing.expect(std.mem.indexOf(u8, closed_row, "Find") == null);
@@ -126,7 +126,7 @@ test "FindController: replace row replaces the current match" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const replace_row = try rowText(view, allocator, 1);
     defer allocator.free(replace_row);
     try std.testing.expect(std.mem.indexOf(u8, replace_row, "Repl") != null);
@@ -181,7 +181,7 @@ test "FindController: decorations paint the match cells" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
@@ -193,7 +193,7 @@ test "FindController: decorations paint the match cells" {
     var escape_event = ui.KeyEvent{ .key = .escape };
     _ = view.dispatchKey(&escape_event);
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const cleared = view.surface.grid();
     try std.testing.expect(cleared.bg[cleared.index(gutter, 0)] != ui.cell.packColor(.{ .r = 200, .g = 120, .b = 0 }));
 }
@@ -365,7 +365,7 @@ test "FindController: find toggles hover and click from the mouse" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     const iface = controller.widget().interface();
     const width_cells = iface.width(iface.context, 60);
@@ -380,7 +380,7 @@ test "FindController: find toggles hover and click from the mouse" {
     _ = try view.dispatchMouse(&hover);
     try std.testing.expect(controller.widget().hover_control != null);
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     const hovered_bg = view.surface.grid().bg[view.surface.grid().index(toggle_x, 0)];
     try std.testing.expect(hovered_bg != normal_bg);
 
@@ -389,7 +389,7 @@ test "FindController: find toggles hover and click from the mouse" {
     _ = try view.dispatchMouse(&away);
     try std.testing.expect(controller.widget().hover_control == null);
     try view.refresh();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
     try std.testing.expectEqual(
         normal_bg,
         view.surface.grid().bg[view.surface.grid().index(toggle_x, 0)],

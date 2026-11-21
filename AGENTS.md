@@ -94,10 +94,13 @@ state that in the comment and keep the behavioral contract intact.
   `focus`/`blur` plus bubbling `focusin`/`focusout`; Tab is a default action,
   not a global shortcut. Keep these rules in the library, not in `src/tui/`.
 - TUI integration (terminal raw mode/read loop, status) stays in `src/tui/`.
-  `src/tui/editorView.zig` is the editor view on the `ui` tree: it owns the gutter,
-  token runs, selection, cursor cell and status bar, and rebuilds the document
-  through `Document.clear` so the `Surface` keeps its frame diff. The
-  read-only `--preview` variant is `src/tui/preview.zig`.
+  `src/tui/editorView.zig` is the editor view on the `ui` tree: it owns the
+  retained line window and retained chrome parts (gutter, scrollbar, widgets,
+  status) and drives the `ui` Surface and box tree. Do not rebuild the whole
+  document per frame; `Document.clear` is only for document creation or reset.
+  A viewport change must resize the `ui.Surface` in place and discard only the
+  line window, not the retained chrome. The read-only `--preview` variant is
+  the `runPreview` path in `src/tui/app.zig`.
 - Widgets and view contributions ported from `src/vs/editor/contrib/...` build
   their view on this document; keep their model/state code upstream-shaped and
   put only the terminal DOM adaptation in the widget. Sidebar/preview/read-loop
@@ -155,6 +158,27 @@ state that in the comment and keep the behavioral contract intact.
     detect the change later by comparing state. A terminal/browser adapter may
     replace the plumbing, but not the event flow itself.
 
+## Faithful porting and performance ownership
+
+- Port VS Code faithfully and literally. Keep the upstream file, type, method,
+  event, dirtying and render-pipeline structure. When upstream has a `View`,
+  `ViewPart`, `render()` / `_flushAccumulatedAndRenderNow()` or a view-part
+  lifecycle, port that pipeline; do not replace it with a terminal-only
+  `View.rebuild`, `View.resize` or similar collapsed method.
+- Terminal adaptations belong at the boundary: cell-grid painting, `ui` DOM
+  nodes and styles, input/focus routing and terminal capabilities. Control
+  flow, state transitions, event ordering and part structure stay
+  upstream-shaped.
+- Performance work belongs in `ui/` as much as possible. Optimize the
+  DOM/box/layout/paint/frame/ANSI primitives instead of adding caches,
+  revisions, fast paths or special cases to ported editor/workbench code. An
+  editor-side performance change is allowed only when it mirrors an upstream
+  optimization; a verified upstream divergence must be documented in the file
+  header, `README.md` and `docs/terminal-ui.md` before it is relied on.
+- A collapsed terminal-only renderer is debt to remove, not a pattern to
+  extend. When touching one, move the behavior into the upstream-shaped
+  `View`/view-part pipeline and keep only the terminal boundary adapter.
+
 ## View and rendering ports
 
 - Port the view-side behavior as part of the contribution: decorated ranges,
@@ -180,6 +204,14 @@ state that in the comment and keep the behavioral contract intact.
   event loop, compositor, native selection), isolate the missing piece, port
   the portable state/commands, wire what the TUI can support, and document the
   exact gap in `README.md` and `docs/terminal-ui.md`.
+- Port upstream `View`/`ViewPart` orchestration (`render`,
+  `_flushAccumulatedAndRenderNow`, `shouldRender`/`prepareRender`/`render`).
+  Do not add a terminal-only `rebuild`/`resize` method; rendering and size
+  changes flow through the upstream layout/configuration and view-event
+  contracts.
+- Performance optimizations go into `ui/`; a ported view must not accumulate
+  non-upstream caches or fast paths. An editor-side optimization is acceptable
+  only when it mirrors an upstream one.
 
 ## Zig conventions
 
@@ -299,6 +331,10 @@ Also verify:
 - [ ] View-side behavior is ported through the upstream-shaped layers, not only
       the model/controller; any terminal/browser-infrastructure exception is
       documented in the file header and `README.md`.
+- [ ] Ported view/render code keeps the upstream `View`/`ViewPart`/event
+      structure; no terminal-only `rebuild`/`resize` method was added.
+- [ ] Performance work is in `ui/` or is a documented, verified upstream
+      difference.
 - [ ] New public command/interface adapters use `interface()`.
 - [ ] Allocations have cleanup paths.
 - [ ] TUI wiring and shortcuts are documented if applicable.
