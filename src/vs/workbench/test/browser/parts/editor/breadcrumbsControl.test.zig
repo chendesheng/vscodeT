@@ -56,7 +56,7 @@ test "BreadcrumbsControl: labels and item kinds from a path model" {
         .request_render = HostImpl.render,
         .focus_editor = HostImpl.focus,
     };
-    const control = try BreadcrumbsControl.init(allocator, host, workspace, null, null);
+    const control = try BreadcrumbsControl.init(allocator, host, workspace, null, null, null);
     defer control.deinit();
 
     try std.testing.expect(control.isVisible());
@@ -136,7 +136,7 @@ test "BreadcrumbsControl: focus, selection and escape return focus to the editor
         .request_render = State.render,
         .focus_editor = State.focusEditor,
     };
-    const control = try BreadcrumbsControl.init(allocator, host, workspace, null, null);
+    const control = try BreadcrumbsControl.init(allocator, host, workspace, null, null, null);
     defer control.deinit();
 
     try std.testing.expect(control.focusAndSelect());

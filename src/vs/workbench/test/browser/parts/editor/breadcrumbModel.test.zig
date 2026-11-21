@@ -23,7 +23,7 @@ test "BreadcrumbsModel: files inside a single-root workspace" {
     const workspace = try WorkspaceContextService.initWithFolders(allocator, "w", &.{"/repo"});
     defer workspace.deinit();
 
-    const model = try BreadcrumbsModel.init(allocator, "/repo/src/a.ts", workspace, .{}, null, null);
+    const model = try BreadcrumbsModel.init(allocator, "/repo/src/a.ts", workspace, .{}, null, null, null);
     defer model.deinit();
 
     const elements = model.getElements();
@@ -40,7 +40,7 @@ test "BreadcrumbsModel: files outside the workspace keep absolute segments" {
     const workspace = try WorkspaceContextService.initWithFolders(allocator, "w", &.{"/repo"});
     defer workspace.deinit();
 
-    const model = try BreadcrumbsModel.init(allocator, "/outside/file.ts", workspace, .{}, null, null);
+    const model = try BreadcrumbsModel.init(allocator, "/outside/file.ts", workspace, .{}, null, null, null);
     defer model.deinit();
 
     const elements = model.getElements();
@@ -57,7 +57,7 @@ test "BreadcrumbsModel: filePath off and last" {
     const workspace = try WorkspaceContextService.initWithFolders(allocator, "w", &.{"/repo"});
     defer workspace.deinit();
 
-    const model = try BreadcrumbsModel.init(allocator, "/repo/a/b.ts", workspace, .{ .file_path = .last }, null, null);
+    const model = try BreadcrumbsModel.init(allocator, "/repo/a/b.ts", workspace, .{ .file_path = .last }, null, null, null);
     defer model.deinit();
     try std.testing.expectEqual(@as(usize, 1), model.getElements().len);
     try std.testing.expectEqualStrings("/repo/a/b.ts", model.getElements()[0].file.path);
@@ -71,7 +71,7 @@ test "BreadcrumbsModel: multi-root workspace keeps the root label" {
     const workspace = try WorkspaceContextService.initWithFolders(allocator, "w", &.{ "/repo/a", "/repo/b" });
     defer workspace.deinit();
 
-    const model = try BreadcrumbsModel.init(allocator, "/repo/a/file.ts", workspace, .{}, null, null);
+    const model = try BreadcrumbsModel.init(allocator, "/repo/a/file.ts", workspace, .{}, null, null, null);
     defer model.deinit();
     const elements = model.getElements();
     try std.testing.expectEqual(@as(usize, 2), elements.len);
@@ -127,7 +127,7 @@ test "BreadcrumbsModel: symbols from an outline provider" {
     defer registration.dispose();
 
     const editor = OutlineEditor{ .context = @ptrCast(&fake_instance), .resource = "/repo/file.ts", .language_id = "javascript" };
-    const model = try BreadcrumbsModel.init(allocator, "/repo/file.ts", workspace, .{}, &service, editor);
+    const model = try BreadcrumbsModel.init(allocator, "/repo/file.ts", workspace, .{}, &service, editor, null);
     defer model.deinit();
 
     const elements = model.getElements();
@@ -138,4 +138,30 @@ test "BreadcrumbsModel: symbols from an outline provider" {
     try model.setSettings(.{ .symbol_path = .last });
     try std.testing.expectEqual(@as(usize, 2), model.getElements().len);
     try std.testing.expectEqualStrings("port", model.getElements()[1].outline.label);
+}
+
+test "BreadcrumbsModel: a file under the home directory gets a ~ root" {
+    const allocator = std.testing.allocator;
+    const workspace = try WorkspaceContextService.initEmpty(allocator, "w");
+    defer workspace.deinit();
+
+    const model = try BreadcrumbsModel.init(
+        allocator,
+        "/home/user/src/a.ts",
+        workspace,
+        .{},
+        null,
+        null,
+        "/home/user",
+    );
+    defer model.deinit();
+
+    const elements = model.getElements();
+    try std.testing.expectEqual(@as(usize, 3), elements.len);
+    try std.testing.expectEqual(FileKind.ROOT_FOLDER, elements[0].file.kind);
+    try std.testing.expectEqualStrings("~", elements[0].file.label.?);
+    try std.testing.expectEqualStrings("/home/user", elements[0].file.path);
+    try std.testing.expectEqualStrings("/home/user/src", elements[1].file.path);
+    try std.testing.expectEqualStrings("/home/user/src/a.ts", elements[2].file.path);
+    try std.testing.expect(model.isRelative());
 }

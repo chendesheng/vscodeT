@@ -592,6 +592,7 @@ pub const Workbench = struct {
     /// Persistent breadcrumb controls for inactive groups, keyed by group id.
     /// Rendering an inactive group must not rebuild its outline every frame.
     breadcrumbs_inactive: std.AutoHashMapUnmanaged(u32, *InactiveBreadcrumb) = .empty,
+    home_path: ?[]u8 = null,
     breadcrumbs_arena: std.heap.ArenaAllocator,
     navigation_arena: std.heap.ArenaAllocator,
     pending_references: ?*ReferencesModel = null,
@@ -747,6 +748,7 @@ pub const Workbench = struct {
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_inactive = .empty;
+        self.home_path = readHomePath(allocator);
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
         self.breadcrumbs_pane = null;
@@ -901,6 +903,7 @@ pub const Workbench = struct {
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_inactive = .empty;
+        self.home_path = readHomePath(allocator);
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
         self.breadcrumbs_pane = null;
@@ -1088,6 +1091,7 @@ pub const Workbench = struct {
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_inactive = .empty;
+        self.home_path = readHomePath(allocator);
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
         self.breadcrumbs_pane = null;
@@ -1708,6 +1712,10 @@ pub const Workbench = struct {
         }
         self.disposeBreadcrumbs();
         self.disposeAllInactiveBreadcrumbs();
+        if (self.home_path) |home| {
+            self.allocator.free(home);
+            self.home_path = null;
+        }
         self.breadcrumbs_arena.deinit();
         self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
@@ -3055,6 +3063,10 @@ pub const Workbench = struct {
     }
 
     /// First workspace folder, used for the extension host's workspace data.
+    fn homePath(self: *const Workbench) ?[]const u8 {
+        return self.home_path;
+    }
+
     pub fn workspaceFolderPath(self: *Workbench) ?[]const u8 {
         const folders = self.workspace.getWorkspace().folders.items;
         if (folders.len == 0) return null;
@@ -8435,6 +8447,7 @@ pub const Workbench = struct {
             self.workspace,
             self.configuration,
             &self.outline_service,
+            self.homePath(),
         );
         errdefer control.deinit();
         control.setGroup(pane.group.id);
@@ -8485,6 +8498,7 @@ pub const Workbench = struct {
             self.workspace,
             self.configuration,
             &self.outline_service,
+            self.homePath(),
         ) catch {
             self.allocator.destroy(entry);
             return null;
@@ -12767,6 +12781,16 @@ fn freeOwnedPaths(allocator: Allocator, paths: []const []const u8) void {
 /// in `search/node/*Worker.zig` and `extensionHostManager.zig`: the terminal's
 /// Io needs the environment for executable resolution/spawn and for HTTP proxy
 /// discovery, but the library must not assume libc is linked.
+fn readHomePath(allocator: Allocator) ?[]u8 {
+    if (builtin.os.tag == .windows) return null;
+    var map = std.process.Environ.Map.init(allocator);
+    defer map.deinit();
+    const environ = asyncEnviron();
+    map.putPosixBlock(.{ .slice = @ptrCast(environ.block.slice) }) catch return null;
+    const value = map.get("HOME") orelse return null;
+    return allocator.dupe(u8, value) catch null;
+}
+
 fn asyncEnviron() std.process.Environ {
     return switch (builtin.os.tag) {
         .windows => .{ .block = .global },

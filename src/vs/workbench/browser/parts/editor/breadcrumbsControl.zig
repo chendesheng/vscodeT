@@ -100,6 +100,7 @@ pub const BreadcrumbsControl = struct {
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
     outline_service: ?*OutlineService,
+    home: ?[]const u8,
     settings: Settings,
     model: ?*BreadcrumbsModel = null,
     model_listener: ?@import("../../../../base/common/event.zig").Emitter(void).ListenerId = null,
@@ -115,6 +116,7 @@ pub const BreadcrumbsControl = struct {
         workspace: *WorkspaceContextService,
         configuration: ?*ConfigurationService,
         outline_service: ?*OutlineService,
+        home: ?[]const u8,
     ) !*BreadcrumbsControl {
         const self = try allocator.create(BreadcrumbsControl);
         self.* = .{
@@ -123,6 +125,7 @@ pub const BreadcrumbsControl = struct {
             .workspace = workspace,
             .configuration = configuration,
             .outline_service = outline_service,
+            .home = home,
             .settings = Settings.load(configuration),
             .widget = BreadcrumbsWidget.init(allocator),
         };
@@ -190,6 +193,7 @@ pub const BreadcrumbsControl = struct {
                 self.settings,
                 self.outline_service,
                 self.host.outline_editor(self.host.context),
+                self.home,
             );
             self.model = model;
             self.model_listener = try model.on_did_update.listen(self, onModelUpdated);
