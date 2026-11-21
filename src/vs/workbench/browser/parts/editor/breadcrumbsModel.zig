@@ -198,9 +198,7 @@ pub const BreadcrumbsModel = struct {
         if (folder) |workspace_folder| {
             const state = self.workspace.getWorkbenchState();
             const folder_count = self.workspace.getWorkspace().folders.items.len;
-            const include_root = folder_count > 1 or
-                (state == .WORKSPACE and samePath(workspace_folder.resource, resource));
-            if (include_root) {
+            if (includeWorkspaceRoot(state, folder_count, workspace_folder.resource, resource)) {
                 const label = try self.allocator.dupe(u8, workspace_folder.name);
                 errdefer self.allocator.free(label);
                 try self.file_info.path.insert(0, .{
@@ -290,6 +288,23 @@ pub const BreadcrumbsModel = struct {
     }
 };
 
+/// Upstream `_initFilePathInfo`: a root folder segment is shown only in a
+/// multi-root workspace, or for the workspace folder that is the resource
+/// itself. A single-folder `.FOLDER` workspace keeps the folder out of the
+/// breadcrumb path.
+pub fn includeWorkspaceRoot(
+    state: WorkbenchState,
+    folder_count: usize,
+    folder_resource: []const u8,
+    resource: []const u8,
+) bool {
+    // The local workspace service reports `.FOLDER` for a folder-only
+    // workspace, so multiple folders are still the authoritative multi-root
+    // signal (a real multi-root workspace always carries a configuration).
+    return folder_count > 1 or
+        (state == .WORKSPACE and samePath(folder_resource, resource));
+}
+
 fn isSeparator(character: u8) bool {
     return character == '/' or character == '\\';
 }
@@ -329,4 +344,13 @@ fn dirnameAny(path: []const u8) []const u8 {
         }
     }
     return path;
+}
+
+test "breadcrumb model: workspace root only in a workspace state" {
+    try std.testing.expect(includeWorkspaceRoot(.WORKSPACE, 2, "/w/a", "/w/a/f.ts"));
+    try std.testing.expect(includeWorkspaceRoot(.WORKSPACE, 1, "/w/a", "/w/a"));
+    try std.testing.expect(!includeWorkspaceRoot(.WORKSPACE, 1, "/w/a", "/w/a/f.ts"));
+    try std.testing.expect(includeWorkspaceRoot(.FOLDER, 2, "/w/a", "/w/a/f.ts"));
+    try std.testing.expect(!includeWorkspaceRoot(.FOLDER, 1, "/w/a", "/w/a/f.ts"));
+    try std.testing.expect(!includeWorkspaceRoot(.EMPTY, 0, "/w/a", "/w/a/f.ts"));
 }

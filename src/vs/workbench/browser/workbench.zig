@@ -8492,6 +8492,14 @@ pub const Workbench = struct {
         defer breadcrumbs_picker.freeEntries(self.allocator, entries);
 
         var items = std.array_list.Managed(QuickPickItem).init(arena);
+        const parent = breadcrumbs_picker.parentDirectory(directory);
+        if (!std.mem.eql(u8, parent, directory)) {
+            try items.append(.{ .item = .{
+                .id = try std.fmt.allocPrint(arena, "u:{s}", .{parent}),
+                .label = "..",
+                .description = "parent folder",
+            } });
+        }
         var active_id: ?[]const u8 = null;
         for (entries) |entry| {
             const id = try std.fmt.allocPrint(arena, "{s}:{s}", .{ if (entry.is_dir) "d" else "f", entry.path });
@@ -8771,6 +8779,8 @@ fn onBreadcrumbPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     if (std.mem.startsWith(u8, id, "f:")) {
         try self.openBreadcrumbFile(id[2..]);
     } else if (std.mem.startsWith(u8, id, "d:")) {
+        try self.showBreadcrumbPickerForDir(id[2..], null);
+    } else if (std.mem.startsWith(u8, id, "u:")) {
         try self.showBreadcrumbPickerForDir(id[2..], null);
     }
 }

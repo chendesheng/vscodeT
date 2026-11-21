@@ -75,6 +75,12 @@ pub fn list(allocator: Allocator, io: Io, directory: []const u8) ![]Entry {
     return try entries.toOwnedSlice();
 }
 
+/// Parent directory of a picker directory, or the same path at a filesystem
+/// root. Used for the picker's leading `..` entry.
+pub fn parentDirectory(directory: []const u8) []const u8 {
+    return dirnamePath(directory);
+}
+
 pub fn freeEntries(allocator: Allocator, entries: []Entry) void {
     for (entries) |*entry| entry.deinit(allocator);
     allocator.free(entries);
@@ -98,4 +104,10 @@ fn dirnamePath(path: []const u8) []const u8 {
         }
     }
     return path;
+}
+
+test "breadcrumb picker: parent directory stops at the root" {
+    try std.testing.expectEqualStrings("/a/b", parentDirectory("/a/b/c"));
+    try std.testing.expectEqualStrings("/", parentDirectory("/a"));
+    try std.testing.expectEqualStrings("/", parentDirectory("/"));
 }

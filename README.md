@@ -541,7 +541,9 @@ console API for raw mode, sizing and input polling.
   is not rebuilt every frame; disabled breadcrumbs ignore clicks, hover only
   applies when the item is neither focused nor selected, `focused.selected`
   uses `breadcrumb.activeSelectionForeground`, and separators inherit
-  `breadcrumb.foreground`.
+  `breadcrumb.foreground`. The terminal picker adds a `..` parent entry after
+  drilling into a folder, and workspace roots follow the upstream
+  multi-root/single-folder rule.
   Clicking a folder or file opens the terminal quick pick with the directory's
   children, and clicking a symbol reveals it. Symbol segments are supplied by
   the ported `IOutlineService`/`IOutline` plumbing. The real TypeScript
