@@ -30,6 +30,27 @@ const foreground = ui.Color{ .r = 230, .g = 230, .b = 230 };
 const dim_foreground = ui.Color{ .r = 140, .g = 140, .b = 150 };
 const hover_background = ui.Color{ .r = 72, .g = 72, .b = 92 };
 
+/// Terminal colors for the find bar. The editor layer does not import the
+/// workbench theme bridge; the host resolves the upstream color ids and passes
+/// this bundle, keeping the widget testable in isolation.
+pub const Theme = struct {
+    background: ui.Color = background,
+    foreground: ui.Color = foreground,
+    dim_foreground: ui.Color = dim_foreground,
+    hover_background: ui.Color = hover_background,
+    input_background: ui.Color = .{ .r = 30, .g = 30, .b = 35 },
+    input_foreground: ui.Color = foreground,
+    placeholder: ui.Color = dim_foreground,
+    active_background: ui.Color = foreground,
+    active_foreground: ui.Color = background,
+    selection_background: ?ui.Color = null,
+    selection_foreground: ?ui.Color = null,
+
+    pub fn dark() Theme {
+        return .{};
+    }
+};
+
 const count_width: usize = 10;
 const toggles_width: usize = 12;
 
@@ -54,6 +75,7 @@ pub const FindWidget = struct {
 
     find_input: ui.InputBox,
     replace_input: ui.InputBox,
+    theme: Theme = Theme.dark(),
 
     focused: bool = false,
     focus_field: FocusField = .find,
@@ -91,8 +113,26 @@ pub const FindWidget = struct {
         self.replace_input.placeholder_color = dim_foreground;
         self.replace_input.callback_context = self;
         self.replace_input.on_change = onReplaceChanged;
+        self.applyTheme();
 
         return self;
+    }
+
+    /// Applies the host-resolved theme ids to the bar and its input boxes.
+    pub fn setTheme(self: *FindWidget, theme: Theme) void {
+        self.theme = theme;
+        self.applyTheme();
+    }
+
+    fn applyTheme(self: *FindWidget) void {
+        self.find_input.color = self.theme.input_foreground;
+        self.find_input.placeholder_color = self.theme.placeholder;
+        self.find_input.selection_background = self.theme.selection_background;
+        self.find_input.selection_foreground = self.theme.selection_foreground;
+        self.replace_input.color = self.theme.input_foreground;
+        self.replace_input.placeholder_color = self.theme.placeholder;
+        self.replace_input.selection_background = self.theme.selection_background;
+        self.replace_input.selection_foreground = self.theme.selection_foreground;
     }
 
     pub fn deinit(self: *FindWidget) void {
@@ -195,8 +235,8 @@ pub const FindWidget = struct {
             .display = .flex,
             .flex_direction = .column,
             .overflow = .hidden,
-            .background = background,
-            .color = foreground,
+            .background = self.theme.background,
+            .color = self.theme.foreground,
         });
         try root.addEventListener(.{ .context = self, .capture = true, .key_down = onKeyCapture });
         try root.addEventListener(.{ .context = self, .mouse_move = onBarMove });
@@ -215,7 +255,7 @@ pub const FindWidget = struct {
         // growing input, the match count and the option toggles.
         const wide = width_cells > 30;
         const find_row = try appendRow(doc, root, false);
-        _ = try appendLabel(doc, find_row, "Find", 4);
+        _ = try appendLabel(doc, find_row, "Find", 4, self.theme.dim_foreground);
         const find_width = if (wide) width_cells -| 30 else width_cells -| 6;
         const find_node = try self.buildInput(
             doc,
@@ -235,7 +275,7 @@ pub const FindWidget = struct {
             var count_buffer: [16]u8 = undefined;
             const count = formatCount(&count_buffer, self.state);
             _ = try appendRightAligned(doc, find_row, count, count_width, .{
-                .color = dim_foreground,
+                .color = self.theme.dim_foreground,
             });
 
             const toggles = try appendToggleGroup(doc, find_row);
@@ -248,7 +288,7 @@ pub const FindWidget = struct {
         if (self.state.is_replace_revealed) {
             // `.replace-part` is the second flex row.
             const replace_row = try appendRow(doc, root, true);
-            _ = try appendLabel(doc, replace_row, "Repl", 4);
+            _ = try appendLabel(doc, replace_row, "Repl", 4, self.theme.dim_foreground);
             const replace_width = @max(@as(usize, 1), width_cells -| 11);
             replace_node = try self.buildInput(
                 doc,
@@ -282,7 +322,6 @@ pub const FindWidget = struct {
         width_cells: usize,
         focused: bool,
     ) !*ui.Node {
-        _ = self;
         // The input box itself remains a zero-origin, 100%-wide absolute child;
         // the relative flex holder owns the cell width flex computes for it.
         const holder = try doc.createElement(.div);
@@ -293,6 +332,7 @@ pub const FindWidget = struct {
             .flex_grow = 1,
             .flex_basis = .{ .cells = 0 },
             .overflow = .hidden,
+            .background = self.theme.input_background,
         });
 
         input.focused = focused;
@@ -313,8 +353,8 @@ pub const FindWidget = struct {
         const hovered = self.hover_control != null and self.hover_control.? == control;
         const node = doc.createText(text) catch return;
         node.setStyle(.{
-            .color = if (active) background else if (hovered) foreground else dim_foreground,
-            .background = if (active) foreground else if (hovered) hover_background else null,
+            .color = if (active) self.theme.active_foreground else if (hovered) self.theme.foreground else self.theme.dim_foreground,
+            .background = if (active) self.theme.active_background else if (hovered) self.theme.hover_background else null,
             .bold = active,
         });
         const holder = doc.createElement(.div) catch return;
@@ -343,8 +383,8 @@ pub const FindWidget = struct {
         const hovered = self.hover_control != null and self.hover_control.? == .replace_all;
         const node = try doc.createText("All");
         node.setStyle(.{
-            .color = if (hovered) foreground else dim_foreground,
-            .background = if (hovered) hover_background else null,
+            .color = if (hovered) self.theme.foreground else self.theme.dim_foreground,
+            .background = if (hovered) self.theme.hover_background else null,
         });
         const holder = try doc.createElement(.div);
         holder.setStyle(.{
@@ -518,7 +558,7 @@ fn appendRow(doc: *ui.Document, parent: *ui.Node, right_padding: bool) !*ui.Node
     return row;
 }
 
-fn appendLabel(doc: *ui.Document, parent: *ui.Node, text: []const u8, width_cells: usize) !*ui.Node {
+fn appendLabel(doc: *ui.Document, parent: *ui.Node, text: []const u8, width_cells: usize, color_value: ui.Color) !*ui.Node {
     const holder = try doc.createElement(.div);
     holder.setStyle(.{
         .width = .{ .cells = @floatFromInt(width_cells) },
@@ -528,7 +568,7 @@ fn appendLabel(doc: *ui.Document, parent: *ui.Node, text: []const u8, width_cell
         .overflow = .hidden,
     });
     const node = try doc.createText(text);
-    node.setStyle(.{ .color = dim_foreground });
+    node.setStyle(.{ .color = color_value });
     _ = try holder.appendChild(node);
     _ = try parent.appendChild(holder);
     return holder;

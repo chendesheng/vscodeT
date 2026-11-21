@@ -13,6 +13,7 @@ const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTe
 const View = @import("../../../../../../tui/editorView.zig").View;
 const editorBrowser = @import("../../../../browser/editorBrowser.zig");
 const FindController = @import("../../browser/findController.zig").FindController;
+const FindWidgetTheme = @import("../../browser/findWidget.zig").Theme;
 
 fn createEditor(allocator: Allocator) !*Editor {
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -451,4 +452,42 @@ test "FindController: clicking All runs replace-all" {
     defer second_line.deinit();
     try std.testing.expectEqualStrings("beta omega", second_line.items);
     try std.testing.expect(view.surface.document().active_element != null);
+}
+
+test "FindController: the host theme reaches the find bar" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    const theme = FindWidgetTheme{
+        .background = ui.Color{ .r = 1, .g = 2, .b = 3 },
+        .input_background = ui.Color{ .r = 4, .g = 5, .b = 6 },
+        .input_foreground = ui.Color{ .r = 7, .g = 8, .b = 9 },
+    };
+    controller.setTheme(theme);
+
+    try controller.open(false);
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(
+        ui.cell.packColor(theme.background),
+        grid.bg[grid.index(grid.cols - 1, 0)],
+    );
 }

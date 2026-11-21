@@ -13,6 +13,7 @@ const editorBrowser = @import("../../../browser/editorBrowser.zig");
 const FindReplaceState = @import("./findState.zig").FindReplaceState;
 const FindModel = @import("./findModel.zig").FindModel;
 const FindWidget = @import("./findWidget.zig").FindWidget;
+const FindWidgetTheme = @import("./findWidget.zig").Theme;
 const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 /// The decoration sink. The controller does not depend on the TUI view type;
@@ -69,6 +70,11 @@ pub const FindController = struct {
 
     pub fn widget(self: *FindController) *FindWidget {
         return self.find_widget;
+    }
+
+    /// Applies the host-resolved terminal colors to the find bar.
+    pub fn setTheme(self: *FindController, theme: FindWidgetTheme) void {
+        self.find_widget.setTheme(theme);
     }
 
     pub fn isOpen(self: *const FindController) bool {
