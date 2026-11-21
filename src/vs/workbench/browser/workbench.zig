@@ -5874,9 +5874,13 @@ pub const Workbench = struct {
                 self.renderPlaceholder(content, focused);
             }
 
+            // The border belongs to the side bar, so the divider cell keeps
+            // the side bar background; an unset background would fall back to
+            // the terminal's default background and read as a bright stripe.
             const divider_x = self.activityBarWidth() + self.sidebarWidth();
             const style = ui.cell.PaintStyle{
                 .fg = ui.cell.packColor(self.themeColor("sideBar.border", .{ 70, 70, 70 })),
+                .bg = ui.cell.packColor(self.themeColor("sideBar.background", .{ 30, 30, 33 })),
             };
             var row: usize = 0;
             while (row < self.workbenchRows()) : (row += 1) {
@@ -8639,6 +8643,20 @@ test "Workbench: side bar part paints the title and runs its actions" {
     const first_tree_row = try workbench.frame.present().rowText(allocator, 1);
     defer allocator.free(first_tree_row);
     try std.testing.expect(std.mem.indexOf(u8, first_tree_row, "title_action.txt") != null);
+
+    // The title row, the content and the divider column share the side bar
+    // background; only the divider glyph gets the border foreground.
+    const side_bar_bg = ui.cell.packColor(ui.Color{ .r = 30, .g = 30, .b = 33 });
+    const presented = workbench.frame.present();
+    const title_right = workbench.activityBarWidth() + workbench.sidebarWidth() - 1;
+    try std.testing.expectEqual(side_bar_bg, presented.bg[presented.index(title_right, 0)]);
+    const divider = workbench.activityBarWidth() + workbench.sidebarWidth();
+    try std.testing.expectEqual(side_bar_bg, presented.bg[presented.index(divider, 0)]);
+    try std.testing.expectEqual(side_bar_bg, presented.bg[presented.index(divider, 5)]);
+    try std.testing.expectEqual(
+        ui.cell.packColor(ui.Color{ .r = 70, .g = 70, .b = 70 }),
+        presented.fg[presented.index(divider, 5)],
+    );
 
     try workbench.findInFiles();
     const view = workbench.search_view.?;
