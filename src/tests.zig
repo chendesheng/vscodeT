@@ -250,6 +250,7 @@ comptime {
     _ = @import("./vs/editor/common/viewModel.zig");
     _ = @import("./vs/editor/common/viewLayout/lineHeights.zig");
     _ = @import("./vs/editor/common/viewLayout/linesLayout.zig");
+    _ = @import("./vs/editor/common/viewLayout/viewLayout.zig");
     _ = @import("./vs/editor/common/viewLayout/viewLinesViewportData.zig");
     _ = @import("./vs/editor/common/viewModel/overviewZoneManager.zig");
     _ = @import("./vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig");

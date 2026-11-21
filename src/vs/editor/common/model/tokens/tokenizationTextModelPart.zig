@@ -171,6 +171,20 @@ pub const TokenizationTextModelPart = struct {
         self.tokens.forceTokenization(lineNumber);
     }
 
+    /// The first line with an unknown tokenization state, if any.
+    pub fn firstInvalidTokenLine(self: *TokenizationTextModelPart) ?usize {
+        return self.tokens.firstInvalidTokenLine();
+    }
+
+    /// Tokenizes exactly the requested line range using a guessed start state,
+    /// so the synchronous cost is bounded by the viewport instead of the
+    /// distance from the last valid state.
+    pub fn forceTokenizeRange(self: *TokenizationTextModelPart, startLineNumber: usize, endLineNumber: usize) void {
+        self.validateLineNumber(startLineNumber);
+        self.validateLineNumber(endLineNumber);
+        self.tokens.forceTokenizeRange(startLineNumber, endLineNumber);
+    }
+
     pub fn refreshRange(self: *TokenizationTextModelPart, startLineNumber: usize, endLineNumber: usize) void {
         self.tokens.refreshRange(startLineNumber, endLineNumber);
     }

@@ -353,6 +353,37 @@ pub const TokenizerSyntaxTokenBackend = struct {
         if (self._defaultBackgroundTokenizer) |*backgroundTokenizer| backgroundTokenizer.checkFinished();
     }
 
+    /// The first line whose tokenization state is not known yet, or null when
+    /// the whole prefix is valid. The terminal editor uses this distance to
+    /// choose between a sequential walk and a viewport-range guess.
+    pub fn firstInvalidTokenLine(self: *TokenizerSyntaxTokenBackend) ?usize {
+        const tokenizer = self._tokenizer orelse return null;
+        const pair = (tokenizer.getFirstInvalidLine() catch return null) orelse return null;
+        return pair.first;
+    }
+
+    /// Tokenizes exactly `[startLineNumber, endLineNumber]`, guessing the
+    /// start state from the surrounding lines when the state store has no
+    /// valid entry. Used for the viewport so a jump does not tokenize every
+    /// line between the last valid state and the target synchronously; the
+    /// background tokenizer repairs the skipped history.
+    pub fn forceTokenizeRange(
+        self: *TokenizerSyntaxTokenBackend,
+        startLineNumber: usize,
+        endLineNumber: usize,
+    ) void {
+        var builder = ContiguousMultilineTokensBuilder.init(self._allocator);
+        defer builder.deinit();
+        if (self._tokenizer) |tokenizer| {
+            const line_count = self.textModel().getLineCount();
+            const start = clamp(startLineNumber, 1, line_count);
+            const end = clamp(endLineNumber, start, line_count);
+            tokenizer.forceTokenizeRange(&builder, start, end) catch {};
+        }
+        self.setTokensAndFire(builder.finalize());
+        if (self._defaultBackgroundTokenizer) |*backgroundTokenizer| backgroundTokenizer.checkFinished();
+    }
+
     pub fn hasAccurateTokensForLine(self: *TokenizerSyntaxTokenBackend, lineNumber: usize) bool {
         if (self._tokenizer) |tokenizer| return tokenizer.hasAccurateTokensForLine(lineNumber);
         return true;

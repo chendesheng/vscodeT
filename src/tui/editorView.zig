@@ -10,9 +10,12 @@
 //!
 //! The document is rebuilt from the editor when `refresh` is called (after a
 //! key, an edit or a resize). `Document.clear` keeps the arena and the
-//! `Surface` frame so the renderer still emits only the changed cells. The view
+//! `Surface` frame so the renderer still emits only the changed cells. The
+//! vertical scroll position comes from the editor's line-granular `ViewLayout`
+//! (upstream `viewLayout.ts`), and `refresh` renders the viewport through the
+//! ported `ViewLines` window instead of forcing a full line pass. The view
 //! also owns the terminal mouse adaptation: click/drag caret placement, drag
-//! selection, click synthesis and wheel scrolling of the editor viewport.
+//! selection, click synthesis and the scrollbar-owned wheel path.
 //!
 //! Find, bracket, word and hover ranges are materialized as `TextModel`
 //! decorations by `ModelDecorationSink` or by the view's bracket pass.
@@ -591,6 +594,23 @@ pub const View = struct {
         const target = (try self.surface.elementFromPoint(event.x, event.y)) orelse
             (doc.root orelse return false);
         ui.event.dispatchMouse(doc, target, event);
+        // Upstream the scrollable element, not the pointer handler, owns the
+        // wheel. Route it through the ported scrollbar part so sensitivity,
+        // fast scroll and clamping match the browser path.
+        if (event.kind == .wheel) {
+            // The status row is outside the editor's scrollable element.
+            if (event.y >= self.editor.textHeight()) return false;
+            if (!event.default_prevented and event.delta_y != 0) {
+                _ = self.terminal_view_host.viewRef().scrollbarPart().delegateScrollFromMouseWheelEvent(
+                    self.editor,
+                    event.delta_y,
+                    event.mods,
+                    self.terminal_view_host.options.get(.mouseWheelScrollSensitivity),
+                    self.terminal_view_host.options.get(.fastScrollSensitivity),
+                );
+            }
+            return false;
+        }
         return self.mouse_handler.dispatch(.{
             .context = self,
             .element_from_point = mouseElementAt,
@@ -608,7 +628,6 @@ pub const View = struct {
             .select_from = mouseSelectFrom,
             .update_drag_selection = mouseUpdateDragSelection,
             .dispatch_click = mouseDispatchClick,
-            .scroll_lines = mouseScrollLines,
         }, event, target);
     }
 
@@ -708,13 +727,6 @@ pub const View = struct {
             .mods = mods,
         };
         ui.event.dispatchMouse(doc, click_target, &click);
-    }
-
-    fn mouseScrollLines(context: *anyopaque, y: usize, delta: f64) bool {
-        const self: *View = @ptrCast(@alignCast(context));
-        if (y >= self.editor.textHeight()) return false;
-        _ = self.editor.scrollViewLines(@as(isize, @intFromFloat(delta)));
-        return true;
     }
 
     fn isScrollbarCell(self: *View, x: usize) bool {
@@ -1162,7 +1174,7 @@ pub const View = struct {
         const indent_size = @max(editor.indentSize(), 1);
 
         if (top <= total) {
-            try self.terminal_view_host.renderRange(top, @min(total, top + text_height -| 1));
+            try self.terminal_view_host.renderViewport();
         }
 
         var guide_counts: []usize = &.{};

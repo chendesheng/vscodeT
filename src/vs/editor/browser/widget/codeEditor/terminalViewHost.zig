@@ -289,14 +289,12 @@ pub const TerminalViewHost = struct {
     }
 
     /// Renders `[start_line, end_line]` (1-based view lines) through the ported
-    /// `ViewLines`. The model is expected to have a viewport of that size.
+    /// `ViewLines`. Test hosts use this for a fixed range; the editor view uses
+    /// `renderViewport`, which takes the range from the editor's `ViewLayout`.
     pub fn renderRange(self: *TerminalViewHost, start_line: usize, end_line: usize) !void {
         const count = end_line -| start_line + 1;
         try self.offsets.resize(self.allocator, count);
         for (0..count) |i| self.offsets.items[i] = @floatFromInt(i);
-
-        if (self.selections.len > 0) self.allocator.free(self.selections);
-        self.selections = try self.editor.getViewSelections();
 
         const partial = view_model.IPartialViewLinesViewportData{
             .bigNumbersDelta = 0,
@@ -308,6 +306,22 @@ pub const TerminalViewHost = struct {
             .completelyVisibleEndLineNumber = end_line,
             .lineHeight = 1,
         };
+        try self.renderPartial(partial);
+    }
+
+    /// Renders the editor's current viewport. The line range and relative
+    /// offsets come from the same `ViewLayout` that owns the scroll position,
+    /// as upstream `ViewLayout.getLinesViewportData`.
+    pub fn renderViewport(self: *TerminalViewHost) !void {
+        var data = try self.editor.viewLayout().getLinesViewportData(self.allocator);
+        defer data.deinit();
+        try self.renderPartial(data.data);
+    }
+
+    fn renderPartial(self: *TerminalViewHost, partial: view_model.IPartialViewLinesViewportData) !void {
+        if (self.selections.len > 0) self.allocator.free(self.selections);
+        self.selections = try self.editor.getViewSelections();
+
         if (self.first_frame) {
             self.decorations.onModelDecorationsChanged();
             self.view.getViewLines().invalidateDecorations();
@@ -321,9 +335,11 @@ pub const TerminalViewHost = struct {
         const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
         // ViewLine owns copies of its render input, so scrolling can retain
         // unchanged rendered lines instead of invalidating the whole window.
-        // The viewport is a stack value, so `ViewLines.last_viewport` must be
-        // refreshed on every pass before overlays query it.
-        self.view.getViewLines().forceShouldRender();
+        // `ViewLines` is dirtied by the view events (scroll/tokens/decorations/
+        // cursor), as upstream; do not force a full render here. The by-value
+        // viewport record is refreshed every pass because the parts query it
+        // after `View.renderText` returns.
+        self.view.getViewLines().setViewportData(&viewport);
 
         self.selections_overlay.setSelections(self.selections);
 
@@ -626,34 +642,26 @@ pub const TerminalViewHost = struct {
     }
 
     fn getScrollWidth(context: *anyopaque) f64 {
-        return @floatFromInt(host(context).editor.textAreaWidth());
+        return host(context).editor.viewLayout().getScrollWidth();
     }
     fn getScrollHeight(context: *anyopaque) f64 {
-        return @floatFromInt(host(context).editor.scrollHeight());
+        return host(context).editor.viewLayout().getScrollHeight();
     }
     fn getCurrentViewport(context: *anyopaque) view_model.Viewport {
-        const self = host(context);
-        return view_model.Viewport.init(
-            @floatFromInt(self.editor.topViewLine() -| 1),
-            0,
-            @floatFromInt(self.editor.textAreaWidth()),
-            @floatFromInt(self.editor.textHeight()),
-        );
+        return host(context).editor.viewLayout().getCurrentViewport();
     }
-    fn getVerticalOffsetBefore(context: *anyopaque, line_number: usize, _: bool) f64 {
-        _ = host(context);
-        return @floatFromInt(line_number -| 1);
+    fn getVerticalOffsetBefore(context: *anyopaque, line_number: usize, include_view_zones: bool) f64 {
+        return host(context).editor.viewLayout().getVerticalOffsetForLineNumber(line_number, include_view_zones);
     }
-    fn getVerticalOffsetAfter(context: *anyopaque, line_number: usize, _: bool) f64 {
-        _ = host(context);
-        return @floatFromInt(line_number);
+    fn getVerticalOffsetAfter(context: *anyopaque, line_number: usize, include_view_zones: bool) f64 {
+        return host(context).editor.viewLayout().getVerticalOffsetAfterLineNumber(line_number, include_view_zones);
     }
-    fn getLineHeight(context: *anyopaque, _: usize) f64 {
-        _ = host(context);
-        return 1;
+    fn getLineHeight(context: *anyopaque, line_number: usize) f64 {
+        return host(context).editor.viewLayout().getLineHeightForLineNumber(line_number);
     }
     fn setMaxLineWidth(context: *anyopaque, width: f64) void {
         host(context).max_line_width = width;
+        host(context).editor.viewLayout().setMaxLineWidth(width);
     }
 
     fn getSelections(context: *anyopaque) []const Selection {

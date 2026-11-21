@@ -1,8 +1,10 @@
 // Port of the portable click/drag/selection state machine from
 // `src/vs/editor/browser/controller/mouseHandler.ts`.
 //
-// The browser handler owns pointer capture, DOM listeners and browser hit
-// testing. The terminal host feeds decoded pointer events and supplies the
+// Upstream the scrollable element, not the pointer handler, owns the mouse
+// wheel; the terminal host routes wheel events to the editor scrollbar before
+// this handler sees them. The browser handler owns pointer capture, DOM
+// listeners and browser hit testing. The terminal host feeds decoded pointer events and supplies the
 // target node, line mapping and editor selection operations through
 // `TerminalMouseHost`; the press/drag/click order and selection behavior stay
 // upstream-shaped.
@@ -43,7 +45,6 @@ pub const TerminalMouseHost = struct {
         y: usize,
         mods: ui.Modifiers,
     ) void,
-    scroll_lines: *const fn (context: *anyopaque, y: usize, delta: f64) bool,
 };
 
 /// Port of the mouse-state subset of `MouseHandler`.
@@ -146,12 +147,7 @@ pub const TerminalMouseHandler = struct {
                     }
                 }
             },
-            .wheel => {
-                if (!event.default_prevented and event.delta_y != 0) {
-                    _ = host.scroll_lines(host.context, event.y, event.delta_y);
-                }
-            },
-            .click => {},
+            .wheel, .click => {},
         }
         return caret_changed;
     }
@@ -163,7 +159,6 @@ test "terminal mouse handler tracks a press, drag and release" {
         cursor: Position = Position.init(1, 1),
         selections: usize = 0,
         clicks: usize = 0,
-        scrolls: usize = 0,
 
         fn element(_: *anyopaque, _: usize, _: usize) ?*ui.Node {
             return null;
@@ -213,11 +208,6 @@ test "terminal mouse handler tracks a press, drag and release" {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.clicks += 1;
         }
-        fn scroll(context: *anyopaque, _: usize, _: f64) bool {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            self.scrolls += 1;
-            return true;
-        }
     };
 
     var state = State{};
@@ -238,7 +228,6 @@ test "terminal mouse handler tracks a press, drag and release" {
         .select_from = State.selectFrom,
         .update_drag_selection = State.updateDrag,
         .dispatch_click = State.click,
-        .scroll_lines = State.scroll,
     };
     var handler = TerminalMouseHandler{};
 

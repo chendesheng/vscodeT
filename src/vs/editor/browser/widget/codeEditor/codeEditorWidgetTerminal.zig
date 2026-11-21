@@ -21,6 +21,8 @@ const LanguageIdCodec = @import("../../../common/languages.zig").LanguageIdCodec
 const languages = @import("../../../common/languages.zig");
 const position_converter = @import("../../../../workbench/api/common/positionConverter.zig");
 const ProjectedViewModelLines = @import("../../../common/viewModel/viewModelLines.zig").ProjectedViewModelLines;
+const ViewLayout = @import("../../../common/viewLayout/viewLayout.zig").ViewLayout;
+const scrollable_mod = @import("../../../../base/common/scrollable.zig");
 const ViewModelEventDispatcher = @import("../../../common/viewModelEventDispatcher.zig").ViewModelEventDispatcher;
 const ViewEventHandler = @import("../../../common/viewEventHandler.zig").ViewEventHandler;
 const view_events = @import("../../../common/viewEvents.zig");
@@ -355,7 +357,10 @@ pub const Editor = struct {
     /// scrollbar. Zero for the read-only preview and for editors used without
     /// the TUI view.
     scrollbar_width: usize,
-    top_view_line: usize,
+    /// Vertical scroll state of this editor. Upstream keeps it on the view
+    /// model's `ViewLayout`; the terminal editor is the view model, so it owns
+    /// the layout directly. `top_view_line` is derived from it.
+    view_layout: ViewLayout,
     /// Selection slices owned by the last `ViewCursorStateChanged` event.
     /// Upstream's arrays stay alive until the next event; view parts retain
     /// these slices for their next render pass.
@@ -379,6 +384,12 @@ pub const Editor = struct {
     /// format) cannot leave the host document stale.
     last_content_changes: std.array_list.Managed(LastContentChange),
     tokens_need_refresh: bool,
+    /// Model-line interval whose tokens were forced for the current content
+    /// version (0 = none). Scrolling forward tokenizes only the new lines; a
+    /// jump tokenizes the visible range from a guessed start state.
+    tokenized_viewport_start: usize,
+    tokenized_viewport_end: usize,
+    tokenized_viewport_version: u32,
     decoration_generation: usize,
     /// The model stays attached for the lifetime of the terminal editor, so
     /// the ported default background tokenizer can run from the main loop.
@@ -631,6 +642,11 @@ pub const Editor = struct {
             character_pair = try CharacterPairSupport.init(config);
         }
 
+        // Materialize the prefix sum before the view lines are moved into the
+        // editor. Calling `getViewLineCount` inside the struct literal would
+        // mutate the moved-from local and leak its refreshed buffers.
+        const initial_view_line_count = view_lines.getViewLineCount();
+
         const cursor_config = CursorConfiguration{
             .tabSize = resolved.tabSize,
             .indentSize = resolved.indentSize,
@@ -687,7 +703,7 @@ pub const Editor = struct {
             .line_number_map = null,
             .read_only = false,
             .scrollbar_width = initial_scrollbar,
-            .top_view_line = 1,
+            .view_layout = try ViewLayout.init(allocator, initial_view_line_count, text_width, @max(height -| 1, 1)),
             .status = undefined,
             .status_len = 0,
             .prev_edit_operation_type = .Other,
@@ -696,6 +712,9 @@ pub const Editor = struct {
             .undo_group_depth = 0,
             .last_content_changes = std.array_list.Managed(LastContentChange).init(allocator),
             .tokens_need_refresh = false,
+            .tokenized_viewport_start = 0,
+            .tokenized_viewport_end = 0,
+            .tokenized_viewport_version = 0,
             .decoration_generation = 0,
             .keybindings = null,
             .shortcut_commands = CommandRegistry.init(allocator),
@@ -709,6 +728,7 @@ pub const Editor = struct {
         editor.folding_delayer = async_mod.ThrottledDelayer.init(editor, foldingDue, folding_debounce_min_ms);
         editor.bracket_guides_delayer = async_mod.ThrottledDelayer.init(editor, bracketGuidesDue, bracket_guides_debounce_ms);
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
+        _ = try editor.view_layout.onDidScroll().listen(editor, onViewLayoutScroll);
         if (editor.character_pair) |*pair_support| {
             editor.cursor_config.auto_closing_pairs = pair_support.getAutoClosingPairs();
             editor.cursor_config.auto_close_before_quotes = pair_support.getAutoCloseBeforeSet(true);
@@ -1288,6 +1308,7 @@ pub const Editor = struct {
         if (self.cursor_event_view_selections.len > 0) self.allocator.free(self.cursor_event_view_selections);
         if (self.cursor_event_model_selections.len > 0) self.allocator.free(self.cursor_event_model_selections);
         self.view_event_dispatcher.deinit();
+        self.view_layout.deinit();
         self.view_lines.deinit();
         if (self.attached_view) |view| {
             self.model.onBeforeDetached(view) catch {};
@@ -1431,7 +1452,18 @@ pub const Editor = struct {
     }
 
     pub fn topViewLine(self: *const Editor) usize {
-        return self.top_view_line;
+        const top = self.view_layout.getCurrentScrollTop();
+        if (top <= 0) return 1;
+        return @as(usize, @intFromFloat(top)) + 1;
+    }
+
+    /// The vertical scroll state (upstream `IViewModel.viewLayout`).
+    pub fn viewLayout(self: *Editor) *ViewLayout {
+        return &self.view_layout;
+    }
+
+    pub fn viewLayoutConst(self: *const Editor) *const ViewLayout {
+        return &self.view_layout;
     }
 
     pub fn gutterWidth(self: *const Editor) usize {
@@ -1585,7 +1617,7 @@ pub const Editor = struct {
         // Keep the model line at the top of the viewport stable across the
         // mapping change. Revealing the cursor here would jump a scrolled
         // viewport back to the cursor whenever a fold is toggled.
-        const top_model_line = self.modelLineNumber(self.top_view_line);
+        const top_model_line = self.modelLineNumber(self.topViewLine());
         const selections = try self.getSelections();
         defer self.allocator.free(selections);
         const adjusted = self.folding.adjustSelections(selections);
@@ -1718,7 +1750,20 @@ pub const Editor = struct {
     }
 
     pub fn emitViewEvent(self: *Editor, event: view_events.ViewEvent) void {
+        // Vertical layout state follows the line-count changes, exactly like
+        // upstream `ViewLayout.onFlushed/onLinesInserted/onLinesDeleted`.
+        switch (event) {
+            .ViewFlushed => self.view_layout.onFlushed(self.view_lines.getViewLineCount()),
+            .ViewLinesInserted => |e| self.view_layout.onLinesInserted(e.fromLineNumber, e.toLineNumber),
+            .ViewLinesDeleted => |e| self.view_layout.onLinesDeleted(e.fromLineNumber, e.toLineNumber),
+            else => {},
+        }
         self.view_event_dispatcher.emitSingleViewEvent(event);
+    }
+
+    fn onViewLayoutScroll(event: scrollable_mod.ScrollEvent, editor: *Editor) anyerror!void {
+        editor.emitViewEvent(.{ .ViewScrollChanged = view_events.ViewScrollChangedEvent.init(event) });
+        for (editor.scroll_listeners.items) |listener| listener.callback(listener.context);
     }
 
     pub fn refreshFoldingIfDirty(self: *Editor) void {
@@ -1756,7 +1801,7 @@ pub const Editor = struct {
     /// of hidden ranges; this entry point exists for callers/tests that hide
     /// model lines directly.
     pub fn setHiddenAreas(self: *Editor, ranges: []const Range) !void {
-        const top_model_line = self.modelLineNumber(self.top_view_line);
+        const top_model_line = self.modelLineNumber(self.topViewLine());
         const changed = try self.view_lines.setHiddenAreas(ranges);
         if (!changed) return;
         self.emitViewEvent(.{ .ViewFlushed = .{} });
@@ -2166,15 +2211,57 @@ pub const Editor = struct {
 
         const count = self.view_lines.getViewLineCount();
         if (count == 0) return;
-        const last = @min(self.top_view_line + self.textHeight() - 1, count);
+        const last = @min(self.topViewLine() + self.textHeight() - 1, count);
         const model_line = @min(self.view_lines.getModelLineNumber(last), line_count);
         if (self.tokens_need_refresh) {
-            const first_model_line = self.view_lines.getModelLineNumber(self.top_view_line);
+            const first_model_line = self.view_lines.getModelLineNumber(self.topViewLine());
             self.model.tokenization().forceRefreshRange(first_model_line, model_line);
             self.tokens_need_refresh = false;
+            self.tokenized_viewport_start = first_model_line;
+            self.tokenized_viewport_end = model_line;
+            self.tokenized_viewport_version = self.model.getVersionId();
             return;
         }
-        self.model.forceTokenization(model_line);
+        // Tokenize only the viewport. An edit or a short scroll walks
+        // sequentially from the first invalid line (cheap and exact); a jump
+        // tokenizes the visible range from a guessed start state instead of
+        // every line in between. The content version makes an edit inside the
+        // forced interval re-tokenize, while the prefix gap a jump leaves
+        // behind does not force the viewport on every later frame.
+        const version = self.model.getVersionId();
+        const first_model_line = self.view_lines.getModelLineNumber(self.topViewLine());
+        const same_version = self.tokenized_viewport_version == version;
+        const height = self.textHeight();
+
+        if (same_version and
+            self.tokenized_viewport_start > 0 and
+            model_line >= self.tokenized_viewport_start and
+            model_line <= self.tokenized_viewport_end)
+        {
+            return;
+        }
+
+        if (same_version and
+            self.tokenized_viewport_end > 0 and
+            model_line > self.tokenized_viewport_end and
+            first_model_line <= self.tokenized_viewport_end + 1 + height)
+        {
+            // Continue the forced range instead of re-tokenizing the overlap.
+            self.model.tokenization().forceTokenizeRange(self.tokenized_viewport_end + 1, model_line);
+        } else if (!self.model.hasAccurateTokensForLine(model_line) and blk: {
+            const first_invalid = self.model.tokenization().firstInvalidTokenLine() orelse break :blk false;
+            break :blk first_invalid + height >= first_model_line;
+        }) {
+            // The first invalid line is at/after the viewport (an edit or a
+            // small forward scroll): walk from it to the viewport end.
+            self.model.forceTokenization(model_line);
+        } else if (!self.model.hasAccurateTokensForLine(model_line)) {
+            self.model.tokenization().forceTokenizeRange(first_model_line, model_line);
+        }
+
+        self.tokenized_viewport_start = first_model_line;
+        self.tokenized_viewport_end = model_line;
+        self.tokenized_viewport_version = version;
     }
 
     fn recoverWrapping(self: *Editor) void {
@@ -2186,12 +2273,10 @@ pub const Editor = struct {
     }
 
     pub fn setViewport(self: *Editor, width: usize, height: usize) void {
-        const old_top = self.top_view_line;
         self.screen_width = @max(width, 1);
         self.screen_height = @max(height, 1);
         self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
         self.ensureCursorVisible();
-        if (self.top_view_line == old_top) self.emitScrollChanged(false);
     }
 
     /// Reserves rightmost text columns for the view's scrollbar/overview ruler.
@@ -2202,10 +2287,8 @@ pub const Editor = struct {
         const clamped = @min(width, available -| 1);
         if (clamped == self.scrollbar_width) return;
         self.scrollbar_width = clamped;
-        const old_top = self.top_view_line;
         self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
         self.ensureCursorVisible();
-        if (self.top_view_line == old_top) self.emitScrollChanged(false);
     }
 
     fn refreshLayout(self: *Editor) !void {
@@ -2214,13 +2297,22 @@ pub const Editor = struct {
         const text_width = @max(@as(usize, 1), available -| self.scrollbar_width);
         self.gutter_width = new_gutter;
         self.cursor_config.pageSize = self.textHeight();
+        self.syncViewportDimensions();
 
         if (try self.view_lines.setWrappingColumn(text_width)) {
+            self.view_layout.onFlushed(self.view_lines.getViewLineCount());
             self.emitViewEvent(.{ .ViewFlushed = .{} });
             self.emitViewEvent(.{ .ViewLineMappingChanged = .{} });
             self.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
             try self.resetCursorViewState();
         }
+    }
+
+    /// Keeps the view layout's viewport size and content height in step with
+    /// the terminal size, status row and scrollbar reservation.
+    fn syncViewportDimensions(self: *Editor) void {
+        self.view_layout.onFlushed(self.view_lines.getViewLineCount());
+        self.view_layout.setViewport(self.textAreaWidth(), self.textHeight());
     }
 
     fn resetCursorViewState(self: *Editor) !void {
@@ -2235,19 +2327,19 @@ pub const Editor = struct {
     /// created after the editor, so the first frame asks for them explicitly.
     pub fn emitCurrentViewState(self: *Editor) void {
         self.emitCursorStateChangedForce(.NotSet);
-        self.emitScrollChanged(true);
+        self.emitCurrentScrollState();
     }
 
-    fn emitScrollChanged(self: *Editor, scroll_top_changed: bool) void {
+    fn emitCurrentScrollState(self: *Editor) void {
         self.emitViewEvent(.{ .ViewScrollChanged = .{
-            .scrollWidth = 0,
-            .scrollLeft = 0,
-            .scrollHeight = @floatFromInt(self.scrollHeight()),
-            .scrollTop = @floatFromInt(self.top_view_line -| 1),
+            .scrollWidth = self.view_layout.getScrollWidth(),
+            .scrollLeft = self.view_layout.getCurrentScrollLeft(),
+            .scrollHeight = self.view_layout.getScrollHeight(),
+            .scrollTop = self.view_layout.getCurrentScrollTop(),
             .scrollWidthChanged = false,
             .scrollLeftChanged = false,
             .scrollHeightChanged = true,
-            .scrollTopChanged = scroll_top_changed,
+            .scrollTopChanged = true,
         } });
         for (self.scroll_listeners.items) |listener| listener.callback(listener.context);
     }
@@ -2261,18 +2353,16 @@ pub const Editor = struct {
     }
 
     pub fn ensureCursorVisible(self: *Editor) void {
-        const old_top = self.top_view_line;
+        const top = self.topViewLine();
         const position = self.viewCursorPosition();
         const height = self.textHeight();
-        if (position.lineNumber < self.top_view_line) {
-            self.top_view_line = position.lineNumber;
-        } else if (position.lineNumber >= self.top_view_line + height) {
-            self.top_view_line = position.lineNumber - height + 1;
+        var next = top;
+        if (position.lineNumber < top) {
+            next = position.lineNumber;
+        } else if (position.lineNumber >= top + height) {
+            next = position.lineNumber - height + 1;
         }
-        const max_top = self.maxTopViewLine();
-        if (self.top_view_line < 1) self.top_view_line = 1;
-        if (self.top_view_line > max_top) self.top_view_line = max_top;
-        if (self.top_view_line != old_top) self.emitScrollChanged(true);
+        if (next != top) _ = self.applyTopViewLine(next);
     }
 
     fn maxTopViewLine(self: *Editor) usize {
@@ -2286,22 +2376,24 @@ pub const Editor = struct {
     /// may stay off-screen until the next cursor move reveals it.
     pub fn scrollViewLines(self: *Editor, delta: isize) bool {
         const max_top = self.maxTopViewLine();
-        const current: isize = @intCast(@min(self.top_view_line, max_top));
+        const current: isize = @intCast(@min(self.topViewLine(), max_top));
         const max: isize = @intCast(max_top);
         const next = std.math.clamp(current + delta, 1, max);
-        if (next == self.top_view_line) return false;
-        self.top_view_line = @intCast(next);
-        self.emitScrollChanged(true);
-        return true;
+        return self.applyTopViewLine(@intCast(next));
     }
 
     /// Sets the first visible view line without moving the cursor. Used by the
     /// terminal scrollbar, whose scroll position is expressed in lines.
     pub fn setTopViewLine(self: *Editor, line: usize) bool {
+        return self.applyTopViewLine(line);
+    }
+
+    /// Applies a whole-line top position through the view layout, which emits
+    /// `ViewScrollChanged` when it changes.
+    fn applyTopViewLine(self: *Editor, line: usize) bool {
         const next = std.math.clamp(line, 1, self.maxTopViewLine());
-        if (next == self.top_view_line) return false;
-        self.top_view_line = next;
-        self.emitScrollChanged(true);
+        if (next == self.topViewLine()) return false;
+        self.view_layout.setScrollPositionNow(.{ .scrollTop = @floatFromInt(next - 1) });
         return true;
     }
 
@@ -2330,7 +2422,7 @@ pub const Editor = struct {
         var changed = false;
         switch (unit) {
             .line => {
-                const top_model_line = self.modelLineNumber(self.top_view_line);
+                const top_model_line = self.modelLineNumber(self.topViewLine());
                 const signed: isize = if (direction == .up)
                     -@as(isize, @intCast(steps))
                 else
@@ -2384,7 +2476,7 @@ pub const Editor = struct {
         const start = std.math.clamp(start_view_line, 1, count);
         const end = std.math.clamp(end_view_line, start, count);
         const height = self.textHeight();
-        const top = self.top_view_line;
+        const top = self.topViewLine();
         const top0: isize = @intCast(top - 1);
         const box_start: isize = @intCast(start - 1);
         const box_end: isize = @intCast(end);
@@ -2461,7 +2553,7 @@ pub const Editor = struct {
     /// The completely visible see view range, with an exclusive end line like
     /// upstream's `getCompletelyVisibleViewRange`.
     pub fn visibleViewRange(self: *Editor) Range {
-        const start = self.top_view_line;
+        const start = self.topViewLine();
         const end = @min(start + self.textHeight(), self.viewLineCount() + 1);
         return Range.init(start, 1, end, 1);
     }

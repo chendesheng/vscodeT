@@ -4,9 +4,13 @@
 // Terminal adaptation: upstream is a DOM view part that measures rendered
 // spans; the terminal version renders the visible line window into a
 // `StringBuilder` (`renderText`) and implements `IViewLines` with cell-column
-// ranges derived from `CursorColumns` instead of DOM reading. The reveal,
-// sticky-scroll, GPU and line-width bookkeeping are browser/layout concerns and
-// are not ported here.
+// ranges derived from `CursorColumns` instead of DOM reading. The TUI creates
+// one empty positioned line node per visible line for hit testing; the text is
+// painted from the retained `ViewLine` runs. The viewport inputs that parts
+// query between frames (view model + visible range) are stored by value, so a
+// caller's stack `ViewportData` is never dereferenced after it returns. The
+// reveal, sticky-scroll, GPU and line-width bookkeeping are browser/layout
+// concerns and are not ported here.
 const std = @import("std");
 const ui = @import("ui");
 const Allocator = std.mem.Allocator;
@@ -37,6 +41,7 @@ const LineVisibleRanges = rendering_context.LineVisibleRanges;
 const HorizontalRange = rendering_context.HorizontalRange;
 const HorizontalPosition = rendering_context.HorizontalPosition;
 const IViewLines = rendering_context.IViewLines;
+const IViewModel = @import("../../../common/viewModel.zig").IViewModel;
 
 /// Port of `ViewLines` (terminal rendering subset).
 pub const ViewLines = struct {
@@ -46,7 +51,10 @@ pub const ViewLines = struct {
     view_line_options: ViewLineOptions,
     line_factory: LineFactory,
     visible_lines: view_layer.VisibleLinesCollection(ViewLine),
-    last_viewport: ?*const ViewportData = null,
+    /// The view model and visible range of the last render pass, kept by value
+    /// so `visibleRangeForPosition` never dereferences a caller's stack
+    /// `ViewportData` after it returns (upstream keeps `_lastRenderData`).
+    last_view_model: ?IViewModel = null,
     last_visible_range: Range = Range.init(1, 1, 1, 1),
     max_line_width: f64 = 0,
     scratch: std.heap.ArenaAllocator,
@@ -228,9 +236,14 @@ pub const ViewLines = struct {
     /// visible window, render each line that changed, and propagate the
     /// maximum line width to the view layout. The terminal view paints the
     /// rendered runs; no DOM is built here.
-    pub fn renderLines(self: *ViewLines, viewport: *const ViewportData) !void {
-        self.last_viewport = viewport;
+    /// Records the render pass inputs that stay valid between frames.
+    pub fn setViewportData(self: *ViewLines, viewport: *const ViewportData) void {
+        self.last_view_model = viewport._model;
         self.last_visible_range = viewport.visibleRange;
+    }
+
+    pub fn renderLines(self: *ViewLines, viewport: *const ViewportData) !void {
+        self.setViewportData(viewport);
         self.max_line_width = 0;
 
         try self.visible_lines.syncWindow(viewport);
@@ -326,11 +339,6 @@ pub const ViewLines = struct {
     /// Upstream `ViewLines._maxLineWidth`, exposed for tests and the View.
     pub fn getMaxLineWidth(self: *const ViewLines) f64 {
         return self.max_line_width;
-    }
-
-    /// The current viewport data, once `renderText` has run.
-    pub fn getLastRenderedViewportData(self: *const ViewLines) ?*const ViewportData {
-        return self.last_viewport;
     }
 
     /// Port of upstream `ViewLines.getCurrentVisibleRange`.
@@ -442,7 +450,7 @@ pub const ViewLines = struct {
     pub fn linesVisibleRangesForRange(self: *ViewLines, range: Range, include_new_lines: bool) ?[]const LineVisibleRanges {
         _ = include_new_lines;
         const intersection = Range.intersectRanges(&range, &self.last_visible_range) orelse return null;
-        const viewport = self.last_viewport orelse return null;
+        const model = self.last_view_model orelse return null;
 
         _ = self.scratch.reset(.retain_capacity);
         const allocator = self.scratch.allocator();
@@ -450,7 +458,7 @@ pub const ViewLines = struct {
 
         var line_number = intersection.startLineNumber;
         while (line_number <= intersection.endLineNumber) : (line_number += 1) {
-            const line_data = viewport.getViewLineRenderingData(line_number) catch continue;
+            const line_data = model.viewportViewLineRenderingData(self.last_visible_range, line_number) catch continue;
             const start_column = if (line_number == intersection.startLineNumber)
                 @max(intersection.startColumn, line_data.minColumn)
             else
@@ -487,13 +495,13 @@ pub const ViewLines = struct {
     /// The cell-column range of `position`, or null when the line is not
     /// rendered in the current viewport.
     pub fn visibleRangeForPosition(self: *ViewLines, position: Position) ?HorizontalPosition {
-        const viewport = self.last_viewport orelse return null;
+        const model = self.last_view_model orelse return null;
         if (position.lineNumber < self.last_visible_range.startLineNumber or
             position.lineNumber > self.last_visible_range.endLineNumber)
         {
             return null;
         }
-        const line_data = viewport.getViewLineRenderingData(position.lineNumber) catch return null;
+        const line_data = model.viewportViewLineRenderingData(self.last_visible_range, position.lineNumber) catch return null;
         const column = @min(@max(position.column, line_data.minColumn), line_data.maxColumn);
         return HorizontalPosition.init(false, @floatFromInt(visibleColumnFor(line_data, column)));
     }

@@ -205,6 +205,130 @@ pub const ScrollState = struct {
     }
 };
 
+/// Port of upstream `Scrollable` (`src/vs/base/common/scrollable.ts`).
+///
+/// Terminal adaptation: this port keeps the state, dimension validation and
+/// scroll-event flow. Smooth scrolling is a no-op that applies the target
+/// immediately — a terminal cell grid cannot paint sub-line scroll offsets, so
+/// the caller sees one whole-line position per frame. `onScroll` therefore
+/// never reports `inSmoothScrolling = true`.
+pub const Scrollable = struct {
+    allocator: std.mem.Allocator,
+    force_integer_values: bool,
+    state: ScrollState,
+    on_scroll: @import("./event.zig").Emitter(ScrollEvent),
+    smooth_scroll_duration: f64 = 0,
+
+    pub fn init(allocator: std.mem.Allocator, force_integer_values: bool) !Scrollable {
+        return .{
+            .allocator = allocator,
+            .force_integer_values = force_integer_values,
+            .state = ScrollState.init(force_integer_values, 0, 0, 0, 0, 0, 0),
+            .on_scroll = @import("./event.zig").Emitter(ScrollEvent).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Scrollable) void {
+        self.on_scroll.deinit();
+    }
+
+    pub fn setSmoothScrollDuration(self: *Scrollable, smooth_scroll_duration: f64) void {
+        self.smooth_scroll_duration = smooth_scroll_duration;
+    }
+
+    pub fn validateScrollPosition(self: *const Scrollable, update: INewScrollPosition) IScrollPosition {
+        const state = self.state.withScrollPosition(update);
+        return .{ .scrollLeft = state.scrollLeft, .scrollTop = state.scrollTop };
+    }
+
+    pub fn getScrollDimensions(self: *const Scrollable) IScrollDimensions {
+        return .{
+            .width = self.state.width,
+            .scrollWidth = self.state.scrollWidth,
+            .height = self.state.height,
+            .scrollHeight = self.state.scrollHeight,
+        };
+    }
+
+    pub fn setScrollDimensions(self: *Scrollable, dimensions: INewScrollDimensions, use_raw_scroll_positions: bool) void {
+        const new_state = self.state.withScrollDimensions(dimensions, use_raw_scroll_positions);
+        self.setState(new_state, false);
+    }
+
+    pub fn getFutureScrollPosition(self: *const Scrollable) IScrollPosition {
+        return .{ .scrollLeft = self.state.scrollLeft, .scrollTop = self.state.scrollTop };
+    }
+
+    pub fn getCurrentScrollPosition(self: *const Scrollable) IScrollPosition {
+        return .{ .scrollLeft = self.state.scrollLeft, .scrollTop = self.state.scrollTop };
+    }
+
+    pub fn setScrollPositionNow(self: *Scrollable, update: INewScrollPosition) void {
+        const new_state = self.state.withScrollPosition(update);
+        self.setState(new_state, false);
+    }
+
+    /// Upstream animates over `smooth_scroll_duration`; the terminal applies
+    /// the whole-line target immediately (see the type comment).
+    pub fn setScrollPositionSmooth(self: *Scrollable, update: INewScrollPosition) void {
+        self.setScrollPositionNow(update);
+    }
+
+    pub fn hasPendingScrollAnimation(self: *const Scrollable) bool {
+        _ = self;
+        return false;
+    }
+
+    fn setState(self: *Scrollable, new_state: ScrollState, in_smooth_scrolling: bool) void {
+        const old_state = self.state;
+        if (old_state.equals(new_state)) return;
+        self.state = new_state;
+        self.on_scroll.fire(new_state.createScrollEvent(old_state, in_smooth_scrolling)) catch {};
+    }
+};
+
+test "scrollable: scrollable emits state changes and clamps" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var scrollable = try Scrollable.init(allocator, true);
+    defer scrollable.deinit();
+
+    const events = struct {
+        var count: usize = 0;
+        var last_top: f64 = 0;
+        fn onScroll(event: ScrollEvent, _: void) anyerror!void {
+            count += 1;
+            last_top = event.scrollTop;
+        }
+    };
+    _ = try scrollable.on_scroll.listen({}, events.onScroll);
+
+    scrollable.setScrollDimensions(.{ .width = 80, .height = 40, .scrollWidth = 80, .scrollHeight = 1000 }, false);
+    try testing.expectEqual(@as(usize, 1), events.count);
+
+    scrollable.setScrollPositionNow(.{ .scrollTop = 500 });
+    try testing.expectEqual(@as(f64, 500), scrollable.getCurrentScrollPosition().scrollTop);
+    try testing.expectEqual(@as(f64, 500), events.last_top);
+
+    // Clamps to `scrollHeight - height`, like upstream.
+    scrollable.setScrollPositionNow(.{ .scrollTop = 5000 });
+    try testing.expectEqual(@as(f64, 960), scrollable.getCurrentScrollPosition().scrollTop);
+
+    // Raw positions differ, so upstream `ScrollState.equals` still fires;
+    // repeating the same raw position changes nothing.
+    const after_clamp = events.count;
+    scrollable.setScrollPositionNow(.{ .scrollTop = 960 });
+    try testing.expectEqual(after_clamp + 1, events.count);
+    const settled = events.count;
+    scrollable.setScrollPositionNow(.{ .scrollTop = 960 });
+    try testing.expectEqual(settled, events.count);
+
+    // Smooth scrolling is applied immediately in the terminal.
+    scrollable.setScrollPositionSmooth(.{ .scrollTop = 10 });
+    try testing.expectEqual(@as(f64, 10), scrollable.getCurrentScrollPosition().scrollTop);
+    try testing.expect(!scrollable.hasPendingScrollAnimation());
+}
+
 test "scrollable: scroll state validates dimensions and position" {
     const state = ScrollState.init(false, 100, 1000, 950, 200, 2000, 1900);
     try std.testing.expectEqual(@as(f64, 100), state.width);

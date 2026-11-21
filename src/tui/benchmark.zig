@@ -299,11 +299,18 @@ test "Tokenization: visible range is synchronous, background is chunked" {
         try std.testing.expect(!editor.model.tokenization().hasAccurateTokensForLine(last_visible + 2));
     }
 
-    // Scrolling extends the tokenized range only to the new viewport.
+    // Scrolling tokenizes the visible range from a guessed start state instead
+    // of walking every line from the top. The visible line is colored (it has
+    // real syntax tokens) even though the skipped history above it is still
+    // flagged inaccurate until the background tokenizer reaches it.
     _ = editor.setTopViewLine(200);
     editor.ensureTokensVisible();
     const scrolled_last = editor.modelLineNumber(editor.topViewLine() + editor.textHeight() -| 1);
-    try std.testing.expect(editor.model.tokenization().hasAccurateTokensForLine(scrolled_last));
+    {
+        var scrolled_tokens = try editor.model.tokenization().getLineTokens(scrolled_last);
+        defer scrolled_tokens.deinit();
+        try std.testing.expect(scrolled_tokens.getCount() > 1);
+    }
     if (scrolled_last + 10 <= editor.model.getLineCount()) {
         try std.testing.expect(!editor.model.tokenization().hasAccurateTokensForLine(scrolled_last + 10));
     }
@@ -353,5 +360,66 @@ test "benchmark: deferred maintenance" {
     std.debug.print(
         "[bench] deferred maintenance {s}: background={d}us(polls={d}) folding={d}us({}) bracket_guides={d}us({})\n",
         .{ path, background_us, background_polls, folding_us, folded, guides_us, guides },
+    );
+}
+
+test "benchmark: workbench scroll frame" {
+    if (!enabled()) return error.SkipZigTest;
+    const allocator = std.heap.page_allocator;
+    const io = time_compat.io;
+    const path = benchFile();
+    std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
+
+    const workbench = try @import("../vs/workbench/browser/workbench.zig").Workbench.init(
+        allocator,
+        io,
+        &.{path},
+        140,
+        44,
+    );
+    defer workbench.deinit();
+    const tab = workbench.activeTab() orelse return error.SkipZigTest;
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try tab.view.refresh();
+    try workbench.render(&out.writer);
+    out.clearRetainingCapacity();
+    while (tab.editor.pollBackgroundTokenization()) {}
+
+    const frames: usize = 20;
+    var render_us_total: i64 = 0;
+    var refresh_us_total: i64 = 0;
+    var best: i64 = std.math.maxInt(i64);
+    var scroll_us_total: i64 = 0;
+    for (0..frames) |_| {
+        const frame_start = nowUs(io);
+        const scroll_start = nowUs(io);
+        _ = tab.editor.scrollViewLines(3);
+        scroll_us_total += nowUs(io) - scroll_start;
+
+        tab.onEditorChanged(time_compat.milliTimestamp());
+        const refresh_start = nowUs(io);
+        try tab.view.refresh();
+        refresh_us_total += nowUs(io) - refresh_start;
+
+        const render_start = nowUs(io);
+        workbench.refreshStatus();
+        try workbench.render(&out.writer);
+        render_us_total += nowUs(io) - render_start;
+        out.clearRetainingCapacity();
+
+        best = @min(best, nowUs(io) - frame_start);
+    }
+
+    std.debug.print(
+        "[bench] workbench scroll {s}: best={d}us avg_scroll={d}us avg_refresh={d}us avg_render={d}us\n",
+        .{
+            path,
+            best,
+            @divTrunc(scroll_us_total, @as(i64, @intCast(frames))),
+            @divTrunc(refresh_us_total, @as(i64, @intCast(frames))),
+            @divTrunc(render_us_total, @as(i64, @intCast(frames))),
+        },
     );
 }

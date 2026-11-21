@@ -3,8 +3,10 @@
 // Terminal adaptation: the browser scrollbar is a `SmoothScrollableElement`
 // with DOM range/slider parts and bitmap/theme shadows. The terminal paints
 // the same scroll state into the reserved right-hand cells: overview-ruler
-// markers first, then the half-cell-precision thumb glyph, with scrolling
-// input handled by the host. The scroll-state contract comes from the ported
+// markers first, then the half-cell-precision thumb glyph. The wheel path ports
+// `ScrollableElement._onMouseWheel`: scale by `mouseWheelScrollSensitivity`,
+// apply `fastScrollSensitivity` for Alt, accumulate sub-line remainders and
+// move whole view lines through the editor's `ViewLayout`. The scroll-state contract comes from the ported
 // `scrollbarState` and `decorationsOverviewRuler`.
 
 const std = @import("std");
@@ -25,6 +27,10 @@ pub const TerminalScrollbar = struct {
     allocator: Allocator,
     width: usize,
     drag: ?DragState = null,
+    /// Sub-line remainder of the wheel deltas. The terminal scrolls whole view
+    /// lines, so a fractional `mouseWheelScrollSensitivity` accumulates here
+    /// instead of being dropped, like upstream's smooth-scroll accumulator.
+    wheel_remainder_lines: f64 = 0,
 
     const DragState = struct {
         start_row: usize,
@@ -74,6 +80,35 @@ pub const TerminalScrollbar = struct {
             _ = scroll_state.setScrollPosition(@floatFromInt(applied));
         }
         self.drag = .{ .start_row = row, .initial_state = scroll_state };
+    }
+
+    /// Port of the wheel delta pipeline in
+    /// `src/vs/base/browser/ui/scrollbar/scrollableElement.ts`: scale by
+    /// `mouseWheelScrollSensitivity`, apply `fastScrollSensitivity` when Alt is
+    /// held, accumulate the fractional line remainder and move whole view
+    /// lines. The terminal input decoder already reports deltas in lines (±3
+    /// per notch), so no pixel-to-line conversion is needed.
+    pub fn delegateScrollFromMouseWheelEvent(
+        self: *TerminalScrollbar,
+        editor: *Editor,
+        delta_lines: i32,
+        mods: ui.Modifiers,
+        mouse_wheel_scroll_sensitivity: f64,
+        fast_scroll_sensitivity: f64,
+    ) bool {
+        if (delta_lines == 0) return false;
+        var delta = @as(f64, @floatFromInt(delta_lines)) * mouse_wheel_scroll_sensitivity;
+        if (mods.alt) delta *= fast_scroll_sensitivity;
+        self.wheel_remainder_lines += delta;
+        const whole = if (self.wheel_remainder_lines < 0)
+            @ceil(self.wheel_remainder_lines)
+        else
+            @floor(self.wheel_remainder_lines);
+        if (whole == 0) return false;
+        self.wheel_remainder_lines -= whole;
+        const limit: f64 = 1_000_000;
+        const clamped = @max(@min(whole, limit), -limit);
+        return editor.scrollViewLines(@intFromFloat(clamped));
     }
 
     pub fn dragTo(self: *TerminalScrollbar, editor: *Editor, y: usize, height: usize) bool {
@@ -349,4 +384,46 @@ fn applyScrollPosition(editor: *Editor, desired: f64) usize {
 
 fn color(rgb: [3]u8) ui.Color {
     return .{ .r = rgb[0], .g = rgb[1], .b = rgb[2] };
+}
+
+test "editorScrollbar: wheel sensitivity, fast scroll and remainder" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var text: std.Io.Writer.Allocating = .init(allocator);
+    defer text.deinit();
+    for (0..50) |i| try text.writer.print("line {d}\n", .{i});
+
+    const editor = try Editor.createFromText(allocator, io, text.written(), "test.txt", 40, 12);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var scrollbar = TerminalScrollbar.init(allocator);
+    defer scrollbar.deinit();
+
+    // A quarter sensitivity leaves a sub-line remainder.
+    try testing.expect(!scrollbar.delegateScrollFromMouseWheelEvent(editor, 3, .{}, 0.25, 1.0));
+    try testing.expectEqual(@as(usize, 1), editor.topViewLine());
+    try testing.expect(scrollbar.delegateScrollFromMouseWheelEvent(editor, 3, .{}, 0.25, 1.0));
+    try testing.expectEqual(@as(usize, 2), editor.topViewLine());
+
+    // Default sensitivity moves one input line per reported line.
+    try testing.expect(scrollbar.delegateScrollFromMouseWheelEvent(editor, 3, .{}, 1.0, 1.0));
+    try testing.expectEqual(@as(usize, 5), editor.topViewLine());
+
+    // Alt applies fastScrollSensitivity.
+    try testing.expect(scrollbar.delegateScrollFromMouseWheelEvent(
+        editor,
+        2,
+        .{ .alt = true },
+        1.0,
+        5.0,
+    ));
+    try testing.expectEqual(@as(usize, 15), editor.topViewLine());
+
+    // Clamps at the end of the document.
+    _ = scrollbar.delegateScrollFromMouseWheelEvent(editor, 1000, .{}, 1.0, 1.0);
+    try testing.expectEqual(editor.viewLineCount() -| editor.textHeight() + 1, editor.topViewLine());
 }
