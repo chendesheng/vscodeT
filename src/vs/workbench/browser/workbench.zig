@@ -4359,6 +4359,45 @@ pub const Workbench = struct {
         return diff_widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced;
     }
 
+    fn editorLabelFormat(self: *Workbench) []const u8 {
+        const configuration = self.configuration orelse return "default";
+        const value = configuration.getValue("workbench.editor.labelFormat", .{}) orelse return "default";
+        return switch (value.*) {
+            .string => |text| text,
+            else => "default",
+        };
+    }
+
+    /// Upstream `workbench.editor.labelFormat`: `default` shows a directory
+    /// only for duplicate names, `short` the parent directory, `medium` the
+    /// workspace-relative directory and `long` the absolute directory.
+    fn tabDescription(self: *Workbench, path: []const u8, duplicate: bool, format: []const u8) !?[]u8 {
+        if (path.len == 0) return null;
+        const dir = std.fs.path.dirname(path) orelse return null;
+        var description: []const u8 = "";
+        if (std.mem.eql(u8, format, "short")) {
+            description = std.fs.path.basename(dir);
+        } else if (std.mem.eql(u8, format, "medium")) {
+            if (self.workspaceFolderPath()) |root| {
+                if (relativeToRoot(path, root)) |relative| {
+                    description = std.fs.path.dirname(relative) orelse "";
+                } else {
+                    description = dir;
+                }
+            } else {
+                description = dir;
+            }
+        } else if (std.mem.eql(u8, format, "long")) {
+            description = dir;
+        } else if (duplicate) {
+            // The default label service uses the parent folder name for a
+            // duplicate label; keep the terminal form compact.
+            description = std.fs.path.basename(dir);
+        }
+        if (description.len == 0 or std.mem.eql(u8, description, ".")) return null;
+        return try self.allocator.dupe(u8, description);
+    }
+
     fn relativeToRoot(path: []const u8, root: []const u8) ?[]const u8 {
         const trimmed = std.mem.trimEnd(u8, root, "/\\");
         if (trimmed.len == 0) return null;
@@ -8239,6 +8278,12 @@ pub const Workbench = struct {
 
         const infos = try self.allocator.alloc(tab_bar.TabInfo, ordered.items.len);
         defer self.allocator.free(infos);
+        const label_format = self.editorLabelFormat();
+        var descriptions = std.array_list.Managed([]u8).init(self.allocator);
+        defer {
+            for (descriptions.items) |description| self.allocator.free(description);
+            descriptions.deinit();
+        }
         for (ordered.items, 0..) |tab, index| {
             infos[index] = .{
                 .label = tab.input.getName(),
@@ -8248,6 +8293,18 @@ pub const Workbench = struct {
                 .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
                 .closeable = !tab.input.hasCapability(editor_mod.EditorInputCapabilities.CannotClose),
             };
+            var duplicate = false;
+            for (ordered.items, 0..) |other, other_index| {
+                if (other_index == index) continue;
+                if (std.mem.eql(u8, other.input.getName(), tab.input.getName())) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (try self.tabDescription(tab.editor.path, duplicate, label_format)) |description| {
+                infos[index].description = description;
+                try descriptions.append(description);
+            }
         }
 
         const active_group = pane.group == self.service.activeGroup();
@@ -12533,6 +12590,31 @@ test "Workbench: status bar context menu hides an entry" {
     var enter = ui.KeyEvent{ .key = .enter };
     _ = try workbench.handleQuickAccessKey(&enter);
     try std.testing.expect(model.isHidden(id));
+}
+
+test "Workbench: duplicate tab labels show their directories" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "a/same.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "b/same.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 80, 10);
+    defer workbench.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    const row = try workbench.frame.prev.rowText(allocator, ui.cell.snap(pane.rect.y));
+    defer allocator.free(row);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, row, "same.txt"));
+    try std.testing.expect(std.mem.indexOf(u8, row, "a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, row, "b") != null);
 }
 
 test "Workbench: status bar spans the window and shows editor state" {

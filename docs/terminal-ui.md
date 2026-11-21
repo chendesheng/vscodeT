@@ -619,7 +619,8 @@ group is laid out over the whole editor area and its siblings are not painted;
 toggling it off restores the split from the existing grid rects. Sash resizing
 and tab dragging are disabled while a group is expanded. There is no 1px
 active-tab top border, horizontal scrollbar, editor actions toolbar, Add Tab
-control; the tab context menu uses the terminal quick pick; overflow clips
+control; the tab context menu uses the terminal quick pick; duplicate labels
+append a dimmed `workbench.editor.labelFormat` description; overflow clips
 leading tabs behind an ellipsis and
 reveals the active tab. Preview editors come from Explorer single clicks;
 Enter/quick open/CLI/session opens stay pinned, and an edit pins a preview.
