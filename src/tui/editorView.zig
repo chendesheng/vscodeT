@@ -2836,6 +2836,13 @@ test "View: scrolling reuses the visible line DOM nodes" {
     const retained = view_lines.lineAt(retained_number);
     const node_before = retained.dom_node orelse return error.TestUnexpectedResult;
     const text_before = node_before.first_child orelse return error.TestUnexpectedResult;
+    const box_before = view.surface.box_tree.find(node_before) orelse return error.TestUnexpectedResult;
+    const box_y_before = box_before.rect.y;
+    // Equal token styles share one interned PaintStyle object (the CSS-class
+    // analogue) rather than carrying a full Style per run.
+    const neighbor = view_lines.lineAt(retained_number + 1).dom_node orelse return error.TestUnexpectedResult;
+    const neighbor_run = neighbor.first_child orelse return error.TestUnexpectedResult;
+    try std.testing.expect(text_before.paintStyle().? == neighbor_run.paintStyle().?);
 
     try std.testing.expect(editor.scrollViewLines(1));
     try view.refresh();
@@ -2844,6 +2851,9 @@ test "View: scrolling reuses the visible line DOM nodes" {
     try std.testing.expectEqual(first_window_start + 1, view_lines.windowStart());
     try std.testing.expectEqual(node_before, view_lines.lineAt(retained_number).dom_node.?);
     try std.testing.expectEqual(text_before, node_before.first_child.?);
+    // The retained line's box is moved, not rebuilt or re-laid-out.
+    try std.testing.expectEqual(box_before, view.surface.box_tree.find(node_before).?);
+    try std.testing.expectEqual(box_y_before - 1, box_before.rect.y);
 
     // The content root holds exactly the windowed line nodes: the leaving line
     // was unlinked and the entering line got a node, so the DOM count stays at
