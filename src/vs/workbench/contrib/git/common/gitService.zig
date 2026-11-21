@@ -29,6 +29,24 @@ pub const GitRef = struct {
     remote: ?[]const u8 = null,
 };
 
+pub fn freeGitRefs(allocator: Allocator, refs: []GitRef) void {
+    for (refs) |ref| {
+        if (ref.name) |value| allocator.free(value);
+        if (ref.commit) |value| allocator.free(value);
+        if (ref.remote) |value| allocator.free(value);
+    }
+    if (refs.len > 0) allocator.free(refs);
+}
+
+pub fn freeGitDiffChanges(allocator: Allocator, changes: []GitDiffChange) void {
+    for (changes) |change| {
+        allocator.free(change.change.path);
+        if (change.change.original_path) |value| allocator.free(value);
+        if (change.change.modified_path) |value| allocator.free(value);
+    }
+    if (changes.len > 0) allocator.free(changes);
+}
+
 pub const GitRefSort = enum {
     alphabetically,
     committerdate,
@@ -80,6 +98,44 @@ pub const GitCommit = struct {
     commit_date: ?i64 = null,
     ref_names: []const []const u8 = &.{},
     short_stat: ?GitCommitShortStat = null,
+
+    pub fn clone(self: GitCommit, allocator: Allocator) !GitCommit {
+        const hash = try allocator.dupe(u8, self.hash);
+        errdefer allocator.free(hash);
+        const message = try allocator.dupe(u8, self.message);
+        errdefer allocator.free(message);
+        const author_name = try allocator.dupe(u8, self.author_name);
+        errdefer allocator.free(author_name);
+        const author_email = try allocator.dupe(u8, self.author_email);
+        errdefer allocator.free(author_email);
+        const parents = try allocator.alloc([]const u8, self.parents.len);
+        errdefer allocator.free(parents);
+        var parents_owned: usize = 0;
+        errdefer for (parents[0..parents_owned]) |parent| allocator.free(parent);
+        for (self.parents, 0..) |parent, index| {
+            parents[index] = try allocator.dupe(u8, parent);
+            parents_owned = index + 1;
+        }
+        const ref_names = try allocator.alloc([]const u8, self.ref_names.len);
+        errdefer allocator.free(ref_names);
+        var refs_owned: usize = 0;
+        errdefer for (ref_names[0..refs_owned]) |name| allocator.free(name);
+        for (self.ref_names, 0..) |name, index| {
+            ref_names[index] = try allocator.dupe(u8, name);
+            refs_owned = index + 1;
+        }
+        return .{
+            .hash = hash,
+            .message = message,
+            .parents = parents,
+            .author_name = author_name,
+            .author_email = author_email,
+            .author_date = self.author_date,
+            .commit_date = self.commit_date,
+            .ref_names = ref_names,
+            .short_stat = self.short_stat,
+        };
+    }
 
     pub fn deinit(self: *GitCommit, allocator: Allocator) void {
         allocator.free(self.hash);

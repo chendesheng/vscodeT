@@ -78,6 +78,7 @@ comptime {
     _ = @import("./extensions/git/src/git.zig");
     _ = @import("./extensions/git/src/repository.zig");
     _ = @import("./extensions/git/src/test/git.test.zig");
+    _ = @import("./extensions/git/src/test/util.test.zig");
     _ = @import("./tui/quickDiffController.zig");
     _ = @import("./vs/workbench/contrib/scm/browser/scmViewPane.zig");
     _ = @import("./tui/vscodeProfile.zig");
@@ -105,6 +106,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/scm/browser/scmHistory.zig");
     _ = @import("./vs/workbench/contrib/scm/test/browser/quickDiffModel.test.zig");
     _ = @import("./vs/workbench/contrib/scm/test/browser/scmHistory.test.zig");
+    _ = @import("./vs/workbench/services/views/common/viewContainerModel.zig");
     _ = @import("./vs/workbench/contrib/git/common/gitService.zig");
     _ = @import("./vs/workbench/contrib/git/browser/gitService.zig");
     _ = @import("./vs/workbench/contrib/git/test/common/gitService.test.zig");
@@ -181,7 +183,6 @@ comptime {
     _ = @import("./vs/workbench/test/browser/parts/statusbar/statusbarPart.test.zig");
     _ = @import("./vs/workbench/browser/parts/statusbar/statusbarPart.zig");
     _ = @import("./vs/workbench/browser/parts/statusbar/statusbarActions.zig");
-    _ = @import("./vs/workbench/services/views/common/viewContainerModel.zig");
     _ = @import("./vs/workbench/services/workspaces/common/workspaceContextService.zig");
     _ = @import("./vs/platform/configuration/common/configuration.zig");
     _ = @import("./vs/platform/configuration/common/configurationVariables.zig");
@@ -199,7 +200,7 @@ comptime {
     _ = @import("./vs/workbench/services/configuration/common/experimentalSettings.zig");
     _ = @import("./vs/workbench/services/configuration/test/common/experimentalSettings.test.zig");
     _ = @import("./vs/workbench/services/configuration/test/browser/configurationService.test.zig");
-    _ = @import("./vs/workbench/services/views/test/browser/viewContainerModel.test.zig");
+
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeBase.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder.zig");
     _ = @import("./vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.zig");

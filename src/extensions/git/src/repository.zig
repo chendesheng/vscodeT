@@ -18,6 +18,7 @@ const quick_diff = @import("../../../vs/workbench/contrib/scm/common/quickDiff.z
 const git_common = @import("../../../vs/workbench/contrib/git/common/gitService.zig");
 const git_browser = @import("../../../vs/workbench/contrib/git/browser/gitService.zig");
 const git_mod = @import("./git.zig");
+const history_provider_mod = @import("./historyProvider.zig");
 const Emitter = @import("../../../vs/base/common/event.zig").Emitter;
 
 pub const Git = git_mod.Git;
@@ -25,6 +26,7 @@ pub const GitRepository = git_browser.GitRepository;
 pub const GitRepositoryState = git_common.GitRepositoryState;
 pub const GitChange = git_common.GitChange;
 pub const QuickDiffProvider = quick_diff.QuickDiffProvider;
+pub const GitHistoryProvider = history_provider_mod.GitHistoryProvider;
 pub const Original = quick_diff.Original;
 
 pub const Host = struct {
@@ -94,6 +96,7 @@ pub const Repository = struct {
     on_groups: Emitter(void),
     primary_quick_diff: QuickDiffProvider,
     secondary_quick_diff: QuickDiffProvider,
+    history: ?*GitHistoryProvider = null,
 
     pub fn create(
         allocator: Allocator,
@@ -188,6 +191,11 @@ pub const Repository = struct {
 
         self.rebuild();
 
+        if (history_provider_mod.GitHistoryProvider.create(allocator, repository)) |history| {
+            self.history = history;
+            self.base.history_provider = history.interface();
+        } else |_| {}
+
         self.primary_quick_diff = .{
             .context = self,
             .id = primary_id,
@@ -209,6 +217,8 @@ pub const Repository = struct {
 
     pub fn destroy(self: *Repository) void {
         const allocator = self.allocator;
+        if (self.history) |history| history.destroy();
+        self.history = null;
         allocator.free(@constCast(self.primary_quick_diff.id));
         allocator.free(@constCast(self.secondary_quick_diff.id));
         for (&self.groups) |*group| {
@@ -230,6 +240,24 @@ pub const Repository = struct {
 
     pub fn interface(self: *Repository) *scm.ISCMProvider {
         return &self.base;
+    }
+
+    pub fn historyProvider(self: *Repository) ?*GitHistoryProvider {
+        return self.history;
+    }
+
+    pub fn setCommitShortHashLength(self: *Repository, length: usize) void {
+        if (self.history) |history| history.setCommitShortHashLength(length);
+    }
+
+    /// Re-reads history refs; returns whether anything changed. Errors are kept
+    /// on the provider (`lastError`) so the view can show an empty state.
+    pub fn refreshHistoryRefs(self: *Repository, silent: bool) bool {
+        const history = self.history orelse return false;
+        return history.refreshRefs(silent) catch |err| {
+            history.last_error = err;
+            return false;
+        };
     }
 
     pub fn quickDiffProviders(self: *Repository) [2]*QuickDiffProvider {
