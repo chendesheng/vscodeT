@@ -598,6 +598,8 @@ pub const Workbench = struct {
     pending_symbols: ?[]goto_symbol_quick_access.Entry = null,
     symbol_action_contexts: [go_to_commands.actions.len]SymbolActionContext = undefined,
     breadcrumbs_dirty: bool = false,
+    tab_menu_pane: ?*GroupPane = null,
+    tab_menu_tab: ?*Tab = null,
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
     hovered_title_action_pane: ?*GroupPane = null,
@@ -750,6 +752,8 @@ pub const Workbench = struct {
         self.breadcrumbs_pane = null;
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
+        self.tab_menu_pane = null;
+        self.tab_menu_tab = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -902,6 +906,8 @@ pub const Workbench = struct {
         self.breadcrumbs_pane = null;
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
+        self.tab_menu_pane = null;
+        self.tab_menu_tab = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -1087,6 +1093,8 @@ pub const Workbench = struct {
         self.breadcrumbs_pane = null;
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
+        self.tab_menu_pane = null;
+        self.tab_menu_tab = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -7209,6 +7217,30 @@ pub const Workbench = struct {
         }
     }
 
+    /// Terminal form of the upstream tab context menu: close/close-others/
+    /// close-all/pin actions presented through the quick pick.
+    pub fn showTabContextMenu(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
+        _ = self.breadcrumbs_arena.reset(.retain_capacity);
+        const arena = self.breadcrumbs_arena.allocator();
+        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        try items.append(.{ .item = .{ .id = "tab:close", .label = "Close" } });
+        try items.append(.{ .item = .{ .id = "tab:close_others", .label = "Close Others" } });
+        try items.append(.{ .item = .{ .id = "tab:close_all", .label = "Close All" } });
+        const pinned = pane.group.model.isPinned(.{ .editor = tab.input });
+        try items.append(.{ .item = .{
+            .id = if (pinned) "tab:unpin" else "tab:pin",
+            .label = if (pinned) "Unpin" else "Pin",
+        } });
+        self.tab_menu_pane = pane;
+        self.tab_menu_tab = tab;
+        try self.quick_access.inputService().showPick(
+            items.items,
+            .{ .placeholder = tab.input.getName() },
+            onTabMenuPick,
+            self,
+        );
+    }
+
     /// Terminal form of the upstream status-bar context menu: the hide and
     /// manage-extension actions are presented through the quick pick.
     pub fn showStatusbarContextMenu(self: *Workbench, handle: statusbar_model_mod.EntryHandle) !void {
@@ -7742,8 +7774,14 @@ pub const Workbench = struct {
                 }
                 return true;
             }
-            // Right-click must not close or activate a tab; the tab context
-            // menu is the later hook for this button.
+            if (event.button == .right) {
+                if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
+                    if (self.orderedTabAt(pane, index)) |tab| {
+                        self.showTabContextMenu(pane, tab) catch {};
+                    }
+                }
+                return true;
+            }
             if (event.button != .left) return false;
             if (tab_bar.closeHitAt(pane.hits.items, event.x)) |index| {
                 if (self.orderedTabAt(pane, index)) |tab| {
@@ -8438,6 +8476,8 @@ pub const Workbench = struct {
     pub fn pollBreadcrumbs(self: *Workbench) bool {
         if (!self.breadcrumbs_dirty) return false;
         self.breadcrumbs_dirty = false;
+        self.tab_menu_pane = null;
+        self.tab_menu_tab = null;
         return true;
     }
 
@@ -8809,6 +8849,39 @@ fn breadcrumbFocusEditor(context: *anyopaque) void {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     self.workbench.focusEditor();
     if (self.workbench.activeTab()) |tab| tab.focusEditor();
+}
+
+fn onTabMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.activeItem() orelse return;
+    const pane = self.tab_menu_pane orelse return;
+    const tab = self.tab_menu_tab orelse return;
+    self.tab_menu_pane = null;
+    self.tab_menu_tab = null;
+
+    if (std.mem.eql(u8, item.id, "tab:close")) {
+        _ = try self.closeTab(pane, tab);
+    } else if (std.mem.eql(u8, item.id, "tab:close_others")) {
+        const tabs = try self.breadcrumbs_arena.allocator().dupe(*Tab, pane.tabs.items);
+        for (tabs) |candidate| {
+            if (candidate == tab) continue;
+            _ = try self.closeTab(pane, candidate);
+            if (self.dialog != null) break;
+        }
+    } else if (std.mem.eql(u8, item.id, "tab:close_all")) {
+        const tabs = try self.breadcrumbs_arena.allocator().dupe(*Tab, pane.tabs.items);
+        for (tabs) |candidate| {
+            _ = try self.closeTab(pane, candidate);
+            if (self.dialog != null) break;
+        }
+    } else if (std.mem.eql(u8, item.id, "tab:pin")) {
+        _ = pane.group.model.pin(tab.input) catch {};
+        self.layoutAll();
+    } else if (std.mem.eql(u8, item.id, "tab:unpin")) {
+        _ = pane.group.model.unpin(tab.input) catch {};
+        self.layoutAll();
+    }
+    self.breadcrumbs_dirty = true;
 }
 
 fn onStatusbarMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
@@ -12993,6 +13066,42 @@ test "Workbench: decoded divider drag resizes a vertical split" {
     try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(first.rect.h));
 }
 
+test "Workbench: tab context menu closes the tab" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "menu_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "menu_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    var down = ui.MouseEvent{
+        .kind = .down,
+        .x = pane.hits.items[0].start + 1,
+        .y = ui.cell.snap(pane.rect.y),
+        .button = .right,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+    const picker = workbench.quick_access.inputService().pickerRef();
+    try std.testing.expectEqualStrings("Close", picker.activeItem().?.label);
+
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+}
+
 test "Workbench: breadcrumb row shows the workspace-relative path" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -14462,10 +14571,10 @@ test "Workbench: right click on a tab neither closes nor activates it" {
     const tab_x = pane.hits.items[0].start + 1;
     const tab_y = ui.cell.snap(pane.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .right };
-    try std.testing.expect(!workbench.handleTabMouse(&down));
-    var up = down;
-    up.kind = .up;
-    _ = workbench.handleTabMouse(&up);
+    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+    var escape = ui.KeyEvent{ .key = .escape };
+    _ = try workbench.handleQuickAccessKey(&escape);
 
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqualStrings("right_b.txt", workbench.activeTab().?.input.getName());
