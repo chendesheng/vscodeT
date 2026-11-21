@@ -181,6 +181,8 @@ pub const TerminalViewHost = struct {
     margin_decorations: margin_decorations_mod.MarginViewLineDecorationsOverlay,
     glyph_lanes: GlyphMarginLanesModel,
     glyph_margin_dirty: bool = true,
+    line_decorations_dirty: bool = true,
+    auto_line_decorations: bool = false,
     selections_overlay: SelectionsOverlay,
     current_line: CurrentLineHighlightOverlay,
     current_line_margin: CurrentLineHighlightOverlay,
@@ -297,6 +299,7 @@ pub const TerminalViewHost = struct {
         self.options.set(.stopRenderingLineAfter, -1);
         self.syncGutterOptions();
         self.glyph_margin_dirty = true;
+        self.line_decorations_dirty = true;
         return any;
     }
 
@@ -462,30 +465,63 @@ pub const TerminalViewHost = struct {
     /// computes its geometry. The terminal reserves one glyph cell only while
     /// a glyph decoration exists.
     pub fn prepareFrame(self: *TerminalViewHost) void {
-        if (!self.glyph_margin_dirty) return;
-        self.glyph_margin_dirty = false;
-
-        const line_count = self.editor.model.getLineCount();
-        self.glyph_lanes.reset(line_count) catch return;
+        if (!self.glyph_margin_dirty and !self.line_decorations_dirty) return;
         const all = self.editor.model.getAllDecorations(0, false) catch return;
         defer self.editor.model.getAllocator().free(all);
 
-        const converter = self.editor.converter.interface();
-        var has_glyph = false;
-        for (all) |decoration| {
-            if (decoration.options.glyphMarginClassName != null) has_glyph = true;
-            const glyph_options = decoration.options.glyphMargin orelse continue;
-            const view_range = converter.convertModelRangeToViewRange(
-                converter.context,
-                decoration.range,
-                .None,
-            );
-            self.glyph_lanes.push(glyph_options.position, view_range, glyph_options.persistLane orelse false);
+        if (self.glyph_margin_dirty) {
+            self.glyph_margin_dirty = false;
+            const line_count = self.editor.model.getLineCount();
+            self.glyph_lanes.reset(line_count) catch return;
+
+            const converter = self.editor.converter.interface();
+            var has_glyph = false;
+            for (all) |decoration| {
+                if (decoration.options.glyphMarginClassName != null) has_glyph = true;
+                const glyph_options = decoration.options.glyphMargin orelse continue;
+                const view_range = converter.convertModelRangeToViewRange(
+                    converter.context,
+                    decoration.range,
+                    .None,
+                );
+                self.glyph_lanes.push(glyph_options.position, view_range, glyph_options.persistLane orelse false);
+            }
+            const enabled = self.options.get(.glyphMargin);
+            const lanes = @max(self.glyph_lanes.requiredLanes(), 1);
+            const width = if (has_glyph and enabled) @min(lanes, 3) else 0;
+            self.editor.setGlyphMarginWidth(width);
         }
-        const enabled = self.options.get(.glyphMargin);
-        const lanes = @max(self.glyph_lanes.requiredLanes(), 1);
-        const width = if (has_glyph and enabled) @min(lanes, 3) else 0;
-        self.editor.setGlyphMarginWidth(width);
+
+        if (self.line_decorations_dirty) {
+            self.line_decorations_dirty = false;
+            var has_line_decoration = false;
+            for (all) |decoration| {
+                const classes = decoration.options.linesDecorationsClassName orelse continue;
+                var tokens = std.mem.tokenizeScalar(u8, classes, ' ');
+                while (tokens.next()) |token| {
+                    if (mappedLineDecorationClass(token)) {
+                        has_line_decoration = true;
+                        break;
+                    }
+                }
+                if (has_line_decoration) break;
+            }
+
+            if (self.editor.lineDecorationsWidth() == 0 and has_line_decoration) {
+                self.auto_line_decorations = true;
+                self.editor.setLineDecorationsWidth(1);
+            } else if (self.auto_line_decorations and !has_line_decoration) {
+                self.auto_line_decorations = false;
+                self.editor.setLineDecorationsWidth(0);
+            }
+        }
+    }
+
+    fn mappedLineDecorationClass(class_name: []const u8) bool {
+        return std.mem.eql(u8, class_name, "insert-sign") or
+            std.mem.eql(u8, class_name, "delete-sign") or
+            std.mem.eql(u8, class_name, "comment-range-glyph") or
+            std.mem.eql(u8, class_name, "first-line");
     }
 
     pub fn foldingShowsEllipsis(self: *const TerminalViewHost, model_line: usize) bool {
@@ -822,6 +858,7 @@ pub const TerminalViewHost = struct {
         const self = host(context);
         self.decorations.onModelDecorationsChanged();
         self.glyph_margin_dirty = true;
+        self.line_decorations_dirty = true;
         return false;
     }
 

@@ -4918,7 +4918,6 @@ test "View: line decoration classes paint the marker cell" {
         allocator.destroy(editor);
     }
 
-    editor.setLineDecorationsWidth(1);
     var options = ModelDecorationOptions.init("insert-line", .AlwaysGrowsWhenTypingAtEdges);
     options.linesDecorationsClassName = "insert-sign";
     const deltas = [_]ModelDeltaDecoration{
@@ -4934,6 +4933,13 @@ test "View: line decoration classes paint the marker cell" {
     try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(usize, 1), editor.lineDecorationsWidth());
     try std.testing.expectEqual(@as(u32, '+'), grid.cluster[grid.index(editor.gutterWidth() - 1, 1)]);
     try std.testing.expectEqual(ui.cell.packColor(.{ .r = 72, .g = 126, .b = 2 }), grid.fg[grid.index(editor.gutterWidth() - 1, 1)]);
+
+    const removed = try editor.model.deltaDecorations(ids, &.{}, 68);
+    defer allocator.free(removed);
+    view.invalidate();
+    try view.renderAnsi(&out.writer);
+    try std.testing.expectEqual(@as(usize, 0), editor.lineDecorationsWidth());
 }
