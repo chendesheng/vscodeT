@@ -533,10 +533,12 @@ console API for raw mode, sizing and input polling.
   resolves color ids to terminal cells (alpha composited over
   `editor.background`, with the previous literal as fallback); the editor
   current-line highlight is wired through it. The remaining UI chrome
-  (status bar, tabs, activity bar, sidebar, search/SCM, terminal panel,
-  quick picker, markdown preview) still uses the original terminal palette and
-  is the remaining full-UI theming work; icon themes and the Color Theme picker
-  are not ported. The terminal host reports a dark scheme for
+  (status bar, tabs, activity bar, side bar view contents, search/SCM,
+  terminal panel, quick picker, markdown preview) still uses the original
+  terminal palette and is the remaining full-UI theming work; the side bar
+  title/header/footer rows now resolve `sideBarTitle.*` and
+  `activityBarTop.*`. Icon themes and the Color Theme picker are not ported.
+  The terminal host reports a dark scheme for
   `window.autoDetectColorScheme` (no portable OS color-scheme API). Without the
   `vscode/` submodule the built-in theme files are unavailable; the workbench
   keeps the `vs-dark` fallback entry active and installs the bundled Dark+
@@ -603,6 +605,35 @@ console API for raw mode, sizing and input polling.
   (`src/vs/workbench/common/views.zig`), but there is still no extension
   contribution point, live Explorer/Search file-change integration, context
   menu or drag-and-drop.
+  `workbench.activityBar.location` (`default`/`top`/`bottom`/`hidden`),
+  `workbench.activityBar.autoHide` and `workbench.activityBar.compact` are read
+  from settings (workspace `.vscode/settings.json` or the user setting files).
+  For `top`/`bottom` the rail is hidden and the activity items move into the
+  side bar as a one-row icon composite bar in the header/footer. Closing the
+  side bar (`Ctrl-B`) keeps the rail visible and clickable, so an activity
+  entry reopens the side bar.
+- The primary side bar is a ported pane-composite part
+  (`src/vs/workbench/browser/parts/sidebar/sidebarPart.zig`), the same way as
+  the bottom panel. The part owns the side bar width/position/visibility, the
+  active viewlet, the `EXPLORER`/`SEARCH`/`SOURCE CONTROL` title row and its
+  toolbar actions; the row is built with the `ui` DOM (`Document` painted
+  through a `Surface`) exactly like the panel title, and the view pane
+  containers render below it without their own section headers. The Search
+  title toolbar runs `Clear Search Results` (`x`) and `Toggle Search Details`
+  (`…`); the Explorer's New File/New Folder/Refresh/Collapse All actions and
+  the SCM provider refresh action are not ported as commands (SCM keeps its
+  `r` key). `Ctrl-0` focuses the side bar,
+  `workbench.action.closeSidebar` closes it,
+  `workbench.action.toggleSidebarVisibility` toggles it and
+  `workbench.action.previousSideBarView`/`nextSideBarView` cycle the visible
+  containers. Not ported: view title context menus, the title toolbar's
+  overflow/"More Actions" menu, `focusActivityBar` (the rail has no keyboard
+  focus model), `workbench.activityBar.iconClickBehavior`,
+  the toggle-activity-bar-visibility action (the configuration service has no
+  `updateValue`), the right-hand side bar position, the
+  `workbench.sidebar.activeviewletid` workbench-storage persistence, boundary
+  sash classes and the active viewlet's optimal width (the terminal keeps the
+  configured width).
 - The bottom panel is a ported pane-composite part
   (`src/vs/workbench/browser/parts/panel/panelPart.zig`) with a one-row
   composite bar. Problems and Terminal are registered at the upstream

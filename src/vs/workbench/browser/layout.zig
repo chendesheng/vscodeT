@@ -8,19 +8,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../base/common/event.zig").Emitter;
+const layout_service = @import("../services/layout/browser/layoutService.zig");
 
-pub const Parts = enum {
-    titlebar,
-    banner,
-    activitybar,
-    sidebar,
-    editor,
-    panel,
-    auxiliarybar,
-    statusbar,
-};
-
-pub const Position = enum { left, right, top, bottom };
+pub const Parts = layout_service.Parts;
+pub const Position = layout_service.Position;
 
 pub const PartState = struct {
     visible: bool = true,

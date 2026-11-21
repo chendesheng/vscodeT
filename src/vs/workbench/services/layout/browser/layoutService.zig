@@ -1,0 +1,103 @@
+// Port of the portable enums and settings in
+// `src/vs/workbench/services/layout/browser/layoutService.ts`.
+//
+// The browser `IWorkbenchLayoutService` owns the workbench grid, part
+// instances, DOM sashes and the floating/panel layout experiments. The
+// terminal keeps the portable state in `src/vs/workbench/browser/layout.zig`
+// (visible parts and part sizes) and this file holds the enums and setting ids
+// both layers share, matching upstream's file split.
+//
+// Terminal adaptation: only the settings the terminal shell reacts to are
+// declared. Grid, panel alignment/maximization and floating-panel settings are
+// not ported; see `README.md`.
+
+const std = @import("std");
+const configuration = @import("../../../../platform/configuration/common/configuration.zig");
+const ConfigurationService = @import("../../configuration/browser/configurationService.zig").ConfigurationService;
+
+/// Upstream `Parts`. The terminal paints the same single-window parts.
+pub const Parts = enum {
+    titlebar,
+    banner,
+    activitybar,
+    sidebar,
+    editor,
+    panel,
+    auxiliarybar,
+    statusbar,
+};
+
+/// Upstream `Position`: the side bar position and the panel position.
+pub const Position = enum { left, right, top, bottom };
+
+/// Upstream `ActivityBarPosition`. The terminal shell supports every value:
+/// `default` is the vertical rail left of the side bar, `top`/`bottom` move the
+/// activity bar into the side bar title area as a composite bar, `hidden` keeps
+/// the side bar title label but removes the activity entries.
+pub const ActivityBarPosition = enum {
+    default,
+    top,
+    bottom,
+    hidden,
+};
+
+/// Upstream `LayoutSettings` ids read by the terminal shell.
+pub const LayoutSettings = struct {
+    pub const activity_bar_location = "workbench.activityBar.location";
+    pub const activity_bar_auto_hide = "workbench.activityBar.autoHide";
+    pub const activity_bar_compact = "workbench.activityBar.compact";
+};
+
+/// The layout settings the terminal shell reads, with upstream defaults.
+pub const LayoutSettingsValues = struct {
+    activity_bar_location: ActivityBarPosition = .default,
+    activity_bar_auto_hide: bool = false,
+    activity_bar_compact: bool = false,
+
+    /// Reads the layout settings for `resource` (the workspace folder).
+    ///
+    /// Terminal adaptation: the port's configuration service only resolves the
+    /// folder-level `.vscode/settings.json` layer for a resource inside the
+    /// folder, so the workbench passes its workspace root; upstream
+    /// `getValue(key)` resolves the window-level setting without a resource.
+    pub fn load(configuration_service: ?*ConfigurationService, resource: ?[]const u8) LayoutSettingsValues {
+        var values = LayoutSettingsValues{};
+        const config = configuration_service orelse return values;
+        const overrides: configuration.Overrides = if (resource) |path| .{ .resource = path } else .{};
+        if (config.getValue(LayoutSettings.activity_bar_location, overrides)) |value| {
+            values.activity_bar_location = activityBarPosition(value.*, .default);
+        }
+        if (config.getValue(LayoutSettings.activity_bar_auto_hide, overrides)) |value| {
+            if (value.* == .bool) values.activity_bar_auto_hide = value.bool;
+        }
+        if (config.getValue(LayoutSettings.activity_bar_compact, overrides)) |value| {
+            if (value.* == .bool) values.activity_bar_compact = value.bool;
+        }
+        return values;
+    }
+};
+
+pub fn activityBarPosition(value: std.json.Value, fallback: ActivityBarPosition) ActivityBarPosition {
+    if (value != .string) return fallback;
+    if (std.mem.eql(u8, value.string, "default")) return .default;
+    if (std.mem.eql(u8, value.string, "top")) return .top;
+    if (std.mem.eql(u8, value.string, "bottom")) return .bottom;
+    if (std.mem.eql(u8, value.string, "hidden")) return .hidden;
+    return fallback;
+}
+
+test "layoutService: activity bar position values and defaults" {
+    var values = LayoutSettingsValues{};
+    try std.testing.expectEqual(ActivityBarPosition.default, values.activity_bar_location);
+    try std.testing.expect(!values.activity_bar_auto_hide);
+    try std.testing.expect(!values.activity_bar_compact);
+
+    values = LayoutSettingsValues.load(null, null);
+    try std.testing.expectEqual(ActivityBarPosition.default, values.activity_bar_location);
+
+    try std.testing.expectEqual(ActivityBarPosition.top, activityBarPosition(.{ .string = "top" }, .default));
+    try std.testing.expectEqual(ActivityBarPosition.bottom, activityBarPosition(.{ .string = "bottom" }, .default));
+    try std.testing.expectEqual(ActivityBarPosition.hidden, activityBarPosition(.{ .string = "hidden" }, .default));
+    try std.testing.expectEqual(ActivityBarPosition.default, activityBarPosition(.{ .string = "sideways" }, .default));
+    try std.testing.expectEqual(ActivityBarPosition.top, activityBarPosition(.{ .integer = 1 }, .top));
+}

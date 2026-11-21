@@ -67,6 +67,12 @@ pub const Action = union(enum) {
     open: []const u8,
 };
 
+/// Terminal view options. The side bar part owns the title area, so the
+/// workbench renders the content without the view's own section header.
+pub const RenderOptions = struct {
+    show_header: bool = true,
+};
+
 pub const Sidebar = struct {
     allocator: Allocator,
     io: Io,
@@ -79,6 +85,9 @@ pub const Sidebar = struct {
     sort_order: explorer.SortOrder = .FilesFirst,
     show_roots: bool = false,
     last_rect: ui.Rect = .{},
+    /// Rows above the tree: one while the view paints its own section header,
+    /// zero when the side bar part paints the title.
+    header_rows: usize = 1,
     theme: ?*const theme_colors_mod.ThemeColors = null,
 
     pub fn init(
@@ -284,7 +293,7 @@ pub const Sidebar = struct {
         const top = ui.cell.snap(rect.y);
         const width = ui.cell.snap(rect.w);
         const height = ui.cell.snap(rect.h);
-        if (x < left or x >= left + width or y <= top or y >= top + height) return null;
+        if (x < left or x >= left + width or y < top + self.header_rows or y >= top + height) return null;
 
         const event = ui.MouseEvent{
             .kind = .down,
@@ -295,7 +304,7 @@ pub const Sidebar = struct {
         if (!self.tree.handleMouse(&event)) return null;
 
         // Ignore clicks below the last rendered row.
-        const list_y = y - top - 1;
+        const list_y = y - top - self.header_rows;
         const position = self.tree.view.widget.view.scroll_top + @as(f64, @floatFromInt(list_y));
         const index = self.tree.view.widget.view.range_map.indexAt(position);
         if (index < 0 or index >= @as(i64, @intCast(self.tree.count()))) return null;
@@ -381,7 +390,7 @@ pub const Sidebar = struct {
         self.theme = palette;
     }
 
-    pub fn render(self: *Sidebar, grid: *CellGrid, rect: ui.Rect, focused: bool) !void {
+    pub fn render(self: *Sidebar, grid: *CellGrid, rect: ui.Rect, focused: bool, options: RenderOptions) !void {
         self.last_rect = rect;
         const x = ui.cell.snap(rect.x);
         const y = ui.cell.snap(rect.y);
@@ -395,23 +404,29 @@ pub const Sidebar = struct {
             ui.cell.PaintStyle{};
         grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), background);
 
-        const header_style_local = if (self.theme) |palette| ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(palette.color("sideBarSectionHeader.foreground", .{ 200, 200, 200 })),
-            .bg = ui.cell.packColor(palette.color("sideBarSectionHeader.background", .{ 38, 38, 42 })),
-        } else header_style;
-        const header = if (focused) " EXPLORER " else " Explorer ";
-        grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style_local);
-        _ = drawText(grid, x + 1, y, width - 2, header, header_style_local);
+        // Upstream the Explorer view pane container has no section header: the
+        // side bar title area shows `EXPLORER` and its actions. The header
+        // remains for standalone preview/test rendering.
+        self.header_rows = if (options.show_header) 1 else 0;
+        if (options.show_header) {
+            const header_style_local = if (self.theme) |palette| ui.cell.PaintStyle{
+                .fg = ui.cell.packColor(palette.color("sideBarSectionHeader.foreground", .{ 200, 200, 200 })),
+                .bg = ui.cell.packColor(palette.color("sideBarSectionHeader.background", .{ 38, 38, 42 })),
+            } else header_style;
+            const header = if (focused) " EXPLORER " else " Explorer ";
+            grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style_local);
+            _ = drawText(grid, x + 1, y, width - 2, header, header_style_local);
+        }
 
-        if (height <= 1) return;
-        const rows = height - 1;
+        if (height <= self.header_rows) return;
+        const rows = height - self.header_rows;
         const content_rows = self.tree.count();
         const show_scrollbar = width > 1 and content_rows > rows;
         const list_width = if (show_scrollbar) width - 1 else width;
         self.tree.setFocus(focused);
         self.tree.render(grid, .{
             .x = @floatFromInt(x),
-            .y = @floatFromInt(y + 1),
+            .y = @floatFromInt(y + self.header_rows),
             .w = @floatFromInt(list_width),
             .h = @floatFromInt(rows),
         });
@@ -420,7 +435,7 @@ pub const Sidebar = struct {
             const scrollbar_x = x + width - 1;
             grid.fillRect(
                 @floatFromInt(scrollbar_x),
-                @floatFromInt(y + 1),
+                @floatFromInt(y + self.header_rows),
                 1,
                 @floatFromInt(rows),
                 scrollbar_track_style,
@@ -438,7 +453,7 @@ pub const Sidebar = struct {
                 )));
             grid.fillRect(
                 @floatFromInt(scrollbar_x),
-                @floatFromInt(y + 1 + thumb_top),
+                @floatFromInt(y + self.header_rows + thumb_top),
                 1,
                 @floatFromInt(thumb_height),
                 scrollbar_thumb_style,
@@ -609,7 +624,7 @@ test "explorer tree sidebar: renders and uses the ported tree view" {
 
     var grid = try ui.CellGrid.init(allocator, 24, 8);
     defer grid.deinit();
-    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{});
     const first = try grid.rowText(allocator, 1);
     defer allocator.free(first);
     try std.testing.expect(std.mem.indexOf(u8, first, "alpha") != null);
@@ -623,7 +638,7 @@ test "explorer tree sidebar: renders and uses the ported tree view" {
     try std.testing.expect(sidebar.isExpanded(alpha));
     var expanded_grid = try ui.CellGrid.init(allocator, 24, 8);
     defer expanded_grid.deinit();
-    try sidebar.render(&expanded_grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true);
+    try sidebar.render(&expanded_grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{});
     const expanded_row = try expanded_grid.rowText(allocator, 1);
     defer allocator.free(expanded_row);
     try std.testing.expect(std.mem.indexOf(u8, expanded_row, "▾") != null);
@@ -663,7 +678,7 @@ test "explorer tree sidebar: wheel scrolls the tree viewport" {
     try std.testing.expectEqual(@as(usize, 12), sidebar.count());
     var grid = try ui.CellGrid.init(allocator, 24, 6);
     defer grid.deinit();
-    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true, .{});
     try std.testing.expect(grid.bg[grid.index(23, 1)] != 0);
     const before = sidebar.tree.view.widget.view.scroll_top;
 
@@ -720,7 +735,7 @@ test "explorer tree sidebar: directory rows only toggle from the twistie" {
 
     var grid = try ui.CellGrid.init(allocator, 24, 6);
     defer grid.deinit();
-    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true, .{});
 
     const alpha = sidebar.selectedNode().?;
     try std.testing.expectEqualStrings("alpha", alpha.name);
@@ -820,7 +835,7 @@ test "explorer tree sidebar: compactFolders compresses single-child chains" {
 
     var grid = try ui.CellGrid.init(allocator, 24, 8);
     defer grid.deinit();
-    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{});
 
     var right = ui.KeyEvent{ .key = .right };
     _ = try sidebar.handleKey(&right);
@@ -828,7 +843,7 @@ test "explorer tree sidebar: compactFolders compresses single-child chains" {
     try std.testing.expectEqualStrings("c", sidebar.renderedItem(0).?.name);
     try std.testing.expectEqualStrings("deep.txt", sidebar.renderedItem(1).?.name);
 
-    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{});
     const compressed_row = try grid.rowText(allocator, 1);
     defer allocator.free(compressed_row);
     try std.testing.expect(std.mem.indexOf(u8, compressed_row, "a/b/c") != null);
@@ -837,7 +852,7 @@ test "explorer tree sidebar: compactFolders compresses single-child chains" {
     var left = ui.KeyEvent{ .key = .left };
     _ = try sidebar.handleKey(&left);
     try std.testing.expectEqual(@as(usize, 1), sidebar.count());
-    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{});
     const collapsed_row = try grid.rowText(allocator, 1);
     defer allocator.free(collapsed_row);
     try std.testing.expect(std.mem.indexOf(u8, collapsed_row, "a/b/c") != null);
@@ -878,7 +893,7 @@ test "explorer tree sidebar: compactFolders false keeps folders separate" {
 
     var grid = try ui.CellGrid.init(allocator, 24, 8);
     defer grid.deinit();
-    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{});
 
     const a_item = sidebar.model.roots.items[0].getChild("a").?;
     sidebar.tree.setSelectionElement(a_item);
@@ -899,7 +914,7 @@ test "explorer tree sidebar: compactFolders false keeps folders separate" {
     try std.testing.expectEqual(@as(usize, 5), sidebar.count());
     try std.testing.expectEqualStrings("deep.txt", sidebar.renderedItem(4).?.name);
 
-    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{});
     const second_row = try grid.rowText(allocator, 2);
     defer allocator.free(second_row);
     try std.testing.expect(std.mem.indexOf(u8, second_row, "a") != null);

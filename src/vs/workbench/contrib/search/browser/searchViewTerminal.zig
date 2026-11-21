@@ -128,6 +128,12 @@ const OwnedStringSet = struct {
     }
 };
 
+/// Terminal view options. The side bar part owns the title area, so the
+/// workbench renders the content without the view's own section header.
+pub const RenderOptions = struct {
+    show_header: bool = true,
+};
+
 pub const SearchView = struct {
     allocator: Allocator,
     workspace: *WorkspaceContextService,
@@ -145,6 +151,9 @@ pub const SearchView = struct {
     visible_rows: usize = 0,
     scrollbar_drag: bool = false,
     last_rect: ui.Rect = .{},
+    /// Rows above the search widget: one while the view paints its own
+    /// section header, zero when the side bar part paints the title.
+    header_rows: usize = 1,
     focus_field: Field = .search,
     results_focused: bool = false,
     suppress_refresh: bool = false,
@@ -870,7 +879,7 @@ pub const SearchView = struct {
         if (event.x < x0 or event.x >= x0 + width or event.y < y0 or event.y >= y0 + height) return false;
         const local_x = event.x - x0;
         const local_y = event.y - y0;
-        if (local_y == 0) {
+        if (self.header_rows == 1 and local_y == 0) {
             if (event.kind == .down and local_x >= width -| 3) {
                 self.controller.toggleQueryDetails(null);
                 return true;
@@ -878,7 +887,7 @@ pub const SearchView = struct {
             return true;
         }
 
-        const input_top = 1;
+        const input_top = self.header_rows;
         const input_bottom = input_top + self.widget.layout.height;
         if (local_y >= input_top and local_y < input_bottom) {
             self.panel_focused = true;
@@ -955,7 +964,7 @@ pub const SearchView = struct {
         self.theme = palette;
     }
 
-    pub fn render(self: *SearchView, grid: *ui.CellGrid, rect: ui.Rect) !void {
+    pub fn render(self: *SearchView, grid: *ui.CellGrid, rect: ui.Rect, options: RenderOptions) !void {
         self.last_rect = rect;
         const x = ui.cell.snap(rect.x);
         const y = ui.cell.snap(rect.y);
@@ -988,15 +997,21 @@ pub const SearchView = struct {
         const base = ui.cell.PaintStyle{ .fg = ui.cell.packColor(foreground), .bg = ui.cell.packColor(background) };
         grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), base);
 
-        const header_style = ui.cell.PaintStyle{ .fg = ui.cell.packColor(foreground), .bg = ui.cell.packColor(header_background) };
-        grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style);
-        _ = drawText(grid, x + 1, y, width -| 1, if (self.panel_focused) " SEARCH " else " Search ", header_style);
-        _ = drawText(grid, x + width -| 3, y, 3, "...", .{ .fg = ui.cell.packColor(dim), .bg = ui.cell.packColor(header_background) });
+        // Upstream the Search view pane container has no section header: the
+        // side bar title area shows `SEARCH` and its actions. The header stays
+        // for standalone preview/test rendering.
+        self.header_rows = if (options.show_header) 1 else 0;
+        if (options.show_header) {
+            const header_style = ui.cell.PaintStyle{ .fg = ui.cell.packColor(foreground), .bg = ui.cell.packColor(header_background) };
+            grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style);
+            _ = drawText(grid, x + 1, y, width -| 1, if (self.panel_focused) " SEARCH " else " Search ", header_style);
+            _ = drawText(grid, x + width -| 3, y, 3, "...", .{ .fg = ui.cell.packColor(dim), .bg = ui.cell.packColor(header_background) });
+        }
 
         try self.widget.render(width);
-        try grid.blit(self.widget.grid(), x, y + 1, width, self.widget.layout.height);
+        try grid.blit(self.widget.grid(), x, y + self.header_rows, width, self.widget.layout.height);
 
-        const status_y = y + 1 + self.widget.layout.height;
+        const status_y = y + self.header_rows + self.widget.layout.height;
         var status_buffer: [240]u8 = undefined;
         var status = self.controller.messageText(&status_buffer);
         if (self.replace_confirmation) |request| status = request.confirmation;

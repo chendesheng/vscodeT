@@ -1100,6 +1100,40 @@ Library constraints:
   (`src/vs/workbench/common/views.zig`) and placed through
   `ViewDescriptorService`; live file-change refresh, resizing and context
   menus are not ported, and there is no extension contribution point yet.
+  `workbench.activityBar.location` (`default`/`top`/`bottom`/`hidden`),
+  `workbench.activityBar.autoHide` and `workbench.activityBar.compact` are
+  applied by `LayoutSettingsValues` in
+  `src/vs/workbench/services/layout/browser/layoutService.zig`; the defaults
+  live in `src/vs/workbench/browser/workbenchConfiguration.zig`. For
+  `top`/`bottom` the rail is hidden and the activity items become a one-row
+  icon composite bar in the side bar header/footer. The rail stays when the
+  side bar is closed, and an entry click reopens it.
+- The primary side bar is a ported pane-composite part
+  (`src/vs/workbench/browser/parts/sidebar/sidebarPart.zig`), mirroring the
+  panel: `SidebarPart` keeps the pane-composite registry, width/position/
+  visibility, the active viewlet, the `workbench.contributions.viewlets`
+  registry id and the activity bar position, while `PaneCompositePart` (shared
+  with the panel) carries the title label, the title toolbar actions and the
+  composite bar position (`top`/`title`/`bottom`). The title row is one cell
+  built with the `ui` DOM and painted through a `ui.Surface`, so the part owns
+  the `EXPLORER`/`SEARCH`/`SOURCE CONTROL` label (uppercased like
+  `text-transform: uppercase`) and its actions; the Explorer, Search and SCM
+  views render below it with `show_header = false` instead of painting their
+  own section headers. Title colors come from `sideBarTitle.*`; the
+  top/bottom composite bar uses `activityBarTop.*`. The Search toolbar runs
+  `search.action.clearSearchResults` and
+  `workbench.action.search.toggleQueryDetails`; the other view title actions
+  (Explorer file actions, the SCM provider refresh action) are not ported as
+  commands. `Ctrl-0` focuses the side bar,
+  `workbench.action.closeSidebar` hides it and
+  `workbench.action.previousSideBarView`/`nextSideBarView` cycle the visible
+  containers. Not ported: the 35 px title metrics and its 1 px theme borders
+  (a cell row and the workbench dividers replace them), view title context
+  menus, the title toolbar overflow/"More Actions" menu, `focusActivityBar`,
+  `workbench.activityBar.iconClickBehavior`, the
+  toggle-activity-bar-visibility action, the right-hand side bar position, the
+  active viewlet's optimal width and the `workbench.sidebar.activeviewletid`
+  storage persistence.
 - The Search panel is split into a portable search service/tree and a terminal
   view. `searchService.zig` walks workspace folders in bounded steps, reads
   open-editor content through a host callback, applies the ported regex/word
@@ -1179,8 +1213,9 @@ Library constraints:
   (resolves ids, composites alpha over `editor.background` and falls back to
   the previous literal). It paints the workbench background/dividers/pane
   borders/placeholders, tab strip, breadcrumbs, activity bar, status bar,
-  Explorer, Search, Source Control, terminal panel, quick picker, Markdown
-  preview and the editor background/highlights/guides. Terminal ANSI output,
+  side bar title/header/footer rows, Explorer, Search, Source Control,
+  terminal panel, quick picker, Markdown preview and the editor
+  background/highlights/guides. Terminal ANSI output,
   overview-ruler marker accents and a few legacy badge literals keep their
   fallback colors. The Color Theme picker and icon themes are not ported.
 

@@ -53,7 +53,9 @@ const tab_bar = @import("./parts/editor/multiEditorTabsControl.zig");
 const Sidebar = @import("../contrib/files/browser/views/explorerView.zig").Sidebar;
 const activity_bar_mod = @import("./parts/activitybar/activitybarPart.zig");
 const ActivityBarPart = @import("./parts/activitybar/activitybarPart.zig").ActivityBarPart;
-const SidebarPart = @import("./parts/sidebar/sidebarPart.zig").SidebarPart;
+const sidebar_part_mod = @import("./parts/sidebar/sidebarPart.zig");
+const SidebarPart = sidebar_part_mod.SidebarPart;
+const layout_service_mod = @import("../services/layout/browser/layoutService.zig");
 const LayoutModel = @import("./layout.zig").LayoutModel;
 const statusbar_mod = @import("./parts/statusbar/statusbarPart.zig");
 const StatusbarService = statusbar_mod.StatusbarService;
@@ -71,6 +73,8 @@ const EditorStatus = editor_status_mod.EditorStatus;
 const workspace_context = @import("../services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const configuration_mod = @import("../services/configuration/browser/configurationService.zig");
+const workbench_configuration = @import("./workbenchConfiguration.zig");
+
 const ConfigurationService = configuration_mod.ConfigurationService;
 const universal_watcher_mod = @import("../../platform/files/node/watcher/watcher.zig");
 const UniversalWatcher = universal_watcher_mod.UniversalWatcher;
@@ -195,6 +199,19 @@ const scm_view_mod = @import("../../../tui/scmView.zig");
 const text_diff_editor_mod = @import("./parts/editor/textDiffEditor.zig");
 const storage_mod = @import("../../platform/storage/common/storage.zig");
 const TerminalService = terminal_service_mod.TerminalService;
+
+const search_command_ids = @import("../contrib/search/common/constants.zig").SearchCommandIds;
+
+/// Side bar title toolbar actions of the Search view container, matching the
+/// `MenuId.ViewTitle` actions upstream. The terminal workbench supplies only
+/// the actions it can run; the Explorer's file actions and the SCM refresh
+/// provider action are not ported as commands.
+const search_title_actions = [_]pane_composite_mod.TitleAction{
+    .{ .id = search_command_ids.clear_search_results, .label = "Clear Search Results", .glyph = 'x' },
+};
+const search_title_secondary_actions = [_]pane_composite_mod.TitleAction{
+    .{ .id = search_command_ids.toggle_query_details, .label = "Toggle Search Details", .glyph = 0x2026 },
+};
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
@@ -855,6 +872,7 @@ pub const Workbench = struct {
         errdefer self.activity_bar_part.deinit();
         self.sidebar_part = SidebarPart.init(self.allocator);
         errdefer self.sidebar_part.deinit();
+        self.sidebar_part.attachActivityBar(&self.activity_bar_part);
         self.panel_part = PanelPart.init(self.allocator);
         errdefer self.panel_part.deinit();
         self.view_containers_registry = views_mod.ViewContainersRegistry.init(self.allocator);
@@ -867,7 +885,7 @@ pub const Workbench = struct {
         self.activity_service = ActivityService.init(self.allocator);
         errdefer self.activity_service.deinit();
 
-        try self.layout_model.setSize(.sidebar, 28);
+        try self.setSidebarWidth(28);
         try self.layout_model.setVisible(.sidebar, false);
         try self.layout_model.setVisible(.activitybar, true);
         try self.layout_model.setVisible(.statusbar, true);
@@ -1105,6 +1123,10 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.compareEditor.swapSides", .label = "Swap Sides", .category = "Diff", .context = self, .run = commandDiffSwap },
             .{ .id = "workbench.action.compareEditor.refreshDiff", .label = "Refresh Diff", .category = "Diff", .context = self, .run = commandDiffRefresh },
             .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
+            .{ .id = "workbench.action.closeSidebar", .label = "Close Primary Side Bar", .category = "View", .context = self, .run = commandCloseSidebar },
+            .{ .id = "workbench.action.focusSideBar", .label = "Focus into Primary Side Bar", .category = "View", .context = self, .run = commandFocusSidebar },
+            .{ .id = "workbench.action.previousSideBarView", .label = "Previous Primary Side Bar View", .category = "View", .context = self, .run = commandPreviousSidebarView },
+            .{ .id = "workbench.action.nextSideBarView", .label = "Next Primary Side Bar View", .category = "View", .context = self, .run = commandNextSidebarView },
             .{ .id = "workbench.action.focusStatusBar", .label = "Focus Status Bar", .category = "View", .context = self, .run = commandFocusStatusBar },
             .{ .id = "workbench.action.terminal.toggleTerminal", .label = "Toggle Terminal", .category = "Terminal", .context = self, .run = commandToggleTerminal },
             .{ .id = "workbench.action.terminal.new", .label = "New Terminal", .category = "Terminal", .context = self, .run = commandNewTerminal },
@@ -1451,10 +1473,10 @@ pub const Workbench = struct {
     }
 
     fn editorAreaX(self: *const Workbench) usize {
-        if (self.sidebarShown()) {
-            return self.activityBarWidth() + self.sidebarWidth() + 1;
-        }
-        return 0;
+        // The activity bar stays when the side bar is hidden, like upstream.
+        var x = self.activityBarWidth();
+        if (self.sidebarShown()) x += self.sidebarWidth() + 1;
+        return x;
     }
 
     fn editorAreaWidth(self: *const Workbench) usize {
@@ -1482,6 +1504,12 @@ pub const Workbench = struct {
     }
 
     fn activityBarWidth(self: *const Workbench) usize {
+        // The activity bar takes no cells when it is hidden or when it moved
+        // into the side bar composite bar (top/bottom positions). Without a
+        // side bar model there is no side bar area for the rail either; the
+        // terminal app always initializes the side bar.
+        if (!self.activity_bar_part.visible) return 0;
+        if (self.sidebar == null) return 0;
         return self.activity_bar_part.width();
     }
 
@@ -1493,6 +1521,47 @@ pub const Workbench = struct {
     fn setSidebarVisible(self: *Workbench, visible: bool) !void {
         try self.layout_model.setVisible(.sidebar, visible);
         try self.sidebar_part.setVisible(visible);
+        if (visible) try self.syncActivityBarVisibility();
+    }
+
+    fn setSidebarWidth(self: *Workbench, width: usize) !void {
+        try self.layout_model.setSize(.sidebar, width);
+        try self.sidebar_part.setWidth(width);
+    }
+
+    /// Port of the composite action collection: the active side bar view
+    /// container supplies the title toolbar actions.
+    fn updateSidebarTitleActions(self: *Workbench) void {
+        const container = self.sidebar_part.pane.active_id orelse "";
+        if (std.mem.eql(u8, container, "search")) {
+            self.sidebar_part.pane.setTitleActions(&search_title_actions, &search_title_secondary_actions) catch {};
+        } else {
+            self.sidebar_part.pane.setTitleActions(&.{}, &.{}) catch {};
+        }
+    }
+
+    fn runSidebarTitleAction(self: *Workbench, id: []const u8) void {
+        self.commands.execute(id) catch {};
+    }
+
+    /// Badges for the side bar composite bar (activity bar top/bottom), built
+    /// from the same activity service the rail uses.
+    fn sidebarBadges(
+        self: *Workbench,
+        texts: *[8][24]u8,
+        badges: *[8]pane_composite_mod.Badge,
+    ) []const pane_composite_mod.Badge {
+        var count: usize = 0;
+        for (self.activity_bar_part.activities.items) |activity| {
+            if (count >= badges.len) break;
+            const description = self.activity_service.getContainerBadgeDescription(activity.id) orelse continue;
+            if (description.len == 0) continue;
+            const len = @min(description.len, texts[count].len);
+            @memcpy(texts[count][0..len], description[0..len]);
+            badges[count] = .{ .id = activity.id, .text = texts[count][0..len] };
+            count += 1;
+        }
+        return badges[0..count];
     }
 
     pub fn activeActivity(self: *const Workbench) usize {
@@ -1623,7 +1692,12 @@ pub const Workbench = struct {
             self.workspace,
             .{
                 .user_settings_paths = self.user_settings_paths,
-                .defaults_json = &.{ search_configuration.defaults_json, terminal_configuration.defaults_json, theme_configuration_mod.defaults_json },
+                .defaults_json = &.{
+                    search_configuration.defaults_json,
+                    terminal_configuration.defaults_json,
+                    theme_configuration_mod.defaults_json,
+                    workbench_configuration.defaults_json,
+                },
             },
         );
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
@@ -1632,10 +1706,12 @@ pub const Workbench = struct {
             watcher.setExtraPaths(self.keybindings_paths) catch {};
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
+        self.applyLayoutSettings();
     }
 
     fn onSettingsReloaded(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
+        self.applyLayoutSettings();
         self.applyConfiguredLanguageAssociationsToAllEditors();
         self.applyEditorSettingsToAllTabs();
         self.reloadKeybindings();
@@ -1845,6 +1921,7 @@ pub const Workbench = struct {
         try self.setSidebarVisible(true);
         _ = try self.activity_bar_part.setActive(self.activity_bar_part.activities.items[0].id);
         _ = try self.sidebar_part.openPaneComposite(self.activity_bar_part.activities.items[0].id);
+        self.updateSidebarTitleActions();
         self.layoutAll();
     }
 
@@ -1894,7 +1971,8 @@ pub const Workbench = struct {
         _ = try self.activity_bar_part.setActive(activity.id);
         _ = try self.sidebar_part.openPaneComposite(activity.id);
         try self.setSidebarVisible(true);
-        try self.layout_model.setVisible(.activitybar, true);
+        try self.syncActivityBarVisibility();
+        self.updateSidebarTitleActions();
         self.focus = .sidebar;
         self.statusbar.main_part.clearFocus();
         if (std.mem.eql(u8, activity.id, "search")) {
@@ -4099,7 +4177,7 @@ pub const Workbench = struct {
         if (width_delta != 0 and self.sidebarShown()) {
             const current: isize = @intCast(self.layout_model.size(.sidebar));
             const next = @min(@max(current - width_delta, 10), @as(isize, @intCast(@max(self.cols / 2, 10))));
-            try self.layout_model.setSize(.sidebar, @intCast(next));
+            try self.setSidebarWidth(@intCast(next));
         }
         if (height_delta != 0 and self.panelShown()) {
             const current: isize = @intCast(self.panel_part.getSize());
@@ -5360,8 +5438,8 @@ pub const Workbench = struct {
     }
 
     pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-        if (!self.sidebarShown()) return false;
-
+        // The activity bar stays clickable while the side bar is hidden; an
+        // entry click reveals the side bar again, like upstream.
         if (event.x < self.activityBarWidth()) {
             if (event.kind == .down) {
                 if (activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, self.activityRect())) |index| {
@@ -5371,11 +5449,48 @@ pub const Workbench = struct {
             return true;
         }
 
+        if (!self.sidebarShown()) return false;
+
         if (event.x > self.activityBarWidth() + self.sidebarWidth()) return false;
+
+        // The side bar title chrome (header composite bar, title and footer):
+        // title actions and the composite bar items only exist there, so the
+        // rest of the side bar keeps routing events to its view.
+        const rect = self.sidebarRect();
+        const content = sidebar_part_mod.contentRect(&self.sidebar_part, rect);
+        const content_top = ui.cell.snap(content.y);
+        const content_height = ui.cell.snap(content.h);
+        const in_chrome = content_height == 0 or
+            event.y < content_top or
+            event.y >= content_top + content_height;
+        if (in_chrome) {
+            if (event.kind == .move) {
+                sidebar_part_mod.setHovered(
+                    &self.sidebar_part,
+                    sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y),
+                );
+                return true;
+            }
+            if (sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y)) |hit| {
+                if (event.kind == .down) switch (hit) {
+                    .action => |id| self.runSidebarTitleAction(id),
+                    .composite => |id| {
+                        _ = self.showActivityById(id) catch {};
+                    },
+                };
+                return true;
+            }
+            // A click on the chrome without an action only moves focus into
+            // the part, like the browser title area.
+            if (event.kind == .down) self.focus = .sidebar;
+            return true;
+        }
+
+        if (event.kind == .move) sidebar_part_mod.setHovered(&self.sidebar_part, null);
         if (event.kind == .down) self.focus = .sidebar;
         const active_id = self.activity_bar_part.active_id orelse "";
         if (std.mem.eql(u8, active_id, "scm")) {
-            if (self.scm_view) |view| _ = view.handleMouse(@constCast(event), self.sidebarRect()) catch false;
+            if (self.scm_view) |view| _ = view.handleMouse(@constCast(event), content) catch false;
             return true;
         }
         if (std.mem.eql(u8, active_id, "search")) {
@@ -5461,7 +5576,7 @@ pub const Workbench = struct {
     }
 
     pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-        if (self.sidebarShown() and event.x <= self.activityBarWidth() + self.sidebarWidth()) return false;
+        if (event.x < self.editorAreaX()) return false;
 
         if (self.pending_tab_drag) |pending| {
             if (event.kind == .move and event.button == .left and
@@ -5648,7 +5763,7 @@ pub const Workbench = struct {
     /// Converts a terminal mouse position inside a pane into editor-relative
     /// coordinates, or null when the event belongs to a tab row.
     pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?ui.MouseEvent {
-        if (self.sidebarShown() and event.x <= self.activityBarWidth() + self.sidebarWidth()) return null;
+        if (event.x < self.editorAreaX()) return null;
         const pane = self.paneAt(event.x, event.y) orelse return null;
         if (pane.group != self.service.activeGroup()) return null;
         const y = ui.cell.snap(pane.rect.y);
@@ -5704,29 +5819,54 @@ pub const Workbench = struct {
             );
         }
 
+        // The activity bar is a part of its own: it stays visible when the
+        // side bar is hidden (default location) and moves into the side bar
+        // title area for the top/bottom locations.
+        if (self.activityBarWidth() > 0) {
+            activity_bar_mod.render(&self.activity_bar_part, &self.activity_service, &self.frame.next, self.activityRect(), self.activeActivity(), self.focus == .sidebar, self.theme_palette);
+        }
+
         if (self.sidebarShown()) {
             const focused = self.focus == .sidebar;
-            activity_bar_mod.render(&self.activity_bar_part, &self.activity_service, &self.frame.next, self.activityRect(), self.activeActivity(), focused, self.theme_palette);
+            const rect = self.sidebarRect();
+
+            // The side bar part paints its own title chrome and background;
+            // the active view pane container renders into the content area
+            // below the title, like upstream.
+            var badge_texts: [8][24]u8 = undefined;
+            var badges: [8]pane_composite_mod.Badge = undefined;
+            try sidebar_part_mod.render(
+                &self.sidebar_part,
+                &self.frame.next,
+                rect,
+                self.theme_palette,
+                self.sidebarBadges(&badge_texts, &badges),
+            );
+            const content = sidebar_part_mod.contentRect(&self.sidebar_part, rect);
             const active_id = self.activity_bar_part.active_id orelse "";
             if (std.mem.eql(u8, active_id, "explorer")) {
                 if (self.sidebar) |sidebar| {
                     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
-                    try sidebar.render(&self.frame.next, self.sidebarRect(), focused);
+                    try sidebar.render(&self.frame.next, content, focused, .{ .show_header = false });
+                } else {
+                    self.renderPlaceholder(content, focused);
                 }
             } else if (std.mem.eql(u8, active_id, "search")) {
                 if (self.search_view) |view| {
                     if (self.theme_palette) |palette| view.setThemeColors(palette);
-                    try view.render(&self.frame.next, self.sidebarRect());
+                    try view.render(&self.frame.next, content, .{ .show_header = false });
+                } else {
+                    self.renderPlaceholder(content, focused);
                 }
             } else if (std.mem.eql(u8, active_id, "scm")) {
                 if (self.scm_view) |view| {
                     if (self.theme_palette) |palette| view.setThemeColors(palette);
-                    try view.render(&self.frame.next, self.sidebarRect(), focused);
+                    try view.render(&self.frame.next, content, focused, .{ .show_header = false });
                 } else {
-                    self.renderPlaceholder(self.sidebarRect(), focused);
+                    self.renderPlaceholder(content, focused);
                 }
             } else {
-                self.renderPlaceholder(self.sidebarRect(), focused);
+                self.renderPlaceholder(content, focused);
             }
 
             const divider_x = self.activityBarWidth() + self.sidebarWidth();
@@ -5906,24 +6046,14 @@ pub const Workbench = struct {
         };
         const active_id = self.activity_bar_part.active_id orelse "";
         const is_scm = std.mem.eql(u8, active_id, "scm");
-        const header = if (std.mem.eql(u8, active_id, "search"))
-            " SEARCH "
-        else if (is_scm)
-            " SOURCE CONTROL "
-        else
-            " SETTINGS ";
         const title = if (is_scm)
             "Source Control is unavailable (no Git repository)"
         else
             "Settings view is not ported yet";
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
-        const header_style = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(self.themeColor("sideBarTitle.foreground", .{ 220, 220, 220 })),
-            .bg = ui.cell.packColor(self.themeColor("sideBarSectionHeader.background", .{ 38, 38, 42 })),
-        };
-        self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style);
-        drawPlainText(&self.frame.next, x + 1, y, width - 2, header, header_style);
-        drawPlainText(&self.frame.next, x + 2, y + 2, width -| 3, title, bg);
+        // The side bar title is painted by the part; the placeholder only
+        // renders the container content.
+        drawPlainText(&self.frame.next, x + 1, y, width -| 2, title, bg);
         _ = focused;
     }
 
@@ -6005,6 +6135,32 @@ pub const Workbench = struct {
         self.breadcrumbs_pane = null;
         self.breadcrumbs_input = null;
         self.breadcrumbs_group = null;
+    }
+
+    /// First workspace folder resource, or null for an empty workspace.
+    fn workspaceRoot(self: *const Workbench) ?[]const u8 {
+        const folders = self.workspace.getWorkspace().folders.items;
+        if (folders.len == 0) return null;
+        return folders[0].resource;
+    }
+
+    /// Port of the `workbench.activityBar.location` / `.autoHide` /
+    /// `.compact` configuration listener: the side bar part decides where its
+    /// composite bar lives and whether the activity bar is shown at all.
+    fn applyLayoutSettings(self: *Workbench) void {
+        const values = layout_service_mod.LayoutSettingsValues.load(self.configuration, self.workspaceRoot());
+        self.activity_bar_part.setCompact(values.activity_bar_compact) catch {};
+        self.sidebar_part.setLayoutSettings(values) catch {};
+        self.syncActivityBarVisibility() catch {};
+        self.layoutAll();
+    }
+
+    /// Port of `SidebarPart.onDidChangeActivityBarLocation`: the rail is shown
+    /// while the side bar does not host the composite bar.
+    fn syncActivityBarVisibility(self: *Workbench) !void {
+        const show = self.sidebar_part.shouldShowActivityBar();
+        try self.activity_bar_part.setVisible(show);
+        try self.layout_model.setVisible(.activitybar, show);
     }
 
     fn applyBreadcrumbsSettings(self: *Workbench) void {
@@ -6858,6 +7014,39 @@ fn commandCreateTerminalEditor(context: *anyopaque) anyerror!void {
 fn commandViewExplorer(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.showExplorer();
+}
+
+fn commandCloseSidebar(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (!self.sidebar_part.isVisible()) return;
+    try self.setSidebarVisible(false);
+    self.focus = .editor;
+    self.layoutAll();
+}
+
+fn commandFocusSidebar(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.sidebar == null) return;
+    try self.setSidebarVisible(true);
+    self.focusSidebar();
+    self.layoutAll();
+}
+
+fn commandPreviousSidebarView(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try switchSidebarView(self, -1);
+}
+
+fn commandNextSidebarView(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try switchSidebarView(self, 1);
+}
+
+/// Port of `SwitchCompositeViewAction`: cycles through the visible side bar
+/// view containers in composite-bar order.
+fn switchSidebarView(self: *Workbench, offset: isize) !void {
+    const target = try self.sidebar_part.switchViewTarget(offset, self.allocator) orelse return;
+    _ = try self.showActivityById(target);
 }
 
 fn commandToggleSidebar(context: *anyopaque) anyerror!void {
@@ -8394,6 +8583,164 @@ test "Workbench: activity bar switches view containers" {
     try std.testing.expectEqual(@as(usize, 0), workbench.activeActivity());
 }
 
+test "Workbench: side bar part paints the title and runs its actions" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "title_action.txt", "alpha beta\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    // The title row belongs to the side bar part and the label is uppercased.
+    const explorer_title = try workbench.frame.present().rowText(allocator, 0);
+    defer allocator.free(explorer_title);
+    try std.testing.expect(std.mem.indexOf(u8, explorer_title, "EXPLORER") != null);
+    // The Explorer view has no header of its own: its first tree row follows
+    // the title directly.
+    const first_tree_row = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(first_tree_row);
+    try std.testing.expect(std.mem.indexOf(u8, first_tree_row, "title_action.txt") != null);
+
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expect(view.rows.items.len > 0);
+    const details_before = view.widget.details_visible;
+
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    const search_title = try workbench.frame.present().rowText(allocator, 0);
+    defer allocator.free(search_title);
+    try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
+
+    // The title toolbar hosts the active view's actions and runs them.
+    const x0 = workbench.activityBarWidth();
+    const width = workbench.sidebarWidth();
+    const clear_click = ui.MouseEvent{ .kind = .down, .x = x0 + width - 5, .y = 0 };
+    try std.testing.expect(workbench.handleSidebarMouse(&clear_click));
+    try std.testing.expectEqual(@as(usize, 0), view.rows.items.len);
+
+    const details_click = ui.MouseEvent{ .kind = .down, .x = x0 + width - 2, .y = 0 };
+    try std.testing.expect(workbench.handleSidebarMouse(&details_click));
+    try std.testing.expectEqual(!details_before, view.widget.details_visible);
+}
+
+test "Workbench: activity bar top moves the composite bar into the side bar" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode");
+    var settings = try tmp.dir.createFile(io, ".vscode/settings.json", .{});
+    try settings.writeStreamingAll(io, "{\"workbench.activityBar.location\": \"top\"}");
+    settings.close(io);
+
+    const path = try seedFile(allocator, io, &tmp, "top_bar.txt", "alpha\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+
+    // The rail is gone and the side bar takes the left column.
+    try std.testing.expectEqual(@as(usize, 0), workbench.activityBarWidth());
+    try std.testing.expect(workbench.sidebar_part.shouldShowCompositeBar());
+    try std.testing.expectEqual(@as(usize, 29), workbench.editorAreaX());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    // Row 0 is the composite bar, row 1 the title label, row 2 the content.
+    const bar_row = try workbench.frame.present().rowText(allocator, 0);
+    defer allocator.free(bar_row);
+    try std.testing.expectEqual(@as(u8, 'E'), bar_row[1]);
+    try std.testing.expectEqual(@as(u8, 'F'), bar_row[4]);
+    const title_row = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(title_row);
+    try std.testing.expect(std.mem.indexOf(u8, title_row, "EXPLORER") != null);
+    // The tree is the first thing below the title (`.vscode` sorts first).
+    var found_file = false;
+    for (2..5) |row| {
+        const content_row = try workbench.frame.present().rowText(allocator, row);
+        defer allocator.free(content_row);
+        if (std.mem.indexOf(u8, content_row, "top_bar.txt") != null) found_file = true;
+    }
+    try std.testing.expect(found_file);
+
+    // Clicking a composite bar item switches the view container.
+    const search_click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 0 };
+    try std.testing.expect(workbench.handleSidebarMouse(&search_click));
+    try std.testing.expectEqual(@as(usize, 1), workbench.activeActivity());
+
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    const search_title = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(search_title);
+    try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
+}
+
+test "Workbench: closing the side bar keeps the activity bar" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "rail_closed.txt", "alpha\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const rail_row = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(rail_row);
+    try std.testing.expectEqual(@as(u8, 'E'), rail_row[1]);
+
+    _ = try workbench.commands.execute("workbench.action.closeSidebar");
+    try std.testing.expect(!workbench.sidebar_part.isVisible());
+    try std.testing.expectEqual(@as(usize, 3), workbench.editorAreaX());
+
+    // The activity bar stays visible and clickable while the side bar is
+    // closed; an entry click reveals the side bar again.
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    const closed_rail_row = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(closed_rail_row);
+    try std.testing.expectEqual(@as(u8, 'E'), closed_rail_row[1]);
+    const rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 1 };
+    try std.testing.expect(workbench.handleSidebarMouse(&rail_click));
+    try std.testing.expect(workbench.sidebar_part.isVisible());
+
+    _ = try workbench.commands.execute("workbench.action.closeSidebar");
+    _ = try workbench.commands.execute("workbench.action.focusSideBar");
+    try std.testing.expect(workbench.sidebar_part.isVisible());
+    try std.testing.expectEqual(Focus.sidebar, workbench.focus);
+}
+
 test "Workbench: Problems panel, status count and range highlight" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -9397,6 +9744,7 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.findInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyF), .secondary = &.{key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF)} } },
     .{ .id = "workbench.action.replaceInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyH) } },
     .{ .id = "workbench.action.toggleSidebarVisibility", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyB) } },
+    .{ .id = "workbench.action.focusSideBar", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Digit0) } },
     .{ .id = "workbench.action.focusStatusBar", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyS) } },
     .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyM) } },
     .{ .id = "workbench.action.togglePanel", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyJ) } },

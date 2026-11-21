@@ -41,6 +41,12 @@ const Row = struct {
     depth: usize = 0,
 };
 
+/// Terminal view options. The side bar part owns the title area, so the
+/// workbench renders the content without the view's own section header.
+pub const RenderOptions = struct {
+    show_header: bool = true,
+};
+
 pub const ScmView = struct {
     allocator: Allocator,
     service: *ISCMService,
@@ -50,6 +56,9 @@ pub const ScmView = struct {
     resource_rows: std.array_list.Managed(usize),
     selection: usize = 0,
     scroll: usize = 0,
+    /// Rows above the list: the section header plus its divider while the view
+    /// paints them, zero when the side bar part paints the title.
+    header_rows: usize = 2,
     theme: ?*const theme_colors_mod.ThemeColors = null,
 
     pub fn init(allocator: Allocator, service: *ISCMService, host: Host) ScmView {
@@ -193,10 +202,10 @@ pub const ScmView = struct {
         const height = ui.cell.snap(rect.h);
         if (event.x < x or event.x >= x + width) return false;
         if (event.y < y or event.y >= y + height) return false;
-        // The list starts below the `SOURCE CONTROL` header and its divider.
-        if (event.y < y + 2) return false;
-        const row_index = event.y - y - 2;
-        const item = self.visibleRow(row_index, height -| 2) orelse return false;
+        // The list starts below the section header and its divider.
+        if (event.y < y + self.header_rows) return false;
+        const row_index = event.y - y - self.header_rows;
+        const item = self.visibleRow(row_index, height -| self.header_rows) orelse return false;
         const resource_index = for (self.resource_rows.items, 0..) |value, index| {
             if (value == item) break index;
         } else return false;
@@ -230,7 +239,7 @@ pub const ScmView = struct {
         self.theme = palette;
     }
 
-    pub fn render(self: *ScmView, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
+    pub fn render(self: *ScmView, grid: *ui.CellGrid, rect: ui.Rect, focused: bool, options: RenderOptions) !void {
         const x = ui.cell.snap(rect.x);
         const y = ui.cell.snap(rect.y);
         const width = ui.cell.snap(rect.w);
@@ -264,24 +273,30 @@ pub const ScmView = struct {
         }
         grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), background);
 
-        const header_style = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(header_foreground),
-            .attrs = if (focused) ui.cell.Attr.bold else 0,
-        };
-        drawText(grid, x + 1, y, width -| 2, "SOURCE CONTROL", header_style);
-
-        if (height > 1) {
-            const divider_style = ui.cell.PaintStyle{
-                .fg = ui.cell.packColor(divider_color),
+        // Upstream the SCM view pane container has no section header: the side
+        // bar title area shows `SOURCE CONTROL` and its actions. The header
+        // stays for standalone preview/test rendering.
+        self.header_rows = if (options.show_header) 2 else 0;
+        if (options.show_header) {
+            const header_style = ui.cell.PaintStyle{
+                .fg = ui.cell.packColor(header_foreground),
+                .attrs = if (focused) ui.cell.Attr.bold else 0,
             };
-            var divider: usize = 0;
-            while (divider < width) : (divider += 1) {
-                grid.putCodepoint(x + divider, y + 1, '\u{2500}', 1, divider_style);
+            drawText(grid, x + 1, y, width -| 2, "SOURCE CONTROL", header_style);
+
+            if (height > 1) {
+                const divider_style = ui.cell.PaintStyle{
+                    .fg = ui.cell.packColor(divider_color),
+                };
+                var divider: usize = 0;
+                while (divider < width) : (divider += 1) {
+                    grid.putCodepoint(x + divider, y + 1, '\u{2500}', 1, divider_style);
+                }
             }
         }
 
-        const list_top = y + 2;
-        const list_height = height -| 2;
+        const list_top = y + self.header_rows;
+        const list_height = height -| self.header_rows;
         self.updateScroll(list_height);
         var row: usize = 0;
         while (row < list_height) : (row += 1) {
@@ -519,7 +534,7 @@ test "scmView: rows, selection, opening and rendering" {
     // Render the SCM header, group count and relative path.
     var grid = try ui.CellGrid.init(allocator, 30, 10);
     defer grid.deinit();
-    try view.render(&grid, rect, true);
+    try view.render(&grid, rect, true, .{});
     const header = try grid.rowText(allocator, 0);
     defer allocator.free(header);
     try testing.expect(std.mem.indexOf(u8, header, "SOURCE CONTROL") != null);

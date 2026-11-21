@@ -29,10 +29,7 @@ pub const Position = layout_mod.Position;
 
 /// A composite-bar badge. Upstream badges come from the activity service; the
 /// workbench passes the Problems error/warning counts here.
-pub const Badge = struct {
-    id: []const u8,
-    text: []const u8,
-};
+pub const Badge = pane.Badge;
 
 pub const PanelPart = struct {
     allocator: Allocator,

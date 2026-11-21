@@ -127,6 +127,31 @@ pub const ActivityBarPart = struct {
         return result.toOwnedSlice();
     }
 
+    /// Port of `ActivitybarPart.getVisiblePaneCompositeIds`: the rail's
+    /// composite bar entries in visual order.
+    pub fn getVisiblePaneCompositeIds(self: *const ActivityBarPart, allocator: Allocator) ![][]const u8 {
+        var ids = std.array_list.Managed([]const u8).init(allocator);
+        errdefer ids.deinit();
+        for (self.activities.items) |activity| {
+            if (activity.visible) try ids.append(activity.id);
+        }
+        return ids.toOwnedSlice();
+    }
+
+    /// Port of `ActivitybarPart.getPinnedPaneCompositeIds`. The terminal rail
+    /// has no pin/unpin UI, so every visible entry is pinned.
+    pub fn getPinnedPaneCompositeIds(self: *const ActivityBarPart, allocator: Allocator) ![][]const u8 {
+        return self.getVisiblePaneCompositeIds(allocator);
+    }
+
+    /// Port of `ActivitybarPart.getPaneCompositeIds`.
+    pub fn getPaneCompositeIds(self: *const ActivityBarPart, allocator: Allocator) ![][]const u8 {
+        const ids = try allocator.alloc([]const u8, self.activities.items.len);
+        errdefer allocator.free(ids);
+        for (self.activities.items, 0..) |activity, index| ids[index] = activity.id;
+        return ids;
+    }
+
     pub fn setActive(self: *ActivityBarPart, id: []const u8) !bool {
         for (self.activities.items) |activity| {
             if (!std.mem.eql(u8, activity.id, id) or !activity.visible) continue;
@@ -284,7 +309,9 @@ pub fn render(
     }
 }
 
-fn badgeGlyph(description: []const u8) u21 {
+/// Single terminal cell standing in for the activity badge, shared with the
+/// side bar composite bar.
+pub fn badgeGlyph(description: []const u8) u21 {
     if (description.len <= 1) return description[0];
     for (description) |character| {
         if (!std.ascii.isDigit(character)) return description[0];

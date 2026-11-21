@@ -154,6 +154,9 @@ comptime {
     _ = @import("./vs/workbench/test/browser/parts/sidebar/sidebarPart.test.zig");
     _ = @import("./vs/workbench/browser/parts/compositeBar.zig");
     _ = @import("./vs/workbench/browser/parts/panel/panelPart.zig");
+    _ = @import("./vs/workbench/browser/parts/sidebar/sidebarPart.zig");
+    _ = @import("./vs/workbench/browser/workbenchConfiguration.zig");
+    _ = @import("./vs/workbench/services/layout/browser/layoutService.zig");
     _ = @import("./vs/workbench/common/views.zig");
     _ = @import("./vs/workbench/services/views/browser/viewDescriptorService.zig");
     _ = @import("./vs/workbench/test/browser/parts/statusbar/statusbarModel.test.zig");
