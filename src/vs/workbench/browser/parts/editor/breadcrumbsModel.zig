@@ -7,8 +7,9 @@
 // relative/absolute decision.
 //
 // Terminal adaptations:
-// - `ILabelService`/home-relative labels and `IUriIdentityService` are not
-//   ported; only workspace-relative and absolute paths are produced.
+// - `ILabelService` and `IUriIdentityService` are not ported. Home-relative
+//   paths use a single `~` root segment instead of upstream's per-component
+//   home labels; workspace-relative and absolute paths are otherwise used.
 // - The outline is created synchronously by `OutlineService`; provider updates
 //   arrive through `IOutline.onDidChange`.
 // - The model emits `on_did_update` after the element list or workspace root
@@ -84,6 +85,7 @@ pub const BreadcrumbsModel = struct {
     settings: Settings,
     outline_service: ?*OutlineService,
     editor: ?OutlineEditor,
+    home: ?[]const u8,
     file_info: FileInfo,
     elements: std.array_list.Managed(Element),
     outline: ?*IOutline = null,
@@ -98,6 +100,7 @@ pub const BreadcrumbsModel = struct {
         settings: Settings,
         outline_service: ?*OutlineService,
         editor: ?OutlineEditor,
+        home: ?[]const u8,
     ) !*BreadcrumbsModel {
         const self = try allocator.create(BreadcrumbsModel);
         errdefer allocator.destroy(self);
@@ -108,6 +111,7 @@ pub const BreadcrumbsModel = struct {
             .settings = settings,
             .outline_service = outline_service,
             .editor = editor,
+            .home = home,
             .file_info = .{ .path = std.array_list.Managed(FileElement).init(allocator) },
             .elements = std.array_list.Managed(Element).init(allocator),
             .on_did_update = Emitter(void).init(allocator),
@@ -172,7 +176,8 @@ pub const BreadcrumbsModel = struct {
         if (resource.len == 0) return;
 
         const folder = self.workspace.getWorkspaceFolder(resource);
-        self.file_info.is_relative = folder != null;
+        const under_home = self.home != null and isUnderRoot(resource, self.home.?);
+        self.file_info.is_relative = folder != null or under_home;
 
         // Collect from the file upwards, then prepend so the list is ordered
         // from the workspace root (or the top-most outside folder) to the file.
@@ -182,6 +187,7 @@ pub const BreadcrumbsModel = struct {
             if (folder) |workspace_folder| {
                 if (samePath(current, workspace_folder.resource)) break;
             }
+            if (under_home and samePath(current, self.home.?)) break;
             const element = FileElement{
                 .path = try self.allocator.dupe(u8, current),
                 .kind = if (first) .FILE else .FOLDER,
@@ -207,6 +213,16 @@ pub const BreadcrumbsModel = struct {
                     .label = label,
                 });
             }
+        } else if (under_home) {
+            // Upstream prepends the home path labels; the terminal uses the
+            // conventional `~` root segment instead of every home component.
+            const label = try self.allocator.dupe(u8, "~");
+            errdefer self.allocator.free(label);
+            try self.file_info.path.insert(0, .{
+                .path = try self.allocator.dupe(u8, self.home.?),
+                .kind = .ROOT_FOLDER,
+                .label = label,
+            });
         }
     }
 
@@ -292,6 +308,13 @@ pub const BreadcrumbsModel = struct {
 /// multi-root workspace, or for the workspace folder that is the resource
 /// itself. A single-folder `.FOLDER` workspace keeps the folder out of the
 /// breadcrumb path.
+fn isUnderRoot(path: []const u8, root: []const u8) bool {
+    const trimmed = std.mem.trimEnd(u8, root, "/\\");
+    if (trimmed.len == 0 or path.len <= trimmed.len) return false;
+    if (!std.mem.startsWith(u8, path, trimmed)) return false;
+    return path[trimmed.len] == '/' or path[trimmed.len] == '\\';
+}
+
 pub fn includeWorkspaceRoot(
     state: WorkbenchState,
     folder_count: usize,
