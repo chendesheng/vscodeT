@@ -292,6 +292,9 @@ pub const SearchView = struct {
     }
 
     pub fn triggerQueryChange(self: *SearchView, preserve_focus: bool, triggered_on_type: bool) !void {
+        // A new query supersedes any pending refresh scheduled by an earlier
+        // editor/content or configuration change.
+        self.refresh_at = null;
         const pattern = std.mem.trim(u8, self.widget.value(self.widget.context, .search), " \t\r\n");
         if (pattern.len == 0) {
             self.clearResults(false);
