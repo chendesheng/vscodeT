@@ -82,8 +82,8 @@ pub const TerminalMargin = struct {
     const Row = struct {
         view_line: usize,
         node: *ui.Node,
-        glyph_cell: *ui.Node,
-        glyph_text: *ui.Node,
+        glyph_cells: [3]*ui.Node,
+        glyph_texts: [3]*ui.Node,
         number_line: *ui.Node,
         number_text: *ui.Node,
         filler_line: *ui.Node,
@@ -95,8 +95,8 @@ pub const TerminalMargin = struct {
         painted_top: usize,
         number_kind: NumberKind = .blank,
         number_active: bool = false,
-        glyph: ?Glyph = null,
-        glyph_buf: [4]u8 = undefined,
+        glyphs: [3]?Glyph = .{ null, null, null },
+        glyph_bufs: [3][4]u8 = undefined,
         /// Owned copy of the painted number/continuation text. The text node
         /// borrows it, so a custom line-number renderer of any length is kept.
         number_owned: ?[]u8 = null,
@@ -113,7 +113,7 @@ pub const TerminalMargin = struct {
         filler_visible: bool,
         number_kind: NumberKind = .blank,
         number_active: bool = false,
-        glyph: ?Glyph = null,
+        glyphs: [3]?Glyph = .{ null, null, null },
         number_buf: [32]u8 = undefined,
         number_len: usize = 0,
         /// Text owned by the line-number overlay; only valid for the duration
@@ -292,7 +292,12 @@ pub const TerminalMargin = struct {
         const output_index = editor.outputLineIndex(view_line);
         if (output_index == 0) {
             if (glyph_width > 0) {
-                if (glyph_margin_overlay) |overlay| paint.glyph = overlay.renderedLine(view_line);
+                if (glyph_margin_overlay) |overlay| {
+                    const line_glyphs = overlay.renderedLine(view_line);
+                    for (0..3) |lane| {
+                        if (line_glyphs.lanes[lane]) |slot| paint.glyphs[lane] = slot.glyph;
+                    }
+                }
             }
             if (editor.line_number_map != null) {
                 // A diff snapshot's line-number map wins; `null` entries are
@@ -360,18 +365,24 @@ pub const TerminalMargin = struct {
             .height = .{ .cells = 1 },
         });
 
-        const glyph_cell = try doc.createElement(.div);
-        glyph_cell.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = 1 },
-            .height = .{ .cells = 1 },
-            .white_space = .pre,
-            .display = .none,
-        });
-        const glyph_text = try doc.createTextBorrowed("");
-        _ = try glyph_cell.appendChild(glyph_text);
+        var glyph_cells: [3]*ui.Node = undefined;
+        var glyph_texts: [3]*ui.Node = undefined;
+        for (0..3) |lane| {
+            const cell = try doc.createElement(.div);
+            cell.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = @floatFromInt(lane) },
+                .top = .{ .cells = 0 },
+                .width = .{ .cells = 1 },
+                .height = .{ .cells = 1 },
+                .white_space = .pre,
+                .display = .none,
+            });
+            const text = try doc.createTextBorrowed("");
+            _ = try cell.appendChild(text);
+            glyph_cells[lane] = cell;
+            glyph_texts[lane] = text;
+        }
 
         const number_line = try doc.createElement(.div);
         number_line.setStyle(.{
@@ -430,7 +441,7 @@ pub const TerminalMargin = struct {
         marker_text.setStyle(.{ .color = self.theme.line_number });
         _ = try marker_cell.appendChild(marker_text);
 
-        _ = try row_node.appendChild(glyph_cell);
+        for (0..3) |lane| _ = try row_node.appendChild(glyph_cells[lane]);
         _ = try row_node.appendChild(number_line);
         _ = try row_node.appendChild(filler_line);
         _ = try row_node.appendChild(fold_cell);
@@ -442,8 +453,8 @@ pub const TerminalMargin = struct {
         row.* = .{
             .view_line = view_line,
             .node = row_node,
-            .glyph_cell = glyph_cell,
-            .glyph_text = glyph_text,
+            .glyph_cells = glyph_cells,
+            .glyph_texts = glyph_texts,
             .number_line = number_line,
             .number_text = number_text,
             .filler_line = filler_line,
@@ -519,21 +530,22 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
         changed = true;
     }
 
-    const glyph_changed = blk: {
-        const current = row.glyph;
-        const next = paint.glyph;
-        if (current == null or next == null) break :blk (current == null) != (next == null);
-        break :blk current.?.codepoint != next.?.codepoint or !current.?.color.eql(next.?.color);
-    };
-    if (glyph_changed) {
-        row.glyph = paint.glyph;
-        if (paint.glyph) |glyph| {
-            const len = std.unicode.utf8Encode(glyph.codepoint, &row.glyph_buf) catch 0;
-            row.glyph_text.setTextBorrowed(row.glyph_buf[0..len]);
-            row.glyph_text.setStyle(.{ .color = glyph.color });
-            setDisplay(row.glyph_cell, true);
+    for (0..3) |lane| {
+        const current = row.glyphs[lane];
+        const next = paint.glyphs[lane];
+        const glyph_changed = blk: {
+            if (current == null or next == null) break :blk (current == null) != (next == null);
+            break :blk current.?.codepoint != next.?.codepoint or !current.?.color.eql(next.?.color);
+        };
+        if (!glyph_changed) continue;
+        row.glyphs[lane] = next;
+        if (next) |glyph| {
+            const len = std.unicode.utf8Encode(glyph.codepoint, &row.glyph_bufs[lane]) catch 0;
+            row.glyph_texts[lane].setTextBorrowed(row.glyph_bufs[lane][0..len]);
+            row.glyph_texts[lane].setStyle(.{ .color = glyph.color });
+            setDisplay(row.glyph_cells[lane], true);
         } else {
-            setDisplay(row.glyph_cell, false);
+            setDisplay(row.glyph_cells[lane], false);
         }
         changed = true;
     }

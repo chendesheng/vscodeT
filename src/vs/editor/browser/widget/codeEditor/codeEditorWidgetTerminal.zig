@@ -1553,7 +1553,7 @@ pub const Editor = struct {
 
     /// Reserves or releases the single terminal glyph-margin cell.
     pub fn setGlyphMarginWidth(self: *Editor, width: usize) void {
-        const clamped = @min(width, 1);
+        const clamped = @min(width, 3);
         if (self.gutter_glyph_width == clamped) return;
         self.gutter_glyph_width = clamped;
         self.refreshLayout() catch {};

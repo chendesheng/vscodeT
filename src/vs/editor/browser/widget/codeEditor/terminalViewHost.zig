@@ -66,6 +66,7 @@ const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const DecorationsOverlay = decorations_overlay_mod.DecorationsOverlay;
 const BlockDecorations = block_decorations_mod.BlockDecorations;
 const GlyphMarginOverlay = glyph_margin_mod.GlyphMarginOverlay;
+const GlyphMarginLanesModel = @import("../../../common/viewModel/glyphLanesModel.zig").GlyphMarginLanesModel;
 const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const ViewLine = @import("../../viewParts/viewLines/viewLine.zig").ViewLine;
@@ -176,6 +177,7 @@ pub const TerminalViewHost = struct {
     decorations_overlay: DecorationsOverlay,
     block_decorations: BlockDecorations,
     glyph_margin: GlyphMarginOverlay,
+    glyph_lanes: GlyphMarginLanesModel,
     glyph_margin_dirty: bool = true,
     selections_overlay: SelectionsOverlay,
     current_line: CurrentLineHighlightOverlay,
@@ -209,6 +211,7 @@ pub const TerminalViewHost = struct {
             .decorations_overlay = undefined,
             .block_decorations = undefined,
             .glyph_margin = undefined,
+            .glyph_lanes = undefined,
             .selections_overlay = undefined,
             .current_line = undefined,
             .view_cursors = undefined,
@@ -236,13 +239,14 @@ pub const TerminalViewHost = struct {
             editor.converter.interface(),
         );
         self.context = ViewContext.init(&self.configuration, self.theme.interface(), self.modelInterface());
+        self.glyph_lanes = try GlyphMarginLanesModel.init(allocator, editor.model.getLineCount());
         self.view.init(allocator, &self.context);
         self.scratch_text = try StringBuilder.init(allocator, 256);
         self.line_numbers.init(allocator, &self.context);
         self.line_decorations.init(allocator, &self.context);
         self.decorations_overlay.init(allocator, &self.context);
         self.block_decorations.init(allocator, &self.context);
-        self.glyph_margin.init(allocator, &self.context);
+        self.glyph_margin.init(allocator, &self.context, &self.glyph_lanes);
         self.selections_overlay.init(allocator, &self.context);
         self.current_line.initContent(allocator, &self.context);
         self.view_cursors.init(allocator, &self.context);
@@ -306,6 +310,7 @@ pub const TerminalViewHost = struct {
         self.selections_overlay.deinit();
         self.block_decorations.deinit();
         self.glyph_margin.deinit();
+        self.glyph_lanes.deinit();
         self.decorations_overlay.deinit();
         self.line_decorations.deinit();
         self.line_numbers.deinit();
@@ -431,17 +436,28 @@ pub const TerminalViewHost = struct {
     pub fn prepareFrame(self: *TerminalViewHost) void {
         if (!self.glyph_margin_dirty) return;
         self.glyph_margin_dirty = false;
-        var has_glyph = false;
+
+        const line_count = self.editor.model.getLineCount();
+        self.glyph_lanes.reset(line_count) catch return;
         const all = self.editor.model.getAllDecorations(0, false) catch return;
         defer self.editor.model.getAllocator().free(all);
+
+        const converter = self.editor.converter.interface();
+        var has_glyph = false;
         for (all) |decoration| {
-            if (decoration.options.glyphMarginClassName != null) {
-                has_glyph = true;
-                break;
-            }
+            if (decoration.options.glyphMarginClassName != null) has_glyph = true;
+            const glyph_options = decoration.options.glyphMargin orelse continue;
+            const view_range = converter.convertModelRangeToViewRange(
+                converter.context,
+                decoration.range,
+                .None,
+            );
+            self.glyph_lanes.push(glyph_options.position, view_range, glyph_options.persistLane orelse false);
         }
         const enabled = self.options.get(.glyphMargin);
-        self.editor.setGlyphMarginWidth(if (has_glyph and enabled) 1 else 0);
+        const lanes = @max(self.glyph_lanes.requiredLanes(), 1);
+        const width = if (has_glyph and enabled) @min(lanes, 3) else 0;
+        self.editor.setGlyphMarginWidth(width);
     }
 
     pub fn foldingShowsEllipsis(self: *const TerminalViewHost, model_line: usize) bool {
