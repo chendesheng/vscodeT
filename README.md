@@ -510,8 +510,11 @@ console API for raw mode, sizing and input polling.
   composited under the two chrome rows, so switching tabs preserves scroll
   position and decorations. Tabs show the Explorer's Nerd Font file icon (the
   terminal adaptation of the file icon theme), preview italics, a close cell
-  and a dirty dot; the close cell and middle click close the tab, and `Ctrl-W`
-  closes the active tab. A dirty tab first opens VS Code's save confirmation
+  and a dirty dot; tab hover, borders, the last-pinned separator and the
+  active-tab top border use their theme ids (the top border only when the
+  terminal supports cell borders), right-click does not close or activate a
+  tab, the close cell and middle click close it, and `Ctrl-W` closes the active
+  tab. A dirty tab first opens VS Code's save confirmation
   (Save / Don't Save / Cancel): Save writes and then closes only if the buffer
   is clean, Don't Save discards the changes, and Cancel or Escape leaves the
   tab open. The dialog is

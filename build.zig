@@ -572,7 +572,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const view_tests = b.addTest(.{
         .name = "view_tests",
         .root_module = tests.root_module,
-        .filters = &.{ "block decorations", "View:", "TerminalViewHost", "FindController:", "margin:", "Editor:", "stickyScroll", "Statusbar" },
+        .filters = &.{ "block decorations", "View:", "TerminalViewHost", "FindController:", "margin:", "Editor:", "stickyScroll", "Statusbar", "tabBar", "Workbench: right click" },
     });
     const run_view_tests = b.addRunArtifact(view_tests);
     const view_test_step = b.step("test-view", "Run editor view-part tests");
