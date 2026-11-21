@@ -1005,7 +1005,7 @@ pub const SCMHistoryViewPane = struct {
                 try appendGlyphs(doc, line, placeholder, self.theme);
                 const indent = try doc.createElement(.span);
                 indent.setStyle(.{ .white_space = .pre, .flex_shrink = 0 });
-                _ = try indent.appendText(try indentText(doc.allocator, 2 + change.depth * 2));
+                _ = try indent.appendText(try indentText(doc.arena.allocator(), 2 + change.depth * 2));
                 _ = try line.appendChild(indent);
                 if (change.change.status != 0) {
                     const status = try doc.createElement(.span);
@@ -1037,7 +1037,7 @@ pub const SCMHistoryViewPane = struct {
                 try appendGlyphs(doc, line, placeholder, self.theme);
                 const indent = try doc.createElement(.span);
                 indent.setStyle(.{ .white_space = .pre, .flex_shrink = 0 });
-                _ = try indent.appendText(try indentText(doc.allocator, 2 + folder.depth * 2));
+                _ = try indent.appendText(try indentText(doc.arena.allocator(), 2 + folder.depth * 2));
                 _ = try line.appendChild(indent);
                 const label = try doc.createElement(.span);
                 label.setStyle(.{ .white_space = .pre, .color = foreground });

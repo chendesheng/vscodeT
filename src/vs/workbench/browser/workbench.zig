@@ -3863,9 +3863,15 @@ pub const Workbench = struct {
     ) !void {
         const root = self.git_root orelse return error.NoRepository;
         const git = self.git orelse return error.NoGit;
-        const relative_right = relativeToRoot(path, root) orelse return error.OutsideRepository;
+        const relative_right = if (std.fs.path.isAbsolute(path))
+            relativeToRoot(path, root) orelse return error.OutsideRepository
+        else
+            path;
         const relative_left = if (original_path) |value|
-            relativeToRoot(value, root) orelse relative_right
+            if (std.fs.path.isAbsolute(value))
+                relativeToRoot(value, root) orelse relative_right
+            else
+                value
         else
             relative_right;
 
@@ -13395,12 +13401,11 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Graph") != null);
     workbench.scm_view_model.?.setCollapsed("graph", false);
 
-    // Expanding a commit appends its changed-file rows.
-    if (history_view.rows.items.len > 1) {
-        history_view.selection = 0;
-        _ = try history_view.handleKey(&.{ .key = .right });
-        try std.testing.expect(history_view.rows.items.len >= 1);
-    }
+    // Expanding the first commit appends its changed-file rows.
+    history_view.selection = 0;
+    const rows_before_expand = history_view.rows.items.len;
+    _ = try history_view.handleKey(&.{ .key = .right });
+    try std.testing.expect(history_view.rows.items.len > rows_before_expand);
 
     // The branch/status entry and activity badge follow the repository.
     try std.testing.expect(workbench.git_status_accessor != null);
@@ -13458,6 +13463,23 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // A second open of the same ref pair refreshes the existing tab.
     try workbench.openDiff(path, .head, .working);
     try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
+
+    // Opening a changed file from the Graph uses the parent/commit snapshot
+    // diff; root commits compare against the empty tree.
+    var change_row: ?usize = null;
+    for (history_view.rows.items, 0..) |row, row_index| {
+        if (std.meta.activeTag(row) == .change) {
+            change_row = row_index;
+            break;
+        }
+    }
+    try std.testing.expect(change_row != null);
+    history_view.selection = change_row.?;
+    _ = try history_view.handleKey(&.{ .key = .enter });
+    const commit_tab = workbench.activeTab() orelse return error.TestExpectedTab;
+    try std.testing.expect(commit_tab.isDiff());
+    try std.testing.expect(std.mem.indexOf(u8, commit_tab.input.getName(), "\u{2194}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, commit_tab.input.getName(), "Empty") != null);
 
     // Session save has no serializer for diff tabs and skips them.
     var registry = editor_factory.EditorFactoryRegistry.init(allocator);
