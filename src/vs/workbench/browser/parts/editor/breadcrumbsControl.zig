@@ -76,14 +76,17 @@ const base_inactive_background = ui.cell.PaintStyle{
 const base_focused_style = ui.cell.PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 255, .g = 255, .b = 255 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
-    .attrs = ui.cell.Attr.underline,
+};
+const base_focused_selected_style = ui.cell.PaintStyle{
+    .fg = ui.cell.packColor(.{ .r = 255, .g = 255, .b = 255 }),
+    .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
 const base_hovered_style = ui.cell.PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 255, .g = 255, .b = 255 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
 const base_separator_style = ui.cell.PaintStyle{
-    .fg = ui.cell.packColor(.{ .r = 110, .g = 110, .b = 110 }),
+    .fg = ui.cell.packColor(.{ .r = 204, .g = 204, .b = 204 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
 const base_icon_style = ui.cell.PaintStyle{
@@ -256,6 +259,7 @@ pub const BreadcrumbsControl = struct {
         var background = base_background;
         var inactive_background = base_inactive_background;
         var focused_style = base_focused_style;
+        var focused_selected_style = base_focused_selected_style;
         var hovered_style = base_hovered_style;
         var separator_style = base_separator_style;
         var icon_style = base_icon_style;
@@ -271,14 +275,17 @@ pub const BreadcrumbsControl = struct {
             focused_style = .{
                 .fg = ui.cell.packColor(colors.color("breadcrumb.focusForeground", .{ 255, 255, 255 })),
                 .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
-                .attrs = ui.cell.Attr.underline,
+            };
+            focused_selected_style = .{
+                .fg = ui.cell.packColor(colors.color("breadcrumb.activeSelectionForeground", .{ 255, 255, 255 })),
+                .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
             };
             hovered_style = .{
-                .fg = ui.cell.packColor(colors.color("breadcrumb.activeSelectionForeground", .{ 255, 255, 255 })),
-                .bg = ui.cell.packColor(colors.color("toolbar.hoverBackground", .{ 37, 37, 38 })),
+                .fg = ui.cell.packColor(colors.color("breadcrumb.focusForeground", .{ 255, 255, 255 })),
+                .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
             };
             separator_style = .{
-                .fg = ui.cell.packColor(colors.color("editorGroup.border", .{ 110, 110, 110 })),
+                .fg = ui.cell.packColor(colors.color("breadcrumb.foreground", .{ 204, 204, 204 })),
                 .bg = ui.cell.packColor(colors.color("breadcrumb.background", .{ 37, 37, 38 })),
             };
             icon_style = .{
@@ -291,6 +298,7 @@ pub const BreadcrumbsControl = struct {
             .background = base,
             .item = base,
             .focused = if (active_group) focused_style else inactive_background,
+            .focused_selected = if (active_group) focused_selected_style else inactive_background,
             .hovered = if (active_group) hovered_style else inactive_background,
             .separator = separator_style,
             .icon = icon_style,

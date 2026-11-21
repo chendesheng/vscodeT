@@ -60,6 +60,7 @@ pub const Style = struct {
     background: PaintStyle,
     item: PaintStyle,
     focused: PaintStyle,
+    focused_selected: PaintStyle,
     hovered: PaintStyle,
     separator: PaintStyle,
     icon: PaintStyle,
@@ -162,6 +163,7 @@ pub const BreadcrumbsWidget = struct {
     }
 
     pub fn hitAt(self: *const BreadcrumbsWidget, x: usize) ?usize {
+        if (!self.enabled) return null;
         for (self.hits.items) |hit| {
             if (x >= hit.start and x < hit.end) return hit.index;
         }
@@ -227,12 +229,12 @@ pub const BreadcrumbsWidget = struct {
 
             const item = self.items.items[index];
             var paint = style.item;
-            if (focused_widget and self.focused == index) {
+            if (focused_widget and self.focused == index and self.selected == index) {
+                paint = style.focused_selected;
+            } else if (focused_widget and self.focused == index) {
                 paint = style.focused;
-            } else if (self.hovered == index) {
+            } else if (!(focused_widget and self.selected == index) and self.hovered == index) {
                 paint = style.hovered;
-            } else if (focused_widget and self.selected == index) {
-                paint = style.focused;
             }
 
             const start = col;
@@ -337,4 +339,46 @@ fn drawText(grid: *CellGrid, x: usize, row: usize, text: []const u8, paint: Pain
         offset += decoded.len;
     }
     return col;
+}
+
+test "breadcrumbs widget: disabled hits, focus order and focused selection" {
+    const allocator = std.testing.allocator;
+    var widget = BreadcrumbsWidget.init(allocator);
+    defer widget.deinit();
+    const items = [_]Item{
+        .{ .label = "a" },
+        .{ .label = "b" },
+    };
+    try widget.setItems(&items);
+
+    var grid = try CellGrid.init(allocator, 20, 1);
+    defer grid.deinit();
+    const red = PaintStyle{ .fg = ui.cell.packColor(.{ .r = 10, .g = 0, .b = 0 }) };
+    const green = PaintStyle{ .fg = ui.cell.packColor(.{ .r = 0, .g = 10, .b = 0 }) };
+    const blue = PaintStyle{ .fg = ui.cell.packColor(.{ .r = 0, .g = 0, .b = 10 }) };
+    const cyan = PaintStyle{ .fg = ui.cell.packColor(.{ .r = 0, .g = 10, .b = 10 }) };
+    const style = Style{
+        .background = PaintStyle{},
+        .item = red,
+        .focused = green,
+        .focused_selected = blue,
+        .hovered = cyan,
+        .separator = PaintStyle{},
+        .icon = PaintStyle{},
+    };
+
+    widget.setFocused(0);
+    widget.setSelection(0);
+    widget.hovered = 1;
+    try widget.draw(&grid, 0, 0, 20, style, true);
+    try std.testing.expectEqual(blue.fg, grid.fg[grid.index(0, 0)]);
+
+    widget.setSelection(null);
+    widget.hovered = 0;
+    try widget.draw(&grid, 0, 0, 20, style, true);
+    try std.testing.expectEqual(green.fg, grid.fg[grid.index(0, 0)]);
+
+    try std.testing.expect(widget.hitAt(0) != null);
+    widget.setEnabled(false);
+    try std.testing.expect(widget.hitAt(0) == null);
 }
