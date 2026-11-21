@@ -155,6 +155,7 @@ pub const BreadcrumbsControl = struct {
             self.widget.setFocused(null);
             self.widget.setSelection(null);
         }
+        self.widget.emitFocusChanged(focused) catch {};
     }
 
     pub fn setSettings(self: *BreadcrumbsControl, settings: Settings) !void {
@@ -336,8 +337,7 @@ pub const BreadcrumbsControl = struct {
         const model = self.model orelse return false;
         const elements = model.getElements();
         if (index >= elements.len) return false;
-        self.widget.setFocused(index);
-        self.widget.setSelection(index);
+        try self.widget.selectItem(index);
         const selection: Selection = switch (elements[index]) {
             .file => |file| .{ .file = file },
             .outline => |outline| .{ .outline = outline },
@@ -351,8 +351,9 @@ pub const BreadcrumbsControl = struct {
         const count = self.widget.itemCount();
         if (count == 0) return false;
         self.focused = true;
-        self.widget.setFocused(count - 1);
         self.widget.setSelection(count - 1);
+        self.widget.emitFocus(count - 1) catch {};
+        self.widget.emitFocusChanged(true) catch {};
         self.host.request_render(self.host.context);
         return true;
     }
@@ -361,6 +362,7 @@ pub const BreadcrumbsControl = struct {
         if (!self.focused) return;
         if (self.widget.getFocused() == null) self.widget.setFocused(0);
         self.widget.focusNext();
+        if (self.widget.getFocused()) |index| self.widget.emitFocus(index) catch {};
         self.host.request_render(self.host.context);
     }
 
@@ -368,6 +370,7 @@ pub const BreadcrumbsControl = struct {
         if (!self.focused) return;
         if (self.widget.getFocused() == null) self.widget.setFocused(0);
         self.widget.focusPrev();
+        if (self.widget.getFocused()) |index| self.widget.emitFocus(index) catch {};
         self.host.request_render(self.host.context);
     }
 
