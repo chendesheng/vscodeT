@@ -933,7 +933,8 @@ console API for raw mode, sizing and input polling.
   files uses an empty workspace, as upstream does.
 - The editor is rendered through the library (`src/tui/editorView.zig`): text,
   syntax colors, right-aligned line numbers (inactive/active colors from
-  `editorLineNumber.*`), wrapped-line markers, selections
+  `editorLineNumber.*`; the column follows `editor.lineNumbers`,
+  `editor.lineNumbersMinChars` and the digit count), wrapped-line markers, selections
   (the theme `editor.selectionBackground` with dimmed covered text), the current
   line and a hardware cursor. The workbench status bar is a
   full-width bottom row built from the ported
@@ -1392,8 +1393,10 @@ TUI editor:
   JSON, and typing a matching closing bracket outdents the line. Languages
   without a ported upstream configuration (for example Zig) keep the caret's
   current indentation.
-- Folding: the last gutter cell shows `▾` for an expanded region and `▸` when
-  collapsed; clicking it toggles the region on that line. `Ctrl-Shift-[` /
+- Folding: the gutter reserves a control cell when `editor.folding` is on and
+  `showFoldingControls` is not `never`; it shows `▾` for an expanded region and
+  `▸` when collapsed (the `mouseover` mode keeps expanded controls hidden until
+  hover, as upstream); clicking it toggles the region on that line. `Ctrl-Shift-[` /
   `Ctrl-Shift-]` fold/unfold at the caret, `Ctrl-K Ctrl-L` toggles,
   `Ctrl-K Ctrl-0` folds all and `Ctrl-K Ctrl-J` unfolds all. Collapsed regions
   hide their model lines and end the first visible line with `…`.

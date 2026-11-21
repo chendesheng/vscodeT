@@ -957,7 +957,7 @@ pub const View = struct {
     /// The last gutter cell is the fold-control column. It only toggles when
     /// the view line is the first output line of a model line with a region.
     fn foldControlAt(self: *const View, x: usize, y: usize) ?usize {
-        if (self.editor.gutterWidth() < 2 or x != self.editor.foldCellColumn()) return null;
+        if (!self.editor.hasFoldControl() or x != self.editor.foldCellColumn()) return null;
         if (y >= self.editor.textHeight()) return null;
         const view_line = self.editor.topViewLine() + y;
         if (view_line > self.editor.viewLineCount()) return null;
@@ -2923,8 +2923,8 @@ test "View: content widget anchors to a model position" {
 
     try std.testing.expectEqual(@as(usize, 1), view.terminal_view_host.viewRef().contentWidgets().entries.items.len);
     const entry = view.terminal_view_host.viewRef().contentWidgets().entries.items[0];
-    // Gutter is 3 cells wide, and column 3 starts at cell 2 of the text.
-    try std.testing.expectEqual(@as(usize, 5), entry.left);
+    // Column 3 starts at the second cell of the text area.
+    try std.testing.expectEqual(editor.gutterWidth() + 2, entry.left);
     try std.testing.expectEqual(@as(usize, 1), entry.top);
 
     const row = try rowText(view, allocator, 1);
@@ -2938,7 +2938,7 @@ test "View: content widget anchors to a model position" {
 test "View: content widget anchors on a wrapped line" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "aaaa bbbb cccc dddd", "test.txt", 20, 6);
+    const editor = try Editor.createFromText(allocator, io, "aaaa bbbb cccc dddd", "test.txt", 23, 6);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -2963,9 +2963,8 @@ test "View: content widget anchors on a wrapped line" {
     try view.renderAnsi(&out.writer);
 
     try std.testing.expectEqual(@as(usize, 2), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].top);
-    // Column 18 is the third cell of the wrapped segment, which starts at the
-    // left edge of the text area.
-    try std.testing.expectEqual(@as(usize, 5), view.terminal_view_host.viewRef().contentWidgets().entries.items[0].left);
+    // Column 18 is the third cell of the wrapped segment.
+    try std.testing.expectEqual(editor.gutterWidth() + 2, view.terminal_view_host.viewRef().contentWidgets().entries.items[0].left);
 }
 
 test "View: content widget flips above and clamps to the text area" {
@@ -3231,8 +3230,8 @@ test "View: hover highlight paints the anchor range" {
     try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
-    // Gutter is 2; columns 2..4 of the text are highlighted.
-    const background = grid.bg[grid.index(3, 0)];
+    // Columns 2..4 of the text are highlighted.
+    const background = grid.bg[grid.index(editor.gutterWidth() + 1, 0)];
     try std.testing.expect(background != 0);
 }
 
@@ -3357,7 +3356,7 @@ test "View: folding keeps a scrolled viewport at the same model line" {
 test "View: mouse target distinguishes text, empty area, gutter and status" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 20, 5);
+    const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 23, 5);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -3370,7 +3369,7 @@ test "View: mouse target distinguishes text, empty area, gutter and status" {
     defer out.deinit();
     try view.renderAnsi(&out.writer);
 
-    const on_text = try view.mouseTargetAt(4, 0);
+    const on_text = try view.mouseTargetAt(editor.gutterWidth() + 1, 0);
     try std.testing.expectEqual(editorBrowser.MouseTargetType.content_text, on_text.type);
     try std.testing.expectEqual(@as(usize, 2), on_text.position.?.column);
 
@@ -3379,7 +3378,7 @@ test "View: mouse target distinguishes text, empty area, gutter and status" {
     const empty_detail = empty.detail.?.content_empty;
     try std.testing.expect(!empty_detail.is_after_lines);
 
-    const after_lines = try view.mouseTargetAt(3, 3);
+    const after_lines = try view.mouseTargetAt(editor.gutterWidth(), 3);
     try std.testing.expectEqual(editorBrowser.MouseTargetType.content_empty, after_lines.type);
     try std.testing.expect(after_lines.detail.?.content_empty.is_after_lines);
 
@@ -3766,7 +3765,7 @@ test "View: typing an auto-closed bracket highlights the pair" {
 test "View: bracket highlights stay on their wrapped segment" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "(abcdefghij)", "test.zig", 10, 4);
+    const editor = try Editor.createFromText(allocator, io, "(abcdefghij)", "test.zig", 13, 4);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -3796,7 +3795,7 @@ test "View: bracket highlights stay on their wrapped segment" {
 test "View: find decorations stay on their wrapped segment" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 11, 4);
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 14, 4);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -3831,7 +3830,7 @@ test "View: find decorations stay on their wrapped segment" {
 test "View: bracket highlights include the synthetic wrap indentation" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "    (abcdefghij)", "test.zig", 11, 8);
+    const editor = try Editor.createFromText(allocator, io, "    (abcdefghij)", "test.zig", 14, 8);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -4079,7 +4078,7 @@ test "View: overview markers honor the per-decoration flag" {
 test "View: overview markers follow wrapped view lines" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 10, 5);
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 13, 5);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -4774,9 +4773,9 @@ test "View: quick-diff gutter marker" {
     try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
-    try std.testing.expectEqual(@as(usize, 4), editor.gutterWidth());
-    try std.testing.expectEqual(@as(usize, 2), editor.foldCellColumn());
-    try std.testing.expectEqual(@as(usize, 3), editor.quickDiffCellColumn());
+    try std.testing.expectEqual(@as(usize, 7), editor.gutterWidth());
+    try std.testing.expectEqual(@as(usize, 5), editor.foldCellColumn());
+    try std.testing.expectEqual(@as(usize, 6), editor.quickDiffCellColumn());
     const row0 = try rowText(view, allocator, 0);
     defer allocator.free(row0);
     const row1 = try rowText(view, allocator, 1);
