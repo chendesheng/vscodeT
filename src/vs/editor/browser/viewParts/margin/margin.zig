@@ -23,6 +23,9 @@ const LineNumbersOverlay = line_numbers_mod.LineNumbersOverlay;
 const lines_decorations_mod = @import("../linesDecorations/linesDecorations.zig");
 const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const FoldingDecorationProvider = @import("../../../contrib/folding/browser/foldingDecorations.zig").FoldingDecorationProvider;
+const glyph_margin = @import("../glyphMargin/glyphMargin.zig");
+const GlyphMarginOverlay = glyph_margin.GlyphMarginOverlay;
+const Glyph = glyph_margin.Glyph;
 
 /// Terminal colors for the gutter. The TUI resolves the upstream color ids and
 /// passes this bundle; the editor-layer view part keeps the defaults so a
@@ -79,6 +82,8 @@ pub const TerminalMargin = struct {
     const Row = struct {
         view_line: usize,
         node: *ui.Node,
+        glyph_cell: *ui.Node,
+        glyph_text: *ui.Node,
         number_line: *ui.Node,
         number_text: *ui.Node,
         filler_line: *ui.Node,
@@ -90,6 +95,8 @@ pub const TerminalMargin = struct {
         painted_top: usize,
         number_kind: NumberKind = .blank,
         number_active: bool = false,
+        glyph: ?Glyph = null,
+        glyph_buf: [4]u8 = undefined,
         /// Owned copy of the painted number/continuation text. The text node
         /// borrows it, so a custom line-number renderer of any length is kept.
         number_owned: ?[]u8 = null,
@@ -106,6 +113,7 @@ pub const TerminalMargin = struct {
         filler_visible: bool,
         number_kind: NumberKind = .blank,
         number_active: bool = false,
+        glyph: ?Glyph = null,
         number_buf: [32]u8 = undefined,
         number_len: usize = 0,
         /// Text owned by the line-number overlay; only valid for the duration
@@ -164,6 +172,7 @@ pub const TerminalMargin = struct {
         editor: *Editor,
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
+        glyph_margin_overlay: ?*const GlyphMarginOverlay,
         folding: *const FoldingDecorationProvider,
         gutter: usize,
         text_height: usize,
@@ -175,6 +184,7 @@ pub const TerminalMargin = struct {
         const fold_column = editor.foldCellColumn();
         const fold_width = editor.gutterFoldWidth();
         const number_width = editor.gutterNumberWidth();
+        const glyph_width = editor.gutterGlyphWidth();
 
         if (self.theme_dirty) {
             try self.resetRows(doc, host);
@@ -210,10 +220,12 @@ pub const TerminalMargin = struct {
                 editor,
                 line_numbers,
                 line_decorations,
+                glyph_margin_overlay,
                 folding,
                 view_line,
                 total,
                 number_width,
+                glyph_width,
                 fold_width,
                 marker_width,
             );
@@ -244,6 +256,7 @@ pub const TerminalMargin = struct {
                     screen_row,
                     gutter,
                     number_width,
+                    glyph_width,
                     fold_column,
                 );
                 if (host) |retained| try retained.addSubtree(row.node);
@@ -262,10 +275,12 @@ pub const TerminalMargin = struct {
         editor: *Editor,
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
+        glyph_margin_overlay: ?*const GlyphMarginOverlay,
         folding: *const FoldingDecorationProvider,
         view_line: usize,
         total: usize,
         number_width: usize,
+        glyph_width: usize,
         fold_width: usize,
         marker_width: usize,
     ) RowPaint {
@@ -276,6 +291,9 @@ pub const TerminalMargin = struct {
         var paint = RowPaint{ .filler = false, .filler_visible = false };
         const output_index = editor.outputLineIndex(view_line);
         if (output_index == 0) {
+            if (glyph_width > 0) {
+                if (glyph_margin_overlay) |overlay| paint.glyph = overlay.renderedLine(view_line);
+            }
             if (editor.line_number_map != null) {
                 // A diff snapshot's line-number map wins; `null` entries are
                 // filler rows with a blank number.
@@ -329,6 +347,7 @@ pub const TerminalMargin = struct {
         screen_row: usize,
         gutter: usize,
         number_width: usize,
+        glyph_width: usize,
         fold_column: usize,
     ) !*Row {
         const row_cells: f64 = @floatFromInt(screen_row);
@@ -341,10 +360,23 @@ pub const TerminalMargin = struct {
             .height = .{ .cells = 1 },
         });
 
+        const glyph_cell = try doc.createElement(.div);
+        glyph_cell.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = 0 },
+            .top = .{ .cells = 0 },
+            .width = .{ .cells = 1 },
+            .height = .{ .cells = 1 },
+            .white_space = .pre,
+            .display = .none,
+        });
+        const glyph_text = try doc.createTextBorrowed("");
+        _ = try glyph_cell.appendChild(glyph_text);
+
         const number_line = try doc.createElement(.div);
         number_line.setStyle(.{
             .position = .absolute,
-            .left = .{ .cells = 0 },
+            .left = .{ .cells = @floatFromInt(glyph_width) },
             .top = .{ .cells = 0 },
             .width = .{ .cells = @floatFromInt(number_width) },
             .height = .{ .cells = 1 },
@@ -358,9 +390,9 @@ pub const TerminalMargin = struct {
         const filler_line = try doc.createElement(.div);
         filler_line.setStyle(.{
             .position = .absolute,
-            .left = .{ .cells = 0 },
+            .left = .{ .cells = @floatFromInt(glyph_width) },
             .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(gutter -| 1) },
+            .width = .{ .cells = @floatFromInt(number_width) },
             .height = .{ .cells = 1 },
             .white_space = .pre,
             .text_align = .right,
@@ -398,6 +430,7 @@ pub const TerminalMargin = struct {
         marker_text.setStyle(.{ .color = self.theme.line_number });
         _ = try marker_cell.appendChild(marker_text);
 
+        _ = try row_node.appendChild(glyph_cell);
         _ = try row_node.appendChild(number_line);
         _ = try row_node.appendChild(filler_line);
         _ = try row_node.appendChild(fold_cell);
@@ -409,6 +442,8 @@ pub const TerminalMargin = struct {
         row.* = .{
             .view_line = view_line,
             .node = row_node,
+            .glyph_cell = glyph_cell,
+            .glyph_text = glyph_text,
             .number_line = number_line,
             .number_text = number_text,
             .filler_line = filler_line,
@@ -481,6 +516,25 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
             .continuation => self.theme.continuation,
             else => if (paint.number_active) self.theme.line_number_active else self.theme.line_number,
         } });
+        changed = true;
+    }
+
+    const glyph_changed = blk: {
+        const current = row.glyph;
+        const next = paint.glyph;
+        if (current == null or next == null) break :blk (current == null) != (next == null);
+        break :blk current.?.codepoint != next.?.codepoint or !current.?.color.eql(next.?.color);
+    };
+    if (glyph_changed) {
+        row.glyph = paint.glyph;
+        if (paint.glyph) |glyph| {
+            const len = std.unicode.utf8Encode(glyph.codepoint, &row.glyph_buf) catch 0;
+            row.glyph_text.setTextBorrowed(row.glyph_buf[0..len]);
+            row.glyph_text.setStyle(.{ .color = glyph.color });
+            setDisplay(row.glyph_cell, true);
+        } else {
+            setDisplay(row.glyph_cell, false);
+        }
         changed = true;
     }
 
@@ -599,7 +653,6 @@ fn parseQuickDiffClass(classes: []const u8) ?ParsedQuickDiffClass {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
-const glyph_margin = @import("../glyphMargin/glyphMargin.zig");
 const model_mod = @import("../../../common/model.zig");
 const Range = @import("../../../common/core/range.zig").Range;
 const TerminalViewHost = @import("../../widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
@@ -684,6 +737,7 @@ test "margin: theme colors the line numbers and the active line" {
         editor,
         &host.line_numbers,
         &host.line_decorations,
+        host.glyphMargin(),
         &folding,
         editor.gutterWidth(),
         editor.textHeight(),
@@ -737,6 +791,7 @@ test "margin: paints the line-number map, blank filler and the quick-diff cell" 
         editor,
         &host.line_numbers,
         &host.line_decorations,
+        host.glyphMargin(),
         &folding,
         editor.gutterWidth(),
         editor.textHeight(),

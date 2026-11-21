@@ -375,6 +375,9 @@ pub const Editor = struct {
     /// the fold width follows `editor.folding`/`showFoldingControls`.
     gutter_number_width: usize,
     gutter_fold_width: usize,
+    /// Glyph-margin cells before the line numbers. The terminal reserves this
+    /// only while a glyph decoration exists, so an unused gutter stays compact.
+    gutter_glyph_width: usize = 0,
     gutter_line_numbers: bool = true,
     gutter_line_numbers_min_chars: usize = 5,
     gutter_folding: bool = true,
@@ -771,6 +774,7 @@ pub const Editor = struct {
             .gutter_width = gutter,
             .gutter_number_width = initial_number_width,
             .gutter_fold_width = initial_fold_width,
+            .gutter_glyph_width = 0,
             .line_decorations_width = 0,
             .line_number_map = null,
             .read_only = false,
@@ -1542,6 +1546,20 @@ pub const Editor = struct {
         return self.gutter_width;
     }
 
+    /// Width of the glyph-margin column (0 or 1 in the terminal).
+    pub fn gutterGlyphWidth(self: *const Editor) usize {
+        return self.gutter_glyph_width;
+    }
+
+    /// Reserves or releases the single terminal glyph-margin cell.
+    pub fn setGlyphMarginWidth(self: *Editor, width: usize) void {
+        const clamped = @min(width, 1);
+        if (self.gutter_glyph_width == clamped) return;
+        self.gutter_glyph_width = clamped;
+        self.refreshLayout() catch {};
+        self.ensureCursorVisible();
+    }
+
     /// Width of the line-number column.
     pub fn gutterNumberWidth(self: *const Editor) usize {
         return self.gutter_number_width;
@@ -1595,13 +1613,13 @@ pub const Editor = struct {
 
     /// Column of the folding control cell in the gutter.
     pub fn foldCellColumn(self: *const Editor) usize {
-        return self.gutter_number_width;
+        return self.gutter_glyph_width + self.gutter_number_width;
     }
 
     /// Column of the quick-diff marker cell in the gutter.
     pub fn quickDiffCellColumn(self: *const Editor) usize {
         if (self.line_decorations_width == 0) return 0;
-        return self.gutter_number_width + self.gutter_fold_width;
+        return self.gutter_glyph_width + self.gutter_number_width + self.gutter_fold_width;
     }
 
     /// Sets the borrowed display line-number map used by diff snapshot editors.
@@ -2413,8 +2431,8 @@ pub const Editor = struct {
         else
             0;
         self.gutter_fold_width = if (self.gutter_folding) 1 else 0;
-        const new_gutter = self.gutter_number_width + self.gutter_fold_width +
-            self.line_decorations_width;
+        const new_gutter = self.gutter_glyph_width + self.gutter_number_width +
+            self.gutter_fold_width + self.line_decorations_width;
         const available = self.screen_width -| new_gutter;
         const text_width = @max(@as(usize, 1), available -| self.scrollbar_width);
         self.gutter_width = new_gutter;
