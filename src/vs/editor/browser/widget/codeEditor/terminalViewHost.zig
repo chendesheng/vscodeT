@@ -214,6 +214,7 @@ pub const TerminalViewHost = struct {
         self.options.set(.experimentalWhitespaceRendering, .off);
         self.options.set(.renderWhitespace, .none);
         self.options.set(.stopRenderingLineAfter, -1);
+        self.syncGutterOptions();
         self.configuration = .{
             .is_simple_widget = false,
             .context_menu_id = actions.menu_ids.EditorContext,
@@ -274,7 +275,18 @@ pub const TerminalViewHost = struct {
         self.options.set(.lineHeight, 1);
         self.options.set(.experimentalWhitespaceRendering, .off);
         self.options.set(.stopRenderingLineAfter, -1);
+        self.syncGutterOptions();
         return any;
+    }
+
+    /// Maps the gutter-related editor options to the cell layout owned by the
+    /// editor. Upstream computes the same widths in `EditorLayoutInfoComputer`.
+    fn syncGutterOptions(self: *TerminalViewHost) void {
+        const line_numbers = self.options.get(.lineNumbers).render_type != .Off;
+        const min_chars: usize = @intCast(@max(self.options.get(.lineNumbersMinChars), 1));
+        const folding = self.options.get(.folding) and
+            self.options.get(.showFoldingControls) != .never;
+        self.editor.setGutterOptions(line_numbers, min_chars, folding);
     }
 
     pub fn deinit(self: *TerminalViewHost) void {

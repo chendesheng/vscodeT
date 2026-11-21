@@ -370,6 +370,14 @@ pub const Editor = struct {
     /// this fallback row for its editor panes.
     status_row: bool,
     gutter_width: usize,
+    /// Cell widths of the three gutter columns. The number width follows
+    /// `editor.lineNumbers`, `editor.lineNumbersMinChars` and the digit count;
+    /// the fold width follows `editor.folding`/`showFoldingControls`.
+    gutter_number_width: usize,
+    gutter_fold_width: usize,
+    gutter_line_numbers: bool = true,
+    gutter_line_numbers_min_chars: usize = 5,
+    gutter_folding: bool = true,
     /// Extra gutter cells after the fold cell used by quick-diff markers.
     /// `0` hides the marker column; `1` is the terminal representation of the
     /// upstream `scm.diffDecorationsGutterWidth` gutter.
@@ -677,7 +685,9 @@ pub const Editor = struct {
         });
 
         const resolved = model.getOptions();
-        const gutter = gutterWidthFor(model.getLineCount(), 0);
+        const initial_number_width = @max(digitsFor(model.getLineCount()), 5);
+        const initial_fold_width: usize = 1;
+        const gutter = initial_number_width + initial_fold_width;
         const initial_scrollbar = if (options.reserve_scrollbar)
             overviewRulerWidthFor(width, gutter)
         else
@@ -759,6 +769,8 @@ pub const Editor = struct {
             .screen_height = @max(height, 1),
             .status_row = true,
             .gutter_width = gutter,
+            .gutter_number_width = initial_number_width,
+            .gutter_fold_width = initial_fold_width,
             .line_decorations_width = 0,
             .line_number_map = null,
             .read_only = false,
@@ -1530,6 +1542,42 @@ pub const Editor = struct {
         return self.gutter_width;
     }
 
+    /// Width of the line-number column.
+    pub fn gutterNumberWidth(self: *const Editor) usize {
+        return self.gutter_number_width;
+    }
+
+    /// Width of the folding-control column (0 or 1).
+    pub fn gutterFoldWidth(self: *const Editor) usize {
+        return self.gutter_fold_width;
+    }
+
+    pub fn hasFoldControl(self: *const Editor) bool {
+        return self.gutter_fold_width > 0;
+    }
+
+    /// Applies `editor.lineNumbers`, `editor.lineNumbersMinChars` and the
+    /// folding options to the gutter layout.
+    pub fn setGutterOptions(
+        self: *Editor,
+        line_numbers: bool,
+        line_numbers_min_chars: usize,
+        folding_enabled: bool,
+    ) void {
+        const min_chars = @max(line_numbers_min_chars, 1);
+        if (self.gutter_line_numbers == line_numbers and
+            self.gutter_line_numbers_min_chars == min_chars and
+            self.gutter_folding == folding_enabled)
+        {
+            return;
+        }
+        self.gutter_line_numbers = line_numbers;
+        self.gutter_line_numbers_min_chars = min_chars;
+        self.gutter_folding = folding_enabled;
+        self.refreshLayout() catch {};
+        self.ensureCursorVisible();
+    }
+
     /// Extra gutter cells reserved for the quick-diff marker column.
     pub fn lineDecorationsWidth(self: *const Editor) usize {
         return self.line_decorations_width;
@@ -1547,12 +1595,13 @@ pub const Editor = struct {
 
     /// Column of the folding control cell in the gutter.
     pub fn foldCellColumn(self: *const Editor) usize {
-        return self.gutter_width -| 1 -| self.line_decorations_width;
+        return self.gutter_number_width;
     }
 
     /// Column of the quick-diff marker cell in the gutter.
     pub fn quickDiffCellColumn(self: *const Editor) usize {
-        return self.gutter_width -| 1;
+        if (self.line_decorations_width == 0) return 0;
+        return self.gutter_number_width + self.gutter_fold_width;
     }
 
     /// Sets the borrowed display line-number map used by diff snapshot editors.
@@ -2358,7 +2407,14 @@ pub const Editor = struct {
     }
 
     fn refreshLayout(self: *Editor) !void {
-        const new_gutter = gutterWidthFor(self.model.getLineCount(), self.line_decorations_width);
+        const digits = digitsFor(self.model.getLineCount());
+        self.gutter_number_width = if (self.gutter_line_numbers)
+            @max(digits, self.gutter_line_numbers_min_chars)
+        else
+            0;
+        self.gutter_fold_width = if (self.gutter_folding) 1 else 0;
+        const new_gutter = self.gutter_number_width + self.gutter_fold_width +
+            self.line_decorations_width;
         const available = self.screen_width -| new_gutter;
         const text_width = @max(@as(usize, 1), available -| self.scrollbar_width);
         self.gutter_width = new_gutter;
@@ -4338,11 +4394,11 @@ pub const Editor = struct {
     }
 };
 
-fn gutterWidthFor(line_count: usize, line_decorations_width: usize) usize {
+fn digitsFor(line_count: usize) usize {
     var digits: usize = 1;
     var n = line_count;
     while (n >= 10) : (n /= 10) digits += 1;
-    return @max(@as(usize, 3), digits + 1) + line_decorations_width;
+    return digits;
 }
 
 fn resolvedLanguageConfigurationForBrackets(
@@ -4491,7 +4547,7 @@ test "Editor: create, edit, undo, and render" {
 test "Editor: viewport reflows wrapping" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 8, 5);
+    var editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 11, 5);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -4504,7 +4560,7 @@ test "Editor: viewport reflows wrapping" {
 test "Editor: scrollbar width reserves wrapping and text columns" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var editor = try Editor.createFromText(allocator, io, "abcdefghijk", "test.txt", 14, 5);
+    var editor = try Editor.createFromText(allocator, io, "abcdefghijk", "test.txt", 17, 5);
     defer {
         editor.deinit();
         allocator.destroy(editor);
@@ -4512,12 +4568,12 @@ test "Editor: scrollbar width reserves wrapping and text columns" {
 
     try std.testing.expectEqual(@as(usize, 1), editor.viewLineCount());
     try std.testing.expectEqual(@as(usize, 11), editor.textAreaWidth());
-    try std.testing.expectEqual(@as(usize, 14), editor.textAreaRight());
+    try std.testing.expectEqual(@as(usize, 17), editor.textAreaRight());
 
     editor.setScrollbarWidth(2);
     try std.testing.expectEqual(@as(usize, 2), editor.scrollbar_width);
     try std.testing.expectEqual(@as(usize, 9), editor.textAreaWidth());
-    try std.testing.expectEqual(@as(usize, 12), editor.textAreaRight());
+    try std.testing.expectEqual(@as(usize, 15), editor.textAreaRight());
     try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
 
     editor.setScrollbarWidth(0);
@@ -4583,13 +4639,13 @@ test "Editor: save writes the model value" {
 test "Editor: cursor and deletion across a wrap boundary" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 8, 5);
+    var editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 11, 5);
     defer {
         editor.deinit();
         allocator.destroy(editor);
     }
 
-    // Gutter is 3 columns, so the text wraps at 5 columns: abcde / fghij.
+    // Gutter is 6 columns, so the text wraps at 5 columns: abcde / fghij.
     var i: usize = 0;
     while (i < 5) : (i += 1) try editor.moveRight(false);
     try std.testing.expectEqual(@as(usize, 2), editor.viewCursorPosition().lineNumber);
@@ -6189,7 +6245,7 @@ test "Editor: reserving the scrollbar avoids a second wrapping pass" {
         io,
         "abcdefgh",
         "test.txt",
-        12,
+        15,
         5,
         .{ .reserve_scrollbar = true },
     );
@@ -6398,11 +6454,46 @@ test "Editor: read-only guards, line-number map and gutter width" {
     try std.testing.expectEqual(@as(usize, 10), status.line);
     editor.clearLineNumberMap();
 
-    try std.testing.expectEqual(@as(usize, 3), editor.gutterWidth());
+    try std.testing.expectEqual(@as(usize, 6), editor.gutterWidth());
     editor.setLineDecorationsWidth(1);
+    try std.testing.expectEqual(@as(usize, 7), editor.gutterWidth());
+    try std.testing.expectEqual(@as(usize, 5), editor.foldCellColumn());
+    try std.testing.expectEqual(@as(usize, 6), editor.quickDiffCellColumn());
+}
+
+test "Editor: gutter follows line-number and folding options" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a\nb\nc", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    // Defaults: five number cells and one folding cell.
+    try std.testing.expectEqual(@as(usize, 6), editor.gutterWidth());
+    try std.testing.expectEqual(@as(usize, 5), editor.gutterNumberWidth());
+    try std.testing.expectEqual(@as(usize, 5), editor.foldCellColumn());
+    try std.testing.expect(editor.hasFoldControl());
+
+    // `editor.lineNumbers: off` removes the number cells but keeps folding.
+    editor.setGutterOptions(false, 5, true);
+    try std.testing.expectEqual(@as(usize, 1), editor.gutterWidth());
+    try std.testing.expectEqual(@as(usize, 0), editor.gutterNumberWidth());
+    try std.testing.expect(editor.hasFoldControl());
+
+    // `editor.lineNumbersMinChars` widens a short line-number column.
+    editor.setGutterOptions(true, 3, true);
     try std.testing.expectEqual(@as(usize, 4), editor.gutterWidth());
-    try std.testing.expectEqual(@as(usize, 2), editor.foldCellColumn());
-    try std.testing.expectEqual(@as(usize, 3), editor.quickDiffCellColumn());
+    try std.testing.expectEqual(@as(usize, 3), editor.gutterNumberWidth());
+
+    // Folding disabled removes the fold cell.
+    editor.setGutterOptions(true, 3, false);
+    try std.testing.expectEqual(@as(usize, 3), editor.gutterWidth());
+    try std.testing.expect(!editor.hasFoldControl());
+
+    editor.setGutterOptions(true, 5, true);
+    try std.testing.expectEqual(@as(usize, 6), editor.gutterWidth());
 }
 
 test "Editor: reveal centers, tops and bottoms a line" {

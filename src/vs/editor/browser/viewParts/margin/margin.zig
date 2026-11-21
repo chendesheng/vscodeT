@@ -2,10 +2,12 @@
 //
 // Terminal adaptation: the browser margin owns `LineNumbers`, glyph margin and
 // line-decoration DOM parts. The terminal has one gutter column layout
-// (`line numbers | fold | quick diff`), so this part paints the line-number /
-// continuation cells, the folding control from the ported
-// `FoldingDecorationProvider`, and the quick-diff marker cell from the ported
-// `LinesDecorationsOverlay` class lists. Hit testing and the fold toggle stay in
+// (`line numbers | fold | quick diff`) whose widths come from
+// `editor.lineNumbers`, `editor.lineNumbersMinChars`, the folding options and
+// the quick-diff marker width. This part paints the line-number / continuation
+// cells, the folding control from the ported `FoldingDecorationProvider`, and
+// the quick-diff marker cell from the ported `LinesDecorationsOverlay` class
+// lists. Hit testing and the fold toggle stay in
 // the host. A line-number map supplied by a diff snapshot can render a blank
 // number for filler rows. Line-number, active-line, folding-control and
 // quick-diff colors come from the terminal `Theme` bundle resolved by the TUI
@@ -171,7 +173,8 @@ pub const TerminalMargin = struct {
         const top = editor.topViewLine();
         const marker_width = editor.lineDecorationsWidth();
         const fold_column = editor.foldCellColumn();
-        const number_width = fold_column;
+        const fold_width = editor.gutterFoldWidth();
+        const number_width = editor.gutterNumberWidth();
 
         if (self.theme_dirty) {
             try self.resetRows(doc, host);
@@ -210,8 +213,8 @@ pub const TerminalMargin = struct {
                 folding,
                 view_line,
                 total,
-                gutter,
-                fold_column,
+                number_width,
+                fold_width,
                 marker_width,
             );
 
@@ -262,12 +265,12 @@ pub const TerminalMargin = struct {
         folding: *const FoldingDecorationProvider,
         view_line: usize,
         total: usize,
-        gutter: usize,
-        fold_column: usize,
+        number_width: usize,
+        fold_width: usize,
         marker_width: usize,
     ) RowPaint {
         if (view_line > total) {
-            return .{ .filler = true, .filler_visible = gutter >= 2 };
+            return .{ .filler = true, .filler_visible = number_width > 0 };
         }
 
         var paint = RowPaint{ .filler = false, .filler_visible = false };
@@ -292,7 +295,7 @@ pub const TerminalMargin = struct {
                 paint.number_active = editor.modelLineNumber(view_line) == editor.modelCursorPosition().lineNumber;
             }
 
-            if (fold_column < gutter) {
+            if (fold_width > 0) {
                 const model_line = editor.modelLineNumber(view_line);
                 const state = editor.foldStateAtModelLine(model_line);
                 if (state != .none) {
@@ -308,7 +311,7 @@ pub const TerminalMargin = struct {
             if (marker_width > 0) {
                 paint.marker = quickDiffMarkerWithTheme(line_decorations.renderedLine(view_line), self.theme);
             }
-        } else if (gutter >= 2) {
+        } else if (number_width > 0) {
             const glyph = "\u{21AA}";
             @memcpy(paint.number_buf[0..glyph.len], glyph);
             paint.number_len = glyph.len;
@@ -741,9 +744,9 @@ test "margin: paints the line-number map, blank filler and the quick-diff cell" 
     );
 
     // Gutter layout: numbers | fold | quick-diff marker.
-    try testing.expectEqual(@as(usize, 4), editor.gutterWidth());
-    try testing.expectEqual(@as(usize, 2), editor.foldCellColumn());
-    try testing.expectEqual(@as(usize, 3), editor.quickDiffCellColumn());
+    try testing.expectEqual(@as(usize, 7), editor.gutterWidth());
+    try testing.expectEqual(@as(usize, 5), editor.foldCellColumn());
+    try testing.expectEqual(@as(usize, 6), editor.quickDiffCellColumn());
 
     try testing.expectEqual(@as(?usize, 10), editor.displayLineNumber(1));
     try testing.expectEqual(@as(?usize, null), editor.displayLineNumber(2));
@@ -769,8 +772,8 @@ test "margin: without a map the model line number is painted" {
     try testing.expectEqual(@as(?usize, null), editor.displayLineNumber(2));
 
     editor.setLineDecorationsWidth(1);
-    try testing.expectEqual(@as(usize, 4), editor.gutterWidth());
-    try testing.expectEqual(@as(usize, 2), editor.foldCellColumn());
+    try testing.expectEqual(@as(usize, 7), editor.gutterWidth());
+    try testing.expectEqual(@as(usize, 5), editor.foldCellColumn());
     editor.setLineDecorationsWidth(0);
-    try testing.expectEqual(@as(usize, 3), editor.gutterWidth());
+    try testing.expectEqual(@as(usize, 6), editor.gutterWidth());
 }
