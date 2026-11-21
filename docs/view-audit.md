@@ -118,6 +118,10 @@ For each row:
   and the quick-diff marker width. Added an option-matrix test. The glyph-margin
   host/lanes, margin/glyph decorations and all line-decoration classes remain
   pending.
+- `2c73bb7` statusbar: theme item kinds and hover states. Added the
+  `statusBarItem.*` kind/foreground/hover palette and applied it through the
+  model/item; added a theme test. Context-menu actions, compact-group hover and
+  tooltip pinning remain pending.
 
 ## Next slice
 
