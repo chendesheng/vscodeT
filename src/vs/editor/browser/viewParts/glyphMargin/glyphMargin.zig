@@ -14,11 +14,15 @@ const rendering_context = @import("../../view/renderingContext.zig");
 const view_context = @import("../../../common/viewModel/viewContext.zig");
 const view_events = @import("../../../common/viewEvents.zig");
 const view_event_handler = @import("../../../common/viewEventHandler.zig");
+const glyph_lanes_mod = @import("../../../common/viewModel/glyphLanesModel.zig");
 
 const DynamicViewOverlay = dynamic_overlay.DynamicViewOverlay;
 const RenderingContext = rendering_context.RenderingContext;
 const ViewContext = view_context.ViewContext;
 const EventHandlerCallbacks = view_event_handler.EventHandlerCallbacks;
+const GlyphMarginLanesModel = glyph_lanes_mod.GlyphMarginLanesModel;
+const GlyphMarginLane = @import("../../../common/model.zig").GlyphMarginLane;
+const Position = @import("../../../common/core/position.zig").Position;
 
 /// A decoration that should be shown along a range of lines.
 pub const DecorationToRender = struct {
@@ -139,25 +143,37 @@ pub const Glyph = struct {
     class_name: []const u8,
 };
 
+/// One line's compacted lane glyphs. `lanes[i]` is the glyph for lane index
+/// `i`, matching the upstream `GlyphMarginLanesModel` compaction.
+pub const LineGlyphs = struct {
+    lanes: [3]?GlyphSlot = .{ null, null, null },
+};
+
 /// Port of the terminal-visible glyph-margin host.
 ///
 /// Upstream supports up to three lanes and positions DOM glyphs from CSS
-/// classes. The terminal reserves at most one glyph cell for now (the editor
-/// grows the gutter only while a glyph decoration exists) and maps the known
-/// `glyphMarginClassName` families to cell glyphs; classes with no terminal
-/// rule stay invisible, like an upstream class with no CSS rule.
+/// classes. The terminal reserves the compacted lane count (1-3 cells) and maps
+/// the known `glyphMarginClassName` families to cell glyphs; classes with no
+/// terminal rule stay invisible, like an upstream class with no CSS rule.
 pub const GlyphMarginOverlay = struct {
     base: dynamic_overlay.DynamicViewOverlay,
     allocator: Allocator,
     context: *ViewContext,
-    render_result: ?[]?GlyphSlot,
+    lanes: *const GlyphMarginLanesModel,
+    render_result: ?[]LineGlyphs,
     render_start_line_number: usize,
 
-    pub fn init(self: *GlyphMarginOverlay, allocator: Allocator, context: *ViewContext) void {
+    pub fn init(
+        self: *GlyphMarginOverlay,
+        allocator: Allocator,
+        context: *ViewContext,
+        lanes: *const GlyphMarginLanesModel,
+    ) void {
         self.* = .{
             .base = undefined,
             .allocator = allocator,
             .context = context,
+            .lanes = lanes,
             .render_result = null,
             .render_start_line_number = 1,
         };
@@ -237,24 +253,36 @@ pub const GlyphMarginOverlay = struct {
         defer self.allocator.free(decorations);
 
         const line_count = visible_end - visible_start + 1;
-        const result = self.allocator.alloc(?GlyphSlot, line_count) catch return;
-        @memset(result, null);
+        const result = self.allocator.alloc(LineGlyphs, line_count) catch return;
+        for (result) |*line| line.* = .{};
         self.render_result = result;
         self.render_start_line_number = visible_start;
 
+        const converter = self.context.view_model.coordinates_converter;
         for (decorations) |decoration| {
             const class_name = decoration.options.glyphMarginClassName orelse continue;
             const glyph = glyphForClass(class_name) orelse continue;
+            const lane_position = if (decoration.options.glyphMargin) |options|
+                options.position
+            else
+                GlyphMarginLane.Center;
             const z_index = decoration.options.zIndex orelse 0;
             const start = @max(decoration.range.startLineNumber, visible_start);
             const end = @min(decoration.range.endLineNumber, visible_end);
             var line = start;
             while (line <= end) : (line += 1) {
-                const slot = &result[line - visible_start];
+                const model_position = converter.convertViewPositionToModelPosition(
+                    converter.context,
+                    Position.init(line, 1),
+                );
+                const active_lanes = self.lanes.getLanesAtLine(self.allocator, model_position.lineNumber) catch continue;
+                defer self.allocator.free(active_lanes);
+                const lane_index = indexOfLane(active_lanes, lane_position) orelse continue;
+                if (lane_index >= 3) continue;
+                const slot = &result[line - visible_start].lanes[lane_index];
                 if (slot.*) |existing| {
-                    const existing_z = existing.z_index;
-                    if (z_index < existing_z) continue;
-                    if (z_index == existing_z and
+                    if (z_index < existing.z_index) continue;
+                    if (z_index == existing.z_index and
                         std.mem.order(u8, class_name, existing.glyph.class_name) != .lt)
                     {
                         continue;
@@ -268,13 +296,12 @@ pub const GlyphMarginOverlay = struct {
         }
     }
 
-    pub fn renderedLine(self: *const GlyphMarginOverlay, view_line: usize) ?Glyph {
-        const result = self.render_result orelse return null;
-        if (view_line < self.render_start_line_number) return null;
+    pub fn renderedLine(self: *const GlyphMarginOverlay, view_line: usize) LineGlyphs {
+        const result = self.render_result orelse return .{};
+        if (view_line < self.render_start_line_number) return .{};
         const index = view_line - self.render_start_line_number;
-        if (index >= result.len) return null;
-        const slot = result[index] orelse return null;
-        return slot.glyph;
+        if (index >= result.len) return .{};
+        return result[index];
     }
 
     fn clearRenderResult(self: *GlyphMarginOverlay) void {
@@ -283,6 +310,13 @@ pub const GlyphMarginOverlay = struct {
         self.render_result = null;
     }
 };
+
+fn indexOfLane(lanes: []const GlyphMarginLane, wanted: GlyphMarginLane) ?usize {
+    for (lanes, 0..) |lane, index| {
+        if (lane == wanted) return index;
+    }
+    return null;
+}
 
 const GlyphSlot = struct {
     glyph: Glyph,

@@ -1027,6 +1027,13 @@ Library constraints:
   `currentMove` uses `diffEditor.moveActive.border`, drawn as a one-cell
   border instead of the browser's 2 px border. Unknown block classes stay
   invisible, just as an upstream class with no CSS rule does.
+- Glyph-margin decorations are ported through
+  `src/vs/editor/browser/viewParts/glyphMargin/glyphMargin.zig`. The terminal
+  reserves one cell per compacted `GlyphMarginLanesModel` lane (up to three)
+  only while a `glyphMarginClassName` decoration exists, maps the known
+  error/warning/info/breakpoint classes to cell glyphs and reports
+  `gutter_glyph_margin` hit targets. DOM glyph widgets, CSS icon fonts and the
+  hover message are not ported.
 - Folding is applied at the view-model boundary:
   `src/vs/editor/contrib/folding/browser/folding.zig` computes indentation
   ranges, keeps collapse state and produces hidden model-line ranges;

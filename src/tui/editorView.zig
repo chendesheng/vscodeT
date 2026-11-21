@@ -4643,6 +4643,47 @@ test "View: glyph margin paints a themed glyph and reports the gutter target" {
     try std.testing.expectEqual(editorBrowser.MouseTargetType.gutter_glyph_margin, target.type);
 }
 
+test "View: glyph margin compacts multiple lanes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var left = ModelDecorationOptions.init("left-glyph", .AlwaysGrowsWhenTypingAtEdges);
+    left.glyphMarginClassName = "glyph-error";
+    left.glyphMargin = .{ .position = .Left, .persistLane = false };
+    var right = ModelDecorationOptions.init("right-glyph", .AlwaysGrowsWhenTypingAtEdges);
+    right.glyphMarginClassName = "glyph-warning";
+    right.glyphMargin = .{ .position = .Right, .persistLane = false };
+    var center = ModelDecorationOptions.init("center-glyph", .AlwaysGrowsWhenTypingAtEdges);
+    center.glyphMarginClassName = "glyph-info";
+    center.glyphMargin = .{ .position = .Center, .persistLane = false };
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(2, 1, 2, 1), .options = &left },
+        .{ .range = Range.init(2, 1, 2, 1), .options = &right },
+        .{ .range = Range.init(3, 1, 3, 1), .options = &center },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 65);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    try std.testing.expectEqual(@as(usize, 2), editor.gutterGlyphWidth());
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, 0x25CF), grid.cluster[grid.index(0, 1)]);
+    try std.testing.expectEqual(@as(u32, 0x25B2), grid.cluster[grid.index(1, 1)]);
+    // Line 3 only has the center lane, so compaction puts it in the first cell.
+    try std.testing.expectEqual(@as(u32, 0x25CF), grid.cluster[grid.index(0, 2)]);
+    try std.testing.expect(grid.cluster[grid.index(1, 2)] != 0x25CF);
+}
+
 test "View: init, paint and invalidate batch renders" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
