@@ -57,10 +57,11 @@ Normal/edit:
   `{`/`}`, `+`/`-`/`_`, `H`/`M`/`L`, `gj`/`gk`.
 - Operators `d c y`, `>`/`<` indentation, `f`/`t` operator motions,
   doubled linewise forms (`dd`, `cc`, `yy`), `x X s S D C Y`.
-- `i I a A o O`, `p P`, `r`, `~`, `J`.
+- `i I a A o O`, `p P`, `r`, `~`, `J`/`gJ`, `Ctrl-A`/`Ctrl-X`.
 - Registers: unnamed and named (`"a`–`"z`).
+- Macro recording/replay (`q{a-z}`, `@{a-z}`, `@@`) with a recursion guard.
 - Text objects: `iw aw iW aW`.
-- `%`, `g_`, `g0`/`g^`/`g$`, `*`/`#`, `U`, `gv`, `gi`, and `.`
+- `%`, `(`, `)`, `g_`, `g0`/`g^`/`g$`, `*`/`#`, `U`, `gv`, `gi`, and `.`
   dot-repeat for the last change. Local marks use `m` and the mark-jump
   keys. Visual-block `I`/`A` prefix/suffix every selected line in one undo
   group. `Ctrl-O`/`Ctrl-I` use the workbench editor navigation history.
@@ -111,10 +112,8 @@ it does not port upstream's SQLite storage or cross-window propagation.
 ## Deliberate non-goals
 
 - Vimscript evaluation, `.vimrc`, plugins and Neovim integration.
-- Macro recording/replay (`q`/`@`). Local marks are supported; global marks
-  are not.
+- Global marks. Local marks are supported.
 - Multi-cursor operators.
-- Sentence motions (`(`/`)`.
 - System clipboard registers fall back to the unnamed register.
 
 These are documented gaps, not hidden behavior. Do not add VSCodeVim back as a

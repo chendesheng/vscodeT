@@ -261,7 +261,7 @@ with `"vim.enabled": true` in the user settings or after startup with the
 host. The editor core knows only the generic built-in extension and
 key-input interfaces; the Vim extension registers its own key handler through
 them. The normal/insert/replace/visual character/line/block modes, counts, motions
-(`{`/`}`, `H`/`M`/`L`, `gj`/`gk`, `f`/`t`), operators, text objects, marks,
+(`{`/`}`, `(`, `)`, `H`/`M`/`L`, `gj`/`gk`, `f`/`t`), operators, text objects, marks, macros,
 registers, undo/redo (`u`/`U`/`Ctrl-R`), visual-block `I`/`A`, dot-repeat,
 regular-expression search, the workbench editor navigation history (`Ctrl-O`/`Ctrl-I`)
 (`/`, `?`, `n`, `N`), viewport commands (`zz`/`zt`/`zb`, `Ctrl-D`/`U`) and the

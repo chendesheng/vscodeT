@@ -122,6 +122,12 @@ pub const VimEngine = struct {
     status_buf: [192]u8 = undefined,
     ignore_case: bool = false,
     history: ?extension_api.IHistoryService = null,
+    macros: [26]?ArrayList(RecordedKey) = std.mem.zeroes([26]?ArrayList(RecordedKey)),
+    macro_register: ?usize = null,
+    pending_macro_record: bool = false,
+    pending_macro_play: bool = false,
+    last_macro: ?usize = null,
+    macro_depth: usize = 0,
 
     pub fn init(
         allocator: Allocator,
@@ -159,6 +165,13 @@ pub const VimEngine = struct {
         self.command_buffer.deinit();
         self.search_buffer.deinit();
         self.last_search.deinit();
+        for (&self.macros) |*macro| {
+            if (macro.*) |*list| {
+                self.clearRecorded(list);
+                list.deinit();
+                macro.* = null;
+            }
+        }
         self.clearRecorded(&self.pending_keys);
         self.clearRecorded(&self.last_change);
         self.pending_keys.deinit();
@@ -213,6 +226,9 @@ pub const VimEngine = struct {
 
     pub fn handleKey(self: *VimEngine, event: *const KeyInputEvent) !bool {
         if (!self.replaying) {
+            if (self.macro_register != null and !isMacroStopKey(event, self.mode)) {
+                try self.recordMacroKey(event);
+            }
             if (isDotCommand(event) and self.mode == .normal and self.operator == .none and
                 self.pending_find == null and self.pending_register == null and !self.pending_g and
                 !self.pending_z and !self.pending_window and !self.count_active)
@@ -233,6 +249,57 @@ pub const VimEngine = struct {
             .search_forward, .search_backward => return self.handleSearchInput(event),
             else => return self.handleNormal(event),
         }
+    }
+
+    fn isMacroStopKey(event: *const KeyInputEvent, mode: Mode) bool {
+        if (mode != .normal) return false;
+        return switch (event.key) {
+            .char => |char| char == 'q',
+            .text => |text| text.len == 1 and text[0] == 'q',
+            else => false,
+        };
+    }
+
+    fn recordMacroKey(self: *VimEngine, event: *const KeyInputEvent) !void {
+        const index = self.macro_register orelse return;
+        if (self.macros[index] == null) self.macros[index] = ArrayList(RecordedKey).init(self.allocator);
+        try self.recordKeyInto(&self.macros[index].?, event);
+    }
+
+    fn recordKeyInto(self: *VimEngine, list: *ArrayList(RecordedKey), event: *const KeyInputEvent) !void {
+        var recorded = RecordedKey{ .key = event.key, .mods = event.mods };
+        if (event.key == .text) {
+            const copy = try self.allocator.dupe(u8, event.key.text);
+            errdefer self.allocator.free(copy);
+            recorded.key = .{ .text = copy };
+        }
+        try list.append(recorded);
+    }
+
+    fn startMacro(self: *VimEngine, index: usize) void {
+        if (self.macros[index]) |*list| {
+            self.clearRecorded(list);
+        } else {
+            self.macros[index] = ArrayList(RecordedKey).init(self.allocator);
+        }
+        self.macro_register = index;
+        self.last_macro = index;
+        self.pending_macro_record = false;
+    }
+
+    fn replayMacro(self: *VimEngine, index: usize, count: usize) !void {
+        if (self.macro_depth >= 100) return;
+        const list = self.macros[index] orelse return;
+        self.macro_depth += 1;
+        defer self.macro_depth -= 1;
+        var remaining = @max(count, 1);
+        while (remaining > 0) : (remaining -= 1) {
+            for (list.items) |recorded| {
+                var event = KeyInputEvent{ .key = recorded.key, .mods = recorded.mods };
+                _ = try self.dispatchKey(&event);
+            }
+        }
+        self.last_macro = index;
     }
 
     fn isDotCommand(event: *const KeyInputEvent) bool {
@@ -264,7 +331,8 @@ pub const VimEngine = struct {
         if (self.did_change and self.mode == .normal and self.operator == .none and
             self.pending_find == null and self.pending_replace == false and
             self.pending_register == null and !self.pending_g and !self.pending_z and
-            !self.pending_window and self.visual_block == null and !self.count_active)
+            !self.pending_window and self.visual_block == null and !self.count_active and
+            !self.pending_macro_record and !self.pending_macro_play)
         {
             self.clearRecorded(&self.last_change);
             const old_pending = self.pending_keys;
@@ -276,7 +344,8 @@ pub const VimEngine = struct {
         if (self.mode == .normal and !self.did_change and self.operator == .none and
             self.pending_find == null and self.pending_replace == false and
             self.pending_register == null and !self.pending_g and !self.pending_z and
-            !self.pending_window and self.visual_block == null and !self.count_active)
+            !self.pending_window and self.visual_block == null and !self.count_active and
+            !self.pending_macro_record and !self.pending_macro_play)
         {
             self.clearRecorded(&self.pending_keys);
         }
@@ -425,6 +494,21 @@ pub const VimEngine = struct {
                 else => {},
             }
         }
+        if (self.pending_macro_record) {
+            self.pending_macro_record = false;
+            if (char >= 'a' and char <= 'z') self.startMacro(char - 'a');
+            return true;
+        }
+        if (self.pending_macro_play) {
+            self.pending_macro_play = false;
+            const count = self.takeCount();
+            if (char == '@') {
+                if (self.last_macro) |index| try self.replayMacro(index, count);
+            } else if (char >= 'a' and char <= 'z') {
+                try self.replayMacro(char - 'a', count);
+            }
+            return true;
+        }
         if (self.pending_register != null) {
             self.pending_register = @intCast(char);
             return true;
@@ -504,6 +588,8 @@ pub const VimEngine = struct {
                 try self.editor.setCursor(self.firstNonBlank(self.editor.cursorPosition().lineNumber));
             } else if (char == '$') {
                 try self.editor.setCursor(self.lineEndPosition(self.editor.cursorPosition().lineNumber, true));
+            } else if (char == 'J') {
+                try self.joinLines(self.takeCount(), "");
             }
             return true;
         }
@@ -600,6 +686,14 @@ pub const VimEngine = struct {
             'm' => self.pending_mark_set = true,
             '\'' => self.pending_mark_jump_exact = false,
             '`' => self.pending_mark_jump_exact = true,
+            '(' => {
+                self.recordJump();
+                try self.moveSentence(false, self.takeCount(), self.mode == .visual or self.mode == .visual_line);
+            },
+            ')' => {
+                self.recordJump();
+                try self.moveSentence(true, self.takeCount(), self.mode == .visual or self.mode == .visual_line);
+            },
             'H' => {
                 self.recordJump();
                 try self.moveToScreenLine(.top);
@@ -651,10 +745,18 @@ pub const VimEngine = struct {
             'u' => try self.editor.undo(),
             'r' => self.pending_replace = true,
             '~' => try self.toggleCase(self.takeCount()),
-            'J' => try self.joinLines(self.takeCount()),
+            'J' => try self.joinLines(self.takeCount(), " "),
             'v' => try self.startVisual(false),
             'V' => try self.startVisual(true),
             'R' => try self.startReplaceMode(),
+            'q' => {
+                if (self.macro_register != null) {
+                    self.macro_register = null;
+                } else {
+                    self.pending_macro_record = true;
+                }
+            },
+            '@' => self.pending_macro_play = true,
             ':' => {
                 self.command_buffer.clearRetainingCapacity();
                 self.mode = .command_line;
@@ -677,7 +779,6 @@ pub const VimEngine = struct {
                 self.recordJump();
                 try self.searchAgain(self.takeCount(), !self.search_forward);
             },
-            '@' => {},
             '"' => self.pending_register = 0,
             else => return false,
         }
@@ -709,6 +810,8 @@ pub const VimEngine = struct {
                 } else return false;
             },
             'v' => try self.startVisualBlock(),
+            'a' => try self.shiftNumber(1, self.takeCount()),
+            'x' => try self.shiftNumber(-1, self.takeCount()),
             else => return false,
         }
         return true;
@@ -812,6 +915,10 @@ pub const VimEngine = struct {
                 const position = try self.wordPosition(cursor, count, char == 'E', .end);
                 return Range.fromPositions(cursor, try self.afterPosition(position));
             },
+            '(', ')' => {
+                const target = try self.sentenceTarget(char == ')', count);
+                return if (char == ')') Range.fromPositions(cursor, target) else Range.fromPositions(target, cursor);
+            },
             '{', '}' => {
                 const target_line = try self.paragraphTarget(char == '}', count);
                 if (char == '}') return Range.fromPositions(Position.init(cursor.lineNumber, 1), Position.init(target_line, 1));
@@ -893,6 +1000,78 @@ pub const VimEngine = struct {
             try self.editor.setCursor(position);
             try self.clampNormal();
         }
+    }
+
+    fn sentenceTarget(self: *VimEngine, forward: bool, count: usize) !Position {
+        const model = self.editor.model;
+        var value = try model.getValue(.LF, false);
+        defer value.deinit();
+        var offset = model.getOffsetAt(self.editor.cursorPosition());
+        var remaining = @max(count, 1);
+        while (remaining > 0) : (remaining -= 1) {
+            if (forward) {
+                var index = @min(offset + 1, value.items.len);
+                var found = false;
+                while (index < value.items.len) : (index += 1) {
+                    const byte = value.items[index];
+                    if (byte == '.' or byte == '!' or byte == '?') {
+                        const next = if (index + 1 < value.items.len) value.items[index + 1] else ' ';
+                        if (std.ascii.isWhitespace(next)) {
+                            var target = index + 1;
+                            while (target < value.items.len and std.ascii.isWhitespace(value.items[target])) target += 1;
+                            offset = @min(target, value.items.len -| 1);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) offset = value.items.len -| 1;
+            } else {
+                const original = offset;
+                var index = offset;
+                while (index > 0) {
+                    index -= 1;
+                    const byte = value.items[index];
+                    if (byte == '.' or byte == '!' or byte == '?') {
+                        var target = index + 1;
+                        while (target < value.items.len and std.ascii.isWhitespace(value.items[target])) target += 1;
+                        if (target == original) continue;
+                        offset = target;
+                        break;
+                    }
+                }
+            }
+        }
+        return model.getPositionAt(offset);
+    }
+
+    fn moveSentence(self: *VimEngine, forward: bool, count: usize, select: bool) !void {
+        const target = try self.sentenceTarget(forward, count);
+        if (select) try self.extendSelection(target) else try self.editor.setCursor(target);
+        try self.clampNormal();
+    }
+
+    fn shiftNumber(self: *VimEngine, delta: i64, count: usize) !void {
+        const cursor = self.editor.cursorPosition();
+        var line = try self.editor.model.getLineContent(cursor.lineNumber);
+        defer line.deinit();
+        var start = cursor.column - 1;
+        if (start >= line.items.len or !std.ascii.isDigit(line.items[start])) {
+            while (start < line.items.len and !std.ascii.isDigit(line.items[start])) start += 1;
+        }
+        if (start >= line.items.len) return;
+        var end = start;
+        while (end < line.items.len and std.ascii.isDigit(line.items[end])) end += 1;
+        const number = std.fmt.parseInt(i64, line.items[start..end], 10) catch return;
+        const next = number + delta * @as(i64, @intCast(@max(count, 1)));
+        var buffer: [32]u8 = undefined;
+        const replacement = std.fmt.bufPrint(&buffer, "{d}", .{next}) catch return;
+        try self.rememberLine(cursor.lineNumber);
+        self.did_change = true;
+        self.editor.beginUndoGroup();
+        defer self.editor.endUndoGroup();
+        const range = Range.init(cursor.lineNumber, start + 1, cursor.lineNumber, end + 1);
+        try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = range, .text = replacement }}, &[_]Position{Position.init(cursor.lineNumber, start + replacement.len)});
     }
 
     fn paragraphTarget(self: *VimEngine, forward: bool, count: usize) !usize {
@@ -1794,7 +1973,7 @@ pub const VimEngine = struct {
         }
     }
 
-    fn joinLines(self: *VimEngine, count: usize) !void {
+    fn joinLines(self: *VimEngine, count: usize, separator: []const u8) !void {
         self.did_change = true;
         const cursor = self.editor.cursorPosition();
         try self.rememberLine(cursor.lineNumber);
@@ -1805,7 +1984,7 @@ pub const VimEngine = struct {
         const end = Position.init(cursor.lineNumber + lines, 1);
         self.editor.beginUndoGroup();
         defer self.editor.endUndoGroup();
-        try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(start, end), .text = " " }}, &[_]Position{start});
+        try self.editor.applyEdits(&[_]extension_api.ITextEdit{.{ .range = Range.fromPositions(start, end), .text = separator }}, &[_]Position{start});
     }
 
     fn toggleCase(self: *VimEngine, count: usize) !void {
@@ -2138,6 +2317,8 @@ pub const VimEngine = struct {
         self.pending_window = false;
         self.pending_find = null;
         self.pending_replace = false;
+        self.pending_macro_record = false;
+        self.pending_macro_play = false;
     }
 
     fn takeCount(self: *VimEngine) usize {

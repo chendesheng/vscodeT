@@ -644,3 +644,65 @@ test "Vim: Ctrl-O and Ctrl-I delegate to the shared history" {
     try h.sendChar('h');
     try std.testing.expectEqual(before, h.history.records);
 }
+
+test "Vim: macros, sentences, gJ and numeric increment" {
+    const macro = try Harness.init(std.testing.allocator, "abc");
+    defer macro.deinit();
+    try macro.sendChar('q');
+    try macro.sendChar('a');
+    try macro.sendChar('x');
+    try macro.sendChar('q');
+    try macro.sendChar('@');
+    try macro.sendChar('a');
+    try macro.expectValue("c");
+
+    const sentence = try Harness.init(std.testing.allocator, "One. Two. Three.");
+    defer sentence.deinit();
+    try sentence.sendChar(')');
+    try std.testing.expectEqual(@as(usize, 6), sentence.editor.modelCursorPosition().column);
+    try sentence.sendChar(')');
+    try std.testing.expectEqual(@as(usize, 11), sentence.editor.modelCursorPosition().column);
+    try sentence.sendChar('(');
+    try std.testing.expectEqual(@as(usize, 6), sentence.editor.modelCursorPosition().column);
+
+    const join = try Harness.init(std.testing.allocator, "a\nb");
+    defer join.deinit();
+    try join.sendChar('g');
+    try join.sendChar('J');
+    try join.expectValue("ab");
+
+    const number = try Harness.init(std.testing.allocator, "x 41");
+    defer number.deinit();
+    try number.sendCtrl('a');
+    try number.expectValue("x 42");
+    try number.sendCtrl('x');
+    try number.expectValue("x 41");
+}
+
+test "Vim: macro insert, count and repeat" {
+    const insert = try Harness.init(std.testing.allocator, "ab");
+    defer insert.deinit();
+    try insert.sendChar('q');
+    try insert.sendChar('a');
+    try insert.sendChar('i');
+    try insert.sendText("X");
+    try insert.send(.escape);
+    try insert.sendChar('q');
+    try insert.sendChar('@');
+    try insert.sendChar('a');
+    try insert.expectValue("XXab");
+    try insert.sendChar('@');
+    try insert.sendChar('@');
+    try insert.expectValue("XXXab");
+
+    const count = try Harness.init(std.testing.allocator, "abcdef");
+    defer count.deinit();
+    try count.sendChar('q');
+    try count.sendChar('a');
+    try count.sendChar('x');
+    try count.sendChar('q');
+    try count.sendChar('2');
+    try count.sendChar('@');
+    try count.sendChar('a');
+    try count.expectValue("def");
+}
