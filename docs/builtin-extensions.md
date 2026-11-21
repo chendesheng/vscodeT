@@ -49,7 +49,13 @@ handler without a future RPC addition.
 
 `src/vs/workbench/api/browser/builtinExtensionHost.zig` adapts workbench/editor
 services to the interfaces. `src/tui/app.zig` decides which built-ins to
-register; the workbench/editor core has no Vim import.
+register; the workbench/editor core has no Vim or Helix import.
+
+The native modal editors are separate built-ins: `vscode-textbuffer.vim`
+(`docs/vim.md`) and `vscode-textbuffer.helix` (`docs/helix.md`). Only one is
+active at a time; their runtimes disable the other for the session and persist
+the other setting off when one is enabled. At startup, Helix takes precedence if
+both settings are true.
 
 ## Lifecycle
 

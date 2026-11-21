@@ -578,6 +578,16 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const vim_test_step = b.step("test-vim", "Run Vim and editor-history tests");
     vim_test_step.dependOn(&run_vim_tests.step);
 
+    // Focused runner for the native Helix editing suite.
+    const helix_tests = b.addTest(.{
+        .name = "helix_tests",
+        .root_module = tests.root_module,
+        .filters = &.{"Helix"},
+    });
+    const run_helix_tests = b.addRunArtifact(helix_tests);
+    const helix_test_step = b.step("test-helix", "Run Helix editing tests");
+    helix_test_step.dependOn(&run_helix_tests.step);
+
     // Terminal-only test root: keeps the integrated-terminal tests runnable
     // without compiling the whole editor. `zig build test` covers them too.
     const terminal_tests = b.addTest(.{

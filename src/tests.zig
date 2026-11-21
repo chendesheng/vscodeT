@@ -647,6 +647,12 @@ comptime {
     _ = @import("./vs/workbench/api/common/extensionApi.zig");
     _ = @import("./vs/workbench/api/common/builtinExtension.zig");
     _ = @import("./vs/workbench/api/browser/builtinExtensionHost.zig");
+    _ = @import("./vs/editor/contrib/helix/browser/helixEngine.zig");
+    _ = @import("./vs/workbench/contrib/helix/browser/helixExtension.zig");
+    _ = @import("./vs/workbench/contrib/helix/browser/helixRuntime.zig");
+    _ = @import("./vs/editor/contrib/helix/test/browser/helixEngine.test.zig");
+    _ = @import("./vs/workbench/contrib/helix/test/browser/helixExtension.test.zig");
+    _ = @import("./vs/workbench/contrib/helix/test/browser/helixRuntime.test.zig");
     _ = @import("./vs/editor/contrib/vim/browser/vimEngine.zig");
     _ = @import("./vs/workbench/contrib/vim/browser/vimExtension.zig");
     _ = @import("./vs/editor/contrib/vim/test/browser/vimEngine.test.zig");

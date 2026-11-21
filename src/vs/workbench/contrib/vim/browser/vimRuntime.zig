@@ -10,10 +10,16 @@ const Workbench = @import("../../../browser/workbench.zig").Workbench;
 const BuiltinExtensionHost = @import("../../../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost;
 const vim_extension = @import("./vimExtension.zig");
 
+pub const EnableListener = struct {
+    context: *anyopaque,
+    on_enable: *const fn (context: *anyopaque) void,
+};
+
 pub const VimRuntime = struct {
     allocator: Allocator,
     workbench: *Workbench,
     host: ?*BuiltinExtensionHost = null,
+    on_enable: ?EnableListener = null,
 
     pub fn init(allocator: Allocator, workbench: *Workbench) !*VimRuntime {
         const self = try allocator.create(VimRuntime);
@@ -30,6 +36,10 @@ pub const VimRuntime = struct {
         self.allocator.destroy(self);
     }
 
+    pub fn setOnEnable(self: *VimRuntime, listener: ?EnableListener) void {
+        self.on_enable = listener;
+    }
+
     pub fn enable(self: *VimRuntime) !void {
         if (self.host != null) return;
         const host = try BuiltinExtensionHost.init(self.allocator, self.workbench);
@@ -37,6 +47,7 @@ pub const VimRuntime = struct {
         try host.registerBuiltin(try vim_extension.create(self.allocator));
         host.activate();
         self.host = host;
+        if (self.on_enable) |listener| listener.on_enable(listener.context);
         self.setMessage("Vim enabled");
     }
 

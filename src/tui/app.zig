@@ -12,6 +12,7 @@ const Workbench = @import("../vs/workbench/browser/workbench.zig").Workbench;
 const extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
 const VimRuntime = @import("../vs/workbench/contrib/vim/browser/vimRuntime.zig").VimRuntime;
+const HelixRuntime = @import("../vs/workbench/contrib/helix/browser/helixRuntime.zig").HelixRuntime;
 const json_language = @import("../vs/workbench/services/language/common/jsonLanguageClient.zig");
 const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
 const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorSerializer;
@@ -441,16 +442,35 @@ pub fn main(init: std.process.Init) !void {
         } else |_| {}
     }
 
-    // Native Vim is a compiled-in built-in extension. The runtime registers
-    // Vim: Enable/Disable/Toggle even when the startup setting is false.
+    // Native Vim and Helix are compiled-in modal built-ins. Their runtimes
+    // register Enable/Disable even while the startup settings are false.
+    // Only one modal built-in may consume keys at a time; enabling either one
+    // disables and persists the other off.
     const vim_runtime = try VimRuntime.init(allocator, workbench);
     defer vim_runtime.deinit();
+    const helix_runtime = try HelixRuntime.init(allocator, workbench);
+    defer helix_runtime.deinit();
+    vim_runtime.setOnEnable(.{ .context = helix_runtime, .on_enable = disableHelixForVim });
+    helix_runtime.setOnEnable(.{ .context = vim_runtime, .on_enable = disableVimForHelix });
+
     const vim_enabled = if (workbench.configuration) |configuration|
         configuration.getBool("vim.enabled", false)
     else
         false;
-    if (vim_enabled) try vim_runtime.enable();
-    infoLog(log_service, "startup: settings-vim={d}ms", .{
+    const helix_enabled = if (workbench.configuration) |configuration|
+        configuration.getBool("helix.enabled", false)
+    else
+        false;
+    if (helix_enabled) {
+        if (vim_enabled) vim_runtime.setEnabledPersistent(false) catch {};
+        try helix_runtime.enable();
+        if (vim_enabled) {
+            if (workbench.activeTab()) |tab| tab.editor.setMessage("Only one modal mode can be active; Helix takes precedence", .{});
+        }
+    } else if (vim_enabled) {
+        try vim_runtime.enable();
+    }
+    infoLog(log_service, "startup: settings-modal={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
 
@@ -795,7 +815,8 @@ pub fn main(init: std.process.Init) !void {
                     if (try workbench.handleSidebarKey(event)) continue;
                     if (try workbench.handleStatusbarKey(event)) continue;
 
-                    if (vim_runtime.host) |host| {
+                    const modal_host = helix_runtime.host orelse vim_runtime.host;
+                    if (modal_host) |host| {
                         const editor_focused = workbench.focus == .editor;
                         const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isImage() else false;
                         if (!workbench.is_pasting and editor_focused and normal_tab and host.dispatchKey(event)) {
@@ -880,7 +901,8 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (event.kind == .down) {
                         workbench.focusEditor();
-                        if (vim_runtime.host) |host| host.resetKeyInput();
+                        const modal_host = helix_runtime.host orelse vim_runtime.host;
+                        if (modal_host) |host| host.resetKeyInput();
                     }
                     if (!current.isDiff() and current.handleMarkdownPreviewMouse(&adjusted, now_ms)) {
                         if (event.kind == .move) workbench.leaveEditorHover();
@@ -1364,6 +1386,16 @@ fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool {
         .insert => {},
     }
     return false;
+}
+
+fn disableHelixForVim(context: *anyopaque) void {
+    const helix: *HelixRuntime = @ptrCast(@alignCast(context));
+    if (helix.isEnabled()) helix.setEnabledPersistent(false) catch {};
+}
+
+fn disableVimForHelix(context: *anyopaque) void {
+    const vim: *VimRuntime = @ptrCast(@alignCast(context));
+    if (vim.isEnabled()) vim.setEnabledPersistent(false) catch {};
 }
 
 test "app: q inserts text" {
@@ -2161,4 +2193,44 @@ test "app: std.log routes engine diagnostics to the log file" {
     try std.testing.expectEqual(@as(usize, 1), sink.buffer.items.len);
     try std.testing.expectEqual(log_module.LogLevel.warning, sink.buffer.items[0].level);
     try std.testing.expectEqualStrings("osc_iterm2: unimplemented OSC 1337: RemoteHost", sink.buffer.items[0].message);
+}
+
+test "app: Helix and Vim modal runtimes disable each other" {
+    const allocator = std.testing.allocator;
+    const io = time_compat.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "modal.txt", .data = "hello\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "settings.json", .data = "{}\n" });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const relative_len = try tmp.dir.realPathFile(io, "modal.txt", &path_buffer);
+    const relative = path_buffer[0..relative_len];
+    var settings_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const settings_len = try tmp.dir.realPathFile(io, "settings.json", &settings_buffer);
+    const settings_path = settings_buffer[0..settings_len];
+
+    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+
+    const vim = try VimRuntime.init(allocator, workbench);
+    defer vim.deinit();
+    const helix = try HelixRuntime.init(allocator, workbench);
+    defer helix.deinit();
+    vim.setOnEnable(.{ .context = helix, .on_enable = disableHelixForVim });
+    helix.setOnEnable(.{ .context = vim, .on_enable = disableVimForHelix });
+
+    try workbench.commands.execute("vim.enable");
+    try std.testing.expect(vim.isEnabled());
+    try std.testing.expect(!helix.isEnabled());
+
+    try workbench.commands.execute("helix.enable");
+    try std.testing.expect(helix.isEnabled());
+    try std.testing.expect(!vim.isEnabled());
+    try std.testing.expect(!workbench.configuration.?.getBool("vim.enabled", true));
+
+    try workbench.commands.execute("vim.enable");
+    try std.testing.expect(vim.isEnabled());
+    try std.testing.expect(!helix.isEnabled());
+    try std.testing.expect(!workbench.configuration.?.getBool("helix.enabled", true));
 }

@@ -3,6 +3,10 @@
 Vim is a compiled-in built-in extension (`vscode-textbuffer.vim`). It does not
 run in the Node extension host and does not load VSCodeVim.
 
+Vim and the native Helix built-in (`docs/helix.md`) are mutually exclusive:
+enabling one disables the other for the session and persists the other setting
+off. Only one modal built-in consumes terminal keys at a time.
+
 ## Enable
 
 Add to the user settings file:

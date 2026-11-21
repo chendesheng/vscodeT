@@ -353,6 +353,20 @@ The status bar shows `-- NORMAL --`, `-- INSERT --`, `-- VISUAL --`, pending
 keys and the `:`/`/` prompt. See `docs/vim.md` for the supported feature list
 and the deliberate non-goals (Vimscript, plugins and `.vimrc`).
 
+Helix is the second compiled-in modal editor (`vscode-textbuffer.helix`),
+enabled with `"helix.enabled": true` or with the `Helix: Enable` /
+`Helix: Disable` commands; both persist the user-level `helix.enabled`
+setting. It uses the same editor-state ownership and raw key-input contract as
+Vim, but follows Helix's selection-first model: `w` selects a word, `d` acts on
+the selection, `x` selects a line, `%` selects the file, `s` selects regex
+matches, and editing commands work on every selection. The normal/insert/select
+modes, multiple selections, registers, macros, `.` repeat, search, command line,
+goto/match/view/window/space minor modes, linewise and surround operations,
+and the `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`, `:reload`, `:bn`, `:bp`,
+`:bd`, `:sp`, `:vsp`, `:noh`, `:set`) are implemented in Zig. Vim and Helix are
+mutually exclusive: enabling one disables and persists the other off. See
+`docs/helix.md` for the supported surface and deliberate gaps.
+
 Declarative built-ins are scanned from `vscode/extensions/theme-defaults`
 and `vscode/extensions/markdown-basics`: their themes, languages, grammars
 and language configurations are loaded at startup. The markdown language
@@ -446,6 +460,8 @@ console API for raw mode, sizing and input polling.
   contract, raw key-input contribution point and lifecycle.
 - [Native Vim](docs/vim.md) — editor-state ownership, supported Vim surface and
   deliberate gaps.
+- [Native Helix](docs/helix.md) — selection-first model, supported Helix
+  surface, mutual exclusion with Vim and deliberate gaps.
 - [TUI porting inventory](docs/porting-inventory.md) — file-by-file mapping of
   `src/tui/` to the VS Code internals it should port, with a UI/view code map
   (what is still collapsed into `view.zig`/`editor.zig` and where it belongs)
