@@ -130,58 +130,6 @@ pub const Surface = struct {
         self.frame.swap();
     }
 
-    /// A host cell layer painted below the box tree. Used by the editor view:
-    /// retained line runs are written as cells, then the gutter/widgets/status
-    /// tree paints over them.
-    pub const CellPainter = struct {
-        context: *anyopaque,
-        paint: *const fn (context: *anyopaque, grid: *cell.CellGrid) anyerror!void,
-    };
-
-    /// Lays out the tree, paints the host cell layer, then paints the box tree
-    /// on top. This is the terminal equivalent of painting behind positioned
-    /// DOM content.
-    pub fn paintFrameWithCells(self: *Surface, painter: CellPainter) !void {
-        try self.ensureLayout();
-        self.frame.begin();
-        try painter.paint(painter.context, &self.frame.next);
-        paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
-        self.frame.swap();
-    }
-
-    /// `render` with a host cell layer under the box tree, for hosts that
-    /// paint retained text as cells instead of DOM text nodes.
-    pub fn renderWithCells(
-        self: *Surface,
-        writer: *std.Io.Writer,
-        options: RenderOptions,
-        painter: CellPainter,
-    ) !void {
-        if (self.first_frame) {
-            try writer.writeAll("\x1b[2J\x1b[H");
-            self.first_frame = false;
-        }
-
-        try self.ensureLayout();
-        self.frame.begin();
-        try painter.paint(painter.context, &self.frame.next);
-        paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
-
-        const encoded = try ansi.encode(
-            self.allocator,
-            if (self.frame.have_prev) &self.frame.prev else null,
-            &self.frame.next,
-            .{
-                .color_depth = self.color_depth,
-                .synchronized = options.synchronized,
-            },
-        );
-        defer self.allocator.free(encoded);
-        if (encoded.len != 0) try writer.writeAll(encoded);
-
-        self.frame.swap();
-    }
-
     /// Lays out the current tree, paints it, diffs it against the previous
     /// frame and writes the ANSI delta. An unchanged frame writes nothing.
     pub fn render(self: *Surface, writer: *std.Io.Writer, options: RenderOptions) !void {

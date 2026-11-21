@@ -1,11 +1,9 @@
 //! The editor view, rendered through the standalone `ui` library.
 //!
 //! This replaces the hand-written `Screen`/`render.zig` path with a
-//! `ui.Document`: one empty absolutely positioned element per view line for hit
-//! testing, a gutter/chrome tree, a status bar and a hardware cursor cell. The
-//! line text itself is painted as a cell layer under that tree from the
-//! retained `ViewLine` runs (the terminal equivalent of the browser painting
-//! DOM spans). It is a deliberate terminal adaptation of
+//! `ui.Document`: one absolutely positioned element per view line, a gutter
+//! element, inline token runs painted by `viewLineRenderer`, a status bar and a
+//! hardware cursor cell. It is a deliberate terminal adaptation of
 //! `src/vs/editor/browser/view/`, not a literal port: the browser view parts
 //! (viewLayer, viewLines, selections, cursors) are collapsed into this file
 //! until the view model is ported.
@@ -359,24 +357,6 @@ pub const View = struct {
     terminal_view_host: *TerminalViewHost,
     /// Active color-theme palette; null keeps the standalone fallback colors.
     theme_colors: ?*const theme_colors_mod.ThemeColors = null,
-    // --- retained paint inputs for the viewport cell layer -----------------
-    // `rebuild` resolves the lines, guides, backgrounds and cursor state, and
-    // `paint` writes them as cells under the gutter/widget tree. Keeping them
-    // here avoids rebuilding the text DOM for every frame.
-    content_top: usize = 0,
-    content_line_count: usize = 0,
-    content_left: usize = 0,
-    content_width: usize = 0,
-    content_height: usize = 0,
-    content_tab_size: usize = 4,
-    content_text_width: usize = 0,
-    content_cursor: Position = Position.init(1, 1),
-    content_states: []CursorState = &.{},
-    content_guides: std.array_list.Managed(TerminalViewHost.PaintGuide),
-    content_line_backgrounds: std.array_list.Managed(?ui.Color),
-    content_current_line_background: ?ui.Color = null,
-    content_default_background: ?ui.Color = null,
-    content_ellipsis_style: ui.Style = .{},
     /// Non-transparent bracket-highlight colors, in theme order, cycled by
     /// `bracket-highlighting-N`. Refreshed when the palette changes.
     bracket_highlight_colors: [6]ui.Color = undefined,
@@ -400,8 +380,6 @@ pub const View = struct {
             .guides = GuidesTextModelPart.init(editor.model),
             .surface = undefined,
             .configuration_listeners = std.array_list.Managed(ConfigurationListener).init(allocator),
-            .content_guides = std.array_list.Managed(TerminalViewHost.PaintGuide).init(allocator),
-            .content_line_backgrounds = std.array_list.Managed(?ui.Color).init(allocator),
             .terminal_view_host = undefined,
         };
         self.refreshBracketHighlightColors();
@@ -424,9 +402,6 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
-        if (self.content_states.len > 0) self.editor.allocator.free(self.content_states);
-        self.content_guides.deinit();
-        self.content_line_backgrounds.deinit();
         self.configuration_listeners.deinit();
         self.terminal_view_host.deinit();
         self.surface.deinit();
@@ -1063,11 +1038,10 @@ pub const View = struct {
     }
 
     /// Paints into the view's own frame without writing ANSI. The multi-file
-    /// workbench composites this grid below the tab strip. The retained line
-    /// runs are written as a cell layer under the gutter/widget tree.
+    /// workbench composites this grid below the tab strip.
     pub fn paint(self: *View) !void {
         try self.ensureBuilt();
-        try self.surface.paintFrameWithCells(.{ .context = self, .paint = paintContentCells });
+        try self.surface.paintFrame();
     }
 
     pub fn grid(self: *View) *const ui.CellGrid {
@@ -1076,7 +1050,7 @@ pub const View = struct {
 
     pub fn render(self: *View, writer: *std.Io.Writer) !void {
         try self.ensureBuilt();
-        try self.surface.renderWithCells(writer, .{ .synchronized = true }, .{ .context = self, .paint = paintContentCells });
+        try self.surface.render(writer, .{ .synchronized = true });
     }
 
     /// The hardware cursor cell, valid after `render` has laid the tree out.
@@ -1129,10 +1103,6 @@ pub const View = struct {
 
     fn rebuild(self: *View) !void {
         self.rebuild_count += 1;
-        if (self.content_states.len > 0) {
-            self.editor.allocator.free(self.content_states);
-            self.content_states = &.{};
-        }
         const editor = self.editor;
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
@@ -1323,14 +1293,12 @@ pub const View = struct {
             .width = .{ .percent = 100 },
             .height = .{ .percent = 100 },
             .overflow = .hidden,
-            // The editor background is the first layer painted by
-            // `paintContentCells`; a node background here would overpaint the
-            // text cells.
+            .background = if (self.theme_colors) |palette| palette.background else null,
         });
         doc.setRoot(root);
 
         const states = try editor.viewCursorStates();
-        errdefer editor.allocator.free(states);
+        defer editor.allocator.free(states);
         const cursor_render_data = self.terminal_view_host.getCursorRenderData();
         const cursor = if (cursor_render_data.len > 0)
             cursor_render_data[0].position
@@ -1359,39 +1327,27 @@ pub const View = struct {
             }
         }
 
-        self.content_guides.clearRetainingCapacity();
+        var paint_guides = std.array_list.Managed(TerminalViewHost.PaintGuide).init(self.allocator);
+        defer paint_guides.deinit();
         for (guide_specs.items) |spec| {
-            try self.content_guides.append(.{ .row = spec.row, .column = spec.col, .color = spec.color });
+            try paint_guides.append(.{ .row = spec.row, .column = spec.col, .color = spec.color });
         }
 
         // Whole-line diff/quick-diff backgrounds are cell colors because the
         // terminal has no CSS. The ported `DecorationsOverlay` supplies the
         // class list per visible view line.
-        try self.content_line_backgrounds.resize(text_height);
-        @memset(self.content_line_backgrounds.items, null);
+        const line_backgrounds = try self.allocator.alloc(?ui.Color, text_height);
+        defer self.allocator.free(line_backgrounds);
+        @memset(line_backgrounds, null);
         if (top <= total) {
             const end_view_line = @min(total, top + text_height -| 1);
             var view_line = top;
             while (view_line <= end_view_line) : (view_line += 1) {
                 if (lineBackground(self.terminal_view_host.decorationsForLine(view_line))) |rgb| {
-                    self.content_line_backgrounds.items[view_line - top] = color(rgb);
+                    line_backgrounds[view_line - top] = color(rgb);
                 }
             }
         }
-
-        // Retain the cell-layer inputs until `paint`; the document build above
-        // only creates the empty line placeholders and the chrome.
-        self.content_top = top;
-        self.content_line_count = total;
-        self.content_left = gutter;
-        self.content_width = text_width;
-        self.content_height = text_height;
-        self.content_tab_size = tab_size;
-        self.content_text_width = text_width;
-        self.content_cursor = cursor;
-        self.content_current_line_background = self.currentLineBackground();
-        self.content_default_background = if (self.theme_colors) |palette| palette.background else null;
-        self.content_ellipsis_style = .{ .color = color(continuation_color) };
 
         try self.terminal_view_host.paintViewport(.{
             .doc = doc,
@@ -1399,7 +1355,7 @@ pub const View = struct {
             .left_cells = gutter,
             .width_cells = text_width,
             .top_row = 0,
-            .guides = self.content_guides.items,
+            .guides = paint_guides.items,
             .top = top,
             .tab_size = tab_size,
             .text_width = text_width,
@@ -1407,11 +1363,11 @@ pub const View = struct {
             .states = states,
             .style_fn = .{ .context = self, .apply = lineStyleForPart },
             .decoration_bits_fn = decorationBits,
-            .line_backgrounds = self.content_line_backgrounds.items,
+            .line_backgrounds = line_backgrounds,
             .selected_flag = CellFlag.selected,
             .secondary_cursor_flag = CellFlag.secondary_cursor,
-            .background_color = self.content_current_line_background,
-            .ellipsis_style = self.content_ellipsis_style,
+            .background_color = self.currentLineBackground(),
+            .ellipsis_style = .{ .color = color(continuation_color) },
         });
 
         try self.terminal_view_host.viewRef().renderDocumentParts(.{
@@ -1430,7 +1386,6 @@ pub const View = struct {
             .folding = self.terminal_view_host.foldingDecorations(),
         });
         try appendStatus(self, doc, root, rows);
-        self.content_states = states;
         self.needs_rebuild = false;
     }
 
@@ -1443,42 +1398,6 @@ pub const View = struct {
         try editor_scrollbar_mod.appendOverviewMarkers(markers, self.editor, self.allocator);
     }
 };
-
-/// The terminal cell layer under the editor's chrome: the editor background,
-/// then the retained view-line runs, guides and cursor flags.
-fn paintContentCells(context: *anyopaque, grid: *ui.CellGrid) !void {
-    const self: *View = @ptrCast(@alignCast(context));
-    if (self.content_default_background) |background| {
-        grid.fillRect(
-            0,
-            0,
-            @floatFromInt(grid.cols),
-            @floatFromInt(grid.rows),
-            .{ .bg = ui.cell.packColor(background) },
-        );
-    }
-    if (self.content_top > self.content_line_count) return;
-    try self.terminal_view_host.paintCells(.{
-        .grid = grid,
-        .left_cells = self.content_left,
-        .width_cells = self.content_width,
-        .top_row = 0,
-        .top = self.content_top,
-        .tab_size = self.content_tab_size,
-        .text_width = self.content_text_width,
-        .cursor = self.content_cursor,
-        .states = self.content_states,
-        .guides = self.content_guides.items,
-        .line_backgrounds = self.content_line_backgrounds.items,
-        .background_color = self.content_current_line_background,
-        .selected_flag = CellFlag.selected,
-        .secondary_cursor_flag = CellFlag.secondary_cursor,
-        .ellipsis_style = self.content_ellipsis_style,
-        .default_background = self.content_default_background,
-        .style_fn = .{ .context = self, .apply = lineStyleForPart },
-        .decoration_bits_fn = decorationBits,
-    });
-}
 
 /// Two cells when there is room for them plus at least one text column. The
 /// marker and thumb layers share these cells. Very narrow terminals keep their
@@ -1502,9 +1421,6 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
         .white_space = .pre,
         .overflow = .hidden,
         .reverse = true,
-        // The cell layer paints the editor background; the reverse bar must
-        // inherit it explicitly now that the root box is transparent.
-        .background = if (view.theme_colors) |palette| palette.background else null,
     });
 
     if (view.status_left_len > 0 or view.status_right_len > 0) {

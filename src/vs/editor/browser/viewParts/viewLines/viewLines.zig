@@ -283,53 +283,21 @@ pub const ViewLines = struct {
         get: *const fn (context: *anyopaque, view_line: usize) anyerror!LinePaintData,
     };
 
-    /// Terminal placeholder assembly: one positioned, empty node per visible
-    /// line. The text paint is `paintCells`.
+    /// Terminal `ViewLines.renderText` assembly: paints each visible line into
+    /// the document through its ported `ViewLine`.
     pub const ViewportPaintOptions = struct {
+        allocator: Allocator,
         doc: *ui.Document,
         root: *ui.Node,
         left_cells: usize,
         width_cells: usize,
         top_row: usize,
-    };
-
-    /// Builds the positioned line nodes used for hit testing and widget
-    /// clipping. The line text is painted as cells by `paintCells` at frame
-    /// time; these nodes have no text children.
-    pub fn paintViewport(self: *ViewLines, options: ViewportPaintOptions) !void {
-        const start = self.visible_lines.getStartLineNumber();
-        const end = self.visible_lines.getEndLineNumber();
-        if (start == 0 or end < start) return;
-
-        const empty_flags: [0]u32 = .{};
-        var line_number = start;
-        while (line_number <= end) : (line_number += 1) {
-            const line = self.visible_lines.getVisibleLine(line_number);
-            const node = try line.paintPlaceholder(options.doc, .{
-                .left_cells = options.left_cells,
-                .top_cells = options.top_row + (line_number - start),
-                .width_cells = options.width_cells,
-                .flags = &empty_flags,
-            });
-            _ = try options.root.appendChild(node);
-        }
-    }
-
-    pub const CellPaintOptions = struct {
-        grid: *ui.CellGrid,
-        left_cells: usize,
-        width_cells: usize,
-        top_row: usize,
         provider: LinePaintProvider,
-        style_fn: ViewLine.PartStyleFn,
+        style_fn: view_line.ViewLine.PartStyleFn,
         decoration_bits_fn: ?*const fn (classes: []const u8) u32 = null,
-        default_background: ?ui.Color = null,
     };
 
-    /// Terminal paint of the visible window: each retained `ViewLine` renders
-    /// its runs into cells, then guides and folded ellipses are overlaid. This
-    /// is the cell equivalent of upstream `ViewLines` painting DOM spans.
-    pub fn paintCells(self: *ViewLines, options: CellPaintOptions) !void {
+    pub fn paintViewport(self: *ViewLines, options: ViewportPaintOptions) !void {
         const start = self.visible_lines.getStartLineNumber();
         const end = self.visible_lines.getEndLineNumber();
         if (start == 0 or end < start) return;
@@ -338,14 +306,12 @@ pub const ViewLines = struct {
         while (line_number <= end) : (line_number += 1) {
             const line = self.visible_lines.getVisibleLine(line_number);
             var data = try options.provider.get(options.provider.context, line_number);
-            defer data.deinit(self.allocator);
+            defer data.deinit(options.allocator);
 
-            line.paintCells(.{
-                .grid = options.grid,
+            const node = try line.paint(options.doc, .{
                 .left_cells = options.left_cells,
                 .top_cells = options.top_row + (line_number - start),
                 .width_cells = options.width_cells,
-                .default_background = options.default_background,
                 .background = data.background,
                 .flags = data.flags,
                 .decoration_bits_fn = options.decoration_bits_fn,
@@ -353,6 +319,7 @@ pub const ViewLines = struct {
                 .folded_ellipsis_style = data.folded_ellipsis_style,
                 .guides = data.guides,
             }, options.style_fn);
+            _ = try options.root.appendChild(node);
         }
     }
 

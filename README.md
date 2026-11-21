@@ -56,10 +56,8 @@ required for the measurements below.
   position lives in a line-granular `ViewLayout` instead of an editor field.
   The layout emits upstream's `ViewScrollChanged`; `ViewLines` reuses the
   overlapping rendered-line window, re-renders only lines invalidated by the
-  view events, and paints the retained output. The editor viewport writes the
-  retained line runs as a cell layer under the gutter/widget tree
-  (`Surface.paintFrameWithCells`) instead of a text node per token, so a scroll
-  no longer rebuilds the whole editor model or the workbench chrome.
+  view events, and paints the retained output. A scroll no longer rebuilds
+  the whole editor model or the workbench chrome.
 - Status bar, side bar title and panel title keep their last painted surface
   grid and skip the clear + flex layout when their content, width, theme,
   focus and hover state are unchanged. This is the terminal equivalent of

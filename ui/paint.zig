@@ -118,12 +118,6 @@ fn paintBox(
     }
 }
 
-/// Public form of the inherited-style conversion used by `paintBox`; hosts
-/// that paint retained text into cells directly use the same rules.
-pub fn cellStyle(base: PaintStyle, style: Style) PaintStyle {
-    return mergeStyle(base, style);
-}
-
 fn mergeStyle(base: PaintStyle, style: Style) PaintStyle {
     var result = base;
     if (style.color) |color| result.fg = cell.packColor(color);
