@@ -171,8 +171,9 @@ test "benchmark: edit frame" {
             after_paint - after_refresh,
         });
     }
+    const edit_perf = tab.view.perfCounters();
     std.debug.print(
-        "[bench] edit frame {s}: best={d}us last={d}us avg_edit={d}us avg_refresh={d}us avg_paint={d}us wraps_delta={d}\n",
+        "[bench] edit frame {s}: best={d}us last={d}us avg_edit={d}us avg_refresh={d}us avg_paint={d}us wraps_delta={d} chrome_rebuilds={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{
             path,
             best_us,
@@ -181,6 +182,12 @@ test "benchmark: edit frame" {
             @divTrunc(refresh_total, 10),
             @divTrunc(paint_total, 10),
             tab.editor.view_lines.rebuildAllCount() - wraps_before,
+            edit_perf.chrome_rebuilds,
+            edit_perf.chrome_subtrees_added,
+            edit_perf.chrome_subtrees_rebuilt,
+            edit_perf.chrome_subtrees_translated,
+            edit_perf.chrome_subtrees_removed,
+            edit_perf.incremental_syncs,
         },
     );
 }
@@ -237,8 +244,9 @@ test "benchmark: scroll frame" {
         wheel_best = @min(wheel_best, nowUs(io) - start);
     }
 
+    const scroll_perf = tab.view.perfCounters();
     std.debug.print(
-        "[bench] scroll frame {s}: line_best={d}us avg_refresh={d}us avg_paint={d}us page_best={d}us wheel_best={d}us rebuilds={d}\n",
+        "[bench] scroll frame {s}: line_best={d}us avg_refresh={d}us avg_paint={d}us page_best={d}us wheel_best={d}us rebuilds={d} chrome_rebuilds={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{
             path,
             line_best,
@@ -247,6 +255,12 @@ test "benchmark: scroll frame" {
             page_best,
             wheel_best,
             tab.view.rebuildCount(),
+            scroll_perf.chrome_rebuilds,
+            scroll_perf.chrome_subtrees_added,
+            scroll_perf.chrome_subtrees_rebuilt,
+            scroll_perf.chrome_subtrees_translated,
+            scroll_perf.chrome_subtrees_removed,
+            scroll_perf.incremental_syncs,
         },
     );
 }
@@ -412,14 +426,21 @@ test "benchmark: workbench scroll frame" {
         best = @min(best, nowUs(io) - frame_start);
     }
 
+    const workbench_perf = tab.view.perfCounters();
     std.debug.print(
-        "[bench] workbench scroll {s}: best={d}us avg_scroll={d}us avg_refresh={d}us avg_render={d}us\n",
+        "[bench] workbench scroll {s}: best={d}us avg_scroll={d}us avg_refresh={d}us avg_render={d}us chrome_rebuilds={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{
             path,
             best,
             @divTrunc(scroll_us_total, @as(i64, @intCast(frames))),
             @divTrunc(refresh_us_total, @as(i64, @intCast(frames))),
             @divTrunc(render_us_total, @as(i64, @intCast(frames))),
+            workbench_perf.chrome_rebuilds,
+            workbench_perf.chrome_subtrees_added,
+            workbench_perf.chrome_subtrees_rebuilt,
+            workbench_perf.chrome_subtrees_translated,
+            workbench_perf.chrome_subtrees_removed,
+            workbench_perf.incremental_syncs,
         },
     );
 }

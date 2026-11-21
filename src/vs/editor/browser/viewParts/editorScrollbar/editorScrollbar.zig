@@ -13,6 +13,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
+const editorBrowser = @import("../../editorBrowser.zig");
+const RetainedViewPartHost = editorBrowser.RetainedViewPartHost;
 const Editor = @import("../../widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
 const Position = @import("../../../common/core/position.zig").Position;
@@ -31,18 +33,48 @@ pub const TerminalScrollbar = struct {
     /// lines, so a fractional `mouseWheelScrollSensitivity` accumulates here
     /// instead of being dropped, like upstream's smooth-scroll accumulator.
     wheel_remainder_lines: f64 = 0,
+    /// Terminal retention: the ruler column and one cell per screen row are
+    /// kept across frames; a repaint only rewrites the cells whose thumb or
+    /// marker paint changed.
+    column: ?*ui.Node = null,
+    cells: std.array_list.Managed(Cell),
+    column_left: usize = 0,
+    column_width: usize = 0,
+    column_height: usize = 0,
 
     const DragState = struct {
         start_row: usize,
         initial_state: scrollbar_state.ScrollbarState,
     };
 
+    const Cell = struct {
+        node: *ui.Node,
+        glyph_buf: [8]u8 = undefined,
+        glyph_len: usize = 0,
+        color: ui.Color = .{ .r = 0, .g = 0, .b = 0 },
+    };
+
     pub fn init(allocator: Allocator) TerminalScrollbar {
-        return .{ .allocator = allocator, .width = 0 };
+        return .{
+            .allocator = allocator,
+            .width = 0,
+            .cells = std.array_list.Managed(Cell).init(allocator),
+        };
     }
 
     pub fn deinit(self: *TerminalScrollbar) void {
         self.drag = null;
+        self.cells.deinit();
+    }
+
+    /// Drops the retained node pointers when the document that owns them is
+    /// being cleared or replaced. The nodes are not touched.
+    pub fn resetNodes(self: *TerminalScrollbar) void {
+        self.cells.clearRetainingCapacity();
+        self.column = null;
+        self.column_left = 0;
+        self.column_width = 0;
+        self.column_height = 0;
     }
 
     pub fn isDragging(self: *const TerminalScrollbar) bool {
@@ -145,8 +177,12 @@ pub const TerminalScrollbar = struct {
         text_height: usize,
         cols: usize,
         column_width: usize,
+        host: ?*RetainedViewPartHost,
     ) !void {
-        if (column_width < 1) return;
+        if (column_width < 1) {
+            if (self.column != null) self.destroyColumn(doc, host);
+            return;
+        }
         const left = cols -| column_width;
         if (left >= cols) return;
 
@@ -191,51 +227,176 @@ pub const TerminalScrollbar = struct {
         else
             ThumbHalves{ .top = 0, .end = 0 };
 
-        const column = try doc.createElement(.div);
-        column.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = @floatFromInt(left) },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(column_width) },
-            .height = .{ .cells = @floatFromInt(text_height) },
-            .overflow = .hidden,
-        });
-        _ = try root.appendChild(column);
+        const previous_cells = self.cells.items.len;
+        var new_column = false;
+        if (self.column == null) {
+            const column = try doc.createElement(.div);
+            column.setStyle(columnStyle(left, column_width, text_height));
+            _ = try root.appendChild(column);
+            self.column = column;
+            self.column_left = left;
+            self.column_width = column_width;
+            self.column_height = text_height;
+            new_column = true;
+        }
+        const column = self.column.?;
+        var geometry_changed = false;
+        if (!new_column) {
+            if (self.column_left != left or self.column_width != column_width) {
+                column.setStyle(columnStyle(left, column_width, text_height));
+                self.column_left = left;
+                self.column_width = column_width;
+                self.column_height = text_height;
+                geometry_changed = true;
+            } else if (self.column_height != text_height) {
+                column.asElement().style.height = .{ .cells = @floatFromInt(text_height) };
+                self.column_height = text_height;
+                geometry_changed = true;
+            }
+        }
+
+        while (self.cells.items.len < text_height) {
+            const cell_row = self.cells.items.len;
+            const cell = try doc.createElement(.div);
+            cell.setStyle(cellStyle(cell_row, column_width));
+            const glyph = try doc.createTextBorrowed("");
+            _ = try cell.appendChild(glyph);
+            _ = try column.appendChild(cell);
+            try self.cells.append(.{ .node = cell });
+        }
+        if (self.cells.items.len != previous_cells) {
+            // The list may have moved the inline glyph buffers, so re-point the
+            // retained text nodes at their current storage.
+            for (self.cells.items) |cell| {
+                if (cell.node.first_child) |text| {
+                    text.setTextBorrowed(cell.glyph_buf[0..cell.glyph_len]);
+                }
+            }
+        }
+        while (self.cells.items.len > text_height) {
+            const dropped = self.cells.pop().?;
+            if (host) |retained| retained.removeSubtree(dropped.node);
+            doc.destroy(dropped.node);
+        }
+        if (geometry_changed) {
+            for (self.cells.items) |cell| {
+                cell.node.asElement().style.width = .{ .cells = @floatFromInt(column_width) };
+            }
+        }
+
+        if (new_column) {
+            var row: usize = 0;
+            while (row < text_height) : (row += 1) {
+                const paint = desiredCell(row_markers, halves, row);
+                _ = paintCell(&self.cells.items[row], paint.glyph, paint.color);
+            }
+            if (host) |retained| try retained.addSubtree(column);
+            return;
+        }
+
+        if (geometry_changed) {
+            var row: usize = 0;
+            while (row < text_height) : (row += 1) {
+                const paint = desiredCell(row_markers, halves, row);
+                _ = paintCell(&self.cells.items[row], paint.glyph, paint.color);
+            }
+            if (host) |retained| try retained.rebuildSubtree(column);
+            return;
+        }
 
         var row: usize = 0;
         while (row < text_height) : (row += 1) {
-            const thumb_part = thumbPartAt(halves, row);
-            const marker = if (row < row_markers.len) row_markers[row] else null;
-            if (thumb_part == .none and marker == null) continue;
-
-            const marker_color = if (thumb_part != .none) scrollbar_thumb_color else marker.?.color;
-            const glyph_text: []const u8 = if (thumb_part != .none)
-                switch (thumb_part) {
-                    .none => unreachable,
-                    .full => "▐█",
-                    .upper => "▝▀",
-                    .lower => "▗▄",
-                }
-            else
-                markerGlyph(marker.?.lane, marker.?.vertical);
-
-            const cell = try doc.createElement(.div);
-            cell.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = 0 },
-                .top = .{ .cells = @floatFromInt(row) },
-                .width = .{ .cells = @floatFromInt(column_width) },
-                .height = .{ .cells = 1 },
-                .white_space = .pre,
-                .color = color(marker_color),
-            });
-            const glyph = try doc.createText(glyph_text);
-            glyph.setStyle(.{ .color = color(marker_color) });
-            _ = try cell.appendChild(glyph);
-            _ = try column.appendChild(cell);
+            const paint = desiredCell(row_markers, halves, row);
+            const changed = paintCell(&self.cells.items[row], paint.glyph, paint.color);
+            if (row >= previous_cells) {
+                if (host) |retained| try retained.addSubtree(self.cells.items[row].node);
+            } else if (changed) {
+                if (host) |retained| try retained.rebuildSubtree(self.cells.items[row].node);
+            }
         }
     }
+
+    fn destroyColumn(self: *TerminalScrollbar, doc: *ui.Document, host: ?*RetainedViewPartHost) void {
+        if (self.column) |column| {
+            if (host) |retained| retained.removeSubtree(column);
+            doc.destroy(column);
+        } else {
+            for (self.cells.items) |cell| {
+                if (host) |retained| retained.removeSubtree(cell.node);
+                doc.destroy(cell.node);
+            }
+        }
+        self.resetNodes();
+    }
 };
+
+const CellPaint = struct {
+    glyph: []const u8,
+    color: ui.Color,
+};
+
+fn columnStyle(left: usize, width: usize, height: usize) ui.Style {
+    return .{
+        .position = .absolute,
+        .left = .{ .cells = @floatFromInt(left) },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = @floatFromInt(width) },
+        .height = .{ .cells = @floatFromInt(height) },
+        .overflow = .hidden,
+    };
+}
+
+fn cellStyle(row: usize, width: usize) ui.Style {
+    return .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = @floatFromInt(row) },
+        .width = .{ .cells = @floatFromInt(width) },
+        .height = .{ .cells = 1 },
+        .white_space = .pre,
+    };
+}
+
+fn desiredCell(
+    row_markers: []const ?decorationsOverviewRuler.Marker,
+    halves: ThumbHalves,
+    row: usize,
+) CellPaint {
+    const thumb_part = thumbPartAt(halves, row);
+    if (thumb_part != .none) {
+        const glyph: []const u8 = switch (thumb_part) {
+            .none => unreachable,
+            .full => "\u{2590}\u{2588}",
+            .upper => "\u{259D}\u{2580}",
+            .lower => "\u{2597}\u{2584}",
+        };
+        return .{ .glyph = glyph, .color = color(scrollbar_thumb_color) };
+    }
+    const marker = if (row < row_markers.len) row_markers[row] else null;
+    if (marker) |paint| {
+        return .{ .glyph = markerGlyph(paint.lane, paint.vertical), .color = color(paint.color) };
+    }
+    return .{ .glyph = "", .color = .{ .r = 0, .g = 0, .b = 0 } };
+}
+
+/// Rewrites one retained scrollbar cell. Returns whether its painted glyph or
+/// colour changed.
+fn paintCell(cell: *TerminalScrollbar.Cell, glyph: []const u8, cell_color: ui.Color) bool {
+    if (cell.glyph_len == glyph.len and cell.color.eql(cell_color) and
+        std.mem.eql(u8, cell.glyph_buf[0..cell.glyph_len], glyph))
+    {
+        return false;
+    }
+    const len = @min(glyph.len, cell.glyph_buf.len);
+    @memcpy(cell.glyph_buf[0..len], glyph[0..len]);
+    cell.glyph_len = len;
+    cell.color = cell_color;
+    const text = cell.node.first_child orelse return false;
+    text.setTextBorrowed(cell.glyph_buf[0..len]);
+    text.setStyle(.{ .color = cell_color });
+    cell.node.asElement().style.color = cell_color;
+    return true;
+}
 
 pub fn appendOverviewMarkers(
     markers: *std.array_list.Managed(decorationsOverviewRuler.Decoration),

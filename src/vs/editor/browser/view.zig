@@ -46,6 +46,7 @@ const TerminalMargin = margin_mod.TerminalMargin;
 const TerminalScrollbar = editor_scrollbar_mod.TerminalScrollbar;
 const IContentWidget = @import("./editorBrowser.zig").IContentWidget;
 const IOverlayWidget = @import("./editorBrowser.zig").IOverlayWidget;
+const RetainedViewPartHost = @import("./editorBrowser.zig").RetainedViewPartHost;
 
 /// Terminal `View`: owns the view lines, view parts and dynamic overlays, and
 /// fans view events out to them.
@@ -70,7 +71,7 @@ pub const View = struct {
             .view_lines = undefined,
             .content_widgets = ViewContentWidgets.init(allocator),
             .overlay_widgets = ViewOverlayWidgets.init(allocator),
-            .margin = .{},
+            .margin = TerminalMargin.init(allocator),
             .scrollbar = TerminalScrollbar.init(allocator),
             .view_parts = std.array_list.Managed(*ViewPart).init(allocator),
             .content_overlays = std.array_list.Managed(*DynamicViewOverlay).init(allocator),
@@ -85,7 +86,7 @@ pub const View = struct {
         self.view_lines.deinit();
         self.content_widgets.deinit();
         self.overlay_widgets.deinit();
-        self.margin = .{};
+        self.margin.deinit();
         self.scrollbar.deinit();
         self.view_parts.deinit();
         self.content_overlays.deinit();
@@ -154,9 +155,20 @@ pub const View = struct {
     /// Terminal paint-boundary assembly: paints the margin, scrollbar,
     /// overlay widgets and content widgets into the document. The line pass is
     /// driven separately through `ViewLines.paintViewport`.
+    ///
+    /// Each chrome part owns a stable container, so the parts that retain their
+    /// DOM (margin rows, scrollbar cells, widget containers) can update only
+    /// their own subtree. Widgets are rebuilt per frame, as upstream does, but
+    /// only their containers are replaced and re-added to the box tree.
     pub const DocumentPartsOptions = struct {
         doc: *ui.Document,
-        root: *ui.Node,
+        gutter_root: *ui.Node,
+        scrollbar_root: *ui.Node,
+        overlay_widgets_root: *ui.Node,
+        content_widgets_root: *ui.Node,
+        /// Explicit box-tree sync for retained parts; null while a full box
+        /// rebuild is pending and the boxes are rebuilt from the DOM instead.
+        host: ?*RetainedViewPartHost,
         editor: *Editor,
         states: []const CursorState,
         cols: usize,
@@ -171,29 +183,44 @@ pub const View = struct {
     };
 
     pub fn renderDocumentParts(self: *View, options: DocumentPartsOptions) !void {
+        const host = options.host;
         try self.margin.render(
             options.doc,
-            options.root,
+            options.gutter_root,
             options.editor,
             options.line_numbers,
             options.line_decorations,
             options.folding,
             options.gutter,
             options.text_height,
+            host,
         );
         try self.scrollbar.render(
             options.doc,
-            options.root,
+            options.scrollbar_root,
             options.editor,
             options.states,
             options.text_height,
             options.cols,
             options.scrollbar_width,
+            host,
         );
-        try self.overlay_widgets.render(options.doc, options.root, options.cols, options.text_height);
+
+        clearPartRoot(options.doc, options.overlay_widgets_root, host);
+        try self.overlay_widgets.render(
+            options.doc,
+            options.overlay_widgets_root,
+            options.cols,
+            options.text_height,
+        );
+        if (host) |retained| {
+            for (self.overlay_widgets.entries.items) |entry| try retained.addSubtree(entry.node);
+        }
+
+        clearPartRoot(options.doc, options.content_widgets_root, host);
         try self.content_widgets.render(
             options.doc,
-            options.root,
+            options.content_widgets_root,
             options.editor,
             options.cols,
             options.text_right,
@@ -201,6 +228,27 @@ pub const View = struct {
             options.gutter,
             options.tab_size,
         );
+        if (host) |retained| {
+            for (self.content_widgets.entries.items) |entry| try retained.addSubtree(entry.node);
+        }
+    }
+
+    /// Unlinks a widget container's current children. With an explicit host the
+    /// old box subtrees are dropped before their nodes are recycled, so a
+    /// recycled pointer can never be looked up as a stale box. Without a host
+    /// the box tree is about to be rebuilt from scratch.
+    fn clearPartRoot(doc: *ui.Document, root: *ui.Node, host: ?*RetainedViewPartHost) void {
+        if (host) |retained| {
+            var child = root.first_child;
+            while (child) |node| {
+                const next = node.next;
+                retained.removeSubtree(node);
+                doc.destroy(node);
+                child = next;
+            }
+        } else {
+            doc.destroyChildren(root);
+        }
     }
 
     /// Port of upstream `View._getViewPartsToRender`: the view parts that

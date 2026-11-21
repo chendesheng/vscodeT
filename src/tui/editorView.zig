@@ -344,7 +344,15 @@ const default_paint_style: ui.style.PaintStyle = .{};
 
 pub const PerfCounters = struct {
     full_box_solves: usize = 0,
+    /// Incremental sync passes after the first full solve.
+    incremental_syncs: usize = 0,
+    /// Incremental passes where a retained chrome part issued explicit box
+    /// operations. The whole-chrome subtree rebuild no longer runs per frame.
     chrome_rebuilds: usize = 0,
+    chrome_subtrees_added: usize = 0,
+    chrome_subtrees_rebuilt: usize = 0,
+    chrome_subtrees_translated: usize = 0,
+    chrome_subtrees_removed: usize = 0,
     line_added: usize = 0,
     line_rebuilt: usize = 0,
     line_translated: usize = 0,
@@ -392,6 +400,23 @@ pub const View = struct {
     root_node: ?*ui.Node = null,
     content_root: ?*ui.Node = null,
     chrome_root: ?*ui.Node = null,
+    /// Stable containers for the retained chrome parts, in paint order. Each
+    /// part updates its own container; a refresh never clears the chrome root.
+    gutter_root: ?*ui.Node = null,
+    scrollbar_root: ?*ui.Node = null,
+    overlay_widgets_root: ?*ui.Node = null,
+    content_widgets_root: ?*ui.Node = null,
+    status_root: ?*ui.Node = null,
+    /// Retained editor status row nodes; their text borrows the stable
+    /// `status_left`/`status_right` buffers and is only rewritten when the
+    /// status signature changes.
+    status_bar: ?*ui.Node = null,
+    status_left_text: ?*ui.Node = null,
+    status_right_box: ?*ui.Node = null,
+    status_right_text: ?*ui.Node = null,
+    status_signature: u64 = 0,
+    status_active: bool = false,
+    status_row: usize = 0,
     /// The box tree has to be rebuilt from scratch (first frame, resize,
     /// theme rescan or the incremental capacity bound).
     needs_full_box_rebuild: bool = true,
@@ -929,9 +954,9 @@ pub const View = struct {
         // destroyed; drop the window without touching their DOM nodes.
         self.terminal_view_host.viewRef().getViewLines().flushWindow();
         self.document_ready = false;
+        self.resetChromeRoots();
         self.root_node = null;
         self.content_root = null;
-        self.chrome_root = null;
         self.needs_full_box_rebuild = true;
         var previous = self.surface;
         self.surface = replacement;
@@ -947,6 +972,26 @@ pub const View = struct {
         self.refreshBracketHighlightColors();
         self.document_ready = false;
         self.invalidate();
+    }
+
+    /// Drops every retained chrome pointer when the document that owns the
+    /// nodes is cleared or replaced. The nodes themselves are not touched.
+    fn resetChromeRoots(self: *View) void {
+        self.terminal_view_host.viewRef().marginPart().resetNodes();
+        self.terminal_view_host.viewRef().scrollbarPart().resetNodes();
+        self.chrome_root = null;
+        self.gutter_root = null;
+        self.scrollbar_root = null;
+        self.overlay_widgets_root = null;
+        self.content_widgets_root = null;
+        self.status_root = null;
+        self.status_bar = null;
+        self.status_left_text = null;
+        self.status_right_box = null;
+        self.status_right_text = null;
+        self.status_signature = 0;
+        self.status_active = false;
+        self.status_row = 0;
     }
 
     fn clearPaintStyles(self: *View) void {
@@ -1281,6 +1326,7 @@ pub const View = struct {
             // whole document is about to be cleared.
             self.terminal_view_host.viewRef().getViewLines().flushWindow();
             doc.clear();
+            self.resetChromeRoots();
             const root = try doc.createElement(.div);
             root.setStyle(.{
                 .position = .absolute,
@@ -1315,6 +1361,14 @@ pub const View = struct {
             self.root_node = root;
             self.content_root = content_root;
             self.chrome_root = chrome_root;
+            // The retained chrome parts manage their own containers, in paint
+            // order: gutter, scrollbar, overlay widgets, content widgets and
+            // the editor status row.
+            self.gutter_root = try appendChromePartRoot(doc, chrome_root);
+            self.scrollbar_root = try appendChromePartRoot(doc, chrome_root);
+            self.overlay_widgets_root = try appendChromePartRoot(doc, chrome_root);
+            self.content_widgets_root = try appendChromePartRoot(doc, chrome_root);
+            self.status_root = try appendChromePartRoot(doc, chrome_root);
             self.document_ready = true;
             self.needs_full_box_rebuild = true;
             self.terminal_view_host.viewRef().getViewLines().setDomHost(
@@ -1323,9 +1377,9 @@ pub const View = struct {
                 self,
                 viewLineDisposed,
             );
-        } else {
-            self.chrome_root.?.clearChildren();
         }
+        // Retained chrome: each part updates its own stable container below
+        // instead of clearing the whole chrome root every frame.
         self.cursor_row = null;
         self.cursor_col = 0;
 
@@ -1459,7 +1513,19 @@ pub const View = struct {
         }
 
         const content_root = self.content_root orelse return error.DocumentRootMissing;
-        const chrome_root = self.chrome_root orelse return error.DocumentRootMissing;
+        const gutter_root = self.gutter_root orelse return error.DocumentRootMissing;
+        const scrollbar_root = self.scrollbar_root orelse return error.DocumentRootMissing;
+        const overlay_widgets_root = self.overlay_widgets_root orelse return error.DocumentRootMissing;
+        const content_widgets_root = self.content_widgets_root orelse return error.DocumentRootMissing;
+        const status_root = self.status_root orelse return error.DocumentRootMissing;
+        // A full box solve rebuilds every box from the DOM; only incremental
+        // frames need the explicit retained-part operations.
+        var chrome_host = editorBrowser.RetainedViewPartHost{
+            .tree = self.surface.box_tree,
+            .doc = doc,
+        };
+        const chrome_host_ptr: ?*editorBrowser.RetainedViewPartHost =
+            if (self.needs_full_box_rebuild) null else &chrome_host;
         const states = try editor.viewCursorStates();
         defer editor.allocator.free(states);
         const cursor_render_data = self.terminal_view_host.getCursorRenderData();
@@ -1535,7 +1601,11 @@ pub const View = struct {
 
         try self.terminal_view_host.viewRef().renderDocumentParts(.{
             .doc = doc,
-            .root = chrome_root,
+            .gutter_root = gutter_root,
+            .scrollbar_root = scrollbar_root,
+            .overlay_widgets_root = overlay_widgets_root,
+            .content_widgets_root = content_widgets_root,
+            .host = chrome_host_ptr,
             .editor = editor,
             .states = states,
             .cols = cols,
@@ -1548,7 +1618,13 @@ pub const View = struct {
             .line_decorations = &self.terminal_view_host.line_decorations,
             .folding = self.terminal_view_host.foldingDecorations(),
         });
-        try appendStatus(self, doc, chrome_root, rows);
+        try updateStatus(self, doc, chrome_host_ptr, status_root, rows);
+        self.perf.chrome_subtrees_added += chrome_host.ops.added;
+        self.perf.chrome_subtrees_rebuilt += chrome_host.ops.rebuilt;
+        self.perf.chrome_subtrees_translated += chrome_host.ops.translated;
+        self.perf.chrome_subtrees_removed += chrome_host.ops.removed;
+        if (chrome_host.ops.total() > 0) self.perf.chrome_rebuilds += 1;
+        if (chrome_host.failed) self.needs_full_box_rebuild = true;
         try self.syncBoxes(doc);
         self.needs_rebuild = false;
     }
@@ -1579,15 +1655,9 @@ pub const View = struct {
             return;
         }
 
-        self.perf.chrome_rebuilds += 1;
-        if (self.chrome_root) |chrome| {
-            if (try tree.rebuildSubtree(chrome)) |box| {
-                try @import("ui").layout.layoutSubtree(tree, doc, box);
-            } else {
-                self.needs_full_box_rebuild = true;
-                return;
-            }
-        }
+        self.perf.incremental_syncs += 1;
+        // The retained chrome parts already applied their explicit box deltas
+        // while rebuilding; only the windowed line pass remains here.
 
         const lines = self.terminal_view_host.viewRef().getViewLines();
         const start = lines.windowStart();
@@ -1662,16 +1732,68 @@ fn viewLineDisposed(context: *anyopaque, line: *ViewLine) void {
     }
 }
 
-fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !void {
-    if (rows == 0 or !view.status_bar_visible) return;
-    if (view.status_left_len == 0 and view.status_right_len == 0) return;
-    const status_row: f64 = @floatFromInt(rows - 1);
+/// Keeps the editor's fallback status row as a stable node. Only the left and
+/// right text nodes are re-pointed at the view's status buffers, and only when
+/// the text signature changes; the row itself is never recreated per frame.
+fn updateStatus(
+    view: *View,
+    doc: *ui.Document,
+    host: ?*editorBrowser.RetainedViewPartHost,
+    root: *ui.Node,
+    rows: usize,
+) !void {
+    const active = rows > 0 and view.status_bar_visible and
+        (view.status_left_len > 0 or view.status_right_len > 0);
+    if (!active) {
+        const bar = view.status_bar orelse return;
+        if (bar.asElement().style.display != .none) {
+            bar.asElement().style.display = .none;
+            view.status_active = false;
+            view.status_signature = 0;
+            if (host) |retained| try retained.rebuildSubtree(root);
+        }
+        return;
+    }
 
+    const signature = statusSignature(view);
+    if (view.status_bar == null) {
+        try createStatusRow(view, doc, root, rows);
+        view.status_signature = signature;
+        view.status_active = true;
+        if (host) |retained| try retained.rebuildSubtree(root);
+        return;
+    }
+
+    var changed = false;
+    const bar = view.status_bar.?;
+    if (!view.status_active) {
+        bar.asElement().style.display = .block;
+        view.status_active = true;
+        changed = true;
+    }
+    if (view.status_row != rows - 1) {
+        view.status_row = rows - 1;
+        bar.asElement().style.top = .{ .cells = @floatFromInt(view.status_row) };
+        changed = true;
+    }
+    if (view.status_signature != signature) {
+        view.status_left_text.?.setTextBorrowed(view.status_left[0..view.status_left_len]);
+        view.status_right_text.?.setTextBorrowed(view.status_right[0..view.status_right_len]);
+        view.status_signature = signature;
+        changed = true;
+    }
+    if (changed) {
+        if (host) |retained| try retained.rebuildSubtree(root);
+    }
+}
+
+fn createStatusRow(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !void {
+    view.status_row = rows - 1;
     const bar = try doc.createElement(.div);
     bar.setStyle(.{
         .position = .absolute,
         .left = .{ .cells = 0 },
-        .top = .{ .cells = status_row },
+        .top = .{ .cells = @floatFromInt(view.status_row) },
         .width = .{ .percent = 100 },
         .height = .{ .cells = 1 },
         .white_space = .pre,
@@ -1679,29 +1801,51 @@ fn appendStatus(view: *View, doc: *ui.Document, root: *ui.Node, rows: usize) !vo
         .reverse = true,
     });
 
-    if (view.status_left_len > 0 or view.status_right_len > 0) {
-        if (view.status_left_len > 0) {
-            const left = try doc.createText(view.status_left[0..view.status_left_len]);
-            _ = try bar.appendChild(left);
-        }
-        if (view.status_right_len > 0) {
-            const right = try doc.createElement(.div);
-            right.setStyle(.{
-                .position = .absolute,
-                .right = .{ .cells = 0 },
-                .top = .{ .cells = 0 },
-                .white_space = .pre,
-            });
-            const text = try doc.createText(view.status_right[0..view.status_right_len]);
-            _ = try right.appendChild(text);
-            _ = try bar.appendChild(right);
-        }
-        _ = try root.appendChild(bar);
-        return;
-    }
+    const left = try doc.createTextBorrowed(view.status_left[0..view.status_left_len]);
+    _ = try bar.appendChild(left);
+    view.status_left_text = left;
 
-    // The fallback `Ctrl-Q` row is gone: the workbench status bar owns status
-    // text. Standalone/preview callers must supply it through `setStatusText`.
+    const right_box = try doc.createElement(.div);
+    right_box.setStyle(.{
+        .position = .absolute,
+        .right = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .white_space = .pre,
+    });
+    const right = try doc.createTextBorrowed(view.status_right[0..view.status_right_len]);
+    _ = try right_box.appendChild(right);
+    _ = try bar.appendChild(right_box);
+    view.status_right_box = right_box;
+    view.status_right_text = right;
+
+    _ = try root.appendChild(bar);
+    view.status_bar = bar;
+}
+
+fn statusSignature(view: *const View) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(std.mem.asBytes(&view.status_left_len));
+    hasher.update(view.status_left[0..view.status_left_len]);
+    hasher.update(std.mem.asBytes(&view.status_right_len));
+    hasher.update(view.status_right[0..view.status_right_len]);
+    return hasher.final();
+}
+
+/// Creates one stable chrome part container: a full-viewport, hit-test
+/// transparent wrapper. Children keep their own pointer-events, so a click on
+/// the text still reaches the content lines painted underneath.
+fn appendChromePartRoot(doc: *ui.Document, parent: *ui.Node) !*ui.Node {
+    const node = try doc.createElement(.div);
+    node.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    node.setPointerEvents(false);
+    _ = try parent.appendChild(node);
+    return node;
 }
 
 /// Terminal paint adapter for one rendered part and its cell flags. The

@@ -93,6 +93,69 @@ pub const IContentWidget = struct {
     is_focused: *const fn (context: *anyopaque) bool,
 };
 
+/// Terminal adaptation: explicit box-tree operations for a retained view part.
+///
+/// The editor view turns off the box tree's automatic mutation invalidation
+/// after the first full solve and drives retained subtrees itself. A view part
+/// that keeps its DOM nodes across frames (gutter rows, scrollbar cells, the
+/// status row, widget containers) reports each DOM delta through this host so
+/// only the changed subtree is rebuilt and laid out. `failed` tells the view
+/// that a parent box was missing and it must fall back to a full box solve.
+pub const RetainedViewPartHost = struct {
+    tree: *ui.BoxTree,
+    doc: *ui.Document,
+    failed: bool = false,
+    ops: Ops = .{},
+
+    pub const Ops = struct {
+        added: usize = 0,
+        rebuilt: usize = 0,
+        translated: usize = 0,
+        removed: usize = 0,
+
+        pub fn total(self: Ops) usize {
+            return self.added + self.rebuilt + self.translated + self.removed;
+        }
+    };
+
+    /// Drops the box subtree of a node that is about to be destroyed.
+    pub fn removeSubtree(self: *RetainedViewPartHost, node: *ui.Node) void {
+        self.tree.removeSubtree(node);
+        self.ops.removed += 1;
+    }
+
+    /// Builds the box for a newly attached DOM node and lays it out.
+    pub fn addSubtree(self: *RetainedViewPartHost, node: *ui.Node) !void {
+        const box = (try self.tree.addSubtree(node)) orelse {
+            self.failed = true;
+            return;
+        };
+        self.ops.added += 1;
+        try ui.layout.layoutSubtree(self.tree, self.doc, box);
+    }
+
+    /// Rebuilds a retained node's box children from its current DOM, refreshes
+    /// the element style (the box copies it at build time) and lays it out.
+    pub fn rebuildSubtree(self: *RetainedViewPartHost, node: *ui.Node) !void {
+        const box = (try self.tree.rebuildSubtree(node)) orelse {
+            self.failed = true;
+            return;
+        };
+        _ = self.tree.translateSubtree(node, 0, 0);
+        self.ops.rebuilt += 1;
+        try ui.layout.layoutSubtree(self.tree, self.doc, box);
+    }
+
+    /// Shifts a retained subtree by a row delta without rebuilding its boxes.
+    pub fn translateSubtree(self: *RetainedViewPartHost, node: *ui.Node, dy: f64) void {
+        if (self.tree.translateSubtree(node, 0, dy)) {
+            self.ops.translated += 1;
+        } else {
+            self.failed = true;
+        }
+    }
+};
+
 /// Mirrors the portable subset of upstream `MouseTargetType`.
 pub const MouseTargetType = enum {
     unknown,

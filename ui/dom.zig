@@ -224,16 +224,6 @@ pub const Document = struct {
         return node;
     }
 
-    /// Re-points a text node without allocating. Used for retained gutter and
-    /// status rows whose text is formatted into stable per-row buffers.
-    pub fn setTextBorrowed(self: *Node, data: []const u8) void {
-        switch (self.kind) {
-            .text => |*text| text.data = data,
-            .element => {},
-        }
-        self.document.notifyMutation(self, .text);
-    }
-
     pub fn setRoot(self: *Document, root: *Node) void {
         root.parent = null;
         self.root = root;
@@ -361,6 +351,16 @@ pub const Node = struct {
             .text => |*text| text,
             .element => unreachable,
         };
+    }
+
+    /// Re-points a text node without allocating. Used for retained gutter and
+    /// status rows whose text is formatted into stable per-row buffers.
+    pub fn setTextBorrowed(self: *Node, data: []const u8) void {
+        switch (self.kind) {
+            .text => |*text| text.data = data,
+            .element => {},
+        }
+        self.document.notifyMutation(self, .text);
     }
 
     pub fn setStyle(self: *Node, value: Style) void {
