@@ -24,6 +24,7 @@ const lines_decorations_mod = @import("../linesDecorations/linesDecorations.zig"
 const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const FoldingDecorationProvider = @import("../../../contrib/folding/browser/foldingDecorations.zig").FoldingDecorationProvider;
 const glyph_margin = @import("../glyphMargin/glyphMargin.zig");
+const current_line_mod = @import("../currentLineHighlight/currentLineHighlight.zig");
 const GlyphMarginOverlay = glyph_margin.GlyphMarginOverlay;
 const Glyph = glyph_margin.Glyph;
 
@@ -36,6 +37,7 @@ pub const Theme = struct {
     continuation: ui.Color = .{ .r = 90, .g = 90, .b = 90 },
     filler: ui.Color = .{ .r = 70, .g = 70, .b = 70 },
     folding_control: ui.Color = .{ .r = 110, .g = 110, .b = 110 },
+    current_line_background: ui.Color = .{ .r = 40, .g = 40, .b = 40 },
     added_primary: ui.Color = .{ .r = 72, .g = 126, .b = 2 },
     modified_primary: ui.Color = .{ .r = 137, .g = 85, .b = 3 },
     deleted_primary: ui.Color = .{ .r = 173, .g = 7, .b = 7 },
@@ -82,6 +84,8 @@ pub const TerminalMargin = struct {
     const Row = struct {
         view_line: usize,
         node: *ui.Node,
+        highlight: *ui.Node,
+        margin_highlight: bool = false,
         glyph_cells: [3]*ui.Node,
         glyph_texts: [3]*ui.Node,
         number_line: *ui.Node,
@@ -93,6 +97,7 @@ pub const TerminalMargin = struct {
         marker_cell: *ui.Node,
         marker_text: *ui.Node,
         painted_top: usize,
+        gutter_width: usize,
         number_kind: NumberKind = .blank,
         number_active: bool = false,
         glyphs: [3]?Glyph = .{ null, null, null },
@@ -114,6 +119,7 @@ pub const TerminalMargin = struct {
         number_kind: NumberKind = .blank,
         number_active: bool = false,
         glyphs: [3]?Glyph = .{ null, null, null },
+        margin_highlight: bool = false,
         number_buf: [32]u8 = undefined,
         number_len: usize = 0,
         /// Text owned by the line-number overlay; only valid for the duration
@@ -173,6 +179,7 @@ pub const TerminalMargin = struct {
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
         glyph_margin_overlay: ?*const GlyphMarginOverlay,
+        line_highlight: ?*const current_line_mod.AbstractLineHighlightOverlay,
         folding: *const FoldingDecorationProvider,
         gutter: usize,
         text_height: usize,
@@ -221,6 +228,7 @@ pub const TerminalMargin = struct {
                 line_numbers,
                 line_decorations,
                 glyph_margin_overlay,
+                line_highlight,
                 folding,
                 view_line,
                 total,
@@ -276,6 +284,7 @@ pub const TerminalMargin = struct {
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
         glyph_margin_overlay: ?*const GlyphMarginOverlay,
+        line_highlight: ?*const current_line_mod.AbstractLineHighlightOverlay,
         folding: *const FoldingDecorationProvider,
         view_line: usize,
         total: usize,
@@ -340,6 +349,11 @@ pub const TerminalMargin = struct {
             paint.number_len = glyph.len;
             paint.number_kind = .continuation;
         }
+        if (line_highlight) |overlay| {
+            if (overlay.renderedLine(view_line)) |highlight| {
+                paint.margin_highlight = highlight.in_margin;
+            }
+        }
         return paint;
     }
 
@@ -364,6 +378,17 @@ pub const TerminalMargin = struct {
             .width = .{ .cells = @floatFromInt(gutter) },
             .height = .{ .cells = 1 },
         });
+
+        const highlight = try doc.createElement(.div);
+        highlight.setStyle(.{
+            .position = .absolute,
+            .left = .{ .cells = 0 },
+            .top = .{ .cells = 0 },
+            .width = .{ .cells = @floatFromInt(gutter) },
+            .height = .{ .cells = 1 },
+            .display = .none,
+        });
+        _ = try row_node.appendChild(highlight);
 
         var glyph_cells: [3]*ui.Node = undefined;
         var glyph_texts: [3]*ui.Node = undefined;
@@ -453,6 +478,7 @@ pub const TerminalMargin = struct {
         row.* = .{
             .view_line = view_line,
             .node = row_node,
+            .highlight = highlight,
             .glyph_cells = glyph_cells,
             .glyph_texts = glyph_texts,
             .number_line = number_line,
@@ -464,6 +490,7 @@ pub const TerminalMargin = struct {
             .marker_cell = marker_cell,
             .marker_text = marker_text,
             .painted_top = screen_row,
+            .gutter_width = gutter,
         };
         _ = try applyPaint(self, row, paint);
         return row;
@@ -527,6 +554,23 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
             .continuation => self.theme.continuation,
             else => if (paint.number_active) self.theme.line_number_active else self.theme.line_number,
         } });
+        changed = true;
+    }
+
+    if (row.margin_highlight != paint.margin_highlight) {
+        row.margin_highlight = paint.margin_highlight;
+        if (paint.margin_highlight) {
+            row.highlight.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .width = .{ .cells = @floatFromInt(row.gutter_width) },
+                .height = .{ .cells = 1 },
+                .background = self.theme.current_line_background,
+            });
+        } else {
+            setDisplay(row.highlight, false);
+        }
         changed = true;
     }
 
@@ -750,6 +794,7 @@ test "margin: theme colors the line numbers and the active line" {
         &host.line_numbers,
         &host.line_decorations,
         host.glyphMargin(),
+        null,
         &folding,
         editor.gutterWidth(),
         editor.textHeight(),
@@ -804,6 +849,7 @@ test "margin: paints the line-number map, blank filler and the quick-diff cell" 
         &host.line_numbers,
         &host.line_decorations,
         host.glyphMargin(),
+        null,
         &folding,
         editor.gutterWidth(),
         editor.textHeight(),
