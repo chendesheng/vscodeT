@@ -938,6 +938,7 @@ pub const View = struct {
             .cols = self.surface.document().cols,
             .text_height = self.editor.textHeight(),
             .gutter_width = self.editor.gutterWidth(),
+            .glyph_width = self.editor.gutterGlyphWidth(),
             .top_view_line = self.editor.topViewLine(),
             .view_line_count = self.editor.viewLineCount(),
             .scrollbar_width = self.scrollbar_width,
@@ -1448,6 +1449,9 @@ pub const View = struct {
     /// their boxes.
     fn flushAccumulatedAndRenderNow(self: *View) !void {
         self.render_count += 1;
+        // Reserve or release the glyph-margin cell before the frame computes
+        // its gutter and wrapping geometry.
+        self.terminal_view_host.prepareFrame();
         try self.synchronizeViewport();
         const editor = self.editor;
         editor.setScrollbarWidth(overviewRulerWidth(editor));
@@ -1807,6 +1811,7 @@ pub const View = struct {
             .scrollbar_width = self.scrollbar_width,
             .line_numbers = &self.terminal_view_host.line_numbers,
             .line_decorations = &self.terminal_view_host.line_decorations,
+            .glyph_margin = self.terminal_view_host.glyphMargin(),
             .folding = self.terminal_view_host.foldingDecorations(),
         });
         try updateStatus(self, doc, chrome_host_ptr, status_root, rows);
@@ -4548,6 +4553,39 @@ test "View: block decorations paint a bordered range under the text" {
     try std.testing.expectEqual(@as(u8, 139), style.border_color.?.r);
     try std.testing.expectEqual(@as(u8, 139), style.border_color.?.g);
     try std.testing.expectEqual(@as(u8, 139), style.border_color.?.b);
+}
+
+test "View: glyph margin paints a themed glyph and reports the gutter target" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var options = ModelDecorationOptions.init("glyph", .AlwaysGrowsWhenTypingAtEdges);
+    options.glyphMarginClassName = "glyph-error";
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(2, 1, 2, 1), .options = &options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 64);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    try std.testing.expectEqual(@as(usize, 1), editor.gutterGlyphWidth());
+    try std.testing.expectEqual(@as(usize, 7), editor.gutterWidth());
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, 0x25CF), grid.cluster[grid.index(0, 1)]);
+    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 241, .g = 76, .b = 76 }), grid.fg[grid.index(0, 1)]);
+
+    const target = try view.mouseTargetAt(0, 1);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.gutter_glyph_margin, target.type);
 }
 
 test "View: init, paint and invalidate batch renders" {

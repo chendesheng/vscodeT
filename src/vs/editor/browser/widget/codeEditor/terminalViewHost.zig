@@ -29,6 +29,7 @@ const folding_decorations_mod = @import("../../../contrib/folding/browser/foldin
 const lines_decorations_mod = @import("../../viewParts/linesDecorations/linesDecorations.zig");
 const decorations_overlay_mod = @import("../../viewParts/decorations/decorations.zig");
 const block_decorations_mod = @import("../../viewParts/blockDecorations/blockDecorations.zig");
+const glyph_margin_mod = @import("../../viewParts/glyphMargin/glyphMargin.zig");
 const restricted_context = @import("../../view/renderingContext.zig");
 const rendering_context = @import("../../view/renderingContext.zig");
 const ModelDecoration = @import("../../../common/model.zig").ModelDecoration;
@@ -64,6 +65,7 @@ const FoldingDecorationProvider = folding_decorations_mod.FoldingDecorationProvi
 const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const DecorationsOverlay = decorations_overlay_mod.DecorationsOverlay;
 const BlockDecorations = block_decorations_mod.BlockDecorations;
+const GlyphMarginOverlay = glyph_margin_mod.GlyphMarginOverlay;
 const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const ViewLine = @import("../../viewParts/viewLines/viewLine.zig").ViewLine;
@@ -173,6 +175,8 @@ pub const TerminalViewHost = struct {
     line_decorations: LinesDecorationsOverlay,
     decorations_overlay: DecorationsOverlay,
     block_decorations: BlockDecorations,
+    glyph_margin: GlyphMarginOverlay,
+    glyph_margin_dirty: bool = true,
     selections_overlay: SelectionsOverlay,
     current_line: CurrentLineHighlightOverlay,
     view_cursors: ViewCursors,
@@ -204,6 +208,7 @@ pub const TerminalViewHost = struct {
             .line_decorations = undefined,
             .decorations_overlay = undefined,
             .block_decorations = undefined,
+            .glyph_margin = undefined,
             .selections_overlay = undefined,
             .current_line = undefined,
             .view_cursors = undefined,
@@ -237,6 +242,7 @@ pub const TerminalViewHost = struct {
         self.line_decorations.init(allocator, &self.context);
         self.decorations_overlay.init(allocator, &self.context);
         self.block_decorations.init(allocator, &self.context);
+        self.glyph_margin.init(allocator, &self.context);
         self.selections_overlay.init(allocator, &self.context);
         self.current_line.initContent(allocator, &self.context);
         self.view_cursors.init(allocator, &self.context);
@@ -248,6 +254,7 @@ pub const TerminalViewHost = struct {
         try self.view.addContentOverlay(&self.decorations_overlay.base);
         try self.view.addContentOverlay(&self.selections_overlay.base);
         try self.view.addContentOverlay(&self.current_line.base);
+        try self.view.addContentOverlay(&self.glyph_margin.base);
         try self.view.addViewPart(&self.block_decorations.base);
 
         self.view_model_handler = ViewEventHandler.init(self, .{
@@ -276,6 +283,7 @@ pub const TerminalViewHost = struct {
         self.options.set(.experimentalWhitespaceRendering, .off);
         self.options.set(.stopRenderingLineAfter, -1);
         self.syncGutterOptions();
+        self.glyph_margin_dirty = true;
         return any;
     }
 
@@ -297,6 +305,7 @@ pub const TerminalViewHost = struct {
         self.current_line.deinit();
         self.selections_overlay.deinit();
         self.block_decorations.deinit();
+        self.glyph_margin.deinit();
         self.decorations_overlay.deinit();
         self.line_decorations.deinit();
         self.line_numbers.deinit();
@@ -409,6 +418,30 @@ pub const TerminalViewHost = struct {
     /// blocks it computed for the current viewport.
     pub fn blockDecorations(self: *TerminalViewHost) *BlockDecorations {
         return &self.block_decorations;
+    }
+
+    /// The ported glyph-margin overlay.
+    pub fn glyphMargin(self: *TerminalViewHost) *GlyphMarginOverlay {
+        return &self.glyph_margin;
+    }
+
+    /// Applies pending decoration-dependent gutter state before the frame
+    /// computes its geometry. The terminal reserves one glyph cell only while
+    /// a glyph decoration exists.
+    pub fn prepareFrame(self: *TerminalViewHost) void {
+        if (!self.glyph_margin_dirty) return;
+        self.glyph_margin_dirty = false;
+        var has_glyph = false;
+        const all = self.editor.model.getAllDecorations(0, false) catch return;
+        defer self.editor.model.getAllocator().free(all);
+        for (all) |decoration| {
+            if (decoration.options.glyphMarginClassName != null) {
+                has_glyph = true;
+                break;
+            }
+        }
+        const enabled = self.options.get(.glyphMargin);
+        self.editor.setGlyphMarginWidth(if (has_glyph and enabled) 1 else 0);
     }
 
     pub fn foldingShowsEllipsis(self: *const TerminalViewHost, model_line: usize) bool {
@@ -744,6 +777,7 @@ pub const TerminalViewHost = struct {
     fn onEditorDecorationsChanged(context: *anyopaque, _: *const view_events.ViewDecorationsChangedEvent) bool {
         const self = host(context);
         self.decorations.onModelDecorationsChanged();
+        self.glyph_margin_dirty = true;
         return false;
     }
 

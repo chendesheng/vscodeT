@@ -21,6 +21,7 @@ pub const Geometry = struct {
     cols: usize,
     text_height: usize,
     gutter_width: usize,
+    glyph_width: usize,
     top_view_line: usize,
     view_line_count: usize,
     scrollbar_width: usize,
@@ -68,6 +69,18 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
     }
 
     const view_line = geometry.top_view_line + y;
+    if (x < geometry.glyph_width) {
+        return .{
+            .element = element,
+            .type = .gutter_glyph_margin,
+            .position = try host.position_at_view_point(
+                host.context,
+                @min(view_line, geometry.view_line_count),
+                0,
+            ),
+            .mouse_column = mouse_column,
+        };
+    }
     if (x < geometry.gutter_width) {
         return .{
             .element = element,

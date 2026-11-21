@@ -915,7 +915,9 @@ console API for raw mode, sizing and input polling.
   editor group; files on the command line still open as tabs. Opening only
   files uses an empty workspace, as upstream does.
 - The editor is rendered through the library (`src/tui/editorView.zig`): text,
-  syntax colors, right-aligned line numbers (inactive/active colors from
+  syntax colors, glyph-margin glyphs (a themed one-cell `●`/`▲` mapping for the
+  known glyph classes, reserved only while a glyph decoration exists),
+  right-aligned line numbers (inactive/active colors from
   `editorLineNumber.*`; the column follows `editor.lineNumbers`,
   `editor.lineNumbersMinChars` and the digit count), wrapped-line markers, selections
   (the theme `editor.selectionBackground` with dimmed covered text), the current

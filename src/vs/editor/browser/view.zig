@@ -20,6 +20,7 @@ const view_lines_mod = @import("./viewParts/viewLines/viewLines.zig");
 const content_widgets_mod = @import("./viewParts/contentWidgets/contentWidgets.zig");
 const overlay_widgets_mod = @import("./viewParts/overlayWidgets/overlayWidgets.zig");
 const margin_mod = @import("./viewParts/margin/margin.zig");
+const glyph_margin_mod = @import("./viewParts/glyphMargin/glyphMargin.zig");
 const editor_scrollbar_mod = @import("./viewParts/editorScrollbar/editorScrollbar.zig");
 const view_event_handler = @import("../common/viewEventHandler.zig");
 const ViewEventHandler = view_event_handler.ViewEventHandler;
@@ -179,6 +180,7 @@ pub const View = struct {
         scrollbar_width: usize,
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
+        glyph_margin: *const glyph_margin_mod.GlyphMarginOverlay,
         folding: *const FoldingDecorationProvider,
     };
 
@@ -190,6 +192,7 @@ pub const View = struct {
             options.editor,
             options.line_numbers,
             options.line_decorations,
+            options.glyph_margin,
             options.folding,
             options.gutter,
             options.text_height,
