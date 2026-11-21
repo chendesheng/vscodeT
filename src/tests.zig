@@ -625,6 +625,7 @@ comptime {
     _ = @import("./vs/editor/browser/widget/diffEditor/diffEditorWidget.zig");
     _ = @import("./vs/editor/browser/viewParts/linesDecorations/linesDecorations.zig");
     _ = @import("./vs/editor/browser/viewParts/marginDecorations/marginDecorations.zig");
+    _ = @import("./vs/editor/browser/viewParts/blockDecorations/blockDecorations.zig");
     _ = @import("./vs/editor/browser/viewParts/viewCursors/viewCursor.zig");
     _ = @import("./vs/editor/browser/viewParts/viewCursors/viewCursors.zig");
     _ = @import("./vs/editor/test/browser/config/editorLayoutProvider.test.zig");

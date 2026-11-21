@@ -1671,6 +1671,7 @@ Editor contributions:
   decoration dedup helpers; the DOM widget host is not ported),
   `editor/browser/viewParts/linesDecorations/linesDecorations.zig`,
   `editor/browser/viewParts/marginDecorations/marginDecorations.zig`,
+  `editor/browser/viewParts/blockDecorations/blockDecorations.zig`,
   `editor/browser/viewParts/viewCursors/viewCursor.zig`,
   `editor/browser/viewParts/viewCursors/viewCursors.zig` and
   `editor/browser/viewParts/viewLines/viewLine.zig` and
@@ -1682,7 +1683,12 @@ Editor contributions:
   enrichment and multi-selection insets (rounded corner background pieces are
   DOM-only), the word-wrap indicator part per-line indicator data at the
   wrapping column, and the line/margin decoration parts the per-line class
-  identifiers with the upstream dedup/order rules, and the view cursors part the
+  identifiers with the upstream dedup/order rules, and the block-decoration
+  part the `blockClassName` ranges and `blockIsAfterEnd`/
+  `blockDoesNotCollapse`/`blockPadding` decisions (the terminal paints them as
+  cell backgrounds or one-cell borders and maps `movedOriginal`/
+  `movedModified`/`currentMove` to `diffEditor.move*.border`), and the view
+  cursors part the
   plural/visibility/blinking decisions and per-cursor viewport data (the
   terminal host owns the hardware cursor cell and blink timer), and the view-line
   wrapper renders tab-expanded line text through the shared renderer for

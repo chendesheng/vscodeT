@@ -567,6 +567,17 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
 
+    // Focused runner for the editor view-part suites. The full suite can block
+    // in unrelated long-running search tests on some hosts.
+    const view_tests = b.addTest(.{
+        .name = "view_tests",
+        .root_module = tests.root_module,
+        .filters = &.{ "block decorations", "View:", "TerminalViewHost" },
+    });
+    const run_view_tests = b.addRunArtifact(view_tests);
+    const view_test_step = b.step("test-view", "Run editor view-part tests");
+    view_test_step.dependOn(&run_view_tests.step);
+
     // Focused runner for the native Vim and editor-history suites. The full
     // suite occasionally blocks in unrelated long-running search tests.
     const vim_tests = b.addTest(.{

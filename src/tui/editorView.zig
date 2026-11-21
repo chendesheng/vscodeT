@@ -443,6 +443,10 @@ pub const View = struct {
     document_ready: bool = false,
     root_node: ?*ui.Node = null,
     content_root: ?*ui.Node = null,
+    /// Content layer for ported block decorations. It sits before the line
+    /// nodes in `content_root`, so block backgrounds/borders paint under text.
+    block_root: ?*ui.Node = null,
+    block_nodes: std.array_list.Managed(*ui.Node),
     chrome_root: ?*ui.Node = null,
     /// Stable containers for the retained chrome parts, in paint order. Each
     /// part updates its own container; a refresh never clears the chrome root.
@@ -502,6 +506,7 @@ pub const View = struct {
             .editor = editor,
             .guides = GuidesTextModelPart.init(editor.model),
             .surface = undefined,
+            .block_nodes = std.array_list.Managed(*ui.Node).init(allocator),
             .configuration_listeners = std.array_list.Managed(ConfigurationListener).init(allocator),
             .terminal_view_host = undefined,
         };
@@ -525,6 +530,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.block_nodes.deinit();
         self.clearPaintStyles();
         self.paint_styles.deinit(self.allocator);
         self.configuration_listeners.deinit();
@@ -1226,6 +1232,117 @@ pub const View = struct {
         return self.surface.grid();
     }
 
+    /// Paints the ported `BlockDecorations` ranges into the content layer.
+    ///
+    /// Upstream creates one positioned DOM block per decoration and styles it
+    /// through CSS. The terminal equivalent is one absolute `ui` node per
+    /// block; the class-name resolver below is the terminal stand-in for the
+    /// upstream CSS rules. Blocks are rebuilt per frame and inserted before
+    /// the retained line nodes, so text always paints over them.
+    fn paintBlocks(
+        self: *View,
+        doc: *ui.Document,
+        root: *ui.Node,
+        host: ?*editorBrowser.RetainedViewPartHost,
+        gutter: usize,
+        text_width: usize,
+        text_height: usize,
+    ) !void {
+        for (self.block_nodes.items) |node| {
+            if (host) |retained| retained.removeSubtree(node);
+            doc.destroy(node);
+        }
+        self.block_nodes.clearRetainingCapacity();
+        if (text_height == 0) return;
+
+        const blocks = self.terminal_view_host.blockDecorations().blocksSlice();
+        for (blocks) |block| {
+            const style = self.blockStyle(block.class_name) orelse continue;
+            const padding = block.padding;
+            const top_f = block.top - @as(f64, @floatFromInt(padding[0]));
+            const bottom_f = block.bottom + @as(f64, @floatFromInt(padding[2]));
+            const top: isize = @max(0, @as(isize, @intFromFloat(@round(top_f))));
+            const bottom: isize = @min(
+                @as(isize, @intCast(text_height)),
+                @as(isize, @intFromFloat(@round(bottom_f))),
+            );
+            if (bottom <= top) continue;
+
+            const left: isize = @max(
+                0,
+                @as(isize, @intCast(gutter)) - @as(isize, @intCast(padding[3])),
+            );
+            const right: isize = @min(
+                @as(isize, @intCast(doc.cols)),
+                @as(isize, @intCast(gutter + text_width + padding[1])),
+            );
+            if (right <= left) continue;
+
+            var width: usize = @intCast(right - left);
+            var height: usize = @intCast(bottom - top);
+
+            // Upstream `.blockDecorations-block` uses `box-sizing: border-box`.
+            // `ui` sizes the content box, so subtract the border widths from
+            // the requested block size. A one-cell block has no room for a
+            // full outline; collapse it to a single edge so it stays visible.
+            var border = ui.Edges{};
+            if (style.border_color != null) {
+                if (width >= 2 and height >= 2) {
+                    border = .{ .top = 1, .right = 1, .bottom = 1, .left = 1 };
+                    width -= 2;
+                    height -= 2;
+                } else if (height == 1) {
+                    border = .{ .top = 1 };
+                    height = 0;
+                } else if (width == 1) {
+                    border = .{ .left = 1 };
+                    width = 0;
+                } else {
+                    continue;
+                }
+            }
+
+            const node = try doc.createElement(.div);
+            node.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = @floatFromInt(left) },
+                .top = .{ .cells = @floatFromInt(top) },
+                .width = .{ .cells = @floatFromInt(width) },
+                .height = .{ .cells = @floatFromInt(height) },
+                .background = style.background,
+                .border = border,
+                .border_color = style.border_color,
+            });
+            node.setPointerEvents(false);
+            _ = try root.appendChild(node);
+            if (host) |retained| try retained.addSubtree(node);
+            try self.block_nodes.append(node);
+        }
+    }
+
+    /// Terminal stand-in for the upstream block-decoration CSS classes. Only
+    /// the classes with a defined upstream color are mapped; unknown classes
+    /// stay invisible, like a class with no CSS rule.
+    fn blockStyle(self: *View, class_name: []const u8) ?ui.Style {
+        var moved = false;
+        var active = false;
+        var tokens = std.mem.tokenizeScalar(u8, class_name, ' ');
+        while (tokens.next()) |token| {
+            if (std.mem.eql(u8, token, "movedOriginal") or std.mem.eql(u8, token, "movedModified")) {
+                moved = true;
+            } else if (std.mem.eql(u8, token, "currentMove")) {
+                active = true;
+            }
+        }
+        if (!moved and !active) return null;
+
+        const border = if (active)
+            themedColor(self.theme_colors, "diffEditor.moveActive.border", .{ 255, 165, 0 })
+        else
+            themedColor(self.theme_colors, "diffEditor.move.border", .{ 139, 139, 139 });
+        return .{ .border_color = border };
+    }
+
     /// Renders the surface diff to an ANSI writer. This is the standalone
     /// preview/read-loop entry point; it is not the upstream `View.render`
     /// orchestration entry point.
@@ -1419,6 +1536,16 @@ pub const View = struct {
                 .pointer = .text,
             });
             doc.setRoot(root);
+            const block_root = try doc.createElement(.div);
+            block_root.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .width = .{ .percent = 100 },
+                .height = .{ .percent = 100 },
+            });
+            block_root.setPointerEvents(false);
+            _ = try root.appendChild(block_root);
             const content_root = try doc.createElement(.div);
             content_root.setStyle(.{
                 .position = .absolute,
@@ -1443,6 +1570,8 @@ pub const View = struct {
             _ = try root.appendChild(chrome_root);
             self.root_node = root;
             self.content_root = content_root;
+            self.block_root = block_root;
+            self.block_nodes.clearRetainingCapacity();
             self.chrome_root = chrome_root;
             // The retained chrome parts manage their own containers, in paint
             // order: gutter, scrollbar, overlay widgets, content widgets and
@@ -1596,6 +1725,7 @@ pub const View = struct {
         }
 
         const content_root = self.content_root orelse return error.DocumentRootMissing;
+        const block_root = self.block_root orelse return error.DocumentRootMissing;
         const gutter_root = self.gutter_root orelse return error.DocumentRootMissing;
         const scrollbar_root = self.scrollbar_root orelse return error.DocumentRootMissing;
         const overlay_widgets_root = self.overlay_widgets_root orelse return error.DocumentRootMissing;
@@ -1661,6 +1791,7 @@ pub const View = struct {
             }
         }
 
+        try self.paintBlocks(doc, block_root, chrome_host_ptr, gutter, text_width, text_height);
         try self.terminal_view_host.paintViewport(.{
             .doc = doc,
             .root = content_root,
@@ -4413,6 +4544,48 @@ test "view: marker error ranges paint a curly underline" {
         try std.testing.expectEqual(ui.UnderlineStyle.curly, ui.cell.underlineStyleOf(attrs));
     }
     try std.testing.expect((grid.attrs[grid.index(gutter + 4, 0)] & ui.cell.Attr.underline) == 0);
+}
+
+test "View: block decorations paint a bordered range under the text" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree\nfour", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var options = ModelDecorationOptions.init("block", .AlwaysGrowsWhenTypingAtEdges);
+    options.blockClassName = "movedModified";
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(2, 1, 3, 1), .options = &options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 63);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    try std.testing.expectEqual(@as(usize, 1), view.block_nodes.items.len);
+    const node = view.block_nodes.items[0];
+    const style = node.style();
+    try std.testing.expect(style.border_color != null);
+    try std.testing.expectEqual(@as(f64, 1), style.border.top);
+    try std.testing.expectEqual(@as(f64, 1), style.border.left);
+    try std.testing.expectEqual(@as(f64, 1), style.border.right);
+    try std.testing.expectEqual(@as(f64, 1), style.border.bottom);
+
+    const box = view.surface.box_tree.find(node) orelse return error.MissingBox;
+    try std.testing.expectEqual(@as(f64, @floatFromInt(editor.gutterWidth())), box.rect.x);
+    // Line 2 starts at view row 1 and the range covers two rows.
+    try std.testing.expectEqual(@as(f64, 1), box.rect.y);
+    try std.testing.expectEqual(@as(f64, 2), box.rect.h);
+    try std.testing.expectEqual(@as(u8, 139), style.border_color.?.r);
+    try std.testing.expectEqual(@as(u8, 139), style.border_color.?.g);
+    try std.testing.expectEqual(@as(u8, 139), style.border_color.?.b);
 }
 
 test "View: init, paint and invalidate batch renders" {
