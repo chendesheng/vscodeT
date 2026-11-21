@@ -7681,6 +7681,9 @@ pub const Workbench = struct {
                 }
                 return true;
             }
+            // Right-click must not close or activate a tab; the tab context
+            // menu is the later hook for this button.
+            if (event.button != .left) return false;
             if (tab_bar.closeHitAt(pane.hits.items, event.x)) |index| {
                 if (self.orderedTabAt(pane, index)) |tab| {
                     _ = self.closeTab(pane, tab) catch {};
@@ -14249,4 +14252,36 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
     var content = try tab.editor.model.getLineContent(1);
     defer content.deinit();
     try std.testing.expectEqualStrings("inside link", content.items);
+}
+
+test "Workbench: right click on a tab neither closes nor activates it" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "right_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "right_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 40, 9);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    const tab_x = pane.hits.items[0].start + 1;
+    const tab_y = ui.cell.snap(pane.rect.y);
+    var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .right };
+    try std.testing.expect(!workbench.handleTabMouse(&down));
+    var up = down;
+    up.kind = .up;
+    _ = workbench.handleTabMouse(&up);
+
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqualStrings("right_b.txt", workbench.activeTab().?.input.getName());
 }

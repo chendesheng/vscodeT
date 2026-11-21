@@ -14,8 +14,11 @@
 //! - A live tab drag over the strip paints upstream's `drop-target-left`/
 //!   `drop-target-right` insertion feedback: a thin cell-border stroke where
 //!   the terminal supports it, or a one-eighth block glyph otherwise.
-//! - The browser's 1px active-tab top border has no partial-cell equivalent;
-//!   the active tab uses its background and bold text instead.
+//! - The browser's 1px active-tab top border becomes a one-cell top stroke
+//!   when the terminal supports cell borders, and the active tab's background
+//!   and bold text otherwise.
+//! - Tab hover, `tab.border` and `tab.lastPinnedBorder` are painted from the
+//!   theme; right-click does not close or activate a tab.
 //! - Tab action space is always reserved (`tabActionReserveSpace`), but only
 //!   the active/hovered tab and the dirty dot paint a glyph. Clicking the dot
 //!   or the close glyph closes the tab.
@@ -86,8 +89,20 @@ const base_inactive_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 150, .g = 150, .b = 150 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
+const base_hover_style = PaintStyle{
+    .fg = ui.cell.packColor(.{ .r = 235, .g = 235, .b = 235 }),
+    .bg = ui.cell.packColor(.{ .r = 31, .g = 31, .b = 31 }),
+};
+const base_unfocused_hover_style = PaintStyle{
+    .fg = ui.cell.packColor(.{ .r = 205, .g = 205, .b = 205 }),
+    .bg = ui.cell.packColor(.{ .r = 45, .g = 45, .b = 45 }),
+};
 const base_separator_style = PaintStyle{
     .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
+    .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
+};
+const base_last_pinned_style = PaintStyle{
+    .fg = ui.cell.packColor(.{ .r = 204, .g = 195, .b = 195 }),
     .bg = ui.cell.packColor(.{ .r = 37, .g = 37, .b = 38 }),
 };
 const base_dirty_style = PaintStyle{
@@ -193,7 +208,11 @@ pub fn draw(
     var active_style = base_active_style;
     var inactive_group_active_style = base_inactive_group_active_style;
     var inactive_style = base_inactive_style;
+    var hover_style = base_hover_style;
+    var unfocused_hover_style = base_unfocused_hover_style;
     var separator_style = base_separator_style;
+    var last_pinned_style = base_last_pinned_style;
+    var active_top_color: ?ui.Color = null;
     var dirty_style = base_dirty_style;
     var title_action_style = base_title_action_style;
     var title_action_hover_style = base_title_action_hover_style;
@@ -217,10 +236,26 @@ pub fn draw(
             .fg = ui.cell.packColor(colors.color("tab.inactiveForeground", .{ 150, 150, 150 })),
             .bg = ui.cell.packColor(colors.color("tab.inactiveBackground", .{ 37, 37, 38 })),
         };
+        hover_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.hoverForeground", .{ 235, 235, 235 })),
+            .bg = ui.cell.packColor(colors.color("tab.hoverBackground", .{ 31, 31, 31 })),
+        };
+        unfocused_hover_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.unfocusedHoverForeground", .{ 205, 205, 205 })),
+            .bg = ui.cell.packColor(colors.color("tab.unfocusedHoverBackground", .{ 45, 45, 45 })),
+        };
         separator_style = .{
-            .fg = ui.cell.packColor(colors.color("editorGroup.border", .{ 70, 70, 70 })),
+            .fg = ui.cell.packColor(colors.color("tab.border", .{ 37, 37, 38 })),
             .bg = ui.cell.packColor(colors.color("editorGroupHeader.tabsBackground", .{ 37, 37, 38 })),
         };
+        last_pinned_style = .{
+            .fg = ui.cell.packColor(colors.color("tab.lastPinnedBorder", .{ 204, 195, 195 })),
+            .bg = ui.cell.packColor(colors.color("editorGroupHeader.tabsBackground", .{ 37, 37, 38 })),
+        };
+        const top_id = if (options.group_active) "tab.activeBorderTop" else "tab.unfocusedActiveBorderTop";
+        if (colors.rawColor(top_id)) |raw| {
+            if (raw.a > 0.001) active_top_color = colors.compositeColor(raw);
+        }
         dirty_style = .{
             .fg = ui.cell.packColor(colors.color("gitDecoration.modifiedResourceForeground", .{ 230, 170, 70 })),
             .attrs = ui.cell.Attr.bold,
@@ -270,7 +305,11 @@ pub fn draw(
     while (index < tabs.len and col < layout_cols) : (index += 1) {
         if (index > first) {
             if (col >= layout_cols) break;
-            grid.putCodepoint(x + col, row, ' ', 1, separator_style);
+            const separator = if (index > 0 and tabs[index - 1].pinned and !tabs[index].pinned)
+                last_pinned_style
+            else
+                separator_style;
+            grid.putCodepoint(x + col, row, ' ', 1, separator);
             col += 1;
             if (col >= layout_cols) break;
         }
@@ -280,12 +319,29 @@ pub fn draw(
         if (tab_width < 2) break;
 
         const is_active = index == active;
+        const hovered = options.hovered == index;
         const paint = if (is_active)
             (if (options.group_active) active_style else inactive_group_active_style)
+        else if (hovered)
+            (if (options.group_active) hover_style else unfocused_hover_style)
         else
             inactive_style;
         const screen_col = x + col;
         grid.fillRect(@floatFromInt(screen_col), @floatFromInt(row), @floatFromInt(tab_width), 1, paint);
+        if (is_active and options.cell_borders) {
+            if (active_top_color) |border_color| {
+                var border_cell = screen_col;
+                while (border_cell < screen_col + tab_width) : (border_cell += 1) {
+                    grid.addBorder(border_cell, row, ui.cell_border.Segment.top, .{
+                        .width = 96,
+                        .color = .{ .rgb = border_color },
+                        .placement = .centered,
+                        .layer = .above_text,
+                        .priority = 2,
+                    });
+                }
+            }
+        }
 
         var cursor = screen_col + 1;
 
@@ -315,7 +371,6 @@ pub fn draw(
 
         if (reserved_close == 2 and tab_width >= 4) {
             const close_cell = screen_col + tab_width - 2;
-            const hovered = options.hovered == index;
             const show_close = tab.closeable and (is_active or hovered or tab.dirty);
             if (show_close) {
                 const glyph: u21 = if (tab.dirty and !hovered) 0x25CF else 0x00D7;
@@ -691,4 +746,28 @@ test "tabBar: drop preview uses a cell-border stroke when available" {
     }, null);
     const set = grid.borderSetAt(hits.items[1].start, 0);
     try std.testing.expect(set.strokeAt(ui.cell_border.Segment.left) != null);
+}
+
+test "tabBar: hover background and last-pinned separator" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 40, 1);
+    defer grid.deinit();
+
+    var hits = std.array_list.Managed(Hit).init(allocator);
+    defer hits.deinit();
+
+    const tabs = [_]TabInfo{
+        .{ .label = "a.txt", .file_name = "a.txt", .pinned = true },
+        .{ .label = "b.txt", .file_name = "b.txt", .pinned = false },
+    };
+    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{ .hovered = 1 }, null);
+
+    try std.testing.expectEqual(
+        base_hover_style.bg,
+        grid.bg[grid.index(hits.items[1].start + 1, 0)],
+    );
+    try std.testing.expectEqual(
+        base_last_pinned_style.fg,
+        grid.fg[grid.index(hits.items[1].start - 1, 0)],
+    );
 }
