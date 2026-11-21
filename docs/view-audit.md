@@ -180,6 +180,10 @@ For each row:
   terminal focus boundary and the active tab is synchronized before each
   workbench frame; focus-only line highlighting now works in content and
   gutter. Added a regression test. Glyph tooltips remain pending.
+- `802e6c1` breadcrumbs: add home-relative roots. Files under `$HOME` outside
+  the workspace get a `~` root; the workbench caches HOME through
+  `Environ.Map`. Added a model test. Editor-type/drop and the outline picker
+  remain pending.
 
 ## Next slice
 
