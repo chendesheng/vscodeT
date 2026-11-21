@@ -21,10 +21,14 @@
 //! decorations by `ModelDecorationSink` or by the view's bracket pass.
 //! `TerminalViewHost` resolves them through the ported `ViewModelDecorations`,
 //! and the ported `ViewLine` filters/clips them and exposes the merged inline
-//! classes; this file maps those classes to terminal cell flags. Bracket
-//! colorization classes (`bracket-highlighting-N` and
-//! `unexpected-closing-bracket`) become cell foregrounds here instead of the
-//! CSS color rules the browser renderer would apply.
+//! classes; this file maps those classes to terminal cell flags. Range
+//! decorations that carry only a `className` (marker squiggles, the Problems
+//! range highlight) come from the ported `DecorationsOverlay` instead: the host
+//! maps their visible cell ranges to the same flags, which paint the diagnostic
+//! squiggle underline styles. Bracket colorization classes
+//! (`bracket-highlighting-N` and `unexpected-closing-bracket`) become cell
+//! foregrounds here instead of the CSS color rules the browser renderer would
+//! apply.
 //!
 //! Indentation guides are painted as dim `│` cells over the leading
 //! whitespace, using the ported `GuidesTextModelPart` count. Vertical
@@ -60,6 +64,9 @@ const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
 const ModelDeltaDecoration = model_module.ModelDeltaDecoration;
 const ModelDecorationOptions = model_module.ModelDecorationOptions;
 const OverviewRulerLane = model_module.OverviewRulerLane;
+const MarkerService = @import("../vs/platform/markers/common/markerService.zig").MarkerService;
+const MarkerDecorationsService = @import("../vs/editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
+const markers_mod = @import("../vs/platform/markers/common/markers.zig");
 const scrollbar_state = @import("../vs/base/browser/ui/scrollbar/scrollbarState.zig");
 const GuidesTextModelPart = @import("../vs/editor/common/model/guidesTextModelPart.zig").GuidesTextModelPart;
 const computeIndentLevel = @import("../vs/editor/common/model/utils.zig").computeIndentLevel;
@@ -255,10 +262,14 @@ const CellFlag = struct {
     const diagnostic_warning: u32 = 1 << 15;
     const diagnostic_info: u32 = 1 << 16;
     const diagnostic_hint: u32 = 1 << 17;
+    /// `.squiggly-unnecessary`: the main dashed/dim hint decoration.
     const diagnostic_unnecessary: u32 = 1 << 18;
+    /// `.squiggly-inline-deprecated`: the inline line-through tag.
     const diagnostic_deprecated: u32 = 1 << 19;
     const char_insert: u32 = 1 << 20;
     const char_delete: u32 = 1 << 21;
+    /// `.squiggly-inline-unnecessary`: the inline opacity/dim tag.
+    const diagnostic_inline_unnecessary: u32 = 1 << 22;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -1982,19 +1993,27 @@ fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme
     if (flag & CellFlag.diagnostic_error != 0) {
         style.color = themedColor(palette, "editorError.foreground", diagnostic_error_color);
         style.underline = true;
+        style.underline_style = .curly;
     } else if (flag & CellFlag.diagnostic_warning != 0) {
         style.color = themedColor(palette, "editorWarning.foreground", diagnostic_warning_color);
         style.underline = true;
+        style.underline_style = .curly;
     } else if (flag & CellFlag.diagnostic_info != 0) {
         style.color = themedColor(palette, "editorInfo.foreground", diagnostic_info_color);
         style.underline = true;
+        style.underline_style = .curly;
     } else if (flag & CellFlag.diagnostic_hint != 0) {
         style.color = themedColor(palette, "editorHint.foreground", diagnostic_hint_color);
         style.underline = true;
-    } else if ((flag & CellFlag.diagnostic_unnecessary != 0) or (flag & CellFlag.diagnostic_deprecated != 0)) {
+        style.underline_style = .dotted;
+    }
+    if (flag & CellFlag.diagnostic_unnecessary != 0) {
         style.dim = true;
         style.underline = true;
+        style.underline_style = .dashed;
     }
+    if (flag & CellFlag.diagnostic_inline_unnecessary != 0) style.dim = true;
+    if (flag & CellFlag.diagnostic_deprecated != 0) style.strikethrough = true;
     if (flag & CellFlag.char_insert != 0) {
         style.background = themedColor(palette, "diffEditor.insertedTextBackground", diff_insert_char_background);
     } else if (flag & CellFlag.char_delete != 0) {
@@ -2102,7 +2121,7 @@ fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "squiggly-info")) return CellFlag.diagnostic_info;
     if (std.mem.eql(u8, class_name, "squiggly-hint")) return CellFlag.diagnostic_hint;
     if (std.mem.eql(u8, class_name, "squiggly-unnecessary")) return CellFlag.diagnostic_unnecessary;
-    if (std.mem.eql(u8, class_name, "squiggly-inline-unnecessary")) return CellFlag.diagnostic_unnecessary;
+    if (std.mem.eql(u8, class_name, "squiggly-inline-unnecessary")) return CellFlag.diagnostic_inline_unnecessary;
     if (std.mem.eql(u8, class_name, "squiggly-inline-deprecated")) return CellFlag.diagnostic_deprecated;
     return null;
 }
@@ -4017,6 +4036,101 @@ test "view: snippet placeholder decoration classes map to cell flags" {
     try std.testing.expectEqual(CellFlag.snippet_placeholder, decorationBit("snippet-placeholder").?);
     try std.testing.expectEqual(CellFlag.finish_snippet_placeholder, decorationBit("finish-snippet-placeholder").?);
     try std.testing.expectEqual(CellFlag.value_set_replacement, decorationBit("valueSetReplacement").?);
+}
+
+test "view: diagnostic decoration classes map to cell flags" {
+    try std.testing.expectEqual(CellFlag.diagnostic_error, decorationBit("squiggly-error").?);
+    try std.testing.expectEqual(CellFlag.diagnostic_warning, decorationBit("squiggly-warning").?);
+    try std.testing.expectEqual(CellFlag.diagnostic_info, decorationBit("squiggly-info").?);
+    try std.testing.expectEqual(CellFlag.diagnostic_hint, decorationBit("squiggly-hint").?);
+    try std.testing.expectEqual(CellFlag.diagnostic_unnecessary, decorationBit("squiggly-unnecessary").?);
+    try std.testing.expectEqual(CellFlag.diagnostic_inline_unnecessary, decorationBit("squiggly-inline-unnecessary").?);
+    try std.testing.expectEqual(CellFlag.diagnostic_deprecated, decorationBit("squiggly-inline-deprecated").?);
+    try std.testing.expectEqual(CellFlag.search_range_highlight, decorationBit("rangeHighlight").?);
+}
+
+test "view: diagnostic flags select terminal underline styles" {
+    var error_style = ui.style.PaintStyle{};
+    applyFlagPaint(&error_style, CellFlag.diagnostic_error, null);
+    try std.testing.expect(error_style.underline);
+    try std.testing.expectEqual(ui.UnderlineStyle.curly, error_style.underline_style);
+    try std.testing.expectEqual(@as(u8, 241), error_style.color.?.r);
+    try std.testing.expectEqual(@as(u8, 76), error_style.color.?.g);
+    try std.testing.expectEqual(@as(u8, 76), error_style.color.?.b);
+
+    var warning_style = ui.style.PaintStyle{};
+    applyFlagPaint(&warning_style, CellFlag.diagnostic_warning, null);
+    try std.testing.expectEqual(ui.UnderlineStyle.curly, warning_style.underline_style);
+
+    var info_style = ui.style.PaintStyle{};
+    applyFlagPaint(&info_style, CellFlag.diagnostic_info, null);
+    try std.testing.expectEqual(ui.UnderlineStyle.curly, info_style.underline_style);
+
+    var hint_style = ui.style.PaintStyle{};
+    applyFlagPaint(&hint_style, CellFlag.diagnostic_hint, null);
+    try std.testing.expectEqual(ui.UnderlineStyle.dotted, hint_style.underline_style);
+
+    var unnecessary_style = ui.style.PaintStyle{};
+    applyFlagPaint(&unnecessary_style, CellFlag.diagnostic_unnecessary, null);
+    try std.testing.expect(unnecessary_style.dim);
+    try std.testing.expect(unnecessary_style.underline);
+    try std.testing.expectEqual(ui.UnderlineStyle.dashed, unnecessary_style.underline_style);
+
+    var inline_unnecessary_style = ui.style.PaintStyle{};
+    applyFlagPaint(&inline_unnecessary_style, CellFlag.diagnostic_inline_unnecessary, null);
+    try std.testing.expect(inline_unnecessary_style.dim);
+    try std.testing.expect(!inline_unnecessary_style.underline);
+
+    var deprecated_style = ui.style.PaintStyle{};
+    applyFlagPaint(&deprecated_style, CellFlag.diagnostic_deprecated, null);
+    try std.testing.expect(deprecated_style.strikethrough);
+    try std.testing.expect(!deprecated_style.underline);
+}
+
+test "view: marker error ranges paint a curly underline" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var marker_service = MarkerService.init(allocator);
+    defer marker_service.deinit();
+    const marker_decorations = try MarkerDecorationsService.init(allocator, &marker_service);
+    defer marker_decorations.deinit();
+
+    const editor = try Editor.createFromText(allocator, io, "{\"a\": 1}", "broken.json", 24, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.attachLanguageServices(null, &marker_service, marker_decorations);
+
+    var resource = try markers_mod.Resource.fromUri(allocator, editor.model.uri());
+    defer resource.deinit(allocator);
+    try marker_service.changeOne("json", resource, &.{
+        .{
+            .message = "unexpected token",
+            .severity = markers_mod.MarkerSeverity.Error,
+            .start_line_number = 1,
+            .start_column = 1,
+            .end_line_number = 1,
+            .end_column = 5,
+        },
+    }, null);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    var col: usize = 0;
+    while (col < 4) : (col += 1) {
+        const attrs = grid.attrs[grid.index(gutter + col, 0)];
+        try std.testing.expect((attrs & ui.cell.Attr.underline) != 0);
+        try std.testing.expectEqual(ui.UnderlineStyle.curly, ui.cell.underlineStyleOf(attrs));
+    }
+    try std.testing.expect((grid.attrs[grid.index(gutter + 4, 0)] & ui.cell.Attr.underline) == 0);
 }
 
 test "View: init, paint and invalidate batch rebuilds" {

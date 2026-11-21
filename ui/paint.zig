@@ -126,7 +126,7 @@ fn mergeTextStyle(base: PaintStyle, paint: style_mod.PaintStyle) PaintStyle {
     if (paint.background) |color| result.bg = cell.packColor(color);
     if (paint.bold) result.attrs |= cell.Attr.bold;
     if (paint.italic) result.attrs |= cell.Attr.italic;
-    if (paint.underline) result.attrs |= cell.Attr.underline;
+    applyUnderline(&result, paint.underline, paint.underline_style);
     if (paint.strikethrough) result.attrs |= cell.Attr.strikethrough;
     if (paint.dim) result.attrs |= cell.Attr.dim;
     if (paint.reverse) result.attrs |= cell.Attr.inverse;
@@ -139,11 +139,17 @@ fn mergeStyle(base: PaintStyle, style: Style) PaintStyle {
     if (style.background) |color| result.bg = cell.packColor(color);
     if (style.bold) result.attrs |= cell.Attr.bold;
     if (style.italic) result.attrs |= cell.Attr.italic;
-    if (style.underline) result.attrs |= cell.Attr.underline;
+    applyUnderline(&result, style.underline, style.underline_style);
     if (style.strikethrough) result.attrs |= cell.Attr.strikethrough;
     if (style.dim) result.attrs |= cell.Attr.dim;
     if (style.reverse) result.attrs |= cell.Attr.inverse;
     return result;
+}
+
+fn applyUnderline(result: *PaintStyle, underline: bool, underline_style: style_mod.UnderlineStyle) void {
+    if (!underline) return;
+    result.attrs &= ~cell.Attr.underline_style_mask;
+    result.attrs |= cell.underlineAttr(underline_style);
 }
 
 fn drawBorder(
@@ -892,4 +898,28 @@ test "paint: overflow hidden clips wrapped continuation lines" {
     defer allocator.free(second);
     try std.testing.expectEqualStrings("one", first);
     try std.testing.expectEqualStrings("", second);
+}
+
+test "paint: underline styles reach the cell attributes" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 6, .rows = 1 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{ .position = .absolute, .width = .{ .percent = 100 } });
+    doc.setRoot(root);
+    const text = try doc.createText("abc");
+    text.setStyle(.{ .underline = true, .underline_style = .dotted });
+    _ = try root.appendChild(text);
+
+    var grid = try CellGrid.init(allocator, 6, 1);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    var col: usize = 0;
+    while (col < 3) : (col += 1) {
+        const attrs = grid.attrs[grid.index(col, 0)];
+        try std.testing.expect((attrs & cell.Attr.underline) != 0);
+        try std.testing.expectEqual(@import("style.zig").UnderlineStyle.dotted, cell.underlineStyleOf(attrs));
+    }
 }

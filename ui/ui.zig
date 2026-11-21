@@ -65,6 +65,7 @@ pub const Rect = style.Rect;
 pub const Style = style.Style;
 pub const TextAlign = style.TextAlign;
 pub const TextStyle = style.TextStyle;
+pub const UnderlineStyle = style.UnderlineStyle;
 pub const WhiteSpace = style.WhiteSpace;
 pub const WordBreak = style.WordBreak;
 pub const Surface = surface.Surface;

@@ -3,10 +3,13 @@
 // Terminal adaptation: upstream `prepareRender` emits positioned `<div class="cdr
 // ...">` HTML for whole-line and range decorations. The terminal has no CSS and
 // no DOM positions, so this overlay produces per-visible-line decoration class
-// lists (`class_name` + `whole_line`) instead. The terminal view maps the class
-// identifiers to row backgrounds and inline styles. DOM range clipping and the
-// `shouldFillLineOnLineBreak` wrap decoration are not representable as cells and
-// are reduced to the line ranges they intersect; the header of this file and
+// lists (`class_name` + `whole_line`) plus, for regular decorations, the cell
+// range returned by `RenderingContext.linesVisibleRangesForRange` (upstream
+// `_renderNormalDecoration`). The terminal view maps whole-line classes to row
+// backgrounds and range classes to cell flags/styles; marker squiggles and the
+// Problems range highlight use the same path. Exact DOM clipping stays at the
+// paint boundary, and the `shouldFillLineOnLineBreak` wrap decoration is not
+// representable as cells and is not ported. The header of this file and
 // `docs/terminal-ui.md` document that substitution.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -26,6 +29,13 @@ const ViewContext = view_context.ViewContext;
 const EventHandlerCallbacks = view_event_handler.EventHandlerCallbacks;
 const ViewModelDecoration = view_model_decoration.ViewModelDecoration;
 
+/// A half-open range of terminal cells on one rendered line. `start` and `end`
+/// are 0-based cell columns, matching `ViewLine`'s paint flags.
+pub const CellRange = struct {
+    start: usize,
+    end: usize,
+};
+
 /// One class applied to a visible line.
 pub const LineDecoration = struct {
     /// The class name of the decoration. Borrowed from the model decoration
@@ -33,6 +43,9 @@ pub const LineDecoration = struct {
     class_name: []const u8,
     /// Whether the decoration covers the whole line (`isWholeLine`).
     whole_line: bool,
+    /// Visible cells for a regular decoration. Null for whole-line
+    /// decorations (and when the range has no visible cells).
+    cell_range: ?CellRange = null,
 };
 
 const LineDecorations = std.array_list.Managed(LineDecoration);
@@ -148,7 +161,7 @@ pub const DecorationsOverlay = struct {
         }
 
         self.renderWholeLineDecorations(decorations.items, visible_start, visible_end, output);
-        self.renderNormalDecorations(decorations.items, visible_start, visible_end, output);
+        self.renderNormalDecorations(context, decorations.items, visible_start, output);
 
         self.render_result = output;
         self.render_start_line_number = visible_start;
@@ -187,14 +200,15 @@ pub const DecorationsOverlay = struct {
         }
     }
 
-    /// Port of `_renderNormalDecorations`/`_renderNormalDecoration` reduced to
-    /// line granularity: identical classes on touching ranges merge, then each
-    /// range contributes its class to every visible line it intersects.
+    /// Port of `_renderNormalDecorations`/`_renderNormalDecoration`: identical
+    /// classes on touching ranges merge, then each merged range is mapped to
+    /// the visible cell ranges on every line it intersects. The cell mapping is
+    /// the same `linesVisibleRangesForRange` call the browser overlay uses.
     fn renderNormalDecorations(
         self: *DecorationsOverlay,
+        context: *const RenderingContext,
         decorations: []const ViewModelDecoration,
         visible_start: usize,
-        visible_end: usize,
         output: []LineDecorations,
     ) void {
         var prev_class: ?[]const u8 = null;
@@ -223,34 +237,45 @@ pub const DecorationsOverlay = struct {
                 continue;
             }
             if (prev_class != null) {
-                self.emitRange(prev_range.?, prev_class.?, visible_start, visible_end, output);
+                renderNormalDecoration(context, prev_range.?, prev_class.?, prev_show_if_collapsed, visible_start, output);
             }
             prev_class = class_name;
             prev_show_if_collapsed = show_if_collapsed;
             prev_range = range;
         }
         if (prev_class != null) {
-            self.emitRange(prev_range.?, prev_class.?, visible_start, visible_end, output);
+            renderNormalDecoration(context, prev_range.?, prev_class.?, prev_show_if_collapsed, visible_start, output);
         }
     }
 
-    fn emitRange(
-        _: *DecorationsOverlay,
+    fn renderNormalDecoration(
+        context: *const RenderingContext,
         range: Range,
         class_name: []const u8,
+        show_if_collapsed: bool,
         visible_start: usize,
-        visible_end: usize,
         output: []LineDecorations,
     ) void {
-        const start_line = @max(range.startLineNumber, visible_start);
-        const end_line = @min(range.endLineNumber, visible_end);
-        if (end_line < start_line) return;
-        var line = start_line;
-        while (line <= end_line) : (line += 1) {
-            output[line - visible_start].append(.{
-                .class_name = class_name,
-                .whole_line = false,
-            }) catch return;
+        const lines = context.linesVisibleRangesForRange(range, std.mem.eql(u8, class_name, "findMatch")) orelse return;
+        for (lines) |line| {
+            if (line.outsideRenderedLine) continue;
+            if (line.lineNumber < visible_start) continue;
+            const line_index = line.lineNumber - visible_start;
+            if (line_index >= output.len) continue;
+            for (line.ranges) |horizontal| {
+                const start: usize = @intCast(@max(horizontal.left, 0));
+                var end: usize = start + @as(usize, @intCast(@max(horizontal.width, 0)));
+                if (show_if_collapsed and line.ranges.len == 1 and end <= start) {
+                    // Upstream expands a collapsed range so the decoration is
+                    // still visible; the terminal equivalent is one cell.
+                    end = start + 1;
+                }
+                output[line_index].append(.{
+                    .class_name = class_name,
+                    .whole_line = false,
+                    .cell_range = if (end > start) CellRange{ .start = start, .end = end } else null,
+                }) catch return;
+            }
         }
     }
 
@@ -322,6 +347,10 @@ const Harness = struct {
     offsets: []f64,
     tokens: line_tokens.LineTokens,
     codec: languages.LanguageIdCodec,
+    /// Fixed buffers for the test `IViewLines` adapter. The real view lines
+    /// return scratch-owned slices; the tests only need one range per line.
+    stub_ranges: [16]rendering_context.HorizontalRange = undefined,
+    stub_lines: [16]rendering_context.LineVisibleRanges = undefined,
 
     fn init(
         self: *Harness,
@@ -389,8 +418,8 @@ const Harness = struct {
             ._model = self.context.view_model,
         };
         self.rendering = RenderingContext.init(self.layout.interface(), &self.viewport, .{
-            .context = @ptrFromInt(@alignOf(usize)),
-            .lines_visible_ranges_for_range = returnsNullRanges,
+            .context = self,
+            .lines_visible_ranges_for_range = linesVisibleRangesForRange,
             .visible_range_for_position = returnsNullPosition,
         });
     }
@@ -403,8 +432,36 @@ const Harness = struct {
         self.codec.deinit();
     }
 
-    fn returnsNullRanges(_: *anyopaque, _: Range, _: bool) ?[]const rendering_context.LineVisibleRanges {
-        return null;
+    fn linesVisibleRangesForRange(
+        context: *anyopaque,
+        range: Range,
+        _: bool,
+    ) ?[]const rendering_context.LineVisibleRanges {
+        const self: *Harness = @ptrCast(@alignCast(context));
+        const visible = self.viewport.visibleRange;
+        const start_line = @max(range.startLineNumber, visible.startLineNumber);
+        const end_line = @min(range.endLineNumber, visible.endLineNumber);
+        if (end_line < start_line) return null;
+
+        var count: usize = 0;
+        var line = start_line;
+        while (line <= end_line and count < self.stub_lines.len) : (line += 1) {
+            const line_start = if (line == range.startLineNumber) range.startColumn else 1;
+            const line_end = if (line == range.endLineNumber) range.endColumn else self.line_lengths[line - 1] + 1;
+            const width: i32 = if (line_end > line_start) @intCast(line_end - line_start) else 0;
+            self.stub_ranges[count] = .{
+                .left = @intCast(line_start - 1),
+                .width = width,
+            };
+            self.stub_lines[count] = .{
+                .outsideRenderedLine = false,
+                .lineNumber = line,
+                .ranges = self.stub_ranges[count .. count + 1],
+                .continuesOnNextLine = false,
+            };
+            count += 1;
+        }
+        return if (count == 0) null else self.stub_lines[0..count];
     }
 
     fn returnsNullPosition(_: *anyopaque, _: @import("../../../common/core/position.zig").Position) ?rendering_context.HorizontalPosition {
@@ -469,6 +526,47 @@ test "decorations: range decorations merge touching ranges of the same class" {
     try testing.expectEqual(@as(usize, 1), harness.overlay.renderedLine(2).len);
     try testing.expectEqual(@as(usize, 1), harness.overlay.renderedLine(3).len);
     try testing.expectEqualStrings("char-insert", harness.overlay.renderedLine(3)[0].class_name);
+}
+
+test "decorations: range decorations expose visible cell ranges" {
+    var options = model.ModelDecorationOptions.init("range", .AlwaysGrowsWhenTypingAtEdges);
+    options.className = "squiggly-error";
+    const decorations = [_]ViewModelDecoration{
+        .{ .range = Range.init(1, 3, 1, 7), .options = &options },
+    };
+
+    var harness: Harness = undefined;
+    try harness.init(testing.allocator, 2, 1, 2, &decorations);
+    defer harness.deinit();
+    harness.overlay.prepareRender(&harness.rendering);
+
+    const line = harness.overlay.renderedLine(1);
+    try testing.expectEqual(@as(usize, 1), line.len);
+    try testing.expectEqualStrings("squiggly-error", line[0].class_name);
+    try testing.expect(!line[0].whole_line);
+    const range = line[0].cell_range.?;
+    try testing.expectEqual(@as(usize, 2), range.start);
+    try testing.expectEqual(@as(usize, 6), range.end);
+}
+
+test "decorations: collapsed range expands to one visible cell" {
+    var options = model.ModelDecorationOptions.init("range", .AlwaysGrowsWhenTypingAtEdges);
+    options.className = "squiggly-error";
+    options.showIfCollapsed = true;
+    const decorations = [_]ViewModelDecoration{
+        .{ .range = Range.init(1, 3, 1, 3), .options = &options },
+    };
+
+    var harness: Harness = undefined;
+    try harness.init(testing.allocator, 1, 1, 1, &decorations);
+    defer harness.deinit();
+    harness.overlay.prepareRender(&harness.rendering);
+
+    const line = harness.overlay.renderedLine(1);
+    try testing.expectEqual(@as(usize, 1), line.len);
+    const range = line[0].cell_range.?;
+    try testing.expectEqual(@as(usize, 2), range.start);
+    try testing.expectEqual(@as(usize, 3), range.end);
 }
 
 test "decorations: class list joins in render order" {

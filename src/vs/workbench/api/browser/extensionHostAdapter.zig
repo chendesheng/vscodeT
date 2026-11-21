@@ -62,6 +62,10 @@ const ActiveDocument = struct {
     uri: []u8,
     id: []const u8 = "1",
     language_id: []u8,
+    /// The document contents the extension host currently mirrors. Change
+    /// ranges are expressed against this snapshot, not against the already
+    /// edited model, so end columns past a shortened line stay valid.
+    lines: std.array_list.Managed([]u8),
 };
 
 /// Source of a cursor-selection change, using upstream's
@@ -81,6 +85,68 @@ pub const SelectionSource = enum {
         };
     }
 };
+
+fn freeDocumentLines(allocator: Allocator, lines: *std.array_list.Managed([]u8)) void {
+    for (lines.items) |line| allocator.free(line);
+    lines.deinit();
+}
+
+fn captureDocumentLines(allocator: Allocator, model: *TextModel) !std.array_list.Managed([]u8) {
+    var lines = std.array_list.Managed([]u8).init(allocator);
+    errdefer freeDocumentLines(allocator, &lines);
+    var line_number: usize = 1;
+    while (line_number <= model.getLineCount()) : (line_number += 1) {
+        var line = try model.getLineContent(line_number);
+        defer line.deinit();
+        const copy = try allocator.dupe(u8, line.items);
+        errdefer allocator.free(copy);
+        try lines.append(copy);
+    }
+    return lines;
+}
+
+/// Applies one model change to the extension host's mirrored lines. The change
+/// ranges are byte columns of the mirrored snapshot, matching the model's
+/// pre-edit coordinates; this is also what makes UTF-16 range conversion work
+/// when an edit deletes the end of a line.
+fn applyChangeToDocumentLines(
+    allocator: Allocator,
+    lines: *std.array_list.Managed([]u8),
+    change: LastContentChange,
+) !void {
+    const start_line = change.range.startLineNumber;
+    const end_line = change.range.endLineNumber;
+    if (start_line == 0 or end_line < start_line or end_line > lines.items.len) return error.InvalidChange;
+    const start_column = @min(@max(change.range.startColumn, 1), lines.items[start_line - 1].len + 1);
+    const end_column = @min(@max(change.range.endColumn, 1), lines.items[end_line - 1].len + 1);
+
+    var segment = std.array_list.Managed(u8).init(allocator);
+    defer segment.deinit();
+    try segment.appendSlice(lines.items[start_line - 1][0 .. start_column - 1]);
+    try segment.appendSlice(change.text);
+    try segment.appendSlice(lines.items[end_line - 1][end_column - 1 ..]);
+
+    var replacement = std.array_list.Managed([]u8).init(allocator);
+    errdefer {
+        for (replacement.items) |line| allocator.free(line);
+        replacement.deinit();
+    }
+    var split = std.mem.splitScalar(u8, segment.items, '\n');
+    while (split.next()) |line| try replacement.append(try allocator.dupe(u8, line));
+
+    const remove_count = end_line - start_line + 1;
+    const removed = try allocator.alloc([]u8, remove_count);
+    defer allocator.free(removed);
+    @memcpy(removed, lines.items[start_line - 1 .. end_line]);
+    try lines.replaceRange(start_line - 1, remove_count, replacement.items);
+    for (removed) |line| allocator.free(line);
+    replacement.deinit();
+}
+
+fn utf16ColumnInLines(lines: []const []u8, line_number: usize, column: usize) usize {
+    if (line_number == 0 or line_number > lines.len) return column;
+    return position_converter.utf16OffsetForColumn(lines[line_number - 1], column);
+}
 
 pub const Extensions = struct {
     allocator: Allocator,
@@ -251,6 +317,7 @@ pub const Extensions = struct {
         if (self.active) |*active| {
             self.allocator.free(active.uri);
             self.allocator.free(active.language_id);
+            freeDocumentLines(self.allocator, &active.lines);
         }
         self.activation_tracker.deinit();
         self.last_selections.deinit();
@@ -741,7 +808,9 @@ pub const Extensions = struct {
         var args = [_]rpc.Arg{.{ .json = delta }};
         _ = try self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback);
 
-        self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language };
+        var lines = try captureDocumentLines(self.allocator, tab.editor.model);
+        errdefer freeDocumentLines(self.allocator, &lines);
+        self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language, .lines = lines };
         self.setScrollListener(tab.editor);
         self.setContentListener(tab.editor);
         self.captureSelections(tab.editor);
@@ -792,7 +861,7 @@ pub const Extensions = struct {
     }
 
     fn removeActiveDocument(self: *Extensions) !void {
-        const active = self.active orelse return;
+        var active = self.active orelse return;
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
@@ -803,6 +872,7 @@ pub const Extensions = struct {
         self.setContentListener(null);
         self.allocator.free(active.uri);
         self.allocator.free(active.language_id);
+        freeDocumentLines(self.allocator, &active.lines);
         self.active = null;
         self.needs_render = true;
     }
@@ -879,13 +949,19 @@ pub const Extensions = struct {
     }
 
     fn sendModelChanges(self: *Extensions, arena: Allocator, changes: []const LastContentChange) !void {
-        const active = self.active orelse return;
+        const active = if (self.active) |*value| value else return;
         var specs = std.array_list.Managed(documents_and_editors.ChangeSpec).init(arena);
         for (changes) |change| {
             try specs.append(.{
                 .text = change.text,
                 .start = .{ .line = change.range.startLineNumber, .column = change.range.startColumn },
                 .end = .{ .line = change.range.endLineNumber, .column = change.range.endColumn },
+                // Convert against the host's mirrored document, not the model
+                // that already contains the edit. A deletion's end column is
+                // past the shortened line in the new model and would otherwise
+                // collapse to a zero-width change.
+                .start_utf16 = utf16ColumnInLines(active.lines.items, change.range.startLineNumber, change.range.startColumn),
+                .end_utf16 = utf16ColumnInLines(active.lines.items, change.range.endLineNumber, change.range.endColumn),
             });
         }
         const event = try documents_and_editors.modelChangesEvent(arena, active.editor.model, specs.items, active.editor.model.getVersionId());
@@ -895,6 +971,17 @@ pub const Extensions = struct {
             .{ .json = .{ .bool = false } },
         };
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelChanged", &args, null, manager.noop_callback) catch {};
+
+        for (changes) |change| {
+            applyChangeToDocumentLines(self.allocator, &active.lines, change) catch {
+                // A malformed change must not poison every later edit; the
+                // model is already at the post-batch state, so resnapshot it.
+                freeDocumentLines(self.allocator, &active.lines);
+                active.lines = captureDocumentLines(self.allocator, active.editor.model) catch
+                    std.array_list.Managed([]u8).init(self.allocator);
+                break;
+            };
+        }
     }
 
     fn sendSelection(self: *Extensions, arena: Allocator, source: SelectionSource) !void {
@@ -1997,6 +2084,78 @@ test "Extensions: real TypeScript extension drives the language features" {
     try std.testing.expect(formatted);
 }
 
+test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
+    if (!build_options.e2e) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "broken.js", .data =
+        \\function f() {
+        \\    return 1;
+        \\}
+        \\
+    });
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_length = try tmp.dir.realPathFile(io, "broken.js", &path_buffer);
+
+    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+    var extension_host = try Extensions.init(
+        allocator,
+        io,
+        workbench,
+        &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
+        ".cache-ext/data-js-test",
+    );
+    defer extension_host.deinit();
+
+    const marker_service = workbench.marker_service.?;
+    const tab = workbench.activeTab().?;
+    const model = tab.editor.model;
+    // Let the extension activate and open the mirror before simulating the
+    // user edit; the workbench starts the host asynchronously after the first
+    // document delta.
+    const ready_deadline = time_compat.milliTimestamp() + 5_000;
+    while (time_compat.milliTimestamp() < ready_deadline) {
+        _ = extension_host.pump();
+        time_compat.sleepMillis(20);
+    }
+    // Make the file invalid after the extension host has opened it, matching
+    // the user path: delete the closing brace and wait for the diagnostics.
+    try tab.editor.setCursorPosition(Position.init(3, 2));
+    try tab.editor.deleteLeft();
+    try std.testing.expect(tab.editor.last_content_changes.items.len > 0);
+    var edited_line = try model.getLineContent(3);
+    defer edited_line.deinit();
+    try std.testing.expectEqualStrings("", edited_line.items);
+
+    var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
+    defer resource.deinit(allocator);
+
+    const deadline = time_compat.milliTimestamp() + 60_000;
+    var found_error = false;
+    while (!found_error and time_compat.milliTimestamp() < deadline) {
+        _ = extension_host.pump();
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const list = marker_service.read(arena.allocator(), .{ .resource = resource }) catch &.{};
+        for (list) |marker| {
+            if (marker.severity == markers_mod.MarkerSeverity.Error) {
+                found_error = true;
+                break;
+            }
+        }
+        if (!found_error) time_compat.sleepMillis(20);
+    }
+    try std.testing.expect(found_error);
+}
+
 test "Extensions: showDocument applies a line selection" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -2052,4 +2211,24 @@ test "Extensions: editorScroll, revealLine and cursorMove command arguments" {
     );
     try std.testing.expect(try applyCursorMove(editor, move_args.array.items));
     try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
+}
+
+test "extension host document mirror keeps UTF-16 deletion ranges valid" {
+    const allocator = std.testing.allocator;
+    var lines = std.array_list.Managed([]u8).init(allocator);
+    try lines.append(try allocator.dupe(u8, "é}"));
+    defer freeDocumentLines(allocator, &lines);
+
+    // `é` is two UTF-8 bytes but one UTF-16 code unit: deleting `}` is byte
+    // columns 3..4 and UTF-16 columns 2..3 in the mirrored document.
+    try std.testing.expectEqual(@as(usize, 2), utf16ColumnInLines(lines.items, 1, 3));
+    try std.testing.expectEqual(@as(usize, 3), utf16ColumnInLines(lines.items, 1, 4));
+
+    var empty: [0]u8 = .{};
+    try applyChangeToDocumentLines(allocator, &lines, .{
+        .range = Range.init(1, 3, 1, 4),
+        .text = empty[0..],
+    });
+    try std.testing.expectEqual(@as(usize, 1), lines.items.len);
+    try std.testing.expectEqualStrings("é", lines.items[0]);
 }

@@ -34,6 +34,11 @@ pub const ChangeSpec = struct {
     text: []const u8,
     start: struct { line: usize, column: usize },
     end: struct { line: usize, column: usize },
+    /// UTF-16 wire columns, precomputed against the host's mirrored document
+    /// when the model already changed. Fall back to converting against `model`
+    /// when absent.
+    start_utf16: ?usize = null,
+    end_utf16: ?usize = null,
 };
 
 /// The delta that adds the active document and its editor. The terminal has a
@@ -186,9 +191,9 @@ pub fn modelChangesEvent(
         try item.put(arena, "text", .{ .string = try arena.dupe(u8, change.text) });
         var range: std.json.ObjectMap = .empty;
         try range.put(arena, "startLineNumber", .{ .integer = @intCast(change.start.line) });
-        try range.put(arena, "startColumn", .{ .integer = @intCast(utf16Column(model, change.start.line, change.start.column)) });
+        try range.put(arena, "startColumn", .{ .integer = @intCast(change.start_utf16 orelse utf16Column(model, change.start.line, change.start.column)) });
         try range.put(arena, "endLineNumber", .{ .integer = @intCast(change.end.line) });
-        try range.put(arena, "endColumn", .{ .integer = @intCast(utf16Column(model, change.end.line, change.end.column)) });
+        try range.put(arena, "endColumn", .{ .integer = @intCast(change.end_utf16 orelse utf16Column(model, change.end.line, change.end.column)) });
         try item.put(arena, "range", .{ .object = range });
         try change_array.append(.{ .object = item });
     }

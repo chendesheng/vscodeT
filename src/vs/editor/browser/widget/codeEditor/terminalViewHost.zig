@@ -458,6 +458,14 @@ pub const TerminalViewHost = struct {
         errdefer self.allocator.free(flags);
         @memset(flags, 0);
 
+        // Range decorations (marker squiggles, range highlights and other
+        // `className` decorations) are painted by the ported
+        // `DecorationsOverlay`; map their visible cell ranges to the same
+        // per-cell flags ViewLine uses for inline classes.
+        if (args.decoration_bits_fn) |bits_fn| {
+            self.applyRangeDecorationFlags(view_line, flags, bits_fn);
+        }
+
         if (self.getSelectionRanges(view_line)) |selection| {
             for (selection.ranges) |range| {
                 if (range.width <= 0) continue;
@@ -581,6 +589,26 @@ pub const TerminalViewHost = struct {
     /// `DecorationsOverlay`.
     pub fn decorationsForLine(self: *const TerminalViewHost, view_line: usize) []const decorations_overlay_mod.LineDecoration {
         return self.decorations_overlay.renderedLine(view_line);
+    }
+
+    /// ORs the flags for range decorations onto the line's paint flags. The
+    /// class-to-flag mapping is the editor view's `decoration_bits_fn`, the same
+    /// adapter `ViewLine.paint` uses for inline classes.
+    fn applyRangeDecorationFlags(
+        self: *const TerminalViewHost,
+        view_line: usize,
+        flags: []u32,
+        bits_fn: *const fn (classes: []const u8) u32,
+    ) void {
+        for (self.decorationsForLine(view_line)) |decoration| {
+            const range = decoration.cell_range orelse continue;
+            const bits = bits_fn(decoration.class_name);
+            if (bits == 0) continue;
+            const start = @min(range.start, flags.len);
+            const end = @min(range.end, flags.len);
+            var cell = start;
+            while (cell < end) : (cell += 1) flags[cell] |= bits;
+        }
     }
 
     pub fn getSelectionRanges(self: *const TerminalViewHost, view_line: usize) ?*const LineSelectionRender {
@@ -922,4 +950,36 @@ test "terminal view host dispatches ViewDecorationsChanged when the model genera
     try std.testing.expect(host.lineDecorations(1) != null);
     try std.testing.expectEqual(@as(usize, 1), host.decorationsForLine(1).len);
     try std.testing.expectEqualStrings("line-insert", host.decorationsForLine(1)[0].class_name);
+}
+
+test "terminal view host exposes marker range cell decorations" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.zig", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+
+    var options = @import("../../../common/model.zig").ModelDecorationOptions.init("squiggly-error", .AlwaysGrowsWhenTypingAtEdges);
+    options.className = "squiggly-error";
+    options.showIfCollapsed = true;
+    const delta = [_]@import("../../../common/model.zig").ModelDeltaDecoration{.{
+        .range = Range.init(1, 2, 1, 4),
+        .options = &options,
+    }};
+    const ids = try editor.model.deltaDecorations(&.{}, &delta, 71);
+    defer allocator.free(ids);
+
+    try host.renderRange(1, 2);
+
+    const line = host.decorationsForLine(1);
+    try std.testing.expectEqual(@as(usize, 1), line.len);
+    try std.testing.expectEqualStrings("squiggly-error", line[0].class_name);
+    const range = line[0].cell_range.?;
+    try std.testing.expectEqual(@as(usize, 1), range.start);
+    try std.testing.expectEqual(@as(usize, 3), range.end);
 }
