@@ -112,8 +112,12 @@ For each row:
   controls; added click tests; updated the README and ledger.
 - `5a796b8` gutter: theme the line numbers and quick-diff markers. Added a
   terminal gutter `Theme`, active-line detection, themed quick-diff markers and
-  a margin theme test. Gutter geometry, glyph margin, margin decorations and
-  fold-option handling remain pending.
+  a margin theme test.
+- `75d45cc` gutter: honor line-number and folding options. Gutter widths now
+  follow `lineNumbers`, `lineNumbersMinChars`, `folding`/`showFoldingControls`
+  and the quick-diff marker width. Added an option-matrix test. The glyph-margin
+  host/lanes, margin/glyph decorations and all line-decoration classes remain
+  pending.
 
 ## Next slice
 
