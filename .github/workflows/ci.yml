@@ -23,10 +23,10 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Install oniguruma
+      - name: Install oniguruma and ripgrep
         run: |
           sudo apt-get update
-          sudo apt-get install -y libonig-dev
+          sudo apt-get install -y libonig-dev ripgrep
       - name: Build
         run: zig build
       - name: Test
@@ -43,8 +43,8 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - name: Install oniguruma
-        run: brew install oniguruma
+      - name: Install oniguruma and ripgrep
+        run: brew install oniguruma ripgrep
       - name: Build
         run: zig build
       - name: Test
@@ -61,6 +61,10 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
+      - name: Install ripgrep
+        shell: pwsh
+        run: choco install ripgrep -y --no-progress
+
       - name: Install oniguruma
         shell: pwsh
         run: |
