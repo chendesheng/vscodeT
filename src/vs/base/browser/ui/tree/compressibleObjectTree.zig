@@ -36,6 +36,7 @@ pub fn CompressibleObjectTree(comptime T: type) type {
             user: []const u8,
             compression_enabled: bool,
             renderer: View.Renderer,
+            options: abstract_tree.Options,
         ) !*CompressibleObjectTree(T) {
             const self = try allocator.create(CompressibleObjectTree(T));
             errdefer allocator.destroy(self);
@@ -45,7 +46,7 @@ pub fn CompressibleObjectTree(comptime T: type) type {
             model.* = try Model.init(allocator, user, compression_enabled);
             errdefer model.deinit();
 
-            const view = try View.init(allocator, model, renderer);
+            const view = try View.init(allocator, model, renderer, options);
             errdefer view.deinit();
 
             self.* = .{
@@ -156,6 +157,10 @@ pub fn CompressibleObjectTree(comptime T: type) type {
 
         pub fn handleMouse(self: *CompressibleObjectTree(T), event: *const ui.MouseEvent) bool {
             return self.view.handleMouse(event);
+        }
+
+        pub fn clearHover(self: *CompressibleObjectTree(T)) void {
+            self.view.clearHover();
         }
 
         pub fn setActivateHandler(

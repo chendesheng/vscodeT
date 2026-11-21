@@ -20,6 +20,16 @@ pub const Row = struct {
     selected: bool,
     focused: bool,
     focused_selection: bool,
+    /// Pointer is over this row.
+    hovered: bool = false,
+    /// Pointer is anywhere inside the list viewport. Trees use this for the
+    /// `workbench.tree.renderIndentGuides: onHover` behavior.
+    list_hovered: bool = false,
+    /// Tree indentation per depth level, in cells. AbstractTree fills this from
+    /// its options before invoking the renderer.
+    indent: usize = 0,
+    /// Whether this row should paint tree indent guides. Set by AbstractTree.
+    render_indent_guides: bool = false,
 };
 
 /// Port of `IListVirtualDelegate`.

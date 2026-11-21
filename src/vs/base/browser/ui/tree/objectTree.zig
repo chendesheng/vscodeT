@@ -35,7 +35,7 @@ pub fn ObjectTree(comptime T: type) type {
             self.* = .{
                 .allocator = allocator,
                 .model = model,
-                .view = try View.init(allocator, model, renderer),
+                .view = try View.init(allocator, model, renderer, .{}),
             };
             return self;
         }

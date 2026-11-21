@@ -17,6 +17,26 @@ pub fn AbstractTree(comptime T: type) type {
     return AbstractTreeForModel(T, object_tree.ObjectTreeModel(T));
 }
 
+/// Port of upstream `RenderIndentGuides` from `abstractTree.ts`.
+pub const RenderIndentGuides = enum {
+    none,
+    on_hover,
+    always,
+
+    pub fn fromString(value: []const u8) RenderIndentGuides {
+        if (std.mem.eql(u8, value, "always")) return .always;
+        if (std.mem.eql(u8, value, "none")) return .none;
+        return .on_hover;
+    }
+};
+
+/// Terminal tree options. `indent` is in cells (upstream uses pixels) and
+/// `render_indent_guides` follows `workbench.tree.renderIndentGuides`.
+pub const Options = struct {
+    indent: usize = 2,
+    render_indent_guides: RenderIndentGuides = .on_hover,
+};
+
 /// View over any model exposing `Node`, `collectRendered` and
 /// `setCollapsedElement`. This mirrors upstream `AbstractTree`'s use of the
 /// `ITreeModel` contract instead of a concrete object model.
@@ -39,6 +59,7 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
         model: *Model,
         widget: list_widget.ListWidget,
         renderer: Renderer,
+        options: Options = .{},
         rendered: std.array_list.Managed(*Node),
         selection_context: ?*anyopaque = null,
         on_activate: ?*const fn (context: ?*anyopaque, element: T) void = null,
@@ -47,6 +68,7 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
             allocator: std.mem.Allocator,
             model: *Model,
             renderer: Renderer,
+            options: Options,
         ) !*AbstractTreeForModel(T, Model) {
             const self = try allocator.create(AbstractTreeForModel(T, Model));
             errdefer allocator.destroy(self);
@@ -62,6 +84,7 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
                     .render = renderCallback,
                 }),
                 .renderer = renderer,
+                .options = options,
                 .rendered = std.array_list.Managed(*Node).init(allocator),
             };
             self.widget.view.delegate.context = @ptrCast(self);
@@ -89,7 +112,14 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
         fn renderCallback(context: *anyopaque, row: *const list.Row, element: list.Element) void {
             const self: *AbstractTreeForModel(T, Model) = @ptrCast(@alignCast(context));
             const node: *const Node = @ptrCast(@alignCast(element));
-            self.renderer.render(self.renderer.context, row, node);
+            var options_row = row.*;
+            options_row.indent = self.options.indent;
+            options_row.render_indent_guides = switch (self.options.render_indent_guides) {
+                .none => false,
+                .always => true,
+                .on_hover => row.list_hovered,
+            };
+            self.renderer.render(self.renderer.context, &options_row, node);
         }
 
         pub fn setFocus(self: *AbstractTreeForModel(T, Model), focus: bool) void {
@@ -193,6 +223,10 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
 
         pub fn handleMouse(self: *AbstractTreeForModel(T, Model), event: *const ui.MouseEvent) bool {
             return self.widget.handleMouse(event);
+        }
+
+        pub fn clearHover(self: *AbstractTreeForModel(T, Model)) void {
+            self.widget.clearHover();
         }
 
         pub fn selectedElement(self: *AbstractTreeForModel(T, Model)) ?T {

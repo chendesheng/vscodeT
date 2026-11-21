@@ -60,6 +60,10 @@ pub const ListWidget = struct {
         if (self.on_selection) |callback| callback(self.selection_context, index);
     }
 
+    pub fn clearHover(self: *ListWidget) void {
+        self.view.clearHover();
+    }
+
     pub fn render(self: *ListWidget, grid: *ui.CellGrid, rect: ui.Rect) void {
         self.last_rect = rect;
         self.view.focused = self.focused;
@@ -115,7 +119,22 @@ pub const ListWidget = struct {
         const height = ui.cell.snap(rect.h);
         const inside = event.x >= x and event.x < x + width and
             event.y >= y and event.y < y + height;
-        if (!inside) return false;
+        self.view.mouse_inside = inside;
+        if (!inside) {
+            self.view.hovered = null;
+            return false;
+        }
+
+        if (event.kind == .move) {
+            const position = self.view.scroll_top +
+                @as(f64, @floatFromInt(event.y - y));
+            const index = self.view.range_map.indexAt(position);
+            self.view.hovered = if (index >= 0 and index < @as(i64, @intCast(self.view.count())))
+                @intCast(index)
+            else
+                null;
+            return true;
+        }
 
         switch (event.kind) {
             .wheel => {

@@ -79,7 +79,7 @@ fn initCompressibleTree(allocator: std.mem.Allocator, enabled: bool) !*Compressi
     return CompressibleTree.init(allocator, "test", enabled, .{
         .context = @ptrCast(&context),
         .render = renderCompressedRow,
-    });
+    }, .{});
 }
 
 fn expectCompressedRows(

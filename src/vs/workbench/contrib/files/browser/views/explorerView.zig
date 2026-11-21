@@ -19,6 +19,8 @@ const explorer_viewer = @import("./explorerViewer.zig");
 const compressible_tree = @import("../../../../../base/browser/ui/tree/compressibleObjectTree.zig");
 const list = @import("../../../../../base/browser/ui/list/list.zig");
 const tree = @import("../../../../../base/browser/ui/tree/tree.zig");
+const abstract_tree = @import("../../../../../base/browser/ui/tree/abstractTree.zig");
+const file_icon = @import("../../../../browser/fileIcon.zig");
 
 const ExplorerItem = explorer.ExplorerItem;
 const ExplorerModel = explorer.ExplorerModel;
@@ -89,6 +91,10 @@ pub const Sidebar = struct {
     /// zero when the side bar part paints the title.
     header_rows: usize = 1,
     theme: ?*const theme_colors_mod.ThemeColors = null,
+    /// Cells per tree depth. Terminal unit for upstream's `workbench.tree.indent`
+    /// pixels setting.
+    indent_cells: usize = 2,
+    render_indent_guides: abstract_tree.RenderIndentGuides = .on_hover,
 
     pub fn init(
         allocator: Allocator,
@@ -117,9 +123,14 @@ pub const Sidebar = struct {
         errdefer self.force_expanded.deinit();
 
         self.show_roots = context.getWorkbenchState() != .FOLDER or self.model.roots.items.len != 1;
+        self.indent_cells = readIndentCells(configuration);
+        self.render_indent_guides = readRenderIndentGuides(configuration);
         self.tree = try CompressibleTree.init(allocator, "explorer", compression_enabled, .{
             .context = @ptrCast(self),
             .render = renderRow,
+        }, .{
+            .indent = self.indent_cells,
+            .render_indent_guides = self.render_indent_guides,
         });
         errdefer self.tree.deinit();
         try self.tree.setFilter(.{
@@ -277,6 +288,10 @@ pub const Sidebar = struct {
         return self.tree.handleMouse(event);
     }
 
+    pub fn clearHover(self: *Sidebar) void {
+        self.tree.clearHover();
+    }
+
     pub fn handleClick(self: *Sidebar, x: usize, y: usize) !?[]const u8 {
         return self.handleClickInternal(x, y);
     }
@@ -313,7 +328,7 @@ pub const Sidebar = struct {
         const item = CompressibleTree.elementOfNode(node) orelse return null;
         if (item.is_directory) {
             const visual_depth = node.depth -| 1;
-            const twistie_x = left + 2 + visual_depth * 2;
+            const twistie_x = left + 2 + visual_depth * self.indent_cells;
             if (x != twistie_x) return null;
         }
         return self.toggle(item);
@@ -506,6 +521,23 @@ fn readSortOrder(configuration: *ConfigurationService, model: *ExplorerModel) ex
     return .FilesFirst;
 }
 
+fn readIndentCells(configuration: *ConfigurationService) usize {
+    const value = configuration.getValue("workbench.tree.indent", .{}) orelse return 2;
+    const cells: usize = switch (value.*) {
+        .integer => |inner| if (inner > 0) @intCast(inner) else 2,
+        else => 2,
+    };
+    return std.math.clamp(cells, 1, 6);
+}
+
+fn readRenderIndentGuides(configuration: *ConfigurationService) abstract_tree.RenderIndentGuides {
+    const value = configuration.getValue("workbench.tree.renderIndentGuides", .{}) orelse return .on_hover;
+    return switch (value.*) {
+        .string => |inner| abstract_tree.RenderIndentGuides.fromString(inner),
+        else => .on_hover,
+    };
+}
+
 fn renderRow(context: *anyopaque, row: *const list.Row, node: *const CompressibleTree.Node) void {
     const sidebar: *Sidebar = @ptrCast(@alignCast(context));
     const compressed = node.element orelse return;
@@ -549,10 +581,23 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
     }
 
     var col = row.x + 2;
+    const indent_width = (node.depth -| 1) * row.indent;
     var indent: usize = 0;
-    const indent_width = (node.depth -| 1) * 2;
     while (indent < indent_width and col < row.x + row.width) : (indent += 1) {
-        row.grid.putSpace(col, row.y, paint);
+        // One guide per ancestor level, painted at the first cell of its
+        // indent slot. The terminal has no CSS borders, so the vertical
+        // `│` is the same one-cell adaptation the pane borders use.
+        if (row.render_indent_guides and indent % row.indent == 0) {
+            const guide_color = if (sidebar.theme) |palette|
+                palette.color("tree.indentGuidesStroke", .{ 80, 80, 80 })
+            else
+                ui.Color{ .r = 80, .g = 80, .b = 80 };
+            var guide_paint = PaintStyle{ .fg = ui.cell.packColor(guide_color) };
+            if (selected) guide_paint.bg = paint.bg;
+            row.grid.putCodepoint(col, row.y, '│', 1, guide_paint);
+        } else {
+            row.grid.putSpace(col, row.y, paint);
+        }
         col += 1;
     }
 
@@ -567,6 +612,28 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
     if (col < row.x + row.width) {
         row.grid.putSpace(col, row.y, paint);
         col += 1;
+    }
+
+    // Nerd Font file/folder icon, after the twistie and its gap, matching the
+    // Explorer row order (twistie, file icon, label).
+    {
+        const icon = if (item.is_directory)
+            file_icon.folder(!node.collapsed)
+        else
+            file_icon.file(item.name);
+        if (col < row.x + row.width) {
+            var icon_paint = PaintStyle{
+                .fg = ui.cell.packColor(icon.color),
+                .bg = paint.bg,
+            };
+            if (selected) icon_paint.attrs = paint.attrs;
+            row.grid.putCodepoint(col, row.y, icon.glyph, 1, icon_paint);
+            col += 1;
+        }
+        if (col < row.x + row.width) {
+            row.grid.putSpace(col, row.y, paint);
+            col += 1;
+        }
     }
 
     // `renderCompressedElements`: join the compressed path with `/`. A single
@@ -650,6 +717,61 @@ test "explorer tree sidebar: renders and uses the ported tree view" {
         .open => |path| try std.testing.expect(std.mem.endsWith(u8, path, "z.txt")),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "explorer tree sidebar: nerd font icons and hover indent guides" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "alpha");
+    var nested = try tmp.dir.createFile(io, "alpha/beta.txt", .{});
+    try nested.writeStreamingAll(io, "b");
+    nested.close(io);
+    var root_file = try tmp.dir.createFile(io, "z.txt", .{});
+    try root_file.writeStreamingAll(io, "z");
+    root_file.close(io);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    var grid = try ui.CellGrid.init(allocator, 24, 8);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{ .show_header = false });
+    const closed = try grid.rowText(allocator, 0);
+    defer allocator.free(closed);
+    try std.testing.expect(std.mem.indexOf(u8, closed, "\u{f07b}") != null);
+
+    var home = ui.KeyEvent{ .key = .home };
+    _ = try sidebar.handleKey(&home);
+    var right = ui.KeyEvent{ .key = .right };
+    _ = try sidebar.handleKey(&right);
+    var expanded_grid = try ui.CellGrid.init(allocator, 24, 8);
+    defer expanded_grid.deinit();
+    try sidebar.render(&expanded_grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{ .show_header = false });
+    const open_folder = try expanded_grid.rowText(allocator, 0);
+    defer allocator.free(open_folder);
+    try std.testing.expect(std.mem.indexOf(u8, open_folder, "\u{f07c}") != null);
+    const child = try expanded_grid.rowText(allocator, 1);
+    defer allocator.free(child);
+    try std.testing.expect(std.mem.indexOf(u8, child, "beta.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, child, "\u{f15b}") != null);
+    // Default `onHover`: no guide until the pointer is inside the list.
+    try std.testing.expect(std.mem.indexOf(u8, child, "│") == null);
+
+    const move = ui.MouseEvent{ .kind = .move, .x = 2, .y = 1, .button = .left };
+    try std.testing.expect(sidebar.handleMouse(&move));
+    try sidebar.render(&expanded_grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{ .show_header = false });
+    const hovered_child = try expanded_grid.rowText(allocator, 1);
+    defer allocator.free(hovered_child);
+    try std.testing.expect(std.mem.indexOf(u8, hovered_child, "│") != null);
 }
 
 test "explorer tree sidebar: wheel scrolls the tree viewport" {

@@ -476,7 +476,16 @@ console API for raw mode, sizing and input polling.
   filter instead of pruning the model. `explorer.compactFolders` is honored
   (default on): a lone child chain such as `src/vs/editor` renders as one
   compressed row, expands/collapses as one node, and resolves the compressed
-  child through `autoExpandCompressedChildren`. `Ctrl-B` toggles the side panel
+  child through `autoExpandCompressedChildren`. Rows paint Nerd Font folder and
+  file glyphs from `src/vs/workbench/browser/fileIcon.zig`: VS Code's SVG icon
+  themes have no terminal image layer, so the Nerd Font glyph is the terminal
+  adaptation of `workbench.iconTheme` (a Nerd Font must be configured in the
+  terminal). Tree indent guides follow `workbench.tree.renderIndentGuides`
+  (`none`, `onHover` or `always`; default `onHover`) and
+  `workbench.tree.indent` is measured in cells (default 2, unlike upstream's
+  pixel unit). The one-cell divider between the activity bar/side bar and the
+  editor area is draggable: press and move to resize the side bar, clamped to
+  half the window. `Ctrl-B` toggles the side panel
   and
   `Escape` returns focus to the editor. The generic VS Code list/tree view is
   being replaced in layers under `src/vs/base/browser/ui/list` and
@@ -486,9 +495,10 @@ console API for raw mode, sizing and input polling.
   `CompressibleObjectTree`/`CompressedObjectTreeModel`/`AbstractTree` path.
   `ObjectTree`, `IndexTree`, a synchronous `DataTree` and the
   `CompressibleObjectTree` view adapter are also ported. Remaining work is the
-  async data tree, drag/drop, sticky scroll, the compressed-label navigation
-  controller (per-segment focus/hover) and identity-provider diffing through
-  the object models.
+  async data tree, file drag/drop inside the tree, sticky scroll, the
+  compressed-label navigation controller (per-segment focus/hover) and
+  identity-provider diffing through the object models. The side-bar divider is
+  draggable; that is part-size resizing, not Explorer file drag/drop.
 - The configuration service (`src/vs/workbench/services/configuration/browser/configurationService.zig`)
   resolves defaults, the VS Code profile's user settings, the terminal's own
   user settings, the workspace file's `settings` block and each folder's

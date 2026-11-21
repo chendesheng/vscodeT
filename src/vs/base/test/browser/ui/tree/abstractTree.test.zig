@@ -26,7 +26,7 @@ fn setup(allocator: std.mem.Allocator) !struct { model: *Model, tree: *Tree } {
     const tree = try Tree.init(allocator, model, .{
         .context = @ptrCast(&context),
         .render = renderRow,
-    });
+    }, .{});
     return .{ .model = model, .tree = tree };
 }
 
@@ -50,7 +50,7 @@ test "AbstractTree: renders the initial projection" {
     const tree = try Tree.init(allocator, model, .{
         .context = @ptrCast(&context),
         .render = renderRow,
-    });
+    }, .{});
     defer tree.deinit();
 
     try testing.expectEqual(@as(usize, 3), tree.count());
@@ -84,7 +84,7 @@ test "AbstractTree: collapse and expand keys" {
     const tree = try Tree.init(allocator, model, .{
         .context = @ptrCast(&context),
         .render = renderRow,
-    });
+    }, .{});
     defer tree.deinit();
     tree.setFocus(true);
 
@@ -115,7 +115,7 @@ test "AbstractTree: enter activates the selected element" {
     const tree = try Tree.init(allocator, model, .{
         .context = @ptrCast(&context),
         .render = renderRow,
-    });
+    }, .{});
     defer tree.deinit();
     tree.setFocus(true);
 

@@ -27,6 +27,8 @@ pub const ListView = struct {
     viewport_height: f64 = 0,
     selected: ?usize = null,
     focused: bool = false,
+    hovered: ?usize = null,
+    mouse_inside: bool = false,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -49,6 +51,12 @@ pub const ListView = struct {
 
     pub fn count(self: *const ListView) usize {
         return self.items.items.len;
+    }
+
+    /// Clears row/list hover state when the pointer leaves the viewport.
+    pub fn clearHover(self: *ListView) void {
+        self.hovered = null;
+        self.mouse_inside = false;
     }
 
     /// Port of `ListView.splice`.
@@ -164,6 +172,8 @@ pub const ListView = struct {
                 .selected = self.selected != null and self.selected.? == index,
                 .focused_selection = self.focused and self.selected != null and self.selected.? == index,
                 .focused = self.focused,
+                .hovered = self.hovered != null and self.hovered.? == index,
+                .list_hovered = self.mouse_inside,
             };
             self.renderer.renderRow(&row, element);
         }

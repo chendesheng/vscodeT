@@ -633,6 +633,12 @@ pub const tui_defaults_json =
     \\      "**/Thumbs.db": true
     \\    }
     \\  },
+    \\  "workbench": {
+    \\    "tree": {
+    \\      "indent": 2,
+    \\      "renderIndentGuides": "onHover"
+    \\    }
+    \\  },
     \\  "explorer": {
     \\    "excludeGitIgnore": true
     \\  },

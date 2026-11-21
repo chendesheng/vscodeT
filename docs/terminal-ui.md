@@ -1140,9 +1140,17 @@ Library constraints:
   wheel scrolling, collapse state and `explorer.compactFolders`. The
   `CompressibleObjectTree` adapter renders a compressed path as one
   `a/b/c` row, and object/index/synchronous-data tree view adapters are ported
-  too. The async data tree/loading placeholders, identity-provider diffing
-  through the object models, drag/drop, sticky scroll and the compressed-label
-  navigation controller (per-segment focus/hover) are not ported.
+  too. Rows paint Nerd Font folder/file glyphs
+  (`src/vs/workbench/browser/fileIcon.zig`), the terminal adaptation of
+  `workbench.iconTheme`: there is no SVG/image layer, so a Nerd Font configured
+  in the terminal supplies the icons. Indent guides follow
+  `workbench.tree.renderIndentGuides` (`none`, `onHover`, `always`; default
+  `onHover`) and `workbench.tree.indent` is counted in cells (default 2).
+  The async data tree/loading placeholders, identity-provider diffing through
+  the object models, Explorer file drag/drop, sticky scroll and the
+  compressed-label navigation controller (per-segment focus/hover) are not
+  ported. The side-bar divider is a draggable part splitter, separate from
+  Explorer file drag/drop.
   The activity bar is split into the ported model
   (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
   activity service model

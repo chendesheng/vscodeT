@@ -425,6 +425,8 @@ pub const Workbench = struct {
     hovered_title_action_pane: ?*GroupPane = null,
     last_tab_click: ?TabClick = null,
     expanded_pane: ?*GroupPane = null,
+    /// Pointer capture for the side-bar divider drag.
+    sidebar_resize_active: bool = false,
     declarative: ?*const extensions_registry.Registry = null,
     json_client: ?*json_language.Client = null,
     language_features: ?*LanguageFeaturesService = null,
@@ -5224,6 +5226,7 @@ pub const Workbench = struct {
     pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (self.expanded_pane != null) return false;
         if (self.drag_tab != null or self.pending_tab_drag != null) return false;
+        if (self.handleSidebarResizeMouse(event)) return true;
         if (self.part.active_sash) |split| {
             switch (event.kind) {
                 .move => {
@@ -5255,6 +5258,48 @@ pub const Workbench = struct {
         const split = self.part.dividerAt(event.x, event.y) orelse return false;
         self.part.active_sash = split;
         return true;
+    }
+
+    /// Port of the side-bar splitter drag from `sidebarPart.ts`/`resizable.ts`.
+    /// The divider is the one-cell border between the side bar and the editor
+    /// area; a press captures the pointer, motion resizes with the upstream
+    /// min/max clamps, and the release ends the gesture.
+    fn handleSidebarResizeMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        if (self.quick_access.isOpen()) return false;
+        if (!self.sidebarShown()) {
+            self.sidebar_resize_active = false;
+            return false;
+        }
+
+        const divider = self.activityBarWidth() + self.sidebarWidth();
+        if (!self.sidebar_resize_active) {
+            if (event.kind != .down or event.button != .left or event.x != divider) return false;
+            self.sidebar_resize_active = true;
+            return true;
+        }
+
+        switch (event.kind) {
+            .move, .down => {
+                self.resizeSidebarTo(event.x);
+                return true;
+            },
+            .up, .click => {
+                self.resizeSidebarTo(event.x);
+                self.sidebar_resize_active = false;
+                return true;
+            },
+            .wheel => return false,
+        }
+    }
+
+    fn resizeSidebarTo(self: *Workbench, pointer_x: usize) void {
+        const bar_width = self.activityBarWidth();
+        const desired = if (pointer_x > bar_width) pointer_x - bar_width else 1;
+        const max_width = @max(self.cols / 2, 10);
+        const width = std.math.clamp(desired, 10, max_width);
+        if (width == self.sidebarWidth() and self.layout_model.size(.sidebar) == width) return;
+        self.setSidebarWidth(width) catch return;
+        self.layoutAll();
     }
 
     fn orderedTabAt(self: *Workbench, pane: *GroupPane, index: usize) ?*Tab {
@@ -5637,9 +5682,20 @@ pub const Workbench = struct {
             return true;
         }
 
-        if (!self.sidebarShown()) return false;
+        if (!self.sidebarShown()) {
+            if (event.kind == .move) {
+                if (self.sidebar) |sidebar| sidebar.clearHover();
+            }
+            return false;
+        }
 
-        if (event.x > self.activityBarWidth() + self.sidebarWidth()) return false;
+        const sidebar_right = self.activityBarWidth() + self.sidebarWidth();
+        if (event.x > sidebar_right) {
+            if (event.kind == .move) {
+                if (self.sidebar) |sidebar| sidebar.clearHover();
+            }
+            return false;
+        }
 
         // The side bar title chrome (header composite bar, title and footer):
         // title actions and the composite bar items only exist there, so the
@@ -5653,6 +5709,7 @@ pub const Workbench = struct {
             event.y >= content_top + content_height;
         if (in_chrome) {
             if (event.kind == .move) {
+                if (self.sidebar) |sidebar| sidebar.clearHover();
                 sidebar_part_mod.setHovered(
                     &self.sidebar_part,
                     sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y),
@@ -5688,7 +5745,7 @@ pub const Workbench = struct {
         if (!std.mem.eql(u8, active_id, "explorer")) return true;
 
         const sidebar = self.sidebar orelse return false;
-        if (event.kind == .wheel) {
+        if (event.kind == .wheel or event.kind == .move) {
             _ = sidebar.handleMouse(event);
             return true;
         }
@@ -8749,6 +8806,45 @@ test "Workbench: sidebar renders and opens a file" {
     try std.testing.expect(!workbench.layout_model.isVisible(.sidebar));
     try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
     try std.testing.expect(workbench.layout_model.isVisible(.sidebar));
+}
+
+test "Workbench: dragging the sidebar divider resizes the side bar" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "resize_a.txt", "alpha");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+
+    const before = workbench.sidebarWidth();
+    const divider = workbench.activityBarWidth() + before;
+    try std.testing.expect(workbench.sidebarShown());
+
+    const down = ui.MouseEvent{ .kind = .down, .x = divider, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&down));
+    try std.testing.expect(workbench.sidebar_resize_active);
+
+    const move = ui.MouseEvent{ .kind = .move, .x = divider + 4, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&move));
+    try std.testing.expectEqual(before + 4, workbench.sidebarWidth());
+
+    const up = ui.MouseEvent{ .kind = .up, .x = divider + 4, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&up));
+    try std.testing.expect(!workbench.sidebar_resize_active);
+
+    // The same gesture clamps at the upstream-style half-window maximum.
+    const far = ui.MouseEvent{ .kind = .down, .x = workbench.activityBarWidth() + workbench.sidebarWidth(), .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&far));
+    const drag_far = ui.MouseEvent{ .kind = .move, .x = 10_000, .y = 2, .button = .left };
+    try std.testing.expect(workbench.handleSashMouse(&drag_far));
+    try std.testing.expectEqual(@as(usize, 35), workbench.sidebarWidth());
 }
 
 test "Workbench: workspace search streams results and opens a match" {
