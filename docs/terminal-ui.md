@@ -1225,8 +1225,11 @@ Library constraints:
   (`src/vs/workbench/services/activity/browser/activityService.zig`) and the
   terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
-  also supports view and global badges. It switches fixed Explorer, Search,
-  Source Control and Settings containers; Settings remains a placeholder.
+  also supports view and global badges. It switches fixed Explorer, Search and
+  Source Control containers. There is no Settings container: upstream's
+  Settings entry is the activity-bar gear action whose Settings item opens the
+  Settings editor as an editor tab, not a view container, and the port has no
+  Settings editor.
   Problems is not an activity-bar container: it lives in the panel
   (`ViewContainerLocation.Panel`) like upstream. The model owns activity
   order, visibility, the active container and compact width. Containers are
@@ -1321,8 +1324,8 @@ Library constraints:
     services do not exist in the terminal workbench;
   - trusted-workspace filtering and restricted settings; there is no
     workspace-trust service;
-  - the browser Settings editor/view; the activity-bar Settings container
-    remains a placeholder.
+  - the browser Settings editor/view; with it, the activity-bar gear's
+    Settings entry is unported, so settings are edited through the JSON file.
 
 - User keybindings live in `src/vs/workbench/services/keybinding/browser/userKeybindings.zig`,
   over the ported `base/common/keybindingParser.zig` and

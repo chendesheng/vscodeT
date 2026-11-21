@@ -1198,12 +1198,6 @@ pub const Workbench = struct {
             .glyph = 'G',
             .order = 2,
         }, .sidebar, .{});
-        _ = try registry.register(.{
-            .id = "settings",
-            .title = "Settings",
-            .glyph = 'S',
-            .order = 4,
-        }, .sidebar, .{});
 
         // Panel containers: Problems order 0, Terminal order 3, matching
         // `markers.contribution.ts` and `terminal.contribution.ts`.
@@ -7500,11 +7494,13 @@ pub const Workbench = struct {
             .bg = ui.cell.packColor(self.themeColor("sideBar.background", .{ 30, 30, 33 })),
         };
         const active_id = self.activity_bar_part.active_id orelse "";
-        const is_scm = std.mem.eql(u8, active_id, "scm");
-        const title = if (is_scm)
+        const title = if (std.mem.eql(u8, active_id, "scm"))
             "Source Control is unavailable (no Git repository)"
+        else if (std.mem.eql(u8, active_id, "explorer") or std.mem.eql(u8, active_id, "search"))
+            // Both views are created with the workspace file tree.
+            "No folder is open"
         else
-            "Settings view is not ported yet";
+            "Nothing to show here";
         self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
         // The side bar title is painted by the part; the placeholder only
         // renders the container content.
@@ -10436,17 +10432,17 @@ test "Workbench: activity bar switches view containers" {
     try workbench.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SOURCE CONTROL") != null);
 
-    const settings_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
-    try std.testing.expect(workbench.handleSidebarMouse(&settings_click));
-    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
-
-    out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "SETTINGS") != null);
+    // Upstream has no Settings view container: its activity bar gear is the
+    // `workbench.actions.manage` global action that opens the Settings editor
+    // as an editor tab, which is not ported. The rail therefore stops after
+    // Source Control and a click below it changes nothing.
+    const empty_rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
+    try std.testing.expect(workbench.handleSidebarMouse(&empty_rail_click));
+    try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
+    try std.testing.expectEqual(@as(usize, 3), workbench.activity_bar_part.count());
 
     // Problems is a panel container: no activity-bar entry and no sidebar
     // container (upstream registers it in `ViewContainerLocation.Panel`).
-    try std.testing.expectEqual(@as(usize, 4), workbench.activity_bar_part.count());
     try std.testing.expect(!try workbench.showActivityById("problems"));
     try std.testing.expect(!workbench.panelShown());
 

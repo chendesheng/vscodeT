@@ -623,9 +623,10 @@ console API for raw mode, sizing and input polling.
     in the terminal workbench);
   - trusted-workspace filtering and restricted settings (no workspace-trust
     service);
-  - the Settings editor/view, which remains a placeholder. Language override
-    blocks such as `[typescript]` resolve through `getValue(...,
-    override_identifier)` but are not projected by a Settings UI.
+  - the Settings editor/view, and with it the activity-bar gear's Settings
+    entry. Language override blocks such as `[typescript]` resolve through
+    `getValue(..., override_identifier)` but are not projected by a Settings
+    UI.
 - Color themes are discovered from the pinned `theme-defaults` extension (all
   ten built-in themes), then the VS Code profile's extensions folder (later
   roots win for duplicate theme ids). `src/tui/vscodeProfile.zig` resolves the
@@ -714,10 +715,14 @@ console API for raw mode, sizing and input polling.
   terminal view (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`). The Search activity shows a badge
   dot while matches are present (the exact count is in the panel); the service
   also supports view and global badges. It
-  switches between Explorer, Search, Source Control and Settings containers;
+  switches between the Explorer, Search and Source Control containers;
   Explorer is wired to the file tree, Search to the workspace text-search
-  panel, Source Control to the git SCM view, and Settings remains a
-  placeholder. `Alt-1..4` switches containers while the side panel has focus.
+  panel and Source Control to the git SCM view. `Alt-1..3` switches containers
+  while the side panel has focus. There is no Settings container: upstream's
+  Settings entry is the `workbench.actions.manage` activity-bar gear, an
+  action whose Settings item opens the Settings editor as an editor tab, not a
+  view container. The port has no Settings editor, so settings are edited
+  through the `Open User Settings (JSON)` command.
   The model owns order, visibility, the active container and compact width.
   Containers are registered in the ported view-container registry
   (`src/vs/workbench/common/views.zig`), but there is still no extension
