@@ -660,15 +660,38 @@ pub const Controllers = struct {
     hover_registration: ?IDisposable = null,
     suggest: *SuggestController,
 
-    /// Applies the palette-derived hover code-block background. Upstream's
-    /// hover CSS uses `--vscode-textCodeBlock-background`; a theme that does
-    /// not define it leaves fenced code transparent.
+    /// Applies the palette-derived hover code-block background and the find
+    /// bar theme. Upstream resolves these through CSS variables and the
+    /// workbench theme service; the terminal layer passes the resolved cells.
     pub fn setThemeColors(self: *Controllers, palette: ?*const theme_colors_mod.ThemeColors) void {
         var code_background: ?ui.Color = null;
         if (palette) |colors| {
             if (colors.rawColor("textCodeBlock.background")) |raw| {
                 code_background = colors.compositeColor(raw);
             }
+            var selection_background: ?ui.Color = null;
+            var selection_foreground: ?ui.Color = null;
+            if (colors.rawColor("editor.selectionBackground")) |raw| {
+                selection_background = colors.compositeColor(raw);
+            }
+            if (colors.rawColor("editor.selectionForeground")) |raw| {
+                selection_foreground = colors.compositeColor(raw);
+            }
+            self.find.setTheme(.{
+                .background = colors.color("editorWidget.background", .{ 45, 45, 55 }),
+                .foreground = colors.color("editorWidget.foreground", .{ 230, 230, 230 }),
+                .dim_foreground = colors.color("input.placeholderForeground", .{ 140, 140, 150 }),
+                .hover_background = colors.color("toolbar.hoverBackground", .{ 72, 72, 92 }),
+                .input_background = colors.color("input.background", .{ 30, 30, 35 }),
+                .input_foreground = colors.color("input.foreground", .{ 230, 230, 230 }),
+                .placeholder = colors.color("input.placeholderForeground", .{ 140, 140, 150 }),
+                .active_background = colors.color("inputOption.activeBackground", .{ 230, 230, 230 }),
+                .active_foreground = colors.color("inputOption.activeForeground", .{ 45, 45, 55 }),
+                .selection_background = selection_background,
+                .selection_foreground = selection_foreground,
+            });
+        } else {
+            self.find.setTheme(.{});
         }
         self.hover_participant.setCodeBackground(code_background);
     }
