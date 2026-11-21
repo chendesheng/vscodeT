@@ -99,6 +99,10 @@ pub const UniversalWatcher = struct {
         self.non_recursive.setVerboseLogging(enabled);
     }
 
+    pub fn setCancelFlag(self: *UniversalWatcher, flag: ?*std.atomic.Value(bool)) void {
+        self.lib.setCancelFlag(flag);
+    }
+
     pub fn poll(self: *UniversalWatcher, now_ms: i64) !bool {
         var changed = false;
         if (try self.non_recursive.poll(now_ms)) changed = true;

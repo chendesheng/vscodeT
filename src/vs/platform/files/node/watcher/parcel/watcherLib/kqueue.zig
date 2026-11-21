@@ -90,6 +90,7 @@ pub const Backend = struct {
     }
 
     fn watchTree(self: *Backend, watcher: *Watcher, path: []const u8, root: bool) !void {
+        if (watcher.isCancelled()) return;
         if (self.bindings.items.len >= self.fd_budget) return;
         try self.addWatch(watcher, path, root);
 
@@ -101,6 +102,7 @@ pub const Backend = struct {
         defer dir.close(self.io);
         var iterator = dir.iterate();
         while (true) {
+            if (watcher.isCancelled()) return;
             const entry = (iterator.next(self.io) catch break) orelse break;
             if (entry.kind == .sym_link) continue;
             const child = try std.fs.path.join(self.allocator, &.{ path, entry.name });
@@ -233,6 +235,7 @@ pub const Backend = struct {
 
         var iterator = dir.iterate();
         while (true) {
+            if (binding.watcher.isCancelled()) return;
             const entry = (iterator.next(self.io) catch break) orelse break;
             if (entry.kind == .sym_link) continue;
             const child = try std.fs.path.join(self.allocator, &.{ binding.path, entry.name });

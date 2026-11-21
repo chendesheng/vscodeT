@@ -19,6 +19,7 @@ comptime {
     _ = @import("./vs/platform/files/node/watcher/nodejs/nodejsWatcherLib.zig");
     _ = @import("./vs/platform/files/node/watcher/nodejs/nodejsWatcher.zig");
     _ = @import("./vs/platform/files/node/watcher/watcher.zig");
+    _ = @import("./vs/platform/files/test/node/watcherClient.test.zig");
 }
 
 const std = @import("std");

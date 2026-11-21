@@ -91,6 +91,7 @@ pub const Backend = struct {
     }
 
     fn watchTree(self: *Backend, watcher: *Watcher, path: []const u8, root: bool) !void {
+        if (watcher.isCancelled()) return;
         try self.addWatch(watcher, path, root);
 
         var dir = Io.Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch |err| switch (err) {
@@ -101,6 +102,7 @@ pub const Backend = struct {
 
         var iterator = dir.iterate();
         while (try iterator.next(self.io)) |entry| {
+            if (watcher.isCancelled()) return;
             const child = try std.fs.path.join(self.allocator, &.{ path, entry.name });
             defer self.allocator.free(child);
 

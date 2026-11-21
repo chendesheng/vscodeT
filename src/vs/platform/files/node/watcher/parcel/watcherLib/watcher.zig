@@ -31,6 +31,10 @@ pub const Watcher = struct {
     subscribers: std.array_list.Managed(Callback),
     events: EventList,
     tree: DirTree,
+    /// Cooperative cancellation for a recursive scan. The watcher process
+    /// equivalent is stopped by the client; the worker-thread adaptation sets
+    /// this atomic so a large initial walk can abort on shutdown.
+    cancel_flag: ?*std.atomic.Value(bool) = null,
     failed: bool = false,
     removed: bool = false,
     dirty_since_ms: ?i64 = null,
@@ -88,6 +92,11 @@ pub const Watcher = struct {
 
     pub fn isIgnored(self: *const Watcher, path: []const u8) bool {
         return self.ignore.isIgnored(path);
+    }
+
+    pub fn isCancelled(self: *const Watcher) bool {
+        const flag = self.cancel_flag orelse return false;
+        return flag.load(.acquire);
     }
 
     pub fn recordCreate(self: *Watcher, path: []const u8, mtime_ns: i64, is_dir: bool) !void {

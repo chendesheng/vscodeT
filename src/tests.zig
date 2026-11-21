@@ -711,4 +711,5 @@ comptime {
 comptime {
     _ = @import("./vs/platform/files/test/node/nodejsWatcher.test.zig");
     _ = @import("./vs/platform/files/test/node/watcherStats.test.zig");
+    _ = @import("./vs/platform/files/test/node/watcherClient.test.zig");
 }

@@ -282,6 +282,7 @@ pub const Lib = struct {
     io: Io,
     backend: Backend,
     watchers: std.array_list.Managed(*Watcher),
+    cancel_flag: ?*std.atomic.Value(bool) = null,
     disposed: bool = false,
 
     pub fn init(allocator: Allocator, io: Io) !*Lib {
@@ -307,9 +308,15 @@ pub const Lib = struct {
         self.allocator.destroy(self);
     }
 
+    pub fn setCancelFlag(self: *Lib, flag: ?*std.atomic.Value(bool)) void {
+        self.cancel_flag = flag;
+        for (self.watchers.items) |watcher| watcher.cancel_flag = flag;
+    }
+
     pub fn subscribe(self: *Lib, dir: []const u8, callback: Callback, options: Options) !*Subscription {
         const watcher = try Watcher.init(self.allocator, self.io, dir, options.ignore, options.recursive);
         errdefer watcher.deinit();
+        watcher.cancel_flag = self.cancel_flag;
         _ = try watcher.addSubscriber(callback);
         try self.backend.subscribe(watcher);
         errdefer self.backend.unsubscribe(watcher);
