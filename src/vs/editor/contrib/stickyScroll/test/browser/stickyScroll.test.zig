@@ -526,3 +526,35 @@ test "sticky widget state exposes displayed line numbers and caps height" {
     try testing.expectEqualSlices(usize, &.{ 8, 9 }, state.end_line_numbers);
     try testing.expectEqual(@as(?usize, 1), state.show_end_for_line);
 }
+
+test "real JavaScript file produces sticky scopes from indentation" {
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "vscode/scripts/code-web.js",
+        allocator,
+        .limited(1024 * 1024),
+    ) catch return error.SkipZigTest;
+    defer allocator.free(source);
+    const editor = try Editor.createFromText(allocator, io, source, "test.js", 120, 40);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var host = StickyScrollHost.init(allocator, view);
+    const controller = try StickyScrollController.init(allocator, editor, host.interface());
+    defer controller.deinit();
+    host.attach(controller);
+    try view.addOverlayWidget(controller.widget.interface());
+    try controller.getStickyScrollCandidateProvider().update();
+    _ = editor.setTopViewLine(135);
+    try view.refresh();
+    try view.paint();
+    try testing.expect(controller.getStickyScrollWidgetHeight() > 0);
+    const row0 = try view.grid().rowText(allocator, 0);
+    defer allocator.free(row0);
+    try testing.expect(std.mem.indexOf(u8, row0, "async function ensureWebDevExtensions") != null);
+}

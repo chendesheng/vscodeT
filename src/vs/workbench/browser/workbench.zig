@@ -8636,6 +8636,42 @@ fn frameText(allocator: Allocator, frame: *const ui.Frame) ![]u8 {
     return text.toOwnedSlice();
 }
 
+test "Workbench: sticky scroll paints scope headers" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var source = std.array_list.Managed(u8).init(allocator);
+    defer source.deinit();
+    try source.appendSlice("async function stickyScope() {\n");
+    var line_buffer: [64]u8 = undefined;
+    for (0..30) |index| {
+        const line = try std.fmt.bufPrint(&line_buffer, "\tconst value{d} = {d};\n", .{ index, index });
+        try source.appendSlice(line);
+    }
+    try source.appendSlice("}\n");
+
+    const path = try seedFile(allocator, io, &tmp, "sticky.js", source.items);
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 12);
+    defer workbench.deinit();
+    const tab = workbench.activeTab().?;
+    try tab.ensureControllers();
+    if (tab.controllers) |controllers| {
+        _ = controllers.sticky.onTick(std.math.maxInt(i64));
+    }
+    _ = tab.editor.setTopViewLine(5);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const text = try frameText(allocator, &workbench.frame);
+    defer allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "async function stickyScope") != null);
+}
+
 test "Workbench: declarative markdown configuration applies to open tabs" {
     const allocator = std.testing.allocator;
     var registry = extensions_registry.scan(allocator, &.{"vscode/extensions/markdown-basics"}) catch return error.SkipZigTest;
