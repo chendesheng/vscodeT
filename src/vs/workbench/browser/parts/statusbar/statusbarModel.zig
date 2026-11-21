@@ -21,6 +21,7 @@ const StatusbarEntry = statusbar.StatusbarEntry;
 const StatusbarEntryPriority = statusbar.StatusbarEntryPriority;
 const PrimaryPriority = statusbar.PrimaryPriority;
 const StatusbarItem = @import("statusbarItem.zig").StatusbarItem;
+const StatusbarItemTheme = @import("statusbarItem.zig").Theme;
 
 pub const EntryHandle = u64;
 
@@ -87,6 +88,11 @@ pub const StatusbarModel = struct {
     /// Adds an entry and returns its stable handle. The browser model accepts a
     /// fully built entry with DOM containers; the terminal model builds the
     /// `StatusbarItem` here.
+    /// Applies the resolved item-kind theme to every entry.
+    pub fn setTheme(self: *StatusbarModel, theme: StatusbarItemTheme) void {
+        for (self.entries_list.items) |*entry| entry.item.setTheme(theme);
+    }
+
     pub fn add(
         self: *StatusbarModel,
         entry: StatusbarEntry,
