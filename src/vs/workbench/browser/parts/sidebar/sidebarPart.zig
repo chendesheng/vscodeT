@@ -68,6 +68,11 @@ pub const SidebarPart = struct {
     hovered_action_id: ?[]const u8 = null,
     hovered_composite_id: ?[]const u8 = null,
     on_did_change: Emitter(void),
+    /// Last painted title/composite-bar grids. The terminal equivalent of
+    /// upstream's retained DOM: unchanged chrome is blitted instead of being
+    /// cleared and flex-laid-out again on every editor frame.
+    title_signature: ?u64 = null,
+    bar_signature: ?u64 = null,
 
     /// A painted title element: a title action or a composite-bar item.
     pub const TitleNode = struct {
@@ -342,6 +347,23 @@ fn upperAscii(buf: []u8, text: []const u8) []const u8 {
     return buf[0..len];
 }
 
+fn hashText(hasher: *std.hash.Wyhash, text: []const u8) void {
+    hasher.update(text);
+    hasher.update(&[_]u8{0});
+}
+
+fn hashRect(hasher: *std.hash.Wyhash, x: usize, y: usize, w: usize, h: usize) void {
+    hasher.update(std.mem.asBytes(&x));
+    hasher.update(std.mem.asBytes(&y));
+    hasher.update(std.mem.asBytes(&w));
+    hasher.update(std.mem.asBytes(&h));
+}
+
+fn hashPalette(hasher: *std.hash.Wyhash, palette: ?*const theme_colors_mod.ThemeColors) void {
+    const value: usize = if (palette) |p| @intFromPtr(p) else 0;
+    hasher.update(std.mem.asBytes(&value));
+}
+
 fn prepareSurface(part: *SidebarPart, slot: *?ui.Surface, width: usize) !*ui.Surface {
     if (slot.*) |*surface| {
         if (surface.doc.cols != width or surface.doc.rows != 1) try surface.resize(width, 1);
@@ -408,6 +430,25 @@ pub fn renderTitle(
     if (!part.visible or width == 0 or height == 0 or !part.pane.has_title) return;
 
     const surface = try prepareSurface(part, &part.title_surface, width);
+
+    var hasher = std.hash.Wyhash.init(0);
+    hashRect(&hasher, x, y, width, height);
+    hashPalette(&hasher, palette);
+    hashText(&hasher, part.pane.title_label.title);
+    hashText(&hasher, part.hovered_action_id orelse "");
+    for ([_][]const pane.TitleAction{ part.pane.primary_actions.items, part.pane.secondary_actions.items }) |actions| {
+        for (actions) |action| {
+            hashText(&hasher, action.id);
+            hasher.update(std.mem.asBytes(&action.glyph));
+            hasher.update(&[_]u8{@intFromBool(action.enabled)});
+        }
+    }
+    const signature = hasher.final();
+    if (part.title_signature == signature) {
+        try grid.blit(surface.grid(), x, y, width, 1);
+        return;
+    }
+
     const doc = surface.document();
     doc.clear();
     part.title_nodes.clearRetainingCapacity();
@@ -464,6 +505,7 @@ pub fn renderTitle(
 
     doc.setRoot(root);
     try surface.paintFrame();
+    part.title_signature = signature;
     try grid.blit(surface.grid(), x, y, width, 1);
 }
 
@@ -483,6 +525,29 @@ pub fn renderCompositeBar(
     if (!part.visible or width == 0 or height == 0 or !part.pane.shouldShowCompositeBar()) return;
 
     const surface = try prepareSurface(part, &part.bar_surface, width);
+
+    var hasher = std.hash.Wyhash.init(0);
+    hashRect(&hasher, x, y, width, height);
+    hashPalette(&hasher, palette);
+    hashText(&hasher, part.pane.active_id orelse "");
+    hashText(&hasher, part.hovered_composite_id orelse "");
+    for (part.pane.bar.items.items) |item| {
+        hashText(&hasher, item.id);
+        hasher.update(&[_]u8{@intFromBool(item.visible)});
+        if (part.pane.getPaneComposite(item.id)) |descriptor| {
+            hasher.update(std.mem.asBytes(&descriptor.glyph));
+        }
+    }
+    for (badges) |badge| {
+        hashText(&hasher, badge.id);
+        hashText(&hasher, badge.text);
+    }
+    const signature = hasher.final();
+    if (part.bar_signature == signature) {
+        try grid.blit(surface.grid(), x, y, width, 1);
+        return;
+    }
+
     const doc = surface.document();
     doc.clear();
     part.bar_nodes.clearRetainingCapacity();
@@ -541,6 +606,7 @@ pub fn renderCompositeBar(
 
     doc.setRoot(root);
     try surface.paintFrame();
+    part.bar_signature = signature;
     try grid.blit(surface.grid(), x, y, width, 1);
 }
 

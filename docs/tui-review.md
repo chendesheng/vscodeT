@@ -14,6 +14,20 @@ and "remaining" verdicts are stale.
 - `ui/`: 22 Zig files, 15,085 lines.
 - Upstream: VS Code **1.147.0**, `vscode/` at `e31c2e52`.
 
+## Update (2026-11-21): scroll pipeline
+
+The scroll path now follows the upstream flow instead of rebuilding the view on
+every scroll. `Editor` owns a line-granular `common/viewLayout/viewLayout.zig`
+(port of `viewLayout.ts` on the ported `LinesLayout`/`Scrollable`), the wheel is
+handled by the ported `EditorScrollbar` part with upstream sensitivity/fast
+scroll, `TerminalViewHost.renderViewport` takes the visible range from the view
+layout, and `ViewLines` re-renders only lines dirtied by view events. Status
+bar, side-bar title and panel title retain their painted grids while unchanged,
+and the Unicode line-break tables are compile-time constants. The editor
+viewport is still rebuilt as DOM nodes on refresh; painting the retained
+`ViewLine` runs into cells is the next step. See
+[`perf/2026-11-21/README.md`](perf/2026-11-21/README.md).
+
 ## Consolidation progress (2026-11-19)
 
 - Git/SCM/quick diff/diff editor: added the read-only Git service + CLI

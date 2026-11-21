@@ -8,8 +8,9 @@
 //!
 //! The tables are a Zig port of the packed Unicode 17.0.0 data. The decoder
 //! shape follows TermDOM so the two implementations can be compared case by
-//! case. There is no global state; a `LineBreakTables` value is built from an
-//! allocator and passed to every call.
+//! case. The packed data is decoded once at compile time; `LineBreakTables` is
+//! a cheap view over those constants, so a layout pass no longer allocates and
+//! re-parses every property range.
 
 const std = @import("std");
 const data = @import("linebreak_tables.zig");
@@ -78,75 +79,90 @@ pub const Break = struct {
     required: bool,
 };
 
-pub const LineBreakTables = struct {
-    allocator: std.mem.Allocator,
-    run_starts: []u32,
-    run_kinds: []u8,
+const run_count = data.linebreak_run_kinds.len;
+const block_count = (@as(usize, 0x110000) >> 10) + 1;
+
+const Tables = struct {
+    run_starts: [run_count]u32,
+    run_kinds: [run_count]u8,
     latin1: [256]u8,
-    block_runs: []u16,
+    block_runs: [block_count]u16,
+};
 
-    pub fn init(allocator: std.mem.Allocator) !LineBreakTables {
-        const run_count = data.linebreak_run_kinds.len;
-        var run_starts = try allocator.alloc(u32, run_count);
-        errdefer allocator.free(run_starts);
-        var run_kinds = try allocator.alloc(u8, run_count);
-        errdefer allocator.free(run_kinds);
+/// The packed Unicode property data decoded once at compile time. Building it
+/// at runtime used to allocate three arrays and re-scan every kind name for
+/// all 2,812 ranges on every layout pass.
+const static_tables: Tables = buildTables();
 
-        var next: u32 = 0;
-        var at: usize = 0;
-        for (0..run_count) |i| {
-            run_starts[i] = next;
-            const letter = data.linebreak_run_kinds[i];
-            const kind_index: usize = if (letter >= 'a')
-                letter - 'a' + 26
-            else if (letter >= 'A')
-                letter - 'A'
-            else
-                letter - '0' + 52;
-            run_kinds[i] = kindAt(kind_index);
-            var length: u32 = 0;
-            while (at < data.linebreak_run_lengths.len) : (at += 1) {
-                const digit = data.linebreak_run_lengths[at];
-                if (digit == ',') {
-                    at += 1;
-                    break;
-                }
-                length = length * 36 + base36(digit);
+fn buildTables() Tables {
+    @setEvalBranchQuota(5_000_000);
+    var result: Tables = undefined;
+
+    var next: u32 = 0;
+    var at: usize = 0;
+    for (0..run_count) |i| {
+        result.run_starts[i] = next;
+        const letter = data.linebreak_run_kinds[i];
+        const kind_index: usize = if (letter >= 'a')
+            letter - 'a' + 26
+        else if (letter >= 'A')
+            letter - 'A'
+        else
+            letter - '0' + 52;
+        result.run_kinds[i] = kindAt(kind_index);
+        var length: u32 = 0;
+        while (at < data.linebreak_run_lengths.len) : (at += 1) {
+            const digit = data.linebreak_run_lengths[at];
+            if (digit == ',') {
+                at += 1;
+                break;
             }
-            next += length;
+            length = length * 36 + base36(digit);
         }
-        std.debug.assert(next == 0x110000);
+        next += length;
+    }
+    std.debug.assert(at >= data.linebreak_run_lengths.len);
+    std.debug.assert(next == 0x110000);
 
-        var latin1: [256]u8 = undefined;
-        var run: usize = 0;
-        for (0..256) |code| {
-            while (run + 1 < run_count and run_starts[run + 1] <= code) run += 1;
-            latin1[code] = run_kinds[run];
-        }
+    var run: usize = 0;
+    for (0..256) |code| {
+        while (run + 1 < run_count and result.run_starts[run + 1] <= code) run += 1;
+        result.latin1[code] = result.run_kinds[run];
+    }
 
-        const block_count = (@as(usize, 0x110000) >> 10) + 1;
-        const block_runs = try allocator.alloc(u16, block_count);
-        errdefer allocator.free(block_runs);
-        run = 0;
-        for (0..block_count) |block| {
-            while (run + 1 < run_count and run_starts[run + 1] <= block << 10) run += 1;
-            block_runs[block] = @intCast(run);
-        }
+    run = 0;
+    for (0..block_count) |block| {
+        while (run + 1 < run_count and result.run_starts[run + 1] <= block << 10) run += 1;
+        result.block_runs[block] = @intCast(run);
+    }
 
+    return result;
+}
+
+pub const LineBreakTables = struct {
+    run_starts: []const u32,
+    run_kinds: []const u8,
+    latin1: *const [256]u8,
+    block_runs: []const u16,
+
+    /// Compatibility wrapper for the previous allocator-based constructor.
+    /// The decoded tables are compile-time constants now.
+    pub fn init(allocator: std.mem.Allocator) !LineBreakTables {
+        _ = allocator;
+        return value();
+    }
+
+    pub fn value() LineBreakTables {
         return .{
-            .allocator = allocator,
-            .run_starts = run_starts,
-            .run_kinds = run_kinds,
-            .latin1 = latin1,
-            .block_runs = block_runs,
+            .run_starts = &static_tables.run_starts,
+            .run_kinds = &static_tables.run_kinds,
+            .latin1 = &static_tables.latin1,
+            .block_runs = &static_tables.block_runs,
         };
     }
 
     pub fn deinit(self: *LineBreakTables) void {
-        self.allocator.free(self.run_starts);
-        self.allocator.free(self.run_kinds);
-        self.allocator.free(self.block_runs);
-        self.* = undefined;
+        _ = self;
     }
 
     pub fn kindOf(self: *const LineBreakTables, cp: u21) u8 {
@@ -176,9 +192,12 @@ fn base36(digit: u8) u32 {
 
 fn kindAt(kind_index: usize) u8 {
     var index: usize = 0;
-    var it = std.mem.tokenizeScalar(u8, data.linebreak_kinds, ' ');
-    while (it.next()) |token| : (index += 1) {
-        if (index != kind_index) continue;
+    var it = std.mem.splitScalar(u8, data.linebreak_kinds, ' ');
+    while (it.next()) |token| {
+        if (index != kind_index) {
+            index += 1;
+            continue;
+        }
         var name = token;
         var flags: u8 = 0;
         if (std.mem.indexOfScalar(u8, token, '+')) |plus| {

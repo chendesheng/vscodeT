@@ -178,9 +178,21 @@ const ProbeHost = struct {
     }
 };
 
+/// The runtime's Debug allocator records a stack trace for every allocation
+/// and free; the profile shows that unwinding is 70-94% of active CPU for the
+/// default build. Keep the debug allocator's safety and leak checks but skip
+/// the traces for the long-running TUI process. Tests keep using the testing
+/// allocator, which reports full traces.
+var app_debug_allocator: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .{};
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    const allocator = init.gpa;
+    const allocator = if (comptime builtin.mode == .debug) app_debug_allocator.allocator() else init.gpa;
+    defer if (comptime builtin.mode == .debug) {
+        if (app_debug_allocator.deinit() == .leak) {
+            std.debug.print("app allocator: allocations leaked at exit\n", .{});
+        }
+    };
     const startup_start_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds();
 
     var paths = ArrayList([]const u8).init(allocator);

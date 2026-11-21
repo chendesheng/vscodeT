@@ -840,12 +840,29 @@ Library constraints:
     and update on typing or cursor movement.
   - Builds the editor tree as one surface; `Document.clear` rebuilds the tree
     between frames while keeping the previous grid for the diff.
+  - The vertical scroll position is the editor's line-granular port of
+    upstream `ViewLayout` (`src/vs/editor/common/viewLayout/viewLayout.zig`),
+    built on the ported `LinesLayout` and `Scrollable`. It emits upstream's
+    `ViewScrollChanged`; `TerminalViewHost.renderViewport` takes the visible
+    range from it, and `ViewLines` re-renders only lines dirtied by view
+    events. The wheel is routed to the ported `EditorScrollbar` part, which
+    applies `mouseWheelScrollSensitivity`/`fastScrollSensitivity` and keeps a
+    sub-line remainder (a terminal cannot paint sub-line offsets, so whole
+    view lines are applied).
+  - Visible-range tokenization is bounded: an incremental scroll tokenizes the
+    new lines, an edit walks from the first invalid line, and a jump tokenizes
+    the visible range from a guessed start state instead of every line in
+    between. The model version guards the forced interval.
 - The workbench status bar is a separate one-row `ui.Surface` owned by the
   ported `StatusbarPart`. `StatusbarPart.render` rebuilds a flex document
   (root row, left `flex_grow` container, right `row_reverse` container with a
   fixed content width, item containers and label containers), paints it, and
   blits the resulting
-  grid into the workbench frame's bottom row. The row spans the full window
+  grid into the workbench frame's bottom row. The part hashes the model
+  revision, width, theme, focus, hover and no-folder state and re-blits its
+  last grid when none changed, so an editor scroll does not relayout it. The
+  side-bar title and panel title use the same retained-grid scheme. The row
+  spans the full window
   (including under the sidebar) and the activity/sidebar/editor part
   rectangles end above it. The ported `StatusbarModel` owns order, priority,
   visibility, overrides and focus; `StatusbarItem` owns the label, kind colors,

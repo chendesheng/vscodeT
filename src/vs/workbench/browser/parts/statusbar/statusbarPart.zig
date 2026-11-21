@@ -130,9 +130,20 @@ pub const StatusbarPart = struct {
     hovered: ?EntryHandle = null,
     rect: ui.Rect = .{},
     theme: ?*const theme_colors_mod.ThemeColors = null,
+    /// Bumped by state that is not part of the model revision (theme and
+    /// style/entry overrides). The render pass reuses its grid when neither
+    /// this nor the model revision, width or focus state changed.
+    render_revision: u64 = 0,
+    render_signature: ?u64 = null,
 
     pub fn setThemeColors(self: *StatusbarPart, palette: ?*const theme_colors_mod.ThemeColors) void {
+        if (self.theme == palette) return;
         self.theme = palette;
+        self.render_revision +%= 1;
+    }
+
+    fn invalidate(self: *StatusbarPart) void {
+        self.render_revision +%= 1;
     }
 
     fn color(self: *const StatusbarPart, id: []const u8, fallback: ui.Color) ui.Color {
@@ -207,6 +218,7 @@ pub const StatusbarPart = struct {
     }
 
     pub fn updateEntryVisibility(self: *StatusbarPart, id: []const u8, visible: bool) void {
+        self.invalidate();
         if (visible) {
             self.model.show(id);
         } else {
@@ -219,6 +231,7 @@ pub const StatusbarPart = struct {
         id: []const u8,
         override: StatusbarEntryOverride,
     ) !EntryOverrideHandle {
+        self.invalidate();
         try self.entry_overrides.append(.{ .id = id, .override = override });
         const index = self.entry_overrides.items.len - 1;
         self.reapplyForId(id);
@@ -226,6 +239,7 @@ pub const StatusbarPart = struct {
     }
 
     pub fn disposeEntryOverride(self: *StatusbarPart, index: usize) void {
+        self.invalidate();
         if (index >= self.entry_overrides.items.len) return;
         const entry = &self.entry_overrides.items[index];
         if (!entry.active) return;
@@ -234,11 +248,13 @@ pub const StatusbarPart = struct {
     }
 
     pub fn overrideStyle(self: *StatusbarPart, style: StatusbarStyleOverride) !StyleOverrideHandle {
+        self.invalidate();
         try self.style_overrides.append(.{ .style = style });
         return .{ .part = self, .index = self.style_overrides.items.len - 1 };
     }
 
     pub fn disposeStyleOverride(self: *StatusbarPart, index: usize) void {
+        self.invalidate();
         if (index >= self.style_overrides.items.len) return;
         self.style_overrides.items[index].active = false;
     }
@@ -368,6 +384,29 @@ pub const StatusbarPart = struct {
             try self.surface.resize(width, 1);
         }
 
+        // A status bar that did not change keeps its last painted grid. This
+        // is the terminal equivalent of upstream's retained DOM: a scroll in
+        // the editor no longer clears and flex-lays-out the whole bar.
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.asBytes(&self.render_revision));
+        hasher.update(std.mem.asBytes(&self.model.revision));
+        hasher.update(std.mem.asBytes(&x));
+        hasher.update(std.mem.asBytes(&y));
+        hasher.update(std.mem.asBytes(&width));
+        const hovered: usize = self.hovered orelse 0;
+        hasher.update(std.mem.asBytes(&hovered));
+        const flags = [_]u8{
+            @intFromBool(options.no_folder),
+            @intFromBool(options.part_focused),
+        };
+        hasher.update(&flags);
+        const signature = hasher.final();
+        if (self.render_signature == signature) {
+            try grid.blit(self.surface.grid(), x, y, width, 1);
+            self.paintTooltip(grid);
+            return;
+        }
+
         const doc = self.surface.document();
         doc.clear();
         self.nodes.clearRetainingCapacity();
@@ -444,6 +483,7 @@ pub const StatusbarPart = struct {
 
         doc.setRoot(root);
         try self.surface.paintFrame();
+        self.render_signature = signature;
         try grid.blit(self.surface.grid(), x, y, width, 1);
         for (self.nodes.items) |*node_entry| {
             const text_box = self.surface.box_tree.find(node_entry.text_node) orelse continue;

@@ -50,6 +50,9 @@ pub const PanelPart = struct {
     /// live in the surface document arena and are rebuilt every render.
     title_nodes: std.array_list.Managed(TitleNode),
     on_did_change: Emitter(void),
+    /// Last painted title grid; unchanged chrome is blitted instead of being
+    /// cleared and laid out again on every editor frame.
+    title_signature: ?u64 = null,
 
     pub const TitleNode = struct {
         id: []const u8,
@@ -203,6 +206,42 @@ pub fn renderTitle(
         part.title_surface = try ui.Surface.init(part.allocator, .{ .cols = width, .rows = 1 });
     }
     const surface = &part.title_surface.?;
+
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(std.mem.asBytes(&x));
+    hasher.update(std.mem.asBytes(&y));
+    hasher.update(std.mem.asBytes(&width));
+    const height = ui.cell.snap(rect.h);
+    hasher.update(std.mem.asBytes(&height));
+    const palette_ptr: usize = if (palette) |p| @intFromPtr(p) else 0;
+    hasher.update(std.mem.asBytes(&palette_ptr));
+    hasher.update(&[_]u8{@intFromBool(focused)});
+    hasher.update(part.pane.active_id orelse "");
+    hasher.update(&[_]u8{0});
+    hasher.update(part.hovered_id orelse "");
+    hasher.update(&[_]u8{0});
+    for (part.pane.bar.items.items) |item| {
+        hasher.update(item.id);
+        hasher.update(&[_]u8{0});
+        hasher.update(&[_]u8{@intFromBool(item.visible)});
+        if (part.pane.getPaneComposite(item.id)) |descriptor| {
+            hasher.update(std.mem.asBytes(&descriptor.glyph));
+            hasher.update(descriptor.name);
+            hasher.update(&[_]u8{0});
+        }
+    }
+    for (badges) |badge| {
+        hasher.update(badge.id);
+        hasher.update(&[_]u8{0});
+        hasher.update(badge.text);
+        hasher.update(&[_]u8{0});
+    }
+    const signature = hasher.final();
+    if (part.title_signature == signature) {
+        try grid.blit(surface.grid(), x, y, width, 1);
+        return;
+    }
+
     const doc = surface.document();
     doc.clear();
     part.title_nodes.clearRetainingCapacity();
@@ -295,6 +334,7 @@ pub fn renderTitle(
 
     doc.setRoot(root);
     try surface.paintFrame();
+    part.title_signature = signature;
     try grid.blit(surface.grid(), x, y, width, 1);
 }
 

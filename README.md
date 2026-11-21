@@ -50,10 +50,21 @@ required for the measurements below.
   file, matching upstream's incremental view-model update. A keystroke lets
   the token store invalidate from the edited line and tokenizes from the first
   invalid line; it no longer forces a refresh of the whole visible range.
-- Scrolling reuses the overlapping rendered-line window and each line's
-  retained render output. Line caches are invalidated from the model's
-  content/token/decoration events, not on every frame. The terminal paint path
-  has an ASCII fast path for the common case.
+- Scrolling goes through the ported upstream pipeline: the wheel is owned by
+  the `EditorScrollbar` view part (`mouseWheelScrollSensitivity`,
+  `fastScrollSensitivity`, clamped by the same scroll state), and the vertical
+  position lives in a line-granular `ViewLayout` instead of an editor field.
+  The layout emits upstream's `ViewScrollChanged`; `ViewLines` reuses the
+  overlapping rendered-line window, re-renders only lines invalidated by the
+  view events, and paints the retained output. A scroll no longer rebuilds
+  the whole editor model or the workbench chrome.
+- Status bar, side bar title and panel title keep their last painted surface
+  grid and skip the clear + flex layout when their content, width, theme,
+  focus and hover state are unchanged. This is the terminal equivalent of
+  upstream's retained DOM: a scroll in the editor renders the editor.
+- The Unicode line-break property tables are decoded at compile time instead
+  of rebuilt on every `layoutTree` call, which removes a fixed per-layout cost
+  from every surface. The paint path also has an ASCII fast path.
 - Folding is scheduled like upstream: a 200 ms minimum debounce, coalesced while
   typing, and driven by the main-loop tick. Fold commands and gutter clicks
   still compute immediately.
@@ -64,16 +75,22 @@ required for the measurements below.
   deferral keeps first paint and key echo fast, but the one-time AST build can
   cause a brief pause when the app is idle after opening or editing a large
   file.
-- Visible-line tokens are forced synchronously, as upstream does; the model is
-  attached and the remaining lines are tokenized by the ported
-  `DefaultBackgroundTokenizer` in ~1 ms chunks from idle main-loop ticks.
-  Scrolling extends the visible token range. The first open of a language still
-  loads its TextMate grammar once per process.
+- Visible-line tokens are forced synchronously for the viewport. An incremental
+  scroll tokenizes only the new lines; a jump tokenizes the visible range from
+  a guessed start state instead of walking every line from the first invalid
+  one. The remaining lines are tokenized by the ported
+  `DefaultBackgroundTokenizer` in ~1 ms chunks from idle main-loop ticks. The
+  first open of a language still loads its TextMate grammar once per process.
+- The TUI process uses a stack-trace-free `DebugAllocator` in Debug builds.
+  The debug allocator's unwinding used to be 70-94% of active CPU in the
+  end-to-end profile; safety checks and the leak report at exit are kept, and
+  the test suite still uses the fully instrumented testing allocator.
 - `zig build bench-open` runs the opt-in `benchmark:` tests: open stages, edit
-  stage breakdown, one-line/page/wheel scroll frames, word-highlight scanning,
-  and the viewport-tokenization contract. Pass
+  stage breakdown, one-line/page/wheel scroll frames, a full-workbench scroll
+  frame, word-highlight scanning, and the viewport-tokenization contract. Pass
   `-Dbench-file=<path>` to benchmark another file (default
-  `src/tui/app.zig`).
+  `src/tui/app.zig`). The 2026-11-21 scroll-pipeline numbers are in
+  [docs/perf/2026-11-21/README.md](docs/perf/2026-11-21/README.md).
 - An end-to-end profile of the default Debug build and ReleaseFast, including
   historical VSCodeVim interaction latency and CPU hotspots, is in
   [docs/performance-profile-2026-11-20.md](docs/performance-profile-2026-11-20.md).

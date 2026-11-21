@@ -60,6 +60,9 @@ pub const StatusbarModel = struct {
     next_handle: EntryHandle = 1,
     focused_handle: ?EntryHandle = null,
     last_focused_handle: ?EntryHandle = null,
+    /// Bumped whenever the visible entry set, text or focus changes. View
+    /// hosts use it to skip rebuilding an unchanged status bar.
+    revision: u64 = 0,
 
     pub fn init(allocator: Allocator) StatusbarModel {
         return .{
@@ -91,6 +94,7 @@ pub const StatusbarModel = struct {
         alignment: StatusbarAlignment,
         priority: StatusbarEntryPriority,
     ) !EntryHandle {
+        self.revision +%= 1;
         const handle = self.next_handle;
         self.next_handle += 1;
         try self.entries_list.append(.{
@@ -109,6 +113,7 @@ pub const StatusbarModel = struct {
     }
 
     pub fn update(self: *StatusbarModel, handle: EntryHandle, entry: StatusbarEntry) bool {
+        self.revision +%= 1;
         const index = self.indexForHandle(handle) orelse return false;
         self.entries_list.items[index].item.update(entry);
         if (entry.text.len == 0 and self.focused_handle == handle) {
@@ -118,6 +123,7 @@ pub const StatusbarModel = struct {
     }
 
     pub fn remove(self: *StatusbarModel, handle: EntryHandle) bool {
+        self.revision +%= 1;
         const index = self.indexForHandle(handle) orelse return false;
         const removed_id = self.entries_list.items[index].id;
         _ = self.entries_list.orderedRemove(index);
@@ -146,6 +152,7 @@ pub const StatusbarModel = struct {
 
     pub fn hide(self: *StatusbarModel, id: []const u8) void {
         if (self.hidden.contains(id)) return;
+        self.revision +%= 1;
         self.hidden.put(id, {}) catch return;
         self.updateVisibility(id, true);
         if (self.focused_handle) |handle| {
@@ -158,6 +165,7 @@ pub const StatusbarModel = struct {
 
     pub fn show(self: *StatusbarModel, id: []const u8) void {
         if (self.hidden.fetchRemove(id) == null) return;
+        self.revision +%= 1;
         self.updateVisibility(id, true);
         self.markFirstLastVisibleEntry();
     }
@@ -195,6 +203,7 @@ pub const StatusbarModel = struct {
     //#region Focus
 
     pub fn setFocused(self: *StatusbarModel, handle: ?EntryHandle) void {
+        self.revision +%= 1;
         if (handle) |value| {
             const entry = self.findByHandle(value) orelse return;
             if (!self.isAvailable(entry)) return;
@@ -206,6 +215,7 @@ pub const StatusbarModel = struct {
     }
 
     pub fn clearFocus(self: *StatusbarModel) void {
+        self.revision +%= 1;
         self.focused_handle = null;
     }
 

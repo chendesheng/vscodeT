@@ -1,5 +1,10 @@
 > Historical note: the VSCodeVim measurements below describe the removed extension path. Vim is now a compiled-in built-in extension; see `docs/vim.md`.
 
+> Follow-up: the scroll pipeline was ported and the fixed layout/allocator
+> costs were removed after this report. See
+> [`docs/perf/2026-11-21/README.md`](perf/2026-11-21/README.md) for the
+> before/after measurements and the remaining hotspots.
+
 # End-to-end performance profile — 2026-11-20
 
 Status: measurement report only. No runtime code was changed for this run.
