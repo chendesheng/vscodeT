@@ -37,8 +37,8 @@ const NULL_LANGUAGE_ID = @import("../../languages.zig").NULL_LANGUAGE_ID;
 /// A single bracket, used by bracket-pair colorization.
 pub const BracketInfo = struct {
     range: Range,
-    /// 0-based bracket-pair nesting level.
-    nestingLevel: usize,
+    /// 0-based bracket-pair nesting level, or -1 for an unexpected closer.
+    nestingLevel: isize,
     nestingLevelOfEqualBracketType: usize,
     isInvalid: bool,
     isColorized: bool,
@@ -360,18 +360,18 @@ pub const BracketPairsTextModelPart = struct {
             .text => {},
             .invalid_bracket => |invalid| {
                 const range = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, node.length));
-                try self.appendBracketInfo(invalid.info, range, depth, 0, true);
+                try self.appendBracketInfo(invalid.info, range, @intCast(depth), 0, true);
             },
             .bracket => {
                 const range = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, node.length));
-                try self.appendBracketInfo(node.data.bracket.info, range, depth, 0, false);
+                try self.appendBracketInfo(node.data.bracket.info, range, @intCast(depth), 0, false);
             },
             .pair => |pair| {
                 const open = pair.opening;
                 const info = open.data.bracket.info;
                 const equalLevel = counts.get(info.bracket_text) orelse 0;
                 const openingRange = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, open.length));
-                try self.appendBracketInfo(info, openingRange, depth, equalLevel, false);
+                try self.appendBracketInfo(info, openingRange, @intCast(depth), equalLevel, false);
                 try counts.put(info.bracket_text, equalLevel + 1);
                 defer counts.put(info.bracket_text, equalLevel) catch {};
                 var offset = tree.lengthAdd(nodeOffset, open.length);
@@ -384,7 +384,7 @@ pub const BracketPairsTextModelPart = struct {
                 if (pair.closing) |closing| {
                     const closeInfo = closing.data.bracket.info;
                     closingRange = tree.lengthsToRange(offset, tree.lengthAdd(offset, closing.length));
-                    try self.appendBracketInfo(closeInfo, closingRange.?, depth, equalLevel, false);
+                    try self.appendBracketInfo(closeInfo, closingRange.?, @intCast(depth), equalLevel, false);
                     offset = tree.lengthAdd(offset, closing.length);
                 }
                 const pairRange = tree.lengthsToRange(nodeOffset, offset);
@@ -411,7 +411,14 @@ pub const BracketPairsTextModelPart = struct {
         }
     }
 
-    fn appendBracketInfo(self: *Self, info: tree.BracketInfo, range: Range, depth: usize, equalLevel: usize, invalid: bool) !void {
+    fn pairClosesColorized(pair: tree.PairData) bool {
+        if (pair.closing) |closing| {
+            return closing.data.bracket.colorized_bracket_ids.intersects(pair.opening.data.bracket.bracket_ids);
+        }
+        return true;
+    }
+
+    fn appendBracketInfo(self: *Self, info: tree.BracketInfo, range: Range, depth: isize, equalLevel: usize, invalid: bool) !void {
         try self._brackets.append(.{
             .range = range,
             .nestingLevel = depth,
@@ -556,16 +563,178 @@ pub const BracketPairsTextModelPart = struct {
     pub fn getBracketsInRange(self: *Self, range: Range, onlyColorized: bool) !ArrayList(BracketInfo) {
         if (!self.canBuildAst()) return ArrayList(BracketInfo).init(self.allocator);
         try self.ensureUpToDate();
-        const start = self.textModel.getOffsetAt(range.startPosition());
-        const end = self.textModel.getOffsetAt(range.endPosition());
+        const document = self._document orelse return ArrayList(BracketInfo).init(self.allocator);
+
+        const start_offset = tree.positionToLength(range.getStartPosition());
+        const end_offset = tree.positionToLength(range.getEndPosition());
         var result = ArrayList(BracketInfo).init(self.allocator);
         errdefer result.deinit();
-        for (self._brackets.items) |bracket| {
-            if (bracket._startOffset <= end and bracket._endOffset >= start and (!onlyColorized or bracket.isColorized)) {
-                try result.append(bracket);
+        var level_per_bracket_type = std.StringHashMap(usize).init(self.allocator);
+        defer level_per_bracket_type.deinit();
+        _ = try self.collectBrackets(
+            document.root,
+            0,
+            document.root.length,
+            start_offset,
+            end_offset,
+            &result,
+            0,
+            0,
+            &level_per_bracket_type,
+            onlyColorized,
+            false,
+        );
+        return result;
+    }
+
+    /// Upstream `collectBrackets`: colorized nesting levels are computed during
+    /// the traversal, because a closing bracket can colorize only some of the
+    /// openings it closes.
+    fn collectBrackets(
+        self: *Self,
+        node_: *tree.AstNode,
+        node_offset_start_: tree.Length,
+        node_offset_end_: tree.Length,
+        start_offset: tree.Length,
+        end_offset: tree.Length,
+        result: *ArrayList(BracketInfo),
+        level_: isize,
+        nesting_level_of_equal_bracket_type_: usize,
+        level_per_bracket_type: *std.StringHashMap(usize),
+        only_colorized_brackets: bool,
+        parent_pair_is_incomplete_: bool,
+    ) !bool {
+        var node = node_;
+        var node_offset_start = node_offset_start_;
+        var node_offset_end = node_offset_end_;
+        var level = level_;
+        var nesting_level_of_equal_bracket_type = nesting_level_of_equal_bracket_type_;
+        var parent_pair_is_incomplete = parent_pair_is_incomplete_;
+
+        if (level > 200) return true;
+
+        outer: while (true) {
+            switch (node.data) {
+                .list => |list| {
+                    for (list.children.items) |child| {
+                        node_offset_end = tree.lengthAdd(node_offset_start, child.length);
+                        if (tree.lengthLessThanEqual(node_offset_start, end_offset) and
+                            tree.lengthLessThanEqual(start_offset, node_offset_end))
+                        {
+                            const child_ends_after_end = tree.lengthLessThanEqual(end_offset, node_offset_end);
+                            if (child_ends_after_end) {
+                                // No child after this one in the requested window.
+                                node = child;
+                                continue :outer;
+                            }
+
+                            if (!try self.collectBrackets(
+                                child,
+                                node_offset_start,
+                                node_offset_end,
+                                start_offset,
+                                end_offset,
+                                result,
+                                level,
+                                0,
+                                level_per_bracket_type,
+                                only_colorized_brackets,
+                                false,
+                            )) return false;
+                        }
+                        node_offset_start = node_offset_end;
+                    }
+                    return true;
+                },
+                .pair => |pair| {
+                    const colorize = !only_colorized_brackets or
+                        pair.closing == null or
+                        pairClosesColorized(pair);
+                    const opening_text = pair.opening.data.bracket.info.bracket_text;
+                    const level_per_bracket = level_per_bracket_type.get(opening_text) orelse 0;
+                    if (colorize) {
+                        try level_per_bracket_type.put(opening_text, level_per_bracket + 1);
+                    }
+
+                    const child_count = node.childrenLength();
+                    var child_index: usize = 0;
+                    while (child_index < child_count) : (child_index += 1) {
+                        const child = node.child(child_index) orelse continue;
+                        node_offset_end = tree.lengthAdd(node_offset_start, child.length);
+                        if (tree.lengthLessThanEqual(node_offset_start, end_offset) and
+                            tree.lengthLessThanEqual(start_offset, node_offset_end))
+                        {
+                            const child_ends_after_end = tree.lengthLessThanEqual(end_offset, node_offset_end);
+                            if (child_ends_after_end and child.kind != .bracket) {
+                                // Don't descend for brackets: they can be
+                                // unclosed/unopened and still need a visit.
+                                node = child;
+                                if (colorize) {
+                                    level += 1;
+                                    nesting_level_of_equal_bracket_type = level_per_bracket + 1;
+                                } else {
+                                    nesting_level_of_equal_bracket_type = level_per_bracket;
+                                }
+                                parent_pair_is_incomplete = pair.closing == null;
+                                continue :outer;
+                            }
+
+                            if (colorize or child.kind != .bracket or pair.closing == null) {
+                                if (!try self.collectBrackets(
+                                    child,
+                                    node_offset_start,
+                                    node_offset_end,
+                                    start_offset,
+                                    end_offset,
+                                    result,
+                                    if (colorize) level + 1 else level,
+                                    if (colorize) level_per_bracket + 1 else level_per_bracket,
+                                    level_per_bracket_type,
+                                    only_colorized_brackets,
+                                    pair.closing == null,
+                                )) return false;
+                            }
+                        }
+                        node_offset_start = node_offset_end;
+                    }
+
+                    try level_per_bracket_type.put(opening_text, level_per_bracket);
+                    return true;
+                },
+                .invalid_bracket => |invalid| {
+                    const range = tree.lengthsToRange(node_offset_start, node_offset_end);
+                    try result.append(.{
+                        .range = range,
+                        .nestingLevel = level - 1,
+                        .nestingLevelOfEqualBracketType = 0,
+                        .isInvalid = true,
+                        .isColorized = false,
+                        .bracketText = invalid.info.bracket_text,
+                        .languageId = invalid.info.language_id,
+                        ._startOffset = self.textModel.getOffsetAt(range.startPosition()),
+                        ._endOffset = self.textModel.getOffsetAt(range.endPosition()),
+                    });
+                    return true;
+                },
+                .bracket => {
+                    const info = node.data.bracket.info;
+                    const range = tree.lengthsToRange(node_offset_start, node_offset_end);
+                    try result.append(.{
+                        .range = range,
+                        .nestingLevel = level - 1,
+                        .nestingLevelOfEqualBracketType = if (nesting_level_of_equal_bracket_type == 0) 0 else nesting_level_of_equal_bracket_type - 1,
+                        .isInvalid = parent_pair_is_incomplete,
+                        .isColorized = info.colorized,
+                        .bracketText = info.bracket_text,
+                        .languageId = info.language_id,
+                        ._startOffset = self.textModel.getOffsetAt(range.startPosition()),
+                        ._endOffset = self.textModel.getOffsetAt(range.endPosition()),
+                    });
+                    return true;
+                },
+                .text => return true,
             }
         }
-        return result;
     }
 
     pub fn hasUnmatchedClosingBracketAfter(self: *Self, position: Position, openingBracket: []const u8) bool {

@@ -629,3 +629,56 @@ test "bracket pairs: matching uses the AST when colorization is disabled" {
 
     try std.testing.expect(!fixture.ctx.model.bracketPairs().useFallbackMatcher());
 }
+
+test "bracket pairs: colorized levels use colorizedBracketPairs relations" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "<", ">" }};
+    var colorized = [_]CharacterPair{ .{ "{", "}" }, .{ "[", "]" }, .{ "(", ")" } };
+    var fixture = try Fixture.init(allocator, " {} [<()>] <{>} ", makeConfig(&brackets, &colorized));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+    try fixture.ctx.model.bracketPairs().updateNow();
+    const full = fixture.ctx.model.getFullModelRange();
+
+    var only_colorized = try fixture.ctx.model.getBracketsInRange(full, true);
+    defer only_colorized.deinit();
+    const expected_colorized = [_]struct { start: usize, end: usize, level: isize }{
+        .{ .start = 2, .end = 3, .level = 0 },
+        .{ .start = 3, .end = 4, .level = 0 },
+        .{ .start = 5, .end = 6, .level = 0 },
+        .{ .start = 7, .end = 8, .level = 1 },
+        .{ .start = 8, .end = 9, .level = 1 },
+        .{ .start = 10, .end = 11, .level = 0 },
+        .{ .start = 13, .end = 14, .level = 0 },
+        .{ .start = 15, .end = 16, .level = -1 },
+    };
+    try std.testing.expectEqual(expected_colorized.len, only_colorized.items.len);
+    for (expected_colorized, only_colorized.items) |expected, actual| {
+        try std.testing.expectEqual(expected.start, actual.range.startColumn);
+        try std.testing.expectEqual(expected.end, actual.range.endColumn);
+        try std.testing.expectEqual(expected.level, actual.nestingLevel);
+    }
+
+    var all = try fixture.ctx.model.getBracketsInRange(full, false);
+    defer all.deinit();
+    const expected_all = [_]struct { start: usize, end: usize, level: isize }{
+        .{ .start = 2, .end = 3, .level = 0 },
+        .{ .start = 3, .end = 4, .level = 0 },
+        .{ .start = 5, .end = 6, .level = 0 },
+        .{ .start = 6, .end = 7, .level = 1 },
+        .{ .start = 7, .end = 8, .level = 2 },
+        .{ .start = 8, .end = 9, .level = 2 },
+        .{ .start = 9, .end = 10, .level = 1 },
+        .{ .start = 10, .end = 11, .level = 0 },
+        .{ .start = 12, .end = 13, .level = 0 },
+        .{ .start = 13, .end = 14, .level = 1 },
+        .{ .start = 14, .end = 15, .level = 0 },
+        .{ .start = 15, .end = 16, .level = -1 },
+    };
+    try std.testing.expectEqual(expected_all.len, all.items.len);
+    for (expected_all, all.items) |expected, actual| {
+        try std.testing.expectEqual(expected.start, actual.range.startColumn);
+        try std.testing.expectEqual(expected.end, actual.range.endColumn);
+        try std.testing.expectEqual(expected.level, actual.nestingLevel);
+    }
+}

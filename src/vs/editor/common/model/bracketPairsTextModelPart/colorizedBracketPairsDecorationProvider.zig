@@ -25,7 +25,6 @@ pub const ColorizedBracketPairsDecorationProvider = struct {
     _options: [30]ModelDecorationOptions,
     _classNames: [30][]u8,
     _unexpectedOption: ModelDecorationOptions,
-    _nextId: u64,
     _onDidChange: Emitter(void),
 
     pub fn init(allocator: Allocator, textModel: *TextModel) ColorizedBracketPairsDecorationProvider {
@@ -35,7 +34,6 @@ pub const ColorizedBracketPairsDecorationProvider = struct {
             ._options = undefined,
             ._classNames = undefined,
             ._unexpectedOption = ModelDecorationOptions.init("BracketPairColorization", .NeverGrowsWhenTypingAtEdges),
-            ._nextId = 0,
             ._onDidChange = Emitter(void).init(allocator),
         };
         self._unexpectedOption.inlineClassName = "unexpected-closing-bracket";
@@ -78,12 +76,17 @@ pub const ColorizedBracketPairsDecorationProvider = struct {
         defer brackets.deinit();
         const independent = self.textModel.getOptions().bracketPairColorizationOptions.independentColorPoolPerBracketType;
         for (brackets.items) |bracket| {
-            self._nextId += 1;
-            const id = (1 << 63) | self._nextId;
             const options = if (bracket.isInvalid) &self._unexpectedOption else blk: {
-                const level = if (independent) bracket.nestingLevelOfEqualBracketType else bracket.nestingLevel;
+                const level: usize = if (independent)
+                    bracket.nestingLevelOfEqualBracketType
+                else
+                    @intCast(bracket.nestingLevel);
                 break :blk &self._options[level % self._options.len];
             };
+            // Upstream keys the decoration by range + level. The port mirrors
+            // that stability with a hash in the provider's high id range, so
+            // repeated queries diff instead of re-adding every bracket.
+            const id = bracketDecorationId(bracket);
             try result.append(.{
                 .id = id,
                 .ownerId = 0,
@@ -92,6 +95,16 @@ pub const ColorizedBracketPairsDecorationProvider = struct {
             });
         }
         return result;
+    }
+
+    fn bracketDecorationId(bracket: BracketInfo) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.asBytes(&bracket.range.startLineNumber));
+        hasher.update(std.mem.asBytes(&bracket.range.startColumn));
+        hasher.update(std.mem.asBytes(&bracket.range.endLineNumber));
+        hasher.update(std.mem.asBytes(&bracket.range.endColumn));
+        hasher.update(std.mem.asBytes(&bracket.nestingLevel));
+        return (1 << 63) | (hasher.final() & ((1 << 63) - 1));
     }
 
     pub fn getDecorationsInRangeDefault(self: *ColorizedBracketPairsDecorationProvider, range: Range, ownerId: usize, filterOutValidation: bool) !ArrayList(ModelDecoration) {

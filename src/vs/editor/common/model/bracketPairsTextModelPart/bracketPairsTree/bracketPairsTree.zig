@@ -191,6 +191,9 @@ pub const Token = struct {
     length: Length,
     bracket_id: usize = 0,
     bracket_ids: SmallImmutableSet = .{},
+    /// Openings this closing bracket closes *and* colorizes (upstream
+    /// `ClosingBracketKind.openingColorized`).
+    colorized_bracket_ids: SmallImmutableSet = .{},
     bracket: ?BracketInfo = null,
 };
 
@@ -207,6 +210,7 @@ pub const Data = union(enum) {
 pub const BracketData = struct {
     info: BracketInfo,
     bracket_ids: SmallImmutableSet,
+    colorized_bracket_ids: SmallImmutableSet = .{},
 };
 
 pub const PairData = struct {
@@ -400,29 +404,38 @@ pub fn buildLanguageBrackets(allocator: Allocator, config: LanguageConfiguration
     errdefer defs.deinit();
     var all = ArrayList([]const u8).init(allocator);
     errdefer all.deinit();
+
+    // Upstream treats `colorizedBracketPairs` as bracket pairs as well, and
+    // marks the (open, close) relation colorized. A closing bracket can be
+    // colorized for some openings and not for others.
     if (config.brackets) |brackets| {
+        for (brackets) |pair| try addBracketDef(&defs, &all, pair[0], pair[1], false);
+    }
+    if (config.colorizedBracketPairs) |pairs| {
+        for (pairs) |pair| try addBracketDef(&defs, &all, pair[0], pair[1], true);
+    } else if (config.brackets) |brackets| {
         for (brackets) |pair| {
-            if (pair[0].len == 0 or pair[1].len == 0) continue;
-            try defs.append(.{
-                .open = pair[0],
-                .close = pair[1],
-                .colorized = isColorizedPair(config, pair[0], pair[1]),
-            });
-            try all.append(pair[0]);
-            try all.append(pair[1]);
+            // Many languages use < and > as brackets even though they are
+            // comparison operators; upstream excludes that exact pair from
+            // colorization unless it is configured explicitly.
+            if (std.mem.eql(u8, pair[0], "<") and std.mem.eql(u8, pair[1], ">")) continue;
+            try addBracketDef(&defs, &all, pair[0], pair[1], true);
         }
     }
     return .{ .defs = defs, .all = all };
 }
 
-fn isColorizedPair(config: LanguageConfiguration, open: []const u8, close: []const u8) bool {
-    if (config.colorizedBracketPairs) |pairs| {
-        for (pairs) |pair| {
-            if (std.mem.eql(u8, pair[0], open) and std.mem.eql(u8, pair[1], close)) return true;
+fn addBracketDef(defs: *ArrayList(BracketDef), all: *ArrayList([]const u8), open: []const u8, close: []const u8, colorized: bool) !void {
+    if (open.len == 0 or close.len == 0) return;
+    for (defs.items) |*def| {
+        if (std.mem.eql(u8, def.open, open) and std.mem.eql(u8, def.close, close)) {
+            def.colorized = def.colorized or colorized;
+            return;
         }
-        return false;
     }
-    return open.len > 0 and close.len > 0 and open[0] != '<' and close[0] != '>';
+    try defs.append(.{ .open = open, .close = close, .colorized = colorized });
+    try all.append(open);
+    try all.append(close);
 }
 
 const Tokenizer = struct {
@@ -639,6 +652,7 @@ const Tokenizer = struct {
         };
         var bracket_id: usize = 0;
         var bracket_ids = SmallImmutableSet.empty();
+        var colorized_bracket_ids = SmallImmutableSet.empty();
         if (isOpening) {
             const key = try std.fmt.allocPrint(self.allocator, "{s}:::{s}", .{ language, bracketText });
             defer self.allocator.free(key);
@@ -653,6 +667,7 @@ const Tokenizer = struct {
                 const id = try self.ids.get(key);
                 if (bracket_id == 0) bracket_id = id;
                 bracket_ids = bracket_ids.add(id);
+                if (def.colorized) colorized_bracket_ids = colorized_bracket_ids.add(id);
             }
         }
         try self.tokens.append(.{
@@ -660,6 +675,7 @@ const Tokenizer = struct {
             .length = toLength(0, bracketText.len),
             .bracket_id = bracket_id,
             .bracket_ids = bracket_ids,
+            .colorized_bracket_ids = colorized_bracket_ids,
             .bracket = info,
         });
         self.cursor = Position.init(lineNumber, pos + 1 + bracketText.len);
@@ -862,7 +878,11 @@ fn makeBracket(allocator: Allocator, token: Token) !*AstNode {
         .length = token.length,
         .list_height = 0,
         .missing = SmallImmutableSet.empty(),
-        .data = .{ .bracket = .{ .info = token.bracket.?, .bracket_ids = token.bracket_ids } },
+        .data = .{ .bracket = .{
+            .info = token.bracket.?,
+            .bracket_ids = token.bracket_ids,
+            .colorized_bracket_ids = token.colorized_bracket_ids,
+        } },
     };
     return node;
 }
