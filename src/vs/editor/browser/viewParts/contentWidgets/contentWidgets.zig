@@ -155,3 +155,85 @@ pub const ViewContentWidgets = struct {
         return (visible -| start_visible_column) + indent_cells;
     }
 };
+
+test "content widgets place below the anchor and clamp to the text area" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var doc = try ui.Document.init(allocator, .{ .cols = 30, .rows = 6 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+
+    const Widget = struct {
+        node: ?*ui.Node = null,
+        position: @import("../../../common/core/position.zig").Position,
+        preference: editorBrowser.ContentWidgetPositionPreference,
+        width_cells: usize,
+        height_cells: usize,
+
+        fn id(_: *anyopaque) []const u8 {
+            return "test-content";
+        }
+        fn getPosition(context: *anyopaque) ?editorBrowser.IContentWidgetPosition {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return .{ .position = self.position, .preference = self.preference };
+        }
+        fn width(context: *anyopaque, _: usize) usize {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return self.width_cells;
+        }
+        fn height(context: *anyopaque) usize {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return self.height_cells;
+        }
+        fn build(context: *anyopaque, d: *ui.Document) anyerror!*ui.Node {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.node = try d.createText("x");
+            return self.node.?;
+        }
+        fn focusNode(_: *anyopaque) ?*ui.Node {
+            return null;
+        }
+        fn isFocused(_: *anyopaque) bool {
+            return false;
+        }
+        fn interface(self: *@This()) editorBrowser.IContentWidget {
+            return .{
+                .context = self,
+                .get_id = id,
+                .get_position = getPosition,
+                .width = width,
+                .height = height,
+                .build = build,
+                .focus_node = focusNode,
+                .is_focused = isFocused,
+            };
+        }
+    };
+
+    var widget = Widget{
+        .position = @import("../../../common/core/position.zig").Position.init(2, 1),
+        .preference = .below,
+        .width_cells = 5,
+        .height_cells = 2,
+    };
+    var part = ViewContentWidgets.init(allocator);
+    defer part.deinit();
+    try part.add(widget.interface());
+    try part.render(&doc, root, editor, 30, editor.textAreaRight(), editor.textHeight(), editor.gutterWidth(), 4);
+    try testing.expectEqual(@as(usize, 1), part.entries.items.len);
+    try testing.expectEqual(@as(usize, editor.gutterWidth()), part.entries.items[0].left);
+    try testing.expectEqual(@as(usize, 2), part.entries.items[0].top);
+    try testing.expectEqual(@as(usize, 5), part.entries.items[0].width);
+    try testing.expectEqual(@as(usize, 2), part.entries.items[0].height);
+
+    widget.preference = .above;
+    try part.render(&doc, root, editor, 30, editor.textAreaRight(), editor.textHeight(), editor.gutterWidth(), 4);
+    try testing.expectEqual(@as(usize, 0), part.entries.items[0].top);
+}
