@@ -195,6 +195,11 @@ pub const BracketPairsTextModelPart = struct {
             self._queuedEdits = combined;
         }
         self._dirty = true;
+        if (!self._uses_fast_tokens) {
+            // Upstream fires when the token-aware tree is current; consumers
+            // (colorisation, guides) then know the tree must be rebuilt.
+            self._onDidChange.fire({}) catch {};
+        }
     }
 
     pub fn handleDidChangeOptions(self: *Self) void {
@@ -276,6 +281,11 @@ pub const BracketPairsTextModelPart = struct {
             self._queuedEdits = combined;
         }
         self._dirty = true;
+        if (!self._uses_fast_tokens) {
+            // Upstream fires when the token-aware tree is current; consumers
+            // (colorisation, guides) then know the tree must be rebuilt.
+            self._onDidChange.fire({}) catch {};
+        }
     }
 
     pub fn markDirty(self: *Self) void {
@@ -773,35 +783,116 @@ pub const BracketPairsTextModelPart = struct {
     pub fn findPrevBracket(self: *Self, position: Position) ?BracketInfo {
         if (self.useFallbackMatcher()) return self.findPrevBracketFallback(position);
         self.ensureUpToDate() catch return null;
-        const offset = self.textModel.getOffsetAt(position);
-        var result: ?BracketInfo = null;
-        for (self._brackets.items) |bracket| {
-            if (bracket._endOffset <= offset) result = bracket;
-        }
-        return result;
+        const document = self._document orelse return null;
+        return self.getFirstBracketBefore(
+            document.root,
+            0,
+            document.root.length,
+            tree.positionToLength(position),
+        );
     }
 
     pub fn findNextBracket(self: *Self, position: Position) ?BracketInfo {
         if (self.useFallbackMatcher()) return self.findNextBracketFallback(position);
         self.ensureUpToDate() catch return null;
-        const offset = self.textModel.getOffsetAt(position);
-        for (self._brackets.items) |bracket| {
-            if (bracket._startOffset >= offset) return bracket;
+        const document = self._document orelse return null;
+        return self.getFirstBracketAfter(
+            document.root,
+            0,
+            document.root.length,
+            tree.positionToLength(position),
+        );
+    }
+
+    fn bracketInfoAt(self: *Self, node_: *tree.AstNode, node_offset_start: tree.Length, node_offset_end: tree.Length) BracketInfo {
+        const info = node_.data.bracket.info;
+        const range = tree.lengthsToRange(node_offset_start, node_offset_end);
+        return .{
+            .range = range,
+            .nestingLevel = 0,
+            .nestingLevelOfEqualBracketType = 0,
+            .isInvalid = false,
+            .isColorized = info.colorized,
+            .bracketText = info.bracket_text,
+            .languageId = info.language_id,
+            ._startOffset = self.textModel.getOffsetAt(range.startPosition()),
+            ._endOffset = self.textModel.getOffsetAt(range.endPosition()),
+        };
+    }
+
+    /// Upstream `getFirstBracketBefore`: unexpected closers are skipped.
+    fn getFirstBracketBefore(
+        self: *Self,
+        node: *tree.AstNode,
+        node_offset_start: tree.Length,
+        node_offset_end: tree.Length,
+        position: tree.Length,
+    ) ?BracketInfo {
+        switch (node.data) {
+            .list, .pair => {
+                var child_index = node.childrenLength();
+                while (child_index > 0) {
+                    child_index -= 1;
+                    const child = node.child(child_index) orelse continue;
+                    var child_offset = node_offset_start;
+                    var earlier: usize = 0;
+                    while (earlier < child_index) : (earlier += 1) {
+                        if (node.child(earlier)) |previous| child_offset = tree.lengthAdd(child_offset, previous.length);
+                    }
+                    const child_offset_end = tree.lengthAdd(child_offset, child.length);
+                    if (tree.lengthLessThan(child_offset, position)) {
+                        if (self.getFirstBracketBefore(child, child_offset, child_offset_end, position)) |result| return result;
+                    }
+                }
+                return null;
+            },
+            .invalid_bracket => return null,
+            .bracket => return self.bracketInfoAt(node, node_offset_start, node_offset_end),
+            .text => return null,
         }
-        return null;
+    }
+
+    /// Upstream `getFirstBracketAfter`.
+    fn getFirstBracketAfter(
+        self: *Self,
+        node: *tree.AstNode,
+        node_offset_start: tree.Length,
+        node_offset_end: tree.Length,
+        position: tree.Length,
+    ) ?BracketInfo {
+        switch (node.data) {
+            .list, .pair => {
+                var child_offset = node_offset_start;
+                var child_index: usize = 0;
+                while (child_index < node.childrenLength()) : (child_index += 1) {
+                    const child = node.child(child_index) orelse continue;
+                    const child_offset_end = tree.lengthAdd(child_offset, child.length);
+                    if (tree.lengthLessThan(position, child_offset_end)) {
+                        if (self.getFirstBracketAfter(child, child_offset, child_offset_end, position)) |result| return result;
+                    }
+                    child_offset = child_offset_end;
+                }
+                return null;
+            },
+            .invalid_bracket => return null,
+            .bracket => return self.bracketInfoAt(node, node_offset_start, node_offset_end),
+            .text => return null,
+        }
     }
 
     pub fn findEnclosingBrackets(self: *Self, position: Position, maxDuration: ?i64) ?[2]Range {
         if (self.useFallbackMatcher()) return self.findEnclosingBracketsFallback(position, maxDuration);
         self.ensureUpToDate() catch return null;
-        const offset = self.textModel.getOffsetAt(position);
+
+        // Upstream takes the last pair in traversal order whose range strictly
+        // contains the zero-length position range.
+        const point = Range.init(position.lineNumber, position.column, position.lineNumber, position.column);
+        var pairs = self.getBracketPairsInRange(point) catch return null;
+        defer pairs.deinit();
         var best: ?BracketPairInfo = null;
-        for (self._pairs.items) |pair| {
-            if (pair._startOffset <= offset and pair._endOffset >= offset) {
-                if (best == null or pair._endOffset - pair._startOffset < best.?._endOffset - best.?._startOffset) {
-                    best = pair;
-                }
-            }
+        for (pairs.items) |pair| {
+            if (pair.closingBracketRange == null) continue;
+            if (Range.strictContainsRange(&pair.range, &point)) best = pair;
         }
         if (best) |pair| {
             if (pair.closingBracketRange) |closeRange| return .{ pair.openingBracketRange, closeRange };

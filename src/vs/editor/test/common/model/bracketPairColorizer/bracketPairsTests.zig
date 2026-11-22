@@ -682,3 +682,27 @@ test "bracket pairs: colorized levels use colorizedBracketPairs relations" {
         try std.testing.expectEqual(expected.level, actual.nestingLevel);
     }
 }
+
+test "bracket pairs: navigation skips invalid closers and uses strict containment" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "} {", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    // The leading `}` is an unexpected closer and is skipped.
+    try std.testing.expect(fixture.ctx.model.bracketPairs().findPrevBracket(Position.init(1, 3)) == null);
+    const next = fixture.ctx.model.bracketPairs().findNextBracket(Position.init(1, 1)).?;
+    try std.testing.expectEqualStrings("{", next.bracketText);
+
+    var braces = try Fixture.init(allocator, "{}", makeConfig(&brackets, &brackets));
+    defer braces.deinit();
+    braces.ctx.model.forceTokenization(1);
+    try braces.ctx.model.bracketPairs().updateNow();
+    // Strict containment: a position on the bracket itself is not enclosed.
+    try std.testing.expect(braces.ctx.model.bracketPairs().findEnclosingBrackets(Position.init(1, 1), null) == null);
+    const enclosing = braces.ctx.model.bracketPairs().findEnclosingBrackets(Position.init(1, 2), null).?;
+    try std.testing.expectEqual(@as(usize, 1), enclosing[0].startColumn);
+    try std.testing.expectEqual(@as(usize, 2), enclosing[1].startColumn);
+}
