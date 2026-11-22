@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/tokens/contiguousMultilineTokensBuilder.ts`.
+//
+// Zig adaptation: `deserialize` takes an allocator plus `Io.Reader` and
+// `finalize` returns a borrowed slice owned by the builder.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -49,10 +53,6 @@ pub const ContiguousMultilineTokensBuilder = struct {
     /// Borrowed view; the builder remains the owner and must outlive use.
     pub fn finalize(self: *ContiguousMultilineTokensBuilder) []ContiguousMultilineTokens {
         return self._tokens.items;
-    }
-
-    pub fn deinitTokens(tokens: []ContiguousMultilineTokens) void {
-        for (tokens) |*item| item.deinit();
     }
 
     pub fn serialize(self: *const ContiguousMultilineTokensBuilder) !ArrayList(u8) {
