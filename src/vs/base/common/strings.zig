@@ -75,7 +75,8 @@ test "isBasicASCII" {
     try std.testing.expectEqual(false, isBasicASCII("Hello\x0080"));
 }
 
-pub const UNUSUAL_LINE_TERMINATORS = "\x20\x28\x20\x29"; // LINE SEPARATOR (LS) or PARAGRAPH SEPARATOR (PS)
+/// Regex source matching LINE SEPARATOR (U+2028) or PARAGRAPH SEPARATOR (U+2029).
+pub const UNUSUAL_LINE_TERMINATORS = "[\u{2028}\u{2029}]";
 
 pub fn containsRTL(str: []const u8) bool {
     // https://github.com/alexdima/unicode-utils/blob/main/rtl-test.js

@@ -640,7 +640,7 @@ pub const TextModel = struct {
         return self._buffer.getMightContainUnusualLineTerminators();
     }
 
-    pub fn removeUnusualLineTerminators(self: *TextModel, selections: ?[]const Selection) !void {
+    pub fn removeUnusualLineTerminators(self: *TextModel, selections: ?[]Selection) !void {
         const matches = try self.findMatches(strings.UNUSUAL_LINE_TERMINATORS, null, true, false, null, false, std.math.maxInt(usize));
         defer matches.deinit();
 
@@ -651,7 +651,7 @@ pub const TextModel = struct {
         for (matches.items) |match| {
             try editOperations.append(IdentifiedSingleEditOperation.init(match.range, null));
         }
-        try self.pushEditOperations(selections, editOperations.items, null, null);
+        _ = try self.pushEditOperations(selections, editOperations.items, null, null);
     }
 
     pub fn mightContainNonBasicASCII(self: *const TextModel) bool {
@@ -3088,4 +3088,18 @@ test "TextModel model decorations: add, query and remove" {
     const empty = try model.getAllDecorations(7, false);
     defer allocator.free(empty);
     try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test "TextModel.removeUnusualLineTerminators removes LS and PS" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+
+    var test_model = try TestModel.init(allocator, "a\u{2028}b\u{2029}c", "plaintext");
+    defer test_model.deinit();
+
+    try test_model.model.removeUnusualLineTerminators(null);
+
+    var content = try test_model.model.getLineContent(1);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("abc", content.items);
 }

@@ -46,10 +46,14 @@ pub fn FixedArray(comptime T: type) type {
                 return;
             }
 
-            if (oldLength < newLength) {
-                _ = try self._store.addManyAt(index, newLength - oldLength);
-            } else if (oldLength > newLength) {
-                try self.delete(index + newLength, oldLength - newLength);
+            // JavaScript's `slice(index + oldLength)` clamps to the store
+            // length, so a replacement range that extends past the currently
+            // materialized part only removes the remaining entries.
+            const materializedOldLength = @min(oldLength, self._store.items.len - index);
+            if (materializedOldLength < newLength) {
+                _ = try self._store.addManyAt(index + materializedOldLength, newLength - materializedOldLength);
+            } else if (materializedOldLength > newLength) {
+                try self.delete(index + newLength, materializedOldLength - newLength);
             }
 
             for (0..newLength) |i| {
@@ -127,4 +131,11 @@ test "FixedArray.replace" {
     try std.testing.expectEqual(100, ones.get(0));
     try ones.replace(0, 2, 2);
     try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 1 }, ones.items());
+
+    // Upstream clamps a replacement that runs past the materialized part.
+    var clamped = FixedArray(i32).init(std.testing.allocator, 1);
+    defer clamped.deinit();
+    try clamped.set(4, 0);
+    try clamped.replace(3, 4, 4);
+    try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 1, 1, 1, 1, 1, 1 }, clamped.items());
 }

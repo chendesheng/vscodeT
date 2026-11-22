@@ -45,15 +45,26 @@ pub fn lengthAdd(a: Length, b: Length) Length {
 }
 
 pub fn lengthOfString(text: []const u8) Length {
+    // Upstream uses `splitLines` (`/\r\n|\r|\n/`): CRLF is a single line
+    // break, not two.
     var lines: usize = 0;
-    var lastStart: usize = 0;
-    for (text, 0..) |c, i| {
-        if (c == '\n' or c == '\r') {
+    var last_start: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        if (text[i] == '\r') {
             lines += 1;
-            lastStart = i + 1;
+            i += 1;
+            if (i < text.len and text[i] == '\n') i += 1;
+            last_start = i;
+        } else if (text[i] == '\n') {
+            lines += 1;
+            i += 1;
+            last_start = i;
+        } else {
+            i += 1;
         }
     }
-    return toLength(lines, text.len - lastStart);
+    return toLength(lines, text.len - last_start);
 }
 
 pub fn positionToLength(position: Position) Length {
@@ -905,4 +916,12 @@ fn makeList(allocator: Allocator, items: []*AstNode, height: u32) !*AstNode {
 
 fn makeEmptyList(allocator: Allocator) !*AstNode {
     return try makeList(allocator, &[_]*AstNode{}, 0);
+}
+
+test "bracketPairsTree: lengthOfString treats CRLF as one line break" {
+    try std.testing.expectEqual(toLength(1, 1), lengthOfString("a\r\nb"));
+    try std.testing.expectEqual(toLength(1, 1), lengthOfString("a\rb"));
+    try std.testing.expectEqual(toLength(1, 1), lengthOfString("a\nb"));
+    try std.testing.expectEqual(toLength(2, 0), lengthOfString("\r\n\r\n"));
+    try std.testing.expectEqual(toLength(0, 3), lengthOfString("abc"));
 }
