@@ -13164,6 +13164,8 @@ test "Workbench: opening a search result from another file does not restart the 
     defer allocator.free(second);
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
+    const second_resource = try std.fs.path.join(allocator, &.{ root, "second.txt" });
+    defer allocator.free(second_resource);
 
     const workbench = try Workbench.init(allocator, io, &.{first}, 80, 20);
     defer workbench.deinit();
@@ -13183,7 +13185,7 @@ test "Workbench: opening a search result from another file does not restart the 
     for (view.rows.items, 0..) |row, index| {
         switch (row) {
             .match => |match| {
-                if (std.mem.eql(u8, match.parent_file.path, second)) {
+                if (std.mem.eql(u8, match.parent_file.path, second_resource)) {
                     second_row = index;
                     break;
                 }
