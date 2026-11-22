@@ -4774,6 +4774,61 @@ test "View: rendered whitespace uses one theme color and guides paint over it" {
     }
 }
 
+test "View: space dot and tab arrow share the whitespace color" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "\tfoo bar\n", "test.txt", 30, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+    const color_theme = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test-dark", &.{
+        .{ "editor.background", "#101010" },
+        .{ "editorWhitespace.foreground", "#00ff00" },
+        .{ "editorIndentGuide.background1", "#ff0000" },
+        .{ "editorIndentGuide.activeBackground1", "#ff0000" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+    view.setThemeColors(&palette);
+
+    view.terminal_view_host.options.set(.renderWhitespace, .all);
+    const option_count = @typeInfo(editor_options.EditorOption).@"enum".field_names.len;
+    var changed: [option_count]bool = @splat(false);
+    changed[@backingInt(editor_options.EditorOption.renderWhitespace)] = true;
+    const event = view_events.ViewConfigurationChangedEvent.init(
+        editor_options.ConfigurationChangedEvent.init(&changed),
+    );
+    _ = view.terminal_view_host.viewRef().onConfigurationChanged(&event);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    // The tab expands to four cells. The indent guide keeps its first cell,
+    // and the repeated `→` marker lands in the tab's padding at the next
+    // column. The space after `foo` is the plain `·` marker.
+    const arrow_cell = grid.index(gutter + 1, 0);
+    const dot_cell = grid.index(gutter + 7, 0);
+    try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[arrow_cell]);
+    try std.testing.expectEqual(@as(u32, 0x00B7), grid.cluster[dot_cell]);
+    // Both visible-whitespace glyphs paint the same `mtkw` color: the tab
+    // marker must not pick up the guide color or a token color.
+    const whitespace_fg = ui.cell.packColor(.{ .r = 0, .g = 255, .b = 0 });
+    try std.testing.expectEqual(whitespace_fg, grid.fg[arrow_cell]);
+    try std.testing.expectEqual(whitespace_fg, grid.fg[dot_cell]);
+}
+
 test "View: rendered whitespace falls back to a dimmed foreground" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

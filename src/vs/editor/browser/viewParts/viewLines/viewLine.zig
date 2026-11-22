@@ -449,6 +449,9 @@ pub const ViewLine = struct {
         // indent/bracket guide background. The terminal paints the guide over
         // the marker cell, so a wide tab repeats the arrow one cell later in
         // its own padding; `·` needs no overlay because the guide just wins.
+        // The overlay reuses the whitespace part's paint style, so the
+        // repeated arrow keeps the same `editorWhitespace.foreground` as the
+        // middle dot instead of picking up the guide or token color.
         const ArrowOverlay = struct {
             cell: usize,
             style: *const ui.style.PaintStyle,
