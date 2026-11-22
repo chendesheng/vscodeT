@@ -317,7 +317,7 @@ pub const BracketPairsTextModelPart = struct {
         self._queuedEdits.clearRetainingCapacity();
         var counts = std.StringHashMap(usize).init(self.allocator);
         defer counts.deinit();
-        try self.walk(doc.root, 0, &counts);
+        try self.walk(doc.root, 0, 0, &counts);
 
         std.sort.heap(BracketPairInfo, self._pairs.items, {}, struct {
             fn lessThan(_: void, a: BracketPairInfo, b: BracketPairInfo) bool {
@@ -332,60 +332,73 @@ pub const BracketPairsTextModelPart = struct {
         self._onDidChange.fire({}) catch {};
     }
 
-    fn walk(self: *Self, node: *tree.AstNode, depth: usize, counts: *std.StringHashMap(usize)) !void {
+    fn walk(self: *Self, node: *tree.AstNode, nodeOffset: tree.Length, depth: usize, counts: *std.StringHashMap(usize)) !void {
         switch (node.data) {
             .text => {},
             .invalid_bracket => |invalid| {
-                try self.appendBracketInfo(invalid.info, depth, 0, true);
+                const range = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, node.length));
+                try self.appendBracketInfo(invalid.info, range, depth, 0, true);
             },
             .bracket => {
-                try self.appendBracketInfo(node.data.bracket.info, depth, 0, false);
+                const range = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, node.length));
+                try self.appendBracketInfo(node.data.bracket.info, range, depth, 0, false);
             },
             .pair => |pair| {
                 const open = pair.opening;
                 const info = open.data.bracket.info;
                 const equalLevel = counts.get(info.bracket_text) orelse 0;
-                try self.appendBracketInfo(info, depth, equalLevel, false);
+                const openingRange = tree.lengthsToRange(nodeOffset, tree.lengthAdd(nodeOffset, open.length));
+                try self.appendBracketInfo(info, openingRange, depth, equalLevel, false);
                 try counts.put(info.bracket_text, equalLevel + 1);
                 defer counts.put(info.bracket_text, equalLevel) catch {};
-                if (pair.child) |child| try self.walk(child, depth + 1, counts);
+                var offset = tree.lengthAdd(nodeOffset, open.length);
+                if (pair.child) |child| {
+                    try self.walk(child, offset, depth + 1, counts);
+                    offset = tree.lengthAdd(offset, child.length);
+                }
 
-                var endPosition = tree.lengthToPosition(tree.lengthAdd(tree.positionToLength(info.range.startPosition()), node.length));
+                var closingRange: ?Range = null;
                 if (pair.closing) |closing| {
                     const closeInfo = closing.data.bracket.info;
-                    try self.appendBracketInfo(closeInfo, depth, equalLevel, false);
-                    endPosition = closeInfo.range.endPosition();
+                    closingRange = tree.lengthsToRange(offset, tree.lengthAdd(offset, closing.length));
+                    try self.appendBracketInfo(closeInfo, closingRange.?, depth, equalLevel, false);
+                    offset = tree.lengthAdd(offset, closing.length);
                 }
+                const pairRange = tree.lengthsToRange(nodeOffset, offset);
                 try self._pairs.append(.{
-                    .range = Range.init(info.range.startLineNumber, info.range.startColumn, endPosition.lineNumber, endPosition.column),
-                    .openingBracketRange = info.range,
-                    .closingBracketRange = if (pair.closing) |closing| closing.data.bracket.info.range else null,
+                    .range = pairRange,
+                    .openingBracketRange = openingRange,
+                    .closingBracketRange = closingRange,
                     .nestingLevel = depth,
                     .nestingLevelOfEqualBracketType = equalLevel,
                     .openingBracket = info.bracket_text,
                     .closingBracket = if (pair.closing) |closing| closing.data.bracket.info.bracket_text else null,
                     .isColorized = info.colorized,
-                    ._startOffset = self.textModel.getOffsetAt(info.range.startPosition()),
-                    ._endOffset = self.textModel.getOffsetAt(endPosition),
+                    ._startOffset = self.textModel.getOffsetAt(pairRange.startPosition()),
+                    ._endOffset = self.textModel.getOffsetAt(pairRange.endPosition()),
                 });
             },
             .list => |list| {
-                for (list.children.items) |child| try self.walk(child, depth, counts);
+                var offset = nodeOffset;
+                for (list.children.items) |child| {
+                    try self.walk(child, offset, depth, counts);
+                    offset = tree.lengthAdd(offset, child.length);
+                }
             },
         }
     }
 
-    fn appendBracketInfo(self: *Self, info: tree.BracketInfo, depth: usize, equalLevel: usize, invalid: bool) !void {
+    fn appendBracketInfo(self: *Self, info: tree.BracketInfo, range: Range, depth: usize, equalLevel: usize, invalid: bool) !void {
         try self._brackets.append(.{
-            .range = info.range,
+            .range = range,
             .nestingLevel = depth,
             .nestingLevelOfEqualBracketType = equalLevel,
             .isInvalid = invalid,
             .isColorized = info.colorized,
             .bracketText = info.bracket_text,
             .languageId = info.language_id,
-            ._startOffset = self.textModel.getOffsetAt(info.range.startPosition()),
-            ._endOffset = self.textModel.getOffsetAt(info.range.endPosition()),
+            ._startOffset = self.textModel.getOffsetAt(range.startPosition()),
+            ._endOffset = self.textModel.getOffsetAt(range.endPosition()),
         });
     }
 

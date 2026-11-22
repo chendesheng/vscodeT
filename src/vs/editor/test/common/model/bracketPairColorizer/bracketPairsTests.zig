@@ -406,3 +406,29 @@ test "bracket pairs: model edits reuse incremental AST" {
     defer third.deinit();
     try std.testing.expectEqual(1, third.items.len);
 }
+
+test "bracket pairs: cached ranges follow edits before them" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{ .{ "{", "}" }, .{ "[", "]" } };
+    var fixture = try Fixture.init(allocator, "{\n}\nplain\n[ ]", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var first = try fixture.ctx.model.getBracketPairsInRange(fixture.ctx.model.getFullModelRange());
+    defer first.deinit();
+    try std.testing.expectEqual(@as(usize, 2), first.items.len);
+    try std.testing.expectEqual(@as(usize, 1), first.items[1].openingBracketRange.startColumn);
+
+    // Insert a line before it; the `[ ]` pair moves from line 4 to line 5.
+    try fixture.ctx.applyEdit(Range.init(3, 1, 3, 1), "\n");
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var second = try fixture.ctx.model.getBracketPairsInRange(fixture.ctx.model.getFullModelRange());
+    defer second.deinit();
+    try std.testing.expectEqual(@as(usize, 2), second.items.len);
+    try std.testing.expectEqual(@as(usize, 5), second.items[1].openingBracketRange.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 1), second.items[1].openingBracketRange.startColumn);
+    try std.testing.expectEqual(@as(usize, 5), second.items[1].closingBracketRange.?.startLineNumber);
+}

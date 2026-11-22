@@ -5571,3 +5571,39 @@ test "View: top inset reserves rows above the text" {
     const text_target = try view.mouseTargetAt(editor.gutterWidth() + 1, 1);
     try std.testing.expectEqual(editorBrowser.MouseTargetType.content_text, text_target.type);
 }
+
+test "View: bracket colorization follows a line insertion above the pair" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "plain\n[ ]\nplain", "test.zig", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.setCursorPosition(Position.init(1, 1));
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const level0 = dark_bracket_highlight_colors[0];
+    var grid = view.surface.grid();
+    var open = ui.cell.unpackColor(grid.fg[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(level0[0], open.r);
+
+    // A new line above the pair shifts it down; the colorization has to follow
+    // the reused AST node instead of staying on its pre-edit row.
+    try editor.typeCharacter("\n");
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    grid = view.surface.grid();
+    const plain = ui.cell.unpackColor(grid.fg[grid.index(gutter, 1)]);
+    try std.testing.expect(!(plain.r == level0[0] and plain.g == level0[1] and plain.b == level0[2]));
+    open = ui.cell.unpackColor(grid.fg[grid.index(gutter, 2)]);
+    try std.testing.expectEqual(level0[0], open.r);
+    try std.testing.expectEqual(level0[1], open.g);
+    try std.testing.expectEqual(level0[2], open.b);
+}
