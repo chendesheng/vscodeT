@@ -503,7 +503,7 @@ The upstream pipeline is `view.ts` (`View`, view parts, rendering context) →
 `src/vs/editor/browser/viewParts/indentGuides/indentGuides.zig`; the other
 parts are collapsed into this file.
 
-Terminal constraints: no CSS cascade, no DOM measurement, no subpixel
+Terminal constraints: no CSS selector engine, no DOM measurement, no subpixel
 geometry, cells instead of pixels, and a hardware cursor cell. These are the
 documented adaptations in `docs/terminal-ui.md`; the portable part is the
 decision logic (which line/decoration/guide/cursor/widget is painted where),

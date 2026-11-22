@@ -3,8 +3,11 @@
 A small, standalone Zig 0.17 terminal UI library. It is the rendering layer used
 by the `vscode-textbuffer` preview; it has no dependency on the editor.
 
-- A DOM-like retained tree (`Node` is an element or text) with direct `Style`
-  values. No CSS, no HTML, no class selectors.
+- A DOM-like retained tree (`Node` is an element or text) with authored
+  `Style` declarations. No CSS parser, no HTML parser and no selector engine:
+  unset fields cascade from the parent's `ComputedStyle` when CSS makes the
+  property inherited, and classes are integer IDs into a document-owned
+  array-backed stylesheet. See “Styles, classes and cascade” below.
 - A **derived layout box tree** separate from the DOM: a viewport root,
   principal boxes, anonymous inline/flex boxes and text boxes. Layout and paint
   operate on that tree; geometry is copied back to DOM rects only for
@@ -88,6 +91,7 @@ zig build example-table    # bordered table with aligned columns
 zig build example-markdown # rendered markdown with a scrollbar: headings, lists, code and a table
 zig build example-tree     # box-drawing file tree
 zig build example-styling  # text attributes, truecolor, background swatches
+zig build example-css      # class records, ordered merging and inheritance
 zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
 zig build example-mouse    # interactive: hover/click/drag a list, wheel scrolling
 zig build example-mouse-events # interactive: hover/down/move/up/click/wheel log
@@ -120,6 +124,44 @@ that own keyboard focus (TodoMVC) receive keys in the gallery too; while one is
 selected, Alt+Up/Down switches scenes and Ctrl-Q quits. Mouse events over the
 content go to the example, so the mouse demos remain interactive there; run an
 individual `example-*` step for a scene without the gallery chrome.
+
+## Styles, classes and cascade
+
+`Style` is a declaration: every field is optional, and `null` means “not
+specified”. A box carries the resolved `ComputedStyle`; inherited properties
+(`color`, text attributes, `white_space`, `word_break`, `overflow_wrap`,
+`text_align`, `visibility`, `pointer`) come from the parent, everything else
+from its initial value.
+
+Class names are integers. Their declarations live in the document's dense
+`ui.css.StyleTable`, so adding a class never passes a style record:
+
+```zig
+const Class = enum(u16) { panel, selected };
+
+const styles = [_]ui.Style{
+    .{ .padding = ui.EdgeDecl.all(1), .color = fg, .bold = true },
+    .{ .background = selection, .bold = false },
+};
+try doc.registerSheet(.{ .base = 0, .styles = &styles });
+
+const panel = try doc.createElement(.div);
+try panel.setClasses(&.{ Class.panel, Class.selected });
+_ = try panel.appendChild(try doc.createText("selected panel"));
+
+// Later classes win; the inline declaration wins over all classes.
+panel.setStyle(.{ .position = .absolute, .width = .{ .cells = 24 } });
+
+// The library helper returns the merged declaration, not a computed style.
+const merged = doc.mergedClassStyle(&.{ Class.panel, Class.selected });
+```
+
+Class IDs index the array directly (O(1)); there is no hash map. `Sheet.base`
+is optional: without it the sheet appends and `registerSheet` returns the first
+ID; with it the module can declare a comptime enum range. Re-registering a base
+range updates it in place. `Document.clear()` keeps the stylesheet.
+`display: contents` threads its computed style to descendants and carries its
+paint declarations in a paint delta; it has no box or hover target.
 
 ## Minimal use
 
@@ -192,8 +234,9 @@ Text nodes are inline content. Position and size belong to the parent element;
 use a box with a text child (as the examples do) rather than setting
 `position`/`left`/`top` on a text node.
 
-Direct writes to the public `Element.style`/`Text.style` fields bypass mutation
-tracking. Use `Node.setStyle` so the attached layout observer sees the change.
+Direct writes to the public `Element.style`/`Text.style`/`Element.classes`
+fields bypass mutation tracking. Use `Node.setStyle` / `Node.setClasses` (or
+`addClass`/`removeClass`) so the attached layout observer sees the change.
 
 ## Keyboard and focus
 

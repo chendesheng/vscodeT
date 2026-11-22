@@ -1,0 +1,177 @@
+# Style declarations, class IDs and the document stylesheet
+
+Status: implemented in `ui/` and the first editor ports.
+
+This document describes the CSS-like layer of the terminal UI library. It is
+deliberately **not** a CSS implementation: there is no parser, no selector
+matching, no specificity, no `!important`, no custom properties and no
+generator. It keeps the three things the port needs:
+
+1. style fields inherit from parent elements,
+2. a class is a style record, merged in order,
+3. an editor CSS file can be ported by hand to a sibling `*_css.zig` file.
+
+## Declarations and computed styles
+
+`ui.Style` is an **authored declaration**. Every field is optional; `null`
+means "not specified".
+
+`ui.ComputedStyle` is the resolved value a layout box carries. It has the same
+field names with concrete defaults. Resolution uses CSS property inheritance,
+not "inherit everything":
+
+- **Inherited (computed):** `text_align`, `visibility`, `white_space`,
+  `word_break`, `overflow_wrap`, `pointer`.
+- **Inherited (paint pass):** `color`, `bold`, `italic`, `underline`,
+  `underline_style`, `strikethrough`, `dim`, `reverse`.
+- **Not inherited:** `display`, position/offsets, sizes/bounds, margin, padding,
+  border, background, overflow, flex properties, gap, order, z-index and
+  translations.
+
+Paint properties stay declarations in `ComputedStyle`; the painter inherits
+them down the live box chain. This keeps hover overlays composable: a hover
+color on an ancestor still reaches a child that did not declare its own color.
+An explicit `false` clears an inherited paint attribute. `background` is never
+inherited.
+
+Initial values are the previous `Style` defaults. `display` defaults per tag:
+`div`/`generic` are block, `span` is inline. `border_style` keeps the terminal
+initial value `single` (a deviation from CSS `none`).
+
+Cascade order for one element:
+
+1. initial values,
+2. inherited values from the parent computed style,
+3. class declarations in list order (later classes win),
+4. the inline declaration (`Node.setStyle`),
+5. at paint time, the same paint declarations; hover overlays last.
+
+`display: contents` generates no box. Its computed layout/text/pointer values
+are threaded to descendants; its inherited paint declarations are carried in a
+paint delta on descendant boxes. A `display: contents` element has no hit target
+of its own, so hover styling on it is not applied.
+
+## Class IDs and the document stylesheet
+
+Class names are integers. The document owns an **array-backed** stylesheet:
+
+```zig
+const Class = enum(u16) {
+    panel = 0,
+    selected = 1,
+};
+
+const styles = [_]ui.Style{
+    .{ .padding = ui.EdgeDecl.all(1), .color = fg },
+    .{ .background = selection, .bold = true },
+};
+
+try doc.registerSheet(.{ .base = 0, .styles = &styles });
+
+const panel = try doc.createElement(.div);
+try panel.setClasses(&.{ Class.panel, Class.selected });
+```
+
+- `Document.class_styles` is a dense `ArrayListUnmanaged(Style)`; the class ID is
+  its index. Lookup is one bounds-checked array access.
+- `Document.registerSheet(Sheet)` copies a batch into the array. Without a
+  `base` it appends; with a `base` it grows with empty declarations and
+  overwrites that range in place (theme re-registration). `Document.addStyle`
+  appends one declaration and returns its ID.
+- `Node.addClass`, `setClasses`, `removeClass`, `toggleClass` and `hasClass`
+  accept any integer or enum name and never take a style record.
+- `Document.clear()` keeps registered styles; `Document.deinit()` frees them.
+- Out-of-range or unregistered IDs are ignored, like a class with no rule.
+- `ui.css.mergeClasses(&doc.class_styles, classes)` returns the merged
+  declaration; `Document.mergedClassStyle` is the convenience form.
+- Per-side `EdgeDecl`/`MarginDecl`/`GapDecl` declarations let one class set
+  `padding-left` without resetting another class's `padding-top`.
+
+## Porting a VSCode CSS file
+
+A port is **hand-written**. There is no `.css` reader and no generator. Put the
+file next to its upstream CSS, with `_css.zig` appended to the basename:
+
+```text
+vscode/src/vs/editor/browser/viewParts/blockDecorations/blockDecorations.css
+src/vs/editor/browser/viewParts/blockDecorations/blockDecorations_css.zig
+```
+
+Shape of a port:
+
+```zig
+// Port of `.../viewLines.css`.
+const ui = @import("ui");
+
+pub const base: u16 = 0x0010;
+
+pub const Class = enum(u16) {
+    view_lines = base,
+    view_line = base + 1,
+};
+
+const styles = [_]ui.Style{
+    .{ .white_space = .nowrap },
+    .{ .position = .absolute, .width = .{ .percent = 100 } },
+};
+
+pub const sheet = ui.css.Sheet{ .base = base, .styles = &styles };
+```
+
+Rules:
+
+- Class enum variants use Zig `snake_case`; the literal CSS class name belongs in
+  a comment. Enum values must be `base + index`, matching the `styles` array.
+- `base` blocks are assigned by hand and must not overlap. Current blocks are
+  registered in `src/vs/editor/browser/editorCss.zig`:
+
+  | file | base | classes |
+  | --- | --- | --- |
+  | `blockDecorations.css` | `0x0000` | container, block |
+  | `viewLines.css` (structural) | `0x0010` | view-lines, view-line |
+  | `overlayWidgets.css` | `0x0020` | overlayWidgets |
+
+- The editor registers every sheet once in `View.init` through
+  `editorCss.register(document)`. `Document.clear()` preserves them.
+- Theme variables (`var(--vscode-...)`) are an editor-boundary problem. A themed
+  port exposes a `Colors` input and builds its `styles` outside the static table;
+  the TUI resolves theme IDs and re-registers the sheet range. The first ports
+  are theme-free.
+- Unsupported browser-only rules are omitted with a header comment:
+  `box-sizing`, `box-shadow`, `border-radius`, `user-select`, transitions,
+  animations, media queries, `!important`, descendant selectors and span rules.
+  A widget chooses the class records it needs; there is no selector engine.
+- Keep inline geometry (position/size) where the terminal view already computes
+  it; classes can still contribute the CSS declaration and are overridden by the
+  inline style.
+
+The first ports attach classes in the terminal view:
+
+- `View.block_root` and each block node (`blockDecorations_css`),
+- the line-scroll content and each `ViewLine` DOM node (`viewLines_css`),
+- `View.overlay_widgets_root` (`overlayWidgets_css`).
+
+## Examples
+
+`ui/examples/css.zig` (`zig build example-css`, also in the gallery) shows a
+local class enum and sheet, ordered merging, inherited text color/attributes, an
+explicit `false`, and an inline text declaration that beats an inherited class
+value.
+
+## Native backend note
+
+`ui.css.Sheet` and class enums are plain data. A future native renderer can
+define the same enum names and values with a different `styles` array (pixel
+units or a different scale) at comptime; the cascade and document table do not
+depend on terminal cells. No backend parameter or px unit is added yet.
+
+## Limitations
+
+- No selectors/specificity, `!important`, custom properties, media queries,
+  animations, transitions, pseudo-elements or unit conversion.
+- `visibility` cascades and affects focusability; the cell painter still does
+  not hide boxes with `visibility: hidden` (pre-existing behavior).
+- `display: contents` has no hover target.
+- Style arrays are owned by the document; class ID ranges are a manual registry.
+- Hover remains a paint-only `Element.hover_style` overlay; there is no
+  `:hover` selector pipeline.

@@ -2,9 +2,9 @@
 //
 // Terminal adaptation: upstream registers `ModelDecorationOptions` and lets
 // the decorator paint the gutter icon, folded background and `inline-folded`
-// ellipsis. The terminal has no CSS class cascade, so the option table also
-// carries the resolved paint intent (icon, folded background, ellipsis) that
-// the view maps to cells. The option selection order and flags are upstream.
+// ellipsis. The terminal maps the CSS class intent directly, so the option
+// table also carries the resolved paint intent (icon, folded background,
+// ellipsis) that the view maps to cells. The option selection order and flags are upstream.
 
 const std = @import("std");
 

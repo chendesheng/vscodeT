@@ -61,8 +61,16 @@ state that in the comment and keep the behavioral contract intact.
 
 - `ui/` is a separate Zig package outside `src/` (a path dependency in
   `build.zig.zon`). It must not import anything from `src/`.
-- There is no CSS and no HTML in this layer: node styles are direct `Style`
-  values, and class names are identifiers, never selectors.
+- There is no CSS parser, no selector engine and no HTML parser. Node styles
+  are authored `Style` declarations; an unset field inherits from the parent's
+  `ComputedStyle` when CSS makes the property inherited, otherwise it uses the
+  initial value. A CSS class is an integer ID into the document's array-backed
+  stylesheet (`ui.css.StyleTable`); `addClass`/`setClasses` pass IDs or enum
+  names, never style records. See `docs/css.md`.
+- Editor `.css` files are ported by hand to a sibling `*_css.zig` module with a
+  disjoint `u16` class-ID range, a `Class` enum, a `styles` array and a
+  `ui.css.Sheet`; register it in
+  `src/vs/editor/browser/editorCss.zig`. Do not add a CSS parser or generator.
 - The renderer is a double-buffered cell grid with an ANSI frame diff; see
   `docs/terminal-ui.md`. Library tests read `Surface.grid()`, not ANSI strings.
 - Layout runs on the derived box tree in `ui/box.zig`, never on DOM nodes:
@@ -84,8 +92,8 @@ state that in the comment and keep the behavioral contract intact.
     the separate `Layout::Box` tree, block/inline/flex formatting contexts,
     layout invalidation and style-driven dirtying.
   Reimplement the behavior in Zig; do not copy code (TermDOM is MIT, WebKit is
-  LGPL-2.1/BSD). When a terminal constraint forces a deviation (no CSS, no
-  subpixel units, no HTML parser), state it in the file comment and in
+  LGPL-2.1/BSD). When a terminal constraint forces a deviation (no CSS parser or
+  selectors, no subpixel units, no HTML parser), state it in the file comment and in
   `docs/terminal-ui.md`. Lightpanda remains a reference for DOM linking and
   ownership only; it has no layout engine.
 - Keyboard events and focus live in `ui/event.zig`; terminal byte decoding is
@@ -208,18 +216,21 @@ state that in the comment and keep the behavioral contract intact.
 - Keep upstream concepts and names where practical: view model, line
   decorations, inline decoration classes/kinds, `getViewLineData`, view parts,
   and contribution/view/widget boundaries. The terminal implementation may
-  replace DOM nodes with `ui` nodes and CSS classes with direct `Style`/cell
-  attributes, but the decision-making logic and order should match.
+  replace DOM nodes with `ui` nodes and CSS rules with typed class records or
+  direct `Style`/cell attributes, but the decision-making logic and order
+  should match.
 - Reuse the existing ported layers (`viewModelDecorations`, `lineDecorations`,
   `viewLineRenderer`, the `editorBrowser` widget contracts) instead of
   inventing a parallel path. For example, bracket and find highlights go
   through model decorations and `LineDecoration.filter`/`extractWrapped`, the
   same route VS Code's ViewLine uses, before the terminal maps classes to
   cells.
-- Terminal constraints are expected at the paint boundary: no CSS cascade or
-  selectors, no subpixel geometry, no DOM, fixed cells. Implement the closest
-  terminal rendering, document the substitution in the file header, and keep
-  the upstream behavior and tests intact.
+- Terminal constraints are expected at the paint boundary: no CSS selectors or
+  parser, no subpixel geometry, no DOM, fixed cells. Declarations do cascade
+  through `ui.Style`/`ui.ComputedStyle` and typed class records; use that layer
+  instead of inventing per-widget style tables. Implement the closest terminal
+  rendering, document the substitution in the file header, and keep the
+  upstream behavior and tests intact.
 - When a view part is genuinely browser-only (full HTML/CSS engine, browser
   event loop, compositor, native selection), isolate the missing piece, port
   the portable state/commands, wire what the TUI can support, and document the

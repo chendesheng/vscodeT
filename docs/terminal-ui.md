@@ -16,7 +16,7 @@ The obstacle is that upstream browser code is written against a browser DOM and
 CSS. This design introduces a small, standalone, DOM-like UI library that
 provides the node tree, direct styles, layout and terminal rendering, so the
 ported editor code can keep its upstream shape without a browser engine and
-without CSS.
+without a CSS parser or selector engine.
 
 The long-term shape is:
 
@@ -41,7 +41,8 @@ terminal cells (ANSI)
      build.zig.zon
      ui.zig              # public root module, re-exports the pieces below
      dom.zig             # Node/Element/Text/Document, tree operations
-     style.zig           # Color, Style, Dimension
+     css.zig             # document StyleTable, Sheet, integer class IDs
+     style.zig           # Style declaration, ComputedStyle, Dimension
      box.zig             # derived layout box tree + node→box mapping
      layout.zig          # formatting contexts over the box tree
      paint.zig           # paints the box tree
@@ -55,13 +56,18 @@ terminal cells (ANSI)
    The package/module name `ui` is provisional and easy to rename. The library
    must not import anything from `src/`.
 
-2. **No CSS and no HTML.** Every node carries a typed `Style` value. Class
-   names may be kept as logical identifiers where upstream toggles them, but
-   they never select visual rules. `innerHTML` is not implemented.
+2. **No CSS parser, selector engine or HTML.** Styles are authored as `Style`
+   declarations. A box carries `ComputedStyle`: inherited properties come from
+   the parent, everything else from its initial value. Classes are integer IDs
+   into the document's array-backed stylesheet (`css.StyleTable`); a class
+   declaration is merged by list order, not matched by a selector. `innerHTML`
+   is not implemented.
 
-3. **Direct style fields, not stylesheet lookups.** Colors, alignment,
-   visibility, positioning and text attributes are written directly by the code
-   that builds the node.
+3. **Declarations, not a stylesheet lookup engine.** Colors, alignment,
+   visibility, positioning and text attributes are still written by the code
+   that builds the node, as inline `Style` declarations. A class is only a
+   style record registered on the document; the ported widget chooses it by
+   enum name. See `docs/css.md`.
 
 4. **Terminal cells are the unit.** `1` style unit = `1` terminal cell. The
    editor configures `lineHeight = 1`, `charWidth = 1`,
@@ -179,8 +185,8 @@ pub const Node = struct {
 pub const Element = struct {
     tag: Tag, // .div, .span, .document, ...
     attributes: AttributeMap,
-    classes: ClassList,
-    style: Style,
+    classes: std.ArrayListUnmanaged(u16), // IDs into Document.class_styles
+    style: Style,                          // inline declaration
     rect: Rect = .{}, // layout result
     focusable: bool = false,
     tab_index: i32 = 0, // positive first, then 0; negative is Tab-skipped
@@ -197,9 +203,9 @@ pub const Text = struct {
 
 - **Tags are enum values**, not Zig types: only the tags the UI actually uses
   (`div`, `span`, ...) plus `.generic`; no per-tag behavior.
-- **Attributes** are a small string map with fast paths for `id`, `class` and
-  `style`-related use. Classes are a small list; class names remain logical
-  identifiers, never style rules.
+- **Attributes** are a small string map. `class` is not interpreted; classes
+  are integer IDs into the document's array-backed style table. The class list
+  is cascade order and the inline `style` declaration is applied after it.
 - **Node identity is the pointer.** No JS wrappers, handles or realms.
 - **Navigation** keeps Lightpanda's invariants: `first_child.?.prev` is the last
   child; `next` of the last child is null; detached nodes have null links.
@@ -250,8 +256,9 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
   ancestor chain, and `Element.hover_style` (a paint-only `HoverStyle`) is
   applied by the painter. `Surface.updateHoverAt` is the coordinate entry point
   for hosts that hit-test themselves and keeps its pointer cell across a tree
-  rebuild. There is no CSS cascade, no `mouseenter`/`mouseleave` synthesis and
-  no transition; hover never dirties layout.
+  rebuild. Declarations cascade through `ComputedStyle`, but there is no
+  selector engine, no `mouseenter`/`mouseleave` synthesis and no transition;
+  hover never dirties layout.
 - `Element.focusable` opts a node into focus. `Element.tab_index` follows HTML:
   positive values come first in ascending order, `0` keeps tree order, and
   negative values are programmatically focusable but skipped by Tab. Tab is the
@@ -939,7 +946,11 @@ Public surface for the POC:
 Library constraints:
 
 - Zero imports from `src/`.
-- No CSS parser, no HTML parser, no hidden globals.
+- No CSS parser or selector engine, no HTML parser, no hidden globals.
+  `Style` declarations cascade (`Style`/`ComputedStyle`); classes are integer
+  IDs into the document `StyleTable`; editor `.css` files are ported by hand to
+  sibling `*_css.zig` files and registered in
+  `src/vs/editor/browser/editorCss.zig`.
 - Unit tests run with `std.testing.allocator`; the library exposes its own
   `zig build test`.
 
@@ -1889,8 +1900,10 @@ map, is tracked in the [TUI porting inventory](porting-inventory.md).
 
 ## 12. Deferred / explicit limitations
 
-- No CSS, HTML, `innerHTML`, grid or table layout, transitions, opacity
-  compositing, borders/radii.
+- No CSS parser/selectors/`!important`/custom properties/units, HTML or
+  `innerHTML`; no grid or table layout, transitions, opacity compositing,
+  borders/radii. Declaration cascade, class records and the document stylesheet
+  are implemented; see `docs/css.md`.
 - No RTL/bidi visual reordering, grapheme segmentation, combining-mark cell
   composition, ligatures, or terminal width negotiation (mode 2027) in the POC.
 - Mouse press/release, click, idle and button-held motion and wheel are in.

@@ -2,13 +2,13 @@
 //
 // Terminal adaptation: upstream owns a DOM container and creates one
 // positioned `<div>` block per decoration that carries `blockClassName`. The
-// terminal has no CSS and no DOM positions, so this view part computes the
+// terminal has no browser DOM or box model, so this view part computes the
 // same block ranges in view-line rows and exposes them to the cell
 // compositor. The compositor maps the class names to cell backgrounds or cell
-// borders, which is the terminal equivalent of the upstream CSS class rules.
+// borders; the ported `blockDecorations_css.zig` supplies the class records.
 // Class names that have no terminal rule stay invisible, matching an upstream
-// class that has no CSS rule. A terminal border is one cell wide; the browser's
-// 2 px moved-block border becomes that cell border.
+// class without a registered CSS rule. A terminal border is one cell wide; the
+// browser's 2 px moved-block border becomes that cell border.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 

@@ -497,8 +497,11 @@ console API for raw mode, sizing and input polling.
 
 ## Terminal UI library
 
-- `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with direct
-  styles (no CSS), a derived layout box tree (viewport, principal, anonymous and
+- `ui/` is a standalone Zig package outside `src/`: a DOM-like tree with
+  authored `Style` declarations that cascade into `ComputedStyle` (inherited
+  properties from the parent, initial values otherwise), integer class IDs into
+  a document-owned array-backed stylesheet, a derived layout box tree
+  (viewport, principal, anonymous and
   text boxes), whole-cell layout with margin/padding/border boxes and borders
   that paint as cell-edge attributes under the draft cell-border protocol (with
   box-drawing fallback), block/inline/flex formatting contexts, CSS white-space

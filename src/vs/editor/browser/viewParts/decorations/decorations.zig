@@ -1,8 +1,8 @@
 // Port of `src/vs/editor/browser/viewParts/decorations/decorations.ts`.
 //
 // Terminal adaptation: upstream `prepareRender` emits positioned `<div class="cdr
-// ...">` HTML for whole-line and range decorations. The terminal has no CSS and
-// no DOM positions, so this overlay produces per-visible-line decoration class
+// ...">` HTML for whole-line and range decorations. The terminal has no browser
+// DOM positions, so this overlay produces per-visible-line decoration class
 // lists (`class_name` + `whole_line`) plus, for regular decorations, the cell
 // range returned by `RenderingContext.linesVisibleRangesForRange` (upstream
 // `_renderNormalDecoration`). The terminal view maps whole-line classes to row
