@@ -139,10 +139,13 @@ pub const SmallImmutableSet = struct {
         return .{};
     }
 
-    pub fn add(self: SmallImmutableSet, id: usize) SmallImmutableSet {
+    /// The inline set covers ids 0..255. Upstream spills into a dynamically
+    /// sized array; the port reports the (extremely rare) overflow as an error
+    /// instead of silently dropping the id.
+    pub fn add(self: SmallImmutableSet, id: usize) !SmallImmutableSet {
         var result = self;
         const word = id / 64;
-        if (word >= result.words.len) return result;
+        if (word >= result.words.len) return error.BracketSetOverflow;
         result.words[word] |= @as(u64, 1) << @intCast(id % 64);
         return result;
     }
@@ -666,7 +669,7 @@ const Tokenizer = struct {
             const key = try std.fmt.allocPrint(self.allocator, "{s}:::{s}", .{ language, bracketText });
             defer self.allocator.free(key);
             bracket_id = try self.ids.get(key);
-            bracket_ids = bracket_ids.add(bracket_id);
+            bracket_ids = try bracket_ids.add(bracket_id);
         } else {
             const defs = try self.getBrackets(language);
             for (defs.defs.items) |def| {
@@ -675,8 +678,8 @@ const Tokenizer = struct {
                 defer self.allocator.free(key);
                 const id = try self.ids.get(key);
                 if (bracket_id == 0) bracket_id = id;
-                bracket_ids = bracket_ids.add(id);
-                if (def.colorized) colorized_bracket_ids = colorized_bracket_ids.add(id);
+                bracket_ids = try bracket_ids.add(id);
+                if (def.colorized) colorized_bracket_ids = try colorized_bracket_ids.add(id);
             }
         }
         try self.tokens.append(.{

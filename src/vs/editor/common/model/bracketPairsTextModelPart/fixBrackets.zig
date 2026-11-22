@@ -163,7 +163,7 @@ const Scanner = struct {
             const key = try std.fmt.allocPrint(self.allocator, "{s}:::{s}", .{ language, bracket_text });
             defer self.allocator.free(key);
             bracket_id = try self.ids.get(key);
-            bracket_ids = bracket_ids.add(bracket_id);
+            bracket_ids = try bracket_ids.add(bracket_id);
         } else {
             const defs = try self.getBrackets(language);
             for (defs.defs.items) |def| {
@@ -172,7 +172,7 @@ const Scanner = struct {
                 defer self.allocator.free(key);
                 const id = try self.ids.get(key);
                 if (bracket_id == 0) bracket_id = id;
-                bracket_ids = bracket_ids.add(id);
+                bracket_ids = try bracket_ids.add(id);
             }
         }
         try self.tokens.append(.{

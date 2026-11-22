@@ -7,11 +7,11 @@ const SmallImmutableSet = tree.SmallImmutableSet;
 
 test "smallImmutableSet: basic add, has, intersects, equals" {
     const empty = SmallImmutableSet.empty();
-    const items1 = empty.add(0);
-    const items12 = items1.add(1);
-    const items2 = empty.add(1);
-    const items21 = items2.add(0);
-    const items3 = empty.add(2);
+    const items1 = try empty.add(0);
+    const items12 = try items1.add(1);
+    const items2 = try empty.add(1);
+    const items21 = try items2.add(0);
+    const items3 = try empty.add(2);
 
     try std.testing.expect(items12.intersects(items1));
     try std.testing.expect(items12.has(0));
@@ -25,10 +25,14 @@ test "smallImmutableSet: many elements keep membership" {
     var set = SmallImmutableSet.empty();
     var i: usize = 0;
     while (i < 100) : (i += 1) {
-        if (i % 2 == 0) set = set.add(i);
+        if (i % 2 == 0) set = try set.add(i);
     }
     i = 0;
     while (i < 100) : (i += 1) {
         try std.testing.expectEqual(i % 2 == 0, set.has(i));
     }
+}
+
+test "smallImmutableSet: overflow is an error, not a silent drop" {
+    try std.testing.expectError(error.BracketSetOverflow, SmallImmutableSet.empty().add(256));
 }

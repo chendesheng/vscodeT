@@ -37,13 +37,13 @@ test "ast: length arithmetic" {
 }
 
 test "ast: small immutable sets" {
-    const a = tree.SmallImmutableSet.empty().add(1).add(70);
-    const b = tree.SmallImmutableSet.empty().add(2).add(70);
+    const a = try (try tree.SmallImmutableSet.empty().add(1)).add(70);
+    const b = try (try tree.SmallImmutableSet.empty().add(2)).add(70);
     try std.testing.expect(a.has(1));
     try std.testing.expect(a.has(70));
     try std.testing.expect(a.intersects(b));
     try std.testing.expect(a.merge(b).has(2));
-    try std.testing.expect(!a.intersects(tree.SmallImmutableSet.empty().add(3)));
+    try std.testing.expect(!a.intersects(try tree.SmallImmutableSet.empty().add(3)));
 }
 
 test "ast: parser builds a 2-3 list tree" {
