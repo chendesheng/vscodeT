@@ -203,9 +203,10 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 - **Bracket-pair core is a merged reimplementation.** `bracketPairsTree.zig`
   keeps the `bracketPairsTree.ts` query/document logic in one file and has
   no streaming `TextBufferTokenizer`/`FastTokenizer` or two-tree mode
-  (`initialAstWithoutTokens`/`astWithTokens`). Queries use flat sorted lists
-  for pair APIs, so many operations remain O(document) and incremental
-  parses deep-clone cached nodes. Delimiter matching (case folding, word
+  (`initialAstWithoutTokens`/`astWithTokens`). Pair queries now walk the AST
+  like upstream (the flat `_pairs` cache was removed; the flat `_brackets`
+  list remains for unmatched-closing checks), and incremental parses
+  deep-clone cached nodes. Delimiter matching (case folding, word
   boundaries, token clamping), `concat23Trees`, and the upstream module
   split for `ast`, `brackets`, `length`, `parser`, `smallImmutableSet` and
   `tokenizer` are done. See findings F9/F15 for the remaining plan.
@@ -298,3 +299,12 @@ which passes on re-run).
 5. Document the deliberate unported pieces (tree-sitter backend, font
    decorations, horizontal guide painting) in `README.md` and in the file
    headers, with the exact terminal limitation.
+
+## 6. Debt removal log
+
+- Removed the flat `BracketPairInfo` cache (`_pairs`). `getBracketPairsInRange`,
+  `findMatchingBracketUp` and `matchBracket` now use the upstream-shaped
+  `collectBracketPairs` AST traversal. The flat `_brackets` list is still
+  used by `hasUnmatchedClosingBracketAfter` and is the next removal target;
+  streaming/two-tree tokenization and the TextMate metadata gaps are larger
+  structural items still open.
