@@ -8420,6 +8420,7 @@ pub const Workbench = struct {
             .{
                 .group_active = active_group,
                 .hovered = hovered_index,
+                .close_button_left = std.mem.eql(u8, self.editorTabCloseButton(), "left"),
                 .title_action = title_action,
                 .drop_index = drop_index,
                 .cell_borders = self.part.cell_borders,

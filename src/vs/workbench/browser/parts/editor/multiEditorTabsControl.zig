@@ -67,6 +67,8 @@ pub const DrawOptions = struct {
     /// Ordered insertion index of a live tab drag over this strip, or null.
     /// Upstream paints this as `drop-target-left`/`drop-target-right`.
     drop_index: ?usize = null,
+    /// Put the close cell before the icon/label (`tabCloseButton: left`).
+    close_button_left: bool = false,
     /// Whether the terminal negotiated the cell-border protocol; without it
     /// the insertion feedback falls back to a block glyph.
     cell_borders: bool = false,
@@ -349,11 +351,11 @@ pub fn draw(
             }
         }
 
-        var cursor = screen_col + 1;
+        var cursor = screen_col + 1 + (if (options.close_button_left) closeWidth(tab) else 0);
 
         // Explorer file icon, then a gap.
         if (iconFor(tab)) |icon| {
-            if (cursor + 2 <= screen_col + tab_width -| closeWidth(tab)) {
+            if (cursor + 2 <= screen_col + tab_width -| (if (options.close_button_left) 0 else closeWidth(tab))) {
                 const icon_paint = PaintStyle{
                     .fg = ui.cell.packColor(icon.color),
                     .bg = paint.bg,
@@ -366,7 +368,10 @@ pub fn draw(
         }
 
         const reserved_close = closeWidth(tab);
-        const label_end = screen_col + tab_width -| reserved_close -| 1;
+        const label_end = if (options.close_button_left)
+            screen_col + tab_width -| 1
+        else
+            screen_col + tab_width -| reserved_close -| 1;
         const label_cells = label_end -| cursor;
         var label_paint = paint;
         if (!tab.pinned) label_paint.attrs |= ui.cell.Attr.italic;
@@ -384,7 +389,7 @@ pub fn draw(
         }
 
         if (reserved_close == 2 and tab_width >= 4) {
-            const close_cell = screen_col + tab_width - 2;
+            const close_cell = if (options.close_button_left) screen_col else screen_col + tab_width - 2;
             const show_close = tab.closeable and (is_active or hovered or tab.dirty);
             if (show_close) {
                 const glyph: u21 = if (tab.dirty and !hovered) 0x25CF else 0x00D7;
@@ -611,6 +616,24 @@ test "tabBar close hits and hovered close" {
     try std.testing.expect(hits.items[0].close_start != null);
     try std.testing.expect(hits.items[1].close_start != null);
     try std.testing.expectEqual(@as(?usize, 1), closeHitAt(hits.items, hits.items[1].close_start.?));
+}
+
+test "tabBar can place the close cell on the left" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 20, 1);
+    defer grid.deinit();
+
+    var hits = std.array_list.Managed(Hit).init(allocator);
+    defer hits.deinit();
+
+    const tabs = [_]TabInfo{
+        .{ .label = "a.txt", .file_name = "a.txt" },
+    };
+    _ = try draw(&grid, &tabs, 0, 0, 0, grid.cols, &hits, .{ .close_button_left = true }, null);
+    try std.testing.expectEqual(@as(usize, 1), hits.items.len);
+    try std.testing.expectEqual(@as(?usize, 0), hits.items[0].close_start);
+    try std.testing.expectEqual(@as(u32, 0x00D7), grid.cluster[grid.index(0, 0)]);
+    try std.testing.expectEqual(@as(?usize, 0), closeHitAt(hits.items, 0));
 }
 
 test "tabBar scrolls to keep the active tab visible" {
