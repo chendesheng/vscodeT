@@ -1,9 +1,10 @@
 // Port of `src/vs/base/browser/ui/tree/dataTree.ts`.
 //
 // Terminal adaptation: this is the synchronous data-tree shell. Children are
-// resolved eagerly from an `IDataSource`; the async data tree (`asyncDataTree.ts`)
-// remains unported. The rendered view is the same `ObjectTree`/`AbstractTree`
-// path as the object tree.
+// resolved eagerly from an `IDataSource`. The asynchronous data tree lives in
+// `asyncDataTree.zig` and is used by the Explorer; this adapter remains the
+// terminal `DataTree` for synchronous callers. The rendered view is the same
+// `ObjectTree`/`AbstractTree` path as the object tree.
 
 const std = @import("std");
 const ui = @import("ui");

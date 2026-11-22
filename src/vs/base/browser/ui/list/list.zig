@@ -17,6 +17,11 @@ pub const Row = struct {
     width: usize,
     height: usize,
     index: usize,
+    /// Compressed tree depth of this row (1 = top-level row). Kept on the row
+    /// because the async/compressed renderer only receives the final element.
+    depth: usize = 0,
+    /// Collapse state of the compressed row's tree node.
+    collapsed: bool = false,
     selected: bool,
     focused: bool,
     focused_selection: bool,

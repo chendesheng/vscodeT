@@ -91,6 +91,20 @@ pub const RangeMap = struct {
         self._padding_top = padding_top;
     }
 
+    /// Resets the map to `count` unit-height rows. Used by the terminal trees,
+    /// whose virtual delegate always reports height 1; this keeps list splices
+    /// from reallocating and consolidating range groups on every expand.
+    pub fn setUniformCount(self: *RangeMap, row_count: usize) void {
+        self.groups.clearRetainingCapacity();
+        if (row_count > 0) {
+            self.groups.append(.{
+                .range = .{ .start = 0, .end = @intCast(row_count) },
+                .size = 1,
+            }) catch {};
+        }
+        self._size = self._padding_top + @as(f64, @floatFromInt(row_count));
+    }
+
     /// Splices `items` into the map at `index`, deleting `delete_count`.
     pub fn splice(self: *RangeMap, index: usize, delete_count: usize, items: []const Item) !void {
         const diff: i64 = @as(i64, @intCast(items.len)) - @as(i64, @intCast(delete_count));

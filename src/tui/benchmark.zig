@@ -14,6 +14,7 @@
 //! structural checks (viewport tokenization, unattached model) assert.
 
 const std = @import("std");
+const ui = @import("ui");
 const build_options = @import("build_options");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -442,5 +443,49 @@ test "benchmark: workbench scroll frame" {
             workbench_perf.chrome_subtrees_removed,
             workbench_perf.incremental_syncs,
         },
+    );
+}
+
+test "benchmark: explorer sidebar scroll" {
+    if (!enabled()) return error.SkipZigTest;
+    const allocator = std.heap.page_allocator;
+    const io = time_compat.io;
+    const Workbench = @import("../vs/workbench/browser/workbench.zig").Workbench;
+    const workbench = try Workbench.init(allocator, io, &.{}, 140, 44);
+    defer workbench.deinit();
+    try workbench.initSidebar(".");
+    const sidebar = workbench.sidebar orelse return error.SkipZigTest;
+
+    var load_guard: usize = 0;
+    while (sidebar.hasPendingLoad() and load_guard < 5000) : (load_guard += 1) {
+        _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
+        if (sidebar.hasPendingLoad()) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    out.clearRetainingCapacity();
+
+    const rect = sidebar.last_rect;
+    const x = ui.cell.snap(rect.x) + 2;
+    const y = ui.cell.snap(rect.y) + sidebar.header_rows + 1;
+    const frames: usize = 20;
+    var total_us: i64 = 0;
+    var best_us: i64 = std.math.maxInt(i64);
+    for (0..frames) |_| {
+        const start = nowUs(io);
+        const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 1 };
+        _ = workbench.handleSidebarMouse(&wheel);
+        workbench.refreshStatus();
+        try workbench.render(&out.writer);
+        out.clearRetainingCapacity();
+        const elapsed = nowUs(io) - start;
+        total_us += elapsed;
+        best_us = @min(best_us, elapsed);
+    }
+    std.debug.print(
+        "[bench] explorer sidebar scroll rows={d} best={d}us avg={d}us\n",
+        .{ sidebar.count(), best_us, @divTrunc(total_us, @as(i64, @intCast(frames))) },
     );
 }

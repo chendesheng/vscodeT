@@ -1,4 +1,5 @@
-// Port of the `FilesFilter` portion of
+// Port of `FilesFilter`, `ExplorerDataSource` and
+// `ExplorerCompressionDelegate` from
 // `src/vs/workbench/contrib/files/browser/views/explorerViewer.ts`.
 //
 // The browser filter owns a parsed `files.exclude` expression per workspace
@@ -9,17 +10,19 @@
 //
 // Terminal adaptations:
 // - resources are canonical path strings, not `URI` objects;
-// - ignore files are read synchronously through `std.Io.Dir`, so `prepare`
-//   replaces the browser's asynchronous `processIgnoreFile` and file watcher;
+// - directory listings, symlink type resolution and the directory's
+//   `.gitignore`/`.ignore` reads run on the async Io through
+//   `ExplorerDataSource`; `prepare` remains a synchronous fallback for model
+//   tests, replacing the browser's `processIgnoreFile` and file watcher;
 // - the open-editor exception is an optional callback because the terminal
 //   Explorer does not import the editor service;
 // - `files.exclude` sibling clauses (`{ when: ... }`) are evaluated through
 //   the `hasSibling` query, like upstream; the terminal query reads the
 //   parent's resolved children.
 //
-// `ExplorerDelegate`, `ExplorerDataSource` and `FilesRenderer` from the same
-// upstream file are not part of this port; the terminal tree owns row
-// virtualization and painting.
+// `ExplorerDataSource` and `ExplorerCompressionDelegate` are ported below.
+// `ExplorerDelegate` and `FilesRenderer` from the same upstream file are not
+// part of this port; the terminal tree owns row virtualization and painting.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -28,14 +31,24 @@ const Io = std.Io;
 const glob = @import("../../../../../base/common/glob.zig");
 const tree = @import("../../../../../base/browser/ui/tree/tree.zig");
 const TreeVisibility = tree.TreeVisibility;
+const async_tree = @import("../../../../../base/browser/ui/tree/asyncDataTree.zig");
 const explorer = @import("../../common/explorerModel.zig");
 const ExplorerItem = explorer.ExplorerItem;
+const ExplorerInput = explorer.ExplorerInput;
 const ignore_file_module = @import("../../../../services/search/common/ignoreFile.zig");
 const IgnoreFile = ignore_file_module.IgnoreFile;
 const configuration_mod = @import("../../../../services/configuration/browser/configurationService.zig");
 const ConfigurationService = configuration_mod.ConfigurationService;
 
 const max_ignore_file_size: usize = 1024 * 1024;
+
+/// One ignore file read by the async directory job. `name` is a static
+/// `ignore_file_names` entry; `contents` is owned by the job result until the
+/// filter parses it on the TUI thread.
+pub const IgnoreFileContents = struct {
+    name: []const u8,
+    contents: []const u8,
+};
 
 /// Optional open-editor query. Upstream keeps excluded files visible while they
 /// are open in an editor; the terminal host supplies that set through this
@@ -130,16 +143,16 @@ pub const FilesFilter = struct {
 
     /// Reads `<directory>/.gitignore` and `.ignore` on top of the enclosing
     /// directory's chain and records the chain for `directory`'s children.
+    /// Kept for model tests and callers outside the async Explorer path.
     pub fn prepare(self: *FilesFilter, directory: *ExplorerItem) !void {
         const root_filter = try self.rootFilter(directory.root());
         if (!root_filter.exclude_git_ignore or self.chains.contains(directory)) return;
 
-        var current: ?*const IgnoreFile = null;
-        if (directory.parent) |parent| {
-            if (self.chains.get(parent)) |chain| current = chain;
+        var contents_list: std.array_list.Managed(IgnoreFileContents) = .init(self.allocator);
+        defer {
+            for (contents_list.items) |entry| self.allocator.free(entry.contents);
+            contents_list.deinit();
         }
-
-        var changed = false;
         for (ignore_file_module.ignore_file_names) |name| {
             const path = try std.fs.path.join(self.allocator, &.{ directory.resource, name });
             defer self.allocator.free(path);
@@ -149,11 +162,32 @@ pub const FilesFilter = struct {
                 self.allocator,
                 .limited(max_ignore_file_size),
             ) catch continue;
-            defer self.allocator.free(contents);
+            try contents_list.append(.{ .name = name, .contents = contents });
+        }
+        try self.prepareWithContents(directory, contents_list.items);
+    }
 
+    /// Applies ignore-file contents read by the asynchronous directory job.
+    /// The parser copies what it needs into the ignore-file arena, so the
+    /// caller may free the slices after this returns.
+    pub fn prepareWithContents(
+        self: *FilesFilter,
+        directory: *ExplorerItem,
+        contents_list: []const IgnoreFileContents,
+    ) !void {
+        const root_filter = try self.rootFilter(directory.root());
+        if (!root_filter.exclude_git_ignore or self.chains.contains(directory)) return;
+
+        var current: ?*const IgnoreFile = null;
+        if (directory.parent) |parent| {
+            if (self.chains.get(parent)) |chain| current = chain;
+        }
+
+        var changed = false;
+        for (contents_list) |entry| {
             const ignore_file = try IgnoreFile.init(
                 self.allocator,
-                contents,
+                entry.contents,
                 directory.resource,
                 current,
                 false,
@@ -376,3 +410,249 @@ fn relativePath(item: *ExplorerItem) []const u8 {
     }
     return resource;
 }
+
+/// Port of `ExplorerDataSource.getChildren` from `explorerViewer.ts`.
+///
+/// The synchronous branch is upstream's fast path for already-resolved
+/// children. A directory that has not been listed yet returns a pending
+/// request; the actual `readdir` and symlink `stat` run on the workbench async
+/// Io. Job-owned entry data uses the thread-safe smp allocator and is copied
+/// into `ExplorerItem`s on the TUI thread when the request is polled.
+pub const ExplorerDataSource = struct {
+    pub const Children = async_tree.Children(*ExplorerItem);
+    pub const Interface = async_tree.IAsyncDataSource(ExplorerInput, *ExplorerItem);
+
+    allocator: Allocator,
+    io: Io,
+    filter: *FilesFilter,
+    sort_order: explorer.SortOrder,
+
+    const Entry = struct {
+        name: []u8,
+        file_type: u8,
+    };
+
+    const LoadedEntries = struct {
+        entries: []Entry,
+        ignore_files: []IgnoreFileContents,
+    };
+
+    const LoadResult = union(enum) {
+        entries: LoadedEntries,
+        err: anyerror,
+    };
+
+    const LoadJob = struct {
+        owner: *ExplorerDataSource,
+        future: Io.Future(LoadResult),
+        done: std.atomic.Value(bool) = .init(false),
+        item: *ExplorerItem,
+        path: []u8,
+        io: Io,
+    };
+
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        filter: *FilesFilter,
+        sort_order: explorer.SortOrder,
+    ) ExplorerDataSource {
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .filter = filter,
+            .sort_order = sort_order,
+        };
+    }
+
+    pub fn interface(self: *ExplorerDataSource) Interface {
+        return .{
+            .context = self,
+            .has_children = hasChildren,
+            .get_children = getChildren,
+        };
+    }
+
+    pub fn setSortOrder(self: *ExplorerDataSource, sort_order: explorer.SortOrder) void {
+        self.sort_order = sort_order;
+    }
+
+    fn hasChildren(_: *anyopaque, element: *ExplorerItem) bool {
+        return element.is_directory;
+    }
+
+    fn getChildren(context: *anyopaque, element: async_tree.DataElement(ExplorerInput, *ExplorerItem)) Children {
+        const self: *ExplorerDataSource = @ptrCast(@alignCast(context));
+        switch (element) {
+            .input => |input| switch (input) {
+                .roots => |roots| return .{ .items = roots },
+                .folder => |root| return self.childrenFor(root),
+            },
+            .item => |item| return self.childrenFor(item),
+        }
+    }
+
+    fn childrenFor(self: *ExplorerDataSource, item: *ExplorerItem) Children {
+        if (!item.is_directory) return .{ .items = &.{} };
+        if (item.is_directory_resolved) return .{ .items = item.children.items };
+
+        const job = self.createJob(item) catch return .{ .items = &.{} };
+        const pending = async_tree.Pending(*ExplorerItem){
+            .context = job,
+            .poll = pollJob,
+            .cancel = cancelJob,
+        };
+        return .{ .pending = pending };
+    }
+
+    fn createJob(self: *ExplorerDataSource, item: *ExplorerItem) !*LoadJob {
+        const job = try self.allocator.create(LoadJob);
+        errdefer self.allocator.destroy(job);
+        const path = try self.allocator.dupe(u8, item.resource);
+        errdefer self.allocator.free(path);
+        job.* = .{
+            .owner = self,
+            .future = undefined,
+            .item = item,
+            .path = path,
+            .io = self.io,
+        };
+        job.future = self.io.async(runLoad, .{job});
+        return job;
+    }
+
+    fn runLoad(job: *LoadJob) LoadResult {
+        defer job.done.store(true, .release);
+        const allocator = std.heap.smp_allocator;
+        var dir = Io.Dir.cwd().openDir(job.io, job.path, .{ .iterate = true }) catch |err| return .{ .err = err };
+        defer dir.close(job.io);
+
+        var entries: std.array_list.Managed(Entry) = .init(allocator);
+        var iterator = dir.iterate();
+        while (true) {
+            const next = iterator.next(job.io) catch |err| {
+                freeEntryList(allocator, &entries);
+                return .{ .err = err };
+            };
+            const entry = next orelse break;
+            if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
+            const name = allocator.dupe(u8, entry.name) catch |err| {
+                freeEntryList(allocator, &entries);
+                return .{ .err = err };
+            };
+            entries.append(.{
+                .name = name,
+                .file_type = explorer.entryFileType(job.io, allocator, job.path, entry),
+            }) catch |err| {
+                allocator.free(name);
+                freeEntryList(allocator, &entries);
+                return .{ .err = err };
+            };
+        }
+        const owned_entries = entries.toOwnedSlice() catch |err| {
+            freeEntryList(allocator, &entries);
+            return .{ .err = err };
+        };
+        errdefer freeEntries(owned_entries);
+
+        var ignore_files: std.array_list.Managed(IgnoreFileContents) = .init(allocator);
+        errdefer {
+            for (ignore_files.items) |entry| allocator.free(entry.contents);
+            ignore_files.deinit();
+        }
+        for (ignore_file_module.ignore_file_names) |name| {
+            const path = std.fs.path.join(allocator, &.{ job.path, name }) catch continue;
+            defer allocator.free(path);
+            const contents = Io.Dir.cwd().readFileAlloc(
+                job.io,
+                path,
+                allocator,
+                .limited(max_ignore_file_size),
+            ) catch continue;
+            ignore_files.append(.{ .name = name, .contents = contents }) catch |err| {
+                allocator.free(contents);
+                freeEntries(owned_entries);
+                return .{ .err = err };
+            };
+        }
+        return .{ .entries = .{
+            .entries = owned_entries,
+            .ignore_files = ignore_files.toOwnedSlice() catch |err| {
+                for (ignore_files.items) |entry| allocator.free(entry.contents);
+                ignore_files.deinit();
+                freeEntries(owned_entries);
+                return .{ .err = err };
+            },
+        } };
+    }
+
+    fn freeEntryList(allocator: Allocator, entries: *std.array_list.Managed(Entry)) void {
+        for (entries.items) |entry| allocator.free(entry.name);
+        entries.deinit();
+    }
+
+    fn pollJob(context: *anyopaque) ?async_tree.Result(*ExplorerItem) {
+        const job: *LoadJob = @ptrCast(@alignCast(context));
+        if (!job.done.load(.acquire)) return null;
+        const result = job.future.await(job.io);
+        const item = job.item;
+        const self = job.owner;
+        defer destroyJob(job);
+        switch (result) {
+            .entries => |loaded| {
+                defer freeEntries(loaded.entries);
+                defer freeIgnoreContents(loaded.ignore_files);
+                for (loaded.entries) |entry| {
+                    const path = std.fs.path.join(self.allocator, &.{ item.resource, entry.name }) catch continue;
+                    defer self.allocator.free(path);
+                    const child = ExplorerItem.createWithFileType(
+                        self.allocator,
+                        path,
+                        entry.name,
+                        item,
+                        entry.file_type,
+                    ) catch continue;
+                    item.children.append(child) catch {
+                        child.destroy();
+                        continue;
+                    };
+                }
+                item.sortChildren(self.sort_order);
+                item.is_directory_resolved = true;
+                self.filter.prepareWithContents(item, loaded.ignore_files) catch {};
+                return .{ .items = item.children.items };
+            },
+            .err => |err| return .{ .err = err },
+        }
+    }
+
+    fn cancelJob(context: *anyopaque) void {
+        const job: *LoadJob = @ptrCast(@alignCast(context));
+        const result = job.future.cancel(job.io);
+        switch (result) {
+            .entries => |loaded| {
+                freeEntries(loaded.entries);
+                freeIgnoreContents(loaded.ignore_files);
+            },
+            .err => {},
+        }
+        destroyJob(job);
+    }
+
+    fn freeEntries(entries: []Entry) void {
+        const allocator = std.heap.smp_allocator;
+        for (entries) |entry| allocator.free(entry.name);
+        allocator.free(entries);
+    }
+
+    fn freeIgnoreContents(entries: []IgnoreFileContents) void {
+        const allocator = std.heap.smp_allocator;
+        for (entries) |entry| allocator.free(entry.contents);
+        allocator.free(entries);
+    }
+
+    fn destroyJob(job: *LoadJob) void {
+        job.owner.allocator.free(job.path);
+        job.owner.allocator.destroy(job);
+    }
+};

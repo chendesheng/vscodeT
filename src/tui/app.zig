@@ -826,6 +826,7 @@ pub fn main(init: std.process.Init) !void {
             awaiting_input_continuation = true;
         }
 
+        var sidebar_event_count: usize = 0;
         for (events.items) |*item| {
             if (extension_host) |ext| {
                 // The next pump reports a selection delta tagged with the
@@ -852,7 +853,10 @@ pub fn main(init: std.process.Init) !void {
                     if (try workbench.handleQuickAccessKey(event)) continue;
                     if (try workbench.handleTerminalKey(event)) continue;
                     if (try workbench.handlePanelKey(event)) continue;
-                    if (try workbench.handleSidebarKey(event)) continue;
+                    if (try workbench.handleSidebarKey(event)) {
+                        sidebar_event_count += 1;
+                        continue;
+                    }
                     if (try workbench.handleStatusbarKey(event)) continue;
 
                     const modal_host = helix_runtime.host orelse vim_runtime.host;
@@ -923,7 +927,10 @@ pub fn main(init: std.process.Init) !void {
                     if (workbench.handleStatusbarMouse(event)) continue;
                     if (workbench.handleSashMouse(event)) continue;
                     if (workbench.handlePanelMouse(event)) continue;
-                    if (workbench.handleSidebarMouse(event)) continue;
+                    if (workbench.handleSidebarMouse(event)) {
+                        sidebar_event_count += 1;
+                        continue;
+                    }
                     if (workbench.handleTabMouse(event)) continue;
                     if (workbench.handleTerminalMouse(event)) continue;
 
@@ -995,13 +1002,19 @@ pub fn main(init: std.process.Init) !void {
             awaiting_input_continuation = false;
         }
 
-        if (workbench.activeTab()) |current| {
-            if (!current.isImage()) {
-                current.onEditorChanged(time_compat.milliTimestamp());
-                workbench.onSearchEditorChanged();
-                try current.view.refresh();
-            } else {
-                try current.refresh();
+        // Explorer wheel/hover/selection events do not change the active
+        // editor. New/activated tabs and layout/focus changes already dirty
+        // their views, so only a batch containing a non-Explorer event needs
+        // the forced editor refresh.
+        if (events.items.len == 0 or sidebar_event_count < events.items.len) {
+            if (workbench.activeTab()) |current| {
+                if (!current.isImage()) {
+                    current.onEditorChanged(time_compat.milliTimestamp());
+                    workbench.onSearchEditorChanged();
+                    try current.view.refresh();
+                } else {
+                    try current.refresh();
+                }
             }
         }
         workbench.refreshStatus();

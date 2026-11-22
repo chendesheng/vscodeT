@@ -4,8 +4,9 @@
 // instead of DOM rows. `AbstractTreeForModel` keeps the view model-agnostic so
 // `CompressibleObjectTree` can drive it with `CompressedObjectTreeModel`, the
 // same composition as upstream's `CompressibleObjectTree extends ObjectTree`.
-// Filtering lives in the tree models; async nodes, drag/drop, context menus
-// and the browser accessibility layer are not ported yet.
+// Filtering lives in the tree models; async nodes are wrapped by
+// `asyncDataTree.zig`. Drag/drop, context menus and the browser accessibility
+// layer are not ported.
 //
 // Sticky scroll is ported from `StickyScrollController`/`StickyScrollWidget`/
 // `StickyScrollFocus`. The terminal has no retained DOM overlay, so the
@@ -142,6 +143,7 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
         renderer: Renderer,
         options: Options = .{},
         rendered: std.array_list.Managed(*Node),
+        element_scratch: std.array_list.Managed(list.Element),
         selection_context: ?*anyopaque = null,
         on_activate: ?*const fn (context: ?*anyopaque, element: T) void = null,
 
@@ -188,6 +190,7 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
                 .rendered = std.array_list.Managed(*Node).init(allocator),
                 .sticky_nodes = std.array_list.Managed(StickyNode).init(allocator),
                 .sticky_constrained = std.array_list.Managed(StickyNode).init(allocator),
+                .element_scratch = std.array_list.Managed(list.Element).init(allocator),
             };
             self.widget.view.delegate.context = @ptrCast(self);
             self.widget.view.renderer.context = @ptrCast(self);
@@ -200,6 +203,7 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
             self.sticky_constrained.deinit();
             self.sticky_nodes.deinit();
             self.rendered.deinit();
+            self.element_scratch.deinit();
             self.widget.deinit();
             self.allocator.destroy(self);
         }
@@ -222,6 +226,8 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
 
         fn renderNodeRow(self: *AbstractTreeForModel(T, Model), row: *const list.Row, node: *const Node) void {
             var options_row = row.*;
+            options_row.depth = node.depth;
+            options_row.collapsed = node.collapsed;
             options_row.indent = self.options.indent;
             options_row.render_indent_guides = switch (self.options.render_indent_guides) {
                 .none => false,
@@ -838,12 +844,16 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
             self.rendered.clearRetainingCapacity();
             try self.model.collectRendered(&self.rendered);
 
-            var elements = try self.allocator.alloc(list.Element, self.rendered.items.len);
-            defer self.allocator.free(elements);
-            for (self.rendered.items, 0..) |node, i| elements[i] = @ptrCast(node);
+            self.element_scratch.clearRetainingCapacity();
+            try self.element_scratch.ensureTotalCapacity(self.rendered.items.len);
+            for (self.rendered.items) |node| self.element_scratch.appendAssumeCapacity(@ptrCast(node));
 
             const old_count = self.widget.count();
-            try self.widget.splice(0, old_count, elements);
+            if (old_count == self.element_scratch.items.len) {
+                try self.widget.replaceAll(self.element_scratch.items);
+            } else {
+                try self.widget.splice(0, old_count, self.element_scratch.items);
+            }
 
             const new_count = self.widget.count();
             if (selected_index) |index| {

@@ -1,9 +1,8 @@
 // Port of `src/vs/base/browser/ui/tree/objectTreeModel.ts`.
 //
 // Terminal adaptation: the element map uses `std.AutoHashMap` instead of a JS
-// Map. Collapse-state preservation, setChildren/resort order and the index-tree
-// projection follow upstream. Identity providers and smart diffing are not
-// ported yet.
+// Map. Collapse-state preservation, setChildren/resort order, identity-aware
+// smart splicing and the index-tree projection follow upstream.
 
 const std = @import("std");
 const tree = @import("./tree.zig");
@@ -27,6 +26,46 @@ pub fn ObjectTreeModelWithHash(comptime T: type, comptime Context: type) type {
         pub const Index = index_model.IndexTreeModel(?T);
         pub const Node = Index.Node;
         pub const Element = tree.TreeElement(?T);
+
+        pub const SetChildrenOptions = struct {
+            diff_identity_provider: ?tree.IdentityProvider(T) = null,
+            diff_depth: usize = 0,
+            on_did_create_node: ?Index.NodeCallback = null,
+            on_did_delete_node: ?Index.NodeCallback = null,
+            callback_context: ?*anyopaque = null,
+        };
+
+        const OptionalIdentity = struct {
+            base: tree.IdentityProvider(T),
+
+            fn getId(context: *anyopaque, element: ?T) []const u8 {
+                const self: *OptionalIdentity = @ptrCast(@alignCast(context));
+                return self.base.get_id(self.base.context, element.?);
+            }
+        };
+
+        const MapCallbacks = struct {
+            model: *ObjectTreeModelWithHash(T, Context),
+            user_create: ?Index.NodeCallback,
+            user_delete: ?Index.NodeCallback,
+            user_context: ?*anyopaque,
+
+            fn create(context: *anyopaque, node: *Node) void {
+                const self: *MapCallbacks = @ptrCast(@alignCast(context));
+                if (node.element) |element| self.model.nodes.put(element, node) catch {};
+                if (self.user_create) |callback| callback(self.user_context orelse context, node);
+            }
+
+            fn delete(context: *anyopaque, node: *Node) void {
+                const self: *MapCallbacks = @ptrCast(@alignCast(context));
+                if (node.element) |element| {
+                    if (self.model.nodes.get(element)) |candidate| {
+                        if (candidate == node) _ = self.model.nodes.remove(element);
+                    }
+                }
+                if (self.user_delete) |callback| callback(self.user_context orelse context, node);
+            }
+        };
 
         allocator: std.mem.Allocator,
         model: Index,
@@ -124,6 +163,18 @@ pub fn ObjectTreeModelWithHash(comptime T: type, comptime Context: type) type {
             element: ?T,
             children: []const ObjectTreeElement(T),
         ) !void {
+            return self.setChildrenWithOptions(element, children, .{});
+        }
+
+        /// Port of upstream `ObjectTreeModel.setChildren` options: the identity
+        /// provider enables smart splicing, while create/delete callbacks keep
+        /// the element map in sync without rebuilding it from the whole tree.
+        pub fn setChildrenWithOptions(
+            self: *ObjectTreeModelWithHash(T, Context),
+            element: ?T,
+            children: []const ObjectTreeElement(T),
+            options: SetChildrenOptions,
+        ) !void {
             const parent_location = try self.locationOf(element);
             defer self.allocator.free(parent_location);
 
@@ -138,8 +189,28 @@ pub fn ObjectTreeModelWithHash(comptime T: type, comptime Context: type) type {
             @memcpy(location[0..parent_location.len], parent_location);
             location[parent_location.len] = 0;
 
-            try self.model.splice(location, std.math.maxInt(usize), elements);
-            self.rebuildNodeMap();
+            var callbacks = MapCallbacks{
+                .model = self,
+                .user_create = options.on_did_create_node,
+                .user_delete = options.on_did_delete_node,
+                .user_context = options.callback_context,
+            };
+            var optional_identity: OptionalIdentity = undefined;
+            var index_identity: ?tree.IdentityProvider(?T) = null;
+            if (options.diff_identity_provider) |provider| {
+                optional_identity = .{ .base = provider };
+                index_identity = .{
+                    .context = &optional_identity,
+                    .get_id = OptionalIdentity.getId,
+                };
+            }
+            try self.model.spliceWithOptions(location, std.math.maxInt(usize), elements, .{
+                .identity_provider = index_identity,
+                .diff_depth = options.diff_depth,
+                .on_did_create_node = MapCallbacks.create,
+                .on_did_delete_node = MapCallbacks.delete,
+                .callback_context = &callbacks,
+            });
         }
 
         fn rebuildNodeMap(self: *ObjectTreeModelWithHash(T, Context)) void {

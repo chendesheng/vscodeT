@@ -21,6 +21,14 @@ pub const SortOrder = enum {
     Modified,
 };
 
+/// Terminal equivalent of upstream `ExplorerItem | ExplorerItem[]` tree input:
+/// a single folder workspace uses the root item (its children are the top-level
+/// rows), while a multi-root workspace uses the roots as the input rows.
+pub const ExplorerInput = union(enum) {
+    folder: *ExplorerItem,
+    roots: []*ExplorerItem,
+};
+
 /// The file-type flags upstream passes into the `ExplorerItem` constructor
 /// from a `FileStat` (`raw.isDirectory`, `raw.isSymbolicLink`,
 /// `!raw.isFile && !raw.isDirectory`).

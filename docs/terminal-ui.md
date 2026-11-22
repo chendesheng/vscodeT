@@ -1378,10 +1378,12 @@ Library constraints:
   file and its parent folders visible.
   The workbench reserves a fixed left activity column
   and sidebar column and offsets the editor split root; a click or Enter on a
-  file calls `Workbench.openPath`. Directory resolution is synchronous. The
+  file opens it through the async workbench open path. Directory resolution is
+  lazy and asynchronous (`ExplorerDataSource`). The
   Explorer now renders through the ported list/tree view layer
   (`rangeMap` + `ListView`/`ListWidget` + `IndexTreeModel`/`ObjectTreeModel` +
   `CompressedObjectTreeModel` + `AbstractTree`), including virtualization,
+  branch-local compressed child updates and unit-row list-splice fast paths,
   wheel scrolling, collapse state and `explorer.compactFolders`. The
   `CompressibleObjectTree` adapter renders a compressed path as one
   `a/b/c` row, and object/index/synchronous-data tree view adapters are ported
@@ -1420,10 +1422,14 @@ Library constraints:
   `list.stickyScroll*` bindings. The sticky widget is read at Explorer
   construction rather than live-updated from a configuration change, like the
   other Explorer tree settings.
-  The async data tree/loading placeholders, identity-provider diffing through
-  the object models, Explorer file drag/drop and the compressed-label
-  navigation controller (per-segment focus/hover) are not ported. The side-bar
-  divider is a draggable part splitter, separate from Explorer file drag/drop.
+  The async data tree (`AsyncDataTree`/`CompressibleAsyncDataTree`) and the
+  Explorer data source are ported: a directory's children are requested from
+  `Io.async` only when the tree needs them, and `pollLoad` applies the result
+  and resumes a pending reveal. Identity-aware smart splicing is ported
+  through the object/compressed tree models. Loading placeholders, Explorer
+  file drag/drop and the compressed-label navigation controller (per-segment
+  focus/hover) are not ported. The side-bar divider is a draggable part splitter, separate
+  from Explorer file drag/drop.
   The activity bar is split into the ported model
   (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
   activity service model
@@ -1616,10 +1622,12 @@ can block read from it:
 - `Workbench.requestOpenPath` reads, BOM-detects, decodes and canonicalizes the
   file in a job; the TUI thread only builds the editor from `LoadedText` when
   the completion flag is set.
-- Explorer expansion uses `Sidebar.requestLoad`; the listing is applied and the
-  node expanded by `Sidebar.pollLoad` on the event-loop tick. Expansion is
-  deferred until the listing lands (there is no synthetic loading row yet); a
-  new expansion cancels and joins the previous one.
+- Explorer expansion is driven by the ported async data tree. Each stale node
+  returns a pending `ExplorerDataSource` request; `Sidebar.pollLoad` drains
+  completed requests and the node is expanded/rendered on the poll tick.
+  Already-resolved children use the synchronous data-source fast path. Multiple
+  directories can be requested concurrently and a pending `explorer.autoReveal`
+  walk resumes after each applied listing.
 - Image tabs and Markdown images use `ImagePreviewPane.requestLoad` and
   `MarkdownPreview` image jobs; local reads/decodes and remote http(s) fetches
   never touch the TUI thread. Remote jobs have a 30 s deadline enforced by

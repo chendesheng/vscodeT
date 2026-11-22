@@ -3,7 +3,9 @@
 // Terminal adaptation: there is no DOM scroll element and no template cache.
 // The `RangeMap` still owns row geometry, `scrollTop` is the viewport offset,
 // and each visible row is handed to the terminal renderer as a `Row` clipped to
-// the list rectangle. Mouse/keyboard selection lives in `listWidget.zig`.
+// the list rectangle. Terminal tree splices use the unit-row fast path; other
+// lists keep the general range-map splice. Mouse/keyboard selection lives in
+// `listWidget.zig`.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -59,6 +61,26 @@ pub const ListView = struct {
         self.mouse_inside = false;
     }
 
+    /// Replaces every element without rebuilding the list when the row count
+    /// is unchanged. Unit-height lists (the terminal trees) do not touch the
+    /// range map at all; other lists fall back to a size splice.
+    pub fn replaceAll(self: *ListView, elements: []const Element) !void {
+        if (elements.len != self.items.items.len) {
+            try self.splice(0, self.items.items.len, elements);
+            return;
+        }
+        try self.items.ensureTotalCapacity(elements.len);
+        for (elements, 0..) |element, index| self.items.items[index] = element;
+        self.items.items.len = elements.len;
+        if (self.range_map.count() != elements.len or self.range_map.size() != @as(f64, @floatFromInt(elements.len))) {
+            var sizes = try self.allocator.alloc(Item, elements.len);
+            defer self.allocator.free(sizes);
+            for (elements, 0..) |element, index| sizes[index] = .{ .size = self.delegate.height(element) };
+            try self.range_map.splice(0, elements.len, sizes);
+        }
+        self.clampScroll();
+    }
+
     /// Port of `ListView.splice`.
     pub fn splice(
         self: *ListView,
@@ -66,6 +88,27 @@ pub const ListView = struct {
         delete_count: usize,
         elements: []const Element,
     ) !void {
+        // The terminal tree delegate reports unit rows. Keep the item array and
+        // a single range group in place instead of rebuilding both structures.
+        if (self.range_map.paddingTop() == 0 and
+            self.range_map.count() == self.items.items.len and
+            self.range_map.size() == @as(f64, @floatFromInt(self.items.items.len)))
+        {
+            var unit = true;
+            for (elements) |element| {
+                if (self.delegate.height(element) != 1) {
+                    unit = false;
+                    break;
+                }
+            }
+            if (unit) {
+                try self.items.replaceRange(index, delete_count, elements);
+                self.range_map.setUniformCount(self.items.items.len);
+                self.clampScroll();
+                return;
+            }
+        }
+
         var sizes = try self.allocator.alloc(Item, elements.len);
         defer self.allocator.free(sizes);
         for (elements, 0..) |element, i| {

@@ -2478,13 +2478,13 @@ pub const Workbench = struct {
     pub fn initSidebarFromWorkspace(self: *Workbench) !void {
         try self.ensureConfiguration();
         if (self.sidebar == null) {
-            self.sidebar = try Sidebar.init(
+            self.sidebar = try Sidebar.initWithAsyncIo(
                 self.allocator,
                 self.io,
+                self.async_io,
                 self.workspace,
                 self.configuration.?,
             );
-            self.sidebar.?.setAsyncIo(self.async_io);
         }
         if (self.search_view == null) try self.initSearchFromWorkspace();
         self.sidebar.?.setOpenEditorQuery(.{ .context = self, .is_open = isPathOpen });
@@ -8677,12 +8677,10 @@ pub const Workbench = struct {
         }
         if (event.kind == .down) {
             if (sidebar.handleClickPreview(event.x, event.y) catch null) |path| {
-                self.openPreviewPath(path) catch |err| {
-                    // Like Enter and the async open path: report the failure
-                    // instead of silently leaving the editor unchanged.
-                    self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-                    return true;
-                };
+                // A single Explorer click opens a preview through the async
+                // text-open job, like Enter. The status hint reports a failed
+                // read when `pollAsyncReads` applies the result.
+                self.requestOpenPathWithOptions(path, .{ .pinned = false });
                 self.focus = .editor;
             }
         }
@@ -11834,6 +11832,27 @@ fn seedFile(allocator: Allocator, io: Io, tmp: *std.testing.TmpDir, name: []cons
     return path;
 }
 
+/// Test helper: drive the Explorer async data tree until its initial listing
+/// and requested expansions have been applied. Production code never blocks;
+/// the event loop calls `pollFileWatcher`.
+/// Test helper: drain an asynchronous interactive open.
+fn pumpOpenForTests(workbench: *Workbench) void {
+    var guard: usize = 0;
+    while (workbench.pending_open != null and guard < 1000) : (guard += 1) {
+        _ = workbench.pollAsyncReads();
+        if (workbench.pending_open != null) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+}
+
+fn pumpSidebarForTests(workbench: *Workbench) void {
+    const sidebar = workbench.sidebar orelse return;
+    var guard: usize = 0;
+    while (sidebar.hasPendingLoad() and guard < 1000) : (guard += 1) {
+        _ = sidebar.pollLoad();
+        if (sidebar.hasPendingLoad()) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+}
+
 fn frameText(allocator: Allocator, frame: *const ui.Frame) ![]u8 {
     var text = std.array_list.Managed(u8).init(allocator);
     errdefer text.deinit();
@@ -13009,6 +13028,7 @@ test "Workbench: sidebar renders and opens a file" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     workbench.focusSidebar();
     try std.testing.expect(workbench.part.group_views.items[0].rect.x > 0);
 
@@ -13020,6 +13040,7 @@ test "Workbench: sidebar renders and opens a file" {
 
     const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 2 };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
+    pumpOpenForTests(workbench);
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqualStrings("side_open.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqual(Focus.editor, workbench.focus);
@@ -13045,6 +13066,7 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
 
     const before = workbench.sidebarWidth();
     const divider = workbench.activityBarWidth() + before;
@@ -13084,6 +13106,7 @@ test "Workbench: workspace search streams results and opens a match" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
 
     try workbench.findInFiles();
     const view = workbench.search_view.?;
@@ -13118,6 +13141,7 @@ test "Workbench: opening a search match selects its range" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.findInFiles();
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
@@ -13170,6 +13194,7 @@ test "Workbench: opening a search result from another file does not restart the 
     const workbench = try Workbench.init(allocator, io, &.{first}, 80, 20);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     workbench.onSearchEditorChanged();
     try workbench.findInFiles();
     const view = workbench.search_view.?;
@@ -13221,6 +13246,7 @@ test "Workbench: search replace all updates an open editor" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
 
     try workbench.findInFiles();
     const view = workbench.search_view.?;
@@ -13257,6 +13283,7 @@ test "Workbench: activity bar switches view containers" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     workbench.focusSidebar();
 
     const search_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 2 };
@@ -13309,6 +13336,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -13386,6 +13414,7 @@ test "Workbench: activity bar top moves the composite bar into the side bar" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
 
     // The rail is gone and the side bar takes the left column.
     try std.testing.expectEqual(@as(usize, 0), workbench.activityBarWidth());
@@ -13438,6 +13467,7 @@ test "Workbench: closing the side bar keeps the activity bar" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -13481,6 +13511,7 @@ test "Workbench: Problems panel, status count and range highlight" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 100, 16);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.enableLanguageFeatures();
     const service = workbench.marker_service orelse return error.TestUnexpectedResult;
 
@@ -13534,6 +13565,7 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 90, 20);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.enableLanguageFeatures();
     try std.testing.expect(!workbench.panelShown());
 
@@ -13628,6 +13660,7 @@ test "Workbench: opens a folder workspace with no initial tabs" {
     defer workbench.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try workbench.initSidebarFromWorkspace();
+    pumpSidebarForTests(workbench);
     workbench.focusSidebar();
 
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
@@ -13641,6 +13674,7 @@ test "Workbench: opens a folder workspace with no initial tabs" {
 
     const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 1 };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
+    pumpOpenForTests(workbench);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("folder_file.txt", workbench.activeTab().?.input.getName());
 }
@@ -13716,7 +13750,9 @@ test "Workbench: opening a file reveals it in the Explorer" {
     const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.openPath(path);
+    pumpSidebarForTests(workbench);
 
     const selected = workbench.sidebar.?.selectedNode().?;
     try std.testing.expectEqualStrings("revealed.txt", selected.name);
@@ -13746,7 +13782,9 @@ test "Workbench: explorer.autoReveal false disables selection" {
     const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.openPath(path);
+    pumpSidebarForTests(workbench);
 
     const selected = workbench.sidebar.?.selectedNode().?;
     try std.testing.expect(!std.mem.eql(u8, selected.name, "no_reveal.txt"));
@@ -13775,6 +13813,7 @@ test "Workbench: switching tabs reveals the active file" {
     const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.openPath(path_a);
     try workbench.openPath(path_b);
     try std.testing.expectEqualStrings("b.txt", workbench.sidebar.?.selectedNode().?.name);
@@ -13842,6 +13881,7 @@ test "Workbench: list keybindings route to the focused sidebar" {
     defer workbench.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try workbench.initSidebarFromWorkspace();
+    pumpSidebarForTests(workbench);
     try workbench.setKeybindingsPaths(&.{keybindings_path});
 
     var j = ui.KeyEvent{ .key = .{ .char = 'j' } };
@@ -14142,6 +14182,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     defer workbench.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.findInFiles();
     const view = workbench.search_view.?;
 
@@ -14182,6 +14223,7 @@ test "Workbench: typing a search query restarts results without stale collapse k
     const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.findInFiles();
     const view = workbench.search_view.?;
 
@@ -14242,6 +14284,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     const workbench = try Workbench.init(allocator, io, paths.items, 80, 16);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.findInFiles();
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
@@ -15715,6 +15758,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.initGit();
 
     try std.testing.expect(workbench.repository != null);
@@ -16003,6 +16047,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.initGit();
     _ = try workbench.showActivityById("scm");
 
@@ -16792,6 +16837,7 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
     const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     workbench.focusSidebar();
 
     const sidebar = workbench.sidebar.?;
@@ -16844,6 +16890,7 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
         .button = .left,
     };
     try std.testing.expect(workbench.handleSidebarMouse(&inner_click));
+    pumpOpenForTests(workbench);
     const tab = workbench.activeTab() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings(inner_path, tab.editor.path);
     var content = try tab.editor.model.getLineContent(1);
@@ -16880,6 +16927,7 @@ test "Workbench: explorer sticky headers pin the folder ancestors" {
     const workbench = try Workbench.init(allocator, io, &.{seed}, 60, 14);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     workbench.focusSidebar();
 
     var first_frame: std.Io.Writer.Allocating = .init(allocator);
@@ -16890,6 +16938,7 @@ test "Workbench: explorer sticky headers pin the folder ancestors" {
     const deep = try std.fmt.allocPrint(allocator, "{s}/aaa/bbb/ccc/f11.txt", .{root});
     defer allocator.free(deep);
     try sidebar.revealPath(deep);
+    pumpSidebarForTests(workbench);
 
     var frame: std.Io.Writer.Allocating = .init(allocator);
     defer frame.deinit();
@@ -16995,6 +17044,7 @@ test "Workbench: hover shows the marker message" {
     const workbench = try Workbench.init(allocator, io, &.{path}, 100, 16);
     defer workbench.deinit();
     try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
     try workbench.enableLanguageFeatures();
     const service = workbench.marker_service orelse return error.TestUnexpectedResult;
     const tab = workbench.activeTab() orelse return error.TestExpectedTab;

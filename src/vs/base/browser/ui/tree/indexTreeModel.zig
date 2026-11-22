@@ -1,8 +1,9 @@
 // Port of `src/vs/base/browser/ui/tree/indexTreeModel.ts`.
 //
 // Terminal adaptation: this slice ports the model's node/splice/collapse/render
-// projection. Smart diff splicing, filters and the event emitters are not ported
-// yet; storage is an arena-backed node tree instead of JS objects.
+// projection, identity-aware smart splicing and create/delete callbacks used by
+// the object/compressed models. Event emitters are not ported; storage is an
+// allocated node tree instead of JS objects.
 
 const std = @import("std");
 const tree = @import("./tree.zig");
@@ -29,9 +30,13 @@ pub fn IndexTreeModel(comptime T: type) type {
             filter: ?tree.TreeFilter(T) = null,
         };
 
+        pub const NodeCallback = *const fn (context: *anyopaque, node: *Node) void;
         pub const SpliceOptions = struct {
             identity_provider: ?tree.IdentityProvider(T) = null,
             diff_depth: usize = 0,
+            on_did_create_node: ?NodeCallback = null,
+            on_did_delete_node: ?NodeCallback = null,
+            callback_context: ?*anyopaque = null,
         };
 
         allocator: std.mem.Allocator,
@@ -72,6 +77,16 @@ pub fn IndexTreeModel(comptime T: type) type {
             self.allocator.destroy(node);
         }
 
+        fn destroyNodeWithOptions(self: *IndexTreeModel(T), node: *Node, options: SpliceOptions) void {
+            if (options.on_did_delete_node) |callback| {
+                const context = options.callback_context orelse @as(*anyopaque, @ptrCast(self));
+                callback(context, node);
+            }
+            for (node.children.items) |child| self.destroyNodeWithOptions(child, options);
+            node.children.deinit();
+            self.allocator.destroy(node);
+        }
+
         pub fn getNode(self: *IndexTreeModel(T), location: []const usize) tree.TreeError!*Node {
             var node = self.root;
             for (location) |index| {
@@ -90,6 +105,7 @@ pub fn IndexTreeModel(comptime T: type) type {
             self: *IndexTreeModel(T),
             parent: *Node,
             element: Element,
+            options: SpliceOptions,
         ) !*Node {
             const node = try self.allocator.create(Node);
             errdefer self.allocator.destroy(node);
@@ -104,7 +120,11 @@ pub fn IndexTreeModel(comptime T: type) type {
             try parent.children.append(node);
             errdefer _ = parent.children.pop();
             for (element.children) |child| {
-                _ = try self.appendElement(node, child);
+                _ = try self.appendElement(node, child, options);
+            }
+            if (options.on_did_create_node) |callback| {
+                const context = options.callback_context orelse @as(*anyopaque, @ptrCast(self));
+                callback(context, node);
             }
             return node;
         }
@@ -139,13 +159,13 @@ pub fn IndexTreeModel(comptime T: type) type {
                 index + delete_count;
 
             if (options.identity_provider) |provider| {
-                try self.spliceSmart(parent, index, end, children, provider, options.diff_depth);
+                try self.spliceSmart(parent, index, end, children, provider, options.diff_depth, options);
             } else {
-                for (parent.children.items[index..end]) |child| self.destroyNode(child);
+                for (parent.children.items[index..end]) |child| self.destroyNodeWithOptions(child, options);
                 _ = try parent.children.replaceRange(index, end - index, &.{});
                 var insertion_index = index;
                 for (children) |child| {
-                    const node = try self.appendElement(parent, child);
+                    const node = try self.appendElement(parent, child, options);
                     _ = parent.children.pop();
                     try parent.children.insert(insertion_index, node);
                     insertion_index += 1;
@@ -162,39 +182,47 @@ pub fn IndexTreeModel(comptime T: type) type {
             children: []const Element,
             provider: tree.IdentityProvider(T),
             depth: usize,
+            options: SpliceOptions,
         ) !void {
             var removed = std.array_list.Managed(*Node).init(self.allocator);
             defer removed.deinit();
             try removed.appendSlice(parent.children.items[index..end]);
 
+            // Index removed nodes by identity so a splice over a large sibling
+            // list stays linear, matching upstream's diff rather than scanning
+            // every removed node for every inserted element.
+            var removed_by_id = std.StringHashMap(*Node).init(self.allocator);
+            defer removed_by_id.deinit();
+            for (removed.items) |candidate| {
+                removed_by_id.put(provider.get_id(provider.context, candidate.element), candidate) catch {};
+            }
+
+            var used = std.AutoHashMap(*Node, void).init(self.allocator);
+            defer used.deinit();
             var next = std.array_list.Managed(*Node).init(self.allocator);
             errdefer next.deinit();
             try next.appendSlice(parent.children.items[0..index]);
 
             for (children) |element| {
                 const id = provider.get_id(provider.context, element.element);
-                var reused: ?*Node = null;
-                for (removed.items, 0..) |candidate, i| {
-                    if (std.mem.eql(u8, provider.get_id(provider.context, candidate.element), id)) {
-                        reused = candidate;
-                        _ = removed.orderedRemove(i);
-                        break;
-                    }
-                }
-                if (reused) |node| {
+                if (removed_by_id.fetchRemove(id)) |entry| {
+                    const node = entry.value;
+                    used.put(node, {}) catch {};
                     node.element = element.element;
                     node.collapsible = element.collapsible or element.children.len > 0;
-                    if (depth > 0) try self.mergeChildrenSmart(node, element.children, provider, depth - 1);
+                    if (depth > 0) try self.mergeChildrenSmart(node, element.children, provider, depth - 1, options);
                     try next.append(node);
                 } else {
-                    const node = try self.appendElement(parent, element);
+                    const node = try self.appendElement(parent, element, options);
                     _ = parent.children.pop();
                     try next.append(node);
                 }
             }
             try next.appendSlice(parent.children.items[end..]);
 
-            for (removed.items) |node| self.destroyNode(node);
+            for (removed.items) |node| {
+                if (!used.contains(node)) self.destroyNodeWithOptions(node, options);
+            }
             parent.children.deinit();
             parent.children = next;
         }
@@ -205,31 +233,31 @@ pub fn IndexTreeModel(comptime T: type) type {
             children: []const Element,
             provider: tree.IdentityProvider(T),
             depth: usize,
+            options: SpliceOptions,
         ) !void {
+            var by_id = std.StringHashMap(*Node).init(self.allocator);
+            defer by_id.deinit();
+            for (node.children.items) |child| {
+                by_id.put(provider.get_id(provider.context, child.element), child) catch {};
+            }
             var next = std.array_list.Managed(*Node).init(self.allocator);
             errdefer next.deinit();
             for (children) |element| {
                 const id = provider.get_id(provider.context, element.element);
-                var reused: ?*Node = null;
-                for (node.children.items, 0..) |candidate, i| {
-                    if (std.mem.eql(u8, provider.get_id(provider.context, candidate.element), id)) {
-                        reused = candidate;
-                        _ = node.children.orderedRemove(i);
-                        break;
-                    }
-                }
-                if (reused) |child_node| {
+                if (by_id.fetchRemove(id)) |entry| {
+                    const child_node = entry.value;
                     child_node.element = element.element;
                     child_node.collapsible = element.collapsible or element.children.len > 0;
-                    if (depth > 0) try self.mergeChildrenSmart(child_node, element.children, provider, depth - 1);
+                    if (depth > 0) try self.mergeChildrenSmart(child_node, element.children, provider, depth - 1, options);
                     try next.append(child_node);
                 } else {
-                    const child_node = try self.appendElement(node, element);
+                    const child_node = try self.appendElement(node, element, options);
                     _ = node.children.pop();
                     try next.append(child_node);
                 }
             }
-            for (node.children.items) |child| self.destroyNode(child);
+            var leftover = by_id.valueIterator();
+            while (leftover.next()) |child| self.destroyNodeWithOptions(child.*, options);
             node.children.deinit();
             node.children = next;
         }

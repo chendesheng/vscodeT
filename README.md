@@ -57,9 +57,9 @@ required for the measurements below.
   reloads also read their files on the async Io: configuration sources,
   keybindings, theme files and editor contents are prepared on a worker and
   installed on the TUI poll tick, matching upstream's asynchronous
-  configuration/theme/text-file reload flows. Startup scans and mouse-click
-  preview opens plus extension-host `openPath` calls still use the synchronous
-  path.
+  configuration/theme/text-file reload flows. Startup scans and extension-host
+  `openPath` calls still use the synchronous path; Explorer single clicks use
+  the async preview open.
 - Opening a file performs one view render and one full wrapping pass. The
   workbench reserves the overview-ruler/scrollbar columns before that pass, and
   a path that is already open reuses its existing tab/editor instead of
@@ -658,13 +658,23 @@ console API for raw mode, sizing and input polling.
   `src/vs/base/browser/ui/tree`: `rangeMap`, the virtualized `ListView`,
   `ListWidget`, the index/object tree models and a terminal `AbstractTree`.
   The Explorer now renders through that
-  `CompressibleObjectTree`/`CompressedObjectTreeModel`/`AbstractTree` path.
-  `ObjectTree`, `IndexTree`, a synchronous `DataTree` and the
-  `CompressibleObjectTree` view adapter are also ported. Remaining work is the
-  async data tree, file drag/drop inside the tree, the compressed-label
-  navigation controller (per-segment focus/hover) and identity-provider
-  diffing through the object models. The side-bar divider is
-  draggable; that is part-size resizing, not Explorer file drag/drop.
+  `CompressibleObjectTree`/`CompressedObjectTreeModel`/`AbstractTree` path,
+  whose child updates follow upstream's branch-local
+  decompress/splice/recompress algorithm instead of rebuilding the loaded
+  tree, and whose unit-height list splices keep the item array and range group
+  in place instead of rebuilding the whole projection.
+  `ObjectTree`, `IndexTree`, the synchronous `DataTree`, the asynchronous
+  `AsyncDataTree`/`CompressibleAsyncDataTree` state machine and the
+  `CompressibleObjectTree` view adapter are also ported. The Explorer tree now
+  loads root and descendant listings lazily through the async data tree:
+  `ExplorerDataSource` requests directory children on the workbench async Io,
+  applies them on the poll tick, returns already-resolved children through the
+  synchronous fast path, and resumes `explorer.autoReveal` after each applied
+  listing. Identity-aware smart splicing is ported through the object and
+  compressed tree models. Remaining work is file drag/drop inside the tree and
+  the compressed-label navigation controller (per-segment focus/hover). The
+  side-bar divider is draggable; that is part-size resizing, not Explorer file
+  drag/drop.
 - The configuration service (`src/vs/workbench/services/configuration/browser/configurationService.zig`)
   resolves defaults, the VS Code profile's user settings, the terminal's own
   user settings, the workspace file's `settings` block and each folder's

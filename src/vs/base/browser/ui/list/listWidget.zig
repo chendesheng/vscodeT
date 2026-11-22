@@ -39,6 +39,10 @@ pub const ListWidget = struct {
         return self.view.count();
     }
 
+    pub fn replaceAll(self: *ListWidget, elements: []const Element) !void {
+        try self.view.replaceAll(elements);
+    }
+
     pub fn splice(self: *ListWidget, index: usize, delete_count: usize, elements: []const Element) !void {
         try self.view.splice(index, delete_count, elements);
         if (self.view.selected) |selected| {

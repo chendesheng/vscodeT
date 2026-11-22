@@ -21,7 +21,7 @@ const explorer = @import("../../common/explorerModel.zig");
 const workspace_context = @import("../../../../services/workspaces/common/workspaceContextService.zig");
 const configuration_mod = @import("../../../../services/configuration/browser/configurationService.zig");
 const explorer_viewer = @import("./explorerViewer.zig");
-const compressible_tree = @import("../../../../../base/browser/ui/tree/compressibleObjectTree.zig");
+const async_tree = @import("../../../../../base/browser/ui/tree/asyncDataTree.zig");
 const list = @import("../../../../../base/browser/ui/list/list.zig");
 const tree = @import("../../../../../base/browser/ui/tree/tree.zig");
 const abstract_tree = @import("../../../../../base/browser/ui/tree/abstractTree.zig");
@@ -29,11 +29,12 @@ const file_icon = @import("../../../../browser/fileIcon.zig");
 
 const ExplorerItem = explorer.ExplorerItem;
 const ExplorerModel = explorer.ExplorerModel;
+const ExplorerInput = explorer.ExplorerInput;
 const FilesFilter = explorer_viewer.FilesFilter;
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const ConfigurationService = configuration_mod.ConfigurationService;
-const CompressibleTree = compressible_tree.CompressibleObjectTree(*ExplorerItem);
-const CompressedElement = CompressibleTree.Element;
+const AsyncTree = async_tree.CompressibleAsyncDataTree(ExplorerInput, *ExplorerItem);
+const AsyncNode = AsyncTree.Node;
 
 const CellGrid = ui.CellGrid;
 const PaintStyle = ui.cell.PaintStyle;
@@ -132,89 +133,14 @@ pub const RenderOptions = struct {
     cell_borders: bool = false,
 };
 
-/// One async directory listing. It owns only the raw entry data; the tree item
-/// is mutated when the result is applied on the TUI thread.
-const ExplorerEntry = struct {
-    name: []u8,
-    /// Resolved `FileType` bits, mirroring upstream `readdir`.
-    file_type: u8,
-};
-
-const ExplorerLoadResult = union(enum) {
-    entries: []ExplorerEntry,
-    err: anyerror,
-};
-
-const ExplorerLoadJob = struct {
-    sidebar: *Sidebar,
-    future: Io.Future(ExplorerLoadResult),
-    done: std.atomic.Value(bool) = .init(false),
-    item: *ExplorerItem,
-    path: []u8,
-    io: Io,
-
-    fn deinit(self: *ExplorerLoadJob, allocator: Allocator) void {
-        allocator.free(self.path);
-        allocator.destroy(self);
-    }
-};
-
-fn runExplorerLoad(job: *ExplorerLoadJob) ExplorerLoadResult {
-    defer job.done.store(true, .release);
-    const allocator = job.sidebar.allocator;
-    const io = job.sidebar.async_io orelse return .{ .err = error.AsyncIoUnavailable };
-    var dir = Io.Dir.cwd().openDir(io, job.path, .{ .iterate = true }) catch |err| return .{ .err = err };
-    defer dir.close(io);
-
-    var entries = std.array_list.Managed(ExplorerEntry).init(allocator);
-    var iterator = dir.iterate();
-    while (iterator.next(io) catch |err| {
-        freeExplorerEntryList(allocator, &entries);
-        return .{ .err = err };
-    }) |entry| {
-        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
-        const name = allocator.dupe(u8, entry.name) catch |err| {
-            freeExplorerEntryList(allocator, &entries);
-            return .{ .err = err };
-        };
-        entries.append(.{
-            .name = name,
-            .file_type = explorer.entryFileType(io, allocator, job.path, entry),
-        }) catch |err| {
-            allocator.free(name);
-            freeExplorerEntryList(allocator, &entries);
-            return .{ .err = err };
-        };
-    }
-    return .{ .entries = entries.toOwnedSlice() catch |err| {
-        freeExplorerEntryList(allocator, &entries);
-        return .{ .err = err };
-    } };
-}
-
-fn freeExplorerEntryList(allocator: Allocator, entries: *std.array_list.Managed(ExplorerEntry)) void {
-    for (entries.items) |entry| allocator.free(entry.name);
-    entries.deinit();
-}
-
-fn freeExplorerEntries(allocator: Allocator, entries: []ExplorerEntry) void {
-    for (entries) |entry| allocator.free(entry.name);
-    allocator.free(entries);
-}
-
 pub const Sidebar = struct {
     allocator: Allocator,
     io: Io,
-    /// Io handed over by the workbench for interactive directory expansion.
-    /// Null keeps the synchronous startup/test path.
-    async_io: ?Io = null,
-    load_job: ?*ExplorerLoadJob = null,
     model: *ExplorerModel,
     files_filter: FilesFilter,
-    tree: *CompressibleTree,
+    data_source: explorer_viewer.ExplorerDataSource,
+    tree: *AsyncTree,
     compression_enabled: bool = true,
-    /// Directories force-expanded once by `autoExpandCompressedChildren`.
-    force_expanded: std.AutoHashMap(*ExplorerItem, void),
     sort_order: explorer.SortOrder = .FilesFirst,
     show_roots: bool = false,
     last_rect: ui.Rect = .{},
@@ -229,10 +155,25 @@ pub const Sidebar = struct {
     /// Set from `RenderOptions` for the current frame; controls whether sticky
     /// rows use terminal cell borders or the underline fallback.
     cell_borders: bool = false,
+    /// Pending `explorer.autoReveal` target. The async tree loads ancestors on
+    /// demand; `pollLoad` resumes this walk after each applied listing.
+    pending_reveal: ?[]u8 = null,
 
+    /// Test/standalone entry point: uses the caller's Io for both the model and
+    /// the async listing jobs.
     pub fn init(
         allocator: Allocator,
         io: Io,
+        context: *WorkspaceContextService,
+        configuration: *ConfigurationService,
+    ) !*Sidebar {
+        return initWithAsyncIo(allocator, io, io, context, configuration);
+    }
+
+    pub fn initWithAsyncIo(
+        allocator: Allocator,
+        io: Io,
+        async_io: Io,
         context: *WorkspaceContextService,
         configuration: *ConfigurationService,
     ) !*Sidebar {
@@ -248,43 +189,56 @@ pub const Sidebar = struct {
             .io = io,
             .model = explorer_model,
             .files_filter = FilesFilter.init(allocator, io, configuration),
+            .data_source = undefined,
             .tree = undefined,
             .compression_enabled = compression_enabled,
-            .force_expanded = std.AutoHashMap(*ExplorerItem, void).init(allocator),
             .sort_order = readSortOrder(configuration, explorer_model),
         };
         errdefer self.files_filter.deinit();
-        errdefer self.force_expanded.deinit();
 
         self.show_roots = context.getWorkbenchState() != .FOLDER or self.model.roots.items.len != 1;
         self.indent_cells = readIndentCells(configuration);
         self.render_indent_guides = readRenderIndentGuides(configuration);
-        self.tree = try CompressibleTree.init(allocator, "explorer", compression_enabled, .{
+        self.data_source = explorer_viewer.ExplorerDataSource.init(
+            allocator,
+            async_io,
+            &self.files_filter,
+            self.sort_order,
+        );
+        self.tree = try AsyncTree.init(allocator, "explorer", self.data_source.interface(), .{
             .context = @ptrCast(self),
             .render = renderRow,
         }, .{
+            .compression_enabled = compression_enabled,
+            .auto_expand_compressed_children = true,
             .indent = self.indent_cells,
             .render_indent_guides = self.render_indent_guides,
             .enable_sticky_scroll = readEnableStickyScroll(configuration),
             .sticky_scroll_max_item_count = readStickyScrollMaxItemCount(configuration),
         });
         errdefer self.tree.deinit();
+        self.tree.setCompressionDelegate(.{
+            .context = @ptrCast(self),
+            .is_incompressible = isIncompressibleItem,
+        });
+        self.tree.setCollapseByDefault(.{
+            .context = @ptrCast(self),
+            .callback = collapseByDefault,
+        });
         try self.tree.setFilter(.{
             .context = &self.files_filter,
             .filter = filterItem,
         });
 
-        if (!self.show_roots and self.model.roots.items.len == 1) {
-            const root = self.model.roots.items[0];
-            try self.loadChildren(root);
-            try self.setChildren(null, root.children.items);
-        } else {
-            try self.setChildren(null, self.model.roots.items);
+        const input: ExplorerInput = if (self.show_roots or self.model.roots.items.len != 1)
+            .{ .roots = self.model.roots.items }
+        else
+            .{ .folder = self.model.roots.items[0] };
+        _ = try self.tree.setInput(input);
+        if (self.show_roots) {
             const expand_count = @min(self.model.roots.items.len, 5);
             for (self.model.roots.items[0..expand_count]) |root| {
-                try self.loadChildren(root);
-                try self.setChildren(root, root.children.items);
-                _ = try self.tree.setCollapsed(root, false, false);
+                _ = self.tree.expand(root, false);
             }
         }
         return self;
@@ -292,165 +246,44 @@ pub const Sidebar = struct {
 
     pub fn deinit(self: *Sidebar) void {
         self.cancelLoad();
+        if (self.pending_reveal) |path| self.allocator.free(path);
         self.tree.deinit();
-        self.force_expanded.deinit();
         self.files_filter.deinit();
         self.model.deinit();
         self.allocator.destroy(self);
     }
 
-    /// Enables async interactive expansion. Startup/root loads stay sync.
+    /// Enables async interactive expansion. Initialization already starts with
+    /// the workbench Io; this remains for callers that install it later.
     pub fn setAsyncIo(self: *Sidebar, io: Io) void {
-        self.async_io = io;
+        self.data_source.io = io;
     }
 
     pub fn hasPendingLoad(self: *const Sidebar) bool {
-        return self.load_job != null;
+        return self.tree.hasPending();
     }
 
-    fn requestLoad(self: *Sidebar, item: *ExplorerItem) !void {
-        const async_io = self.async_io orelse return;
-        if (self.load_job) |job| {
-            if (job.item == item) return;
-            self.cancelLoad();
-        }
-        const path = try self.allocator.dupe(u8, item.resource);
-        errdefer self.allocator.free(path);
-        const job = try self.allocator.create(ExplorerLoadJob);
-        errdefer self.allocator.destroy(job);
-        job.* = .{
-            .sidebar = self,
-            .future = undefined,
-            .item = item,
-            .path = path,
-            .io = async_io,
-        };
-        job.future = async_io.async(runExplorerLoad, .{job});
-        self.load_job = job;
-    }
-
-    /// Drains a completed directory listing on the TUI thread.
+    /// Drains completed listings and resumes a pending reveal. Returns whether
+    /// the rendered tree changed.
     pub fn pollLoad(self: *Sidebar) bool {
-        const job = self.load_job orelse return false;
-        if (!job.done.load(.acquire)) return false;
-        const result = job.future.await(job.io);
-        self.load_job = null;
-        const item = job.item;
-        job.deinit(self.allocator);
-
-        var changed = false;
-        switch (result) {
-            .entries => |entries| {
-                defer freeExplorerEntries(self.allocator, entries);
-                if (item.is_directory_resolved or !self.isAttached(item)) return false;
-                for (entries) |entry| {
-                    const path = std.fs.path.join(self.allocator, &.{ item.resource, entry.name }) catch continue;
-                    defer self.allocator.free(path);
-                    const child = ExplorerItem.createWithFileType(
-                        self.allocator,
-                        path,
-                        entry.name,
-                        item,
-                        entry.file_type,
-                    ) catch continue;
-                    item.children.append(child) catch {
-                        child.destroy();
-                        continue;
-                    };
-                }
-                item.sortChildren(self.sort_order);
-                item.is_directory_resolved = true;
-                self.files_filter.prepare(item) catch {};
-                self.setChildren(item, item.children.items) catch {};
-                _ = self.tree.setCollapsed(item, false, false) catch {};
-                self.selectElement(item);
+        var changed = self.tree.poll();
+        if (self.pending_reveal) |path| {
+            const done = self.continueReveal(path) catch false;
+            if (done or !self.tree.hasPending()) {
+                self.allocator.free(path);
+                self.pending_reveal = null;
                 changed = true;
-            },
-            .err => {},
+            }
         }
         return changed;
     }
 
     pub fn cancelLoad(self: *Sidebar) void {
-        const job = self.load_job orelse return;
-        self.load_job = null;
-        const result = job.future.cancel(job.io);
-        if (result == .entries) freeExplorerEntries(self.allocator, result.entries);
-        job.deinit(self.allocator);
-    }
-
-    fn isAttached(self: *Sidebar, item: *ExplorerItem) bool {
-        const root = item.root();
-        for (self.model.roots.items) |candidate| {
-            if (candidate == root) return true;
+        self.tree.cancelAllRefreshPromises(true);
+        if (self.pending_reveal) |path| {
+            self.allocator.free(path);
+            self.pending_reveal = null;
         }
-        return false;
-    }
-
-    fn loadChildren(self: *Sidebar, item: *ExplorerItem) !void {
-        const was_resolved = item.is_directory_resolved;
-        item.fetchChildren(self.io, self.sort_order) catch {};
-        try self.files_filter.prepare(item);
-        if (was_resolved or !self.compression_enabled) return;
-
-        // `autoExpandCompressedChildren`: a lone compressible child is rendered
-        // together with its parent, so resolve its children as well to reveal
-        // them when the compressed row is expanded.
-        var current = item;
-        while (current.children.items.len == 1) {
-            const child = current.children.items[0];
-            if (isIncompressible(child)) break;
-            try self.force_expanded.put(child, {});
-            if (!child.is_directory or child.is_directory_resolved) break;
-            child.fetchChildren(self.io, self.sort_order) catch {};
-            try self.files_filter.prepare(child);
-            current = child;
-        }
-    }
-
-    fn setChildren(self: *Sidebar, parent: ?*ExplorerItem, items: []*ExplorerItem) !void {
-        const selected = self.tree.selectionElement();
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const elements = try self.buildElements(arena.allocator(), items);
-        self.force_expanded.clearRetainingCapacity();
-        try self.tree.setChildren(parent, elements);
-        // Child updates must not scroll the viewport; upstream splices keep
-        // the scroll position and restore the selected element in place.
-        if (selected) |item| self.tree.setSelectionElementNoReveal(item);
-    }
-
-    /// Builds the loaded subtree as compressed tree elements. Children are only
-    /// included for resolved directories, which mirrors the async data tree's
-    /// `asTreeElement` including the children it has loaded.
-    fn buildElements(
-        self: *Sidebar,
-        allocator: Allocator,
-        items: []*ExplorerItem,
-    ) ![]CompressedElement {
-        var children_list = std.array_list.Managed(CompressedElement).init(allocator);
-        for (items) |item| {
-            var children: []const CompressedElement = &.{};
-            if (item.is_directory and item.is_directory_resolved and item.children.items.len > 0) {
-                children = try self.buildElements(allocator, item.children.items);
-            }
-            const collapsed: ?bool = if (!item.is_directory)
-                null
-            else if (self.force_expanded.contains(item))
-                false
-            else if (self.tree.has(item))
-                null
-            else
-                true;
-            try children_list.append(.{
-                .element = item,
-                .children = children,
-                .collapsible = item.is_directory,
-                .collapsed = collapsed,
-                .incompressible = isIncompressible(item),
-            });
-        }
-        return children_list.toOwnedSlice();
     }
 
     fn selectElement(self: *Sidebar, item: *ExplorerItem) void {
@@ -460,30 +293,22 @@ pub const Sidebar = struct {
     fn toggle(self: *Sidebar, item: *ExplorerItem) !?[]const u8 {
         if (!item.is_directory) return item.resource;
         if (self.tree.isCollapsed(item)) {
-            if (!item.is_directory_resolved and self.async_io != null) {
-                try self.requestLoad(item);
-                self.selectElement(item);
-                return null;
-            }
-            try self.loadChildren(item);
-            try self.setChildren(item, item.children.items);
-            _ = try self.tree.setCollapsed(item, false, false);
-            self.selectElement(item);
+            _ = self.tree.expand(item, false);
         } else {
-            _ = try self.tree.setCollapsed(item, true, false);
-            self.selectElement(item);
+            _ = self.tree.collapse(item, false);
         }
+        self.selectElement(item);
         return null;
     }
 
     fn expandSelected(self: *Sidebar) !void {
         const node = self.tree.selectionNode() orelse return;
-        const item = CompressibleTree.elementOfNode(node) orelse return;
+        const item = node.element orelse return;
         if (!item.is_directory) return;
         if (self.tree.isCollapsed(item)) {
             _ = try self.toggle(item);
         } else if (node.children.items.len > 0) {
-            self.tree.setSelectionNode(node.children.items[0]);
+            if (node.children.items[0].element) |child| self.selectElement(child);
         }
     }
 
@@ -509,14 +334,14 @@ pub const Sidebar = struct {
             },
             .enter => {
                 const node = self.tree.selectionNode() orelse return .handled;
-                const item = CompressibleTree.elementOfNode(node) orelse return .handled;
+                const item = node.element orelse return .handled;
                 if (try self.toggle(item)) |path| return .{ .open = path };
                 return .handled;
             },
             .char => |ch| {
                 if (ch == ' ') {
                     const node = self.tree.selectionNode() orelse return .handled;
-                    const item = CompressibleTree.elementOfNode(node) orelse return .handled;
+                    const item = node.element orelse return .handled;
                     if (try self.toggle(item)) |path| return .{ .open = path };
                     return .handled;
                 }
@@ -574,9 +399,10 @@ pub const Sidebar = struct {
             // Upstream's sticky click selects/reveals the node; a click on its
             // twistie additionally toggles the folder.
             const node = self.tree.selectionNode() orelse return null;
-            const item = CompressibleTree.elementOfNode(node) orelse return null;
+            const item = node.element orelse return null;
             if (item.is_directory) {
-                const twistie_x = left + 2 + (node.depth -| 1) * self.indent_cells;
+                const visual_depth = (self.tree.selectionDepth() orelse 1) -| 1;
+                const twistie_x = left + 2 + visual_depth * self.indent_cells;
                 if (x == twistie_x) return self.toggle(item);
             }
             return null;
@@ -584,14 +410,14 @@ pub const Sidebar = struct {
 
         // Ignore clicks below the last rendered row.
         const list_y = y - top - self.header_rows;
-        const position = self.tree.view.widget.view.scroll_top + @as(f64, @floatFromInt(list_y));
-        const index = self.tree.view.widget.view.range_map.indexAt(position);
+        const position = self.tree.scrollTop() + @as(f64, @floatFromInt(list_y));
+        const index = self.tree.indexAt(position);
         if (index < 0 or index >= @as(i64, @intCast(self.tree.count()))) return null;
 
         const node = self.tree.selectionNode() orelse return null;
-        const item = CompressibleTree.elementOfNode(node) orelse return null;
+        const item = node.element orelse return null;
         if (item.is_directory) {
-            const visual_depth = node.depth -| 1;
+            const visual_depth = (self.tree.selectionDepth() orelse 1) -| 1;
             const twistie_x = left + 2 + visual_depth * self.indent_cells;
             if (x != twistie_x) return null;
         }
@@ -605,9 +431,23 @@ pub const Sidebar = struct {
     }
 
     /// Reveals a resource like VS Code's `explorer.autoReveal`: expands lazy
-    /// ancestors, then selects and scrolls to the item without moving focus.
+    /// ancestors asynchronously, then selects and scrolls to the item without
+    /// moving focus. The walk resumes from `pollLoad` after each listing.
     pub fn revealPath(self: *Sidebar, path: []const u8) !void {
-        const folder = self.model.context.getWorkspaceFolder(path) orelse return;
+        if (self.selectedNode()) |selected| {
+            if (std.mem.eql(u8, selected.resource, path)) return;
+        }
+        if (self.pending_reveal) |old| self.allocator.free(old);
+        self.pending_reveal = try self.allocator.dupe(u8, path);
+        const done = try self.continueReveal(self.pending_reveal.?);
+        if (done or !self.tree.hasPending()) {
+            self.allocator.free(self.pending_reveal.?);
+            self.pending_reveal = null;
+        }
+    }
+
+    fn continueReveal(self: *Sidebar, path: []const u8) !bool {
+        const folder = self.model.context.getWorkspaceFolder(path) orelse return false;
         var root: ?*ExplorerItem = null;
         for (self.model.roots.items) |candidate| {
             if (std.mem.eql(u8, candidate.resource, folder.resource)) {
@@ -615,19 +455,25 @@ pub const Sidebar = struct {
                 break;
             }
         }
-        const root_item = root orelse return;
+        const root_item = root orelse return false;
         const relative = std.mem.trimStart(u8, path[root_item.resource.len..], "/\\");
         if (relative.len == 0) {
             if (self.show_roots) self.selectElement(root_item);
-            return;
+            return true;
         }
 
         var current = root_item;
         var parts = std.mem.tokenizeAny(u8, relative, "/\\");
         while (parts.next()) |name| {
-            if (!current.is_directory) return;
-            const was_resolved = current.is_directory_resolved;
-            if (!was_resolved) try self.loadChildren(current);
+            if (!current.is_directory) return false;
+            if (!current.is_directory_resolved) {
+                // The single-folder root is the async tree input; it loads in
+                // response to setInput. Other directories load through expand.
+                if (!(current == root_item and !self.show_roots)) {
+                    if (self.tree.hasNode(current)) _ = self.tree.expand(current, false);
+                }
+                return false;
+            }
 
             var next: ?*ExplorerItem = null;
             for (current.children.items) |child| {
@@ -636,21 +482,24 @@ pub const Sidebar = struct {
                     break;
                 }
             }
-            const item = next orelse return;
+            const item = next orelse return false;
 
-            // The single-folder root is the tree input and has no visible row;
-            // its children were already installed by init(). Resolved folders
-            // are already installed too, so re-splicing them would rebuild the
-            // tree (and move the selection/scroll) for no change.
             if (!(current == root_item and !self.show_roots)) {
-                if (!was_resolved or !self.tree.has(current)) {
-                    try self.setChildren(current, current.children.items);
-                }
-                _ = try self.tree.setCollapsed(current, false, false);
+                if (!self.tree.hasNode(current)) return false;
+                if (self.tree.isCollapsed(current)) _ = self.tree.expand(current, false);
+            }
+
+            // Installing a directory's resolved children only needs the tree
+            // refresh; expanding it above already requested that. Wait for the
+            // applied listing when the child is not attached yet.
+            if (!self.tree.hasNode(item)) {
+                if (self.tree.hasNode(current)) _ = self.tree.expand(current, false);
+                if (!self.tree.hasNode(item)) return false;
             }
             current = item;
         }
         self.selectElement(current);
+        return true;
     }
 
     pub fn selectedNode(self: *Sidebar) ?*ExplorerItem {
@@ -658,8 +507,7 @@ pub const Sidebar = struct {
     }
 
     pub fn renderedItem(self: *Sidebar, index: usize) ?*ExplorerItem {
-        const node = self.tree.renderedNode(index) orelse return null;
-        return CompressibleTree.elementOfNode(node);
+        return self.tree.renderedItem(index);
     }
 
     pub fn count(self: *const Sidebar) usize {
@@ -734,7 +582,7 @@ pub const Sidebar = struct {
             else
                 @as(usize, @intFromFloat(@round(
                     @as(f64, @floatFromInt(rows - thumb_height)) *
-                        self.tree.view.widget.view.scroll_top / max_scroll,
+                        self.tree.scrollTop() / max_scroll,
                 )));
             grid.fillRect(
                 @floatFromInt(scrollbar_x),
@@ -804,10 +652,17 @@ fn readCompactFolders(configuration: *ConfigurationService, model: *ExplorerMode
 
 /// Port of `ExplorerCompressionDelegate.isIncompressible`: workspace roots,
 /// files and the root's direct children never merge into their parent.
-fn isIncompressible(item: *ExplorerItem) bool {
+fn isIncompressibleItem(_: *anyopaque, item: *ExplorerItem) bool {
     if (item.parent == null) return true;
     if (!item.is_directory) return true;
     return item.parent.?.parent == null;
+}
+
+/// `collapseByDefault` in `explorerView.ts`: Explorer rows start collapsed;
+/// `autoExpandCompressedChildren` forces the single-child compressed chain open
+/// when it is loaded.
+fn collapseByDefault(_: *anyopaque, _: *ExplorerItem) bool {
+    return true;
 }
 
 fn readSortOrder(configuration: *ConfigurationService, model: *ExplorerModel) explorer.SortOrder {
@@ -870,11 +725,16 @@ fn readRenderIndentGuides(configuration: *ConfigurationService) abstract_tree.Re
     };
 }
 
-fn renderRow(context: *anyopaque, row: *const list.Row, node: *const CompressibleTree.Node) void {
+fn renderRow(
+    context: *anyopaque,
+    row: *const list.Row,
+    node: *AsyncNode,
+    elements: []const *AsyncNode,
+) void {
     const sidebar: *Sidebar = @ptrCast(@alignCast(context));
-    const compressed = node.element orelse return;
-    if (compressed.elements.len == 0) return;
-    const item = compressed.elements[compressed.elements.len - 1];
+    const item = node.element orelse return;
+    if (elements.len == 0) return;
+    const collapsed = row.collapsed;
     const selected = row.selected;
     const sticky_highlight = row.sticky and (row.sticky_hovered or row.sticky_focused);
     var paint = if (selected)
@@ -947,7 +807,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
     }
 
     var col = row.x + 2;
-    const indent_width = (node.depth -| 1) * row.indent;
+    const indent_width = (row.depth -| 1) * row.indent;
     var indent: usize = 0;
     while (indent < indent_width and col < row.x + row.width) : (indent += 1) {
         // One guide per ancestor level, painted at the first cell of its
@@ -968,7 +828,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
 
     if (col < row.x + row.width) {
         const glyph: u21 = if (item.is_directory)
-            (if (node.collapsed) '▸' else '▾')
+            (if (collapsed) '▸' else '▾')
         else
             ' ';
         row.grid.putCodepoint(col, row.y, glyph, 1, paint);
@@ -983,7 +843,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
     // Explorer row order (twistie, file icon, label).
     {
         const icon = if (item.is_directory)
-            file_icon.folder(!node.collapsed)
+            file_icon.folder(!collapsed)
         else
             file_icon.file(item.name);
         if (col < row.x + row.width) {
@@ -1004,7 +864,8 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
     // `renderCompressedElements`: join the compressed path with `/`. A single
     // element renders exactly like the uncompressed `renderElement` path.
     var remaining = (row.x + row.width) -| col;
-    for (compressed.elements, 0..) |element, index| {
+    for (elements, 0..) |element_node, index| {
+        const element = element_node.element orelse continue;
         if (index > 0) {
             if (remaining == 0) break;
             row.grid.putCodepoint(col, row.y, '/', 1, paint);
@@ -1031,6 +892,17 @@ fn drawText(grid: *CellGrid, x: usize, y: usize, max_width: usize, text: []const
     return col - x;
 }
 
+/// Drives the async tree and data source until the initial listing (or a
+/// requested expansion/reveal) has landed. Tests use it in place of the old
+/// synchronous `Sidebar.init` behavior.
+fn pumpSidebar(sidebar: *Sidebar, io: Io) void {
+    var guard: usize = 0;
+    while (sidebar.hasPendingLoad() and guard < 1000) : (guard += 1) {
+        _ = sidebar.pollLoad();
+        if (sidebar.hasPendingLoad()) io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+}
+
 test "explorer tree sidebar: renders and uses the ported tree view" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -1051,6 +923,7 @@ test "explorer tree sidebar: renders and uses the ported tree view" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     try std.testing.expectEqual(@as(usize, 3), sidebar.count());
 
@@ -1067,6 +940,7 @@ test "explorer tree sidebar: renders and uses the ported tree view" {
     const alpha = sidebar.selectedNode().?;
     var right = ui.KeyEvent{ .key = .right };
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     try std.testing.expect(sidebar.isExpanded(alpha));
     var expanded_grid = try ui.CellGrid.init(allocator, 24, 8);
     defer expanded_grid.deinit();
@@ -1106,6 +980,7 @@ test "explorer tree sidebar: nerd font icons and hover indent guides" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     var grid = try ui.CellGrid.init(allocator, 24, 8);
     defer grid.deinit();
@@ -1118,6 +993,7 @@ test "explorer tree sidebar: nerd font icons and hover indent guides" {
     _ = try sidebar.handleKey(&home);
     var right = ui.KeyEvent{ .key = .right };
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     var expanded_grid = try ui.CellGrid.init(allocator, 24, 8);
     defer expanded_grid.deinit();
     try sidebar.render(&expanded_grid, .{ .x = 0, .y = 0, .w = 24, .h = 8 }, true, .{ .show_header = false });
@@ -1161,6 +1037,7 @@ test "explorer tree sidebar: row text keeps the theme side bar background" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     var registry = color_utils.ColorRegistry.init(allocator);
     defer registry.deinit();
@@ -1216,17 +1093,18 @@ test "explorer tree sidebar: wheel scrolls the tree viewport" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     try std.testing.expectEqual(@as(usize, 12), sidebar.count());
     var grid = try ui.CellGrid.init(allocator, 24, 6);
     defer grid.deinit();
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 24, .h = 6 }, true, .{});
     try std.testing.expect(grid.bg[grid.index(23, 1)] != 0);
-    const before = sidebar.tree.view.widget.view.scroll_top;
+    const before = sidebar.tree.scrollTop();
 
     const wheel = ui.MouseEvent{ .kind = .wheel, .x = 1, .y = 2, .delta_y = 1 };
     try std.testing.expect(sidebar.handleMouse(&wheel));
-    try std.testing.expect(sidebar.tree.view.widget.view.scroll_top > before);
+    try std.testing.expect(sidebar.tree.scrollTop() > before);
 }
 
 test "explorer tree sidebar: revealPath expands ancestors and selects the file" {
@@ -1248,10 +1126,12 @@ test "explorer tree sidebar: revealPath expands ancestors and selects the file" 
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     const path = try std.fmt.allocPrint(allocator, "{s}/alpha/beta/deep.txt", .{root});
     defer allocator.free(path);
     try sidebar.revealPath(path);
+    pumpSidebar(sidebar, io);
 
     const selected = sidebar.selectedNode().?;
     try std.testing.expectEqualStrings("deep.txt", selected.name);
@@ -1274,6 +1154,7 @@ test "explorer tree sidebar: directory rows only toggle from the twistie" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     var grid = try ui.CellGrid.init(allocator, 24, 6);
     defer grid.deinit();
@@ -1282,8 +1163,10 @@ test "explorer tree sidebar: directory rows only toggle from the twistie" {
     const alpha = sidebar.selectedNode().?;
     try std.testing.expectEqualStrings("alpha", alpha.name);
     _ = try sidebar.handleClick(5, 1);
+    pumpSidebar(sidebar, io);
     try std.testing.expect(!sidebar.isExpanded(alpha));
     _ = try sidebar.handleClick(2, 1);
+    pumpSidebar(sidebar, io);
     try std.testing.expect(sidebar.isExpanded(alpha));
 }
 
@@ -1313,6 +1196,7 @@ test "explorer tree sidebar: sort order comes from settings" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     try std.testing.expectEqual(explorer.SortOrder.Type, sidebar.sort_order);
     try std.testing.expectEqualStrings(".vscode", sidebar.renderedItem(0).?.name);
@@ -1345,6 +1229,7 @@ test "explorer tree sidebar: tree filter hides ignored children without dropping
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     try std.testing.expectEqual(@as(usize, 2), sidebar.count());
     try std.testing.expectEqualStrings(".gitignore", sidebar.renderedItem(0).?.name);
@@ -1370,6 +1255,7 @@ test "explorer tree sidebar: compactFolders compresses single-child chains" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     try std.testing.expect(sidebar.compression_enabled);
     try std.testing.expectEqual(@as(usize, 1), sidebar.count());
@@ -1381,6 +1267,7 @@ test "explorer tree sidebar: compactFolders compresses single-child chains" {
 
     var right = ui.KeyEvent{ .key = .right };
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     try std.testing.expectEqual(@as(usize, 2), sidebar.count());
     try std.testing.expectEqualStrings("c", sidebar.renderedItem(0).?.name);
     try std.testing.expectEqualStrings("deep.txt", sidebar.renderedItem(1).?.name);
@@ -1401,6 +1288,7 @@ test "explorer tree sidebar: compactFolders compresses single-child chains" {
     try std.testing.expect(std.mem.indexOf(u8, collapsed_row, "▸") != null);
 
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     try std.testing.expectEqual(@as(usize, 2), sidebar.count());
 }
 
@@ -1428,6 +1316,7 @@ test "explorer tree sidebar: compactFolders false keeps folders separate" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     try std.testing.expect(!sidebar.compression_enabled);
     // `.vscode` (which holds the setting) and `a` are the top-level rows.
@@ -1442,17 +1331,22 @@ test "explorer tree sidebar: compactFolders false keeps folders separate" {
 
     var right = ui.KeyEvent{ .key = .right };
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     try std.testing.expectEqual(@as(usize, 3), sidebar.count());
     try std.testing.expectEqualStrings("a", sidebar.renderedItem(1).?.name);
     try std.testing.expectEqualStrings("b", sidebar.renderedItem(2).?.name);
 
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     try std.testing.expectEqual(@as(usize, 4), sidebar.count());
     try std.testing.expectEqualStrings("c", sidebar.renderedItem(3).?.name);
 
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
     try std.testing.expectEqual(@as(usize, 5), sidebar.count());
     try std.testing.expectEqualStrings("deep.txt", sidebar.renderedItem(4).?.name);
 
@@ -1489,12 +1383,14 @@ test "explorer tree sidebar: compressed paths keep the tree filter" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     try std.testing.expectEqual(@as(usize, 2), sidebar.count());
     sidebar.tree.setSelectionElement(sidebar.model.roots.items[0].getChild("a").?);
 
     var right = ui.KeyEvent{ .key = .right };
     _ = try sidebar.handleKey(&right);
+    pumpSidebar(sidebar, io);
 
     try std.testing.expectEqual(@as(usize, 3), sidebar.count());
     try std.testing.expectEqualStrings("c", sidebar.renderedItem(0).?.name);
@@ -1523,9 +1419,9 @@ test "explorer tree sidebar: expansion reads directories on the async Io" {
     var async_state = Io.Threaded.init(allocator, .{});
     defer async_state.deinit();
 
-    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, async_state.io(), context, configuration);
     defer sidebar.deinit();
-    sidebar.setAsyncIo(async_state.io());
+    pumpSidebar(sidebar, io);
 
     var home = ui.KeyEvent{ .key = .home };
     _ = try sidebar.handleKey(&home);
@@ -1535,12 +1431,11 @@ test "explorer tree sidebar: expansion reads directories on the async Io" {
     var right = ui.KeyEvent{ .key = .right };
     _ = try sidebar.handleKey(&right);
     try std.testing.expect(sidebar.hasPendingLoad());
-    try std.testing.expect(!sidebar.isExpanded(alpha));
+    try std.testing.expect(sidebar.isExpanded(alpha));
+    try std.testing.expect(!alpha.is_directory_resolved);
+    try std.testing.expectEqual(@as(usize, 1), sidebar.count());
 
-    var waited: usize = 0;
-    while (!sidebar.pollLoad() and waited < 2000) : (waited += 1) {
-        sidebar.async_io.?.sleep(.fromMilliseconds(1), .awake) catch {};
-    }
+    pumpSidebar(sidebar, io);
     try std.testing.expect(!sidebar.hasPendingLoad());
     try std.testing.expect(sidebar.isExpanded(alpha));
     try std.testing.expect(alpha.is_directory_resolved);
@@ -1570,9 +1465,9 @@ test "explorer tree sidebar: async expansion resolves a symbolic link directory"
     var async_state = Io.Threaded.init(allocator, .{});
     defer async_state.deinit();
 
-    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, async_state.io(), context, configuration);
     defer sidebar.deinit();
-    sidebar.setAsyncIo(async_state.io());
+    pumpSidebar(sidebar, io);
 
     const link = sidebar.model.roots.items[0].getChild("link").?;
     try std.testing.expect(link.is_directory);
@@ -1583,7 +1478,7 @@ test "explorer tree sidebar: async expansion resolves a symbolic link directory"
 
     var waited: usize = 0;
     while (!sidebar.pollLoad() and waited < 2000) : (waited += 1) {
-        sidebar.async_io.?.sleep(.fromMilliseconds(1), .awake) catch {};
+        io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(!sidebar.hasPendingLoad());
     try std.testing.expect(sidebar.isExpanded(link));
@@ -1614,6 +1509,7 @@ test "explorer tree sidebar: symbolic link directories render and expand" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     const link = sidebar.model.roots.items[0].getChild("link").?;
     try std.testing.expect(link.is_directory);
@@ -1632,6 +1528,7 @@ test "explorer tree sidebar: symbolic link directories render and expand" {
 
     sidebar.tree.setSelectionElement(link);
     _ = try sidebar.handleKey(&.{ .key = .right });
+    pumpSidebar(sidebar, io);
     try std.testing.expect(sidebar.isExpanded(link));
     try std.testing.expect(link.getChild("inner.txt") != null);
 
@@ -1691,6 +1588,7 @@ test "explorer tree sidebar: sticky headers pin folder ancestors" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     var grid = try ui.CellGrid.init(allocator, 32, 8);
     defer grid.deinit();
@@ -1701,6 +1599,7 @@ test "explorer tree sidebar: sticky headers pin folder ancestors" {
     const deep = try std.fs.path.join(allocator, &.{ root, "aaa", "bbb", "ccc", "f11.txt" });
     defer allocator.free(deep);
     try sidebar.revealPath(deep);
+    pumpSidebar(sidebar, io);
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
 
     try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
@@ -1737,17 +1636,20 @@ test "explorer tree sidebar: sticky headers pin folder ancestors" {
     // Selecting a row that is already visible must not move the viewport, and
     // the auto-reveal that follows opening it must not move it either.
     try sidebar.revealPath(deep);
+    pumpSidebar(sidebar, io);
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
-    const scroll_before_file_click = sidebar.tree.view.widget.view.scroll_top;
+    const scroll_before_file_click = sidebar.tree.scrollTop();
     const clicked = try sidebar.handleClick(10, 3);
     try std.testing.expect(clicked != null);
-    try std.testing.expectEqual(scroll_before_file_click, sidebar.tree.view.widget.view.scroll_top);
+    try std.testing.expectEqual(scroll_before_file_click, sidebar.tree.scrollTop());
     try sidebar.revealPath(clicked.?);
-    try std.testing.expectEqual(scroll_before_file_click, sidebar.tree.view.widget.view.scroll_top);
+    pumpSidebar(sidebar, io);
+    try std.testing.expectEqual(scroll_before_file_click, sidebar.tree.scrollTop());
 
     // Clicking a sticky row jumps to the node and selects it in the list,
     // matching upstream `handleStickyScrollMouseEvent`.
     try sidebar.revealPath(deep);
+    pumpSidebar(sidebar, io);
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
     const down = ui.MouseEvent{ .kind = .down, .x = 10, .y = 1, .button = .left };
     try std.testing.expect(sidebar.handleMouse(&down));
@@ -1759,6 +1661,7 @@ test "explorer tree sidebar: sticky headers pin folder ancestors" {
 
     // Clicking the sticky row's twistie also toggles the folder.
     try sidebar.revealPath(deep);
+    pumpSidebar(sidebar, io);
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
     const ccc = sidebar.selectedNode().?.parent.?;
     try std.testing.expectEqualStrings("ccc", ccc.name);
@@ -1804,6 +1707,7 @@ test "explorer tree sidebar: sticky headers honor the tree settings" {
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     var grid = try ui.CellGrid.init(allocator, 32, 8);
     defer grid.deinit();
@@ -1812,6 +1716,7 @@ test "explorer tree sidebar: sticky headers honor the tree settings" {
     const deep = try std.fs.path.join(allocator, &.{ root, "aaa", "bbb", "ccc", "f11.txt" });
     defer allocator.free(deep);
     try sidebar.revealPath(deep);
+    pumpSidebar(sidebar, io);
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
     try std.testing.expectEqual(@as(usize, 1), sidebar.tree.stickyScrollNodes().len);
     const row0 = try grid.rowText(allocator, 0);
@@ -1831,10 +1736,12 @@ test "explorer tree sidebar: sticky headers honor the tree settings" {
     defer disabled_configuration.deinit();
     const disabled_sidebar = try Sidebar.init(allocator, io, context, disabled_configuration);
     defer disabled_sidebar.deinit();
+    pumpSidebar(disabled_sidebar, io);
     var disabled_grid = try ui.CellGrid.init(allocator, 32, 8);
     defer disabled_grid.deinit();
     try disabled_sidebar.render(&disabled_grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
     try disabled_sidebar.revealPath(deep);
+    pumpSidebar(disabled_sidebar, io);
     try disabled_sidebar.render(&disabled_grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
     try std.testing.expectEqual(@as(usize, 0), disabled_sidebar.tree.stickyScrollNodes().len);
 }
@@ -1872,6 +1779,7 @@ test "explorer tree sidebar: sticky rows use a header tint and bottom cell borde
     defer configuration.deinit();
     const sidebar = try Sidebar.init(allocator, io, context, configuration);
     defer sidebar.deinit();
+    pumpSidebar(sidebar, io);
 
     var registry = color_utils.ColorRegistry.init(allocator);
     defer registry.deinit();
@@ -1891,6 +1799,7 @@ test "explorer tree sidebar: sticky rows use a header tint and bottom cell borde
     const deep = try std.fs.path.join(allocator, &.{ root, "aaa", "bbb", "ccc", "f11.txt" });
     defer allocator.free(deep);
     try sidebar.revealPath(deep);
+    pumpSidebar(sidebar, io);
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
     try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
 

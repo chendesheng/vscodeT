@@ -315,6 +315,7 @@ comptime {
     _ = @import("./vs/base/test/browser/ui/tree/objectTree.test.zig");
     _ = @import("./vs/base/test/browser/ui/tree/indexTree.test.zig");
     _ = @import("./vs/base/test/browser/ui/tree/dataTree.test.zig");
+    _ = @import("./vs/base/test/browser/ui/tree/asyncDataTree.test.zig");
     _ = @import("./vs/platform/theme/common/theme.zig");
     _ = @import("./vs/platform/theme/common/themeService.zig");
     _ = @import("./vs/platform/theme/common/colorUtils.zig");

@@ -1,12 +1,12 @@
 // Port of `src/vs/base/browser/ui/tree/compressedObjectTreeModel.ts`.
 //
 // Terminal adaptation: compression works on owned slices instead of JS
-// iterables. Upstream mutates compressed nodes in place through smart splices;
-// this port keeps an uncompressed raw tree (with the `incompressible` flag) and
-// rebuilds the compressed model from it after each child update. Rebuilding is
-// safe because the raw tree preserves collapse state per element, including
-// the collapse state of a compressed group, so expanding a group and then
-// loading children does not collapse it again.
+// iterables. The port keeps an uncompressed raw tree (with the `incompressible`
+// flag) as the authoritative source and follows upstream's branch update:
+// decompress the affected compressed group, splice the changed element, then
+// recompress and replace either that group's children or the group inside its
+// parent. A full rebuild is reserved for compression/filter configuration
+// changes and for periodically reclaiming stale compressed branches.
 
 const std = @import("std");
 const object_tree = @import("./objectTreeModel.zig");
@@ -186,6 +186,40 @@ pub fn CompressedObjectTreeModel(comptime T: type) type {
         retained: std.array_list.Managed(Compressed),
         filter: ?tree.TreeFilter(T) = null,
 
+        const DiffContext = struct {
+            arena: *std.heap.ArenaAllocator,
+
+            fn getId(context: *anyopaque, compressed: CompressedNode) []const u8 {
+                const self: *DiffContext = @ptrCast(@alignCast(context));
+                var hasher = std.hash.Wyhash.init(0);
+                for (compressed.elements) |element| std.hash.autoHash(&hasher, element);
+                return std.fmt.allocPrint(self.arena.allocator(), "{x}", .{hasher.final()}) catch "";
+            }
+        };
+
+        const NodeMapCallbacks = struct {
+            model: *CompressedObjectTreeModel(T),
+            inserted: *std.AutoHashMap(T, void),
+
+            fn create(context: *anyopaque, node: *Model.Node) void {
+                const self: *NodeMapCallbacks = @ptrCast(@alignCast(context));
+                const compressed = node.element orelse return;
+                for (compressed.elements) |element| {
+                    self.model.nodes.put(element, compressed) catch {};
+                    self.inserted.put(element, {}) catch {};
+                }
+            }
+
+            fn delete(context: *anyopaque, node: *Model.Node) void {
+                const self: *NodeMapCallbacks = @ptrCast(@alignCast(context));
+                const compressed = node.element orelse return;
+                for (compressed.elements) |element| {
+                    if (self.inserted.contains(element)) continue;
+                    _ = self.model.nodes.remove(element);
+                }
+            }
+        };
+
         pub fn init(allocator: std.mem.Allocator, user: []const u8, compression_enabled: bool) !CompressedObjectTreeModel(T) {
             return .{
                 .allocator = allocator,
@@ -282,8 +316,11 @@ pub fn CompressedObjectTreeModel(comptime T: type) type {
         }
 
         /// Replaces children of `element` in the uncompressed source tree, then
-        /// recompresses the whole model. Recompression from the root matches the
-        /// upstream behavior that a child edit can change how ancestors group.
+        /// recompresses only the compressed branch that contains `element`.
+        /// This is the terminal port of upstream `CompressedObjectTreeModel.setChildren`:
+        /// decompress the affected group, splice in the new children, recompress,
+        /// and update the compressed node itself or its parent when the group
+        /// membership changed.
         pub fn setChildren(
             self: *CompressedObjectTreeModel(T),
             element: ?T,
@@ -294,8 +331,228 @@ pub fn CompressedObjectTreeModel(comptime T: type) type {
                 self.raw_nodes.get(value) orelse return error.TreeNotFound
             else
                 null;
+
+            if (element == null) {
+                try self.replaceRawChildren(null, children);
+                try self.recompressRootChildren();
+                return;
+            }
+
+            const compressed_node = self.nodes.get(element.?) orelse return error.TreeNotFound;
+            const model_node = try self.model.getNode(compressed_node);
+            const compressed_element = try self.modelNodeToCompressedElement(model_node);
+            defer self.freeModelDerivedCompressed(compressed_element);
+
+            const decompressed = try decompress(T, self.allocator, compressed_element);
+            defer freeDecompressed(T, self.allocator, decompressed);
+
+            var spliced = try self.spliceDecompressed(decompressed, element.?, children);
+            defer freeDecompressed(T, self.allocator, spliced);
+            self.applyRawCollapse(&spliced);
+
+            const recompressed = if (self.enabled)
+                try compress(T, self.allocator, spliced)
+            else
+                try noCompress(T, self.allocator, spliced);
+
             try self.replaceRawChildren(parent, children);
-            try self.rebuild();
+            try self.applyRecompressed(model_node, compressed_element.element.elements, recompressed);
+            // Branch updates keep the old compressed root elements alive for
+            // reading; compact once the retained set grows large so a long
+            // session does not accumulate stale compressed trees.
+            if (self.retained.items.len > 512) try self.rebuild();
+        }
+
+        /// Rebuilds the root-level compressed elements after a root child
+        /// update. Other branches are untouched.
+        fn recompressRootChildren(self: *CompressedObjectTreeModel(T)) !void {
+            var elements = std.array_list.Managed(ModelElement).init(self.allocator);
+            defer elements.deinit();
+            const retained_before = self.retained.items.len;
+            errdefer {
+                while (self.retained.items.len > retained_before) {
+                    const retained = self.retained.pop().?;
+                    freeCompressed(T, self.allocator, retained);
+                }
+            }
+            for (self.root_children.items) |raw_node| {
+                const raw_element = try self.fromRawNode(raw_node);
+                defer freeDecompressed(T, self.allocator, raw_element);
+                const compressed = if (self.enabled)
+                    try compress(T, self.allocator, raw_element)
+                else
+                    try noCompress(T, self.allocator, raw_element);
+                try self.retained.append(compressed);
+                try elements.append(try self.toModelElement(compressed));
+            }
+            defer {
+                for (elements.items) |element| self.freeModelElement(element);
+            }
+            var inserted = std.AutoHashMap(T, void).init(self.allocator);
+            defer inserted.deinit();
+            try self.setModelChildren(null, elements.items, 0, &inserted);
+        }
+
+        /// Applies a recompressed branch to the object model. If the compressed
+        /// group membership is unchanged, only its children are replaced;
+        /// otherwise the group is replaced in its parent's child list, exactly
+        /// like upstream.
+        fn applyRecompressed(
+            self: *CompressedObjectTreeModel(T),
+            model_node: *Model.Node,
+            old_elements: []const T,
+            recompressed: Compressed,
+        ) !void {
+            if (std.mem.eql(T, old_elements, recompressed.element.elements)) {
+                try self.retained.append(recompressed);
+                var children = std.array_list.Managed(ModelElement).init(self.allocator);
+                defer children.deinit();
+                defer for (children.items) |child| self.freeModelElement(child);
+                for (recompressed.children) |child| try children.append(try self.toModelElement(child));
+                var inserted = std.AutoHashMap(T, void).init(self.allocator);
+                defer inserted.deinit();
+                try self.setModelChildren(model_node.element, children.items, 1, &inserted);
+                return;
+            }
+
+            const parent_model = model_node.parent orelse return error.TreeNotFound;
+            try self.retained.append(recompressed);
+            var parent_children = std.array_list.Managed(ModelElement).init(self.allocator);
+            defer parent_children.deinit();
+            defer for (parent_children.items) |child| self.freeModelElement(child);
+            for (parent_model.children.items) |child| {
+                if (child == model_node) {
+                    try parent_children.append(try self.toModelElement(recompressed));
+                } else {
+                    try parent_children.append(try self.modelNodeToModelElement(child));
+                }
+            }
+            var inserted = std.AutoHashMap(T, void).init(self.allocator);
+            defer inserted.deinit();
+            const depth = if (model_node.depth > parent_model.depth) model_node.depth - parent_model.depth else 1;
+            try self.setModelChildren(parent_model.element, parent_children.items, depth, &inserted);
+        }
+
+        fn setModelChildren(
+            self: *CompressedObjectTreeModel(T),
+            node: ?CompressedNode,
+            children: []const ModelElement,
+            diff_depth: usize,
+            inserted: *std.AutoHashMap(T, void),
+        ) !void {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            var diff = DiffContext{ .arena = &arena };
+            var callbacks = NodeMapCallbacks{ .model = self, .inserted = inserted };
+            try self.model.setChildrenWithOptions(node, children, .{
+                .diff_identity_provider = .{
+                    .context = &diff,
+                    .get_id = DiffContext.getId,
+                },
+                .diff_depth = diff_depth,
+                .on_did_create_node = NodeMapCallbacks.create,
+                .on_did_delete_node = NodeMapCallbacks.delete,
+                .callback_context = &callbacks,
+            });
+            inserted.clearRetainingCapacity();
+            self.refreshNodeMap();
+        }
+
+        fn refreshNodeMap(self: *CompressedObjectTreeModel(T)) void {
+            self.nodes.clearRetainingCapacity();
+            for (self.model.model.root.children.items) |node| self.mapNode(node);
+        }
+
+        fn modelNodeToCompressedElement(self: *CompressedObjectTreeModel(T), node: *Model.Node) !Compressed {
+            var children = std.array_list.Managed(Compressed).init(self.allocator);
+            errdefer {
+                for (children.items) |child| freeCompressed(T, self.allocator, child);
+                children.deinit();
+            }
+            for (node.children.items) |child| {
+                try children.append(try self.modelNodeToCompressedElement(child));
+            }
+            return .{
+                .element = node.element orelse return error.TreeNotFound,
+                .children = try children.toOwnedSlice(),
+                .collapsible = node.collapsible,
+                .collapsed = node.collapsed,
+                .incompressible = if (node.element) |value| value.incompressible else false,
+            };
+        }
+
+        fn modelNodeToModelElement(self: *CompressedObjectTreeModel(T), node: *Model.Node) !ModelElement {
+            var children = std.array_list.Managed(ModelElement).init(self.allocator);
+            errdefer {
+                for (children.items) |child| self.freeModelElement(child);
+                children.deinit();
+            }
+            for (node.children.items) |child| {
+                try children.append(try self.modelNodeToModelElement(child));
+            }
+            return .{
+                .element = node.element orelse return error.TreeNotFound,
+                .children = try children.toOwnedSlice(),
+                .collapsible = node.collapsible,
+                .collapsed = node.collapsed,
+            };
+        }
+
+        fn cloneDecompressed(self: *CompressedObjectTreeModel(T), element: CompressedTreeElement(T)) !CompressedTreeElement(T) {
+            var children = std.array_list.Managed(CompressedTreeElement(T)).init(self.allocator);
+            errdefer {
+                for (children.items) |child| freeDecompressed(T, self.allocator, child);
+                children.deinit();
+            }
+            for (element.children) |child| try children.append(try self.cloneDecompressed(child));
+            return .{
+                .element = element.element,
+                .children = try children.toOwnedSlice(),
+                .collapsible = element.collapsible,
+                .collapsed = element.collapsed,
+                .incompressible = element.incompressible,
+            };
+        }
+
+        fn spliceDecompressed(
+            self: *CompressedObjectTreeModel(T),
+            source: CompressedTreeElement(T),
+            element: T,
+            children: []const CompressedTreeElement(T),
+        ) !CompressedTreeElement(T) {
+            var out = std.array_list.Managed(CompressedTreeElement(T)).init(self.allocator);
+            errdefer {
+                for (out.items) |child| freeDecompressed(T, self.allocator, child);
+                out.deinit();
+            }
+            if (source.element == element) {
+                for (children) |child| try out.append(try self.cloneDecompressed(child));
+            } else {
+                for (source.children) |child| {
+                    try out.append(try self.spliceDecompressed(child, element, children));
+                }
+            }
+            return .{
+                .element = source.element,
+                .children = try out.toOwnedSlice(),
+                .collapsible = source.collapsible,
+                .collapsed = source.collapsed,
+                .incompressible = source.incompressible,
+            };
+        }
+
+        /// The compressed element tree built from model nodes borrows the
+        /// model-owned `elements` slices. Only its own children arrays are
+        /// owned, so it must not go through `freeCompressed`.
+        fn freeModelDerivedCompressed(self: *CompressedObjectTreeModel(T), element: Compressed) void {
+            for (element.children) |child| self.freeModelDerivedCompressed(child);
+            self.allocator.free(element.children);
+        }
+
+        fn applyRawCollapse(self: *CompressedObjectTreeModel(T), element: *CompressedTreeElement(T)) void {
+            if (self.raw_nodes.get(element.element)) |raw| element.collapsed = raw.collapsed;
+            const mutable: [*]CompressedTreeElement(T) = @constCast(element.children.ptr);
+            for (0..element.children.len) |index| self.applyRawCollapse(&mutable[index]);
         }
 
         fn replaceRawChildren(
