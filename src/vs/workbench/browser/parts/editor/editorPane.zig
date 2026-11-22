@@ -802,7 +802,6 @@ pub const Controllers = struct {
         else
             MarkdownHoverParticipant.init(allocator, editor.model, &self.hover_providers);
         errdefer self.hover_participant.deinit();
-        self.setThemeColors(view.theme_colors);
         self.marker_hover_participant = MarkerHoverParticipant.init(
             allocator,
             editor.model,
@@ -856,6 +855,11 @@ pub const Controllers = struct {
         else
             try SuggestController.init(allocator, editor, self.completion_providers[0..self.completion_count], suggest_host);
         errdefer self.suggest.deinit();
+
+        // Every part `setThemeColors` touches (find, hover, hover_participant,
+        // suggest) must exist first; upstream gets this ordering implicitly
+        // from CSS being applied to already-created DOM nodes.
+        self.setThemeColors(view.theme_colors);
 
         try view.addConfigurationListener(.{ .context = self, .notify = onStickyConfigurationChanged });
         return self;
