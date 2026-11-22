@@ -60,6 +60,8 @@ pub const TitleActionHit = struct {
     end: usize,
 };
 
+pub const TabSizing = enum { fit, shrink, fixed };
+
 pub const DrawOptions = struct {
     group_active: bool = true,
     hovered: ?usize = null,
@@ -69,6 +71,7 @@ pub const DrawOptions = struct {
     drop_index: ?usize = null,
     /// Put the close cell before the icon/label (`tabCloseButton: left`).
     close_button_left: bool = false,
+    tab_sizing: TabSizing = .shrink,
     /// Whether the terminal negotiated the cell-border protocol; without it
     /// the insertion feedback falls back to a block glyph.
     cell_borders: bool = false,
@@ -157,10 +160,15 @@ fn closeWidth(tab: TabInfo) usize {
     return if (tab.closeable) 2 else 0;
 }
 
-fn tabWidth(tab: TabInfo, cols: usize) usize {
+fn tabWidth(tab: TabInfo, cols: usize, sizing: TabSizing, count: usize) usize {
     const description_width = if (tab.description.len > 0) textWidth(tab.description) + 1 else 0;
     const width = textWidth(tab.label) + description_width + 2 + iconSpace(tab) + closeWidth(tab);
-    return @min(@max(width, 4), @max(cols -| 1, 1));
+    const cap: usize = switch (sizing) {
+        .shrink => @max(cols -| 1, 1),
+        .fit => if (count == 0) @max(cols -| 1, 1) else @max(cols / count, 4),
+        .fixed => @min(12, @max(cols -| 1, 1)),
+    };
+    return @min(@max(width, 4), cap);
 }
 
 fn truncateLabel(label: []const u8, max_cells: usize) []const u8 {
@@ -292,7 +300,7 @@ pub fn draw(
     const widths = try grid.allocator.alloc(usize, tabs.len);
     defer grid.allocator.free(widths);
     for (tabs, 0..) |tab, index| {
-        widths[index] = tabWidth(tab, layout_cols);
+        widths[index] = tabWidth(tab, layout_cols, options.tab_sizing, tabs.len);
     }
 
     // Find the first tab to paint. Start at zero unless the active tab would
@@ -634,6 +642,28 @@ test "tabBar can place the close cell on the left" {
     try std.testing.expectEqual(@as(?usize, 0), hits.items[0].close_start);
     try std.testing.expectEqual(@as(u32, 0x00D7), grid.cluster[grid.index(0, 0)]);
     try std.testing.expectEqual(@as(?usize, 0), closeHitAt(hits.items, 0));
+}
+
+test "tabBar supports fit, shrink and fixed sizing" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 40, 1);
+    defer grid.deinit();
+
+    var hits = std.array_list.Managed(Hit).init(allocator);
+    defer hits.deinit();
+    const tabs = [_]TabInfo{
+        .{ .label = "very-long-file-name-a.ts", .file_name = "a.ts" },
+        .{ .label = "very-long-file-name-b.ts", .file_name = "b.ts" },
+        .{ .label = "very-long-file-name-c.ts", .file_name = "c.ts" },
+    };
+
+    _ = try draw(&grid, &tabs, 0, 0, 0, 40, &hits, .{ .tab_sizing = .fixed }, null);
+    try std.testing.expectEqual(@as(usize, 3), hits.items.len);
+    try std.testing.expectEqual(@as(usize, 12), hits.items[0].end - hits.items[0].start);
+
+    _ = try draw(&grid, &tabs, 0, 0, 0, 40, &hits, .{ .tab_sizing = .fit }, null);
+    try std.testing.expectEqual(@as(usize, 3), hits.items.len);
+    try std.testing.expect(hits.items[0].end - hits.items[0].start <= 13);
 }
 
 test "tabBar scrolls to keep the active tab visible" {
