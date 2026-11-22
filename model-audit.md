@@ -168,12 +168,12 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 
 - **Bracket-pair core is a merged reimplementation.** `bracketPairsTree.zig`
   carries eight upstream modules in one file and has no `concat23Trees`,
-  streaming `TextBufferTokenizer`/`FastTokenizer`, two-tree mode
-  (`initialAstWithoutTokens`/`astWithTokens`) or upstream bracket matcher
-  (case folding, word boundaries, token clamping). Queries use flat sorted
-  lists for pair/matching APIs, so many operations remain O(document) and
-  incremental parses deep-clone cached nodes. See the audit findings F9/F15
-  for concrete differences and the staged split plan.
+  streaming `TextBufferTokenizer`/`FastTokenizer`, or two-tree mode
+  (`initialAstWithoutTokens`/`astWithTokens`). Queries use flat sorted lists
+  for pair APIs, so many operations remain O(document) and incremental
+  parses deep-clone cached nodes. Delimiter matching (case folding, word
+  boundaries, token clamping) is now ported. See findings F9/F15 for the
+  staged split plan.
 - **Piece-tree public APIs still have byte/UTF-16 and safety gaps.**
   `getLineCharCode`/`getCharCode` are byte accessors next to the codepoint
   helpers; `getNearestChunk` returns a borrowed slice into mutable buffers;
