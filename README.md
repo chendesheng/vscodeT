@@ -518,7 +518,8 @@ console API for raw mode, sizing and input polling.
   menu (Close, Close Others, Close to the Right, Close Saved, Close All,
   Pin/Unpin, Split Right, Split Down)
   instead of closing or
-  activating a tab, duplicate labels append a dimmed parent-directory
+  activating a tab; pinned tabs share the single row rather than using a
+  separate pinned row, duplicate labels append a dimmed parent-directory
   description (`workbench.editor.labelFormat` short/medium/long/default is
   read), clicking the leading ellipsis lists the clipped tabs in a quick pick,
   `workbench.editor.tabCloseButton` off/left/right controls the close cell,
