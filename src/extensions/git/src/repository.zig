@@ -42,8 +42,11 @@ pub const GitScmResource = struct {
     relative_path: []u8,
     absolute_path: []u8,
     kind: ResourceKind,
+    /// Porcelain v2 status letter (`M`, `A`, `D`, `R`, `?`, ...).
     status: u8,
-    status_text: [1]u8,
+    /// Upstream `Resource.letter` projection (`U` for untracked, `!` for a
+    /// conflict, ...); the resource row paints it as a file decoration badge.
+    letter: [1]u8,
     decorations: scm.ISCMResourceDecorations,
     iface: scm.ISCMResource,
 
@@ -330,14 +333,15 @@ pub const Repository = struct {
         else
             try std.fs.path.join(self.allocator, &.{ self.root, change.path });
         errdefer self.allocator.free(absolute);
-        const tooltip = try self.allocator.dupe(u8, change.path);
-        errdefer self.allocator.free(tooltip);
-
         const status: u8 = if (change.status != 0) change.status else switch (kind) {
             .merge => 'U',
             .untracked => '?',
             else => 'M',
         };
+        const info = statusDecoration(kind, status, change.conflict);
+        const tooltip = try self.allocator.dupe(u8, info.tooltip);
+        errdefer self.allocator.free(tooltip);
+
         const group = &self.groups[group_index];
         resource.* = .{
             .provider = self,
@@ -345,11 +349,13 @@ pub const Repository = struct {
             .absolute_path = absolute,
             .kind = kind,
             .status = status,
-            .status_text = .{status},
+            .letter = .{info.letter},
             .decorations = .{
                 .tooltip = tooltip,
-                .strike_through = status == 'D',
-                .faded = kind == .untracked,
+                .strike_through = info.strike_through,
+                .faded = false,
+                .letter = &resource.letter,
+                .color = info.color,
             },
             .iface = .{
                 .context = resource,
@@ -357,10 +363,12 @@ pub const Repository = struct {
                 .source_path = absolute,
                 .decorations = .{
                     .tooltip = tooltip,
-                    .strike_through = status == 'D',
-                    .faded = kind == .untracked,
+                    .strike_through = info.strike_through,
+                    .faded = false,
+                    .letter = &resource.letter,
+                    .color = info.color,
                 },
-                .context_value = &resource.status_text,
+                .context_value = null,
                 .command = null,
                 .open_fn = openResource,
             },
@@ -376,6 +384,72 @@ pub const Repository = struct {
         return path[root.len + 1 ..];
     }
 };
+
+const StatusDecoration = struct {
+    letter: u8,
+    tooltip: []const u8,
+    color: []const u8,
+    strike_through: bool = false,
+};
+
+/// Port of the upstream `git` extension's `Resource.getStatusLetter`/
+/// `getStatusText`/`getStatusColor` mapping. The terminal provider carries the
+/// resulting file decoration on the SCM resource because the workbench has no
+/// general file decoration service.
+fn statusDecoration(kind: ResourceKind, status: u8, conflict: ?[2]u8) StatusDecoration {
+    return switch (kind) {
+        .merge => conflictDecoration(conflict),
+        .index => switch (status) {
+            'M' => .{ .letter = 'M', .tooltip = "Index Modified", .color = "gitDecoration.stageModifiedResourceForeground" },
+            'A' => .{ .letter = 'A', .tooltip = "Index Added", .color = "gitDecoration.addedResourceForeground" },
+            'D' => .{ .letter = 'D', .tooltip = "Index Deleted", .color = "gitDecoration.stageDeletedResourceForeground", .strike_through = true },
+            'R' => .{ .letter = 'R', .tooltip = "Index Renamed", .color = "gitDecoration.renamedResourceForeground" },
+            'C' => .{ .letter = 'C', .tooltip = "Index Copied", .color = "gitDecoration.renamedResourceForeground" },
+            else => .{ .letter = status, .tooltip = "Index Modified", .color = "gitDecoration.stageModifiedResourceForeground" },
+        },
+        .working => switch (status) {
+            'M' => .{ .letter = 'M', .tooltip = "Modified", .color = "gitDecoration.modifiedResourceForeground" },
+            'D' => .{ .letter = 'D', .tooltip = "Deleted", .color = "gitDecoration.deletedResourceForeground", .strike_through = true },
+            'A' => .{ .letter = 'A', .tooltip = "Intent to Add", .color = "gitDecoration.addedResourceForeground" },
+            'R' => .{ .letter = 'R', .tooltip = "Intent to Rename", .color = "gitDecoration.renamedResourceForeground" },
+            'T' => .{ .letter = 'T', .tooltip = "Type Changed", .color = "gitDecoration.modifiedResourceForeground" },
+            '?' => .{ .letter = 'U', .tooltip = "Untracked", .color = "gitDecoration.untrackedResourceForeground" },
+            else => .{ .letter = status, .tooltip = "Modified", .color = "gitDecoration.modifiedResourceForeground" },
+        },
+        .untracked => .{ .letter = 'U', .tooltip = "Untracked", .color = "gitDecoration.untrackedResourceForeground" },
+    };
+}
+
+fn conflictDecoration(conflict: ?[2]u8) StatusDecoration {
+    const pair = conflict orelse return .{
+        .letter = '!',
+        .tooltip = "Conflict",
+        .color = "gitDecoration.conflictingResourceForeground",
+    };
+    const xy = pair;
+    if (xy[0] == 'D' and xy[1] == 'D') {
+        return .{ .letter = '!', .tooltip = "Conflict: Both Deleted", .color = "gitDecoration.conflictingResourceForeground", .strike_through = true };
+    }
+    if (xy[0] == 'A' and xy[1] == 'U') {
+        return .{ .letter = '!', .tooltip = "Conflict: Added By Us", .color = "gitDecoration.conflictingResourceForeground" };
+    }
+    if (xy[0] == 'U' and xy[1] == 'D') {
+        return .{ .letter = '!', .tooltip = "Conflict: Deleted By Them", .color = "gitDecoration.conflictingResourceForeground", .strike_through = true };
+    }
+    if (xy[0] == 'U' and xy[1] == 'A') {
+        return .{ .letter = '!', .tooltip = "Conflict: Added By Them", .color = "gitDecoration.conflictingResourceForeground" };
+    }
+    if (xy[0] == 'D' and xy[1] == 'U') {
+        return .{ .letter = '!', .tooltip = "Conflict: Deleted By Us", .color = "gitDecoration.conflictingResourceForeground", .strike_through = true };
+    }
+    if (xy[0] == 'A' and xy[1] == 'A') {
+        return .{ .letter = '!', .tooltip = "Conflict: Both Added", .color = "gitDecoration.conflictingResourceForeground" };
+    }
+    if (xy[0] == 'U' and xy[1] == 'U') {
+        return .{ .letter = '!', .tooltip = "Conflict: Both Modified", .color = "gitDecoration.conflictingResourceForeground" };
+    }
+    return .{ .letter = '!', .tooltip = "Conflict", .color = "gitDecoration.conflictingResourceForeground" };
+}
 
 fn providerGroups(context: *anyopaque) []const *scm.ISCMResourceGroup {
     const self: *Repository = @ptrCast(@alignCast(context));
@@ -506,7 +580,11 @@ const TestHost = struct {
 fn makeState(allocator: Allocator) !GitRepositoryState {
     var state = GitRepositoryState{};
     state.merge_changes = try allocator.alloc(GitChange, 1);
-    state.merge_changes[0] = .{ .path = try allocator.dupe(u8, "conflict.zig"), .status = 'U' };
+    state.merge_changes[0] = .{
+        .path = try allocator.dupe(u8, "conflict.zig"),
+        .status = 'U',
+        .conflict = .{ 'U', 'U' },
+    };
     state.index_changes = try allocator.alloc(GitChange, 1);
     state.index_changes[0] = .{ .path = try allocator.dupe(u8, "staged.zig"), .status = 'M' };
     state.working_tree_changes = try allocator.alloc(GitChange, 1);
@@ -543,7 +621,26 @@ test "repository: groups, status letters and resource opening" {
 
     try testing.expectEqual(@as(usize, 1), groups[0].resources().len);
     try testing.expectEqual(@as(u8, 'U'), provider.groups[0].resources.items[0].status);
+    const merge_decorations = groups[0].resources()[0].decorations;
+    try testing.expectEqualStrings("!", merge_decorations.letter.?);
+    try testing.expectEqualStrings("Conflict: Both Modified", merge_decorations.tooltip.?);
+    try testing.expectEqualStrings("gitDecoration.conflictingResourceForeground", merge_decorations.color.?);
+
+    const staged_decorations = groups[1].resources()[0].decorations;
+    try testing.expectEqualStrings("M", staged_decorations.letter.?);
+    try testing.expectEqualStrings("Index Modified", staged_decorations.tooltip.?);
+    try testing.expectEqualStrings("gitDecoration.stageModifiedResourceForeground", staged_decorations.color.?);
+
     try testing.expectEqual(@as(usize, 2), groups[2].resources().len);
+    const working_decorations = groups[2].resources()[0].decorations;
+    try testing.expectEqualStrings("M", working_decorations.letter.?);
+    try testing.expectEqualStrings("Modified", working_decorations.tooltip.?);
+    try testing.expectEqualStrings("gitDecoration.modifiedResourceForeground", working_decorations.color.?);
+    const untracked_decorations = groups[2].resources()[1].decorations;
+    try testing.expectEqualStrings("U", untracked_decorations.letter.?);
+    try testing.expectEqualStrings("Untracked", untracked_decorations.tooltip.?);
+    try testing.expectEqualStrings("gitDecoration.untrackedResourceForeground", untracked_decorations.color.?);
+    try testing.expect(!untracked_decorations.faded);
     const expected_untracked = try std.fs.path.join(allocator, &.{ test_root, "new.zig" });
     defer allocator.free(expected_untracked);
     try testing.expectEqualStrings(expected_untracked, groups[2].resources()[1].source_path);

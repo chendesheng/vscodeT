@@ -27,9 +27,21 @@ pub const REPOSITORIES_VIEW_PANE_ID = "workbench.scm.repositories";
 pub const ViewMode = enum { list, tree };
 
 pub const ISCMResourceDecorations = struct {
+    /// File-decoration tooltip. The Git provider stores the upstream status
+    /// text here (`Modified`, `Index Added`, `Conflict: Both Modified`, ...);
+    /// the SCM view uses it for the `scm.defaultViewSortKey=status` ordering.
+    /// Terminal rows have no hover, so the text is not painted directly.
     tooltip: ?[]const u8 = null,
     strike_through: bool = false,
     faded: bool = false,
+    /// Terminal projection of the Git extension's file decoration
+    /// (`FileDecoration.letter`). The workbench has no general file
+    /// decoration service, so the SCM provider carries the badge letter the
+    /// resource row paints.
+    letter: ?[]const u8 = null,
+    /// Theme color of the badge letter (for Git
+    /// `gitDecoration.modifiedResourceForeground`, ...).
+    color: ?[]const u8 = null,
 };
 
 /// A changed resource in a resource group. The terminal resource rows paint the
