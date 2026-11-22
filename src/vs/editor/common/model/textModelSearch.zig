@@ -60,8 +60,12 @@ pub const SearchParams = struct {
         errdefer regex.?.deinit();
 
         var canUseSimpleSearch = (!self.isRegex and !multiline);
-        if (canUseSimpleSearch and strings.containsEnglishLetter(self.searchString)) {
-            // casing might make a difference
+        if (canUseSimpleSearch and
+            (strings.containsEnglishLetter(self.searchString) or !strings.isBasicASCII(self.searchString)))
+        {
+            // Casing might make a difference. Upstream disables simple search
+            // for every cased character; non-ASCII text conservatively takes
+            // the regex path so Unicode case folding matches.
             canUseSimpleSearch = self.matchCase;
         }
 
@@ -141,7 +145,10 @@ pub fn createFindMatch(allocator: Allocator, range: Range, rawMatches: SearchRes
     for (0..rawMatches.numberOfGroups()) |i| {
         // The regex groups point into a transient line buffer. Copy them so the
         // find model can build replacement strings after the search returns.
-        try matches.append(try allocator.dupe(u8, rawMatches.groupN(i)));
+        // A group that did not participate matches JS `undefined`, which the
+        // replacement builder treats like the empty string.
+        const group = rawMatches.groupNOrNull(i) orelse "";
+        try matches.append(try allocator.dupe(u8, group));
     }
     return FindMatch.init(range, try matches.toOwnedSlice());
 }
@@ -263,6 +270,7 @@ pub const TextModelSearch = struct {
         defer value.deinit();
         const text = value.items;
         var lf_counter: ?LineFeedCounter = if (model.getEOL() == .CRLF) try LineFeedCounter.init(allocator, text) else null;
+        defer if (lf_counter) |*counter| counter.deinit();
         const lf_counter_ptr: ?*LineFeedCounter = if (lf_counter) |*counter| counter else null;
 
         var result = ArrayList(FindMatch).init(allocator);
@@ -381,9 +389,11 @@ pub const TextModelSearch = struct {
         defer value.deinit();
         const text = value.items;
         var lf_counter: ?LineFeedCounter = if (model.getEOL() == .CRLF) try LineFeedCounter.init(allocator, text) else null;
+        defer if (lf_counter) |*counter| counter.deinit();
         const lf_counter_ptr: ?*LineFeedCounter = if (lf_counter) |*counter| counter else null;
         var local_searcher = searcher;
-        local_searcher.reset(text, 0);
+        // Upstream starts scanning at the cursor column inside the joined text.
+        local_searcher.reset(text, searchStart.column - 1);
         if (local_searcher.next()) |m| {
             return try createFindMatch(allocator, try _getMultilineMatchRange(model, deltaOffset, text, lf_counter_ptr, m.index(), m.groupN(0)), m, captureMatches);
         }
@@ -450,10 +460,15 @@ pub const TextModelSearch = struct {
     }
 
     fn _doFindPreviousMatchMultiline(model: *TextModel, searchStart: Position, searcher: Searcher, captureMatches: bool) !?FindMatch {
-        const matches = try _doFindMatchesMultiline(model, Range.init(1, 1, searchStart.lineNumber, searchStart.column), searcher, captureMatches, 10 * LIMIT_FIND_COUNT);
+        const allocator = model.getAllocator();
+        var matches = try _doFindMatchesMultiline(model, Range.init(1, 1, searchStart.lineNumber, searchStart.column), searcher, captureMatches, 10 * LIMIT_FIND_COUNT);
         if (matches.items.len > 0) {
-            return matches.items[matches.items.len - 1];
+            const result = matches.items[matches.items.len - 1];
+            for (matches.items[0 .. matches.items.len - 1]) |match| match.free(allocator);
+            matches.deinit();
+            return result;
         }
+        matches.deinit();
 
         const lineCount = model.getLineCount();
         if (searchStart.lineNumber != lineCount or searchStart.column != model.getLineMaxColumn(lineCount)) {
@@ -617,3 +632,76 @@ pub const Searcher = struct {
         }
     }
 };
+
+test "findMatches: regex matches do not overlap" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+    var test_model = try TestModel.init(allocator, "aaaa", "plaintext");
+    defer test_model.deinit();
+
+    var matches = try test_model.model.findMatches("aa", null, true, true, null, false, 100);
+    defer {
+        for (matches.items) |*match| match.free(allocator);
+        matches.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 2), matches.items.len);
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 3), matches.items[0].range);
+    try std.testing.expectEqualDeep(Range.init(1, 3, 1, 5), matches.items[1].range);
+}
+
+test "findMatches: optional capture groups are empty, not a panic" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+    var test_model = try TestModel.init(allocator, "bazbar", "plaintext");
+    defer test_model.deinit();
+
+    var matches = try test_model.model.findMatches("(foo)?bar", null, true, true, null, true, 100);
+    defer {
+        for (matches.items) |*match| match.free(allocator);
+        matches.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 1), matches.items.len);
+    try std.testing.expect(matches.items[0].matches != null);
+    try std.testing.expectEqualStrings("", matches.items[0].matches.?[1]);
+}
+
+test "findNextMatch: multiline search starts at the cursor column" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+    var test_model = try TestModel.init(allocator, "foo bar foo bar", "plaintext");
+    defer test_model.deinit();
+
+    const first = (try test_model.model.findNextMatch("foo\\Wbar", Position.init(1, 1), true, true, null, false)).?;
+    defer first.free(allocator);
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 8), first.range);
+
+    const second = (try test_model.model.findNextMatch("foo\\Wbar", Position.init(1, 8), true, true, null, false)).?;
+    defer second.free(allocator);
+    try std.testing.expectEqualDeep(Range.init(1, 9, 1, 16), second.range);
+}
+
+test "findPreviousMatch: multiline result owns no leaked matches" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+    var test_model = try TestModel.init(allocator, "a b a b", "plaintext");
+    defer test_model.deinit();
+
+    const match = (try test_model.model.findPreviousMatch("a\\Wb", Position.init(1, 8), true, true, null, false)).?;
+    defer match.free(allocator);
+    try std.testing.expectEqualDeep(Range.init(1, 5, 1, 8), match.range);
+}
+
+test "findMatches: case-insensitive non-ASCII uses the regex path" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+    var test_model = try TestModel.init(allocator, "\u{00C4}", "plaintext");
+    defer test_model.deinit();
+
+    var matches = try test_model.model.findMatches("\u{00E4}", null, false, false, null, false, 100);
+    defer {
+        for (matches.items) |*match| match.free(allocator);
+        matches.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 1), matches.items.len);
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 3), matches.items[0].range);
+}
