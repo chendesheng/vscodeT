@@ -9,11 +9,12 @@
 // resizing replaces the split-view sash; the original pane is not
 // keyboard-focusable (documented terminal simplification).
 //
-// Not ported in this milestone: inline diff mode, hide-unchanged regions, the
-// accessible diff viewer, editing either side, and the combined two-lane
-// overview ruler (each pane keeps its own scrollbar markers). Moved-block
-// detection is wired through `state.moved_texts` into `movedOriginal`/
-// `movedModified` block decorations.
+// Not ported in this milestone: inline diff mode, the accessible diff viewer,
+// editing either side, and the combined two-lane overview ruler (each pane
+// keeps its own scrollbar markers). Moved-block detection is wired through
+// `state.moved_texts` into `movedOriginal`/`movedModified` block decorations.
+// Hide-unchanged regions are applied as collapsed user-defined folding ranges
+// over both aligned display texts, keeping context around each change.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -182,6 +183,16 @@ pub const DiffEditorWidget = struct {
         modified_editor.setLineDecorationsWidth(0);
         original_view.setStatusBarVisible(false) catch {};
         modified_view.setStatusBarVisible(false) catch {};
+        if (normalized_options.hide_unchanged_regions) {
+            try applyHideUnchangedRegions(
+                allocator,
+                original_editor,
+                modified_editor,
+                &aligned,
+                normalized_options.hide_unchanged_regions_context_line_count,
+                normalized_options.hide_unchanged_regions_minimum_line_count,
+            );
+        }
 
         // The model decorations store pointers into the options structs owned
         // by `DiffEditorDecorations`, so it must live at a stable address
@@ -548,7 +559,65 @@ fn clampRatio(ratio: f64) f64 {
     return std.math.clamp(ratio, 0.2, 0.8);
 }
 
-pub fn splitOwnedLines(allocator: Allocator, text: []const u8) ![][]u8 {
+pub fn applyHideUnchangedRegions(
+    allocator: Allocator,
+    original_editor: *Editor,
+    modified_editor: *Editor,
+    aligned: *const AlignedRows,
+    context_line_count: usize,
+    minimum_line_count: usize,
+) !void {
+    var ranges = std.array_list.Managed(LineRange).init(allocator);
+    defer ranges.deinit();
+
+    var cursor: usize = 1;
+    for (aligned.mappings) |mapping| {
+        const run_end = mapping.original.startLineNumber -| 1;
+        try appendHiddenRange(&ranges, cursor, run_end, true, true, context_line_count, minimum_line_count);
+        cursor = mapping.original.endLineNumberExclusive;
+    }
+    try appendHiddenRange(&ranges, cursor, aligned.lineCount(), true, false, context_line_count, minimum_line_count);
+    if (ranges.items.len == 0) return;
+
+    const fold_ranges = try allocator.alloc(
+        @import("../../../contrib/folding/browser/foldingRanges.zig").FoldRange,
+        ranges.items.len,
+    );
+    defer allocator.free(fold_ranges);
+    for (ranges.items, 0..) |range, index| {
+        fold_ranges[index] = .{
+            .startLineNumber = range.startLineNumber,
+            .endLineNumber = range.endLineNumberExclusive - 1,
+            .isCollapsed = true,
+            .source = .user_defined,
+        };
+    }
+    try original_editor.addFoldingRanges(fold_ranges);
+    try modified_editor.addFoldingRanges(fold_ranges);
+}
+
+fn appendHiddenRange(
+    ranges: *std.array_list.Managed(LineRange),
+    start: usize,
+    end: usize,
+    has_previous: bool,
+    has_next: bool,
+    context_line_count: usize,
+    minimum_line_count: usize,
+) !void {
+    if (start > end) return;
+    const left_keep = if (has_previous) context_line_count else 0;
+    const right_keep = if (has_next) context_line_count else 0;
+    const collapse_start = start +| left_keep;
+    if (collapse_start > end) return;
+    const collapse_end = end -| right_keep;
+    if (collapse_end < collapse_start) return;
+    const hidden_count = collapse_end - collapse_start + 1;
+    if (hidden_count < minimum_line_count or hidden_count == 0) return;
+    try ranges.append(LineRange.init(collapse_start, collapse_end + 1));
+}
+
+fn splitOwnedLines(allocator: Allocator, text: []const u8) ![][]u8 {
     var lines = std.array_list.Managed([]u8).init(allocator);
     errdefer freeLines(allocator, lines.items);
     var iterator = std.mem.splitScalar(u8, text, '\n');
@@ -745,4 +814,35 @@ test "diffEditorWidget: moved blocks create model decorations" {
         }
     }
     try std.testing.expect(found);
+}
+
+test "diffEditorWidget: hide unchanged regions folds the middle" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
+    const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
+    const widget = try DiffEditorWidget.create(
+        allocator,
+        io,
+        "a.txt",
+        "b.txt",
+        original,
+        modified,
+        "Original",
+        "Modified",
+        80,
+        8,
+        .{ .hide_unchanged_regions = true },
+    );
+    defer widget.destroy();
+
+    const model = widget.original_editor.foldingModel();
+    var collapsed: usize = 0;
+    var index: usize = 0;
+    while (index < model.length()) : (index += 1) {
+        if (model.getRegion(index)) |region| {
+            if (region.isCollapsed) collapsed += 1;
+        }
+    }
+    try std.testing.expect(collapsed > 0);
 }

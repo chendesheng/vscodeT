@@ -2223,6 +2223,17 @@ pub const Editor = struct {
     }
 
     /// Port of the `editor.fold` command's `levels`/`direction` arguments.
+    /// Adds collapsed user-defined folding ranges; used by the diff editor's
+    /// hide-unchanged regions.
+    pub fn addFoldingRanges(
+        self: *Editor,
+        ranges: []const @import("../../../contrib/folding/browser/foldingRanges.zig").FoldRange,
+    ) !void {
+        self.refreshFoldingIfDirty();
+        try self.foldingModel().addManualRanges(ranges);
+        try self.applyFoldingVisibility();
+    }
+
     pub fn foldLines(
         self: *Editor,
         lines: []const usize,
