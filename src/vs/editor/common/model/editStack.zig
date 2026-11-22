@@ -572,7 +572,9 @@ pub const SingleModelEditStackElement = struct {
                 defer data.deinit();
                 try model._applyRedo(data.changes, data.afterEOL, data.afterVersionId, data.afterCursorState);
             },
-            .uri => {},
+            .uri => {
+                return error.InvalidSingleModelEditStackElement;
+            },
         }
     }
 

@@ -158,7 +158,7 @@ pub const PieceTreeTextBuffer = struct {
         const actualEOLLength: usize = if (actualEOL == .CRLF) 2 else 1;
 
         if (desiredEOLLength != actualEOLLength) {
-            const delta = usizeSub(actualEOLLength, desiredEOLLength);
+            const delta: isize = @as(isize, @intCast(desiredEOLLength)) - @as(isize, @intCast(actualEOLLength));
             const eolCount = range.endLineNumber - range.startLineNumber;
             eolOffsetCompensation = delta * @as(isize, @intCast(eolCount));
         }
@@ -898,4 +898,20 @@ test "applyEdits: collapses 1000+ operations without losing text" {
         try expected.append(if (i % 2 == 0) 'b' else 'a');
     }
     try std.testing.expectEqualStrings(expected.items, content.items);
+}
+
+test "getValueLengthInRange compensates EOL length in both directions" {
+    const allocator = std.testing.allocator;
+    var crlf_buffers = [_]StringBuffer{try StringBuffer.init(allocator, "a\r\nb\r\nc")};
+    var crlf = try PieceTreeTextBuffer.init(allocator, &crlf_buffers, "", .CRLF, false, false, true, true);
+    defer crlf.deinit();
+    const full = Range.init(1, 1, 3, 2);
+    try std.testing.expectEqual(@as(usize, 7), crlf.getValueLengthInRange(full, .CRLF));
+    try std.testing.expectEqual(@as(usize, 5), crlf.getValueLengthInRange(full, .LF));
+
+    var lf_buffers = [_]StringBuffer{try StringBuffer.init(allocator, "a\nb\nc")};
+    var lf = try PieceTreeTextBuffer.init(allocator, &lf_buffers, "", .LF, false, false, true, true);
+    defer lf.deinit();
+    try std.testing.expectEqual(@as(usize, 7), lf.getValueLengthInRange(full, .CRLF));
+    try std.testing.expectEqual(@as(usize, 5), lf.getValueLengthInRange(full, .LF));
 }
