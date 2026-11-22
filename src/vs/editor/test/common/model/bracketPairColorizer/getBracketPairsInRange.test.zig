@@ -172,3 +172,20 @@ test "getBracketPairsInRange: Basic Empty" {
     defer pairs.deinit();
     try std.testing.expectEqual(@as(usize, 0), pairs.items.len);
 }
+
+test "getBracketPairsInRange: Basic All" {
+    var fixture = try Fixture.init(std.testing.allocator, "¹ { ( [] ) [  { } ] () } [] ²");
+    defer fixture.deinit();
+
+    var pairs = try fixture.model.model.getBracketPairsInRange(fixture.queryRange());
+    defer pairs.deinit();
+    try expectPairs(pairs.items, &.{
+        .{ .level = 0, .range = Range.init(1, 2, 1, 24), .open = Range.init(1, 2, 1, 3), .close = Range.init(1, 23, 1, 24) },
+        .{ .level = 1, .range = Range.init(1, 4, 1, 10), .open = Range.init(1, 4, 1, 5), .close = Range.init(1, 9, 1, 10) },
+        .{ .level = 2, .range = Range.init(1, 6, 1, 8), .open = Range.init(1, 6, 1, 7), .close = Range.init(1, 7, 1, 8) },
+        .{ .level = 1, .range = Range.init(1, 11, 1, 19), .open = Range.init(1, 11, 1, 12), .close = Range.init(1, 18, 1, 19) },
+        .{ .level = 2, .range = Range.init(1, 14, 1, 17), .open = Range.init(1, 14, 1, 15), .close = Range.init(1, 16, 1, 17) },
+        .{ .level = 1, .range = Range.init(1, 20, 1, 22), .open = Range.init(1, 20, 1, 21), .close = Range.init(1, 21, 1, 22) },
+        .{ .level = 0, .range = Range.init(1, 25, 1, 27), .open = Range.init(1, 25, 1, 26), .close = Range.init(1, 26, 1, 27) },
+    });
+}
