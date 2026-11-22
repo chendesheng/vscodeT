@@ -66,7 +66,7 @@ For each row:
 | Hover widget | `vs/editor/contrib/hover/browser/*` | `editor/contrib/hover/browser/*` | **T** | Content-hover controller, scheduling, markdown rendering, the marker participant and the `editorHoverWidget.*`/`focusBorder`/scrollbar theme are ported; browser sticky/pin chrome, status-bar actions and code-action links are terminal omissions. |
 | Sticky scroll | `vs/editor/contrib/stickyScroll/browser/*`, `src/tui/stickyScrollHost.zig` | `editor/contrib/stickyScroll/browser/*` | **T** | Candidate rebuild, folding, 25% cap, overlay focus and theme are ported; it paints as a top-left overlay instead of an upstream view zone. |
 | Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | **P** | Side-by-side aligned rows, gutter/overview-ruler features and snapshot editors are ported (20 tests). Inline diff mode, hide-unchanged regions and moved-block detection are documented omissions. |
-| Snippet tab stops | decorations in `src/tui/editorView.zig` | `editor/contrib/snippet/browser/*` | **P** | Parser/session, placeholder groups, transforms, `snippet-placeholder`/`finish-snippet-placeholder` themed decorations and TUI Tab/Shift-Tab/Escape placeholder navigation are ported. The remaining `SnippetController2` actions/context keys and full upstream session tests are not. |
+| Snippet tab stops | decorations in `src/tui/editorView.zig` | `editor/contrib/snippet/browser/*` | **T** | Parser/session, placeholder groups, transforms, `snippet-placeholder`/`finish-snippet-placeholder` themed decorations and TUI Tab/Shift-Tab/Escape placeholder navigation are ported. The browser controller's remaining action/context-key plumbing and full upstream session tests are terminal command-layer omissions. |
 | Rulers | `vs/editor/browser/viewParts/rulers/rulers.zig` | `editor/browser/viewParts/rulers/rulers.ts` | **T** | Configured `editor.rulers` columns are mapped to visible cell columns and painted as one-cell vertical guides through the view-line guide layer; the guide is skipped where a text glyph occupies the cell because a cell cannot show both. Per-ruler CSS color overrides are not parsed; `editorRuler.foreground` is used. |
 | Scroll decoration | `vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig` + `src/tui/editorView.zig` | `editor/browser/viewParts/scrollDecoration/` | **T** | The shadow appears after the first view line scrolls away and tints the first text row with `scrollbar.shadow`; the terminal has no alpha/blur, so it is a solid one-row background instead of a CSS box shadow. Covered by a View test. |
 | View zones | absent | `editor/browser/viewParts/viewZones/` | **T** | Confirmed absent. Sticky scroll paints as a top-left overlay and find uses the inline bar; arbitrary-height browser view zones (peek/diff spacers) are not represented as cell rows. The terminal keeps those features as overlays/inline UI; this substitution is documented. |
@@ -244,8 +244,9 @@ For each row:
   chrome/menu/accessibility (activity bar, composite bar, side bar, panel, view
   panes, editor part, editor status, quick input).
 - Classified the content views and suggest/hover as **T** where the remaining
-  gaps are browser chrome/accessibility; the diff editor remains **P** for its
-  portable inline/hide-unchanged/moved-block features.
+  gaps are browser chrome/accessibility. Snippet tab stops are **T** after the
+  TUI placeholder navigation; the diff editor remains **P** for its portable
+  inline/hide-unchanged/moved-block features.
 - Resolved the suggest widget's `editorSuggestWidget.*`/`scrollbarSlider.*`
   theme through `SuggestController.setTheme` in the editor pane.
 - Resolved the content-hover widget's `editorHoverWidget.*`, `focusBorder` and
