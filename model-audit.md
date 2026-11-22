@@ -176,6 +176,10 @@ Small commits, each with a regression test:
     `getNearestChunk`, `getLineCharCode`).
 42. `f59bdd8` `EditStackElement.split` deep-clones elements; the multi-model
     `toString` appends were fixed.
+43. `02066a5` annotations worker serialization helpers (`ISerializedAnnotation`,
+    `serialize`, `deserialize`) with a round-trip test.
+44. `32cb2ab` `ModelDecorationOptions` font fields and
+    `TextModel.getFontDecorationsInRange`.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -203,12 +207,11 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   languages (HTML `<script>`, markdown fences) are not attributed. Font-token
   metadata is discarded. This is partly a documented single-language terminal
   limitation, but the language-id path should still be ported.
-- **Font-decoration API surface is absent.** `onDidChangeFont*`,
-  `tokenizationFontDecorationsProvider.ts`, `TextModel.getFontDecorationsInRange`
-  and the `filterFontDecorations` parameters do not exist. A terminal has one
-  font/size/line height, so the provider itself is a documented capability
-  gap; the cheap model flags/parameters should be ported or their absence
-  documented in `README.md` (currently only in file headers).
+- **Font-token provider is absent.** The model now has the font decoration
+  option fields and `getFontDecorationsInRange`, but
+  `tokenizationFontDecorationsProvider.ts`, `onDidChangeFont*` and the
+  `filterFontDecorations` parameters are still unported. A terminal has one
+  font/size/line height, so the provider is a documented capability gap.
 
 ### Medium
 
@@ -231,8 +234,7 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 - `editStack`: `split()` now returns owned deep copies; `heapSize` still
   contains a JS-specific overhead constant and the multi-model/delegate path
   is unreachable (bulk editing is not produced by the port).
-- `annotations`: serialization (`ISerializedAnnotation`, `serialize`,
-  `deserialize`) is absent; the port uses its own worker protocol.
+- `annotations`: serialization helpers are ported for the worker protocol.
 - `textModelSearch`: line-by-line ranges now clamp like JS substring and JS
   `m`/end-of-input semantics match upstream. The buffer-level path returns
   empty for invalid node positions, as upstream does.
@@ -266,7 +268,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3076 tests, 19 skipped; the only observed
+The full suite currently passes (3078 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
