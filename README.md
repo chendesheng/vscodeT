@@ -1699,8 +1699,22 @@ Editor contributions:
   a draggable sash, and a tab can be dragged into another pane or onto an edge
   to tile a new group. `Alt-\` splits horizontally, `Alt-Shift-\` vertically,
   `Ctrl-Alt-Left` / `Ctrl-Alt-Right` switch groups, and clicking a group
-  activates it. A split moves the active tab into the new group (independent
-  view state for one shared model still needs the model/view split).
+  activates it. Splitting duplicates the active editor into the new group:
+  both panes share the same text model, undo history and dirty/saved state,
+  while wrapping, cursor/selection, scroll and folding are independent view
+  state (`EditorDocument` plus one `Editor` per pane). The ported
+  `workbench.action.splitEditor` follows
+  `workbench.editor.openSideBySideDirection` (right by default, down when set),
+  `workbench.action.splitEditorOrthogonal` uses the other axis, and
+  `workbench.action.splitEditorLeft`/`Right`/`Up`/`Down` place the copy on the
+  requested side. `Ctrl-\` and the `Ctrl-K Ctrl-\` chord are registered
+  through the terminal's `CtrlCmd` mapping like upstream; the terminal-only
+  `Alt-\` shortcuts remain. A diff/snapshot tab has no safe duplicate yet, so
+  splitting one leaves the layout unchanged. Find/hover/word highlights are owned by the shared model,
+  so the last command run in either pane is painted in both until P4's
+  view-scoped decoration ownership lands. Session restore reopens each
+  serialized group from disk, so restored split panes are not re-linked to one
+  document until the session format stores the shared input.
 - Serialization/restore is ported at the model and TUI boundaries:
   `src/vs/workbench/common/editor/editorFactory.zig` holds the editor
   serializer registry, `EditorGroupModel.serialize`/`deserialize` rebuilds the

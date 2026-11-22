@@ -23,11 +23,12 @@
 //! and adjacent outlines merge into shared dividers. The glyph fallback keeps
 //! the one-cell gutter and box-drawing divider instead.
 //!
-//! A split currently moves the active tab into the new group (the terminal
-//! equivalent of "move editor to group"); upstream `splitEditor` duplicates the
-//! active input and gives each pane independent view state. Duplicating an
-//! `Editor` would duplicate the text model, so the move preserves the one
-//! model until the editor is split into model/view state.
+//! A split duplicates the active input into the new group, matching upstream
+//! `EditorGroupView.copyEditor`: both panes show the same `EditorDocument` and
+//! share its text model, undo history and dirty state, while wrapping, cursors,
+//! scroll and folding are independent per view. `workbench.action.splitEditor`
+//! follows `workbench.editor.openSideBySideDirection`; the Left/Right/Up/Down
+//! command variants place the copy on the requested side.
 //!
 //! Async terminal adaptation: interactive read paths (`requestOpenPath`,
 //! explorer expansion, image/Markdown previews and remote Markdown images) run
@@ -1445,6 +1446,10 @@ pub const Workbench = struct {
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
             .{ .id = "workbench.action.splitEditorOrthogonal", .label = "Split Editor Orthogonal", .category = "View", .context = self, .run = commandSplitEditorOrthogonal },
+            .{ .id = "workbench.action.splitEditorLeft", .label = "Split Editor Left", .category = "View", .context = self, .run = commandSplitEditorLeft },
+            .{ .id = "workbench.action.splitEditorRight", .label = "Split Editor Right", .category = "View", .context = self, .run = commandSplitEditorRight },
+            .{ .id = "workbench.action.splitEditorUp", .label = "Split Editor Up", .category = "View", .context = self, .run = commandSplitEditorUp },
+            .{ .id = "workbench.action.splitEditorDown", .label = "Split Editor Down", .category = "View", .context = self, .run = commandSplitEditorDown },
             .{ .id = "workbench.action.navigateLeft", .label = "Focus Group Left", .category = "View", .context = self, .run = commandNavigateLeft },
             .{ .id = "workbench.action.navigateRight", .label = "Focus Group Right", .category = "View", .context = self, .run = commandNavigateRight },
             .{ .id = "workbench.action.navigateUp", .label = "Focus Group Up", .category = "View", .context = self, .run = commandNavigateUp },
@@ -6099,7 +6104,13 @@ pub const Workbench = struct {
                 const tab = pane.tabs.items[0];
                 _ = try pane.group.model.closeEditor(tab.input, .MOVE, false);
                 _ = pane.removeTab(tab);
-                _ = try target.group.model.openEditor(tab.input, .{ .pinned = true, .active = false });
+                const opened = try target.group.model.openEditor(tab.input, .{ .pinned = true, .active = false });
+                if (!opened.is_new) {
+                    // Target already shows this document (a split copy has a
+                    // distinct input over the shared model); drop the moved view.
+                    self.discardTab(tab);
+                    continue;
+                }
                 try target.addTab(tab);
             }
             pane.syncActivePane();
@@ -6210,33 +6221,151 @@ pub const Workbench = struct {
         if (try self.showActivityById("explorer")) self.focusSidebar();
     }
 
-    /// Splits the active group and moves the active tab into the new group.
+    /// Preferred side-by-side split direction from
+    /// `workbench.editor.openSideBySideDirection` (upstream
+    /// `preferredSideBySideGroupDirection`).
+    pub fn preferredSideBySideDirection(self: *Workbench) editor_groups.GroupDirection {
+        if (self.configuration) |configuration| {
+            if (configuration.getValue("workbench.editor.openSideBySideDirection", .{})) |value| {
+                if (value.* == .string and std.mem.eql(u8, value.string, "down")) return .DOWN;
+            }
+        }
+        return .RIGHT;
+    }
+
+    /// Port of `workbench.action.splitEditor`: duplicate the active editor
+    /// into a new group in the preferred side-by-side direction.
     pub fn splitActive(self: *Workbench, direction: SplitDirection) !void {
+        try self.splitActiveInDirection(switch (direction) {
+            .horizontal => .RIGHT,
+            .vertical => .DOWN,
+        });
+    }
+
+    /// Port of upstream `splitEditor(editorGroupsService, direction, context)`:
+    /// create a group beside the active one and copy the active editor into it.
+    /// The original tab stays open; both panes share the document/model and
+    /// keep independent view state.
+    pub fn splitActiveInDirection(self: *Workbench, direction: editor_groups.GroupDirection) !void {
         self.part.active_sash = null;
         self.expanded_pane = null;
         self.clearTabDrag();
         const source = self.activePane() orelse return;
         const tab = source.activeTab() orelse return;
 
-        const new_pane = try self.part.splitGroup(source, direction, false);
-
-        _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
-        _ = source.removeTab(tab);
-        source.syncActivePane();
-        // Moving the last active tab leaves the model without an active editor
-        // even when the group still has tabs; activate one so the group keeps
-        // its breadcrumb/editor chrome.
-        if (source.activeTab() == null and source.tabs.items.len > 0) {
-            try source.activateTab(source.tabs.items[0]);
+        const orientation: SplitDirection = switch (direction) {
+            .LEFT, .RIGHT => .horizontal,
+            .UP, .DOWN => .vertical,
+        };
+        const new_first = direction == .LEFT or direction == .UP;
+        const new_pane = try self.part.splitGroup(source, orientation, new_first);
+        var keep_view = false;
+        defer {
+            if (!keep_view) _ = self.part.removeView(new_pane);
         }
-        _ = try new_pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
-        try new_pane.addTab(tab);
+
+        const copied = try self.copyTabIntoPane(new_pane, tab);
+        keep_view = true;
 
         self.layoutAll();
         if (self.activeTab()) |active| {
             try active.ensureControllers();
             try active.refresh();
+            active.focusEditor();
         }
+        self.focusEditor();
+        _ = copied;
+    }
+
+    /// Copies `tab` into `target`, port of `EditorGroupView.copyEditor` plus
+    /// the new editor pane the target group opens. File inputs share one
+    /// `EditorDocument`; image previews get a new read-only pane.
+    fn copyTabIntoPane(self: *Workbench, target: *GroupPane, tab: *Tab) !*Tab {
+        if (tab.file_input) |file_input| {
+            const copied_input = try file_input.copyInput();
+            var input_owned = true;
+            errdefer if (input_owned) copied_input.deinit();
+            var tab_owned: ?*Tab = null;
+            errdefer if (tab_owned) |owned| owned.deinit();
+
+            const opened = try target.group.model.openEditor(
+                &copied_input.base,
+                .{ .pinned = true, .active = true },
+            );
+            if (!opened.is_new) {
+                // The target already shows this document; upstream's
+                // `copyEditor` reveals that pane instead of adding a duplicate.
+                const existing = target.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
+                copied_input.deinit();
+                input_owned = false;
+                return existing;
+            }
+            errdefer _ = target.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
+
+            const copied = try Tab.initFromInput(self.allocator, copied_input);
+            tab_owned = copied;
+            input_owned = false;
+            try self.finishCopiedTab(target, copied);
+            return copied;
+        }
+
+        if (tab.image_input) |image_input| {
+            const copied_input = try ImagePreviewEditorInput.init(self.allocator, image_input.path);
+            var input_owned = true;
+            errdefer if (input_owned) copied_input.deinit();
+            var tab_owned: ?*Tab = null;
+            errdefer if (tab_owned) |owned| owned.deinit();
+
+            const opened = try target.group.model.openEditor(
+                &copied_input.base,
+                .{ .pinned = true, .active = true },
+            );
+            if (!opened.is_new) {
+                const existing = target.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
+                copied_input.deinit();
+                input_owned = false;
+                return existing;
+            }
+            errdefer _ = target.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
+
+            const dims = editorDimensions(self, target);
+            const copied = try Tab.initImageFromInput(
+                self.allocator,
+                self.io,
+                copied_input,
+                dims.width,
+                dims.height,
+                &self.images,
+                self.async_io,
+            );
+            tab_owned = copied;
+            input_owned = false;
+            try self.finishCopiedTab(target, copied);
+            return copied;
+        }
+
+        // Diff/snapshot tabs own their models and inputs. Upstream copies the
+        // side-by-side input; the terminal diff view is not model/view split
+        // yet, so there is nothing safe to duplicate. Leave the layout
+        // unchanged rather than opening an empty group.
+        return error.SplitUnsupported;
+    }
+
+    fn finishCopiedTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
+        tab.setAsyncIo(self.async_io);
+        tab.setImageRuntime(&self.images);
+        try tab.view.setStatusBarVisible(false);
+        try pane.addTab(tab);
+        errdefer _ = pane.removeTab(tab);
+        self.applyEditorSettingsToTab(tab);
+        if (!tab.isImage()) {
+            self.registerWorkingCopy(tab);
+            if (self.quick_diff_controller) |controller| controller.attach(tab.editor, tab.editor.path) catch {};
+        }
+        if (self.language_features) |features| tab.attachLanguageRegistry(features);
+        try tab.ensureControllers();
+        try pane.activateTab(tab);
+        try tab.refresh();
     }
 
     pub fn closeActive(self: *Workbench) !bool {
@@ -7521,7 +7650,46 @@ pub const Workbench = struct {
         };
     }
 
+    /// Destroys a tab view that lost to an already-open editor, detaching the
+    /// workbench registrations that keep raw pointers into it.
+    fn discardTab(self: *Workbench, tab: *Tab) void {
+        if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
+        if (self.hovered_tab == tab) self.hovered_tab = null;
+        self.detachHistoryTab(tab);
+        self.unregisterWorkingCopy(tab);
+        if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
+        tab.deinit();
+    }
+
     fn moveTabToPane(self: *Workbench, source: *GroupPane, dest: *GroupPane, tab: *Tab, index: ?isize) !void {
+        // Open first, like upstream `doMoveOrCopyEditorAcrossGroups`: when the
+        // target already shows a matching input (split copies have distinct
+        // inputs over one model) the model reuses that editor and the moved
+        // view is disposed instead of adding a second tab for the same model.
+        const opened = try dest.group.model.openEditor(
+            tab.input,
+            .{ .pinned = true, .active = true, .index = index },
+        );
+
+        if (!opened.is_new) {
+            const existing = dest.tabForInput(opened.editor);
+            // Split copies share one document, so discarding the moved view is
+            // safe. A session-restored duplicate can own a different document;
+            // never discard unsaved edits from it.
+            if (existing) |target_tab| {
+                if (target_tab.editor.model != tab.editor.model and tab.editor.isDirty()) {
+                    try dest.activateTab(target_tab);
+                    tab.editor.setMessage(
+                        "Move blocked: {s} is already open with unsaved changes in the target group",
+                        .{tab.input.getName()},
+                    );
+                    self.service.activateGroup(dest.group);
+                    self.focus = .editor;
+                    return;
+                }
+            }
+        }
+
         _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
         _ = source.removeTab(tab);
         source.syncActivePane();
@@ -7531,7 +7699,20 @@ pub const Workbench = struct {
         if (source.activeTab() == null and source.tabs.items.len > 0) {
             try source.activateTab(source.tabs.items[0]);
         }
-        _ = try dest.group.model.openEditor(tab.input, .{ .pinned = true, .active = true, .index = index });
+
+        if (!opened.is_new) {
+            if (dest.tabForInput(opened.editor)) |existing| {
+                try dest.activateTab(existing);
+                existing.focusEditor();
+            }
+            // The moved view loses to the already-open tab; detach every
+            // workbench registration before destroying it.
+            self.discardTab(tab);
+            self.service.activateGroup(dest.group);
+            self.focus = .editor;
+            return;
+        }
+
         try dest.addTab(tab);
         self.service.activateGroup(dest.group);
         try tab.ensureControllers();
@@ -10195,14 +10376,46 @@ fn commandRefreshMarkdownPreview(context: *anyopaque) anyerror!void {
     self.refreshMarkdownPreview();
 }
 
+fn runSplitCommand(self: *Workbench, direction: editor_groups.GroupDirection) anyerror!void {
+    self.splitActiveInDirection(direction) catch |err| switch (err) {
+        // The terminal diff/snapshot pane owns its models and cannot be
+        // duplicated yet; report the terminal limitation instead of failing
+        // the command handler with no visible feedback.
+        error.SplitUnsupported => self.setStatusHint("Split Editor is unavailable for this editor type", .{}),
+        else => return err,
+    };
+}
+
 fn commandSplitEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.splitActive(.horizontal);
+    try runSplitCommand(self, self.preferredSideBySideDirection());
 }
 
 fn commandSplitEditorOrthogonal(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.splitActive(.vertical);
+    // Upstream `SplitEditorOrthogonalAction.getDirection`: the opposite axis
+    // of `workbench.editor.openSideBySideDirection`.
+    try runSplitCommand(self, if (self.preferredSideBySideDirection() == .RIGHT) .DOWN else .RIGHT);
+}
+
+fn commandSplitEditorLeft(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try runSplitCommand(self, .LEFT);
+}
+
+fn commandSplitEditorRight(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try runSplitCommand(self, .RIGHT);
+}
+
+fn commandSplitEditorUp(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try runSplitCommand(self, .UP);
+}
+
+fn commandSplitEditorDown(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try runSplitCommand(self, .DOWN);
 }
 
 fn commandNavigateLeft(context: *anyopaque) anyerror!void {
@@ -11368,7 +11581,7 @@ test "Workbench: markdown preview follows editor scroll and can reveal the edito
     try std.testing.expect(tab.editor.topViewLine() != before);
 }
 
-test "Workbench: split moves the active tab into a second group" {
+test "Workbench: split duplicates the active editor and shares its buffer" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
@@ -11385,25 +11598,105 @@ test "Workbench: split moves the active tab into a second group" {
 
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
-    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqual(@as(usize, 3), workbench.tabCount());
     try std.testing.expectEqualStrings("split_b.txt", workbench.activeTab().?.input.getName());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try workbench.render(&out.writer);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "split_a.txt") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "split_b.txt") != null);
+    // Both panes paint the shared buffer; tab labels may be clipped.
+    try std.testing.expect(std.mem.count(u8, out.written(), "beta") >= 2);
 
-    // The original group still holds the other tab.
+    // The source group keeps its tabs; the new group gets a copy of the active
+    // editor, not an empty pane.
     const first_pane = workbench.part.group_views.items[0];
     const second_pane = workbench.part.group_views.items[1];
-    try std.testing.expectEqual(@as(usize, 1), first_pane.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), first_pane.tabs.items.len);
     try std.testing.expectEqual(@as(usize, 1), second_pane.tabs.items.len);
+    try std.testing.expect(first_pane.activeTab() != null);
+    try std.testing.expect(second_pane.activeTab() != null);
+    try std.testing.expectEqualStrings("split_b.txt", first_pane.activeTab().?.input.getName());
+    try std.testing.expectEqualStrings("split_b.txt", second_pane.tabs.items[0].input.getName());
+    try std.testing.expect(first_pane.tabs.items[1].editor.model == second_pane.tabs.items[0].editor.model);
 
-    // Splitting again moves the active tab to a third group.
+    // Editing either pane updates the shared model and dirty state.
+    try workbench.activeTab().?.editor.insertText("X");
+    const first_text = try first_pane.tabs.items[1].editor.model.getLineContent(1);
+    defer first_text.deinit();
+    try std.testing.expectEqualStrings("Xbeta", first_text.items);
+    try std.testing.expect(workbench.activeTab().?.editor.isDirty());
+    try std.testing.expect(first_pane.tabs.items[1].editor.isDirty());
+    try workbench.activeTab().?.editor.undo();
+
+    // Splitting again duplicates the active tab into a third group.
     try workbench.splitActive(.vertical);
     try std.testing.expectEqual(@as(usize, 3), workbench.groupCount());
-    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqual(@as(usize, 4), workbench.tabCount());
+}
+
+test "Workbench: directional split commands place the copy on each side" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "directional.txt", "alpha");
+    defer allocator.free(path);
+
+    const DirectionCase = struct {
+        command: []const u8,
+        expected: editor_groups.GroupDirection,
+    };
+    const cases = [_]DirectionCase{
+        .{ .command = "workbench.action.splitEditorLeft", .expected = .LEFT },
+        .{ .command = "workbench.action.splitEditorRight", .expected = .RIGHT },
+        .{ .command = "workbench.action.splitEditorUp", .expected = .UP },
+        .{ .command = "workbench.action.splitEditorDown", .expected = .DOWN },
+    };
+    for (cases) |case| {
+        const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+        defer workbench.deinit();
+        const source = workbench.part.group_views.items[0];
+        _ = try workbench.commands.execute(case.command);
+        try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+        try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+        const copy = workbench.part.group_views.items[1];
+        switch (case.expected) {
+            .LEFT => try std.testing.expect(ui.cell.snap(copy.rect.x) < ui.cell.snap(source.rect.x)),
+            .RIGHT => try std.testing.expect(ui.cell.snap(copy.rect.x) > ui.cell.snap(source.rect.x)),
+            .UP => try std.testing.expect(ui.cell.snap(copy.rect.y) < ui.cell.snap(source.rect.y)),
+            .DOWN => try std.testing.expect(ui.cell.snap(copy.rect.y) > ui.cell.snap(source.rect.y)),
+        }
+        try std.testing.expect(copy.activeTab() != null);
+        try std.testing.expect(copy.activeTab().?.editor.model == source.activeTab().?.editor.model);
+    }
+}
+
+test "Workbench: splitEditor follows openSideBySideDirection" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "direction_setting.txt", "alpha");
+    defer allocator.free(path);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    workbench.ensureConfigurationReady();
+    try workbench.setUserConfigurationValue("workbench.editor.openSideBySideDirection", .{ .string = "down" });
+    try std.testing.expectEqual(editor_groups.GroupDirection.DOWN, workbench.preferredSideBySideDirection());
+
+    const source = workbench.part.group_views.items[0];
+    _ = try workbench.commands.execute("workbench.action.splitEditor");
+    const copy = workbench.part.group_views.items[1];
+    try std.testing.expect(ui.cell.snap(copy.rect.y) > ui.cell.snap(source.rect.y));
 }
 
 test "Workbench: directional group navigation and join all groups" {
@@ -11424,10 +11717,16 @@ test "Workbench: directional group navigation and join all groups" {
     try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
 
     try workbench.navigateGroup(.left);
+    try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
+    // Switch the source group to its other tab, then navigate across groups.
+    try workbench.activateIndex(0);
     try std.testing.expectEqualStrings("nav_a.txt", workbench.activeTab().?.input.getName());
     try workbench.navigateGroup(.right);
     try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
+    try workbench.navigateGroup(.left);
+    try std.testing.expectEqualStrings("nav_a.txt", workbench.activeTab().?.input.getName());
 
+    // Joining drops the split copy whose model is already open in the target.
     try workbench.joinAllGroups();
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
@@ -11621,12 +11920,9 @@ test "Workbench: closing the last tab collapses the empty group" {
 
     const path_a = try seedFile(allocator, io, &tmp, "collapse_a.txt", "alpha");
     defer allocator.free(path_a);
-    const path_b = try seedFile(allocator, io, &tmp, "collapse_b.txt", "beta");
-    defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = try Workbench.init(allocator, io, &.{path_a}, 50, 10);
     defer workbench.deinit();
-    try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.part.group_views.items.len);
@@ -11808,12 +12104,18 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
 
+    // The source group starts with A and B; close B so moving A empties it.
+    const source = workbench.part.group_views.items[0];
+    const target = workbench.part.group_views.items[1];
+    workbench.service.activateGroup(source.group);
+    try source.activateTab(source.tabs.items[1]);
+    _ = try workbench.closeActive();
+    workbench.service.activateGroup(target.group);
+
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try workbench.render(&out.writer);
 
-    const source = workbench.part.group_views.items[0];
-    const target = workbench.part.group_views.items[1];
     const source_y = ui.cell.snap(source.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = source.hits.items[0].start, .y = source_y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&down));
@@ -11868,7 +12170,8 @@ test "Workbench: openPath reveals an already-open file in another group" {
     try std.testing.expectEqualStrings("reveal_b.txt", workbench.activeTab().?.input.getName());
 
     try workbench.openPath(path_a);
-    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    // A + B in the source group and the split copy of B.
+    try std.testing.expectEqual(@as(usize, 3), workbench.tabCount());
     try std.testing.expectEqualStrings("reveal_a.txt", workbench.activeTab().?.input.getName());
 }
 
@@ -11937,7 +12240,8 @@ test "Workbench: serialize and restore multiple groups" {
     defer restored.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), restored.groupCount());
-    try std.testing.expectEqual(@as(usize, 2), restored.tabCount());
+    // Group one restores A + B and group two restores the split copy of B.
+    try std.testing.expectEqual(@as(usize, 3), restored.tabCount());
     try std.testing.expectEqualStrings("part_b.txt", restored.activeTab().?.input.getName());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -13513,6 +13817,8 @@ const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
 };
 
 const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
+    .{ .id = "workbench.action.splitEditor", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash) } },
+    .{ .id = "workbench.action.splitEditorOrthogonal", .weight = 200, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash)) } },
     .{ .id = "workbench.action.quickOpen", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyP) } },
     .{ .id = "workbench.action.showCommands", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyP) } },
     .{ .id = "workbench.action.findInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyF), .secondary = &.{key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF)} } },

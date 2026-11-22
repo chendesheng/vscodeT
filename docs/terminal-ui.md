@@ -602,7 +602,13 @@ from the split tree and promotes its sibling, mirroring Grid branch demotion.
 Dragging a tab moves it between groups: dropping in a pane's middle moves it
 there, dropping on an edge splits that pane in that direction and moves the tab
 into the new group, and dropping on a tab strip inserts the tab at the previewed
-position (reordering within the same group). While dragging over editor content,
+position (reordering within the same group). The split commands duplicate the
+active editor instead of moving it, like `EditorGroupView.copyEditor`: a shared
+`EditorDocument` owns the text model, undo stack, language services and
+saved/dirty state, while each pane has its own `Editor` view (wrapping,
+cursors, scroll and folding). `workbench.action.splitEditor` uses
+`workbench.editor.openSideBySideDirection`, and the Left/Right/Up/Down command
+variants choose the side explicitly. While dragging over editor content,
 the target pane gets a bright outline (with cell borders; the glyph fallback has
 no drag indicator). Over a tab strip, the insertion boundary gets upstream's
 `drop-target-left`/`drop-target-right` feedback in `tab.dragAndDropBorder`: a
