@@ -342,8 +342,10 @@ key-input interfaces; the Vim extension registers its own key handler through
 them. The normal/insert/replace/visual character/line/block modes, counts, motions
 (`{`/`}`, `(`, `)`, `H`/`M`/`L`, `gj`/`gk`, `f`/`t`), operators, text objects, marks, macros,
 registers, undo/redo (`u`/`U`/`Ctrl-R`), visual-block `I`/`A`, dot-repeat,
-regular-expression search, the workbench editor navigation history (`Ctrl-O`/`Ctrl-I`)
-(`/`, `?`, `n`, `N`), viewport commands (`zz`/`zt`/`zb`, `Ctrl-D`/`U`) and the
+incremental regular-expression search (`/`, `?`, `n`, `N`) that previews the
+match while the prompt is typed and highlights every match with the Ctrl+F
+find-match colors, the workbench editor navigation history (`Ctrl-O`/`Ctrl-I`),
+viewport commands (`zz`/`zt`/`zb`, `Ctrl-D`/`U`) and the
 basic `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`,
 `:vsp`, `:noh`) are implemented in Zig.
 
