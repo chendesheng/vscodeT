@@ -14,6 +14,7 @@ const event = @import("event.zig");
 const style_mod = @import("style.zig");
 
 pub const Style = style_mod.Style;
+pub const HoverStyle = style_mod.HoverStyle;
 pub const Rect = style_mod.Rect;
 pub const Key = event.Key;
 pub const KeyEvent = event.KeyEvent;
@@ -43,6 +44,11 @@ pub const Element = struct {
     attributes: std.StringHashMapUnmanaged([]const u8) = .empty,
     classes: std.ArrayList([]const u8) = .empty,
     style: Style = .{},
+    /// Paint-only overrides applied while this element is in the hover chain
+    /// (the pointer target or one of its ancestors). `null` opts the element
+    /// out of hover. Kept separate from `Style` so layout boxes never copy it
+    /// and hover cannot invalidate layout. Set it with `Node.setHoverStyle`.
+    hover_style: ?HoverStyle = null,
     rect: Rect = .{},
     /// Participates in keyboard focus. Natively focusable tags are not
     /// implicit here; the code that builds the node opts in.
@@ -77,6 +83,9 @@ pub const Document = struct {
     /// The element that owns keyboard focus. Read it through `activeElement`,
     /// which falls back to the root like a browser's body.
     active_element: ?*Node = null,
+    /// The element last hit by pointer motion. `Node.isHovered` derives the
+    /// CSS-like hover chain from it. Cleared when the node leaves the tree.
+    hover_target: ?*Node = null,
     cols: usize,
     rows: usize,
     tab_size: usize,
@@ -129,11 +138,13 @@ pub const Document = struct {
         _ = self.arena.reset(.retain_capacity);
         self.root = null;
         self.active_element = null;
+        self.hover_target = null;
     }
 
     /// Retires `node` and its subtree into the free list. The caller must not
     /// use any pointer into that subtree afterwards.
     pub fn destroy(self: *Document, node: *Node) void {
+        self.clearHoverWithin(node);
         if (node.parent) |parent| _ = parent.detachChild(node, true);
         self.recycleNode(node);
         event.clearDetachedFocus(self);
@@ -141,6 +152,9 @@ pub const Document = struct {
 
     /// Unlinks and recycles every child of `node`, emitting one tree mutation.
     pub fn destroyChildren(self: *Document, node: *Node) void {
+        if (self.hover_target) |target| {
+            if (target != node and isAncestorOf(node, target)) self.hover_target = null;
+        }
         var child = node.first_child;
         node.first_child = null;
         while (child) |current| {
@@ -153,6 +167,25 @@ pub const Document = struct {
         }
         self.notifyMutation(node, .tree);
         event.clearDetachedFocus(self);
+    }
+
+    /// Clears the hover target when it lies inside `subtree` (inclusive),
+    /// before the subtree is unlinked or recycled. A dangling hover target
+    /// would otherwise let a reused node inherit hover state.
+    fn clearHoverWithin(self: *Document, subtree: *Node) void {
+        const target = self.hover_target orelse return;
+        if (isAncestorOf(subtree, target)) self.hover_target = null;
+    }
+
+    /// Clears hover after the root changed, when the target is no longer
+    /// connected to the new tree.
+    fn clearDetachedHover(self: *Document) void {
+        const target = self.hover_target orelse return;
+        const root = self.root orelse {
+            self.hover_target = null;
+            return;
+        };
+        if (!isAncestorOf(root, target)) self.hover_target = null;
     }
 
     fn recycleNode(self: *Document, node: *Node) void {
@@ -228,7 +261,29 @@ pub const Document = struct {
         root.parent = null;
         self.root = root;
         event.clearDetachedFocus(self);
+        self.clearDetachedHover();
         self.notifyMutation(root, .tree);
+    }
+
+    /// The element last hit by pointer motion, or null when the pointer is not
+    /// over the document tree. `Node.isHovered` derives the hover chain (the
+    /// target and its ancestors) from it.
+    pub fn hoverTarget(self: *const Document) ?*Node {
+        return self.hover_target;
+    }
+
+    /// Sets the pointer target. Returns whether it changed. This only changes
+    /// paint state: it never dirties or re-runs layout. A host that repaints
+    /// the tree later must do so itself.
+    pub fn setHoverTarget(self: *Document, target: ?*Node) bool {
+        if (self.hover_target == target) return false;
+        self.hover_target = target;
+        return true;
+    }
+
+    /// Clears the pointer target. Returns whether it changed.
+    pub fn clearHover(self: *Document) bool {
+        return self.setHoverTarget(null);
     }
 
     /// The focused element, or the root when nothing is focused.
@@ -351,6 +406,31 @@ pub const Node = struct {
             .text => |*text| text,
             .element => unreachable,
         };
+    }
+
+    /// Sets the paint-only style applied while this element is hovered, or
+    /// clears it with `null`. Text nodes do not take hover styles (hit testing
+    /// retargets their cells to the parent element). Hover is applied by the
+    /// painter from the live DOM, so this needs no mutation notification and
+    /// never invalidates layout.
+    pub fn setHoverStyle(self: *Node, value: ?HoverStyle) void {
+        switch (self.kind) {
+            .element => |*element| element.hover_style = value,
+            .text => {},
+        }
+    }
+
+    /// Whether this node is in the current hover chain: the pointer target
+    /// itself or one of its ancestors (CSS `:hover` semantics). Derived from
+    /// `Document.hover_target` so it stays correct across reparenting and
+    /// node reuse.
+    pub fn isHovered(self: *const Node) bool {
+        const target = self.document.hover_target orelse return false;
+        var current: ?*Node = target;
+        while (current) |node| : (current = node.parent) {
+            if (node == self) return true;
+        }
+        return false;
     }
 
     /// Re-points a text node without allocating. Used for retained gutter and
@@ -484,6 +564,9 @@ pub const Node = struct {
         // Focus does not survive leaving the tree, and no blur fires for an
         // element that is already gone (Lightpanda and TermDOM both do this).
         if (clear_focus) event.clearFocusWithin(self.document, child);
+        // Hover is pointer-derived paint state; a detached target must not
+        // survive into the free list (or a subsequent move/reinsert).
+        self.document.clearHoverWithin(child);
         const first = self.first_child.?;
         if (child == first) {
             if (child.next) |next| {
@@ -783,4 +866,104 @@ test "Node: cycle is rejected" {
     const child = try doc.createElement(.div);
     _ = try parent.appendChild(child);
     try std.testing.expectError(error.Cycle, child.appendChild(parent));
+}
+
+test "Document: hover target covers the inclusive ancestor chain" {
+    const allocator = std.testing.allocator;
+    var doc = try Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const parent = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    const sibling = try doc.createElement(.div);
+    _ = try root.appendChild(parent);
+    _ = try parent.appendChild(child);
+    _ = try root.appendChild(sibling);
+    doc.setRoot(root);
+
+    try std.testing.expect(doc.setHoverTarget(child));
+    try std.testing.expectEqual(child, doc.hoverTarget().?);
+    try std.testing.expect(child.isHovered());
+    try std.testing.expect(parent.isHovered());
+    try std.testing.expect(root.isHovered());
+    try std.testing.expect(!sibling.isHovered());
+
+    // Re-setting the same target is a no-op.
+    try std.testing.expect(!doc.setHoverTarget(child));
+
+    try std.testing.expect(doc.clearHover());
+    try std.testing.expect(doc.hoverTarget() == null);
+    try std.testing.expect(!child.isHovered());
+    try std.testing.expect(!parent.isHovered());
+}
+
+test "Document: detaching the hovered subtree clears the target" {
+    const allocator = std.testing.allocator;
+    var doc = try Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const parent = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    _ = try root.appendChild(parent);
+    _ = try parent.appendChild(child);
+    doc.setRoot(root);
+
+    try std.testing.expect(doc.setHoverTarget(child));
+    _ = parent.removeChild(child);
+    try std.testing.expect(doc.hoverTarget() == null);
+    try std.testing.expect(!child.isHovered());
+
+    // Detaching a sibling leaves the target alone.
+    const other = try doc.createElement(.div);
+    _ = try root.appendChild(other);
+    try std.testing.expect(doc.setHoverTarget(parent));
+    _ = root.removeChild(other);
+    try std.testing.expectEqual(parent, doc.hoverTarget().?);
+}
+
+test "Document: clear, destroy and root changes drop a detached hover target" {
+    const allocator = std.testing.allocator;
+    var doc = try Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const parent = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    _ = try root.appendChild(parent);
+    _ = try parent.appendChild(child);
+    doc.setRoot(root);
+
+    try std.testing.expect(doc.setHoverTarget(child));
+    doc.destroy(child);
+    try std.testing.expect(doc.hoverTarget() == null);
+
+    const next = try doc.createElement(.div);
+    _ = try parent.appendChild(next);
+    try std.testing.expect(doc.setHoverTarget(next));
+    const replacement = try doc.createElement(.div);
+    doc.setRoot(replacement);
+    try std.testing.expect(doc.hoverTarget() == null);
+
+    _ = try replacement.appendChild(try doc.createText("x"));
+    try std.testing.expect(doc.setHoverTarget(replacement));
+    doc.clear();
+    try std.testing.expect(doc.hoverTarget() == null);
+}
+
+test "Document: a recycled node does not keep its hover style" {
+    const allocator = std.testing.allocator;
+    var doc = try Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    const first = try doc.createElement(.div);
+    first.setHoverStyle(.{ .background = .{ .r = 1, .g = 2, .b = 3 } });
+    try std.testing.expect(first.asElement().hover_style != null);
+    doc.destroy(first);
+
+    const second = try doc.createElement(.div);
+    try std.testing.expect(second.asElement().hover_style == null);
 }

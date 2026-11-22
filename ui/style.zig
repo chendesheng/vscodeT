@@ -301,6 +301,26 @@ pub const PaintStyle = struct {
     }
 };
 
+/// Paint-only overrides applied while an element is in the hover chain
+/// (`Element.hover_style`). Every field is optional so a declaration is a
+/// delta: `null` keeps the element's own value, while `false` clears a
+/// boolean attribute. There are deliberately no layout properties: hover is
+/// applied by the painter and never dirties or re-runs layout. This is the
+/// terminal analogue of a `:hover` rule without the cascade, selectors or
+/// transitions.
+pub const HoverStyle = struct {
+    color: ?Color = null,
+    background: ?Color = null,
+    border_color: ?Color = null,
+    bold: ?bool = null,
+    italic: ?bool = null,
+    underline: ?bool = null,
+    underline_style: UnderlineStyle = .single,
+    strikethrough: ?bool = null,
+    dim: ?bool = null,
+    reverse: ?bool = null,
+};
+
 /// Text-flow overrides carried by a text node (extracted from `Style`). They
 /// resolve against the parent box's `TextStyle`.
 pub const TextFlow = struct {

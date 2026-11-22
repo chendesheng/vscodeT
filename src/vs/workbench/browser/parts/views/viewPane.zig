@@ -5,6 +5,12 @@
 // optional "Outdated" badge and the title actions. The body belongs to the
 // view pane itself (see `viewPaneContainer.zig`). Browser focus rings, the
 // merged-header animation, the context menu and title tooltips are not ported.
+//
+// Upstream expands/collapses a pane from the header's own click listener
+// (`paneview.ts` registers `EventType.CLICK`), and its title action buttons
+// get the toolbar hover background from CSS `:hover`. The `ui` library owns
+// that hover here: each action declares a paint-only `HoverStyle`, the surface
+// tracks the pointer and paints it, and motion never toggles the section.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
@@ -22,7 +28,6 @@ pub const Header = struct {
     actions: []const views.TitleAction = &.{},
     collapsed: bool = false,
     outdated: bool = false,
-    hovered_action: ?[]const u8 = null,
     surface: ?ui.Surface = null,
     nodes: std.array_list.Managed(NodeRef),
     signature: u64 = 0,
@@ -45,6 +50,20 @@ pub const Header = struct {
 
     pub fn setActions(self: *Header, actions: []const views.TitleAction) void {
         self.actions = actions;
+    }
+
+    /// Moves the pointer over the header surface. The library resolves the
+    /// element under the cell, keeps the hover chain and repaints the hover
+    /// style on the next `paintFrame`; layout errors only lose the highlight.
+    pub fn setHoveredAt(self: *Header, local_x: usize, local_y: usize) void {
+        if (self.surface) |*surface| {
+            _ = surface.updateHoverAt(local_x, local_y) catch {};
+        }
+    }
+
+    /// Clears the header's pointer/hover state when the pointer moves away.
+    pub fn clearHover(self: *Header) void {
+        if (self.surface) |*surface| _ = surface.clearHover();
     }
 
     pub fn render(
@@ -71,7 +90,6 @@ pub const Header = struct {
             @intFromBool(self.outdated),
             @intFromBool(focused),
         });
-        hashText(&hasher, self.hovered_action orelse "");
         const palette_ptr: usize = if (palette) |value| @intFromPtr(value) else 0;
         hasher.update(std.mem.asBytes(&palette_ptr));
         for (self.actions) |action| {
@@ -145,7 +163,6 @@ pub const Header = struct {
             }
 
             for (self.actions) |action| {
-                const hovered = self.hovered_action != null and std.mem.eql(u8, self.hovered_action.?, action.id);
                 const button = try doc.createElement(.div);
                 button.setStyle(.{
                     .display = .flex,
@@ -153,10 +170,12 @@ pub const Header = struct {
                     .height = .{ .percent = 100 },
                     .flex_shrink = 0,
                     .padding = .{ .left = 1, .right = 1 },
-                    .background = if (hovered) colors.hover_background else null,
                     .color = if (action.enabled) colors.foreground else null,
                     .dim = !action.enabled,
                 });
+                // The browser gets this from `:hover` on the toolbar action;
+                // the ui surface tracks the pointer and paints the declaration.
+                button.setHoverStyle(.{ .background = colors.hover_background });
                 var glyph_buf: [4]u8 = undefined;
                 const glyph_len = std.unicode.utf8Encode(action.glyph, &glyph_buf) catch 0;
                 _ = try button.appendText(glyph_buf[0..glyph_len]);
@@ -169,10 +188,13 @@ pub const Header = struct {
             }
 
             doc.setRoot(root);
-            try surface.paintFrame();
             self.signature = signature;
         }
 
+        // Hover is live paint state, not part of the signature: repaint the
+        // one-row surface so a pointer move over a title action is reflected.
+        // The library also re-resolves the stored pointer cell after a rebuild.
+        try surface.paintFrame();
         try grid.blit(surface.grid(), x, y, width, 1);
     }
 
