@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
         .{ .step = "example-markdown", .path = "examples/markdown.zig", .description = "Run the markdown example" },
         .{ .step = "example-tree", .path = "examples/tree.zig", .description = "Run the tree example" },
         .{ .step = "example-styling", .path = "examples/styling.zig", .description = "Run the styling example" },
+        .{ .step = "example-css", .path = "examples/css.zig", .description = "Run the class/cascade example" },
         .{ .step = "example-focus", .path = "examples/focus.zig", .description = "Run the interactive focus example" },
         .{ .step = "example-mouse", .path = "examples/mouse.zig", .description = "Run the interactive mouse example" },
         .{ .step = "example-mouse-events", .path = "examples/mouse_events.zig", .description = "Run the interactive mouse event log" },

@@ -26,6 +26,7 @@ const table = @import("table.zig");
 const markdown = @import("markdown.zig");
 const tree = @import("tree.zig");
 const styling = @import("styling.zig");
+const css = @import("css.zig");
 const focus = @import("focus.zig");
 const mouse = @import("mouse.zig");
 const mouse_events = @import("mouse_events.zig");
@@ -58,6 +59,7 @@ const entries = [_]Entry{
     .{ .title = "markdown", .open = markdown.markdownExample },
     .{ .title = "tree", .open = tree.treeExample },
     .{ .title = "styling", .open = styling.stylingExample },
+    .{ .title = "css", .open = css.cssExample },
     .{ .title = "focus", .open = focus.focusExample },
     .{ .title = "mouse", .open = mouse.mouseExample },
     .{ .title = "mouse events", .open = mouse_events.mouseEventsExample },
