@@ -187,6 +187,9 @@ Small commits, each with a regression test:
 47. `7427573` the bracket tokenizer merges adjacent line tokens with
     identical metadata (so word brackets split across runs match); ported
     the tokenizer Basic case.
+48. `de4b82d` `tokenForText` builds canonical bracket tokens (upstream
+    `BracketTokens.getToken`), reused by the tokenizer; ported the brackets
+    Basic case (Verilog/LaTeX families).
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -252,11 +255,12 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 - Missing upstream tests remain the main safety net:
   full `beforeEditPositionMapper.test.ts` (three cases ported),
   `brackets`, `concat23Trees`, full `getBracketPairsInRange`,
-  `tokenizer` Basic is ported; most of `pieceTreeTextBuffer.test.ts`
-  (CRLF/random and snapshot suites partly ported); `textModelTokens.test.ts`,
-  `editableTextModel*.test.ts`, `model*.test.ts`. The before-edit mapper,
-  annotations, concat23Trees, and the anchor/simple/multiline/find-next/
-  capturing portions of `textModelSearch.test.ts` are ported.
+  `tokenizer` and `brackets` Basic are ported; most of
+  `pieceTreeTextBuffer.test.ts` (CRLF/random and snapshot suites partly
+  ported); `textModelTokens.test.ts`, `editableTextModel*.test.ts`,
+  `model*.test.ts`. The before-edit mapper, annotations, concat23Trees, and
+  the anchor/simple/multiline/find-next/capturing portions of
+  `textModelSearch.test.ts` are ported.
 - Dead/malformed declarations that only compile because they are never
   analyzed: `rbTreeBase.TreeNode.iterate`, `intervalTree` font bit,
   `model.zig` `initModelDecorationOptionsDefaults`.
@@ -274,7 +278,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3108 tests, 19 skipped; the only observed
+The full suite currently passes (3109 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
