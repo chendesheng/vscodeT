@@ -458,9 +458,8 @@ status and the remaining work.
 ## Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`
-suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`),
-and cross-compiles the watcher-only test root for `x86_64-windows` and
-`aarch64-macos` on Linux. The Linux, macOS and Windows jobs initialize the
+suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`).
+The Linux, macOS and Windows jobs initialize the
 shallow `vscode/` submodule at the pinned commit, so the tokenizer, theme and
 extension-asset tests run against the real upstream tree instead of the
 fallbacks. The Windows job installs oniguruma with vcpkg and passes
