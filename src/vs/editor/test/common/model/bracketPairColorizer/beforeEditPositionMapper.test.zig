@@ -210,3 +210,126 @@ test "beforeEditPositionMapper: Multi-Line Replace 1" {
         "∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
     });
 }
+
+test "beforeEditPositionMapper: Multi-Line Replace 2" {
+    try expectComputed(std.testing.allocator, &.{ "abcdefghij", "012345678", "ABCDEFGHIJ" }, &.{
+        .{ .start = tree.toLength(0, 3), .end = tree.toLength(1, 0), .text = "ab" },
+        .{ .start = tree.toLength(1, 5), .end = tree.toLength(1, 7), .text = "c" },
+    }, &.{
+        "a  b  c  a  b  0  1  2  3  4  c  7  8  ",
+        "0  0  0  0  0  1  1  1  1  1  1  1  1  1  ",
+        "0  1  2  3  4  0  1  2  3  4  5  7  8  9  ",
+        "0  0  0  0  0  0  0  0  0  0  0  ∞  ∞  ∞  ",
+        "3  2  1  0  0  5  4  3  2  1  0  ∞  ∞  ∞  ",
+        "A  B  C  D  E  F  G  H  I  J  ",
+        "2  2  2  2  2  2  2  2  2  2  2  ",
+        "0  1  2  3  4  5  6  7  8  9  10 ",
+        "∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+        "∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+    });
+}
+
+test "beforeEditPositionMapper: Multi-Line Replace 3" {
+    try expectComputed(std.testing.allocator, &.{ "abcdefghij", "012345678", "ABCDEFGHIJ" }, &.{
+        .{ .start = tree.toLength(0, 3), .end = tree.toLength(1, 0), .text = "ab" },
+        .{ .start = tree.toLength(1, 5), .end = tree.toLength(1, 7), .text = "c" },
+        .{ .start = tree.toLength(1, 8), .end = tree.toLength(2, 4), .text = "d" },
+    }, &.{
+        "a  b  c  a  b  0  1  2  3  4  c  7  d  E  F  G  H  I  J  ",
+        "0  0  0  0  0  1  1  1  1  1  1  1  1  2  2  2  2  2  2  2  ",
+        "0  1  2  3  4  0  1  2  3  4  5  7  8  4  5  6  7  8  9  10 ",
+        "0  0  0  0  0  0  0  0  0  0  0  0  0  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+        "3  2  1  0  0  5  4  3  2  1  0  1  0  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+    });
+}
+
+test "beforeEditPositionMapper: Multi-Line Insert 1" {
+    try expectComputed(std.testing.allocator, &.{"012345678"}, &.{
+        .{ .start = tree.toLength(0, 3), .end = tree.toLength(0, 5), .text = "a\nb" },
+    }, &.{
+        "0  1  2  a  ",
+        "0  0  0  0  0  ",
+        "0  1  2  3  4  ",
+        "0  0  0  0  0  ",
+        "3  2  1  0  0  ",
+        "b  5  6  7  8  ",
+        "1  0  0  0  0  0  ",
+        "0  5  6  7  8  9  ",
+        "0  ∞  ∞  ∞  ∞  ∞  ",
+        "0  ∞  ∞  ∞  ∞  ∞  ",
+    });
+}
+
+test "beforeEditPositionMapper: Multi-Line Insert 2" {
+    try expectComputed(std.testing.allocator, &.{"012345678"}, &.{
+        .{ .start = tree.toLength(0, 3), .end = tree.toLength(0, 5), .text = "a\nb" },
+        .{ .start = tree.toLength(0, 7), .end = tree.toLength(0, 8), .text = "x\ny" },
+    }, &.{
+        "0  1  2  a  ",
+        "0  0  0  0  0  ",
+        "0  1  2  3  4  ",
+        "0  0  0  0  0  ",
+        "3  2  1  0  0  ",
+        "b  5  6  x  ",
+        "1  0  0  0  0  ",
+        "0  5  6  7  8  ",
+        "0  0  0  0  0  ",
+        "0  2  1  0  0  ",
+        "y  8  ",
+        "1  0  0  ",
+        "0  8  9  ",
+        "0  ∞  ∞  ",
+        "0  ∞  ∞  ",
+    });
+}
+
+test "beforeEditPositionMapper: Multi-Line Replace/Insert 1" {
+    try expectComputed(std.testing.allocator, &.{ "abcdefghij", "012345678", "ABCDEFGHIJ" }, &.{
+        .{ .start = tree.toLength(0, 3), .end = tree.toLength(1, 1), .text = "aaa\nbbb" },
+    }, &.{
+        "a  b  c  a  a  a  ",
+        "0  0  0  0  0  0  0  ",
+        "0  1  2  3  4  5  6  ",
+        "0  0  0  0  0  0  0  ",
+        "3  2  1  0  0  0  0  ",
+        "b  b  b  1  2  3  4  5  6  7  8  ",
+        "1  1  1  1  1  1  1  1  1  1  1  1  ",
+        "0  1  2  1  2  3  4  5  6  7  8  9  ",
+        "0  0  0  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+        "0  0  0  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+        "A  B  C  D  E  F  G  H  I  J  ",
+        "2  2  2  2  2  2  2  2  2  2  2  ",
+        "0  1  2  3  4  5  6  7  8  9  10 ",
+        "∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+        "∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+    });
+}
+
+test "beforeEditPositionMapper: Multi-Line Replace/Insert 2" {
+    try expectComputed(std.testing.allocator, &.{ "abcdefghij", "012345678", "ABCDEFGHIJ" }, &.{
+        .{ .start = tree.toLength(0, 3), .end = tree.toLength(1, 1), .text = "aaa\nbbb" },
+        .{ .start = tree.toLength(1, 5), .end = tree.toLength(1, 5), .text = "x\ny" },
+        .{ .start = tree.toLength(1, 7), .end = tree.toLength(2, 4), .text = "k\nl" },
+    }, &.{
+        "a  b  c  a  a  a  ",
+        "0  0  0  0  0  0  0  ",
+        "0  1  2  3  4  5  6  ",
+        "0  0  0  0  0  0  0  ",
+        "3  2  1  0  0  0  0  ",
+        "b  b  b  1  2  3  4  x  ",
+        "1  1  1  1  1  1  1  1  1  ",
+        "0  1  2  1  2  3  4  5  6  ",
+        "0  0  0  0  0  0  0  0  0  ",
+        "0  0  0  4  3  2  1  0  0  ",
+        "y  5  6  k  ",
+        "2  1  1  1  1  ",
+        "0  5  6  7  8  ",
+        "0  0  0  0  0  ",
+        "0  2  1  0  0  ",
+        "l  E  F  G  H  I  J  ",
+        "2  2  2  2  2  2  2  2  ",
+        "0  4  5  6  7  8  9  10 ",
+        "0  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+        "0  ∞  ∞  ∞  ∞  ∞  ∞  ∞  ",
+    });
+}
