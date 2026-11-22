@@ -73,7 +73,7 @@ pub const PieceTreeTextBuffer = struct {
         self._pieceTree.deinit();
     }
 
-    pub fn equals(self: *const PieceTreeTextBuffer, other: *const PieceTreeTextBuffer) bool {
+    pub fn equals(self: *const PieceTreeTextBuffer, other: *const PieceTreeTextBuffer) !bool {
         if (!std.mem.eql(self._BOM, other._BOM)) {
             return false;
         }
@@ -82,7 +82,7 @@ pub const PieceTreeTextBuffer = struct {
             return false;
         }
 
-        return self._pieceTree.equal(other._pieceTree);
+        return try self._pieceTree.equal(other._pieceTree);
     }
 
     pub fn getMightContainRTL(self: *const PieceTreeTextBuffer) bool {
@@ -914,4 +914,42 @@ test "getValueLengthInRange compensates EOL length in both directions" {
     defer lf.deinit();
     try std.testing.expectEqual(@as(usize, 7), lf.getValueLengthInRange(full, .CRLF));
     try std.testing.expectEqual(@as(usize, 5), lf.getValueLengthInRange(full, .LF));
+}
+
+test "createSnapshot: immutable, BOM on first read, empty snapshot reads BOM once" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "abc")};
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, true);
+    defer buffer.deinit();
+
+    var snapshot = try buffer.createSnapshot(true);
+    defer snapshot.deinit();
+
+    try std.testing.expectEqualStrings("abc", snapshot.read().?);
+    try std.testing.expect(snapshot.read() == null);
+}
+
+test "createSnapshot: prepends the BOM to the first piece" {
+    const allocator = std.testing.allocator;
+    const bom = "\xEF\xBB\xBF";
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "abc")};
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, bom, .LF, false, false, true, true);
+    defer buffer.deinit();
+
+    var snapshot = try buffer.createSnapshot(true);
+    defer snapshot.deinit();
+    try std.testing.expectEqualStrings("\xEF\xBB\xBFabc", snapshot.read().?);
+    try std.testing.expect(snapshot.read() == null);
+}
+
+test "createSnapshot: empty text reads the BOM once" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "")};
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, true);
+    defer buffer.deinit();
+
+    var snapshot = try buffer.createSnapshot(true);
+    defer snapshot.deinit();
+    try std.testing.expectEqualStrings("", snapshot.read().?);
+    try std.testing.expect(snapshot.read() == null);
 }

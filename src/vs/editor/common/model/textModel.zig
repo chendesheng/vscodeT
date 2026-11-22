@@ -115,13 +115,17 @@ pub const TextModelSnapshot = struct {
         return TextModelSnapshot{ ._source = source, ._eos = false };
     }
 
-    pub fn read(self: *TextModelSnapshot) ?[]const u8 {
+    pub fn deinit(self: *TextModelSnapshot) void {
+        self._source.deinit();
+    }
+
+    pub fn read(self: *TextModelSnapshot) !?[]const u8 {
         if (self._eos) {
             return null;
         }
 
         const allocator = self._source.allocator;
-        const result: ArrayList(u8) = ArrayList(u8).init(allocator);
+        var result: ArrayList(u8) = ArrayList(u8).init(allocator);
         defer result.deinit();
 
         while (true) {
@@ -132,7 +136,7 @@ pub const TextModelSnapshot = struct {
                 if (result.items.len == 0) {
                     return null;
                 } else {
-                    return std.mem.join(allocator, "", result.items);
+                    return try std.mem.join(allocator, "", result.items);
                 }
             }
 
@@ -143,7 +147,7 @@ pub const TextModelSnapshot = struct {
             }
 
             if (result.items.len >= 64 * 1024) {
-                return std.mem.join(allocator, "", result.items);
+                return try std.mem.join(allocator, "", result.items);
             }
         }
     }
@@ -511,8 +515,8 @@ pub const TextModel = struct {
         return (self._onWillDispose.hasListeners() or self._onDidChangeDecorations.hasListeners() or self._tokenizationTextModelPart._hasListeners() or self._onDidChangeOptions.hasListeners() or self._onDidChangeAttached.hasListeners() or self._onDidChangeInjectedText.hasListeners() or self._onDidChangeLineHeight.hasListeners() or self._eventEmitter.hasListeners());
     }
 
-    pub fn equalsTextBuffer(self: *const TextModel, other: *const PieceTreeTextBuffer) bool {
-        return self._buffer.equals(other);
+    pub fn equalsTextBuffer(self: *const TextModel, other: *const PieceTreeTextBuffer) !bool {
+        return try self._buffer.equals(other);
     }
 
     pub fn getTextBuffer(self: *const TextModel) PieceTreeTextBuffer {

@@ -195,53 +195,76 @@ pub const StringBuffer = struct {
     }
 };
 
-// Readonly snapshot for piece tree.
-// In a real multiple thread environment, to make snapshot reading always work correctly, we need to
-// 1. Make TreeNode.piece immutable, then reading and writing can run in parallel.
-// 2. TreeNode/Buffers normalization should not happen during snapshot reading.
-const PieceTreeSnapshot = struct {
-    _pieces: ArrayList(*const Piece),
-    _index: ?usize, // null is for BOM
+/// Readonly snapshot for piece tree.
+///
+/// The port copies `Piece` values instead of referencing live tree nodes, so
+/// later edits cannot mutate a snapshot. The tree itself must outlive the
+/// snapshot because piece contents are read from its buffers lazily.
+pub const PieceTreeSnapshot = struct {
+    allocator: Allocator,
+    _pieces: ArrayList(Piece),
+    _index: usize,
     _tree: *const PieceTreeBase,
+    /// First read with a BOM is `BOM + first piece`; precomputed so `read`
+    /// stays infallible.
+    _first_read: ?ArrayList(u8),
     _BOM: []const u8,
 
     fn init(tree: *const PieceTreeBase, BOM: []const u8) !PieceTreeSnapshot {
-        var pieces = ArrayList(*const Piece).init(tree.allocator);
+        var pieces = ArrayList(Piece).init(tree.allocator);
+        errdefer pieces.deinit();
 
         var iter = tree.root.iterator();
         while (iter.next()) |node| {
-            if (node.piece) |*piece| {
+            if (node.piece) |piece| {
                 try pieces.append(piece);
             }
         }
 
+        var first_read: ?ArrayList(u8) = null;
+        if (pieces.items.len > 0 and BOM.len > 0) {
+            var joined = ArrayList(u8).init(tree.allocator);
+            errdefer joined.deinit();
+            try joined.appendSlice(BOM);
+            try joined.appendSlice(tree.getPieceContent(&pieces.items[0]));
+            first_read = joined;
+        }
+
         return .{
+            .allocator = tree.allocator,
             ._pieces = pieces,
-            ._index = if (BOM.len > 0) null else 0,
+            ._index = 0,
             ._tree = tree,
+            ._first_read = first_read,
             ._BOM = BOM,
         };
     }
 
-    fn deinit(self: *const PieceTreeSnapshot) void {
+    pub fn deinit(self: *PieceTreeSnapshot) void {
+        if (self._first_read) |*first| first.deinit();
         self._pieces.deinit();
     }
 
-    fn read(self: *PieceTreeSnapshot) ?[]const u8 {
-        if (self._index == null) {
-            self._index = 0;
-            return self._BOM;
-        }
-
-        const i = self._index.?;
-
-        if (i >= self._pieces.items.len) {
+    pub fn read(self: *PieceTreeSnapshot) ?[]const u8 {
+        if (self._pieces.items.len == 0) {
+            if (self._index == 0) {
+                self._index = 1;
+                return self._BOM;
+            }
             return null;
         }
 
-        const ret = self._tree.getPieceContent(self._pieces.items[i]);
-        self._index = i + 1;
-        return ret;
+        if (self._index >= self._pieces.items.len) {
+            return null;
+        }
+
+        const index = self._index;
+        self._index += 1;
+        if (index == 0) {
+            if (self._first_read) |*first| return first.items;
+            return self._tree.getPieceContent(&self._pieces.items[0]);
+        }
+        return self._tree.getPieceContent(&self._pieces.items[index]);
     }
 };
 
@@ -510,7 +533,7 @@ pub const PieceTreeBase = struct {
         try self.normalizeEOL(self._EOL);
     }
 
-    pub fn createSnapshot(self: *PieceTreeBase, BOM: []u8) !PieceTreeSnapshot {
+    pub fn createSnapshot(self: *const PieceTreeBase, BOM: []const u8) !PieceTreeSnapshot {
         return try PieceTreeSnapshot.init(self, BOM);
     }
 
@@ -887,7 +910,7 @@ pub const PieceTreeBase = struct {
         return self.getOffsetAt(lineNumber + 1, 1) - self.getOffsetAt(lineNumber, 1) - self._EOLLength;
     }
 
-    pub fn getCharCode(self: *const PieceTreeBase, offset: usize) usize {
+    pub fn getCharCode(self: *const PieceTreeBase, offset: usize) u8 {
         const nodePos = self.nodeAt(offset);
         return self._getCharCode(nodePos);
     }
