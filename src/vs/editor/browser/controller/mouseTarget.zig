@@ -26,6 +26,8 @@ pub const Geometry = struct {
     top_view_line: usize,
     view_line_count: usize,
     scrollbar_width: usize,
+    /// Horizontal scroll offset in cells.
+    scroll_left: usize = 0,
 };
 
 /// The terminal host surface the factory needs. All coordinates are cells.
@@ -111,7 +113,11 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
         };
     }
 
-    const position = try host.position_at_view_point(host.context, view_line, x - geometry.gutter_width);
+    const signed_offset = @as(isize, @intCast(x)) -
+        @as(isize, @intCast(geometry.gutter_width)) +
+        @as(isize, @intCast(geometry.scroll_left));
+    const offset: usize = if (signed_offset <= 0) 0 else @intCast(signed_offset);
+    const position = try host.position_at_view_point(host.context, view_line, offset);
     const range = Range.init(position.lineNumber, position.column, position.lineNumber, position.column);
     const text_width = host.line_text_width(host.context, view_line) orelse {
         return .{
@@ -122,7 +128,6 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
         };
     };
 
-    const offset = x - geometry.gutter_width;
     if (offset < text_width) {
         return .{
             .element = element,

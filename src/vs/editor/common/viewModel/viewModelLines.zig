@@ -92,7 +92,7 @@ pub const ProjectedViewModelLines = struct {
             .classifier = classifier,
             .projections = projections,
             .prefix = prefix,
-            .wrapping_column = @max(wrapping_column, 1),
+            .wrapping_column = wrapping_column,
             .tab_size = @max(tab_size, 1),
             .wrapping_indent = wrapping_indent,
             .word_break = word_break,
@@ -227,9 +227,15 @@ pub const ProjectedViewModelLines = struct {
     }
 
     pub fn setWrappingColumn(self: *ProjectedViewModelLines, column: usize) !bool {
-        const new_column = @max(column, 1);
-        if (self.wrapping_column == new_column) return false;
-        self.wrapping_column = new_column;
+        return self.setWrappingOptions(column, self.wrapping_indent);
+    }
+
+    /// Updates the wrapping column (0 means no soft wrap) and continuation
+    /// indentation together. Rebuilds only when either value changes.
+    pub fn setWrappingOptions(self: *ProjectedViewModelLines, column: usize, indent: WrappingIndent) !bool {
+        if (self.wrapping_column == column and self.wrapping_indent == indent) return false;
+        self.wrapping_column = column;
+        self.wrapping_indent = indent;
         try self.rebuildAll();
         return true;
     }

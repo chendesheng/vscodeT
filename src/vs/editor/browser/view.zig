@@ -179,6 +179,7 @@ pub const View = struct {
         text_right: usize,
         gutter: usize,
         tab_size: usize,
+        scroll_left: usize = 0,
         scrollbar_width: usize,
         line_numbers: *const LineNumbersOverlay,
         line_decorations: *const LinesDecorationsOverlay,
@@ -236,6 +237,7 @@ pub const View = struct {
             options.text_height,
             options.gutter,
             options.tab_size,
+            options.scroll_left,
         );
         if (host) |retained| {
             for (self.content_widgets.entries.items) |entry| try retained.addSubtree(entry.node);

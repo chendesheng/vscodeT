@@ -1110,9 +1110,10 @@ Library constraints:
   one 300 ms scheduler ticked by the app and runs synchronously on the UI
   thread (the debounce coalesces edits but does not cancel a provider call). Because terminal scrolling is in
   whole cells, a scope whose header is still the first visible row is not
-  duplicated. No CSS border/shadow, horizontal `scrollWithEditor` coupling,
-  context menu, go-to-definition from a sticky row or embedded-editor peek
-  styling is ported.
+  duplicated. `stickyScroll.scrollWithEditor` translates the sticky content
+  layer by the editor's horizontal offset. No CSS border/shadow, context menu,
+  go-to-definition from a sticky row or embedded-editor peek styling is
+  ported.
 - Indentation guides are painted by the terminal editor render pass from the ported
   `src/vs/editor/common/model/guidesTextModelPart.zig` indentation subset. The
   model computes a guide count per visible model line, including the upstream
@@ -1321,8 +1322,13 @@ Library constraints:
   scrolling.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are
   right-aligned with `text_align = .right`.
-- Long lines are clipped (no horizontal scrolling); wrapping uses the existing
-  projection/wrapping column.
+- Text soft-wraps at the terminal width by default. `editor.wordWrap` is
+  honored (`off`, `on`, `wordWrapColumn`, `bounded`, plus `wordWrapColumn` and
+  `wrappingIndent`); `off` removes soft wrapping and the line content becomes a
+  horizontal `ui.ScrollView` viewport. Wheel/Shift+wheel and the `scrollLeft`/
+  `scrollRight` commands scroll it, the caret and reveal paths keep the cursor
+  visible, and cursor/mouse/content-widget coordinates subtract the offset.
+  There is still no horizontal scrollbar.
 - The old `src/tui/screen.zig`/`render.zig` path is gone.
 - Multi-file editing keeps one `View` per tab and composites the active view's
   cell grid below a one-row tab strip in `src/vs/workbench/browser/workbench.zig`. The portable
