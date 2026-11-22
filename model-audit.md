@@ -164,6 +164,11 @@ Small commits, each with a regression test:
 35. `278b457` JS `m` now maps to Oniguruma line anchors (not dotAll),
     Searcher handles end-of-line matches, and the core
     `textModelSearch.test.ts` cases are ported.
+36. `977e31c` split `brackets.ts` and `tokenizer.ts` out of the merged tree;
+    `length.zig`, `smallImmutableSet.zig`, `brackets.zig` and `tokenizer.zig`
+    now match upstream basenames.
+37. `a4a12d4` ported the annotations visual test suite (set/intersect/edit/
+    rebase).
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -172,7 +177,7 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 ### High
 
 - **Bracket-pair core is a merged reimplementation.** `bracketPairsTree.zig`
-  carries the remaining upstream modules in one file and has no `concat23Trees`,
+  still carries `ast.ts`/`parser.ts`/`bracketPairsTree.ts` in one file and has no `concat23Trees`,
   streaming `TextBufferTokenizer`/`FastTokenizer`, or two-tree mode
   (`initialAstWithoutTokens`/`astWithTokens`). Queries use flat sorted lists
   for pair APIs, so many operations remain O(document) and incremental
@@ -230,10 +235,10 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   full `beforeEditPositionMapper.test.ts` (three cases ported),
   `brackets`, `concat23Trees`, full `getBracketPairsInRange`,
   `tokenizer`; most of `pieceTreeTextBuffer.test.ts` (CRLF/random and
-  snapshot suites partly ported); `annotations.test.ts`,
-  `textModelTokens.test.ts`, `editableTextModel*.test.ts`, `model*.test.ts`;
-  the anchor/simple/multiline/find-next/capturing parts of
-  `textModelSearch.test.ts`.
+  snapshot suites partly ported); `textModelTokens.test.ts`,
+  `editableTextModel*.test.ts`, `model*.test.ts`; the remaining mapper
+  cases and the anchor/simple/multiline/find-next/capturing parts of
+  `textModelSearch.test.ts` are ported.
 - Dead/malformed declarations that only compile because they are never
   analyzed: `rbTreeBase.TreeNode.iterate`, `intervalTree` font bit,
   `model.zig` `initModelDecorationOptionsDefaults`.
@@ -251,7 +256,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3057 tests, 19 skipped; the only observed
+The full suite currently passes (3065 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
