@@ -60,3 +60,20 @@ test "grid: branch demotion keeps the sibling" {
     try std.testing.expect(grid.removeRoot(*u32, allocator, &root, &a));
     try std.testing.expect(root.kind.leaf == &b);
 }
+
+test "grid: moveRoot relocates a live leaf" {
+    const allocator = std.testing.allocator;
+    var a: u32 = 1;
+    var b: u32 = 2;
+    var root = try grid.initNode(*u32, allocator, &a);
+    defer grid.deinitRoot(*u32, allocator, root);
+
+    try grid.splitRoot(*u32, allocator, &root, &a, .horizontal, &b, false);
+    try grid.moveRoot(*u32, allocator, &root, &b, &a, .horizontal, true);
+    grid.layoutRoot(*u32, root, .{ .x = 0, .y = 0, .w = 20, .h = 4 }, {}, gap);
+
+    const a_node = grid.findLeaf(*u32, root, &a).?;
+    const b_node = grid.findLeaf(*u32, root, &b).?;
+    try std.testing.expectEqual(@as(f64, 0), b_node.rect.x);
+    try std.testing.expectEqual(@as(f64, 10), a_node.rect.x);
+}
