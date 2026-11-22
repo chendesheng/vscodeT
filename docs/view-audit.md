@@ -59,7 +59,7 @@ For each row:
 | Decoration overlays | `vs/editor/browser/viewParts/decorations/` + `src/tui/editorView.zig` | `editor/browser/viewParts/decorations/decorations.ts` | **T** | Whole-line/range class lists, merge order and visible cell ranges are ported; find/word/bracket/diagnostic classes route through the terminal style map with theme colors. `shouldFillLineOnLineBreak` has no cell representation and is omitted (documented in the header/terminal-ui). |
 | Scrollbar | `vs/editor/browser/viewParts/editorScrollbar/editorScrollbar.zig` | `editor/browser/viewParts/editorScrollbar/editorScrollbar.ts` | **T** | The accepted 3-lane cell geometry replaces the pixel scrollbar; wheel/drag/hit and `scrollbarSlider.*` theme resolution are ported and tested. Arrow buttons/rounded slider CSS are omitted as browser-only. |
 | Overview ruler | `vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig` | `editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.ts` | **T** | The upstream line-to-row projection, lane choice and z-index/group paint order are kept; the canvas collapses to one terminal column and one-cell minimum heights. Lane, multi-line, z-order, cursor and collapse tests pass. |
-| Content widgets | `vs/editor/browser/viewParts/contentWidgets/` | same | **P** | Registry, anchor-to-cell mapping, above/below placement, clamping, hit rectangles and focus restore are ported; a placement/clamping test now covers below/above anchors. Multi-widget ordering and focus-restore tests are still missing. |
+| Content widgets | `vs/editor/browser/viewParts/contentWidgets/` | same | **F** | Registry, anchor-to-cell mapping, above/below placement, clamping, hit rectangles, insertion order and focus restore are ported. Below/above anchoring, clamping, multi-widget order and focus are covered by tests. |
 | Overlay widgets | `vs/editor/browser/viewParts/overlayWidgets/` | same | **F** | Corner preferences, size, insertion paint order, hit rectangles and focus restoration are ported; origin, top-right, bottom-right and top-center placement plus focus are covered by tests. |
 | Block decorations | `vs/editor/browser/viewParts/blockDecorations/blockDecorations.zig` | `editor/browser/viewParts/blockDecorations/blockDecorations.ts` | **F** | Ported in `113764e`; block ranges, padding, `blockIsAfterEnd`/`blockDoesNotCollapse`; terminal maps moved classes to one-cell borders. Covered by `block decorations:` tests and `View: block decorations paint a bordered range under the text`. |
 | Suggest widget | `vs/editor/contrib/suggest/browser/*` | `editor/contrib/suggest/browser/*` | **P** | Trigger/session model, windowed list, one-cell scrollbar, selection, mouse listeners and plain-text documentation are ported (20 tests). The full details/status bar, icon/theme matrix and browser accessibility panes are not. |
@@ -212,6 +212,7 @@ For each row:
   with a View test.
 - Made the clipped-tab ellipsis clickable: it lists the hidden tabs in a quick
   pick and activates the chosen tab, with a narrow-strip test.
+- Added multi-widget/focus coverage for content widgets; that row is now **F**.
 
 ## Next slice
 
