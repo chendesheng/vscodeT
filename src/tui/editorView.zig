@@ -597,7 +597,7 @@ pub const View = struct {
         self.* = .{
             .allocator = allocator,
             .editor = editor,
-            .guides = GuidesTextModelPart.init(editor.model),
+            .guides = GuidesTextModelPart.init(editor.model, editor.language_service),
             .surface = undefined,
             .block_nodes = std.array_list.Managed(*ui.Node).init(allocator),
             .configuration_listeners = std.array_list.Managed(ConfigurationListener).init(allocator),
@@ -624,6 +624,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.guides.dispose();
         self.block_nodes.deinit();
         self.clearPaintStyles();
         self.paint_styles.deinit(self.allocator);
@@ -1823,33 +1824,23 @@ pub const View = struct {
                 }
             }
 
-            // Active indentation scope: the contiguous block around the caret
-            // with at least the caret line's guide level.
+            // Active indentation scope comes from the model part, exactly like
+            // upstream `getActiveIndentGuide`.
             const cursor_model_line = editor.modelCursorPosition().lineNumber;
-            if (cursor_model_line >= guide_start_model_line and
-                cursor_model_line - guide_start_model_line < guide_counts.len)
-            {
-                const cursor_index = cursor_model_line - guide_start_model_line;
-                var cursor_content = try editor.model.getLineContent(cursor_model_line);
-                defer cursor_content.deinit();
-                const cursor_indent = computeIndentLevel(cursor_content.items, tab_size);
-                const active_level = if (cursor_indent >= 0)
-                    ceilDiv(@as(usize, @intCast(cursor_indent)), indent_size)
-                else
-                    guide_counts[cursor_index];
-                if (active_level > 0) {
-                    var first = cursor_index;
-                    while (first > 0 and guide_counts[first - 1] >= active_level) first -= 1;
-                    var last = cursor_index;
-                    while (last + 1 < guide_counts.len and guide_counts[last + 1] >= active_level) last += 1;
-                    var index = first;
-                    while (index <= last) : (index += 1) {
-                        const model_line = guide_start_model_line + index;
+            if (self.guides.getActiveIndentGuide(
+                cursor_model_line,
+                guide_start_model_line,
+                guide_end_model_line,
+            ) catch null) |active_info| {
+                if (active_info.indent > 0) {
+                    var model_line = @max(active_info.startLineNumber, guide_start_model_line);
+                    const last_model_line = @min(active_info.endLineNumber, guide_end_model_line);
+                    while (model_line <= last_model_line) : (model_line += 1) {
                         const row = viewRowForModelLine(editor, top, model_line) orelse continue;
                         try guide_specs.append(.{
                             .row = row,
-                            .col = (active_level - 1) * indent_size,
-                            .color = rgbOf(self.indentGuideColors(active_level - 1).active),
+                            .col = (active_info.indent - 1) * indent_size,
+                            .color = rgbOf(self.indentGuideColors(active_info.indent - 1).active),
                         });
                     }
                 }
@@ -4459,18 +4450,25 @@ test "View: indent guides mark leading whitespace and blank lines" {
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
     const guide_fg = ui.cell.packColor(color(indent_guide_color));
+    const active_fg = ui.cell.packColor(color(indent_guide_active_color));
 
-    // Level 1 on the first indented line.
+    // Level 1 on the first indented line. The caret is on the unindented first
+    // line, which upstream treats as the start of the indented scope, so this
+    // guide is the active scope.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 1)]);
-    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 1)]);
 
-    // Level 2 adds a guide at the next indentation column.
+    // Level 2 adds a normal guide at the next indentation column; the active
+    // level-1 scope continues through the whole indented block.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 2)]);
+    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 2)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 2)]);
+    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter + 4, 2)]);
 
     // The blank line inherits both guides from the surrounding block.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 3)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 3)]);
+    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter + 4, 3)]);
 
     // The unindented first and last lines have no guides.
     try std.testing.expectEqual(@as(u32, 'i'), grid.cluster[grid.index(gutter, 0)]);
@@ -4666,7 +4664,9 @@ test "View: indent guides honor per-level theme colors" {
     defer theme.deinit();
     const palette = theme_colors_mod.ThemeColors.init(theme);
 
-    try editor.setCursorPosition(Position.init(1, 1));
+    // The caret on `grand` makes line 3's level-2 guide the active scope;
+    // line 2 keeps the normal level-1 color.
+    try editor.setCursorPosition(Position.init(3, 1));
     const view = try View.init(allocator, editor);
     defer view.deinit();
     view.setThemeColors(&palette);
@@ -4679,7 +4679,7 @@ test "View: indent guides honor per-level theme colors" {
     const level1 = grid.fg[grid.index(gutter, 1)];
     try std.testing.expectEqual(ui.cell.packColor(.{ .r = 255, .g = 0, .b = 0 }), level1);
     const level2 = grid.fg[grid.index(gutter + 4, 2)];
-    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 0, .g = 255, .b = 0 }), level2);
+    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 0, .g = 170, .b = 0 }), level2);
 }
 
 test "View: bracket guides follow pairs and highlight the active pair" {
@@ -4763,17 +4763,18 @@ test "View: active indentation guide follows the cursor scope" {
     const active_fg = ui.cell.packColor(color(indent_guide_active_color));
     const normal_fg = ui.cell.packColor(color(indent_guide_color));
 
-    // The whole cursor scope (rows 1-3) highlights level 1 at column 0.
+    // Upstream highlights the child scope opened by the caret line: `child`
+    // opens `grand`, so line 3's level-2 guide is the active one.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 1)]);
-    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter, 1)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 2)]);
-    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 2)]);
-    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 3)]);
-    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 3)]);
-
-    // Level 2 on `grand` remains a normal guide.
+    try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter, 2)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 2)]);
-    try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter + 4, 2)]);
+    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter + 4, 2)]);
+
+    // `sibling` and the closing `root` keep normal guides.
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 3)]);
+    try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter, 3)]);
 }
 
 test "View: contribution highlights are stored as model decorations" {
