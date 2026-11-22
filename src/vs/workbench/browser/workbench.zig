@@ -7310,6 +7310,18 @@ pub const Workbench = struct {
         if (self.focus != .sidebar or !self.sidebarShown()) return false;
 
         if (event.key == .escape) {
+            // A focused sticky-scroll widget is the innermost focus target;
+            // Escape leaves it before leaving the side bar (upstream leaves it
+            // with Tab, which is the same terminal focus-traversal key).
+            const active = self.activity_bar_part.active_id orelse "";
+            if (std.mem.eql(u8, active, "explorer")) {
+                if (self.sidebar) |sidebar| {
+                    if (sidebar.tree.stickyScrollFocused()) {
+                        sidebar.tree.clearStickyScrollFocus();
+                        return true;
+                    }
+                }
+            }
             self.focusEditor();
             if (self.activeTab()) |tab| tab.focusEditor();
             return true;
@@ -14249,4 +14261,74 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
     var content = try tab.editor.model.getLineContent(1);
     defer content.deinit();
     try std.testing.expectEqualStrings("inside link", content.items);
+}
+
+test "Workbench: explorer sticky headers pin the folder ancestors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "aaa/bbb/ccc");
+    var file_a = try tmp.dir.createFile(io, "aaa/a.txt", .{});
+    try file_a.writeStreamingAll(io, "a");
+    file_a.close(io);
+    var file_b = try tmp.dir.createFile(io, "aaa/bbb/b.txt", .{});
+    try file_b.writeStreamingAll(io, "b");
+    file_b.close(io);
+    for (0..12) |i| {
+        var name_buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "aaa/bbb/ccc/f{d:0>2}.txt", .{i});
+        var file = try tmp.dir.createFile(io, name, .{});
+        try file.writeStreamingAll(io, "x");
+        file.close(io);
+    }
+
+    const seed = try seedFile(allocator, io, &tmp, "sticky_seed.txt", "seed");
+    defer allocator.free(seed);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{seed}, 60, 14);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    workbench.focusSidebar();
+
+    var first_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer first_frame.deinit();
+    try workbench.render(&first_frame.writer);
+
+    const sidebar = workbench.sidebar.?;
+    const deep = try std.fmt.allocPrint(allocator, "{s}/aaa/bbb/ccc/f11.txt", .{root});
+    defer allocator.free(deep);
+    try sidebar.revealPath(deep);
+
+    var frame: std.Io.Writer.Allocating = .init(allocator);
+    defer frame.deinit();
+    try workbench.render(&frame.writer);
+
+    try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
+    const sticky_a = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(sticky_a);
+    const sticky_b = try workbench.frame.present().rowText(allocator, 2);
+    defer allocator.free(sticky_b);
+    const sticky_c = try workbench.frame.present().rowText(allocator, 3);
+    defer allocator.free(sticky_c);
+    try std.testing.expect(std.mem.indexOf(u8, sticky_a, "aaa") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sticky_b, "bbb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sticky_c, "ccc") != null);
+
+    // Tab moves the focus into the sticky widget; Escape leaves the widget
+    // before the side bar returns focus to the editor.
+    var tab = ui.KeyEvent{ .key = .tab };
+    try std.testing.expect(try workbench.handleSidebarKey(&tab));
+    try std.testing.expect(sidebar.tree.stickyScrollFocused());
+    var escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(try workbench.handleSidebarKey(&escape));
+    try std.testing.expect(!sidebar.tree.stickyScrollFocused());
+    try std.testing.expectEqual(Focus.sidebar, workbench.focus);
+
+    // A second Escape leaves the side bar for the editor, as before.
+    try std.testing.expect(try workbench.handleSidebarKey(&escape));
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
 }

@@ -645,7 +645,9 @@ pub const tui_defaults_json =
     \\  "workbench": {
     \\    "tree": {
     \\      "indent": 2,
-    \\      "renderIndentGuides": "onHover"
+    \\      "renderIndentGuides": "onHover",
+    \\      "enableStickyScroll": true,
+    \\      "stickyScrollMaxItemCount": 7
     \\    }
     \\  },
     \\  "explorer": {

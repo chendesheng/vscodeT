@@ -1224,11 +1224,32 @@ Library constraints:
   in the terminal supplies the icons. Indent guides follow
   `workbench.tree.renderIndentGuides` (`none`, `onHover`, `always`; default
   `onHover`) and `workbench.tree.indent` is counted in cells (default 2).
+  Tree sticky scroll is ported from the generic tree view
+  (`src/vs/base/browser/ui/tree/abstractTree.zig`): the controller pins the
+  ancestors of the first visible row, `CompressibleStickyScrollDelegate`
+  merges an overflowing ancestor chain into one compressed row, and
+  `workbench.tree.enableStickyScroll` / `stickyScrollMaxItemCount` select the
+  behavior. Sticky rows are overlays painted after the list rows through the
+  same renderer, so they keep indentation, twisties, icons and compressed
+  labels. There is no retained overlay or scroll event in the terminal view,
+  so the pinned state is recomputed before every paint. Clicking a pinned row
+  reproduces upstream's `handleStickyScrollMouseEvent`: the tree scrolls the
+  node below the remaining sticky rows and selects it; a click on the row's
+  twistie toggles the folder. Model splices restore the selected row without
+  revealing it, so selecting an already-visible file does not move the
+  viewport. Terminal rows are whole
+  cells, so the upstream pixel-level slide-out clip becomes "paint the whole
+  row or hide it"; the hover/focus
+  outline becomes the list hover background (bold while focused). `Tab` enters
+  the widget (the terminal stand-in for DOM tab order) and `Escape`/`Tab`
+  leave it; Up/Down/Enter/Space/Left implement the upstream
+  `list.stickyScroll*` bindings. The sticky widget is read at Explorer
+  construction rather than live-updated from a configuration change, like the
+  other Explorer tree settings.
   The async data tree/loading placeholders, identity-provider diffing through
-  the object models, Explorer file drag/drop, sticky scroll and the
-  compressed-label navigation controller (per-segment focus/hover) are not
-  ported. The side-bar divider is a draggable part splitter, separate from
-  Explorer file drag/drop.
+  the object models, Explorer file drag/drop and the compressed-label
+  navigation controller (per-segment focus/hover) are not ported. The side-bar
+  divider is a draggable part splitter, separate from Explorer file drag/drop.
   The activity bar is split into the ported model
   (`src/vs/workbench/browser/parts/activitybar/activitybarPart.zig`), the
   activity service model

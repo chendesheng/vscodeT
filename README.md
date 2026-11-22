@@ -590,11 +590,24 @@ console API for raw mode, sizing and input polling.
   terminal). Tree indent guides follow `workbench.tree.renderIndentGuides`
   (`none`, `onHover` or `always`; default `onHover`) and
   `workbench.tree.indent` is measured in cells (default 2, unlike upstream's
-  pixel unit). The one-cell divider between the activity bar/side bar and the
-  editor area is draggable: press and move to resize the side bar, clamped to
-  half the window. `Ctrl-B` toggles the side panel
-  and
-  `Escape` returns focus to the editor. The generic VS Code list/tree view is
+  pixel unit). Sticky scroll is ported from the generic tree (not an Explorer
+  special case): as the file tree scrolls, the folder ancestors of the first
+  visible row pin above it, and overflow chains collapse into one compressed
+  row through `CompressibleStickyScrollDelegate`.
+  `workbench.tree.enableStickyScroll` (default on) and
+  `workbench.tree.stickyScrollMaxItemCount` (default 7) are read when the
+  Explorer is created. `Tab` focuses the sticky widget (the TUI key for
+  upstream's DOM tab order), Up/Down move between pinned folders,
+  Enter/Space reveal the folder in the tree, Left collapses it, and
+  `Escape`/`Tab` return to the list. Clicking a pinned row reveals and selects
+  that folder in the tree (and focuses the list), matching upstream's
+  `handleStickyScrollMouseEvent`; clicking its twistie also toggles it.
+  Selecting a row that is already visible keeps the scroll position, and the
+  auto-reveal that follows opening a file only scrolls when the row is outside
+  the visible, non-sticky area. The one-cell
+  divider between the activity bar/side bar and the editor area is draggable:
+  press and move to resize the side bar, clamped to half the window. `Ctrl-B`
+  toggles the side panel and `Escape` returns focus to the editor. The generic VS Code list/tree view is
   being replaced in layers under `src/vs/base/browser/ui/list` and
   `src/vs/base/browser/ui/tree`: `rangeMap`, the virtualized `ListView`,
   `ListWidget`, the index/object tree models and a terminal `AbstractTree`.
@@ -602,9 +615,9 @@ console API for raw mode, sizing and input polling.
   `CompressibleObjectTree`/`CompressedObjectTreeModel`/`AbstractTree` path.
   `ObjectTree`, `IndexTree`, a synchronous `DataTree` and the
   `CompressibleObjectTree` view adapter are also ported. Remaining work is the
-  async data tree, file drag/drop inside the tree, sticky scroll, the
-  compressed-label navigation controller (per-segment focus/hover) and
-  identity-provider diffing through the object models. The side-bar divider is
+  async data tree, file drag/drop inside the tree, the compressed-label
+  navigation controller (per-segment focus/hover) and identity-provider
+  diffing through the object models. The side-bar divider is
   draggable; that is part-size resizing, not Explorer file drag/drop.
 - The configuration service (`src/vs/workbench/services/configuration/browser/configurationService.zig`)
   resolves defaults, the VS Code profile's user settings, the terminal's own
