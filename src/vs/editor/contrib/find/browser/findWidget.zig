@@ -323,6 +323,7 @@ pub const FindWidget = struct {
             .height = .{ .cells = 1 },
             .white_space = .pre,
             .flex_shrink = 0,
+            .pointer = .pointer,
         });
         _ = holder.appendChild(node) catch return;
         _ = parent.appendChild(holder) catch {};
@@ -351,6 +352,7 @@ pub const FindWidget = struct {
             .height = .{ .cells = 1 },
             .white_space = .pre,
             .flex_shrink = 0,
+            .pointer = .pointer,
         });
         _ = try holder.appendChild(node);
         _ = try parent.appendChild(holder);

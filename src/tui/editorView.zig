@@ -943,12 +943,17 @@ pub const View = struct {
             return;
         }
 
-        const replacement = try ui.Surface.init(self.allocator, .{
+        var replacement = try ui.Surface.init(self.allocator, .{
             .cols = width,
             .rows = height,
             .tab_size = self.editor.tabSize(),
             .measure_width = cellMetrics.measureCodepoint,
         });
+        // Pointer state is terminal-global, so a new surface for a resize keeps
+        // the preview host's emission flag and the last shape it wrote.
+        replacement.pointer_shapes = self.surface.pointer_shapes;
+        replacement.pointer = self.surface.pointer;
+        replacement.pointer_state = self.surface.pointer_state;
 
         // The line elements belong to the surface document that is about to be
         // destroyed; drop the window without touching their DOM nodes.
@@ -1180,6 +1185,25 @@ pub const View = struct {
         try self.surface.render(writer, .{ .synchronized = true });
     }
 
+    /// The computed pointer shape under an editor-relative cell. Content text
+    /// resolves to `.text`; the chrome roots and widget styles override it.
+    pub fn pointerAt(self: *View, x: usize, y: usize) !ui.Pointer {
+        try self.ensureBuilt();
+        return (try self.surface.pointerAt(x, y)) orelse .default;
+    }
+
+    /// Records the pointer shape for the next `render`. Returns true when it
+    /// changed, so the read-only preview can request a redraw.
+    pub fn setPointer(self: *View, shape: ui.Pointer) bool {
+        return self.surface.setPointer(shape);
+    }
+
+    /// Enables OSC 22 emission for the single-surface preview host. The
+    /// workbench composites pane surfaces itself and emits at its own frame.
+    pub fn setPointerShapes(self: *View, enabled: bool) void {
+        self.surface.setPointerShapes(enabled);
+    }
+
     /// The hardware cursor cell, valid after `render` has laid the tree out.
     /// Returns null when the caret is outside the text area.
     pub fn cursorCell(self: *View) ?Cell {
@@ -1336,6 +1360,10 @@ pub const View = struct {
                 .height = .{ .percent = 100 },
                 .overflow = .hidden,
                 .background = if (self.theme_colors) |palette| palette.background else null,
+                // The editor content is text: blank cells beyond a line still
+                // show the I-beam because they hit the root. Chrome roots
+                // override this with the terminal default.
+                .pointer = .text,
             });
             doc.setRoot(root);
             const content_root = try doc.createElement(.div);
@@ -1345,6 +1373,7 @@ pub const View = struct {
                 .top = .{ .cells = 0 },
                 .width = .{ .percent = 100 },
                 .height = .{ .percent = 100 },
+                .pointer = .text,
             });
             content_root.setPointerEvents(false);
             _ = try root.appendChild(content_root);
@@ -1355,6 +1384,7 @@ pub const View = struct {
                 .top = .{ .cells = 0 },
                 .width = .{ .percent = 100 },
                 .height = .{ .percent = 100 },
+                .pointer = .default,
             });
             chrome_root.setPointerEvents(false);
             _ = try root.appendChild(chrome_root);
@@ -2168,6 +2198,36 @@ test "View: text, gutter and status" {
     const cursor = view.cursorCell().?;
     try std.testing.expectEqual(@as(usize, 0), cursor.row);
     try std.testing.expectEqual(editor.gutterWidth(), cursor.col);
+}
+
+test "View: content requests text, chrome requests default" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abc", "test.txt", 20, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    view.setStatusText("test status", "");
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.render(&out.writer);
+
+    // Text cells, the empty space after the line, and the content area below
+    // the last line all take the browser's I-beam.
+    try std.testing.expectEqual(ui.Pointer.text, try view.pointerAt(editor.gutterWidth(), 0));
+    try std.testing.expectEqual(ui.Pointer.text, try view.pointerAt(15, 0));
+    try std.testing.expectEqual(ui.Pointer.text, try view.pointerAt(editor.gutterWidth(), 3));
+
+    // Gutter, overview ruler/scrollbar and the status row keep the terminal
+    // default; only the content root opts into text.
+    try std.testing.expectEqual(ui.Pointer.default, try view.pointerAt(0, 0));
+    try std.testing.expectEqual(ui.Pointer.default, try view.pointerAt(editor.screen_width - 1, 0));
+    try std.testing.expectEqual(ui.Pointer.default, try view.pointerAt(3, editor.screen_height - 1));
 }
 
 test "View: CJK and tab runs keep the caret on the right cell" {

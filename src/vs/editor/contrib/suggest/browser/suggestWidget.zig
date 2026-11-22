@@ -271,6 +271,7 @@ pub const SuggestWidget = struct {
                 .padding = .{ .left = 1, .right = 1 },
                 .overflow = .hidden,
                 .background = if (selected) selected_background else null,
+                .pointer = .pointer,
             });
 
             const kind = try doc.createElement(.div);
