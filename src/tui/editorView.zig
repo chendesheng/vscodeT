@@ -4671,7 +4671,7 @@ test "View: rendered whitespace falls back to a dimmed foreground" {
     try std.testing.expect(ui.cell.unpackColor(grid.fg[cell]).r < default_text_color[0]);
 }
 
-test "View: selected whitespace marker keeps the selection background" {
+test "View: selected whitespace guide keeps the selection background" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const editor = try Editor.createFromText(allocator, io, "    x", "test.txt", 20, 3);
@@ -4692,17 +4692,22 @@ test "View: selected whitespace marker keeps the selection background" {
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
     const guide = grid.index(gutter, 0);
-    // The selected leading space renders a whitespace marker. The marker is
-    // text, so it wins the cell over the guide overlay and keeps the selection
-    // background instead of dropping out of the band as a dark cell, which is
-    // what the old inverse paint did.
-    try std.testing.expectEqual(@as(u32, '\u{00B7}'), grid.cluster[guide]);
+    // Indent guides paint after the text runs, so the guide wins the shared
+    // cell over the selected space marker. The guide owns only the glyph, so
+    // the cell keeps the selection background instead of dropping out of the
+    // band as a dark cell, which is what the old inverse paint did.
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[guide]);
     try std.testing.expectEqual(
         ui.cell.packColor(color(selection_background_dark)),
         grid.bg[guide],
     );
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(indent_guide_active_color)),
+        grid.fg[guide],
+    );
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[guide] & ui.cell.Attr.inverse);
-    try std.testing.expect(grid.fg[guide] != 0);
+    // The remaining selected spaces keep their markers.
+    try std.testing.expectEqual(@as(u32, 0x00B7), grid.cluster[grid.index(gutter + 1, 0)]);
 }
 
 test "View: selected tab renders its marker after the indent guide" {
@@ -4784,7 +4789,7 @@ test "View: each selected tab renders after its own indent guide" {
     try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[grid.index(gutter + 5, 0)]);
 }
 
-test "View: one-cell tab keeps its arrow over the indent guide" {
+test "View: one-cell tab guide keeps the shared cell" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const editor = try Editor.createFromText(allocator, io, "\tfoo", "test.txt", 20, 3);
@@ -4793,8 +4798,9 @@ test "View: one-cell tab keeps its arrow over the indent guide" {
         allocator.destroy(editor);
     }
 
-    // A one-cell tab has no padding cell to move the arrow into, so the marker
-    // keeps the shared cell like the `·` space marker does.
+    // A one-cell tab has no padding cell to move the arrow into, so the guide
+    // paints over the tab marker and keeps the shared cell, matching the `·`
+    // space marker behavior.
     const Settings = struct {
         detect_indentation: std.json.Value = .{ .bool = false },
         tab_size: std.json.Value = .{ .integer = 1 },
@@ -4825,8 +4831,9 @@ test "View: one-cell tab keeps its arrow over the indent guide" {
     const first_cell = grid.index(gutter, 0);
     const rendered = try rowText(view, allocator, 0);
     defer allocator.free(rendered);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{2192}foo") != null);
-    try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[first_cell]);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{2502}foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{2192}") == null);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[first_cell]);
     try std.testing.expectEqual(
         ui.cell.packColor(color(selection_background_dark)),
         grid.bg[first_cell],
