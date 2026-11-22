@@ -226,8 +226,13 @@ pub const TerminalViewHost = struct {
         };
 
         self.options.set(.lineHeight, 1);
+        // The shared line renderer owns whitespace rendering (the browser's
+        // SVG whitespace layer is not ported), so keep
+        // `experimentalWhitespaceRendering` off and retain the upstream
+        // `selection` default: selecting text reveals middots for spaces and an
+        // arrow for tabs. An explicit `editor.renderWhitespace` setting still
+        // overrides it in `applyEditorSettings`.
         self.options.set(.experimentalWhitespaceRendering, .off);
-        self.options.set(.renderWhitespace, .none);
         self.options.set(.stopRenderingLineAfter, -1);
         self.syncGutterOptions();
         self.configuration = .{

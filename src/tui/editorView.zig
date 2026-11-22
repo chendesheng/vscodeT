@@ -44,8 +44,10 @@
 //! Indentation guides are painted as dim `│` cells over the leading
 //! whitespace, using the ported `GuidesTextModelPart` count. Vertical
 //! bracket-pair guides and the active indentation/bracket scope are painted
-//! with brighter colors. Guides never overwrite text cells; horizontal guide
-//! segments are not terminal cells, so they are not painted.
+//! with brighter colors. A visible-whitespace marker keeps its cell: a `·` or a
+//! one-cell tab's `→` replaces a guide that shares the cell, while a wider tab
+//! keeps the guide and repeats the arrow in the next (padding) cell. Horizontal
+//! guide segments are not terminal cells, so they are not painted.
 //!
 //! The right edge of the text area reserves two cells that double as the
 //! overview ruler and the scrollbar. Marker ranges project onto text rows
@@ -1235,9 +1237,9 @@ pub const View = struct {
         return self.indent_guide_colors[level % self.indent_guide_color_count];
     }
 
-    /// Applies `editor.*` view settings to the ported options and fans a
-    /// configuration-change event out to the view parts, then schedules a
-    /// rebuild. Model-level settings are applied by the owning editor.
+    /// Applies `editor.*` view settings to the ported options and dispatches a
+    /// configuration-change view event, then schedules a rebuild. Model-level
+    /// settings are applied by the owning editor.
     pub fn applyEditorSettings(
         self: *View,
         reader: terminal_editor_config.Reader,
@@ -1246,10 +1248,16 @@ pub const View = struct {
     ) !bool {
         var changed: terminal_editor_config.ChangeSet = undefined;
         if (!self.terminal_view_host.applyEditorSettings(reader, language_id, resource, &changed)) return false;
+        // Configuration changes are a view event, so dispatch them through the
+        // editor: every part registered with the `ViewContext` (including
+        // `ViewLines`, which caches `ViewLineOptions` per line) receives them,
+        // exactly like the upstream view-model event flow. Calling the concrete
+        // `View` method directly skipped `ViewLines`, leaving line options such
+        // as `renderWhitespace` stale.
         const event = view_events.ViewConfigurationChangedEvent.init(
             editor_options.ConfigurationChangedEvent.init(&changed),
         );
-        _ = self.terminal_view_host.viewRef().onConfigurationChanged(&event);
+        self.editor.emitViewEvent(.{ .ViewConfigurationChanged = event });
         for (self.configuration_listeners.items) |listener| listener.notify(listener.context);
         self.document_ready = false;
         self.needs_render = true;
@@ -2818,6 +2826,78 @@ test "View: high contrast selection uses the selection foreground" {
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(gutter, 0)] & ui.cell.Attr.inverse);
 }
 
+test "View: selection shows whitespace markers by default" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a b\tc d", "test.txt", 30, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 5)});
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    // The upstream default (`editor.renderWhitespace: selection`) replaces the
+    // covered space with a middot and the covered tab with a rightwards arrow;
+    // the whitespace after the selection is untouched.
+    const rendered = try rowText(view, allocator, 0);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "a\u{00B7}b\u{2192}c d") != null);
+
+    // Clearing the selection restores the plain text: the markers are driven by
+    // the same selection state the selection background uses.
+    try editor.setSelections(&[_]Selection{Selection.init(1, 5, 1, 5)});
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    const cleared = try rowText(view, allocator, 0);
+    defer allocator.free(cleared);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "a b c d") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "\u{00B7}") == null);
+}
+
+test "View: editor.renderWhitespace setting overrides the selection default" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a b c", "test.txt", 20, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 4)});
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const Settings = struct {
+        value: std.json.Value = .{ .string = "none" },
+
+        fn get(context: *anyopaque, key: []const u8, _: ?[]const u8, _: ?[]const u8) ?*const std.json.Value {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (!std.mem.eql(u8, key, "editor.renderWhitespace")) return null;
+            return &self.value;
+        }
+    };
+    var settings = Settings{};
+    _ = try view.applyEditorSettings(.{ .context = &settings, .get_value = Settings.get }, null, null);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const rendered = try rowText(view, allocator, 0);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "a b c") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{00B7}") == null);
+}
+
 test "View: refresh keeps the frame diff and the cursor visible" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -4353,7 +4433,7 @@ test "View: indent guides mark leading whitespace and blank lines" {
     try std.testing.expectEqual(@as(u32, 'e'), grid.cluster[grid.index(gutter, 6)]);
 }
 
-test "View: indent guide inside a selection keeps the selection background" {
+test "View: selected whitespace marker keeps the selection background" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const editor = try Editor.createFromText(allocator, io, "    x", "test.txt", 20, 3);
@@ -4374,18 +4454,145 @@ test "View: indent guide inside a selection keeps the selection background" {
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
     const guide = grid.index(gutter, 0);
-    // The guide glyph paints over its selected cell. It must keep the selection
-    // background (the guide text run has no background of its own) instead of
-    // dropping out of the band as a dark cell, which is what the old inverse
-    // paint did.
-    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[guide]);
+    // The selected leading space renders a whitespace marker. The marker is
+    // text, so it wins the cell over the guide overlay and keeps the selection
+    // background instead of dropping out of the band as a dark cell, which is
+    // what the old inverse paint did.
+    try std.testing.expectEqual(@as(u32, '\u{00B7}'), grid.cluster[guide]);
     try std.testing.expectEqual(
         ui.cell.packColor(color(selection_background_dark)),
         grid.bg[guide],
     );
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[guide] & ui.cell.Attr.inverse);
-    // The guide keeps its own foreground color rather than the terminal default.
     try std.testing.expect(grid.fg[guide] != 0);
+}
+
+test "View: selected tab renders its marker after the indent guide" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "\tfoo", "test.txt", 20, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 5)});
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const guide_cell = grid.index(gutter, 0);
+    const arrow_cell = grid.index(gutter + 1, 0);
+    const rendered = try rowText(view, allocator, 0);
+    defer allocator.free(rendered);
+    // The tab expands to four cells. The indent guide keeps its first cell and
+    // the arrow is repeated in the next cell (one of the tab's padding cells),
+    // so both stay visible while the selection is active.
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{2502}\u{2192}  foo") != null);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[guide_cell]);
+    try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[arrow_cell]);
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(selection_background_dark)),
+        grid.bg[guide_cell],
+    );
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(selection_background_dark)),
+        grid.bg[arrow_cell],
+    );
+
+    // Without a selection there is no marker: the guide stays and the padding
+    // cells are blank.
+    try editor.setSelections(&[_]Selection{Selection.init(1, 5, 1, 5)});
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    const cleared = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, 0x2502), cleared.cluster[guide_cell]);
+    try std.testing.expectEqual(@as(u32, ' '), cleared.cluster[arrow_cell]);
+}
+
+test "View: each selected tab renders after its own indent guide" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "\t\tfoo", "test.txt", 20, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 3)});
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const rendered = try rowText(view, allocator, 0);
+    defer allocator.free(rendered);
+    // Two four-cell tabs and two indent guides: `│→  │→  foo`.
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{2502}\u{2192}  \u{2502}\u{2192}  foo") != null);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(gutter, 0)]);
+    try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[grid.index(gutter + 1, 0)]);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(gutter + 4, 0)]);
+    try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[grid.index(gutter + 5, 0)]);
+}
+
+test "View: one-cell tab keeps its arrow over the indent guide" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "\tfoo", "test.txt", 20, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    // A one-cell tab has no padding cell to move the arrow into, so the marker
+    // keeps the shared cell like the `·` space marker does.
+    const Settings = struct {
+        detect_indentation: std.json.Value = .{ .bool = false },
+        tab_size: std.json.Value = .{ .integer = 1 },
+        indent_size: std.json.Value = .{ .integer = 1 },
+
+        fn get(context: *anyopaque, key: []const u8, _: ?[]const u8, _: ?[]const u8) ?*const std.json.Value {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, key, "editor.detectIndentation")) return &self.detect_indentation;
+            if (std.mem.eql(u8, key, "editor.tabSize")) return &self.tab_size;
+            if (std.mem.eql(u8, key, "editor.indentSize")) return &self.indent_size;
+            return null;
+        }
+    };
+    var settings = Settings{};
+    _ = try editor.applyEditorSettings(.{ .context = &settings, .get_value = Settings.get }, null, null);
+
+    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 5)});
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const first_cell = grid.index(gutter, 0);
+    const rendered = try rowText(view, allocator, 0);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{2192}foo") != null);
+    try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[first_cell]);
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(selection_background_dark)),
+        grid.bg[first_cell],
+    );
 }
 
 test "View: indent guides honor per-level theme colors" {
