@@ -38,7 +38,7 @@ test "BreadcrumbsControl: labels and item kinds from a path model" {
         fn symbol(_: *anyopaque, _: ?u32) []const u8 {
             return "ƒ";
         }
-        fn open(_: *anyopaque, _: Selection, _: SelectMode) !void {}
+        fn open(_: *anyopaque, _: Selection, _: SelectMode, _: usize) !void {}
         fn reveal(_: *anyopaque, _: *IOutline, _: *anyopaque) !void {}
         fn render(_: *anyopaque) void {}
         fn focus(_: *anyopaque) void {}
@@ -112,7 +112,7 @@ test "BreadcrumbsControl: focus, selection and escape return focus to the editor
         fn symbol(_: *anyopaque, _: ?u32) []const u8 {
             return "ƒ";
         }
-        fn open(_: *anyopaque, _: Selection, _: SelectMode) !void {
+        fn open(_: *anyopaque, _: Selection, _: SelectMode, _: usize) !void {
             opened += 1;
         }
         fn reveal(_: *anyopaque, _: *IOutline, _: *anyopaque) !void {}

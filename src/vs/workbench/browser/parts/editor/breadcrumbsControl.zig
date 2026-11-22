@@ -59,7 +59,7 @@ pub const Host = struct {
     outline_editor: *const fn (context: *anyopaque) ?OutlineEditor,
     file_icon: *const fn (context: *anyopaque) ?file_icon_mod.Icon,
     symbol_icon: *const fn (context: *anyopaque, kind: ?u32) []const u8,
-    open_element: *const fn (context: *anyopaque, selection: Selection, mode: SelectMode) anyerror!void,
+    open_element: *const fn (context: *anyopaque, selection: Selection, mode: SelectMode, anchor_x: usize) anyerror!void,
     reveal_element: *const fn (context: *anyopaque, outline: *IOutline, element: *anyopaque) anyerror!void,
     request_render: *const fn (context: *anyopaque) void,
     focus_editor: *const fn (context: *anyopaque) void,
@@ -255,6 +255,17 @@ pub const BreadcrumbsControl = struct {
         self.theme = palette;
     }
 
+    /// Recomputes the item list without rebuilding the outline model or
+    /// emitting `on_did_update`. The workbench calls this after a cursor move
+    /// so the symbol chain follows the active element, matching upstream's
+    /// `onDidChangeCursorPosition` refresh.
+    pub fn refreshElements(self: *BreadcrumbsControl) !void {
+        const model = self.model orelse return;
+        try model.refreshElements();
+        try self.rebuildItems();
+        self.host.request_render(self.host.context);
+    }
+
     pub fn draw(self: *BreadcrumbsControl, grid: *ui.CellGrid, rect: ui.Rect, active_group: bool) !void {
         if (!self.visible) return;
         const x = ui.cell.snap(rect.x);
@@ -330,14 +341,14 @@ pub const BreadcrumbsControl = struct {
 
     pub fn click(self: *BreadcrumbsControl, x: usize) !bool {
         const index = self.widget.hitAt(x) orelse return false;
-        return self.selectIndex(index);
+        return self.activateIndex(index, .pick, x);
     }
 
     pub fn selectIndex(self: *BreadcrumbsControl, index: usize) !bool {
-        return self.activateIndex(index, .pick);
+        return self.activateIndex(index, .pick, self.widget.hitStart(index) orelse 0);
     }
 
-    fn activateIndex(self: *BreadcrumbsControl, index: usize, mode: SelectMode) !bool {
+    fn activateIndex(self: *BreadcrumbsControl, index: usize, mode: SelectMode, anchor_x: usize) !bool {
         const model = self.model orelse return false;
         const elements = model.getElements();
         if (index >= elements.len) return false;
@@ -347,7 +358,7 @@ pub const BreadcrumbsControl = struct {
             .outline => |outline| .{ .outline = outline },
             .placeholder => .placeholder,
         };
-        try self.host.open_element(self.host.context, selection, mode);
+        try self.host.open_element(self.host.context, selection, mode, anchor_x);
         return true;
     }
 
@@ -390,7 +401,7 @@ pub const BreadcrumbsControl = struct {
         if (index >= elements.len) return false;
         switch (elements[index]) {
             .outline => |outline| try self.host.reveal_element(self.host.context, outline.outline, outline.element),
-            else => return self.activateIndex(index, .reveal),
+            else => return self.activateIndex(index, .reveal, self.widget.hitStart(index) orelse 0),
         }
         return true;
     }

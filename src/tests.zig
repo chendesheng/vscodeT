@@ -735,12 +735,15 @@ comptime {
     _ = @import("./vs/workbench/api/common/positionConverter.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadLanguageFeatures.test.zig");
     _ = @import("./vs/editor/contrib/documentSymbols/browser/outlineModel.zig");
+    _ = @import("./vs/editor/contrib/documentSymbols/test/browser/outlineModel.test.zig");
     _ = @import("./vs/editor/contrib/gotoSymbol/browser/goToSymbol.zig");
     _ = @import("./vs/editor/contrib/gotoSymbol/browser/referencesModel.zig");
     _ = @import("./vs/editor/contrib/gotoSymbol/browser/goToCommands.zig");
     _ = @import("./vs/editor/contrib/gotoSymbol/test/browser/referencesModel.test.zig");
     _ = @import("./vs/workbench/contrib/codeEditor/browser/quickaccess/gotoSymbolQuickAccess.zig");
     _ = @import("./vs/workbench/contrib/codeEditor/browser/outline/documentSymbolsOutline.zig");
+    _ = @import("./vs/workbench/contrib/outline/browser/outline.zig");
+    _ = @import("./vs/workbench/contrib/outline/browser/outlinePane.zig");
 }
 comptime {
     _ = @import("./vs/platform/files/test/common/files.test.zig");

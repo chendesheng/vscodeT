@@ -7,9 +7,10 @@
 // a reveal operation.
 //
 // Terminal adaptations (documented in README and docs/terminal-ui.md):
-// - `IOutlineListConfig` is reduced to the breadcrumbs data source. The tree
-//   data source, renderers, comparator and picker quick-pick source are only
-//   needed by the browser Outline view, which is not ported.
+// - `IOutlineListConfig` keeps the breadcrumbs data source plus a terminal
+//   tree snapshot, comparator and kind filter for the Outline side panel. The
+//   browser renderer/delegate and quick-pick source are replaced by the
+//   shared `ListWidget` and the breadcrumb popup.
 // - `IEditorPane` is replaced by `OutlineEditor`, a small descriptor the TUI
 //   fills from its tab. There is no extension host yet, so a creator gets the
 //   descriptor synchronously; asynchronous provider results arrive through
@@ -50,9 +51,54 @@ pub const BreadcrumbsDataSource = struct {
     get_breadcrumb_elements: *const fn (context: *anyopaque) []const BreadcrumbsOutlineElement,
 };
 
+/// Upstream `IOutlineComparator`: sorting modes used by both the outline pane
+/// and the breadcrumb outline picker.
+pub const OutlineComparator = struct {
+    context: *anyopaque,
+    compare_by_position: *const fn (context: *anyopaque, a: *anyopaque, b: *anyopaque) std.math.Order,
+    compare_by_type: *const fn (context: *anyopaque, a: *anyopaque, b: *anyopaque) std.math.Order,
+    compare_by_name: *const fn (context: *anyopaque, a: *anyopaque, b: *anyopaque) std.math.Order,
+};
+
+/// One node returned by the terminal tree data source. The element pointer is
+/// the same opaque handle `IOutline.reveal` accepts.
+pub const TreeElement = struct {
+    element: *anyopaque,
+    label: []const u8,
+    symbol_kind: ?u32 = null,
+    is_group: bool = false,
+    collapsible: bool = false,
+    id: []const u8 = "",
+    marker_count: usize = 0,
+    marker_severity: ?u32 = null,
+    deprecated: bool = false,
+    children: []const TreeElement = &.{},
+};
+
+/// Upstream `IDataSource<IOutline<E>, E>` reduced to a tree snapshot. The
+/// provider owns the returned tree until its next change.
+pub const TreeDataSource = struct {
+    context: *anyopaque,
+    get_roots: *const fn (context: *anyopaque) []const TreeElement,
+};
+
+/// Upstream `DocumentSymbolFilter` hook. The outline pane asks whether an
+/// element's symbol kind is enabled by the `outline.show*` settings.
+pub const OutlineFilter = struct {
+    context: *anyopaque,
+    is_visible: *const fn (context: *anyopaque, element: *anyopaque) bool,
+};
+
 /// The portable subset of upstream `IOutlineListConfig`.
 pub const OutlineListConfig = struct {
     breadcrumbs_data_source: BreadcrumbsDataSource,
+    /// Supplied by providers that can populate the Outline side panel. The
+    /// breadcrumb-only path leaves it null.
+    tree_data_source: ?TreeDataSource = null,
+    comparator: ?OutlineComparator = null,
+    filter: ?OutlineFilter = null,
+    /// Upstream `options.collapseByDefault` for the outline pane.
+    collapse_by_default: bool = false,
 };
 
 pub const OutlineChangeEvent = struct {
@@ -74,11 +120,26 @@ pub const IOutline = struct {
     is_empty: bool = false,
     config: OutlineListConfig,
     on_did_change: ?*Emitter(OutlineChangeEvent) = null,
+    /// Upstream `activeElement`.
+    active_element_fn: ?*const fn (context: *anyopaque) ?*anyopaque = null,
+    /// The parent of an element, used by the breadcrumb outline picker to list
+    /// siblings. Upstream gets it from the tree element's `parent`.
+    parent_fn: ?*const fn (context: *anyopaque, element: *anyopaque) ?*anyopaque = null,
     revealFn: *const fn (context: *anyopaque, element: *anyopaque, options: RevealOptions) anyerror!void,
     disposeFn: *const fn (context: *anyopaque) void,
 
     pub fn reveal(self: *IOutline, element: *anyopaque, options: RevealOptions) !void {
         try self.revealFn(self.context, element, options);
+    }
+
+    pub fn activeElement(self: *IOutline) ?*anyopaque {
+        const callback = self.active_element_fn orelse return null;
+        return callback(self.context);
+    }
+
+    pub fn getParent(self: *IOutline, element: *anyopaque) ?*anyopaque {
+        const callback = self.parent_fn orelse return null;
+        return callback(self.context, element);
     }
 
     pub fn dispose(self: *IOutline) void {

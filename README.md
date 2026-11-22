@@ -559,6 +559,18 @@ console API for raw mode, sizing and input polling.
   editor part. A drag over a tab strip previews the insertion position; dropping
   reorders the tab within its strip or inserts it at that position in another group.
   `--preview` remains a single-file mode.
+- The terminal Outline side panel (`src/vs/workbench/contrib/outline/browser/outlinePane.zig`)
+  lists the active document's symbols through the ported `IOutlineService` and
+  `DocumentSymbolsOutline` tree snapshot. It mirrors upstream's Outline view:
+  hierarchy indentation and twisties, selection and Enter-to-reveal,
+  Collapse All / Expand All, Follow Cursor, Filter on Type, Sort By
+  Position/Name/Category title actions, and problem count/rollup badges from
+  the marker service. Cursor and content changes come through the editor's
+  `ViewCursorStateChanged` / `ViewLinesChanged` view events; content rebuilds
+  are debounced like upstream. Terminal adaptations: the side bar hosts one
+  container at a time, so Outline is its own activity-bar container instead of
+  a second view stacked under Explorer; tree state is not persisted, and the
+  browser data-tree find widget is replaced by typing directly in the pane.
 - The breadcrumb row shows the workspace-relative file path (absolute segments
   outside the workspace) with `>` separators and the Explorer's Nerd Font file
   icon; `>` and the segments follow the upstream focus/selection rules. Each
@@ -572,20 +584,23 @@ console API for raw mode, sizing and input polling.
   picker adds a `..` parent entry after
   drilling into a folder, and workspace roots follow the upstream
   multi-root/single-folder rule.
-  Clicking a folder or file opens the terminal quick pick with the directory's
-  children, and clicking a symbol reveals it. Symbol segments are supplied by
-  the ported `IOutlineService`/`IOutline` plumbing. The real TypeScript
-  extension registers a document-symbol provider for TS/JS files; other
-  languages still show only the file path until an extension provider is
-  registered. `Ctrl+Shift+.` focuses/selects the last segment
-  and `Ctrl+Shift+;` focuses it; Left/Right navigate, Enter/Down opens the picker,
-  Space reveals and Escape returns to the editor. Terminal substitutions: the
-  browser chevron/codicon is `>`, the file icon theme is the Explorer's Nerd Font
-  file icon, the tree picker is the existing quick pick, and overflow clips
-  leading segments behind an ellipsis instead of a horizontal scrollbar. The
-  editor-type dropdown, breadcrumb drag-and-drop and outline sibling picker,
-  tab context menus/actions
-  toolbar and the symbol-kind filters are not ported.
+  Clicking a folder or file opens an anchored terminal popup under the segment
+  with the directory's children; selecting a folder drills into it, `..` walks
+  up, and selecting a file opens it. Clicking a symbol opens the same popup
+  with the symbol's siblings, and selecting one reveals it. This replaces the
+  earlier quick-pick fallback, matching upstream's context-view tree picker.
+  Symbol segments are supplied by the ported `IOutlineService`/`IOutline`
+  plumbing. The real TypeScript extension registers a document-symbol provider
+  for TS/JS files; other languages still show only the file path until an
+  extension provider is registered. `Ctrl+Shift+.` focuses/selects the last
+  segment and `Ctrl+Shift+;` focuses it; Left/Right navigate, Enter/Down opens
+  the popup, Space reveals and Escape returns to the editor. Terminal
+  substitutions: the browser chevron/codicon is `>`, the file icon theme is the
+  Explorer's Nerd Font file icon, the tree picker is a bordered cell popup with
+  a box-drawing frame, and overflow clips leading segments behind an ellipsis
+  instead of a horizontal scrollbar. The editor-type dropdown, breadcrumb
+  drag-and-drop, tab context menus/actions toolbar and the symbol-kind filters
+  are not ported.
 - A terminal Explorer sidebar (`src/vs/workbench/contrib/files/browser/views/explorerView.zig`) sits left of the editor
   area over the ported `ExplorerModel`
   (`src/vs/workbench/contrib/files/common/explorerModel.zig`). It lists the

@@ -135,6 +135,13 @@ const OutlineEditor = outline_mod.OutlineEditor;
 const IOutlineCreator = outline_mod.IOutlineCreator;
 const DocumentSymbolsOutline = @import("../contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutline;
 const OutlineModel = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModel;
+const OutlineMarker = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineMarker;
+const ViewEventHandler = @import("../../editor/common/viewEventHandler.zig").ViewEventHandler;
+const view_events = @import("../../editor/common/viewEvents.zig");
+const outline_pane_mod = @import("../contrib/outline/browser/outlinePane.zig");
+const OutlinePane = outline_pane_mod.OutlinePane;
+const outline_contrib = @import("../contrib/outline/browser/outline.zig");
+const OutlineSortOrder = outline_contrib.OutlineSortOrder;
 const quick_input_common = @import("../../platform/quickinput/common/quickInput.zig");
 const QuickPickItem = quick_input_common.QuickPickItem;
 const QuickPick = @import("../../platform/quickinput/browser/quickInput.zig").QuickPick;
@@ -588,6 +595,13 @@ pub const Workbench = struct {
     theme_palette: ?*theme_colors_mod.ThemeColors,
     quick_access: *QuickAccessService,
     outline_service: OutlineService,
+    /// Terminal Outline side panel (`outline` view container).
+    outline_view: ?*OutlinePane = null,
+    outline_dirty: bool = false,
+    /// Cursor/content listener for the breadcrumb symbol chain. It follows the
+    /// active tab's editor, like upstream's per-editor outline subscriptions.
+    cursor_handler: ViewEventHandler = .{},
+    cursor_handler_editor: ?*Editor = null,
     breadcrumbs_service: BreadcrumbsService,
     breadcrumbs_settings: BreadcrumbsSettings,
     breadcrumbs_control: ?*BreadcrumbsControl = null,
@@ -606,6 +620,10 @@ pub const Workbench = struct {
     pending_symbols: ?[]goto_symbol_quick_access.Entry = null,
     symbol_action_contexts: [go_to_commands.actions.len]SymbolActionContext = undefined,
     breadcrumbs_dirty: bool = false,
+    /// Anchored breadcrumb picker (upstream context-view tree). The popup
+    /// borrows its item strings and symbol handles from `breadcrumbs_arena`.
+    breadcrumb_popup: ?*breadcrumbs_picker.Popup = null,
+    breadcrumb_popup_symbols: []const BreadcrumbPopupSymbol = &.{},
     tab_menu_pane: ?*GroupPane = null,
     tab_menu_tab: ?*Tab = null,
     tab_overflow_tabs: ?[]*Tab = null,
@@ -763,6 +781,8 @@ pub const Workbench = struct {
         self.breadcrumbs_pane = null;
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
+        self.breadcrumb_popup = null;
+        self.breadcrumb_popup_symbols = &.{};
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
         self.tab_overflow_tabs = null;
@@ -779,6 +799,8 @@ pub const Workbench = struct {
         self.word_completion_registration = null;
         self.outline_registration = null;
         self.document_symbol_listener = null;
+        self.outline_view = null;
+        self.outline_dirty = false;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -921,6 +943,8 @@ pub const Workbench = struct {
         self.breadcrumbs_pane = null;
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
+        self.breadcrumb_popup = null;
+        self.breadcrumb_popup_symbols = &.{};
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
         self.tab_overflow_tabs = null;
@@ -937,6 +961,8 @@ pub const Workbench = struct {
         self.word_completion_registration = null;
         self.outline_registration = null;
         self.document_symbol_listener = null;
+        self.outline_view = null;
+        self.outline_dirty = false;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -1112,6 +1138,8 @@ pub const Workbench = struct {
         self.breadcrumbs_pane = null;
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
+        self.breadcrumb_popup = null;
+        self.breadcrumb_popup_symbols = &.{};
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
         self.tab_overflow_tabs = null;
@@ -1128,6 +1156,8 @@ pub const Workbench = struct {
         self.word_completion_registration = null;
         self.outline_registration = null;
         self.document_symbol_listener = null;
+        self.outline_view = null;
+        self.outline_dirty = false;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -1248,6 +1278,13 @@ pub const Workbench = struct {
 
         try self.registerViewContainers();
         try self.sidebar_part.setWidth(28);
+        self.cursor_handler = ViewEventHandler.init(self, .{
+            .onCursorStateChanged = onWorkbenchCursorStateChanged,
+            .onLinesChanged = onWorkbenchLinesChanged,
+            .onLinesInserted = onWorkbenchLinesInserted,
+            .onLinesDeleted = onWorkbenchLinesDeleted,
+        });
+        self.cursor_handler_editor = null;
 
         try self.initStatusHint();
     }
@@ -1275,6 +1312,12 @@ pub const Workbench = struct {
             .title = "Source Control",
             .glyph = 'G',
             .order = 2,
+        }, .sidebar, .{});
+        _ = try registry.register(.{
+            .id = outline_contrib.outline_id,
+            .title = "Outline",
+            .glyph = 'O',
+            .order = 3,
         }, .sidebar, .{});
 
         // Panel containers: Problems order 0, Terminal order 3, matching
@@ -1448,6 +1491,14 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.reopenClosedEditor", .label = "Reopen Closed Editor", .category = "View", .context = self, .run = commandReopenClosedEditor },
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
+            .{ .id = "outline.focus", .label = "Focus Outline", .category = "View", .context = self, .run = commandFocusOutline },
+            .{ .id = "outline.collapse", .label = "Collapse All", .category = "View", .context = self, .run = commandOutlineCollapse },
+            .{ .id = "outline.expand", .label = "Expand All", .category = "View", .context = self, .run = commandOutlineExpand },
+            .{ .id = "outline.followCursor", .label = "Follow Cursor", .category = "View", .context = self, .run = commandOutlineFollowCursor },
+            .{ .id = "outline.filterOnType", .label = "Filter on Type", .category = "View", .context = self, .run = commandOutlineFilterOnType },
+            .{ .id = "outline.sortByPosition", .label = "Sort By: Position", .category = "View", .context = self, .run = commandOutlineSortByPosition },
+            .{ .id = "outline.sortByName", .label = "Sort By: Name", .category = "View", .context = self, .run = commandOutlineSortByName },
+            .{ .id = "outline.sortByKind", .label = "Sort By: Category", .category = "View", .context = self, .run = commandOutlineSortByKind },
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
             .{ .id = "workbench.action.splitEditorOrthogonal", .label = "Split Editor Orthogonal", .category = "View", .context = self, .run = commandSplitEditorOrthogonal },
             .{ .id = "workbench.action.splitEditorLeft", .label = "Split Editor Left", .category = "View", .context = self, .run = commandSplitEditorLeft },
@@ -1770,6 +1821,11 @@ pub const Workbench = struct {
             TokenizationRegistry.instance.setBackgroundTokenizerFactory(null);
             factory.shutdown();
         }
+        if (self.breadcrumb_popup) |popup| {
+            popup.deinit();
+            self.breadcrumb_popup = null;
+        }
+        self.breadcrumb_popup_symbols = &.{};
         if (self.dialog) |dialog| {
             dialog.deinit();
             self.dialog = null;
@@ -1796,6 +1852,11 @@ pub const Workbench = struct {
         self.breadcrumbs_arena.deinit();
         self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
+        self.detachCursorHandler();
+        if (self.outline_view) |view| {
+            view.deinit();
+            self.outline_view = null;
+        }
         self.outline_service.deinit();
         if (self.media_status) |status| {
             status.deinit();
@@ -2030,6 +2091,12 @@ pub const Workbench = struct {
             else
                 null;
             self.sidebar_part.pane.setTitleActions(merged orelse &.{}, &.{}) catch {};
+        } else if (std.mem.eql(u8, container, outline_contrib.outline_id)) {
+            if (self.outline_view) |view| {
+                self.sidebar_part.pane.setTitleActions(view.titleActions(), &.{}) catch {};
+            } else {
+                self.sidebar_part.pane.setTitleActions(&.{}, &.{}) catch {};
+            }
         } else {
             self.sidebar_part.pane.setTitleActions(&.{}, &.{}) catch {};
         }
@@ -2579,6 +2646,10 @@ pub const Workbench = struct {
         self.statusbar.main_part.clearFocus();
         if (std.mem.eql(u8, activity.id, "search")) {
             if (self.search_view) |view| view.focus();
+        }
+        if (std.mem.eql(u8, activity.id, outline_contrib.outline_id)) {
+            self.syncOutlineView() catch {};
+            self.updateSidebarTitleActions();
         }
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         self.layoutAll();
@@ -3327,6 +3398,7 @@ pub const Workbench = struct {
     fn onMarkersChanged(_: MarkerChangeEvent, self: *Workbench) !void {
         try self.syncPanelContainerVisibility();
         if (self.problems_view) |view| view.refresh();
+        if (self.outline_view) |view| view.refresh() catch {};
     }
 
     /// Applies declarative language/grammar contributions to the open tabs and
@@ -8444,6 +8516,7 @@ pub const Workbench = struct {
         if (self.sidebar) |sidebar| sidebar.clearHover();
         if (self.scm_container) |container| container.clearHover();
         if (self.scm_history_view) |view| view.clearHover();
+        if (self.outline_view) |view| view.clearHover();
     }
 
     pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
@@ -8518,6 +8591,13 @@ pub const Workbench = struct {
                     },
                     .unhandled => return true,
                 }
+            }
+            return true;
+        }
+        if (std.mem.eql(u8, active_id, outline_contrib.outline_id)) {
+            self.syncOutlineView() catch {};
+            if (self.outline_view) |view| {
+                _ = view.handleKey(event) catch {};
             }
             return true;
         }
@@ -8661,6 +8741,17 @@ pub const Workbench = struct {
         }
         if (std.mem.eql(u8, active_id, "search")) {
             if (self.search_view) |view| _ = view.handleMouse(event);
+            return true;
+        }
+        if (std.mem.eql(u8, active_id, outline_contrib.outline_id)) {
+            self.syncOutlineView() catch {};
+            if (self.outline_view) |view| {
+                const handled = view.handleMouse(event, content);
+                if (event.kind == .move) {
+                    self.pointer = if (view.hasHoveredRow()) .pointer else .default;
+                }
+                if (!handled and event.kind == .move) self.pointer = .default;
+            }
             return true;
         }
         if (!std.mem.eql(u8, active_id, "explorer")) return true;
@@ -9129,6 +9220,13 @@ pub const Workbench = struct {
                 } else {
                     self.renderPlaceholder(content, focused);
                 }
+            } else if (std.mem.eql(u8, active_id, outline_contrib.outline_id)) {
+                self.syncOutlineView() catch {};
+                if (self.outline_view) |view| {
+                    try view.render(&self.frame.next, content, focused);
+                } else {
+                    self.renderPlaceholder(content, focused);
+                }
             } else {
                 self.renderPlaceholder(content, focused);
             }
@@ -9181,6 +9279,7 @@ pub const Workbench = struct {
         }
         try self.renderScmHistoryHover();
         try self.quick_access.render(&self.frame.next);
+        if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next);
         if (self.dialog) |dialog| dialog.render(&self.frame.next);
 
         // Image uploads/placements must reach the terminal before the frame
@@ -9641,6 +9740,83 @@ pub const Workbench = struct {
         }, active_group);
     }
 
+    fn ensureOutlineView(self: *Workbench) !*OutlinePane {
+        if (self.outline_view) |view| return view;
+        const view = try OutlinePane.init(self.allocator, .{
+            .context = self,
+            .active_editor = outlineActiveEditor,
+            .active_resource = outlineActiveResource,
+            .current_position = outlineViewCurrentPosition,
+            .request_render = outlineRequestRender,
+            .focus_editor = outlineFocusEditor,
+            .is_symbol_visible = outlineSymbolVisible,
+        }, &self.outline_service);
+        view.setThemeColors(self.theme_palette);
+        view.setBorderRendering(self.part.cell_borders);
+        self.outline_view = view;
+        return view;
+    }
+
+    fn syncCursorHandler(self: *Workbench) void {
+        const tab = self.activeTab();
+        const editor: ?*Editor = if (tab) |active| blk: {
+            if (active.isImage() or active.isDiff()) break :blk null;
+            break :blk active.editor;
+        } else null;
+        if (self.cursor_handler_editor == editor) return;
+        self.detachCursorHandler();
+        if (editor) |value| {
+            value.addViewEventHandler(&self.cursor_handler);
+            self.cursor_handler_editor = value;
+        }
+    }
+
+    fn detachCursorHandler(self: *Workbench) void {
+        if (self.cursor_handler_editor) |editor| editor.removeViewEventHandler(&self.cursor_handler);
+        self.cursor_handler_editor = null;
+    }
+
+    /// Binds the outline pane to the active text editor. Called before the
+    /// outline body renders, like upstream's active-editor listener.
+    fn syncOutlineView(self: *Workbench) !void {
+        const tab = self.activeTab();
+        const editor: ?*Editor = if (tab) |active| blk: {
+            if (active.isImage() or active.isDiff()) break :blk null;
+            break :blk active.editor;
+        } else null;
+        const view = try self.ensureOutlineView();
+        view.setThemeColors(self.theme_palette);
+        view.setBorderRendering(self.part.cell_borders);
+        if (view.editor != editor) try view.setEditor(editor);
+    }
+
+    pub fn pollOutline(self: *Workbench, now_ms: i64) bool {
+        self.syncCursorHandler();
+        if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", outline_contrib.outline_id)) {
+            self.syncOutlineView() catch {};
+        }
+        const view = self.outline_view orelse return false;
+        if (view.poll(now_ms)) {
+            self.outline_dirty = false;
+            return true;
+        }
+        if (self.outline_dirty) {
+            self.outline_dirty = false;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn outlineWantsTick(self: *const Workbench) bool {
+        const view = self.outline_view orelse return false;
+        return view.wantsTick();
+    }
+
+    pub fn outlineTimeout(self: *const Workbench, now_ms: i64) ?i64 {
+        const view = self.outline_view orelse return null;
+        return view.timeout(now_ms);
+    }
+
     pub fn pollBreadcrumbs(self: *Workbench) bool {
         if (!self.breadcrumbs_dirty) return false;
         self.breadcrumbs_dirty = false;
@@ -9702,35 +9878,47 @@ pub const Workbench = struct {
         }
     }
 
-    pub fn showBreadcrumbPicker(self: *Workbench, file: *const breadcrumbs_model.FileElement) !void {
+    /// Opens the anchored breadcrumb picker for `file`. Upstream shows the
+    /// clicked element's parent directory in a tree; the terminal popup shows
+    /// the same immediate children and preserves the clicked element focus.
+    pub fn showBreadcrumbPicker(self: *Workbench, file: *const breadcrumbs_model.FileElement, anchor_x: usize) !void {
+        _ = self.breadcrumbs_arena.reset(.retain_capacity);
+        const arena = self.breadcrumbs_arena.allocator();
+        const anchor_y = self.breadcrumbAnchorY();
+
         if (file.kind == .ROOT_FOLDER) {
             const workspace = self.workspace.getWorkspace();
             if (workspace.folders.items.len > 1) {
-                _ = self.breadcrumbs_arena.reset(.retain_capacity);
-                const arena = self.breadcrumbs_arena.allocator();
-                var items = std.array_list.Managed(QuickPickItem).init(arena);
+                var items = std.array_list.Managed(breadcrumbs_picker.PopupItem).init(arena);
+                var active_id: ?[]const u8 = null;
                 for (workspace.folders.items) |folder| {
-                    try items.append(.{ .item = .{
-                        .id = try std.fmt.allocPrint(arena, "f:{s}", .{folder.resource}),
+                    const id = try std.fmt.allocPrint(arena, "d:{s}", .{folder.resource});
+                    if (std.mem.eql(u8, folder.resource, file.path)) active_id = id;
+                    try items.append(.{
+                        .id = id,
                         .label = folder.name,
                         .description = "folder",
-                    } });
+                        .kind = .folder,
+                        .icon = file_icon.folder(false),
+                    });
                 }
-                try self.quick_access.inputService().showPick(
-                    items.items,
-                    .{ .placeholder = "Select File" },
-                    onBreadcrumbPick,
-                    self,
-                );
+                try self.openBreadcrumbPopup(items.items, anchor_x, anchor_y, active_id);
                 return;
             }
         }
         const directory = breadcrumbs_picker.inputDirectory(file);
-        try self.showBreadcrumbPickerForDir(directory, file.path);
+        try self.showBreadcrumbPickerForDir(directory, file.path, anchor_x, anchor_y);
     }
 
-    fn showBreadcrumbPickerForDir(self: *Workbench, directory: []const u8, focus_path: ?[]const u8) !void {
+    fn showBreadcrumbPickerForDir(
+        self: *Workbench,
+        directory: []const u8,
+        focus_path: ?[]const u8,
+        anchor_x: usize,
+        anchor_y: usize,
+    ) !void {
         _ = self.breadcrumbs_arena.reset(.retain_capacity);
+        self.breadcrumb_popup_symbols = &.{};
         const arena = self.breadcrumbs_arena.allocator();
 
         const entries = breadcrumbs_picker.list(self.allocator, self.io, directory) catch {
@@ -9739,14 +9927,16 @@ pub const Workbench = struct {
         };
         defer breadcrumbs_picker.freeEntries(self.allocator, entries);
 
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        var items = std.array_list.Managed(breadcrumbs_picker.PopupItem).init(arena);
         const parent = breadcrumbs_picker.parentDirectory(directory);
         if (!std.mem.eql(u8, parent, directory)) {
-            try items.append(.{ .item = .{
+            try items.append(.{
                 .id = try std.fmt.allocPrint(arena, "u:{s}", .{parent}),
                 .label = "..",
                 .description = "parent folder",
-            } });
+                .kind = .parent,
+                .icon = file_icon.folder(false),
+            });
         }
         var active_id: ?[]const u8 = null;
         for (entries) |entry| {
@@ -9754,18 +9944,141 @@ pub const Workbench = struct {
             if (focus_path) |focus| {
                 if (std.mem.eql(u8, focus, entry.path)) active_id = id;
             }
-            try items.append(.{ .item = .{
+            try items.append(.{
                 .id = id,
                 .label = try arena.dupe(u8, entry.name),
                 .description = if (entry.is_dir) "folder" else "",
-            } });
+                .kind = if (entry.is_dir) .folder else .file,
+                .icon = if (entry.is_dir) file_icon.folder(false) else file_icon.forPath(entry.path),
+            });
         }
-        try self.quick_access.inputService().showPick(
-            items.items,
-            .{ .placeholder = "Select File", .active_id = active_id },
-            onBreadcrumbPick,
-            self,
-        );
+        try self.openBreadcrumbPopup(items.items, anchor_x, anchor_y, active_id);
+    }
+
+    /// Upstream `BreadcrumbsOutlinePicker`: list the clicked symbol's
+    /// siblings from its parent outline node. Selecting one reveals it.
+    pub fn showBreadcrumbOutlinePicker(
+        self: *Workbench,
+        outline: *outline_mod.IOutline,
+        element: *anyopaque,
+        anchor_x: usize,
+    ) !void {
+        const source = outline.config.tree_data_source orelse {
+            try self.revealBreadcrumbElement(outline, element);
+            return;
+        };
+        const roots = source.get_roots(source.context);
+        const parent = outline.getParent(element);
+        const siblings = if (parent) |parent_element|
+            (findTreeElement(roots, parent_element) orelse {
+                try self.revealBreadcrumbElement(outline, element);
+                return;
+            }).children
+        else
+            roots;
+
+        _ = self.breadcrumbs_arena.reset(.retain_capacity);
+        const arena = self.breadcrumbs_arena.allocator();
+        var symbols = std.array_list.Managed(BreadcrumbPopupSymbol).init(arena);
+        var items = std.array_list.Managed(breadcrumbs_picker.PopupItem).init(arena);
+        var active_id: ?[]const u8 = null;
+        for (siblings, 0..) |sibling, index| {
+            const id = try std.fmt.allocPrint(arena, "s:{d}", .{index});
+            if (sibling.element == element) active_id = id;
+            try symbols.append(.{ .outline = outline, .element = sibling.element });
+            try items.append(.{
+                .id = id,
+                .label = sibling.label,
+                .description = if (sibling.symbol_kind) |kind| goto_symbol_quick_access.kindLabel(kind) else "",
+                .kind = .symbol,
+            });
+        }
+        self.breadcrumb_popup_symbols = try symbols.toOwnedSlice();
+        try self.openBreadcrumbPopup(items.items, anchor_x, self.breadcrumbAnchorY(), active_id);
+    }
+
+    fn breadcrumbAnchorY(self: *Workbench) usize {
+        const pane = self.activePane() orelse return 0;
+        return ui.cell.snap(pane.rect.y) + pane.titleHeight();
+    }
+
+    fn ensureBreadcrumbPopup(self: *Workbench) !*breadcrumbs_picker.Popup {
+        if (self.breadcrumb_popup) |popup| {
+            popup.setThemeColors(self.theme_palette);
+            return popup;
+        }
+        const popup = try breadcrumbs_picker.Popup.init(self.allocator);
+        popup.setThemeColors(self.theme_palette);
+        popup.on_accept_context = self;
+        popup.on_accept = onBreadcrumbPopupAccept;
+        popup.on_close_context = self;
+        popup.on_close = onBreadcrumbPopupClose;
+        self.breadcrumb_popup = popup;
+        return popup;
+    }
+
+    fn openBreadcrumbPopup(
+        self: *Workbench,
+        items: []const breadcrumbs_picker.PopupItem,
+        anchor_x: usize,
+        anchor_y: usize,
+        active_id: ?[]const u8,
+    ) !void {
+        if (self.quick_access.isOpen()) self.quick_access.inputService().hide();
+        const popup = try self.ensureBreadcrumbPopup();
+        try popup.open(items, anchor_x, anchor_y, active_id);
+        self.breadcrumbs_dirty = true;
+    }
+
+    pub fn handleBreadcrumbPopupKey(self: *Workbench, event: *const ui.KeyEvent) bool {
+        const popup = self.breadcrumb_popup orelse return false;
+        if (!popup.isVisible()) return false;
+        _ = popup.handleKey(event);
+        self.breadcrumbs_dirty = true;
+        return true;
+    }
+
+    pub fn handleBreadcrumbPopupMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        const popup = self.breadcrumb_popup orelse return false;
+        if (!popup.isVisible()) return false;
+        _ = popup.handleMouse(event);
+        self.breadcrumbs_dirty = true;
+        return true;
+    }
+
+    pub fn breadcrumbPopupVisible(self: *const Workbench) bool {
+        const popup = self.breadcrumb_popup orelse return false;
+        return popup.isVisible();
+    }
+
+    fn acceptBreadcrumbPopupItem(self: *Workbench, item: *const breadcrumbs_picker.PopupItem) !void {
+        const id = item.id;
+        if (std.mem.startsWith(u8, id, "f:")) {
+            self.breadcrumb_popup_symbols = &.{};
+            if (self.breadcrumb_popup) |popup| popup.close();
+            try self.openBreadcrumbFile(id[2..]);
+            return;
+        }
+        if (std.mem.startsWith(u8, id, "d:") or std.mem.startsWith(u8, id, "u:")) {
+            const directory = id[2..];
+            var anchor_x: usize = 0;
+            var anchor_y: usize = 0;
+            if (self.breadcrumb_popup) |popup| {
+                anchor_x = popup.anchor_x;
+                anchor_y = popup.anchor_y;
+                popup.close();
+            }
+            try self.showBreadcrumbPickerForDir(directory, null, anchor_x, anchor_y);
+            return;
+        }
+        if (std.mem.startsWith(u8, id, "s:")) {
+            const index = std.fmt.parseInt(usize, id[2..], 10) catch return;
+            if (index >= self.breadcrumb_popup_symbols.len) return;
+            const choice = self.breadcrumb_popup_symbols[index];
+            if (self.breadcrumb_popup) |popup| popup.close();
+            try self.revealBreadcrumbElement(choice.outline, choice.element);
+            return;
+        }
     }
 
     fn openBreadcrumbFile(self: *Workbench, path: []const u8) !void {
@@ -9780,6 +10093,7 @@ pub const Workbench = struct {
     pub fn cursorCell(self: *Workbench) ?ViewCell {
         if (self.quick_access.isOpen()) return null;
         if (self.dialog != null) return null;
+        if (self.breadcrumbPopupVisible()) return null;
         if (self.focus == .terminal) {
             if (!self.terminalVisible()) return null;
             const service = self.terminal_service orelse return null;
@@ -9818,6 +10132,7 @@ pub const Workbench = struct {
     /// Hosts call this after the terminal capability probe. Cell borders keep
     /// the split gutters from consuming a column/row; the fallback keeps them.
     pub fn setCellBorders(self: *Workbench, enabled: bool) void {
+        if (self.outline_view) |view| view.setBorderRendering(enabled);
         self.part.setCellBorders(enabled);
     }
 
@@ -9918,6 +10233,69 @@ pub const Workbench = struct {
     }
 };
 
+fn onWorkbenchCursorStateChanged(context: *anyopaque, _: *const view_events.ViewCursorStateChangedEvent) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
+    return false;
+}
+
+fn onWorkbenchLinesChanged(context: *anyopaque, _: *const view_events.ViewLinesChangedEvent) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
+    return false;
+}
+
+fn onWorkbenchLinesInserted(context: *anyopaque, _: *const view_events.ViewLinesInsertedEvent) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
+    return false;
+}
+
+fn onWorkbenchLinesDeleted(context: *anyopaque, _: *const view_events.ViewLinesDeletedEvent) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
+    return false;
+}
+
+fn outlineActiveEditor(context: *anyopaque) ?OutlineEditor {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return null;
+    if (tab.isImage() or tab.isDiff()) return null;
+    return .{
+        .context = @ptrCast(tab),
+        .resource = tab.editor.path,
+        .language_id = tab.editor.languageId(),
+    };
+}
+
+fn outlineActiveResource(context: *anyopaque) ?[]const u8 {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return null;
+    return tab.editor.path;
+}
+
+fn outlineViewCurrentPosition(context: *anyopaque) ?Position {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return null;
+    return tab.editor.modelSelection().getStartPosition();
+}
+
+fn outlineFocusEditor(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.focusEditor();
+    if (self.activeTab()) |tab| tab.focusEditor();
+}
+
+fn outlineSymbolVisible(context: *anyopaque, kind: u32) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.findBoolSetting(outline_contrib.showConfigForKind(kind), true);
+}
+
+fn breadcrumbSymbolVisible(context: *anyopaque, kind: u32) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.findBoolSetting(outline_contrib.breadcrumbConfigForKind(kind), true);
+}
+
 fn outlineMatches(context: *anyopaque, editor: OutlineEditor) bool {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const active: *Tab = @ptrCast(@alignCast(editor.context));
@@ -9928,7 +10306,6 @@ fn outlineMatches(context: *anyopaque, editor: OutlineEditor) bool {
 }
 
 fn outlineCreate(context: *anyopaque, editor: OutlineEditor, target: outline_mod.OutlineTarget) !?*outline_mod.IOutline {
-    _ = target;
     const self: *Workbench = @ptrCast(@alignCast(context));
     const tab: *Tab = @ptrCast(@alignCast(editor.context));
     const features = self.language_features orelse return null;
@@ -9936,13 +10313,56 @@ fn outlineCreate(context: *anyopaque, editor: OutlineEditor, target: outline_mod
     defer self.allocator.free(providers);
     if (providers.len == 0) return null;
     const model = try OutlineModel.create(self.allocator, tab.editor.model, providers[0]);
+    try outlineApplyMarkers(self, model, tab);
     const outline = try DocumentSymbolsOutline.create(self.allocator, model, .{
         .context = tab,
         .current_position = outlineCurrentPosition,
         .reveal_range = outlineRevealRange,
         .request_render = outlineRequestRender,
+        .is_symbol_visible = if (target == .Breadcrumbs) breadcrumbSymbolVisible else outlineSymbolVisible,
     });
-    return outline.interfacePtr();
+    const result = outline.interfacePtr();
+    result.config.collapse_by_default = target == .OutlinePane and outlineCollapseByDefault(self);
+    return result;
+}
+
+/// Port of `_applyMarkersToOutline`: roll the model's error/warning markers up
+/// into the outline tree before the tree snapshot is built. The browser gets
+/// live markers from `IMarkerDecorationsService`; the terminal reads the same
+/// resource's markers from `MarkerService`.
+fn outlineApplyMarkers(self: *Workbench, model: *OutlineModel, tab: *Tab) !void {
+    if (!self.findBoolSetting("problems.visibility", true)) return;
+    if (!self.findBoolSetting("outline.problems.enabled", true)) return;
+    const marker_service = self.marker_service orelse return;
+    var resource = markers_mod.Resource.fromUri(self.allocator, tab.editor.model.uri()) catch return;
+    defer resource.deinit(self.allocator);
+    const list = marker_service.read(self.allocator, .{ .resource = resource }) catch return;
+    defer self.allocator.free(list);
+    var markers = std.array_list.Managed(OutlineMarker).init(self.allocator);
+    defer markers.deinit();
+    for (list) |marker| {
+        const severity = marker.severity;
+        if (severity != markers_mod.MarkerSeverity.Error and severity != markers_mod.MarkerSeverity.Warning) continue;
+        try markers.append(.{
+            .range = Range.init(
+                @intCast(marker.start_line_number),
+                @intCast(marker.start_column),
+                @intCast(marker.end_line_number),
+                @intCast(marker.end_column),
+            ),
+            .severity = severity,
+        });
+    }
+    model.updateMarker(markers.items) catch {};
+}
+
+fn outlineCollapseByDefault(self: *Workbench) bool {
+    const configuration = self.configuration orelse return false;
+    const value = configuration.getValue(outline_contrib.OutlineConfigKeys.collapse_items, .{}) orelse return false;
+    return switch (value.*) {
+        .string => |text| std.mem.eql(u8, text, outline_contrib.OutlineConfigCollapseItemsValues.collapsed),
+        else => false,
+    };
 }
 
 fn outlineCurrentPosition(context: *anyopaque) ?Position {
@@ -9955,7 +10375,15 @@ fn outlineRevealRange(context: *anyopaque, range: Range) !void {
     try tab.editor.setSelections(&.{Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn)});
 }
 
-fn outlineRequestRender(_: *anyopaque) void {}
+fn outlineRequestRender(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.outline_dirty = true;
+}
+
+const BreadcrumbPopupSymbol = struct {
+    outline: *outline_mod.IOutline,
+    element: *anyopaque,
+};
 
 const InactiveBreadcrumb = struct {
     control: *BreadcrumbsControl,
@@ -10037,7 +10465,7 @@ fn breadcrumbSymbolIcon(_: *anyopaque, kind: ?u32) []const u8 {
     };
 }
 
-fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, mode: BreadcrumbsSelectMode) anyerror!void {
+fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, mode: BreadcrumbsSelectMode, anchor_x: usize) anyerror!void {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     self.activate();
     switch (selection) {
@@ -10045,10 +10473,16 @@ fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, m
             if (mode == .reveal and file.kind == .FILE) {
                 try self.workbench.openBreadcrumbFile(file.path);
             } else {
-                try self.workbench.showBreadcrumbPicker(file);
+                try self.workbench.showBreadcrumbPicker(file, anchor_x);
             }
         },
-        .outline => |outline| try self.workbench.revealBreadcrumbElement(outline.outline, outline.element),
+        .outline => |outline| {
+            if (mode == .pick) {
+                try self.workbench.showBreadcrumbOutlinePicker(outline.outline, outline.element, anchor_x);
+            } else {
+                try self.workbench.revealBreadcrumbElement(outline.outline, outline.element);
+            }
+        },
         .placeholder => {},
     }
 }
@@ -10169,17 +10603,15 @@ fn onStatusbarMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     }
 }
 
-fn onBreadcrumbPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+fn onBreadcrumbPopupAccept(context: *anyopaque, item: *const breadcrumbs_picker.PopupItem) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    const item = picker.activeItem() orelse return;
-    const id = item.id;
-    if (std.mem.startsWith(u8, id, "f:")) {
-        try self.openBreadcrumbFile(id[2..]);
-    } else if (std.mem.startsWith(u8, id, "d:")) {
-        try self.showBreadcrumbPickerForDir(id[2..], null);
-    } else if (std.mem.startsWith(u8, id, "u:")) {
-        try self.showBreadcrumbPickerForDir(id[2..], null);
-    }
+    try self.acceptBreadcrumbPopupItem(item);
+}
+
+fn onBreadcrumbPopupClose(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.breadcrumb_popup_symbols = &.{};
+    self.breadcrumbs_dirty = true;
 }
 
 fn onReferencePick(context: *anyopaque, picker: *QuickPick) anyerror!void {
@@ -10209,6 +10641,14 @@ fn onSymbolPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     self.focusEditor();
     self.refreshStatus();
     self.revealActiveEditor();
+}
+
+fn findTreeElement(roots: []const outline_mod.TreeElement, target: *anyopaque) ?outline_mod.TreeElement {
+    for (roots) |element| {
+        if (element.element == target) return element;
+        if (findTreeElement(element.children, target)) |found| return found;
+    }
+    return null;
 }
 
 fn itemIndex(id: []const u8, prefix: []const u8) ?usize {
@@ -10637,6 +11077,70 @@ fn commandFocusAndSelectBreadcrumbs(context: *anyopaque) anyerror!void {
 fn commandFocusBreadcrumbs(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     _ = self.focusBreadcrumbs(false);
+}
+
+fn commandFocusOutline(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = try self.showActivityById(outline_contrib.outline_id);
+    self.focusSidebar();
+    if (self.outline_view) |view| view.setFocused(true);
+    self.updateSidebarTitleActions();
+}
+
+fn commandOutlineCollapse(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.outline_view) |view| {
+        view.collapseAll();
+        self.updateSidebarTitleActions();
+    }
+}
+
+fn commandOutlineExpand(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.outline_view) |view| {
+        view.expandAll();
+        self.updateSidebarTitleActions();
+    }
+}
+
+fn commandOutlineFollowCursor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.outline_view) |view| {
+        try view.setFollowCursor(!view.view_state.follow_cursor);
+        self.updateSidebarTitleActions();
+    }
+}
+
+fn commandOutlineFilterOnType(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.outline_view) |view| {
+        try view.setFilterOnType(!view.view_state.filter_on_type);
+        self.updateSidebarTitleActions();
+    }
+}
+
+fn commandOutlineSortByPosition(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.outline_view) |view| {
+        try view.setSortBy(.ByPosition);
+        self.updateSidebarTitleActions();
+    }
+}
+
+fn commandOutlineSortByName(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.outline_view) |view| {
+        try view.setSortBy(.ByName);
+        self.updateSidebarTitleActions();
+    }
+}
+
+fn commandOutlineSortByKind(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.outline_view) |view| {
+        try view.setSortBy(.ByKind);
+        self.updateSidebarTitleActions();
+    }
 }
 
 fn commandCloseEditor(context: *anyopaque) anyerror!void {
@@ -13303,14 +13807,22 @@ test "Workbench: activity bar switches view containers" {
     try workbench.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SOURCE CONTROL") != null);
 
+    // The Outline container follows Source Control in the terminal rail.
+    const outline_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
+    try std.testing.expect(workbench.handleSidebarMouse(&outline_click));
+    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "OUTLINE") != null);
+
     // Upstream has no Settings view container: its activity bar gear is the
     // `workbench.actions.manage` global action that opens the Settings editor
-    // as an editor tab, which is not ported. The rail therefore stops after
-    // Source Control and a click below it changes nothing.
-    const empty_rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
+    // as an editor tab, which is not ported. A click below the last entry
+    // changes nothing.
+    const empty_rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 5 };
     try std.testing.expect(workbench.handleSidebarMouse(&empty_rail_click));
-    try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
-    try std.testing.expectEqual(@as(usize, 3), workbench.activity_bar_part.count());
+    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
+    try std.testing.expectEqual(@as(usize, 4), workbench.activity_bar_part.count());
 
     // Problems is a panel container: no activity-bar entry and no sidebar
     // container (upstream registers it in `ViewContainerLocation.Panel`).
@@ -15259,8 +15771,12 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     const hit = control.widget.hits.items[0];
     var click = ui.MouseEvent{ .kind = .down, .x = hit.start, .y = 1, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&click));
-    try std.testing.expect(workbench.quick_access.inputService().isVisible());
-    workbench.quick_access.inputService().hide();
+    try std.testing.expect(!workbench.quick_access.inputService().isVisible());
+    try std.testing.expect(workbench.breadcrumbPopupVisible());
+    try std.testing.expect(workbench.breadcrumb_popup.?.selectedIndex() != null);
+    var escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(workbench.handleBreadcrumbPopupKey(&escape));
+    try std.testing.expect(!workbench.breadcrumbPopupVisible());
 }
 
 test "Workbench: breadcrumb symbols come from a registered outline provider" {
@@ -15324,6 +15840,102 @@ test "Workbench: breadcrumb symbols come from a registered outline provider" {
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "parseAuthority") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "port") != null);
+}
+
+test "Workbench: outline side panel shows provider symbols" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "outline/file.ts", "class A {}\nfunction b() {}\n");
+    defer allocator.free(path);
+
+    const Fake = struct {
+        var labels = [_][]const u8{ "A", "b" };
+        var nodes: [2]u8 = undefined;
+        var elements: [2]outline_mod.TreeElement = undefined;
+        var roots: [1]outline_mod.TreeElement = undefined;
+        var outline: outline_mod.IOutline = undefined;
+        var revealed: usize = 0;
+
+        fn matches(_: *anyopaque, _: OutlineEditor) bool {
+            return true;
+        }
+        fn create(_: *anyopaque, _: OutlineEditor, target: outline_mod.OutlineTarget) !?*outline_mod.IOutline {
+            _ = target;
+            return &outline;
+        }
+        fn rootsFor(_: *anyopaque) []const outline_mod.TreeElement {
+            return roots[0..];
+        }
+        fn breadcrumbs(_: *anyopaque) []const outline_mod.BreadcrumbsOutlineElement {
+            return &.{};
+        }
+        fn reveal(_: *anyopaque, _: *anyopaque, _: outline_mod.RevealOptions) !void {
+            revealed += 1;
+        }
+        fn dispose(_: *anyopaque) void {}
+    };
+    var context: u8 = 0;
+    Fake.nodes = .{ 1, 2 };
+    Fake.elements[0] = .{
+        .element = @ptrCast(&Fake.nodes[0]),
+        .label = Fake.labels[0],
+        .symbol_kind = 5,
+        .id = "a",
+    };
+    Fake.elements[1] = .{
+        .element = @ptrCast(&Fake.nodes[1]),
+        .label = Fake.labels[1],
+        .symbol_kind = 12,
+        .id = "b",
+    };
+    Fake.roots[0] = .{
+        .element = @ptrCast(&Fake.nodes[0]),
+        .label = Fake.labels[0],
+        .symbol_kind = 5,
+        .id = "a",
+        .collapsible = true,
+        .children = Fake.elements[1..2],
+    };
+    Fake.outline = .{
+        .context = @ptrCast(&context),
+        .uri = path,
+        .outline_kind = "test",
+        .config = .{
+            .breadcrumbs_data_source = .{ .context = @ptrCast(&context), .get_breadcrumb_elements = Fake.breadcrumbs },
+            .tree_data_source = .{ .context = @ptrCast(&context), .get_roots = Fake.rootsFor },
+        },
+        .revealFn = Fake.reveal,
+        .disposeFn = Fake.dispose,
+    };
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 60, 12);
+    defer workbench.deinit();
+    const registration = try workbench.outline_service.registerOutlineCreator(.{
+        .context = @ptrCast(&context),
+        .matches = Fake.matches,
+        .create_outline = Fake.create,
+    });
+    defer registration.dispose();
+    try workbench.openPath(path);
+    try workbench.activeTab().?.ensureControllers();
+    _ = try workbench.showActivityById(outline_contrib.outline_id);
+
+    const view = workbench.outline_view.?;
+    try std.testing.expectEqual(@as(usize, 2), view.rowCount());
+    try std.testing.expectEqualStrings("A", view.rowLabel(0).?);
+    try std.testing.expectEqualStrings("b", view.rowLabel(1).?);
+    try std.testing.expectEqual(@as(usize, 1), view.rowDepth(1).?);
+
+    view.setFocused(true);
+    view.selectRow(1);
+    try std.testing.expect(try view.handleKey(&.{ .key = .enter }));
+    try std.testing.expectEqual(@as(usize, 1), Fake.revealed);
+
+    try view.setFollowCursor(true);
+    try std.testing.expect(view.titleActions().len >= 4);
 }
 
 test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {

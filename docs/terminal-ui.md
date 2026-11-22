@@ -692,22 +692,40 @@ The breadcrumb row is the cell adaptation of `breadcrumbsWidget.ts` and
 them; a file segment starts with the Explorer's Nerd Font file icon (glyph and
 color), while folder segments have no icon, matching upstream's `hideIcon`;
 focused/selected items are underlined and white, hovered items brighten,
-and long paths drop leading items behind `…`. A directory/file click opens the
-terminal quick pick for the item's sibling directory (the browser tree picker is
-replaced by the existing quick pick); a symbol click/space calls
-`IOutline.reveal`. Focus navigation is `Left`/`Right`, `Enter`/`Down` picks,
-`Space` reveals and `Escape` returns to the editor. `Ctrl+Shift+.` and
-`Ctrl+Shift+;` focus the bar; some terminals do not deliver those combinations.
+and long paths drop leading items behind `…`. A directory/file click opens an
+anchored cell popup under the clicked item (the browser context-view tree
+picker). The popup lists the directory's immediate children, `..` walks up,
+folders drill in and files open; a symbol segment lists the symbol's siblings
+and reveals the selected one. Popup navigation is `Up`/`Down`/`Home`/`End`,
+`Enter` activates and `Escape` or a click outside closes it. A symbol click or
+`Space` calls `IOutline.reveal`. Focus navigation in the bar is
+`Left`/`Right`, `Enter`/`Down` opens the popup, `Space` reveals and `Escape`
+returns to the editor. `Ctrl+Shift+.` and `Ctrl+Shift+;` focus the bar; some
+terminals do not deliver those combinations.
 
 Symbol segments require an `IOutlineCreator` registered with the ported
-`OutlineService`. The tree's only creator source is the future extension host /
-language-service layer, so the stock TUI shows the file path alone; the
-breadcrumb model/widget tests register fake creators to cover the symbol path.
-The browser editor-type dropdown, hover tooltips, drag data, symbol-kind filters
-and the tree picker are not ported. Creating a short-lived control to paint an
-inactive group's breadcrumbs is a terminal adaptation of the browser's one
-widget per group; it keeps the visible content correct without a per-group DOM
-lifetime.
+`OutlineService`. The built-in TypeScript extension and the JSON language
+client register document-symbol providers; other languages show the file path
+alone until a provider is registered. The breadcrumb model/widget tests
+register fake creators to cover the symbol path. The browser editor-type
+dropdown, hover tooltips, drag data and symbol-kind filters are not ported.
+Creating a short-lived control to paint an inactive group's breadcrumbs is a
+terminal adaptation of the browser's one widget per group; it keeps the visible
+content correct without a per-group DOM lifetime.
+
+The Outline side panel is the cell adaptation of
+`src/vs/workbench/contrib/outline/browser/outlinePane.ts`. It binds to the
+active text editor, creates the outline through `OutlineService`, and renders
+the `DocumentSymbolsOutline` tree snapshot with the shared `ListWidget`:
+indentation and twisties, symbol glyphs, marker counts/rollup bubbles,
+selection/hover/focus colors, wheel scrolling and Enter-to-reveal. The title
+actions are Collapse All, Expand All, Follow Cursor, Filter on Type and the
+three Sort By commands. Follow Cursor selects the symbol enclosing the cursor;
+content changes schedule a 200 ms rebuild, matching upstream's debounce.
+Terminal adaptations: Outline is a separate activity-bar container because the
+terminal side bar hosts one container at a time (upstream stacks it under the
+Explorer view), tree state is not persisted, and the find widget's separate
+input row is not drawn (typed filter text is appended to the pane's filter).
 
 Limitations of the current wire encoder: it emits solid strokes only, with
 square joints, `placement=1` and `layer=0`. `Set` carries joint flags and the

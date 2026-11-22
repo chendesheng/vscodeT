@@ -197,6 +197,16 @@ pub const BreadcrumbsWidget = struct {
         return null;
     }
 
+    /// Start column of an item's painted rectangle, used to anchor the
+    /// breadcrumb picker below the focused item when it is opened from the
+    /// keyboard.
+    pub fn hitStart(self: *const BreadcrumbsWidget, index: usize) ?usize {
+        for (self.hits.items) |hit| {
+            if (hit.index == index) return hit.start;
+        }
+        return null;
+    }
+
     /// Paints the widget. `row_style` is the base row background/foreground;
     /// `focus`/`hover` styling is applied per item.
     pub fn draw(

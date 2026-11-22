@@ -226,6 +226,12 @@ pub const BreadcrumbsModel = struct {
         }
     }
 
+    /// Recomputes the file/outline element list in place, used when the cursor
+    /// moves and the outline chain changes (upstream's active-element update).
+    pub fn refreshElements(self: *BreadcrumbsModel) !void {
+        try self.rebuildElements();
+    }
+
     fn rebuildElements(self: *BreadcrumbsModel) !void {
         self.elements.clearRetainingCapacity();
 
