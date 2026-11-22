@@ -2,8 +2,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
-const tree = @import("./bracketPairsTree.zig");
-const Length = tree.Length;
+const length_mod = @import("./length.zig");
+const Length = length_mod.Length;
 
 pub const TextEditInfo = struct {
     startOffset: Length,
@@ -18,11 +18,11 @@ pub const TextEditInfo = struct {
 const TL = struct { line: usize, column: usize };
 
 fn toTL(length: Length) TL {
-    return .{ .line = tree.lengthLineCount(length), .column = tree.lengthColumnCount(length) };
+    return .{ .line = length_mod.lengthLineCount(length), .column = length_mod.lengthColumnCount(length) };
 }
 
 fn fromTL(value: TL) Length {
-    return tree.toLength(value.line, value.column);
+    return length_mod.toLength(value.line, value.column);
 }
 
 const EditCache = struct {
@@ -46,7 +46,7 @@ pub const BeforeEditPositionMapper = struct {
             try cache.append(.{
                 .offset = toTL(edit.startOffset),
                 .endOffsetBefore = toTL(edit.endOffset),
-                .endOffsetAfter = toTL(tree.lengthAdd(edit.startOffset, edit.newLength)),
+                .endOffsetAfter = toTL(length_mod.lengthAdd(edit.startOffset, edit.newLength)),
             });
         }
         return .{ .edits = cache };
@@ -66,7 +66,7 @@ pub const BeforeEditPositionMapper = struct {
         if (self.nextEditIdx >= self.edits.items.len) return null;
         const nextEdit = self.edits.items[self.nextEditIdx];
         const nextChangeOffset = self.translateOldToCur(nextEdit.offset);
-        return tree.lengthDiffNonNegative(offset, nextChangeOffset);
+        return length_mod.lengthDiffNonNegative(offset, nextChangeOffset);
     }
 
     fn translateOldToCur(self: *BeforeEditPositionMapper, old: TL) Length {
@@ -100,7 +100,7 @@ pub const BeforeEditPositionMapper = struct {
         while (self.nextEditIdx < self.edits.items.len) {
             const nextEdit = self.edits.items[self.nextEditIdx];
             const nextEditEndOffsetInCur = self.translateOldToCur(nextEdit.endOffsetAfter);
-            if (tree.lengthLessThanEqual(nextEditEndOffsetInCur, offset)) {
+            if (length_mod.lengthLessThanEqual(nextEditEndOffsetInCur, offset)) {
                 self.nextEditIdx += 1;
                 const endInCur = toTL(nextEditEndOffsetInCur);
                 const endBeforeInCur = toTL(self.translateOldToCur(nextEdit.endOffsetBefore));

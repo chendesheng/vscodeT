@@ -2,20 +2,20 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
-const tree = @import("./bracketPairsTree.zig");
+const length_mod = @import("./length.zig");
 const TextEditInfo = @import("./beforeEditPositionMapper.zig").TextEditInfo;
 
 const Mapping = struct {
     modified: bool,
-    before: tree.Length,
-    after: tree.Length,
+    before: length_mod.Length,
+    after: length_mod.Length,
     /// Upstream's trailing sentinel (`lengthBefore`/`lengthAfter` undefined)
     /// means "copy every remaining first-state mapping".
     copy_all: bool = false,
 
-    fn splitAt(self: Mapping, lengthAfter: tree.Length) [2]?Mapping {
-        const remainingAfter = tree.lengthDiffNonNegative(lengthAfter, self.after);
-        if (tree.lengthEquals(remainingAfter, 0)) {
+    fn splitAt(self: Mapping, lengthAfter: length_mod.Length) [2]?Mapping {
+        const remainingAfter = length_mod.lengthDiffNonNegative(lengthAfter, self.after);
+        if (length_mod.lengthEquals(remainingAfter, 0)) {
             return .{ self, null };
         }
         if (self.modified) {
@@ -34,11 +34,11 @@ const Mapping = struct {
 fn toMappings(allocator: Allocator, edits: []const TextEditInfo) !ArrayList(Mapping) {
     var result = ArrayList(Mapping).init(allocator);
     errdefer result.deinit();
-    var lastOffset: tree.Length = 0;
+    var lastOffset: length_mod.Length = 0;
     for (edits) |edit| {
-        const space = tree.lengthDiffNonNegative(lastOffset, edit.startOffset);
-        if (!tree.lengthIsZero(space)) try result.append(.{ .modified = false, .before = space, .after = space });
-        const before = tree.lengthDiffNonNegative(edit.startOffset, edit.endOffset);
+        const space = length_mod.lengthDiffNonNegative(lastOffset, edit.startOffset);
+        if (!length_mod.lengthIsZero(space)) try result.append(.{ .modified = false, .before = space, .after = space });
+        const before = length_mod.lengthDiffNonNegative(edit.startOffset, edit.endOffset);
         try result.append(.{ .modified = true, .before = before, .after = edit.newLength });
         lastOffset = edit.endOffset;
     }
@@ -72,22 +72,22 @@ pub fn combineTextEditInfos(allocator: Allocator, first: []const TextEditInfo, s
     var curItem: ?Mapping = if (firstMappings.items.len > 0) firstMappings.items[0] else null;
     if (curItem != null) firstIdx = 1;
 
-    var s0offset: tree.Length = 0;
+    var s0offset: length_mod.Length = 0;
     for (secondMappings.items) |s1ToS2| {
         var s0ToS1 = ArrayList(Mapping).init(allocator);
         defer s0ToS1.deinit();
         try takeFirstMappings(&firstMappings, &firstIdx, &curItem, s1ToS2.before, &s0ToS1, s1ToS2.copy_all);
 
         if (s1ToS2.modified) {
-            var s0Length: tree.Length = 0;
-            for (s0ToS1.items) |m| s0Length = tree.lengthAdd(s0Length, m.before);
-            const s0End = tree.lengthAdd(s0offset, s0Length);
+            var s0Length: length_mod.Length = 0;
+            for (s0ToS1.items) |m| s0Length = length_mod.lengthAdd(s0Length, m.before);
+            const s0End = length_mod.lengthAdd(s0offset, s0Length);
             try pushEdit(&result, s0offset, s0End, s1ToS2.after);
             s0offset = s0End;
         } else {
             for (s0ToS1.items) |s1| {
                 const start = s0offset;
-                s0offset = tree.lengthAdd(s0offset, s1.before);
+                s0offset = length_mod.lengthAdd(s0offset, s1.before);
                 if (s1.modified) try pushEdit(&result, start, s0offset, s1.after);
             }
         }
@@ -99,7 +99,7 @@ fn takeFirstMappings(
     all: *ArrayList(Mapping),
     index: *usize,
     cur: *?Mapping,
-    s1Length: tree.Length,
+    s1Length: length_mod.Length,
     out: *ArrayList(Mapping),
     copyAll: bool,
 ) !void {
@@ -112,11 +112,11 @@ fn takeFirstMappings(
     }
 
     var remaining = s1Length;
-    while (cur.* != null and !tree.lengthIsZero(remaining)) {
+    while (cur.* != null and !length_mod.lengthIsZero(remaining)) {
         const item = cur.*.?;
         const split = item.splitAt(remaining);
         try out.append(split[0].?);
-        remaining = tree.lengthDiffNonNegative(split[0].?.after, remaining);
+        remaining = length_mod.lengthDiffNonNegative(split[0].?.after, remaining);
         if (split[1]) |rest| {
             cur.* = rest;
         } else {
@@ -124,16 +124,16 @@ fn takeFirstMappings(
             if (cur.* != null) index.* += 1;
         }
     }
-    if (!tree.lengthIsZero(remaining)) {
+    if (!length_mod.lengthIsZero(remaining)) {
         try out.append(.{ .modified = false, .before = remaining, .after = remaining });
     }
 }
 
-fn pushEdit(result: *ArrayList(TextEditInfo), start: tree.Length, end: tree.Length, newLength: tree.Length) !void {
-    if (result.items.len > 0 and tree.lengthEquals(result.items[result.items.len - 1].endOffset, start)) {
+fn pushEdit(result: *ArrayList(TextEditInfo), start: length_mod.Length, end: length_mod.Length, newLength: length_mod.Length) !void {
+    if (result.items.len > 0 and length_mod.lengthEquals(result.items[result.items.len - 1].endOffset, start)) {
         const last = &result.items[result.items.len - 1];
         last.endOffset = end;
-        last.newLength = tree.lengthAdd(last.newLength, newLength);
+        last.newLength = length_mod.lengthAdd(last.newLength, newLength);
     } else {
         try result.append(.{ .startOffset = start, .endOffset = end, .newLength = newLength });
     }
@@ -142,20 +142,20 @@ fn pushEdit(result: *ArrayList(TextEditInfo), start: tree.Length, end: tree.Leng
 test "combineTextEditInfos: keeps older edits that follow the newest edit" {
     const allocator = std.testing.allocator;
     const first = [_]TextEditInfo{
-        .{ .startOffset = tree.toLength(0, 4), .endOffset = tree.toLength(0, 7), .newLength = tree.toLength(0, 2) },
+        .{ .startOffset = length_mod.toLength(0, 4), .endOffset = length_mod.toLength(0, 7), .newLength = length_mod.toLength(0, 2) },
     };
     const second = [_]TextEditInfo{
-        .{ .startOffset = 0, .endOffset = tree.toLength(0, 2), .newLength = tree.toLength(0, 1) },
+        .{ .startOffset = 0, .endOffset = length_mod.toLength(0, 2), .newLength = length_mod.toLength(0, 1) },
     };
 
     var combined = try combineTextEditInfos(allocator, &first, &second);
     defer combined.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), combined.items.len);
-    try std.testing.expectEqual(tree.toLength(0, 0), combined.items[0].startOffset);
-    try std.testing.expectEqual(tree.toLength(0, 2), combined.items[0].endOffset);
-    try std.testing.expectEqual(tree.toLength(0, 1), combined.items[0].newLength);
-    try std.testing.expectEqual(tree.toLength(0, 4), combined.items[1].startOffset);
-    try std.testing.expectEqual(tree.toLength(0, 7), combined.items[1].endOffset);
-    try std.testing.expectEqual(tree.toLength(0, 2), combined.items[1].newLength);
+    try std.testing.expectEqual(length_mod.toLength(0, 0), combined.items[0].startOffset);
+    try std.testing.expectEqual(length_mod.toLength(0, 2), combined.items[0].endOffset);
+    try std.testing.expectEqual(length_mod.toLength(0, 1), combined.items[0].newLength);
+    try std.testing.expectEqual(length_mod.toLength(0, 4), combined.items[1].startOffset);
+    try std.testing.expectEqual(length_mod.toLength(0, 7), combined.items[1].endOffset);
+    try std.testing.expectEqual(length_mod.toLength(0, 2), combined.items[1].newLength);
 }

@@ -1,11 +1,12 @@
 // Port of `src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/bracketPairsTree.ts`.
 //
 // This file also contains the merged upstream modules `ast.ts`, `brackets.ts`,
-// `length.ts`, `parser.ts`, `smallImmutableSet.ts` and `tokenizer.ts`. The
-// port merges them into one module (a deviation from the upstream file layout)
-// and replaces `concat23Trees.ts` with a simpler `buildList`; lengths, nodes,
-// the tokenizer/parser and the min-indentation cache keep the upstream
-// behavior. Colors are UTF-8 byte lengths, not UTF-16 code units.
+// `parser.ts` and `tokenizer.ts`. The port merges them into one module (a
+// deviation from the upstream file layout) and replaces `concat23Trees.ts`
+// with a simpler `buildList`; nodes, the tokenizer/parser and the
+// min-indentation cache keep the upstream behavior. `length.ts` and
+// `smallImmutableSet.ts` are separate files. Colors are UTF-8 byte lengths,
+// not UTF-16 code units.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -20,187 +21,31 @@ const BeforeEditPositionMapper = @import("./beforeEditPositionMapper.zig").Befor
 const TextEditInfo = @import("./beforeEditPositionMapper.zig").TextEditInfo;
 const NodeReader = @import("./nodeReader.zig").NodeReader;
 
-pub const factor: u64 = 1 << 32;
+const length_mod = @import("./length.zig");
+pub const factor = length_mod.factor;
+pub const Length = length_mod.Length;
+pub const toLength = length_mod.toLength;
+pub const lengthZero = length_mod.lengthZero;
+pub const lengthLineCount = length_mod.lengthLineCount;
+pub const lengthGetColumnCountIfZeroLineCount = length_mod.lengthGetColumnCountIfZeroLineCount;
+pub const lengthColumnCount = length_mod.lengthColumnCount;
+pub const lengthAdd = length_mod.lengthAdd;
+pub const lengthOfString = length_mod.lengthOfString;
+pub const positionToLength = length_mod.positionToLength;
+pub const LengthObj = length_mod.LengthObj;
+pub const lengthToObj = length_mod.lengthToObj;
+pub const lengthToPosition = length_mod.lengthToPosition;
+pub const lengthsToRange = length_mod.lengthsToRange;
+pub const lengthDiff = length_mod.lengthDiff;
+pub const lengthDiffNonNegative = length_mod.lengthDiffNonNegative;
+pub const lengthEquals = length_mod.lengthEquals;
+pub const lengthBetween = length_mod.lengthBetween;
+pub const lengthIsZero = length_mod.lengthIsZero;
+pub const lengthLessThanEqual = length_mod.lengthLessThanEqual;
+pub const lengthLessThan = length_mod.lengthLessThan;
 
-/// A compact line/column length. Upper 32 bits are lines, lower 32 columns.
-pub const Length = u64;
-
-pub fn toLength(lineCount: usize, columnCount: usize) Length {
-    return (@as(u64, @intCast(lineCount)) << 32) | @as(u64, @intCast(columnCount));
-}
-
-pub fn lengthZero() Length {
-    return 0;
-}
-
-pub fn lengthLineCount(length: Length) usize {
-    return @intCast(length >> 32);
-}
-
-/// Returns the amount of columns of the given length, assuming that it does not
-/// span any line.
-pub fn lengthGetColumnCountIfZeroLineCount(length: Length) usize {
-    return @intCast(length);
-}
-
-pub fn lengthColumnCount(length: Length) usize {
-    return @intCast(length & 0xFFFF_FFFF);
-}
-
-pub fn lengthAdd(a: Length, b: Length) Length {
-    if (b >> 32 != 0) return toLength(lengthLineCount(a) + lengthLineCount(b), lengthColumnCount(b));
-    return toLength(lengthLineCount(a), lengthColumnCount(a) + lengthColumnCount(b));
-}
-
-pub fn lengthOfString(text: []const u8) Length {
-    // Upstream uses `splitLines` (`/\r\n|\r|\n/`): CRLF is a single line
-    // break, not two.
-    var lines: usize = 0;
-    var last_start: usize = 0;
-    var i: usize = 0;
-    while (i < text.len) {
-        if (text[i] == '\r') {
-            lines += 1;
-            i += 1;
-            if (i < text.len and text[i] == '\n') i += 1;
-            last_start = i;
-        } else if (text[i] == '\n') {
-            lines += 1;
-            i += 1;
-            last_start = i;
-        } else {
-            i += 1;
-        }
-    }
-    return toLength(lines, text.len - last_start);
-}
-
-pub fn positionToLength(position: Position) Length {
-    return toLength(position.lineNumber - 1, position.column - 1);
-}
-
-pub const LengthObj = struct {
-    lineCount: usize,
-    columnCount: usize,
-
-    pub fn toString(self: LengthObj, allocator: Allocator) ![]u8 {
-        return try std.fmt.allocPrint(allocator, "{d},{d}", .{ self.lineCount, self.columnCount });
-    }
-};
-
-/// Upstream `lengthToObj`.
-pub fn lengthToObj(length: Length) LengthObj {
-    return .{ .lineCount = lengthLineCount(length), .columnCount = lengthColumnCount(length) };
-}
-
-pub fn lengthToPosition(length: Length) Position {
-    return Position.init(lengthLineCount(length) + 1, lengthColumnCount(length) + 1);
-}
-
-/// Upstream `lengthsToRange`: turn an AST span into a document range. Cached
-/// nodes are reused after edits, so a bracket position can only be derived
-/// from the node's current offset, never from its tokenization position.
-pub fn lengthsToRange(start: Length, end: Length) Range {
-    return Range.init(
-        lengthLineCount(start) + 1,
-        lengthColumnCount(start) + 1,
-        lengthLineCount(end) + 1,
-        lengthColumnCount(end) + 1,
-    );
-}
-
-pub fn lengthDiff(start: Length, end: Length) Length {
-    if (lengthLineCount(start) != lengthLineCount(end)) {
-        return toLength(lengthLineCount(end) - lengthLineCount(start), lengthColumnCount(end));
-    }
-    return toLength(0, lengthColumnCount(end) - lengthColumnCount(start));
-}
-
-pub fn lengthDiffNonNegative(start: Length, end: Length) Length {
-    if (!lengthLessThan(start, end)) return 0;
-    return lengthDiff(start, end);
-}
-
-pub fn lengthEquals(a: Length, b: Length) bool {
-    return a == b;
-}
-
-pub fn lengthBetween(start: Position, end: Position) Length {
-    if (start.lineNumber == end.lineNumber) {
-        return toLength(0, end.column - start.column);
-    }
-    return toLength(end.lineNumber - start.lineNumber, end.column - 1);
-}
-
-pub fn lengthIsZero(length: Length) bool {
-    return length == 0;
-}
-
-pub fn lengthLessThanEqual(a: Length, b: Length) bool {
-    return a == b or lengthLessThan(a, b);
-}
-
-pub fn lengthLessThan(a: Length, b: Length) bool {
-    if (lengthLineCount(a) != lengthLineCount(b)) return lengthLineCount(a) < lengthLineCount(b);
-    return lengthColumnCount(a) < lengthColumnCount(b);
-}
-
-/// A small immutable set used for dense opening-bracket ids.
-pub const SmallImmutableSet = struct {
-    words: [4]u64 = .{ 0, 0, 0, 0 },
-
-    pub fn empty() SmallImmutableSet {
-        return .{};
-    }
-
-    /// The inline set covers ids 0..255. Upstream spills into a dynamically
-    /// sized array; the port reports the (extremely rare) overflow as an error
-    /// instead of silently dropping the id.
-    pub fn add(self: SmallImmutableSet, id: usize) !SmallImmutableSet {
-        var result = self;
-        const word = id / 64;
-        if (word >= result.words.len) return error.BracketSetOverflow;
-        result.words[word] |= @as(u64, 1) << @intCast(id % 64);
-        return result;
-    }
-
-    pub fn addAll(self: SmallImmutableSet, other: SmallImmutableSet) SmallImmutableSet {
-        var result = self;
-        for (&result.words, other.words) |*a, b| a.* |= b;
-        return result;
-    }
-
-    pub fn has(self: SmallImmutableSet, id: usize) bool {
-        const word = id / 64;
-        if (word >= self.words.len) return false;
-        return (self.words[word] & (@as(u64, 1) << @intCast(id % 64))) != 0;
-    }
-
-    pub fn intersects(self: SmallImmutableSet, other: SmallImmutableSet) bool {
-        for (self.words, other.words) |a, b| if ((a & b) != 0) return true;
-        return false;
-    }
-
-    pub fn merge(self: SmallImmutableSet, other: SmallImmutableSet) SmallImmutableSet {
-        return self.addAll(other);
-    }
-
-    pub fn isEmpty(self: SmallImmutableSet) bool {
-        for (self.words) |word| if (word != 0) return false;
-        return true;
-    }
-
-    pub fn eql(self: SmallImmutableSet, other: SmallImmutableSet) bool {
-        return std.mem.eql(u64, &self.words, &other.words);
-    }
-
-    pub fn first(self: SmallImmutableSet) ?usize {
-        for (self.words, 0..) |word, i| {
-            if (word != 0) return i * 64 + @ctz(word);
-        }
-        return null;
-    }
-};
+const set_mod = @import("./smallImmutableSet.zig");
+pub const SmallImmutableSet = set_mod.SmallImmutableSet;
 
 pub const TokenKind = enum { text, opening_bracket, closing_bracket };
 
