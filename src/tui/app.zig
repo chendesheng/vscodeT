@@ -1075,6 +1075,11 @@ fn handleMouseEvent(
     }
 
     const target = try view.mouseTargetAt(event.x, event.y);
+    if (event.kind == .move) {
+        view.setGlyphHover(target);
+    } else {
+        view.clearGlyphHover();
+    }
     const hover_event = hoverTypes.EditorMouseEvent{
         .target = target,
         .x = event.x,

@@ -934,9 +934,9 @@ console API for raw mode, sizing and input polling.
   syntax colors, configured ruler columns (`editor.rulers`), a one-row scroll
   shadow after scrolling, `marginClassName` gutter row tints and marker-cell glyphs for
   the known diff/edit/comment line classes (the marker cell is reserved while
-  such a decoration exists), glyph-margin glyphs (compacted 1-3 cell lanes with a themed
-  `●`/`▲` mapping for the known glyph classes, reserved only while a glyph
-  decoration exists),
+  such a decoration exists), glyph-margin glyphs (compacted 1-3 cell lanes with
+  a themed `●`/`▲` mapping for the known glyph classes, reserved only while a
+  glyph decoration exists) and their `glyphMarginHoverMessage` tooltip cells,
   right-aligned line numbers (inactive/active colors from
   `editorLineNumber.*`; the column follows `editor.lineNumbers`,
   `editor.lineNumbersMinChars` and the digit count), wrapped-line markers,

@@ -405,6 +405,90 @@ pub const PerfCounters = struct {
     line_translated: usize = 0,
 };
 
+/// A one-line content-widget tooltip for the glyph-margin hover message.
+const GlyphTooltip = struct {
+    visible: bool = false,
+    line: usize = 1,
+    text_buf: [192]u8 = undefined,
+    text_len: usize = 0,
+    node: ?*ui.Node = null,
+
+    fn text(self: *const GlyphTooltip) []const u8 {
+        return self.text_buf[0..self.text_len];
+    }
+
+    fn setText(self: *GlyphTooltip, value: []const u8) void {
+        self.text_len = @min(value.len, self.text_buf.len);
+        @memcpy(self.text_buf[0..self.text_len], value[0..self.text_len]);
+        self.visible = self.text_len > 0;
+    }
+
+    fn clear(self: *GlyphTooltip) void {
+        self.visible = false;
+        self.text_len = 0;
+    }
+
+    fn getPosition(context: *anyopaque) ?editorBrowser.IContentWidgetPosition {
+        const self: *GlyphTooltip = @ptrCast(@alignCast(context));
+        if (!self.visible) return null;
+        return .{
+            .position = Position.init(self.line, 1),
+            .preference = .below,
+        };
+    }
+
+    fn width(context: *anyopaque, cols: usize) usize {
+        const self: *GlyphTooltip = @ptrCast(@alignCast(context));
+        return @min(self.text_len + 2, cols);
+    }
+
+    fn height(_: *anyopaque) usize {
+        return 1;
+    }
+
+    fn build(context: *anyopaque, doc: *ui.Document) anyerror!*ui.Node {
+        const self: *GlyphTooltip = @ptrCast(@alignCast(context));
+        const node = try doc.createElement(.div);
+        node.setStyle(.{
+            .width = .{ .percent = 100 },
+            .height = .{ .cells = 1 },
+            .background = .{ .r = 50, .g = 50, .b = 55 },
+            .color = .{ .r = 230, .g = 230, .b = 230 },
+            .white_space = .pre,
+            .overflow = .hidden,
+        });
+        const label = try doc.createText(self.text());
+        _ = try node.appendChild(label);
+        self.node = node;
+        return node;
+    }
+
+    fn focusNode(_: *anyopaque) ?*ui.Node {
+        return null;
+    }
+
+    fn isFocused(_: *anyopaque) bool {
+        return false;
+    }
+
+    fn id(_: *anyopaque) []const u8 {
+        return "glyph-tooltip";
+    }
+
+    fn interface(self: *GlyphTooltip) editorBrowser.IContentWidget {
+        return .{
+            .context = self,
+            .get_id = id,
+            .get_position = getPosition,
+            .width = width,
+            .height = height,
+            .build = build,
+            .focus_node = focusNode,
+            .is_focused = isFocused,
+        };
+    }
+};
+
 pub const View = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
@@ -436,6 +520,7 @@ pub const View = struct {
     /// Whether this view paints the editor's fallback status row. The
     /// multi-group workbench disables it in favour of its status-bar part.
     status_bar_visible: bool = true,
+    glyph_tooltip: GlyphTooltip = .{},
     /// Set when a widget/status/layout change made the current document
     /// stale. The next paint/render flushes it, so a burst of registrations
     /// costs one render instead of one per call.
@@ -516,6 +601,7 @@ pub const View = struct {
         self.refreshBracketHighlightColors();
         self.terminal_view_host = try TerminalViewHost.init(allocator, editor);
         errdefer self.terminal_view_host.deinit();
+        try self.terminal_view_host.viewRef().addContentWidget(self.glyph_tooltip.interface());
 
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
@@ -537,6 +623,7 @@ pub const View = struct {
         self.clearPaintStyles();
         self.paint_styles.deinit(self.allocator);
         self.configuration_listeners.deinit();
+        _ = self.terminal_view_host.viewRef().removeContentWidget("glyph-tooltip");
         self.terminal_view_host.deinit();
         self.surface.deinit();
         self.allocator.destroy(self);
@@ -1240,6 +1327,39 @@ pub const View = struct {
 
     pub fn isFocused(self: *const View) bool {
         return self.terminal_view_host.viewRef().isFocused();
+    }
+
+    /// Updates the glyph-margin tooltip from the mouse target. Non-glyph
+    /// targets clear it. The message comes from `glyphMarginHoverMessage`.
+    pub fn setGlyphHover(self: *View, target: editorBrowser.MouseTarget) void {
+        if (target.type != .gutter_glyph_margin) {
+            self.clearGlyphHover();
+            return;
+        }
+        const position = target.position orelse {
+            self.clearGlyphHover();
+            return;
+        };
+        const lane = target.mouse_column -| 1;
+        const tooltip = self.terminal_view_host.glyphTooltipAt(position.lineNumber, lane) orelse {
+            self.clearGlyphHover();
+            return;
+        };
+        if (self.glyph_tooltip.visible and
+            self.glyph_tooltip.line == position.lineNumber and
+            std.mem.eql(u8, self.glyph_tooltip.text(), tooltip))
+        {
+            return;
+        }
+        self.glyph_tooltip.line = position.lineNumber;
+        self.glyph_tooltip.setText(tooltip);
+        self.invalidate();
+    }
+
+    pub fn clearGlyphHover(self: *View) void {
+        if (!self.glyph_tooltip.visible) return;
+        self.glyph_tooltip.clear();
+        self.invalidate();
     }
 
     /// Paints into the view's own frame without writing ANSI. The multi-file
@@ -5125,4 +5245,53 @@ test "View: scroll decoration shadows the first row" {
     view.invalidate();
     try view.renderAnsi(&out.writer);
     try std.testing.expectEqual(shadow, view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 0)]);
+}
+
+test "View: glyph hover message becomes a content tooltip" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree", "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var options = ModelDecorationOptions.init("glyph-tip", .AlwaysGrowsWhenTypingAtEdges);
+    options.glyphMarginClassName = "glyph-error";
+    options.glyphMarginHoverMessage = "glyph message";
+    const deltas = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 1, 1, 1), .options = &options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 69);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const target = try view.mouseTargetAt(0, 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.gutter_glyph_margin, target.type);
+    try std.testing.expect(view.terminal_view_host.glyphTooltipAt(1, 0) != null);
+    view.setGlyphHover(target);
+    try std.testing.expect(view.glyph_tooltip.visible);
+    try view.renderAnsi(&out.writer);
+
+    var found = false;
+    var row: usize = 0;
+    while (row < view.surface.grid().rows) : (row += 1) {
+        const text = try view.surface.grid().rowText(allocator, row);
+        defer allocator.free(text);
+        if (std.mem.indexOf(u8, text, "glyph message") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+
+    view.clearGlyphHover();
+    try view.renderAnsi(&out.writer);
+    try std.testing.expect(view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 1)] !=
+        ui.cell.packColor(.{ .r = 50, .g = 50, .b = 55 }));
 }
