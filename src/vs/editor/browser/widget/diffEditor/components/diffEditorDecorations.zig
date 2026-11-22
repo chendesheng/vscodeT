@@ -63,6 +63,8 @@ pub const DiffEditorDecorations = struct {
     char_delete: ModelDecorationOptions,
     char_insert_empty: ModelDecorationOptions,
     char_delete_empty: ModelDecorationOptions,
+    moved_original: ModelDecorationOptions,
+    moved_modified: ModelDecorationOptions,
 
     pub fn init(
         allocator: Allocator,
@@ -86,6 +88,8 @@ pub const DiffEditorDecorations = struct {
             .char_delete = undefined,
             .char_insert_empty = undefined,
             .char_delete_empty = undefined,
+            .moved_original = undefined,
+            .moved_modified = undefined,
         };
         self.buildOptions();
         return self;
@@ -125,11 +129,12 @@ pub const DiffEditorDecorations = struct {
         self.char_delete = createRange("char-delete");
         self.char_insert_empty = createRange("char-insert diff-range-empty");
         self.char_delete_empty = createRange("char-delete diff-range-empty");
+        self.moved_original = createMovedBlock("movedOriginal");
+        self.moved_modified = createMovedBlock("movedModified");
     }
 
     /// Rebuilds both decoration sets from the aligned rows and the diff state.
     pub fn update(self: *DiffEditorDecorations, aligned: *const AlignedRows, state: *const DiffState) !void {
-        _ = state;
         var original_decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
         defer original_decorations.deinit();
         var modified_decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
@@ -162,6 +167,25 @@ pub const DiffEditorDecorations = struct {
                 mapping.source,
                 self.config.show_empty_decorations,
             );
+        }
+
+        for (state.moved_texts) |moved| {
+            const original_start = moved.lineRangeMapping.original.startLineNumber;
+            const original_end = moved.lineRangeMapping.original.endLineNumberExclusive;
+            if (original_end > original_start) {
+                try original_decorations.append(.{
+                    .range = Range.init(original_start, 1, original_end, 1),
+                    .options = &self.moved_original,
+                });
+            }
+            const modified_start = moved.lineRangeMapping.modified.startLineNumber;
+            const modified_end = moved.lineRangeMapping.modified.endLineNumberExclusive;
+            if (modified_end > modified_start) {
+                try modified_decorations.append(.{
+                    .range = Range.init(modified_start, 1, modified_end, 1),
+                    .options = &self.moved_modified,
+                });
+            }
         }
 
         const new_original = try self.applyTo(self.original_model, self.original_owner, self.original_ids, original_decorations.items);
@@ -255,6 +279,13 @@ fn appendSideDecorations(
             .options = @constCast(option),
         });
     }
+}
+
+fn createMovedBlock(class_name: []const u8) ModelDecorationOptions {
+    var options = ModelDecorationOptions.init("moved", .AlwaysGrowsWhenTypingAtEdges);
+    options.blockClassName = class_name;
+    options.blockPadding = .{ 1, 0, 1, 1 };
+    return options;
 }
 
 fn createWholeLine(class_name: []const u8, color: [3]u8, overview: bool) ModelDecorationOptions {
@@ -351,7 +382,25 @@ fn diffEditorState(allocator: Allocator, diff: diff_provider.IDocumentDiff) !Dif
             .inner_changes = inner,
         } };
     }
-    const moves = try allocator.alloc(view_model.MovedText, 0);
+    const moves = try allocator.alloc(view_model.MovedText, diff.moves.len);
+    var initialized_moves: usize = 0;
+    errdefer for (moves[0..initialized_moves]) |*moved| moved.deinit(allocator);
+    for (diff.moves, 0..) |source, index| {
+        const changes = try allocator.alloc(view_model.DetailedLineRangeMapping, source.changes.len);
+        for (source.changes, 0..) |change, change_index| {
+            const inner = if (change.inner_changes) |values| try allocator.dupe(RangeMapping, values) else null;
+            changes[change_index] = .{
+                .original = change.original,
+                .modified = change.modified,
+                .inner_changes = inner,
+            };
+        }
+        moves[index] = .{
+            .lineRangeMapping = source.lineRangeMapping,
+            .changes = changes,
+        };
+        initialized_moves = index + 1;
+    }
     return .{
         .mappings = mappings,
         .moved_texts = moves,

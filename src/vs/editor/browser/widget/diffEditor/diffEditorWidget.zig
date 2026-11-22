@@ -9,9 +9,11 @@
 // resizing replaces the split-view sash; the original pane is not
 // keyboard-focusable (documented terminal simplification).
 //
-// Not ported in this milestone: inline diff mode, hide-unchanged regions, moved
-// block lines, the accessible diff viewer, editing either side, and the
-// combined two-lane overview ruler (each pane keeps its own scrollbar markers).
+// Not ported in this milestone: inline diff mode, hide-unchanged regions, the
+// accessible diff viewer, editing either side, and the combined two-lane
+// overview ruler (each pane keeps its own scrollbar markers). Moved-block
+// detection is wired through `state.moved_texts` into `movedOriginal`/
+// `movedModified` block decorations.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -713,4 +715,34 @@ test "diffEditorWidget: mouse drag resizes the split ratio" {
     var up = ui.MouseEvent{ .kind = .up, .x = 60, .y = 3, .button = .left };
     _ = try widget.dispatchMouse(&up);
     try testing.expect(!widget.dragging_split);
+}
+
+test "diffEditorWidget: moved blocks create model decorations" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const widget = try DiffEditorWidget.create(
+        allocator,
+        io,
+        "a.txt",
+        "b.txt",
+        "aaaaaa\nbbbbbb\ncccccc\nxxxxxx\nyyyyyy\nzzzzzz",
+        "xxxxxx\nyyyyyy\nzzzzzz\naaaaaa\nbbbbbb\ncccccc",
+        "Original",
+        "Modified",
+        80,
+        8,
+        .{ .show_moves = true },
+    );
+    defer widget.destroy();
+
+    try std.testing.expect(widget.state().?.moved_texts.len > 0);
+    const decorations = try widget.original_editor.model.getAllDecorations(0, false);
+    defer widget.original_editor.model.getAllocator().free(decorations);
+    var found = false;
+    for (decorations) |decoration| {
+        if (decoration.options.blockClassName) |class_name| {
+            if (std.mem.startsWith(u8, class_name, "movedOriginal")) found = true;
+        }
+    }
+    try std.testing.expect(found);
 }

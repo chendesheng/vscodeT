@@ -937,8 +937,9 @@ console API for raw mode, sizing and input polling.
   revert, reload and external-change handling are inert, they are not working
   copies, history entries or session-serialized, and closing them returns to
   the untouched file tab. Terminal limitations: no inline diff mode, hidden
-  unchanged regions, moved-block lines, quick-diff peek, multi-diff editor,
-  accessible diff viewer, or editing either side; the original pane is not
+  unchanged regions, quick-diff peek, multi-diff editor,
+  accessible diff viewer, or editing either side; moved blocks are surfaced as
+  block decorations; the original pane is not
   keyboard-focusable; the combined two-lane overview ruler is per-side; the
   gutter width/pattern/minimap settings are reduced to one marker cell and a
   dimmed pattern; panes narrower than 50 cells fall back to a modified-only
