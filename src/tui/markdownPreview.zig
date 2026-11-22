@@ -1276,19 +1276,23 @@ test "markdownPreview: resolves local image URLs and skips remote ones" {
     {
         const path = (try preview.resolveImagePath(allocator, "images/a.png")).?;
         defer allocator.free(path);
-        const expected = try std.fs.path.join(allocator, &.{ "/tmp/docs", "images/a.png" });
+        const expected = try std.fs.path.resolve(allocator, &.{ preview.base_dir, "images/a.png" });
         defer allocator.free(expected);
         try std.testing.expectEqualStrings(expected, path);
     }
     {
         const path = (try preview.resolveImagePath(allocator, "/tmp/abs.png#fragment")).?;
         defer allocator.free(path);
-        try std.testing.expectEqualStrings("/tmp/abs.png", path);
+        const expected = try std.fs.path.resolve(allocator, &.{"/tmp/abs.png"});
+        defer allocator.free(expected);
+        try std.testing.expectEqualStrings(expected, path);
     }
     {
         const path = (try preview.resolveImagePath(allocator, "file:///tmp/a%20b.png")).?;
         defer allocator.free(path);
-        try std.testing.expectEqualStrings("/tmp/a b.png", path);
+        const expected = try std.fs.path.resolve(allocator, &.{"/tmp/a b.png"});
+        defer allocator.free(expected);
+        try std.testing.expectEqualStrings(expected, path);
     }
     try std.testing.expect((try preview.resolveImagePath(allocator, "https://example.com/a.png")) == null);
     try std.testing.expect((try preview.resolveImagePath(allocator, "data:image/png;base64,AAAA")) == null);
