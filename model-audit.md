@@ -106,6 +106,25 @@ Small commits, each with a regression test:
     `getLinesDecorations` end-line clamp; decoration-effect flags OR;
     `pushEOL` deferred event order; attached-view handler mutated in place;
     left word definition in `getWordAtPosition`.
+11. `80477f0` interval-tree `maxEnd` shrinks with the node end; EOL-length
+    compensation uses `desired - actual`; URI-backed redo reports an error.
+12. `1823d22` language-configuration changes invalidate the bracket tree
+    (LanguageService event -> TextModel -> bracket/tokenization parts);
+    bracket matching always uses the AST when it can be built, regardless of
+    colorization.
+13. `acde702` bracket colorization levels: the bracket table is
+    `brackets ∪ colorizedBracketPairs`; closing tokens carry which openings
+    they colorize; `getBracketsInRange` walks the AST like upstream
+    `collectBrackets` (levels only advance for colorized pairs, unclosed pairs
+    are colorized, unexpected closers are emitted at level -1); decoration ids
+    are stable.
+14. `927d4e3` piece-tree snapshots are immutable value copies, prepend the BOM
+    to the first piece, expose public read/deinit, and the buffer/TextModel
+    wrappers type-check.
+15. `88e2cac` forced tokenization only records end states from a known-valid
+    start; TextMate tokenization has the 500 ms limit and keeps the input
+    state on `stoppedEarly`; callback registration is idempotent.
+16. `ed781d6` provenance headers for every model file.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -113,85 +132,76 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 
 ### High
 
-- **Piece tree snapshot API is not usable.** `pieceTreeBase.zig`
-  (`PieceTreeSnapshot`) stores `*const Piece` pointers into live tree nodes and
-  returns the BOM as a separate chunk; `PieceTreeSnapshot` is private while
-  `pieceTreeTextBuffer.createSnapshot` exposes it, and takes `[]u8` from a
-  `[]const u8` BOM. `pieceTreeTextBuffer.equals` also returns `bool` for a
-  `!bool` base call. These declarations are dead because Zig never analyzes
-  them; they will fail to compile when wired. Port upstream's immutable
-  snapshot (piece values + BOM prefix) and a `refAllDecls`-style compile test.
-- **`intervalTree.computeMaxEnd` seeds from `maxEnd`, not `end`**
-  (`intervalTree.zig`): the bound never shrinks. Queries stay correct but
-  pruning degrades after edits. Change the seed to `node.end`.
-- **Bracket colorization levels/filtering.** `bracketPairsImpl.zig` assigns
-  levels over all pairs and filters by a per-token `isColorized` flag;
-  upstream computes levels per pair when colorizing, returns `-1` for invalid
-  closers, always emits unexpected closers, and treats
-  `brackets ∪ colorizedBracketPairs` as the bracket table. This affects
-  `editorBracketHighlighting*` colors and the colorized decoration provider.
-- **Bracket matching falls back to the legacy scanner when colorization is
-  off** (`useFallbackMatcher`). Upstream chooses the AST solely by
-  `canBuildAST()`. Matching results therefore diverge with colorization
-  disabled.
+- **Bracket-pair core is a merged reimplementation.** `bracketPairsTree.zig`
+  carries eight upstream modules in one file and has no `concat23Trees`,
+  streaming `TextBufferTokenizer`/`FastTokenizer`, two-tree mode
+  (`initialAstWithoutTokens`/`astWithTokens`) or upstream bracket matcher
+  (case folding, word boundaries, token clamping). Queries use flat sorted
+  lists for pair/matching APIs, so many operations remain O(document) and
+  incremental parses deep-clone cached nodes. See the audit findings F9/F15
+  for concrete differences and the staged split plan.
+- **Piece-tree public APIs still have byte/UTF-16 and safety gaps.**
+  `getLineCharCode`/`getCharCode` are byte accessors next to the codepoint
+  helpers; `nodeAt` returns `undefined` past the document; `getNearestChunk`
+  returns a borrowed slice into mutable buffers; several JS-`substring` call
+  sites slice without clamping/swapping; `getLinesContent`/factory ownership
+  still leak on some error paths.
+- **TextMate metadata loses embedded languages and engine theme semantics.**
+  `textMateTokenizer.zig` hard-codes `languageId = 0` and matches theme rules
+  per scope instead of through the engine's full scope path; embedded
+  languages (HTML `<script>`, markdown fences) are not attributed. Font-token
+  metadata is discarded. This is partly a documented single-language terminal
+  limitation, but the language-id path should still be ported.
+- **Font-decoration API surface is absent.** `onDidChangeFont*`,
+  `tokenizationFontDecorationsProvider.ts`, `TextModel.getFontDecorationsInRange`
+  and the `filterFontDecorations` parameters do not exist. A terminal has one
+  font/size/line height, so the provider itself is a documented capability
+  gap; the cheap model flags/parameters should be ported or their absence
+  documented in `README.md` (currently only in file headers).
 
 ### Medium
 
-- `pieceTreeBase`: `getValueLengthInRange` EOL compensation sign is inverted;
-  `getLineCharCode`/`getCharCode` return one UTF-8 byte (dead byte-based APIs
-  next to the codepoint ones); `nodeAt` returns `undefined` past the document;
-  `getNearestChunk` returns a borrowed slice into mutable buffers; cache fields
-  (`_searchCache`, `_lastVisitedLine`) are reset but never populated.
 - `pieceTreeTextBufferBuilder`: `getFirstLineText` slices without clamping and
-  keeps `\r`; RTL/unusual-terminator checks inspect only the new chunk;
+  keeps ``; RTL/unusual-terminator checks inspect only the new chunk;
   factory/create ownership allows a second `create` to alias the same chunks.
-- `textModel`: font-decoration tracking/events and `filterFontDecorations`
-  parameters are absent (font families/sizes are a terminal capability gap,
-  but the API surface is upstream); `changeDecorations` accessor methods are
-  private and unused; raw-content injected-text slices reference short-lived
-  buffers; `onWillDispose` is never fired and there is no disposed guard;
+- `textModel`: `changeDecorations` accessor methods are private and unused;
+  raw-content injected-text slices reference short-lived buffers;
+  `onWillDispose` is never fired and there is no disposed guard;
   `_deltaDecorationsImpl` never normalizes options; `MultiModelEditStackElement`
   and `split()` are unreachable and would double-free if wired.
 - `tokens`: non-stabilized visible-range refresh has no 50 ms scheduler;
-  attached views are destroyed by `AttachedViews` even though the consumer
-  owns them; `forceTokenizeRange` writes guessed end states and can mark
-  stale tokens accurate; `onDidChangeFontTokens` plumbing is absent;
-  textmate metadata language id is hard-coded (embedded languages are not
-  attributed); the theme is matched per scope instead of via the engine;
-  `tokenizeEncoded` has no 500 ms limit / `stoppedEarly` handling.
+  attached views are destroyed by `AttachedViews` even though upstream lets the
+  consumer own them; `tokenizeHeuristically`/`forceTokenizeRange` callers still
+  have scheduler-specific differences; `onDidChangeFontTokens` is absent.
+- `bracketPairsTree`: `SmallImmutableSet` silently drops ids ≥ 256;
+  `findPrevBracket`/`findNextBracket`/`findEnclosingBrackets` still scan the
+  flat lists (upstream traverses the AST and skips unexpected closers);
+  `colorizedBracketPairsDecorationProvider` still returns no decorations
+  while dirty (documented terminal adaptation) and uses hashed ids.
+- `editStack`: `split()` copies heap-owning elements; `heapSize` contains a
+  JS-specific overhead constant; the multi-model/delegate path is unreachable.
+- `annotations`: serialization (`ISerializedAnnotation`, `serialize`,
+  `deserialize`) is absent; the port uses its own worker protocol.
+- `textModelSearch`: `findNextMatch` has a fallback full search after the
+  line-by-line scans; `_doFindMatchesLineByLine` can exceed the limit by the
+  remaining lines; reversed ranges can panic on slicing.
 - `guidesTextModelPart`: horizontal guide segments are produced but the
-  terminal view intentionally skips them (documented in
-  `indentGuides.zig`); wrapping-column fields are carried but the terminal has
-  no wrapping.
-- `bracketPairsTree`: tokenizer/parser are a merged reimplementation without
-  `concat23Trees`, the streaming tokenizers, two-tree mode or the upstream
-  bracket matcher (case/world-boundary rules); `SmallImmutableSet` silently
-  drops ids ≥ 256; `getBracketPairsInRange`/matching queries use flat sorted
-  lists instead of AST traversal (O(document) per query).
-- `language configuration changes` do not invalidate bracket pairs or
-  tokenization (`handleLanguageConfigurationServiceChange` has no producer),
-  so replacing a configuration leaves an existing AST stale.
-- `editStack`: `redo` silently ignores URI-backed elements; `split()` copies
-  heap-owning elements.
+  terminal view intentionally skips them; wrapping columns are unused.
 
 ### Low / process
 
-- Missing required `// Port of ...` headers in several files
-  (`bracketPairsTree.zig` and its merged modules, `beforeEditPositionMapper`,
-  `combineTextEditInfos`, `nodeReader`, `colorizedBracketPairsDecorationProvider`,
-  the tokens files, and most misc files). The merged 8-file bracket tree needs
-  a header naming all upstream modules and stating the merge.
-- Missing upstream tests: `bracketPairColorizer/{beforeEditPositionMapper,
-  brackets, combineTextEditInfos, concat23Trees, getBracketPairsInRange,
-  length, smallImmutableSet, tokenizer}.test.ts`; `pieceTreeTextBuffer.test.ts`
-  (≈2.1k lines, CRLF/random/snapshot suites); `annotations.test.ts`;
-  `textModelTokens.test.ts`; `editableTextModel*.test.ts`; `model*.test.ts`;
-  `textModelSearch.test.ts`. These are the suites that would have caught the
-  fixed bugs and the remaining ones.
+- Missing upstream tests remain the main safety net:
+  `bracketPairColorizer/{beforeEditPositionMapper, brackets,
+  combineTextEditInfos, concat23Trees, getBracketPairsInRange, length,
+  smallImmutableSet, tokenizer}.test.ts`; `pieceTreeTextBuffer.test.ts`
+  (CRLF/random/snapshot suites); `annotations.test.ts`,
+  `textModelTokens.test.ts`, `editableTextModel*.test.ts`, `model*.test.ts`,
+  `textModelSearch.test.ts`.
 - Dead/malformed declarations that only compile because they are never
-  analyzed: `rbTreeBase.TreeNode.iterate`, `pieceTreeTextBuffer.equals`,
-  `createSnapshot`, `getCharCode` return type, `intervalTree` font bit,
+  analyzed: `rbTreeBase.TreeNode.iterate`, `intervalTree` font bit,
   `model.zig` `initModelDecorationOptionsDefaults`.
+- The terminal UI's guide painting skips horizontal segments and wrapping
+  columns; these are documented in `indentGuides.zig`.
 
 ## 4. Verification
 
