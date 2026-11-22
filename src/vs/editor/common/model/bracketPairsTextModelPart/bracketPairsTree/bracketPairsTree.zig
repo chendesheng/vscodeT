@@ -79,6 +79,20 @@ pub fn positionToLength(position: Position) Length {
     return toLength(position.lineNumber - 1, position.column - 1);
 }
 
+pub const LengthObj = struct {
+    lineCount: usize,
+    columnCount: usize,
+
+    pub fn toString(self: LengthObj, allocator: Allocator) ![]u8 {
+        return try std.fmt.allocPrint(allocator, "{d},{d}", .{ self.lineCount, self.columnCount });
+    }
+};
+
+/// Upstream `lengthToObj`.
+pub fn lengthToObj(length: Length) LengthObj {
+    return .{ .lineCount = lengthLineCount(length), .columnCount = lengthColumnCount(length) };
+}
+
 pub fn lengthToPosition(length: Length) Position {
     return Position.init(lengthLineCount(length) + 1, lengthColumnCount(length) + 1);
 }

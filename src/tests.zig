@@ -243,6 +243,7 @@ comptime {
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/length.test.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/smallImmutableSet.test.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/getBracketPairsInRange.test.zig");
+    _ = @import("./vs/editor/test/common/model/bracketPairColorizer/beforeEditPositionMapper.test.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/astTests.zig");
     _ = @import("./vs/editor/common/model/tokens/textMateTokenizer.zig");
     _ = @import("./vs/editor/standalone/browser/standaloneThemeService.zig");

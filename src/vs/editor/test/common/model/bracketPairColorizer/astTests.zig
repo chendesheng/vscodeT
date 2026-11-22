@@ -137,7 +137,7 @@ test "ast: before-edit position mapper" {
     var mapper = try Mapper.init(allocator, &edits);
     defer mapper.deinit();
 
-    const expectedOldColumns = [_]usize{ 0, 1, 2, 3, 4, 4, 7, 8, 9, 10 };
+    const expectedOldColumns = [_]usize{ 0, 1, 2, 3, 4, 5, 7, 8, 9, 10 };
     for (expectedOldColumns, 0..) |column, i| {
         const old = mapper.getOffsetBeforeChange(tree.toLength(0, i));
         try std.testing.expectEqual(column, tree.lengthColumnCount(old));

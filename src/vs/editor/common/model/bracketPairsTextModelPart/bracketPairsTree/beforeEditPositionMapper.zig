@@ -58,14 +58,6 @@ pub const BeforeEditPositionMapper = struct {
 
     pub fn getOffsetBeforeChange(self: *BeforeEditPositionMapper, offset: Length) Length {
         self.adjustNextEdit(offset);
-        if (self.nextEditIdx < self.edits.items.len) {
-            const nextEdit = self.edits.items[self.nextEditIdx];
-            const startInCur = self.translateOldToCur(nextEdit.offset);
-            const endInCur = self.translateOldToCur(nextEdit.endOffsetAfter);
-            if (tree.lengthLessThanEqual(startInCur, offset) and tree.lengthLessThan(offset, endInCur)) {
-                return fromTL(nextEdit.offset);
-            }
-        }
         return self.translateCurToOld(offset);
     }
 
