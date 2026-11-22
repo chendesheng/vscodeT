@@ -141,6 +141,10 @@ pub fn drainResizeWatcher(fd: std.posix.fd_t) void {
 pub fn runStatic(allocator: std.mem.Allocator, example: Example) !void {
     var runner = try Runner.init(allocator, example);
     defer runner.deinit();
+    // Build after the runner reached its final address: nodes keep a
+    // `*Document` back-pointer, so building inside `init` would leave them
+    // pointing at the returned stack copy.
+    try runner.rebuildScene();
     try runner.runStatic();
 }
 
@@ -149,6 +153,8 @@ pub fn runStatic(allocator: std.mem.Allocator, example: Example) !void {
 pub fn runInteractive(allocator: std.mem.Allocator, example: Example) !void {
     var runner = try Runner.init(allocator, example);
     defer runner.deinit();
+    // See `runStatic`: build only once the runner is at its final address.
+    try runner.rebuildScene();
     try runner.runInteractive();
 }
 
@@ -160,13 +166,11 @@ const Runner = struct {
     fn init(allocator: std.mem.Allocator, example: Example) !Runner {
         var surface = try fullscreenSurface(allocator);
         errdefer surface.deinit();
-        var runner = Runner{
+        return .{
             .allocator = allocator,
             .example = example,
             .surface = surface,
         };
-        try runner.rebuildScene();
-        return runner;
     }
 
     fn deinit(self: *Runner) void {
