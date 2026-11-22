@@ -706,3 +706,48 @@ test "bracket pairs: navigation skips invalid closers and uses strict containmen
     try std.testing.expectEqual(@as(usize, 1), enclosing[0].startColumn);
     try std.testing.expectEqual(@as(usize, 2), enclosing[1].startColumn);
 }
+
+test "bracket pairs: word delimiters are case-insensitive and honor boundaries" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "begin", "end" }};
+
+    var lower = try Fixture.init(allocator, "begin end", makeConfig(&brackets, &brackets));
+    defer lower.deinit();
+    lower.ctx.model.forceTokenization(1);
+    try lower.ctx.model.bracketPairs().updateNow();
+    var lower_pairs = try lower.ctx.model.getBracketPairsInRange(lower.ctx.model.getFullModelRange());
+    defer lower_pairs.deinit();
+    try std.testing.expectEqual(@as(usize, 1), lower_pairs.items.len);
+    try std.testing.expect(lower_pairs.items[0].closingBracketRange != null);
+
+    var upper = try Fixture.init(allocator, "Begin END", makeConfig(&brackets, &brackets));
+    defer upper.deinit();
+    upper.ctx.model.forceTokenization(1);
+    try upper.ctx.model.bracketPairs().updateNow();
+    var upper_pairs = try upper.ctx.model.getBracketPairsInRange(upper.ctx.model.getFullModelRange());
+    defer upper_pairs.deinit();
+    try std.testing.expectEqual(@as(usize, 1), upper_pairs.items.len);
+    try std.testing.expect(upper_pairs.items[0].closingBracketRange != null);
+
+    // No prefix boundary: `unbegin` does not open, so `end` is unexpected.
+    var prefixed = try Fixture.init(allocator, "unbegin end", makeConfig(&brackets, &brackets));
+    defer prefixed.deinit();
+    prefixed.ctx.model.forceTokenization(1);
+    try prefixed.ctx.model.bracketPairs().updateNow();
+    var prefixed_pairs = try prefixed.ctx.model.getBracketPairsInRange(prefixed.ctx.model.getFullModelRange());
+    defer prefixed_pairs.deinit();
+    for (prefixed_pairs.items) |pair| {
+        try std.testing.expect(pair.closingBracketRange == null);
+    }
+
+    // No suffix boundary: `endx` does not close `begin`.
+    var suffixed = try Fixture.init(allocator, "begin endx", makeConfig(&brackets, &brackets));
+    defer suffixed.deinit();
+    suffixed.ctx.model.forceTokenization(1);
+    try suffixed.ctx.model.bracketPairs().updateNow();
+    var suffixed_pairs = try suffixed.ctx.model.getBracketPairsInRange(suffixed.ctx.model.getFullModelRange());
+    defer suffixed_pairs.deinit();
+    for (suffixed_pairs.items) |pair| {
+        try std.testing.expect(pair.closingBracketRange == null);
+    }
+}

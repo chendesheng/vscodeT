@@ -117,8 +117,8 @@ const Scanner = struct {
                 continue;
             }
 
-            if (matchAt(text, pos, defs, true)) |open| {
-                if (matchAt(text, pos, defs, false)) |close| {
+            if (matchAt(text, pos, text.len, defs, true)) |open| {
+                if (matchAt(text, pos, text.len, defs, false)) |close| {
                     if (close.len >= open.len) {
                         try self.emitText(last_pos, pos);
                         try self.emitBracket(close, false, language);
@@ -133,7 +133,7 @@ const Scanner = struct {
                 last_pos = pos;
                 continue;
             }
-            if (matchAt(text, pos, defs, false)) |close| {
+            if (matchAt(text, pos, text.len, defs, false)) |close| {
                 try self.emitText(last_pos, pos);
                 try self.emitBracket(close, false, language);
                 pos += close.len;

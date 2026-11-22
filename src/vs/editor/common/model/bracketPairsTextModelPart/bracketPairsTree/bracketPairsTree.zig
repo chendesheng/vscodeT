@@ -565,8 +565,8 @@ const Tokenizer = struct {
 
             var pos: usize = 0;
             while (pos < text.len) {
-                if (matchAt(text, pos, defs, true)) |open| {
-                    if (matchAt(text, pos, defs, false)) |close| {
+                if (matchAt(text, pos, text.len, defs, true)) |open| {
+                    if (matchAt(text, pos, text.len, defs, false)) |close| {
                         if (close.len >= open.len) {
                             try self.emitBracket(line_number, pos, close, false, language);
                             pos += close.len;
@@ -577,7 +577,7 @@ const Tokenizer = struct {
                     pos += open.len;
                     continue;
                 }
-                if (matchAt(text, pos, defs, false)) |close| {
+                if (matchAt(text, pos, text.len, defs, false)) |close| {
                     try self.emitBracket(line_number, pos, close, false, language);
                     pos += close.len;
                     continue;
@@ -616,9 +616,10 @@ const Tokenizer = struct {
                     pos += utf8Len(text[pos..]);
                     continue;
                 }
+                const token_end = if (hasTokens) @min(lineTokens.getEndOffset(tokenIndex), text.len) else text.len;
 
-                if (matchAt(text, pos, defs, true)) |open| {
-                    if (matchAt(text, pos, defs, false)) |close| {
+                if (matchAt(text, pos, token_end, defs, true)) |open| {
+                    if (matchAt(text, pos, token_end, defs, false)) |close| {
                         if (close.len >= open.len and close.len >= open.len) {
                             try self.emitBracket(lineNumber, pos, close, false, language);
                             pos += close.len;
@@ -629,7 +630,7 @@ const Tokenizer = struct {
                     pos += open.len;
                     continue;
                 }
-                if (matchAt(text, pos, defs, false)) |close| {
+                if (matchAt(text, pos, token_end, defs, false)) |close| {
                     try self.emitBracket(lineNumber, pos, close, false, language);
                     pos += close.len;
                     continue;
@@ -699,15 +700,49 @@ const Tokenizer = struct {
     }
 };
 
-pub fn matchAt(text: []const u8, pos: usize, brackets: *LanguageBrackets, opening: bool) ?[]const u8 {
+/// Upstream `BracketTokens.getToken` matching: case-insensitive and bounded by
+/// the current token. Word-like delimiters get `\b` boundaries in the upstream
+/// regex, reproduced here.
+pub fn matchAt(text: []const u8, pos: usize, max_end: usize, brackets: *LanguageBrackets, opening: bool) ?[]const u8 {
     var best: ?[]const u8 = null;
+    const end_limit = @min(text.len, max_end);
     for (brackets.defs.items) |def| {
         const candidate = if (opening) def.open else def.close;
-        if (candidate.len == 0 or pos + candidate.len > text.len) continue;
-        if (!std.mem.eql(u8, text[pos .. pos + candidate.len], candidate)) continue;
+        if (candidate.len == 0 or pos + candidate.len > end_limit) continue;
+        if (!std.ascii.eqlIgnoreCase(text[pos .. pos + candidate.len], candidate)) continue;
+        if (!wordBoundariesMatch(text, pos, candidate)) continue;
         if (best == null or candidate.len > best.?.len) best = candidate;
     }
     return best;
+}
+
+fn isWordCharacter(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
+/// Mirrors `prepareBracketForRegExp`: a delimiter starting/ending with a word
+/// character or space gets a `\b` assertion at that edge.
+fn wordBoundariesMatch(text: []const u8, pos: usize, candidate: []const u8) bool {
+    if (candidate.len == 0) return false;
+    if (isWordCharacter(candidate[0]) or candidate[0] == ' ') {
+        const previous_word = pos > 0 and isWordCharacter(text[pos - 1]);
+        if (isWordCharacter(candidate[0])) {
+            if (previous_word) return false;
+        } else {
+            if (!previous_word) return false;
+        }
+    }
+    const last = candidate[candidate.len - 1];
+    if (isWordCharacter(last) or last == ' ') {
+        const end = pos + candidate.len;
+        const next_word = end < text.len and isWordCharacter(text[end]);
+        if (isWordCharacter(last)) {
+            if (next_word) return false;
+        } else {
+            if (!next_word) return false;
+        }
+    }
+    return true;
 }
 
 fn utf8Len(text: []const u8) usize {
