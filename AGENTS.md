@@ -158,6 +158,26 @@ state that in the comment and keep the behavioral contract intact.
     detect the change later by comparing state. A terminal/browser adapter may
     replace the plumbing, but not the event flow itself.
 
+## Fixing bugs
+
+1. **Compare with upstream before changing anything.** Find the upstream file
+   named in the Zig file's header comment and read the corresponding code and
+   tests at the pinned `vscode/` commit. A reported problem is usually a
+   deviation from that code, not a missing feature.
+2. **Port the upstream behavior literally** unless the problem is specific to:
+   - the terminal UI layer (`ui/`, `src/tui/`), which replaces the browser DOM,
+     CSS and event plumbing; or
+   - the UTF-16 ↔ UTF-8 boundary (token offsets, `OnigString`, string slices).
+
+   For everything else — defaults, control flow, argument handling, event order,
+   error reporting — copy upstream, including values it leaves implicit (for
+   example a defaulted parameter that upstream passes as `true`).
+3. Do not patch the symptom locally when the upstream implementation fits. Fix
+   the ported line so the Zig code reads like the upstream code, and state any
+   unavoidable UI/UTF-16 adaptation in the file header.
+4. Add a regression test that fails before the fix. A change that only silences
+   a diagnostic without restoring the upstream behavior is not a fix.
+
 ## Faithful porting and performance ownership
 
 - Port VS Code faithfully and literally. Keep the upstream file, type, method,
