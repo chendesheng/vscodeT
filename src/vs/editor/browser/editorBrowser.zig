@@ -231,3 +231,11 @@ pub const Decoration = struct {
     /// still decides whether it has a marker color at all.
     show_in_overview_ruler: bool = true,
 };
+
+/// Turns portable `Decoration` values into model decorations. The view owner
+/// supplies the materialization (class names, colors); the editor layer only
+/// forwards ranges.
+pub const DecorationSink = struct {
+    context: ?*anyopaque = null,
+    set: ?*const fn (context: ?*anyopaque, decorations: []const Decoration) void = null,
+};
