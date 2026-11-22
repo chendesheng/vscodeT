@@ -607,6 +607,7 @@ pub const Workbench = struct {
     breadcrumbs_dirty: bool = false,
     tab_menu_pane: ?*GroupPane = null,
     tab_menu_tab: ?*Tab = null,
+    tab_overflow_tabs: ?[]*Tab = null,
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
     hovered_title_action_pane: ?*GroupPane = null,
@@ -765,6 +766,7 @@ pub const Workbench = struct {
         self.breadcrumbs_dirty = false;
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
+        self.tab_overflow_tabs = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -923,6 +925,7 @@ pub const Workbench = struct {
         self.breadcrumbs_dirty = false;
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
+        self.tab_overflow_tabs = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -1114,6 +1117,7 @@ pub const Workbench = struct {
         self.breadcrumbs_dirty = false;
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
+        self.tab_overflow_tabs = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -1735,6 +1739,10 @@ pub const Workbench = struct {
         }
         self.disposeBreadcrumbs();
         self.disposeAllInactiveBreadcrumbs();
+        if (self.tab_overflow_tabs) |tabs| {
+            self.allocator.free(tabs);
+            self.tab_overflow_tabs = null;
+        }
         if (self.home_path) |home| {
             self.allocator.free(home);
             self.home_path = null;
@@ -7337,6 +7345,53 @@ pub const Workbench = struct {
         }
     }
 
+    /// A click on the leading ellipsis lists the tabs clipped out of the strip
+    /// and activates the chosen one.
+    fn showTabOverflowMenu(self: *Workbench, pane: *GroupPane) !bool {
+        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
+        defer ordered.deinit();
+        try pane.orderedTabs(self.allocator, &ordered);
+        if (pane.hits.items.len >= ordered.items.len) return false;
+        _ = self.breadcrumbs_arena.reset(.retain_capacity);
+        const arena = self.breadcrumbs_arena.allocator();
+
+        var hidden = std.array_list.Managed(*Tab).init(self.allocator);
+        errdefer hidden.deinit();
+        for (ordered.items, 0..) |tab, index| {
+            var visible = false;
+            for (pane.hits.items) |hit| {
+                if (hit.index == index) {
+                    visible = true;
+                    break;
+                }
+            }
+            if (!visible) try hidden.append(tab);
+        }
+        if (hidden.items.len == 0) {
+            hidden.deinit();
+            return false;
+        }
+
+        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        for (hidden.items, 0..) |tab, index| {
+            try items.append(.{ .item = .{
+                .id = try std.fmt.allocPrint(arena, "overflow:{d}", .{index}),
+                .label = tab.input.getName(),
+            } });
+        }
+        if (self.tab_overflow_tabs) |old| self.allocator.free(old);
+        self.tab_overflow_tabs = try hidden.toOwnedSlice();
+        self.tab_menu_pane = pane;
+        self.tab_menu_tab = null;
+        try self.quick_access.inputService().showPick(
+            items.items,
+            .{ .placeholder = "Open Editor" },
+            onTabOverflowPick,
+            self,
+        );
+        return true;
+    }
+
     /// Terminal form of the upstream tab context menu: close/close-others/
     /// close-all/pin actions presented through the quick pick.
     pub fn showTabContextMenu(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
@@ -7938,6 +7993,9 @@ pub const Workbench = struct {
                 return true;
             }
             if (event.button != .left) return false;
+            if (pane.hits.items.len > 0 and event.x < pane.hits.items[0].start) {
+                if (self.showTabOverflowMenu(pane) catch false) return true;
+            }
             if (tab_bar.closeHitAt(pane.hits.items, event.x)) |index| {
                 if (self.orderedTabAt(pane, index)) |tab| {
                     _ = self.closeTab(pane, tab) catch {};
@@ -8651,6 +8709,7 @@ pub const Workbench = struct {
         self.breadcrumbs_dirty = false;
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
+        self.tab_overflow_tabs = null;
         return true;
     }
 
@@ -9071,6 +9130,21 @@ fn breadcrumbFocusEditor(context: *anyopaque) void {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     self.workbench.focusEditor();
     if (self.workbench.activeTab()) |tab| tab.focusEditor();
+}
+
+fn onTabOverflowPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.activeItem() orelse return;
+    const index = itemIndex(item.id, "overflow:") orelse return;
+    const tabs = self.tab_overflow_tabs orelse return;
+    self.tab_overflow_tabs = null;
+    defer self.allocator.free(tabs);
+    if (index >= tabs.len) return;
+    const pane = self.tab_menu_pane orelse return;
+    self.tab_menu_pane = null;
+    try pane.activateTab(tabs[index]);
+    self.focusEditor();
+    self.layoutAll();
 }
 
 fn onTabMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
@@ -15211,4 +15285,47 @@ test "Workbench: hover shows the marker message" {
     const rendered = try frameText(allocator, &workbench.frame);
     defer allocator.free(rendered);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "boom") != null);
+}
+
+test "Workbench: tab overflow lists clipped tabs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "overflow_a.txt", "a");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "overflow_b.txt", "b");
+    defer allocator.free(path_b);
+    const path_c = try seedFile(allocator, io, &tmp, "overflow_c.txt", "c");
+    defer allocator.free(path_c);
+    const path_d = try seedFile(allocator, io, &tmp, "overflow_d.txt", "d");
+    defer allocator.free(path_d);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b, path_c, path_d }, 28, 10);
+    defer workbench.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    try std.testing.expect(pane.hits.items.len > 0);
+    try std.testing.expect(pane.hits.items.len < pane.tabs.items.len);
+    const first_hit = pane.hits.items[0].start;
+    try std.testing.expect(first_hit > 0);
+
+    var down = ui.MouseEvent{
+        .kind = .down,
+        .x = ui.cell.snap(pane.rect.x),
+        .y = ui.cell.snap(pane.rect.y),
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+    try std.testing.expect(workbench.isQuickAccessOpen());
+    const picker = workbench.quick_access.inputService().pickerRef();
+    const hidden_name = picker.activeItem().?.label;
+
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expectEqualStrings(hidden_name, workbench.activeTab().?.input.getName());
 }

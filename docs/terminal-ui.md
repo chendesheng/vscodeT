@@ -621,7 +621,7 @@ and tab dragging are disabled while a group is expanded. There is no 1px
 active-tab top border, horizontal scrollbar, editor actions toolbar, Add Tab
 control; the tab context menu uses the terminal quick pick; duplicate labels
 append a dimmed `workbench.editor.labelFormat` description; overflow clips
-leading tabs behind an ellipsis and
+leading tabs behind a clickable ellipsis that lists them in a quick pick, and
 reveals the active tab. Preview editors come from Explorer single clicks;
 Enter/quick open/CLI/session opens stay pinned, and an edit pins a preview.
 
