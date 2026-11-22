@@ -342,8 +342,10 @@ key-input interfaces; the Vim extension registers its own key handler through
 them. The normal/insert/replace/visual character/line/block modes, counts, motions
 (`{`/`}`, `(`, `)`, `H`/`M`/`L`, `gj`/`gk`, `f`/`t`), operators, text objects, marks, macros,
 registers, undo/redo (`u`/`U`/`Ctrl-R`), visual-block `I`/`A`, dot-repeat,
-regular-expression search, the workbench editor navigation history (`Ctrl-O`/`Ctrl-I`)
-(`/`, `?`, `n`, `N`), viewport commands (`zz`/`zt`/`zb`, `Ctrl-D`/`U`) and the
+incremental regular-expression search (`/`, `?`, `n`, `N`) that previews the
+match while the prompt is typed and highlights every match with the Ctrl+F
+find-match colors, the workbench editor navigation history (`Ctrl-O`/`Ctrl-I`),
+viewport commands (`zz`/`zt`/`zb`, `Ctrl-D`/`U`) and the
 basic `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`,
 `:vsp`, `:noh`) are implemented in Zig.
 
@@ -367,7 +369,8 @@ setting. It uses the same editor-state ownership and raw key-input contract as
 Vim, but follows Helix's selection-first model: `w` selects a word, `d` acts on
 the selection, `x` selects a line, `%` selects the file, `s` selects regex
 matches, and editing commands work on every selection. The normal/insert/select
-modes, multiple selections, registers, macros, `.` repeat, search, command line,
+modes, multiple selections, registers, macros, `.` repeat, incremental search
+with find-match highlighting, command line,
 goto/match/view/window/space minor modes, linewise, surround and text-object
 operations (`mi`/`ma`), and the `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`,
 `:reload`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`, `:noh`, `:set`) are implemented

@@ -263,6 +263,9 @@ const DecorationOwner = struct {
     const hover: usize = 4;
     const search: usize = 5;
     const marker_selection: usize = 6;
+    /// Vim/Helix incremental-search highlights. Separate from the Search view
+    /// result range above, so the two never clear each other.
+    const incremental_search: usize = 7;
 };
 
 const CellFlag = struct {
@@ -816,6 +819,13 @@ pub const View = struct {
     pub const ModelDecorationSink = struct {
         model: *TextModel,
         owner: usize,
+
+        /// Sink for the vim/helix incremental-search highlights. They reuse
+        /// the find decoration kinds, so the view paints them with the same
+        /// colors as Ctrl+F.
+        pub fn incrementalSearch(model: *TextModel) ModelDecorationSink {
+            return .{ .model = model, .owner = DecorationOwner.incremental_search };
+        }
 
         pub fn context(self: *ModelDecorationSink) *anyopaque {
             return self;

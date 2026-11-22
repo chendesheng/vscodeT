@@ -64,6 +64,9 @@ pub const ITextEditor = struct {
     view_line_count_fn: *const fn (context: *anyopaque) usize,
     model_line_number_fn: *const fn (context: *anyopaque, view_line: usize) usize,
     set_message_fn: *const fn (context: *anyopaque, text: []const u8) void,
+    /// Optional. Built-in vim/helix hosts install it to paint incremental
+    /// search matches with the editor's find-match colors.
+    set_search_highlights_fn: ?*const fn (context: *anyopaque, matches: []const Range, current: ?Range) void = null,
 
     pub fn getSelections(self: ITextEditor, allocator: Allocator) ![]Selection {
         return self.get_selections_fn(self.context, allocator);
@@ -154,6 +157,12 @@ pub const ITextEditor = struct {
     }
     pub fn setMessage(self: ITextEditor, text: []const u8) void {
         self.set_message_fn(self.context, text);
+    }
+    /// Replaces the incremental-search highlights: every range in `matches`
+    /// plus the emphasized `current` match (which may be repeated in
+    /// `matches`). An empty slice clears them.
+    pub fn setSearchHighlights(self: ITextEditor, matches: []const Range, current: ?Range) void {
+        if (self.set_search_highlights_fn) |set| set(self.context, matches, current);
     }
 };
 

@@ -19,6 +19,11 @@ const IWindowService = extension_api.IWindowService;
 const ICommandService = extension_api.ICommandService;
 const KeyInputEvent = extension_api.KeyInputEvent;
 
+/// Matches highlighted while a search is active or previewed. Mirrors the find
+/// contribution's result cap so a pathological pattern cannot build an
+/// unbounded decoration list.
+const SEARCH_HIGHLIGHT_LIMIT: usize = 999;
+
 pub const Mode = enum {
     normal,
     select,
@@ -158,6 +163,9 @@ pub const HelixEngine = struct {
     search_is_regex: bool = true,
     case_mode: CaseMode = .smart,
     last_search_match: ?Range = null,
+    /// Selections when the `/` or `?` prompt opened. Incremental previews
+    /// always search from this head, and Escape restores these selections.
+    search_origin: ?[]Selection = null,
     last_selections: ArrayList(Selection),
     last_insert_text: ArrayList(u8),
     insert_buffer: ArrayList(u8),
@@ -209,6 +217,7 @@ pub const HelixEngine = struct {
         self.search_buffer.deinit();
         self.regex_buffer.deinit();
         self.last_search.deinit();
+        self.freeSearchOrigin();
         self.last_selections.deinit();
         self.last_insert_text.deinit();
         self.insert_buffer.deinit();
@@ -277,6 +286,10 @@ pub const HelixEngine = struct {
 
     pub fn resetInteractionState(self: *HelixEngine) void {
         self.resetPending();
+        if (self.mode == .search_forward or self.mode == .search_backward) {
+            self.restoreSearchOrigin() catch {};
+            self.freeSearchOrigin();
+        }
         if (self.mode == .insert) {
             self.finishInsert() catch {};
         }
@@ -954,18 +967,8 @@ pub const HelixEngine = struct {
                 self.prompt_select = self.extendMode();
                 self.mode = .command_line;
             },
-            '/' => {
-                self.search_buffer.clearRetainingCapacity();
-                self.prompt_select = self.extendMode();
-                self.mode = .search_forward;
-                self.search_forward = true;
-            },
-            '?' => {
-                self.search_buffer.clearRetainingCapacity();
-                self.prompt_select = self.extendMode();
-                self.mode = .search_backward;
-                self.search_forward = false;
-            },
+            '/' => try self.beginSearch(true),
+            '?' => try self.beginSearch(false),
             'n' => try self.searchAgain(self.takeCount(), self.search_forward),
             'N' => try self.searchAgain(self.takeCount(), !self.search_forward),
             '*' => try self.searchSelection(true, false, true),
@@ -2191,6 +2194,7 @@ pub const HelixEngine = struct {
             )});
         }
         self.editor.revealRange(range);
+        try self.refreshSearchHighlights(self.last_search.items, range);
     }
 
     fn regexSelection(self: *HelixEngine, pattern: []const u8, split: bool) !void {
@@ -2318,7 +2322,12 @@ pub const HelixEngine = struct {
         switch (event.key) {
             .escape => {
                 self.search_buffer.clearRetainingCapacity();
+                try self.restoreSearchOrigin();
+                self.freeSearchOrigin();
                 self.finishPrompt();
+                // Helix restores the previous pattern's highlights; the
+                // abandoned preview must not keep them.
+                try self.refreshCommittedHighlight();
             },
             .enter => {
                 const forward = self.mode == .search_forward;
@@ -2329,9 +2338,16 @@ pub const HelixEngine = struct {
                 self.finishPrompt();
                 self.recordJump();
                 self.last_search_match = null;
+                // Commit from the prompt-start selections so searchAgain does
+                // not skip the previewed match.
+                try self.restoreSearchOrigin();
+                self.freeSearchOrigin();
                 try self.searchAgain(1, forward);
             },
-            .backspace => removeLastCodepoint(&self.search_buffer),
+            .backspace => {
+                removeLastCodepoint(&self.search_buffer);
+                try self.updateSearchPreview();
+            },
             .char => |char| {
                 if (event.mods.ctrl) {
                     switch (char) {
@@ -2339,17 +2355,141 @@ pub const HelixEngine = struct {
                         'w' => removeLastWord(&self.search_buffer),
                         else => {},
                     }
+                    try self.updateSearchPreview();
                     return true;
                 }
                 if (event.mods.alt) return true;
                 var buffer: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(char, &buffer) catch return false;
                 try self.search_buffer.appendSlice(buffer[0..len]);
+                try self.updateSearchPreview();
             },
-            .text => |text| try self.search_buffer.appendSlice(text),
+            .text => |text| {
+                try self.search_buffer.appendSlice(text);
+                try self.updateSearchPreview();
+            },
             else => return false,
         }
         return true;
+    }
+
+    fn beginSearch(self: *HelixEngine, forward: bool) !void {
+        self.freeSearchOrigin();
+        self.search_origin = try self.getSelections();
+        self.search_buffer.clearRetainingCapacity();
+        self.prompt_select = self.extendMode();
+        self.search_forward = forward;
+        self.mode = if (forward) .search_forward else .search_backward;
+    }
+
+    fn freeSearchOrigin(self: *HelixEngine) void {
+        if (self.search_origin) |origin| self.allocator.free(origin);
+        self.search_origin = null;
+    }
+
+    fn restoreSearchOrigin(self: *HelixEngine) !void {
+        const origin = self.search_origin orelse return;
+        try self.setSelections(origin);
+    }
+
+    /// Helix previews search results live: every prompt edit moves the
+    /// selection to the match (or, in select mode, extends to it) and
+    /// highlights all matches with the find-match colors.
+    fn updateSearchPreview(self: *HelixEngine) !void {
+        const origin = self.search_origin orelse return;
+        if (self.search_buffer.items.len == 0) {
+            try self.setSelections(origin);
+            try self.refreshCommittedHighlight();
+            return;
+        }
+
+        const model = self.editor.model;
+        const forward = self.mode == .search_forward;
+        const pattern = self.search_buffer.items;
+        const match_case = self.matchCase(pattern);
+        const head = if (origin.len > 0) origin[0].getPosition() else Position.init(1, 1);
+
+        var match = if (forward)
+            try model.findNextMatch(pattern, head, self.search_is_regex, match_case, null, false)
+        else
+            try model.findPreviousMatch(pattern, head, self.search_is_regex, match_case, null, false);
+        if (match == null) {
+            const wrap = if (forward)
+                Position.init(1, 1)
+            else
+                Position.init(model.getLineCount(), model.getLineMaxColumn(model.getLineCount()));
+            match = if (forward)
+                try model.findNextMatch(pattern, wrap, self.search_is_regex, match_case, null, false)
+            else
+                try model.findPreviousMatch(pattern, wrap, self.search_is_regex, match_case, null, false);
+        }
+
+        const found = match orelse {
+            try self.setSelections(origin);
+            self.editor.setSearchHighlights(&.{}, null);
+            return;
+        };
+
+        const selection = Selection.init(
+            found.range.startLineNumber,
+            found.range.startColumn,
+            found.range.endLineNumber,
+            found.range.endColumn,
+        );
+        if (self.prompt_select) {
+            var combined = ArrayList(Selection).init(self.allocator);
+            defer combined.deinit();
+            try combined.appendSlice(origin);
+            try combined.append(selection);
+            try self.setNormalizedSelections(combined.items);
+        } else {
+            try self.setSelections(&[_]Selection{selection});
+        }
+        self.editor.revealRange(found.range);
+        try self.refreshSearchHighlights(pattern, found.range);
+    }
+
+    /// Repaints the highlights for the committed pattern and current match.
+    fn refreshCommittedHighlight(self: *HelixEngine) !void {
+        try self.refreshSearchHighlights(self.last_search.items, self.last_search_match);
+    }
+
+    /// Highlights every match of `pattern` with the find-match colors and
+    /// `current` with the current-find-match color, exactly like Ctrl+F.
+    fn refreshSearchHighlights(self: *HelixEngine, pattern: []const u8, current: ?Range) !void {
+        if (pattern.len == 0) {
+            self.editor.setSearchHighlights(&.{}, null);
+            return;
+        }
+
+        var matches = try self.editor.model.findMatches(
+            pattern,
+            null,
+            self.search_is_regex,
+            self.matchCase(pattern),
+            null,
+            false,
+            SEARCH_HIGHLIGHT_LIMIT,
+        );
+        defer {
+            for (matches.items) |*match| match.free(self.allocator);
+            matches.deinit();
+        }
+
+        var ranges = ArrayList(Range).init(self.allocator);
+        defer ranges.deinit();
+        for (matches.items) |match| try ranges.append(match.range);
+        if (current) |range| {
+            var included = false;
+            for (ranges.items) |match| {
+                if (Range.equalsRange(match, range)) {
+                    included = true;
+                    break;
+                }
+            }
+            if (!included) try ranges.append(range);
+        }
+        self.editor.setSearchHighlights(ranges.items, current);
     }
 
     fn handleRegexInput(self: *HelixEngine, event: *const KeyInputEvent) !bool {
@@ -2460,6 +2600,7 @@ pub const HelixEngine = struct {
         } else if (std.mem.eql(u8, command, "noh")) {
             self.last_search.clearRetainingCapacity();
             self.last_search_match = null;
+            self.editor.setSearchHighlights(&.{}, null);
         } else if (std.mem.eql(u8, command, "$")) {
             try self.gotoPosition(self.firstNonBlank(self.editor.model.getLineCount()), self.extendMode());
         } else if (std.mem.eql(u8, command, "set ignorecase")) {
@@ -3554,6 +3695,8 @@ pub const HelixEngine = struct {
         self.command_buffer.clearRetainingCapacity();
         self.search_buffer.clearRetainingCapacity();
         self.regex_buffer.clearRetainingCapacity();
+        try self.restoreSearchOrigin();
+        self.freeSearchOrigin();
         self.prompt_select = false;
         self.minor_select = false;
         self.resetPending();

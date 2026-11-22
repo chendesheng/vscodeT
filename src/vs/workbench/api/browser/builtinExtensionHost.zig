@@ -161,6 +161,7 @@ pub fn editorInterface(editor: *Editor) ITextEditor {
         .view_line_count_fn = editorViewLineCount,
         .model_line_number_fn = editorModelLineNumber,
         .set_message_fn = editorSetMessage,
+        .set_search_highlights_fn = editorSetSearchHighlights,
     };
 }
 
@@ -300,6 +301,10 @@ fn editorModelLineNumber(context: *anyopaque, view_line: usize) usize {
 
 fn editorSetMessage(context: *anyopaque, text: []const u8) void {
     editorFrom(context).setMessage("{s}", .{text});
+}
+
+fn editorSetSearchHighlights(context: *anyopaque, matches: []const Range, current: ?Range) void {
+    editorFrom(context).setSearchHighlights(matches, current);
 }
 
 fn activeTextEditor(context: *anyopaque) ?ITextEditor {

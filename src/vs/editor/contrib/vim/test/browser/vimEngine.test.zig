@@ -6,12 +6,15 @@ const extension_api = @import("../../../../../workbench/api/common/extensionApi.
 const builtin_host = @import("../../../../../workbench/api/browser/builtinExtensionHost.zig");
 const VimEngine = @import("../../browser/vimEngine.zig").VimEngine;
 const Position = @import("../../../../common/core/position.zig").Position;
+const Range = @import("../../../../common/core/range.zig").Range;
 const Selection = @import("../../../../common/core/selection.zig").Selection;
+const editorBrowser = @import("../../../../browser/editorBrowser.zig");
 
 const Harness = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
     engine: *VimEngine,
+    highlights: HighlightRecorder,
     commands: CommandState,
     window: WindowState,
     history: HistoryState,
@@ -33,10 +36,12 @@ const Harness = struct {
             .allocator = allocator,
             .editor = editor,
             .engine = undefined,
+            .highlights = HighlightRecorder.init(allocator),
             .commands = .{},
             .window = .{},
             .history = .{},
         };
+        editor.setSearchHighlightSink(.{ .context = &self.highlights, .set = HighlightRecorder.set });
         self.engine = try VimEngine.init(
             allocator,
             builtin_host.editorInterface(editor),
@@ -50,9 +55,21 @@ const Harness = struct {
 
     fn deinit(self: *Harness) void {
         self.engine.deinit();
+        self.highlights.deinit();
         self.editor.deinit();
         self.allocator.destroy(self.editor);
         self.allocator.destroy(self);
+    }
+
+    fn highlightCount(self: *Harness) usize {
+        return self.highlights.decorations.items.len;
+    }
+
+    fn currentHighlight(self: *Harness) ?Range {
+        for (self.highlights.decorations.items) |decoration| {
+            if (decoration.kind == .current_find_match) return decoration.range;
+        }
+        return null;
     }
 
     fn send(self: *Harness, key: ui.Key) !void {
@@ -83,6 +100,26 @@ const Harness = struct {
         const text = try self.value();
         defer self.allocator.free(text);
         try std.testing.expectEqualStrings(expected, text);
+    }
+};
+
+/// Captures the decorations the engine pushes through the editor's search
+/// highlight sink, mirroring what the TUI view would paint.
+const HighlightRecorder = struct {
+    decorations: std.array_list.Managed(editorBrowser.Decoration),
+
+    fn init(allocator: std.mem.Allocator) HighlightRecorder {
+        return .{ .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator) };
+    }
+
+    fn deinit(self: *HighlightRecorder) void {
+        self.decorations.deinit();
+    }
+
+    fn set(context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void {
+        const self: *HighlightRecorder = @ptrCast(@alignCast(context orelse return));
+        self.decorations.clearRetainingCapacity();
+        self.decorations.appendSlice(decorations) catch {};
     }
 };
 
@@ -326,6 +363,92 @@ test "Vim: n advances through repeated search matches" {
     try std.testing.expectEqual(@as(usize, 9), h.editor.modelCursorPosition().column);
     try h.sendChar('n');
     try std.testing.expectEqual(@as(usize, 1), h.editor.modelCursorPosition().column);
+}
+
+test "Vim: incremental search previews matches and Escape restores the cursor" {
+    const h = try Harness.init(std.testing.allocator, "alpha beta alpha");
+    defer h.deinit();
+
+    try h.sendChar('/');
+    try h.sendText("alp");
+    try std.testing.expectEqual(Position.init(1, 12), h.editor.modelCursorPosition());
+    try std.testing.expectEqual(@as(usize, 2), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 12, 1, 15), h.currentHighlight().?);
+
+    // The preview searches from the prompt-start cursor, not from the
+    // previewed match, so extending the pattern keeps the first match.
+    try h.sendText("ha");
+    try std.testing.expectEqual(Position.init(1, 12), h.editor.modelCursorPosition());
+    try std.testing.expectEqual(@as(usize, 2), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 12, 1, 17), h.currentHighlight().?);
+
+    try h.send(.escape);
+    try std.testing.expectEqual(Position.init(1, 1), h.editor.modelCursorPosition());
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+}
+
+test "Vim: committed search highlights all matches and n moves the current match" {
+    const h = try Harness.init(std.testing.allocator, "foo foo foo");
+    defer h.deinit();
+
+    try h.sendChar('/');
+    try h.sendText("foo");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 3), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 5, 1, 8), h.currentHighlight().?);
+
+    try h.sendChar('n');
+    try std.testing.expectEqual(Range.init(1, 9, 1, 12), h.currentHighlight().?);
+
+    try h.sendChar('N');
+    try std.testing.expectEqual(Range.init(1, 5, 1, 8), h.currentHighlight().?);
+
+    try h.sendChar(':');
+    try h.sendText("noh");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+}
+
+test "Vim: incremental search backspace and no match" {
+    const h = try Harness.init(std.testing.allocator, "abcabc");
+    defer h.deinit();
+
+    try h.sendChar('/');
+    try h.sendText("bc");
+    try std.testing.expectEqual(Position.init(1, 2), h.editor.modelCursorPosition());
+    try std.testing.expectEqual(@as(usize, 2), h.highlightCount());
+
+    try h.send(.backspace);
+    try std.testing.expectEqual(Position.init(1, 2), h.editor.modelCursorPosition());
+
+    try h.send(.backspace);
+    try std.testing.expectEqual(Position.init(1, 1), h.editor.modelCursorPosition());
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+
+    try h.sendText("zzz");
+    try std.testing.expectEqual(Position.init(1, 1), h.editor.modelCursorPosition());
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+}
+
+test "Vim: starred search highlights every occurrence" {
+    const h = try Harness.init(std.testing.allocator, "foo bar foo");
+    defer h.deinit();
+
+    try h.sendChar('*');
+    try std.testing.expectEqual(@as(usize, 2), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 9, 1, 12), h.currentHighlight().?);
+}
+
+test "Vim: counted search commits to the counted match" {
+    const h = try Harness.init(std.testing.allocator, "foo foo foo");
+    defer h.deinit();
+
+    try h.sendChar('2');
+    try h.sendChar('/');
+    try h.sendText("foo");
+    try h.send(.enter);
+    try std.testing.expectEqual(Position.init(1, 9), h.editor.modelCursorPosition());
+    try std.testing.expectEqual(Range.init(1, 9, 1, 12), h.currentHighlight().?);
 }
 
 test "Vim: f and ; repeat a character search" {

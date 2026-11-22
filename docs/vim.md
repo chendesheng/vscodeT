@@ -75,8 +75,15 @@ Normal/edit:
 
 Command surface:
 
-- `/`, `?`, `n`, `N` regular-expression search through the editor model;
-  `:set regex`/`:set noregex` selects regex or literal matching.
+- `/`, `?` incremental search through the editor model. While the prompt is
+  edited, the cursor previews the first match after the prompt-start cursor and
+  every match is highlighted with the Ctrl+F find-match colors (`incsearch` +
+  `hlsearch`). `Enter` commits the pattern (a count before `/`/`?` commits to
+  the count-th match), `Esc` restores the cursor and the previous pattern's
+  highlights. `n`, `N` move through matches and move the current-match
+  emphasis; `:noh` clears the highlights; `*`/`#` highlight every occurrence
+  of the word under the cursor. `:set regex`/`:set noregex` selects regex or
+  literal matching.
 - `:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`, `:noh`,
   `:set ignorecase`/`:set noignorecase`, line jumps and `:$`.
 - `gd`, `gD`, `gh`, `gO`, `gf`, `Ctrl-]`.

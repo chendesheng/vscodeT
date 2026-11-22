@@ -19,6 +19,11 @@ const IWindowService = extension_api.IWindowService;
 const ICommandService = extension_api.ICommandService;
 const KeyInputEvent = extension_api.KeyInputEvent;
 
+/// Matches highlighted while a search is active or previewed. Mirrors the find
+/// contribution's result cap so a pathological pattern cannot build an
+/// unbounded decoration list.
+const SEARCH_HIGHLIGHT_LIMIT: usize = 999;
+
 pub const Mode = enum {
     normal,
     insert,
@@ -106,6 +111,12 @@ pub const VimEngine = struct {
     search_forward: bool = true,
     search_is_regex: bool = true,
     last_search_match: ?Range = null,
+    /// Cursor position when the `/` or `?` prompt opened. Incremental previews
+    /// always search from here, and Escape restores it.
+    search_origin: ?Position = null,
+    /// Count typed before `/` or `?` (`3/foo`), applied when the search is
+    /// committed.
+    search_count: usize = 1,
     last_visual: ?LastVisual = null,
     last_insert_position: ?Position = null,
     line_undo: ?LineUndo = null,
@@ -779,16 +790,8 @@ pub const VimEngine = struct {
                 self.command_buffer.clearRetainingCapacity();
                 self.mode = .command_line;
             },
-            '/' => {
-                self.search_buffer.clearRetainingCapacity();
-                self.mode = .search_forward;
-                self.search_forward = true;
-            },
-            '?' => {
-                self.search_buffer.clearRetainingCapacity();
-                self.mode = .search_backward;
-                self.search_forward = false;
-            },
+            '/' => self.beginSearch(true),
+            '?' => self.beginSearch(false),
             'n' => {
                 self.recordJump();
                 try self.searchAgain(self.takeCount(), self.search_forward);
@@ -1485,8 +1488,12 @@ pub const VimEngine = struct {
     fn handleSearchInput(self: *VimEngine, event: *const KeyInputEvent) !bool {
         switch (event.key) {
             .escape => {
+                try self.cancelSearchPreview();
                 self.mode = .normal;
                 self.search_buffer.clearRetainingCapacity();
+                // Vim restores the previous pattern's hlsearch, not the
+                // abandoned preview.
+                try self.refreshCommittedHighlight();
             },
             .enter => {
                 const forward = self.mode == .search_forward;
@@ -1496,22 +1503,142 @@ pub const VimEngine = struct {
                 }
                 self.mode = .normal;
                 self.recordJump();
+                // Search from the pre-prompt cursor so the committed match is
+                // the one that was previewed (or the count-th one).
+                try self.restoreSearchOrigin();
+                self.search_origin = null;
+                const count = self.search_count;
+                self.search_count = 1;
                 self.last_search_match = null;
-                try self.searchAgain(1, forward);
+                try self.searchAgain(count, forward);
             },
             .backspace => {
                 if (self.search_buffer.items.len > 0) self.search_buffer.items.len -= 1;
+                try self.updateSearchPreview();
             },
-            .text => |text| try self.search_buffer.appendSlice(text),
+            .text => |text| {
+                try self.search_buffer.appendSlice(text);
+                try self.updateSearchPreview();
+            },
             .char => |char| {
                 if (event.mods.ctrl) return false;
                 var buffer: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(char, &buffer) catch return false;
                 try self.search_buffer.appendSlice(buffer[0..len]);
+                try self.updateSearchPreview();
             },
             else => return false,
         }
         return true;
+    }
+
+    fn beginSearch(self: *VimEngine, forward: bool) void {
+        self.search_origin = self.editor.cursorPosition();
+        self.search_count = self.takeCount();
+        self.search_buffer.clearRetainingCapacity();
+        self.search_forward = forward;
+        self.mode = if (forward) .search_forward else .search_backward;
+    }
+
+    fn restoreSearchOrigin(self: *VimEngine) !void {
+        const origin = self.search_origin orelse return;
+        try self.editor.setCursor(origin);
+        try self.editor.clampNormal();
+        self.editor.revealRange(Range.init(origin.lineNumber, origin.column, origin.lineNumber, origin.column));
+    }
+
+    fn cancelSearchPreview(self: *VimEngine) !void {
+        try self.restoreSearchOrigin();
+        self.search_origin = null;
+        self.search_count = 1;
+    }
+
+    /// Vim's `incsearch`: while the prompt is edited, move the cursor to the
+    /// first match after the pre-search cursor and highlight every match of
+    /// the pattern being typed. An empty pattern or no match restores the
+    /// cursor and the committed highlights.
+    fn updateSearchPreview(self: *VimEngine) !void {
+        const origin = self.search_origin orelse return;
+        if (self.search_buffer.items.len == 0) {
+            try self.restoreSearchOrigin();
+            try self.refreshCommittedHighlight();
+            return;
+        }
+
+        const model = self.editor.model;
+        const forward = self.mode == .search_forward;
+        const pattern = self.search_buffer.items;
+        const match_case = !self.ignore_case;
+        const from = if (forward) try self.afterPosition(origin) else try self.leftPosition(origin, 1);
+
+        var match = if (forward)
+            try model.findNextMatch(pattern, from, self.search_is_regex, match_case, null, false)
+        else
+            try model.findPreviousMatch(pattern, from, self.search_is_regex, match_case, null, false);
+        if (match == null) {
+            const wrap_position = if (forward)
+                Position.init(1, 1)
+            else
+                Position.init(model.getLineCount(), model.getLineMaxColumn(model.getLineCount()));
+            match = if (forward)
+                try model.findNextMatch(pattern, wrap_position, self.search_is_regex, match_case, null, false)
+            else
+                try model.findPreviousMatch(pattern, wrap_position, self.search_is_regex, match_case, null, false);
+        }
+
+        const found = match orelse {
+            try self.restoreSearchOrigin();
+            self.editor.setSearchHighlights(&.{}, null);
+            return;
+        };
+
+        try self.editor.setCursor(found.range.startPosition());
+        try self.editor.clampNormal();
+        self.editor.revealRange(found.range);
+        try self.refreshSearchHighlights(pattern, self.search_is_regex, found.range);
+    }
+
+    /// Repaints the highlights for the committed pattern and current match.
+    fn refreshCommittedHighlight(self: *VimEngine) !void {
+        try self.refreshSearchHighlights(self.last_search.items, self.search_is_regex, self.last_search_match);
+    }
+
+    /// Highlights every match of `pattern` with the find-match colors and
+    /// `current` with the current-find-match color, exactly like Ctrl+F.
+    fn refreshSearchHighlights(self: *VimEngine, pattern: []const u8, is_regex: bool, current: ?Range) !void {
+        if (pattern.len == 0) {
+            self.editor.setSearchHighlights(&.{}, null);
+            return;
+        }
+
+        var matches = try self.editor.model.findMatches(
+            pattern,
+            null,
+            is_regex,
+            !self.ignore_case,
+            null,
+            false,
+            SEARCH_HIGHLIGHT_LIMIT,
+        );
+        defer {
+            for (matches.items) |*match| match.free(self.allocator);
+            matches.deinit();
+        }
+
+        var ranges = ArrayList(Range).init(self.allocator);
+        defer ranges.deinit();
+        for (matches.items) |match| try ranges.append(match.range);
+        if (current) |range| {
+            var included = false;
+            for (ranges.items) |match| {
+                if (Range.equalsRange(match, range)) {
+                    included = true;
+                    break;
+                }
+            }
+            if (!included) try ranges.append(range);
+        }
+        self.editor.setSearchHighlights(ranges.items, current);
     }
 
     fn executeCommandLine(self: *VimEngine) !void {
@@ -1538,6 +1665,8 @@ pub const VimEngine = struct {
             _ = try self.commands.execute("workbench.action.splitEditorOrthogonal");
         } else if (std.mem.eql(u8, command, "noh")) {
             self.last_search.clearRetainingCapacity();
+            self.last_search_match = null;
+            self.editor.setSearchHighlights(&.{}, null);
         } else if (std.mem.eql(u8, command, "$")) {
             try self.editor.setCursor(self.firstNonBlank(self.editor.model.getLineCount()));
         } else if (std.mem.eql(u8, command, "set ignorecase")) {
@@ -1619,6 +1748,7 @@ pub const VimEngine = struct {
         try self.editor.setCursor(range.startPosition());
         try self.clampNormal();
         self.editor.revealRange(range);
+        try self.refreshSearchHighlights(self.last_search.items, self.search_is_regex, range);
     }
 
     fn gotoLine(self: *VimEngine, line: usize) !void {
@@ -2441,6 +2571,11 @@ pub const VimEngine = struct {
     /// editor is about to apply.
     pub fn resetInteractionState(self: *VimEngine) void {
         self.resetPending();
+        if (self.mode == .search_forward or self.mode == .search_backward) {
+            self.search_origin = null;
+            self.search_count = 1;
+            self.search_buffer.clearRetainingCapacity();
+        }
         if (self.mode == .visual or self.mode == .visual_line or self.mode == .visual_block) self.mode = .normal;
     }
 

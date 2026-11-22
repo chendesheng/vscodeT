@@ -16,6 +16,7 @@ const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
 const Selection = @import("../../../common/core/selection.zig").Selection;
+const editorBrowser = @import("../../editorBrowser.zig");
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
 const bracket_pairs_tree = @import("../../../common/model/bracketPairsTextModelPart/bracketPairsTree/bracketPairsTree.zig");
@@ -700,6 +701,10 @@ pub const Editor = struct {
     /// Find controller hooks, installed by the per-tab controllers.
     find_context: ?*anyopaque = null,
     find_start_fn: ?*const fn (context: *anyopaque, replace: bool) anyerror!void = null,
+    /// Sink for the vim/helix incremental-search highlights, installed by the
+    /// view owner. The editor forwards portable ranges; only the sink knows
+    /// class names and colors.
+    search_highlight_sink: ?editorBrowser.DecorationSink = null,
     json_client: ?*json_language.Client = null,
     json_uri: ?[]u8 = null,
     json_version: u32 = 0,
@@ -1043,6 +1048,45 @@ pub const Editor = struct {
     ) void {
         self.find_context = context;
         self.find_start_fn = start_fn;
+    }
+
+    /// Installs the sink that paints vim/helix incremental-search matches.
+    /// `null` detaches it when the owning tab is destroyed.
+    pub fn setSearchHighlightSink(self: *Editor, sink: ?editorBrowser.DecorationSink) void {
+        self.search_highlight_sink = sink;
+    }
+
+    /// Replaces the incremental-search highlights. `matches` reuse the
+    /// find-match decoration kind and `current` the current-find-match kind,
+    /// so both modal engines paint with the same colors as Ctrl+F. An empty
+    /// slice clears the highlights.
+    pub fn setSearchHighlights(self: *Editor, matches: []const Range, current: ?Range) void {
+        const sink = self.search_highlight_sink orelse return;
+        const set = sink.set orelse return;
+
+        var decorations = ArrayList(editorBrowser.Decoration).init(self.allocator);
+        defer decorations.deinit();
+        decorations.ensureTotalCapacity(matches.len + 1) catch {
+            set(sink.context, &.{});
+            return;
+        };
+        for (matches) |range| {
+            decorations.appendAssumeCapacity(.{
+                .range = range,
+                .kind = if (Range.equalsRange(range, current)) .current_find_match else .find_match,
+            });
+        }
+        if (current) |range| {
+            var included = false;
+            for (matches) |match| {
+                if (Range.equalsRange(match, range)) {
+                    included = true;
+                    break;
+                }
+            }
+            if (!included) decorations.appendAssumeCapacity(.{ .range = range, .kind = .current_find_match });
+        }
+        set(sink.context, decorations.items);
     }
 
     fn ensureShortcutKeybindings(self: *Editor) !void {

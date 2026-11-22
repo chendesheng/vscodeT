@@ -686,7 +686,9 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
 /// single-editor app so the find/hover/word/suggest behavior is identical.
 pub const Controllers = struct {
     allocator: Allocator,
+    editor: *Editor,
     find_sink: View.ModelDecorationSink,
+    search_highlight_sink: View.ModelDecorationSink,
     hover_sink: View.ModelDecorationSink,
     word_sink: View.ModelDecorationSink,
 
@@ -766,9 +768,16 @@ pub const Controllers = struct {
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
+        self.editor = editor;
         self.hover_registration = null;
 
         self.find_sink = .{ .model = editor.model, .owner = 1 };
+        self.search_highlight_sink = View.ModelDecorationSink.incrementalSearch(editor.model);
+        editor.setSearchHighlightSink(.{
+            .context = self.search_highlight_sink.context(),
+            .set = View.ModelDecorationSink.set,
+        });
+        errdefer editor.setSearchHighlightSink(null);
         self.find = try FindController.init(allocator, editor, .{
             .context = self.find_sink.context(),
             .set = View.ModelDecorationSink.set,
@@ -877,6 +886,8 @@ pub const Controllers = struct {
     }
 
     pub fn deinit(self: *Controllers) void {
+        // The sink context points at this controller; detach before it dies.
+        self.editor.setSearchHighlightSink(null);
         self.view.removeConfigurationListener(.{ .context = self, .notify = onStickyConfigurationChanged });
         self.sticky.deinit();
         if (self.hover_registration) |registration| registration.dispose();
