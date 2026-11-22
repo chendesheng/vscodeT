@@ -169,6 +169,9 @@ Small commits, each with a regression test:
     now match upstream basenames.
 37. `a4a12d4` ported the annotations visual test suite (set/intersect/edit/
     rebase).
+38. `79abc90` split `ast.ts` and `parser.ts` out of the merged tree.
+39. `9454db5` completed the nine-case before-edit position mapper suite.
+40. `ae139c9` ported the `getBracketPairsInRange` Basic All case.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -177,13 +180,15 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 ### High
 
 - **Bracket-pair core is a merged reimplementation.** `bracketPairsTree.zig`
-  still carries `ast.ts`/`parser.ts`/`bracketPairsTree.ts` in one file and has no `concat23Trees`,
-  streaming `TextBufferTokenizer`/`FastTokenizer`, or two-tree mode
+  keeps the `bracketPairsTree.ts` query/document logic in one file and has
+  no upstream `concat23Trees` (the parser uses `buildList`), streaming
+  `TextBufferTokenizer`/`FastTokenizer`, or two-tree mode
   (`initialAstWithoutTokens`/`astWithTokens`). Queries use flat sorted lists
   for pair APIs, so many operations remain O(document) and incremental
   parses deep-clone cached nodes. Delimiter matching (case folding, word
-  boundaries, token clamping) is now ported. See findings F9/F15 for the
-  staged split plan.
+  boundaries, token clamping) and the upstream module split for `ast`,
+  `brackets`, `length`, `parser`, `smallImmutableSet` and `tokenizer` are
+  done. See findings F9/F15 for the remaining plan.
 - **Piece-tree public APIs still have byte/UTF-16 and safety gaps.**
   `getLineCharCode`/`getCharCode` are byte accessors next to the codepoint
   helpers; `getNearestChunk` returns a borrowed slice into mutable buffers;
@@ -236,9 +241,9 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   `brackets`, `concat23Trees`, full `getBracketPairsInRange`,
   `tokenizer`; most of `pieceTreeTextBuffer.test.ts` (CRLF/random and
   snapshot suites partly ported); `textModelTokens.test.ts`,
-  `editableTextModel*.test.ts`, `model*.test.ts`; the remaining mapper
-  cases and the anchor/simple/multiline/find-next/capturing parts of
-  `textModelSearch.test.ts` are ported.
+  `editableTextModel*.test.ts`, `model*.test.ts`. The before-edit mapper
+  suite, annotations suite, and the anchor/simple/multiline/find-next/
+  capturing portions of `textModelSearch.test.ts` are ported.
 - Dead/malformed declarations that only compile because they are never
   analyzed: `rbTreeBase.TreeNode.iterate`, `intervalTree` font bit,
   `model.zig` `initModelDecorationOptionsDefaults`.
@@ -256,7 +261,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3065 tests, 19 skipped; the only observed
+The full suite currently passes (3072 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
