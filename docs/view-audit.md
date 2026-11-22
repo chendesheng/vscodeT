@@ -225,17 +225,17 @@ For each row:
 - Added the Close to the Right tab action with a context-menu test.
 - Added Split Right/Down tab actions that activate the captured tab before
   splitting, with a context-menu test.
-- Added the Close Saved tab action with a context-menu test.
+- Added the Close Saved tab action with a context-menu test, including keeping
+  dirty tabs open.
 
 ## Next slice
 
-Group 1, in this order:
+All listed rows have a verdict and evidence; no `Pending audit` or `M` rows
+remain. The remaining work is the recorded **P** gaps:
 
-1. Find & replace overlay.
-2. Gutter / margin / line numbers / glyph margin / decorations / folding.
-3. Status bar.
-4. Tab bar / title control.
-5. Breadcrumbs.
+1. Tab control-layer variants, actions/toolbar and sticky rows.
+2. The remaining workbench/content **P** gaps.
+3. The remaining editor-contribution **P** gaps (suggest/hover/diff/snippet).
 
-Each row is audited before code changes, then fixed in a small commit with
-tests and the corresponding ledger update.
+Each fix lands in a small commit with tests and the corresponding ledger
+update.
