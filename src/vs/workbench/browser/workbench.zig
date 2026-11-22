@@ -4557,6 +4557,20 @@ pub const Workbench = struct {
         return self.findBoolSetting("editor.find.addExtraSpaceOnTop", true);
     }
 
+    fn findSeedSearchStringFromSelection(self: *Workbench) @import("../../editor/contrib/find/browser/findController.zig").SeedSearchString {
+        const configuration = self.configuration orelse return .always;
+        const value = configuration.getValue("editor.find.seedSearchStringFromSelection", .{}) orelse return .always;
+        return switch (value.*) {
+            .string => |text| if (std.mem.eql(u8, text, "never"))
+                .never
+            else if (std.mem.eql(u8, text, "selection"))
+                .selection
+            else
+                .always,
+            else => .always,
+        };
+    }
+
     fn findOnType(self: *Workbench) bool {
         return self.findBoolSetting("editor.find.findOnType", true);
     }
@@ -8645,6 +8659,7 @@ pub const Workbench = struct {
                 const widget = controllers.find.widget();
                 widget.setFindOnType(self.findOnType());
                 widget.setCloseOnResult(self.findCloseOnResult());
+                controllers.find.setSeedSearchStringFromSelection(self.findSeedSearchStringFromSelection());
                 controllers.find.state.loop = self.findLoop();
             }
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);

@@ -15,7 +15,8 @@
 // TUI-specific: the key map (documented in the README), the cell layout, and
 // the absence of the browser sash and accessibility tree. Find and replace
 // input histories are kept host-side and navigated with Up/Down.
-// `findOnType`, `closeOnResult` and `loop` are host-resolved options. The browser
+// `findOnType`, `closeOnResult`, `loop` and `seedSearchStringFromSelection`
+// are host-resolved options. The browser
 // `FindWidgetViewZone` becomes a terminal top inset: while the bar is visible
 // and `editor.find.addExtraSpaceOnTop` is enabled, the editor reserves the
 // bar's 1-2 rows above line 1 and shifts text/hit testing below it.

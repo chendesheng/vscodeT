@@ -23,10 +23,13 @@ pub const DecorationSink = struct {
     set: ?*const fn (context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void = null,
 };
 
+pub const SeedSearchString = enum { never, always, selection };
+
 pub const FindController = struct {
     allocator: Allocator,
     editor: *Editor,
     state: *FindReplaceState,
+    seed_search_string_from_selection: SeedSearchString = .always,
     model: *FindModel,
     find_widget: *FindWidget,
     sink: DecorationSink,
@@ -106,6 +109,10 @@ pub const FindController = struct {
         }
     }
 
+    pub fn setSeedSearchStringFromSelection(self: *FindController, mode: SeedSearchString) void {
+        self.seed_search_string_from_selection = mode;
+    }
+
     pub fn open(self: *FindController, replace: bool) !void {
         if (self.state.is_revealed) {
             if (replace) {
@@ -126,16 +133,28 @@ pub const FindController = struct {
             self.model.getDecorations().setStartPosition(selection.getStartPosition());
         }
 
-        if (!selection.isEmpty() and selection.startLineNumber == selection.endLineNumber) {
-            const text = try self.editor.model.getValueInRange(.{
-                .startLineNumber = selection.startLineNumber,
-                .startColumn = selection.startColumn,
-                .endLineNumber = selection.endLineNumber,
-                .endColumn = selection.endColumn,
-            }, null);
-            defer text.deinit();
-            if (text.items.len > 0 and text.items.len <= 200) {
-                try self.find_widget.find_input.setValue(text.items);
+        if (self.state.search_string.len == 0 and
+            self.seed_search_string_from_selection != .never)
+        {
+            if (!selection.isEmpty() and selection.startLineNumber == selection.endLineNumber) {
+                const text = try self.editor.model.getValueInRange(.{
+                    .startLineNumber = selection.startLineNumber,
+                    .startColumn = selection.startColumn,
+                    .endLineNumber = selection.endLineNumber,
+                    .endColumn = selection.endColumn,
+                }, null);
+                defer text.deinit();
+                if (text.items.len > 0 and text.items.len <= 200) {
+                    try self.find_widget.find_input.setValue(text.items);
+                }
+            } else if (selection.isEmpty() and self.seed_search_string_from_selection == .always) {
+                if (self.editor.model.getWordAtPosition(selection.getStartPosition())) |word_value| {
+                    var word = word_value;
+                    defer word.deinit();
+                    if (word.word.items.len > 0 and word.word.items.len <= 200) {
+                        try self.find_widget.find_input.setValue(word.word.items);
+                    }
+                }
             }
         }
 
