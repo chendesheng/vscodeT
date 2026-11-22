@@ -222,7 +222,7 @@ For each row:
   testing, tightening the **P** evidence.
 - Promoted the named-view verdicts after the recent fixes: gutter **F**,
   status bar **T** (tooltip pin/aux context menu are browser-only) and
-  breadcrumbs **T** (editor-type/drop/outline sibling picker are browser-only).
+  breadcrumbs **T** (editor-type dropdown and drag/drop are browser-only).
 - Added `workbench.editor.tabSizing` fit/shrink/fixed support with a tab-width
   test.
 - Added the Close to the Right tab action with a context-menu test.

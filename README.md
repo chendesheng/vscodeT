@@ -580,25 +580,28 @@ console API for raw mode, sizing and input polling.
   uses `breadcrumb.activeSelectionForeground`, and separators inherit
   `breadcrumb.foreground`; files outside the workspace under `$HOME` get a
   `~` root segment; the widget also exposes the upstream
-  `onDidSelectItem`/`onDidFocusItem`/`onDidChangeFocus` events. The terminal
-  picker adds a `..` parent entry after
-  drilling into a folder, and workspace roots follow the upstream
-  multi-root/single-folder rule.
-  Clicking a folder or file opens an anchored terminal popup under the segment
-  with the directory's children; selecting a folder drills into it, `..` walks
-  up, and selecting a file opens it. Clicking a symbol opens the same popup
-  with the symbol's siblings, and selecting one reveals it. This replaces the
-  earlier quick-pick fallback, matching upstream's context-view tree picker.
+  `onDidSelectItem`/`onDidFocusItem`/`onDidChangeFocus` events. Workspace roots
+  follow the upstream multi-root/single-folder rule and the out-of-workspace
+  `~` root segment is retained.
+  Clicking a folder or file opens an anchored terminal tree under the segment.
+  It is the ported `BreadcrumbsFilePicker` over the shared `AsyncDataTree`:
+  directories expand and collapse inline with the Explorer's twistie behavior,
+  lazy-loading their children, and a file activates on Enter. Clicking a symbol
+  opens the ported `BreadcrumbsOutlinePicker` over the same outline tree,
+  revealing the clicked element. This replaces the earlier quick-pick fallback;
+  the only terminal substitution is the anchored cell overlay in place of the
+  browser context view.
   Symbol segments are supplied by the ported `IOutlineService`/`IOutline`
   plumbing. The real TypeScript extension registers a document-symbol provider
   for TS/JS files; other languages still show only the file path until an
   extension provider is registered. `Ctrl+Shift+.` focuses/selects the last
   segment and `Ctrl+Shift+;` focuses it; Left/Right navigate, Enter/Down opens
-  the popup, Space reveals and Escape returns to the editor. Terminal
+  the tree, Space reveals and Escape returns to the editor. Terminal
   substitutions: the browser chevron/codicon is `>`, the file icon theme is the
-  Explorer's Nerd Font file icon, the tree picker is a bordered cell popup with
-  a box-drawing frame, and overflow clips leading segments behind an ellipsis
-  instead of a horizontal scrollbar. The editor-type dropdown, breadcrumb
+  Explorer's Nerd Font file icon, the context view is an anchored cell overlay
+  with a box-drawing frame, and overflow clips leading segments behind an
+  ellipsis instead of a horizontal scrollbar. The editor-type dropdown,
+  breadcrumb
   drag-and-drop, tab context menus/actions toolbar and the symbol-kind filters
   are not ported.
 - A terminal Explorer sidebar (`src/vs/workbench/contrib/files/browser/views/explorerView.zig`) sits left of the editor

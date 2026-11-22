@@ -37,56 +37,62 @@ test "breadcrumbsPicker: input directory and sorted children" {
     try std.testing.expectEqualStrings("b.txt", entries[1].name);
 }
 
-test "breadcrumbsPicker: popup lists items, navigates and accepts" {
+test "breadcrumbsPicker: file tree expands folders inline" {
     const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
     const ui = @import("ui");
-    const Popup = picker.Popup;
-    const PopupItem = picker.PopupItem;
+    const file_icon = @import("../../../../browser/fileIcon.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "picker");
+    try tmp.dir.createDirPath(io, "picker/a-dir");
+    var nested = try tmp.dir.createFile(io, "picker/a-dir/nested.txt", .{});
+    nested.close(io);
+    var file = try tmp.dir.createFile(io, "picker/b.txt", .{});
+    file.close(io);
+
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &path_buffer);
+    const root = try std.fs.path.join(allocator, &.{ path_buffer[0..root_len], "picker" });
+    defer allocator.free(root);
 
     const State = struct {
-        var accepted: ?[]const u8 = null;
-        var closed: usize = 0;
-        fn accept(_: *anyopaque, item: *const PopupItem) !void {
-            accepted = item.id;
+        var opened: usize = 0;
+        fn open(_: *anyopaque, _: []const u8) !void {
+            opened += 1;
         }
-        fn close(_: *anyopaque) void {
-            closed += 1;
+        fn icon(_: *anyopaque, path: []const u8) file_icon.Icon {
+            return file_icon.forPath(path);
         }
+        fn render(_: *anyopaque) void {}
     };
-    State.accepted = null;
-    State.closed = 0;
     var context: u8 = 0;
-    const popup = try Popup.init(allocator);
-    defer popup.deinit();
-    popup.on_accept_context = @ptrCast(&context);
-    popup.on_accept = State.accept;
-    popup.on_close_context = @ptrCast(&context);
-    popup.on_close = State.close;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const file_picker = try picker.FilePicker.init(allocator, .{
+        .context = @ptrCast(&context),
+        .io = io,
+        .arena = arena.allocator(),
+        .open_file = State.open,
+        .file_icon = State.icon,
+        .request_render = State.render,
+    });
+    defer file_picker.deinit();
 
-    const items = [_]PopupItem{
-        .{ .id = "f:/tmp/a.zig", .label = "a.zig", .kind = .file },
-        .{ .id = "d:/tmp/src", .label = "src", .kind = .folder, .description = "folder" },
-    };
-    try popup.open(&items, 3, 1, "d:/tmp/src");
-    try std.testing.expect(popup.isVisible());
-    try std.testing.expectEqual(@as(usize, 1), popup.selectedIndex().?);
-    try std.testing.expectEqualStrings("d:/tmp/src", popup.selectedItem().?.id);
+    try file_picker.showDirectory(root, null);
+    try std.testing.expectEqual(@as(usize, 2), file_picker.count());
+    const folder = file_picker.tree.renderedItem(0).?;
+    try std.testing.expect(folder.is_dir);
+    file_picker.tree.setSelectionElement(folder);
+    try std.testing.expect(file_picker.handleKey(&.{ .key = .right }));
+    try std.testing.expectEqual(@as(usize, 3), file_picker.count());
 
     var grid = try ui.CellGrid.init(allocator, 40, 12);
     defer grid.deinit();
-    try popup.render(&grid);
-    try std.testing.expect(ui.cell.snap(popup.rect.w) > 3);
+    try file_picker.render(&grid);
+    try std.testing.expect(ui.cell.snap(file_picker.rect.w) > 3);
 
-    var up = ui.KeyEvent{ .key = .up };
-    try std.testing.expect(popup.handleKey(&up));
-    try std.testing.expectEqual(@as(usize, 0), popup.selectedIndex().?);
-    var enter = ui.KeyEvent{ .key = .enter };
-    try std.testing.expect(popup.handleKey(&enter));
-    try std.testing.expectEqualStrings("f:/tmp/a.zig", State.accepted.?);
-
-    // A click outside closes the context-view popup.
-    var outside = ui.MouseEvent{ .kind = .down, .x = 0, .y = 11, .button = .left };
-    try std.testing.expect(popup.handleMouse(&outside));
-    try std.testing.expect(!popup.isVisible());
-    try std.testing.expectEqual(@as(usize, 1), State.closed);
+    try std.testing.expect(file_picker.handleKey(&.{ .key = .left }));
+    try std.testing.expectEqual(@as(usize, 2), file_picker.count());
 }

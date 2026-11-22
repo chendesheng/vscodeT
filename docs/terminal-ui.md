@@ -693,15 +693,16 @@ them; a file segment starts with the Explorer's Nerd Font file icon (glyph and
 color), while folder segments have no icon, matching upstream's `hideIcon`;
 focused/selected items are underlined and white, hovered items brighten,
 and long paths drop leading items behind `…`. A directory/file click opens an
-anchored cell popup under the clicked item (the browser context-view tree
-picker). The popup lists the directory's immediate children, `..` walks up,
-folders drill in and files open; a symbol segment lists the symbol's siblings
-and reveals the selected one. Popup navigation is `Up`/`Down`/`Home`/`End`,
-`Enter` activates and `Escape` or a click outside closes it. A symbol click or
-`Space` calls `IOutline.reveal`. Focus navigation in the bar is
-`Left`/`Right`, `Enter`/`Down` opens the popup, `Space` reveals and `Escape`
-returns to the editor. `Ctrl+Shift+.` and `Ctrl+Shift+;` focus the bar; some
-terminals do not deliver those combinations.
+anchored cell overlay under the clicked item (the terminal replacement for the
+browser context view). The overlay hosts the ported `BreadcrumbsFilePicker` /
+`BreadcrumbsOutlinePicker` `AsyncDataTree`s, so directories and nested symbols
+expand and collapse inline with the Explorer's twistie behavior and lazy
+directory loading. `Left`/`Right` collapse/expand the selected node,
+`Up`/`Down`/`Home`/`End` navigate, `Enter` activates and `Escape` or a click
+outside closes it. A symbol click or `Space` calls `IOutline.reveal`. Focus
+navigation in the bar is `Left`/`Right`, `Enter`/`Down` opens the tree,
+`Space` reveals and `Escape` returns to the editor. `Ctrl+Shift+.` and
+`Ctrl+Shift+;` focus the bar; some terminals do not deliver those combinations.
 
 Symbol segments require an `IOutlineCreator` registered with the ported
 `OutlineService`. The built-in TypeScript extension and the JSON language

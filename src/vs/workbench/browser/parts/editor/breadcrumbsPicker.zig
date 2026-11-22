@@ -1,16 +1,17 @@
 // Port of the portable file-picker decisions of
 // `src/vs/workbench/browser/parts/editor/breadcrumbsPicker.ts`.
 //
-// Upstream `BreadcrumbsFilePicker` is a tree inside a context view: selecting
-// a breadcrumb opens the tree at the clicked element's parent directory and
-// focuses the clicked element. This file keeps those decisions and the
-// immediate-children/sort rules; the terminal workbench maps the entries to the
-// existing quick pick. The outline picker's tree/quick-pick sources are not
-// ported because the TUI ships no document-symbol provider yet.
+// Upstream `BreadcrumbsFilePicker` and `BreadcrumbsOutlinePicker` are trees in
+// an anchored context view. This file ports both tree pipelines: the file
+// picker uses `AsyncDataTree` with an `IAsyncDataSource` over directory
+// children, and the outline picker uses `AsyncDataTree` over the outline tree
+// snapshot. Expansion, selection, navigation and activation come from the
+// ported tree, not a parallel row list.
 //
-// Terminal adaptations: `IFileService.resolve` becomes a direct `Io.Dir`
-// iteration; a folder selection drills into the folder by reopening the picker
-// instead of expanding a tree row.
+// Terminal adaptations: `IFileService.resolve` becomes direct `Io.Dir`
+// iteration with synchronous children; the browser context view is replaced by
+// an anchored cell overlay because the terminal has no DOM/CSS context view.
+// The tree behavior and data flow stay upstream-shaped.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -125,238 +126,172 @@ test "breadcrumb picker: parent directory stops at the root" {
 
 const ui = @import("ui");
 const list_mod = @import("../../../../base/browser/ui/list/list.zig");
-const list_widget_mod = @import("../../../../base/browser/ui/list/listWidget.zig");
-const ListWidget = list_widget_mod.ListWidget;
 const theme_colors_mod = @import("../../themeColors.zig");
 const file_icon_mod = @import("../../fileIcon.zig");
 
-pub const PopupItemKind = enum { file, folder, symbol, parent, group };
+// ---------------------------------------------------------------------------
+// Terminal breadcrumb pickers
+//
+// Port of `BreadcrumbsFilePicker` and `BreadcrumbsOutlinePicker` from
+// `breadcrumbsPicker.ts`. Both upstream classes use a workbench data tree in an
+// anchored context view. The terminal replaces the DOM context view with an
+// anchored cell overlay, but keeps the tree pipeline: `AsyncDataTree` for the
+// file picker (lazy directory children) and `AsyncDataTree` over the outline
+// tree snapshot for symbols. Expansion, selection, keyboard navigation and
+// activation are the ported tree's behavior, not a parallel flat-list model.
+// ---------------------------------------------------------------------------
 
-pub const PopupItem = struct {
-    /// Stable action id; the workbench owns the string behind it.
-    id: []const u8,
-    label: []const u8,
-    description: []const u8 = "",
-    kind: PopupItemKind = .file,
-    icon: ?file_icon_mod.Icon = null,
+const async_tree_mod = @import("../../../../base/browser/ui/tree/asyncDataTree.zig");
+const outline_mod = @import("../../../services/outline/browser/outline.zig");
+const goto_symbol = @import("../../../contrib/codeEditor/browser/quickaccess/gotoSymbolQuickAccess.zig");
+const markerSeverity = @import("../../../../platform/markers/common/markers.zig").MarkerSeverity;
+
+pub const FileNode = struct {
+    path: []const u8,
+    name: []const u8,
+    is_dir: bool,
 };
 
-pub const Popup = struct {
+pub const FileInput = union(enum) {
+    workspace: void,
+    directory: []const u8,
+};
+
+pub const FolderRef = struct {
+    path: []const u8,
+    name: []const u8,
+};
+
+pub const FileHost = struct {
+    context: *anyopaque,
+    io: Io,
+    /// Strings/nodes created by the data source live in this arena, which the
+    /// workbench resets when a new picker opens.
+    arena: Allocator,
+    open_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
+    file_icon: *const fn (context: *anyopaque, path: []const u8) file_icon_mod.Icon,
+    request_render: *const fn (context: *anyopaque) void,
+};
+
+pub const OutlineHost = struct {
+    context: *anyopaque,
+    arena: Allocator,
+    reveal: *const fn (context: *anyopaque, outline: *outline_mod.IOutline, element: *anyopaque) anyerror!void,
+    request_render: *const fn (context: *anyopaque) void,
+};
+
+const FileTree = async_tree_mod.AsyncDataTree(FileInput, *const FileNode);
+const OutlineTree = async_tree_mod.AsyncDataTree(*outline_mod.IOutline, *const outline_mod.TreeElement);
+
+pub const FilePicker = struct {
     allocator: Allocator,
-    items: std.array_list.Managed(PopupItem),
-    list: ListWidget,
-    visible: bool = false,
+    host: FileHost,
+    tree: *FileTree,
+    folders: []const FolderRef = &.{},
     anchor_x: usize = 0,
     anchor_y: usize = 0,
     rect: ui.Rect = .{},
+    visible: bool = false,
     theme: ?*const theme_colors_mod.ThemeColors = null,
-    on_accept_context: ?*anyopaque = null,
-    on_accept: ?*const fn (context: *anyopaque, item: *const PopupItem) anyerror!void = null,
-    on_close_context: ?*anyopaque = null,
-    on_close: ?*const fn (context: *anyopaque) void = null,
 
-    pub fn init(allocator: Allocator) !*Popup {
-        const self = try allocator.create(Popup);
+    pub fn init(allocator: Allocator, host: FileHost) !*FilePicker {
+        const self = try allocator.create(FilePicker);
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
-            .items = std.array_list.Managed(PopupItem).init(allocator),
-            .list = ListWidget.init(allocator, .{
-                .context = @ptrCast(self),
-                .get_height = rowHeight,
-                .get_template_id = rowTemplate,
-            }, .{
-                .context = @ptrCast(self),
-                .render = renderRow,
-            }),
+            .host = host,
+            .tree = undefined,
         };
-        self.list.on_activate = activate;
-        self.list.activation_context = self;
-        self.list.on_selection = selectionChanged;
-        self.list.selection_context = self;
+        self.tree = try FileTree.init(allocator, "BreadcrumbsFilePicker", .{
+            .context = @ptrCast(self),
+            .has_children = fileHasChildren,
+            .get_children = fileGetChildren,
+        }, .{
+            .context = @ptrCast(self),
+            .render = renderFileRow,
+        }, .{
+            .compression_enabled = false,
+            .indent = 2,
+        });
+        self.tree.setActivateHandler(self, fileActivate);
         return self;
     }
 
-    pub fn deinit(self: *Popup) void {
-        self.list.deinit();
-        self.items.deinit();
+    pub fn deinit(self: *FilePicker) void {
+        self.tree.deinit();
         self.allocator.destroy(self);
     }
 
-    pub fn setThemeColors(self: *Popup, palette: ?*const theme_colors_mod.ThemeColors) void {
+    pub fn setThemeColors(self: *FilePicker, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme = palette;
     }
 
-    pub fn isVisible(self: *const Popup) bool {
+    pub fn isVisible(self: *const FilePicker) bool {
         return self.visible;
     }
 
-    /// Replaces the items and anchors the popup under `(anchor_x, anchor_y)`
-    /// (the clicked breadcrumb cell). `active_id` focuses the clicked element.
-    pub fn open(
-        self: *Popup,
-        items: []const PopupItem,
-        anchor_x: usize,
-        anchor_y: usize,
-        active_id: ?[]const u8,
-    ) !void {
-        self.items.clearRetainingCapacity();
-        try self.items.appendSlice(items);
-        var elements = std.array_list.Managed(list_mod.Element).init(self.allocator);
-        defer elements.deinit();
-        for (self.items.items) |*item| try elements.append(@ptrCast(item));
-        try self.list.replaceAll(elements.items);
-        self.list.setSelection(null);
-        if (active_id) |id| {
-            for (self.items.items, 0..) |item, index| {
-                if (std.mem.eql(u8, item.id, id)) {
-                    self.list.setSelection(index);
-                    break;
-                }
-            }
-        }
-        if (self.list.selection() == null and self.items.items.len > 0) self.list.setSelection(0);
-        self.list.setFocus(true);
-        self.anchor_x = anchor_x;
-        self.anchor_y = anchor_y;
+    pub fn showWorkspace(self: *FilePicker, folders: []const FolderRef, focus_path: ?[]const u8) !void {
+        self.folders = folders;
+        _ = try self.tree.setInput(.{ .workspace = {} });
+        self.finishShow(focus_path);
+    }
+
+    pub fn showDirectory(self: *FilePicker, directory: []const u8, focus_path: ?[]const u8) !void {
+        self.folders = &.{};
+        _ = try self.tree.setInput(.{ .directory = directory });
+        self.finishShow(focus_path);
+    }
+
+    fn finishShow(self: *FilePicker, focus_path: ?[]const u8) void {
+        self.tree.setFocus(true);
+        if (focus_path) |path| self.selectPath(path);
         self.visible = true;
     }
 
-    pub fn close(self: *Popup) void {
+    pub fn close(self: *FilePicker) void {
         if (!self.visible) return;
         self.visible = false;
-        self.list.clearHover();
-        if (self.on_close) |callback| callback(self.on_close_context orelse return);
+        self.tree.setFocus(false);
+        self.tree.clearHover();
     }
 
-    pub fn selectedItem(self: *const Popup) ?*const PopupItem {
-        const index = self.list.selection() orelse return null;
-        if (index >= self.items.items.len) return null;
-        return &self.items.items[index];
+    pub fn count(self: *const FilePicker) usize {
+        return self.tree.count();
     }
 
-    pub fn itemCount(self: *const Popup) usize {
-        return self.items.items.len;
+    pub fn selectedPath(self: *const FilePicker) ?[]const u8 {
+        const element = self.tree.selectionElement() orelse return null;
+        return element.path;
     }
 
-    pub fn selectedIndex(self: *const Popup) ?usize {
-        return self.list.selection();
-    }
-
-    fn colors(self: *const Popup) struct {
-        background: ui.Color,
-        foreground: ui.Color,
-        dim: ui.Color,
-        selection_background: ui.Color,
-        hover_background: ui.Color,
-        border: ui.Color,
-    } {
-        const palette = self.theme orelse return .{
-            .background = .{ .r = 37, .g = 37, .b = 38 },
-            .foreground = .{ .r = 204, .g = 204, .b = 204 },
-            .dim = .{ .r = 150, .g = 150, .b = 150 },
-            .selection_background = .{ .r = 4, .g = 57, .b = 94 },
-            .hover_background = .{ .r = 42, .g = 45, .b = 46 },
-            .border = .{ .r = 69, .g = 69, .b = 69 },
-        };
-        return .{
-            .background = palette.colorOr("breadcrumbsPicker.background", palette.color("menu.background", .{ 37, 37, 38 })),
-            .foreground = palette.color("menu.foreground", .{ 204, 204, 204 }),
-            .dim = palette.color("descriptionForeground", .{ 150, 150, 150 }),
-            .selection_background = palette.color("list.activeSelectionBackground", .{ 4, 57, 94 }),
-            .hover_background = palette.color("list.hoverBackground", .{ 42, 45, 46 }),
-            .border = palette.color("widget.border", .{ 69, 69, 69 }),
-        };
-    }
-
-    fn computeLayout(self: *Popup, cols: usize, rows: usize) ui.Rect {
-        var content_width: usize = 24;
-        for (self.items.items) |item| {
-            const label_width = textWidth(item.label);
-            const desc_width = if (item.description.len > 0) textWidth(item.description) + 2 else 0;
-            const icon_width: usize = if (item.icon != null) 2 else 0;
-            content_width = @max(content_width, label_width + desc_width + icon_width + 4);
+    fn selectPath(self: *FilePicker, path: []const u8) void {
+        for (0..self.tree.count()) |index| {
+            const element = self.tree.renderedItem(index) orelse continue;
+            if (std.mem.eql(u8, element.path, path)) {
+                self.tree.setSelectionElement(element);
+                return;
+            }
         }
-        const width = @min(@max(content_width, 20), cols);
-        const max_height = @max(@min(rows -| 2, 12), 1);
-        const content_height = @min(self.items.items.len, max_height);
-        const height = @min(content_height + 2, rows);
-        var x = self.anchor_x;
-        if (x + width > cols) x = cols -| width;
-        var y = self.anchor_y + 1;
-        if (y + height > rows) y = self.anchor_y -| height;
-        if (y + height > rows) y = rows -| height;
-        self.rect = .{
-            .x = @floatFromInt(x),
-            .y = @floatFromInt(y),
-            .w = @floatFromInt(width),
-            .h = @floatFromInt(height),
-        };
-        return self.rect;
     }
 
-    pub fn render(self: *Popup, grid: *ui.CellGrid) !void {
+    pub fn render(self: *FilePicker, grid: *ui.CellGrid) !void {
         if (!self.visible) return;
-        const rect = self.computeLayout(grid.cols, grid.rows);
-        const x = ui.cell.snap(rect.x);
-        const y = ui.cell.snap(rect.y);
-        const width = ui.cell.snap(rect.w);
-        const height = ui.cell.snap(rect.h);
-        if (width < 3 or height < 3) return;
-        const palette = self.colors();
-        const background = ui.cell.PaintStyle{ .bg = ui.cell.packColor(palette.background), .fg = ui.cell.packColor(palette.foreground) };
-        const border = ui.cell.PaintStyle{ .bg = ui.cell.packColor(palette.background), .fg = ui.cell.packColor(palette.border) };
-        grid.fillRect(rect.x, rect.y, rect.w, rect.h, background);
-        grid.clearBordersRect(rect.x, rect.y, rect.w, rect.h);
-        // Box border. The arrow cell points back to the breadcrumb row.
-        grid.putCodepoint(x, y, 0x250C, 1, border);
-        grid.putCodepoint(x + width - 1, y, 0x2510, 1, border);
-        grid.putCodepoint(x, y + height - 1, 0x2514, 1, border);
-        grid.putCodepoint(x + width - 1, y + height - 1, 0x2518, 1, border);
-        var col: usize = 1;
-        while (col + 1 < width) : (col += 1) {
-            grid.putCodepoint(x + col, y, 0x2500, 1, border);
-            grid.putCodepoint(x + col, y + height - 1, 0x2500, 1, border);
-        }
-        var row: usize = 1;
-        while (row + 1 < height) : (row += 1) {
-            grid.putCodepoint(x, y + row, 0x2502, 1, border);
-            grid.putCodepoint(x + width - 1, y + row, 0x2502, 1, border);
-        }
-        var arrow_offset = self.anchor_x -| x;
-        arrow_offset = @min(arrow_offset, width - 2);
-        grid.putCodepoint(x + arrow_offset, y, 0x25B2, 1, border);
-
-        const inner = ui.Rect{
-            .x = @floatFromInt(x + 1),
-            .y = @floatFromInt(y + 1),
-            .w = @floatFromInt(width - 2),
-            .h = @floatFromInt(height - 2),
-        };
-        self.list.render(grid, inner);
+        self.rect = overlayRect(self.anchor_x, self.anchor_y, grid.cols, grid.rows);
+        if (ui.cell.snap(self.rect.w) < 3 or ui.cell.snap(self.rect.h) < 3) return;
+        renderOverlayFrame(grid, self.rect, self.theme);
+        self.tree.render(grid, innerRect(self.rect));
     }
 
-    pub fn handleKey(self: *Popup, event: *const ui.KeyEvent) bool {
+    pub fn handleKey(self: *FilePicker, event: *const ui.KeyEvent) bool {
         if (!self.visible) return false;
-        switch (event.key) {
-            .escape => {
-                self.close();
-                return true;
-            },
-            .enter => {
-                if (self.selectedItem()) |item| {
-                    if (self.on_accept) |callback| callback(self.on_accept_context orelse return true, item) catch {};
-                }
-                return true;
-            },
-            else => {
-                _ = self.list.handleKey(event);
-                return true;
-            },
+        if (event.key == .escape) {
+            self.close();
+            return true;
         }
+        return self.tree.handleKey(event);
     }
 
-    pub fn handleMouse(self: *Popup, event: *const ui.MouseEvent) bool {
+    pub fn handleMouse(self: *FilePicker, event: *const ui.MouseEvent) bool {
         if (!self.visible) return false;
         const x = ui.cell.snap(self.rect.x);
         const y = ui.cell.snap(self.rect.y);
@@ -367,95 +302,514 @@ pub const Popup = struct {
             if (event.kind == .down or event.kind == .click) self.close();
             return true;
         }
-        if (event.kind == .move) {
-            _ = self.list.handleMouse(event);
-            return true;
-        }
-        if (event.kind == .wheel) {
-            _ = self.list.handleMouse(event);
-            return true;
-        }
-        if (event.kind == .down or event.kind == .click) {
-            const handled = self.list.handleMouse(event);
-            if (handled) {
-                if (self.selectedItem()) |item| {
-                    if (self.on_accept) |callback| callback(self.on_accept_context orelse return true, item) catch {};
-                }
-            }
-            return true;
-        }
-        return self.list.handleMouse(event);
-    }
-
-    fn rowHeight(_: *anyopaque, _: list_mod.Element) f64 {
-        return 1;
-    }
-
-    fn rowTemplate(_: *anyopaque, _: list_mod.Element) usize {
-        return 0;
-    }
-
-    fn renderRow(context: *anyopaque, row: *const list_mod.Row, element: list_mod.Element) void {
-        const self: *Popup = @ptrCast(@alignCast(context));
-        const item: *const PopupItem = @ptrCast(@alignCast(element));
-        const palette = self.colors();
-        var bg = palette.background;
-        var fg = palette.foreground;
-        if (row.selected) {
-            bg = palette.selection_background;
-            fg = .{ .r = 255, .g = 255, .b = 255 };
-        } else if (row.hovered) {
-            bg = palette.hover_background;
-        }
-        const base = ui.cell.PaintStyle{ .fg = ui.cell.packColor(fg), .bg = ui.cell.packColor(bg) };
-        row.grid.fillRect(@floatFromInt(row.x), @floatFromInt(row.y), @floatFromInt(row.width), 1, base);
-        var col = row.x;
-        const limit = row.x + row.width;
-        if (col < limit) {
-            const icon = item.icon orelse if (item.kind == .folder)
-                file_icon_mod.folder(false)
-            else if (item.kind == .parent)
-                file_icon_mod.folder(false)
-            else
-                null;
-            if (icon) |value| {
-                row.grid.putCodepoint(col, row.y, value.glyph, 1, .{
-                    .fg = ui.cell.packColor(value.color),
-                    .bg = ui.cell.packColor(bg),
-                });
-                col += 1;
-                if (col < limit) {
-                    row.grid.putCodepoint(col, row.y, ' ', 1, base);
-                    col += 1;
-                }
-            } else if (item.kind == .symbol) {
-                row.grid.putCodepoint(col, row.y, 0x25C7, 1, base);
-                col += 1;
-                if (col < limit) {
-                    row.grid.putCodepoint(col, row.y, ' ', 1, base);
-                    col += 1;
+        const handled = self.tree.handleMouse(event);
+        if ((event.kind == .down or event.kind == .click) and handled) {
+            if (self.tree.selectionElement()) |node| {
+                if (node.is_dir) {
+                    const depth = self.tree.selectionDepth() orelse 0;
+                    const twistie_x = x + 1 + depth * 2;
+                    if (event.x == twistie_x) _ = self.tree.toggleCollapsed(node, false);
                 }
             }
         }
-        const label_width = drawTextClipped(row.grid, col, row.y, limit -| col, item.label, base);
-        col += label_width;
-        if (item.description.len > 0 and col + 1 < limit) {
+        return true;
+    }
+};
+
+pub const OutlinePicker = struct {
+    allocator: Allocator,
+    host: OutlineHost,
+    tree: *OutlineTree,
+    outline: ?*outline_mod.IOutline = null,
+    anchor_x: usize = 0,
+    anchor_y: usize = 0,
+    rect: ui.Rect = .{},
+    visible: bool = false,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
+
+    pub fn init(allocator: Allocator, host: OutlineHost) !*OutlinePicker {
+        const self = try allocator.create(OutlinePicker);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .allocator = allocator,
+            .host = host,
+            .tree = undefined,
+        };
+        self.tree = try OutlineTree.init(allocator, "BreadcrumbsOutlinePicker", .{
+            .context = @ptrCast(self),
+            .has_children = outlineHasChildren,
+            .get_children = outlineGetChildren,
+        }, .{
+            .context = @ptrCast(self),
+            .render = renderOutlineRow,
+        }, .{
+            .compression_enabled = false,
+            .indent = 2,
+        });
+        self.tree.setActivateHandler(self, outlineActivate);
+        return self;
+    }
+
+    pub fn deinit(self: *OutlinePicker) void {
+        self.tree.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn setThemeColors(self: *OutlinePicker, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+    }
+
+    pub fn isVisible(self: *const OutlinePicker) bool {
+        return self.visible;
+    }
+
+    pub fn show(self: *OutlinePicker, outline: *outline_mod.IOutline, element: *anyopaque) !void {
+        self.outline = outline;
+        _ = try self.tree.setInput(outline);
+        const source = outline.config.tree_data_source orelse {
+            self.tree.setFocus(true);
+            self.visible = true;
+            return;
+        };
+        const roots = source.get_roots(source.context);
+        const target = findElementInTree(roots, element) orelse {
+            self.tree.setFocus(true);
+            self.visible = true;
+            return;
+        };
+        const target_element = findTreeElementById(roots, target.id) orelse {
+            self.tree.setFocus(true);
+            self.visible = true;
+            return;
+        };
+        const path = try outlinePath(self.allocator, roots, target.id);
+        defer self.allocator.free(path);
+        for (path[0..path.len -| 1]) |ancestor| {
+            _ = self.tree.expand(ancestor, false);
+        }
+        self.tree.setSelectionElement(target_element);
+        self.tree.setFocus(true);
+        self.visible = true;
+    }
+
+    pub fn close(self: *OutlinePicker) void {
+        if (!self.visible) return;
+        self.visible = false;
+        self.tree.setFocus(false);
+        self.tree.clearHover();
+        self.outline = null;
+    }
+
+    pub fn count(self: *const OutlinePicker) usize {
+        return self.tree.count();
+    }
+
+    pub fn selectedLabel(self: *const OutlinePicker) ?[]const u8 {
+        const element = self.tree.selectionElement() orelse return null;
+        return element.label;
+    }
+
+    pub fn render(self: *OutlinePicker, grid: *ui.CellGrid) !void {
+        if (!self.visible) return;
+        self.rect = overlayRect(self.anchor_x, self.anchor_y, grid.cols, grid.rows);
+        if (ui.cell.snap(self.rect.w) < 3 or ui.cell.snap(self.rect.h) < 3) return;
+        renderOverlayFrame(grid, self.rect, self.theme);
+        self.tree.render(grid, innerRect(self.rect));
+    }
+
+    pub fn handleKey(self: *OutlinePicker, event: *const ui.KeyEvent) bool {
+        if (!self.visible) return false;
+        if (event.key == .escape) {
+            self.close();
+            return true;
+        }
+        return self.tree.handleKey(event);
+    }
+
+    pub fn handleMouse(self: *OutlinePicker, event: *const ui.MouseEvent) bool {
+        if (!self.visible) return false;
+        const x = ui.cell.snap(self.rect.x);
+        const y = ui.cell.snap(self.rect.y);
+        const width = ui.cell.snap(self.rect.w);
+        const height = ui.cell.snap(self.rect.h);
+        const inside = event.x >= x and event.x < x + width and event.y >= y and event.y < y + height;
+        if (!inside) {
+            if (event.kind == .down or event.kind == .click) self.close();
+            return true;
+        }
+        const handled = self.tree.handleMouse(event);
+        if ((event.kind == .down or event.kind == .click) and handled) {
+            if (self.tree.selectionElement()) |node| {
+                if (node.children.len > 0) {
+                    const depth = self.tree.selectionDepth() orelse 0;
+                    const twistie_x = x + 1 + depth * 2;
+                    if (event.x == twistie_x) _ = self.tree.toggleCollapsed(node, false);
+                }
+            }
+        }
+        return true;
+    }
+};
+
+/// Terminal shell around the two upstream picker classes. It owns one tree at a
+/// time; the workbench routes keys, mouse and rendering through it.
+pub const Picker = struct {
+    allocator: Allocator,
+    file: ?*FilePicker = null,
+    outline: ?*OutlinePicker = null,
+    file_host: FileHost,
+    outline_host: OutlineHost,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
+
+    pub fn init(allocator: Allocator, file_host: FileHost, outline_host: OutlineHost) !*Picker {
+        const self = try allocator.create(Picker);
+        self.* = .{
+            .allocator = allocator,
+            .file_host = file_host,
+            .outline_host = outline_host,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *Picker) void {
+        if (self.file) |picker| picker.deinit();
+        if (self.outline) |picker| picker.deinit();
+        self.file = null;
+        self.outline = null;
+        self.allocator.destroy(self);
+    }
+
+    pub fn setThemeColors(self: *Picker, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+        if (self.file) |picker| picker.setThemeColors(palette);
+        if (self.outline) |picker| picker.setThemeColors(palette);
+    }
+
+    pub fn showFileWorkspace(self: *Picker, folders: []const FolderRef, focus_path: ?[]const u8, anchor_x: usize, anchor_y: usize) !void {
+        self.closeOutline();
+        if (self.file == null) {
+            self.file = try FilePicker.init(self.allocator, self.file_host);
+            self.file.?.setThemeColors(self.theme);
+        }
+        self.file.?.anchor_x = anchor_x;
+        self.file.?.anchor_y = anchor_y;
+        try self.file.?.showWorkspace(folders, focus_path);
+    }
+
+    pub fn showFileDirectory(self: *Picker, directory: []const u8, focus_path: ?[]const u8, anchor_x: usize, anchor_y: usize) !void {
+        self.closeOutline();
+        if (self.file == null) {
+            self.file = try FilePicker.init(self.allocator, self.file_host);
+            self.file.?.setThemeColors(self.theme);
+        }
+        self.file.?.anchor_x = anchor_x;
+        self.file.?.anchor_y = anchor_y;
+        try self.file.?.showDirectory(directory, focus_path);
+    }
+
+    pub fn showOutline(self: *Picker, outline: *outline_mod.IOutline, element: *anyopaque, anchor_x: usize, anchor_y: usize) !void {
+        self.closeFile();
+        if (self.outline == null) {
+            self.outline = try OutlinePicker.init(self.allocator, self.outline_host);
+            self.outline.?.setThemeColors(self.theme);
+        }
+        self.outline.?.anchor_x = anchor_x;
+        self.outline.?.anchor_y = anchor_y;
+        try self.outline.?.show(outline, element);
+    }
+
+    pub fn isVisible(self: *const Picker) bool {
+        if (self.file) |picker| if (picker.isVisible()) return true;
+        if (self.outline) |picker| if (picker.isVisible()) return true;
+        return false;
+    }
+
+    pub fn close(self: *Picker) void {
+        self.closeFile();
+        self.closeOutline();
+    }
+
+    fn closeFile(self: *Picker) void {
+        if (self.file) |picker| picker.close();
+    }
+
+    fn closeOutline(self: *Picker) void {
+        if (self.outline) |picker| picker.close();
+    }
+
+    pub fn render(self: *Picker, grid: *ui.CellGrid) !void {
+        if (self.file) |picker| if (picker.isVisible()) return picker.render(grid);
+        if (self.outline) |picker| if (picker.isVisible()) return picker.render(grid);
+    }
+
+    pub fn handleKey(self: *Picker, event: *const ui.KeyEvent) bool {
+        if (self.file) |picker| if (picker.isVisible()) return picker.handleKey(event);
+        if (self.outline) |picker| if (picker.isVisible()) return picker.handleKey(event);
+        return false;
+    }
+
+    pub fn handleMouse(self: *Picker, event: *const ui.MouseEvent) bool {
+        if (self.file) |picker| if (picker.isVisible()) return picker.handleMouse(event);
+        if (self.outline) |picker| if (picker.isVisible()) return picker.handleMouse(event);
+        return false;
+    }
+};
+
+fn fileHasChildren(_: *anyopaque, node: *const FileNode) bool {
+    return node.is_dir;
+}
+
+fn fileGetChildren(context: *anyopaque, element: async_tree_mod.DataElement(FileInput, *const FileNode)) async_tree_mod.Children(*const FileNode) {
+    const self: *FilePicker = @ptrCast(@alignCast(context));
+    var result = std.array_list.Managed(*const FileNode).init(self.host.arena);
+    switch (element) {
+        .input => |input| switch (input) {
+            .workspace => {
+                for (self.folders) |folder| {
+                    const node = self.host.arena.create(FileNode) catch continue;
+                    node.* = .{ .path = folder.path, .name = folder.name, .is_dir = true };
+                    result.append(node) catch continue;
+                }
+            },
+            .directory => |directory| appendDirectory(self, &result, directory),
+        },
+        .item => |node| appendDirectory(self, &result, node.path),
+    }
+    return .{ .items = result.toOwnedSlice() catch &.{} };
+}
+
+fn appendDirectory(self: *FilePicker, result: *std.array_list.Managed(*const FileNode), directory: []const u8) void {
+    const entries = list(self.allocator, self.host.io, directory) catch return;
+    defer freeEntries(self.allocator, entries);
+    const arena = self.host.arena;
+    for (entries) |entry| {
+        const path = arena.dupe(u8, entry.path) catch continue;
+        const name = arena.dupe(u8, entry.name) catch continue;
+        const node = arena.create(FileNode) catch continue;
+        node.* = .{ .path = path, .name = name, .is_dir = entry.is_dir };
+        result.append(node) catch continue;
+    }
+}
+
+fn renderFileRow(context: *anyopaque, row: *const list_mod.Row, node: *const FileTree.Node, elements: []const *FileTree.Node) void {
+    _ = elements;
+    const self: *FilePicker = @ptrCast(@alignCast(context));
+    const item = node.element orelse return;
+    const base = rowPaint(self.theme, row);
+    row.grid.fillRect(@floatFromInt(row.x), @floatFromInt(row.y), @floatFromInt(row.width), 1, base);
+    const indent = node.depth * 2;
+    var col = row.x + @min(indent, row.width -| 1);
+    if (col < row.x + row.width) {
+        if (node.has_children) {
+            row.grid.putCodepoint(col, row.y, if (node.collapsed) 0x25B8 else 0x25BE, 1, base);
+        } else {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
+        }
+        col += 1;
+        if (col < row.x + row.width) {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
             col += 1;
-            _ = drawTextClipped(row.grid, col, row.y, limit -| col, item.description, .{
-                .fg = ui.cell.packColor(palette.dim),
-                .bg = ui.cell.packColor(bg),
+        }
+    }
+    const icon = self.host.file_icon(self.host.context, item.path);
+    if (col < row.x + row.width) {
+        row.grid.putCodepoint(col, row.y, icon.glyph, 1, .{
+            .fg = ui.cell.packColor(icon.color),
+            .bg = base.bg,
+        });
+        col += 1;
+        if (col < row.x + row.width) {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
+            col += 1;
+        }
+    }
+    _ = drawTextClipped(row.grid, col, row.y, row.x + row.width -| col, item.name, base);
+}
+
+fn fileActivate(context: ?*anyopaque, element: *const FileNode) void {
+    const self: *FilePicker = @ptrCast(@alignCast(context orelse return));
+    if (element.is_dir) {
+        _ = self.tree.toggleCollapsed(element, false);
+        return;
+    }
+    self.close();
+    self.host.open_file(self.host.context, element.path) catch {};
+}
+
+fn outlineHasChildren(_: *anyopaque, node: *const outline_mod.TreeElement) bool {
+    return node.children.len > 0;
+}
+
+fn outlineGetChildren(context: *anyopaque, element: async_tree_mod.DataElement(*outline_mod.IOutline, *const outline_mod.TreeElement)) async_tree_mod.Children(*const outline_mod.TreeElement) {
+    const self: *OutlinePicker = @ptrCast(@alignCast(context));
+    const children = switch (element) {
+        .input => |outline| blk: {
+            const source = outline.config.tree_data_source orelse break :blk &.{};
+            break :blk source.get_roots(source.context);
+        },
+        .item => |node| node.children,
+    };
+    const result = self.host.arena.alloc(*const outline_mod.TreeElement, children.len) catch return .{ .items = &.{} };
+    for (children, 0..) |_, index| result[index] = &children[index];
+    return .{ .items = result };
+}
+
+fn renderOutlineRow(context: *anyopaque, row: *const list_mod.Row, node: *const OutlineTree.Node, elements: []const *OutlineTree.Node) void {
+    _ = elements;
+    const self: *OutlinePicker = @ptrCast(@alignCast(context));
+    const item = node.element orelse return;
+    const base = rowPaint(self.theme, row);
+    row.grid.fillRect(@floatFromInt(row.x), @floatFromInt(row.y), @floatFromInt(row.width), 1, base);
+    const indent = node.depth * 2;
+    var col = row.x + @min(indent, row.width -| 1);
+    if (col < row.x + row.width) {
+        if (node.has_children) {
+            row.grid.putCodepoint(col, row.y, if (node.collapsed) 0x25B8 else 0x25BE, 1, base);
+        } else {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
+        }
+        col += 1;
+        if (col < row.x + row.width) {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
+            col += 1;
+        }
+    }
+    if (col < row.x + row.width) {
+        const glyph = goto_symbol.glyph(item.symbol_kind orelse 0);
+        col += drawTextClipped(row.grid, col, row.y, row.x + row.width -| col, glyph, base);
+        if (col < row.x + row.width) {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
+            col += 1;
+        }
+    }
+    col += drawTextClipped(row.grid, col, row.y, row.x + row.width -| col, item.label, base);
+    if (item.marker_severity) |severity| {
+        var buf: [8]u8 = undefined;
+        const badge = if (item.marker_count > 0)
+            std.fmt.bufPrint(&buf, "{d}", .{@min(item.marker_count, 9)}) catch "+"
+        else
+            "\u{25CF}";
+        const badge_width = textWidth(badge);
+        if (row.x + row.width > badge_width + 1) {
+            const badge_col = row.x + row.width -| badge_width -| 1;
+            const color = if (severity == markerSeverity.Error)
+                if (self.theme) |theme| theme.color("list.errorForeground", .{ 244, 135, 113 }) else ui.Color{ .r = 244, .g = 135, .b = 113 }
+            else if (self.theme) |theme| theme.color("list.warningForeground", .{ 204, 167, 0 }) else ui.Color{ .r = 204, .g = 167, .b = 0 };
+            _ = drawTextClipped(row.grid, badge_col, row.y, row.width -| (badge_col - row.x), badge, .{
+                .fg = ui.cell.packColor(color),
+                .bg = base.bg,
             });
         }
     }
+}
 
-    fn activate(context: ?*anyopaque, index: usize) void {
-        const self: *Popup = @ptrCast(@alignCast(context orelse return));
-        if (index >= self.items.items.len) return;
-        if (self.on_accept) |callback| callback(self.on_accept_context orelse return, &self.items.items[index]) catch {};
+fn outlineActivate(context: ?*anyopaque, element: *const outline_mod.TreeElement) void {
+    const self: *OutlinePicker = @ptrCast(@alignCast(context orelse return));
+    const outline = self.outline orelse return;
+    self.close();
+    self.host.reveal(self.host.context, outline, element.element) catch {};
+}
+
+fn rowPaint(theme: ?*const theme_colors_mod.ThemeColors, row: *const list_mod.Row) ui.cell.PaintStyle {
+    var bg = if (theme) |palette| palette.color("menu.background", .{ 37, 37, 38 }) else ui.Color{ .r = 37, .g = 37, .b = 38 };
+    var fg = if (theme) |palette| palette.color("menu.foreground", .{ 204, 204, 204 }) else ui.Color{ .r = 204, .g = 204, .b = 204 };
+    if (row.selected) {
+        bg = if (theme) |palette| palette.color("list.activeSelectionBackground", .{ 4, 57, 94 }) else ui.Color{ .r = 4, .g = 57, .b = 94 };
+        fg = .{ .r = 255, .g = 255, .b = 255 };
+    } else if (row.hovered) {
+        bg = if (theme) |palette| palette.color("list.hoverBackground", .{ 42, 45, 46 }) else ui.Color{ .r = 42, .g = 45, .b = 46 };
     }
+    return .{ .fg = ui.cell.packColor(fg), .bg = ui.cell.packColor(bg) };
+}
 
-    fn selectionChanged(_: ?*anyopaque, _: ?usize) void {}
-};
+fn overlayRect(anchor_x: usize, anchor_y: usize, cols: usize, rows: usize) ui.Rect {
+    const width = @min(@max(cols -| 4, 20), 64);
+    const height = @min(@max(rows -| 3, 4), 14);
+    var x = anchor_x;
+    if (x + width > cols) x = cols -| width;
+    var y = anchor_y + 1;
+    if (y + height > rows) y = anchor_y -| height;
+    if (y + height > rows) y = rows -| height;
+    return .{
+        .x = @floatFromInt(x),
+        .y = @floatFromInt(y),
+        .w = @floatFromInt(width),
+        .h = @floatFromInt(height),
+    };
+}
+
+fn innerRect(rect: ui.Rect) ui.Rect {
+    return .{
+        .x = rect.x + 1,
+        .y = rect.y + 1,
+        .w = @max(rect.w - 2, 1),
+        .h = @max(rect.h - 2, 1),
+    };
+}
+
+fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_colors_mod.ThemeColors) void {
+    const x = ui.cell.snap(rect.x);
+    const y = ui.cell.snap(rect.y);
+    const width = ui.cell.snap(rect.w);
+    const height = ui.cell.snap(rect.h);
+    if (width < 3 or height < 3) return;
+    const bg = if (theme) |palette| palette.color("menu.background", .{ 37, 37, 38 }) else ui.Color{ .r = 37, .g = 37, .b = 38 };
+    const fg = if (theme) |palette| palette.color("menu.foreground", .{ 204, 204, 204 }) else ui.Color{ .r = 204, .g = 204, .b = 204 };
+    const border = if (theme) |palette| palette.color("widget.border", .{ 69, 69, 69 }) else ui.Color{ .r = 69, .g = 69, .b = 69 };
+    const background = ui.cell.PaintStyle{ .bg = ui.cell.packColor(bg), .fg = ui.cell.packColor(fg) };
+    const border_style = ui.cell.PaintStyle{ .bg = ui.cell.packColor(bg), .fg = ui.cell.packColor(border) };
+    grid.fillRect(rect.x, rect.y, rect.w, rect.h, background);
+    grid.clearBordersRect(rect.x, rect.y, rect.w, rect.h);
+    grid.putCodepoint(x, y, 0x250C, 1, border_style);
+    grid.putCodepoint(x + width - 1, y, 0x2510, 1, border_style);
+    grid.putCodepoint(x, y + height - 1, 0x2514, 1, border_style);
+    grid.putCodepoint(x + width - 1, y + height - 1, 0x2518, 1, border_style);
+    var col: usize = 1;
+    while (col + 1 < width) : (col += 1) {
+        grid.putCodepoint(x + col, y, 0x2500, 1, border_style);
+        grid.putCodepoint(x + col, y + height - 1, 0x2500, 1, border_style);
+    }
+    var row: usize = 1;
+    while (row + 1 < height) : (row += 1) {
+        grid.putCodepoint(x, y + row, 0x2502, 1, border_style);
+        grid.putCodepoint(x + width - 1, y + row, 0x2502, 1, border_style);
+    }
+}
+
+fn findElementInTree(roots: []const outline_mod.TreeElement, element: *anyopaque) ?outline_mod.TreeElement {
+    for (roots) |root| {
+        if (root.element == element) return root;
+        if (findElementInTree(root.children, element)) |found| return found;
+    }
+    return null;
+}
+
+fn findTreeElementById(roots: []const outline_mod.TreeElement, id: []const u8) ?*const outline_mod.TreeElement {
+    for (roots) |*root| {
+        if (std.mem.eql(u8, root.id, id)) return root;
+        if (findTreeElementById(root.children, id)) |found| return found;
+    }
+    return null;
+}
+
+fn outlinePath(allocator: Allocator, roots: []const outline_mod.TreeElement, id: []const u8) ![]const *const outline_mod.TreeElement {
+    var path = std.array_list.Managed(*const outline_mod.TreeElement).init(allocator);
+    errdefer path.deinit();
+    for (roots) |*root| {
+        if (try appendPath(&path, root, id)) return path.toOwnedSlice();
+    }
+    return path.toOwnedSlice();
+}
+
+fn appendPath(path: *std.array_list.Managed(*const outline_mod.TreeElement), element: *const outline_mod.TreeElement, id: []const u8) !bool {
+    try path.append(element);
+    if (std.mem.eql(u8, element.id, id)) return true;
+    for (element.children) |*child| {
+        if (try appendPath(path, child, id)) return true;
+    }
+    _ = path.pop();
+    return false;
+}
 
 fn drawTextClipped(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []const u8, style: ui.cell.PaintStyle) usize {
     var col: usize = 0;

@@ -622,8 +622,7 @@ pub const Workbench = struct {
     breadcrumbs_dirty: bool = false,
     /// Anchored breadcrumb picker (upstream context-view tree). The popup
     /// borrows its item strings and symbol handles from `breadcrumbs_arena`.
-    breadcrumb_popup: ?*breadcrumbs_picker.Popup = null,
-    breadcrumb_popup_symbols: []const BreadcrumbPopupSymbol = &.{},
+    breadcrumb_popup: ?*breadcrumbs_picker.Picker = null,
     tab_menu_pane: ?*GroupPane = null,
     tab_menu_tab: ?*Tab = null,
     tab_overflow_tabs: ?[]*Tab = null,
@@ -782,7 +781,6 @@ pub const Workbench = struct {
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
         self.breadcrumb_popup = null;
-        self.breadcrumb_popup_symbols = &.{};
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
         self.tab_overflow_tabs = null;
@@ -944,7 +942,6 @@ pub const Workbench = struct {
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
         self.breadcrumb_popup = null;
-        self.breadcrumb_popup_symbols = &.{};
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
         self.tab_overflow_tabs = null;
@@ -1139,7 +1136,6 @@ pub const Workbench = struct {
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
         self.breadcrumb_popup = null;
-        self.breadcrumb_popup_symbols = &.{};
         self.tab_menu_pane = null;
         self.tab_menu_tab = null;
         self.tab_overflow_tabs = null;
@@ -1825,7 +1821,6 @@ pub const Workbench = struct {
             popup.deinit();
             self.breadcrumb_popup = null;
         }
-        self.breadcrumb_popup_symbols = &.{};
         if (self.dialog) |dialog| {
             dialog.deinit();
             self.dialog = null;
@@ -9878,123 +9873,43 @@ pub const Workbench = struct {
         }
     }
 
-    /// Opens the anchored breadcrumb picker for `file`. Upstream shows the
-    /// clicked element's parent directory in a tree; the terminal popup shows
-    /// the same immediate children and preserves the clicked element focus.
+    /// Opens the anchored file picker for `file`. Upstream
+    /// `BreadcrumbsFilePicker` sets the tree input to the workspace for a root
+    /// folder and to the clicked element's parent directory otherwise.
     pub fn showBreadcrumbPicker(self: *Workbench, file: *const breadcrumbs_model.FileElement, anchor_x: usize) !void {
+        if (self.breadcrumb_popup) |popup| popup.close();
         _ = self.breadcrumbs_arena.reset(.retain_capacity);
         const arena = self.breadcrumbs_arena.allocator();
         const anchor_y = self.breadcrumbAnchorY();
+        const picker = try self.ensureBreadcrumbPopup();
 
         if (file.kind == .ROOT_FOLDER) {
             const workspace = self.workspace.getWorkspace();
-            if (workspace.folders.items.len > 1) {
-                var items = std.array_list.Managed(breadcrumbs_picker.PopupItem).init(arena);
-                var active_id: ?[]const u8 = null;
-                for (workspace.folders.items) |folder| {
-                    const id = try std.fmt.allocPrint(arena, "d:{s}", .{folder.resource});
-                    if (std.mem.eql(u8, folder.resource, file.path)) active_id = id;
-                    try items.append(.{
-                        .id = id,
-                        .label = folder.name,
-                        .description = "folder",
-                        .kind = .folder,
-                        .icon = file_icon.folder(false),
-                    });
-                }
-                try self.openBreadcrumbPopup(items.items, anchor_x, anchor_y, active_id);
-                return;
+            var folders = std.array_list.Managed(breadcrumbs_picker.FolderRef).init(arena);
+            for (workspace.folders.items) |folder| {
+                try folders.append(.{ .path = folder.resource, .name = folder.name });
             }
+            try picker.showFileWorkspace(folders.items, file.path, anchor_x, anchor_y);
+        } else {
+            const directory = breadcrumbs_picker.inputDirectory(file);
+            try picker.showFileDirectory(directory, file.path, anchor_x, anchor_y);
         }
-        const directory = breadcrumbs_picker.inputDirectory(file);
-        try self.showBreadcrumbPickerForDir(directory, file.path, anchor_x, anchor_y);
+        self.breadcrumbs_dirty = true;
     }
 
-    fn showBreadcrumbPickerForDir(
-        self: *Workbench,
-        directory: []const u8,
-        focus_path: ?[]const u8,
-        anchor_x: usize,
-        anchor_y: usize,
-    ) !void {
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        self.breadcrumb_popup_symbols = &.{};
-        const arena = self.breadcrumbs_arena.allocator();
-
-        const entries = breadcrumbs_picker.list(self.allocator, self.io, directory) catch {
-            if (self.activeTab()) |tab| tab.editor.setMessage("breadcrumb: cannot open {s}", .{directory});
-            return;
-        };
-        defer breadcrumbs_picker.freeEntries(self.allocator, entries);
-
-        var items = std.array_list.Managed(breadcrumbs_picker.PopupItem).init(arena);
-        const parent = breadcrumbs_picker.parentDirectory(directory);
-        if (!std.mem.eql(u8, parent, directory)) {
-            try items.append(.{
-                .id = try std.fmt.allocPrint(arena, "u:{s}", .{parent}),
-                .label = "..",
-                .description = "parent folder",
-                .kind = .parent,
-                .icon = file_icon.folder(false),
-            });
-        }
-        var active_id: ?[]const u8 = null;
-        for (entries) |entry| {
-            const id = try std.fmt.allocPrint(arena, "{s}:{s}", .{ if (entry.is_dir) "d" else "f", entry.path });
-            if (focus_path) |focus| {
-                if (std.mem.eql(u8, focus, entry.path)) active_id = id;
-            }
-            try items.append(.{
-                .id = id,
-                .label = try arena.dupe(u8, entry.name),
-                .description = if (entry.is_dir) "folder" else "",
-                .kind = if (entry.is_dir) .folder else .file,
-                .icon = if (entry.is_dir) file_icon.folder(false) else file_icon.forPath(entry.path),
-            });
-        }
-        try self.openBreadcrumbPopup(items.items, anchor_x, anchor_y, active_id);
-    }
-
-    /// Upstream `BreadcrumbsOutlinePicker`: list the clicked symbol's
-    /// siblings from its parent outline node. Selecting one reveals it.
+    /// Upstream `BreadcrumbsOutlinePicker`: input the outline tree and reveal
+    /// the clicked element.
     pub fn showBreadcrumbOutlinePicker(
         self: *Workbench,
         outline: *outline_mod.IOutline,
         element: *anyopaque,
         anchor_x: usize,
     ) !void {
-        const source = outline.config.tree_data_source orelse {
-            try self.revealBreadcrumbElement(outline, element);
-            return;
-        };
-        const roots = source.get_roots(source.context);
-        const parent = outline.getParent(element);
-        const siblings = if (parent) |parent_element|
-            (findTreeElement(roots, parent_element) orelse {
-                try self.revealBreadcrumbElement(outline, element);
-                return;
-            }).children
-        else
-            roots;
-
+        if (self.breadcrumb_popup) |popup| popup.close();
         _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
-        var symbols = std.array_list.Managed(BreadcrumbPopupSymbol).init(arena);
-        var items = std.array_list.Managed(breadcrumbs_picker.PopupItem).init(arena);
-        var active_id: ?[]const u8 = null;
-        for (siblings, 0..) |sibling, index| {
-            const id = try std.fmt.allocPrint(arena, "s:{d}", .{index});
-            if (sibling.element == element) active_id = id;
-            try symbols.append(.{ .outline = outline, .element = sibling.element });
-            try items.append(.{
-                .id = id,
-                .label = sibling.label,
-                .description = if (sibling.symbol_kind) |kind| goto_symbol_quick_access.kindLabel(kind) else "",
-                .kind = .symbol,
-            });
-        }
-        self.breadcrumb_popup_symbols = try symbols.toOwnedSlice();
-        try self.openBreadcrumbPopup(items.items, anchor_x, self.breadcrumbAnchorY(), active_id);
+        const picker = try self.ensureBreadcrumbPopup();
+        try picker.showOutline(outline, element, anchor_x, self.breadcrumbAnchorY());
+        self.breadcrumbs_dirty = true;
     }
 
     fn breadcrumbAnchorY(self: *Workbench) usize {
@@ -10002,32 +9917,31 @@ pub const Workbench = struct {
         return ui.cell.snap(pane.rect.y) + pane.titleHeight();
     }
 
-    fn ensureBreadcrumbPopup(self: *Workbench) !*breadcrumbs_picker.Popup {
+    fn ensureBreadcrumbPopup(self: *Workbench) !*breadcrumbs_picker.Picker {
         if (self.breadcrumb_popup) |popup| {
             popup.setThemeColors(self.theme_palette);
             return popup;
         }
-        const popup = try breadcrumbs_picker.Popup.init(self.allocator);
+        const popup = try breadcrumbs_picker.Picker.init(
+            self.allocator,
+            .{
+                .context = self,
+                .io = self.io,
+                .arena = self.breadcrumbs_arena.allocator(),
+                .open_file = onBreadcrumbPickerOpenFile,
+                .file_icon = onBreadcrumbPickerFileIcon,
+                .request_render = onBreadcrumbPickerRequestRender,
+            },
+            .{
+                .context = self,
+                .arena = self.breadcrumbs_arena.allocator(),
+                .reveal = onBreadcrumbPickerReveal,
+                .request_render = onBreadcrumbPickerRequestRender,
+            },
+        );
         popup.setThemeColors(self.theme_palette);
-        popup.on_accept_context = self;
-        popup.on_accept = onBreadcrumbPopupAccept;
-        popup.on_close_context = self;
-        popup.on_close = onBreadcrumbPopupClose;
         self.breadcrumb_popup = popup;
         return popup;
-    }
-
-    fn openBreadcrumbPopup(
-        self: *Workbench,
-        items: []const breadcrumbs_picker.PopupItem,
-        anchor_x: usize,
-        anchor_y: usize,
-        active_id: ?[]const u8,
-    ) !void {
-        if (self.quick_access.isOpen()) self.quick_access.inputService().hide();
-        const popup = try self.ensureBreadcrumbPopup();
-        try popup.open(items, anchor_x, anchor_y, active_id);
-        self.breadcrumbs_dirty = true;
     }
 
     pub fn handleBreadcrumbPopupKey(self: *Workbench, event: *const ui.KeyEvent) bool {
@@ -10049,36 +9963,6 @@ pub const Workbench = struct {
     pub fn breadcrumbPopupVisible(self: *const Workbench) bool {
         const popup = self.breadcrumb_popup orelse return false;
         return popup.isVisible();
-    }
-
-    fn acceptBreadcrumbPopupItem(self: *Workbench, item: *const breadcrumbs_picker.PopupItem) !void {
-        const id = item.id;
-        if (std.mem.startsWith(u8, id, "f:")) {
-            self.breadcrumb_popup_symbols = &.{};
-            if (self.breadcrumb_popup) |popup| popup.close();
-            try self.openBreadcrumbFile(id[2..]);
-            return;
-        }
-        if (std.mem.startsWith(u8, id, "d:") or std.mem.startsWith(u8, id, "u:")) {
-            const directory = id[2..];
-            var anchor_x: usize = 0;
-            var anchor_y: usize = 0;
-            if (self.breadcrumb_popup) |popup| {
-                anchor_x = popup.anchor_x;
-                anchor_y = popup.anchor_y;
-                popup.close();
-            }
-            try self.showBreadcrumbPickerForDir(directory, null, anchor_x, anchor_y);
-            return;
-        }
-        if (std.mem.startsWith(u8, id, "s:")) {
-            const index = std.fmt.parseInt(usize, id[2..], 10) catch return;
-            if (index >= self.breadcrumb_popup_symbols.len) return;
-            const choice = self.breadcrumb_popup_symbols[index];
-            if (self.breadcrumb_popup) |popup| popup.close();
-            try self.revealBreadcrumbElement(choice.outline, choice.element);
-            return;
-        }
     }
 
     fn openBreadcrumbFile(self: *Workbench, path: []const u8) !void {
@@ -10380,11 +10264,6 @@ fn outlineRequestRender(context: *anyopaque) void {
     self.outline_dirty = true;
 }
 
-const BreadcrumbPopupSymbol = struct {
-    outline: *outline_mod.IOutline,
-    element: *anyopaque,
-};
-
 const InactiveBreadcrumb = struct {
     control: *BreadcrumbsControl,
     context: BreadcrumbContext,
@@ -10603,14 +10482,22 @@ fn onStatusbarMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     }
 }
 
-fn onBreadcrumbPopupAccept(context: *anyopaque, item: *const breadcrumbs_picker.PopupItem) anyerror!void {
+fn onBreadcrumbPickerOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.acceptBreadcrumbPopupItem(item);
+    try self.openBreadcrumbFile(path);
 }
 
-fn onBreadcrumbPopupClose(context: *anyopaque) void {
+fn onBreadcrumbPickerFileIcon(_: *anyopaque, path: []const u8) file_icon.Icon {
+    return file_icon.forPath(path);
+}
+
+fn onBreadcrumbPickerReveal(context: *anyopaque, outline: *outline_mod.IOutline, element: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    self.breadcrumb_popup_symbols = &.{};
+    try self.revealBreadcrumbElement(outline, element);
+}
+
+fn onBreadcrumbPickerRequestRender(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
     self.breadcrumbs_dirty = true;
 }
 
@@ -10641,14 +10528,6 @@ fn onSymbolPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     self.focusEditor();
     self.refreshStatus();
     self.revealActiveEditor();
-}
-
-fn findTreeElement(roots: []const outline_mod.TreeElement, target: *anyopaque) ?outline_mod.TreeElement {
-    for (roots) |element| {
-        if (element.element == target) return element;
-        if (findTreeElement(element.children, target)) |found| return found;
-    }
-    return null;
 }
 
 fn itemIndex(id: []const u8, prefix: []const u8) ?usize {
@@ -15773,7 +15652,8 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     try std.testing.expect(workbench.handleTabMouse(&click));
     try std.testing.expect(!workbench.quick_access.inputService().isVisible());
     try std.testing.expect(workbench.breadcrumbPopupVisible());
-    try std.testing.expect(workbench.breadcrumb_popup.?.selectedIndex() != null);
+    try std.testing.expect(workbench.breadcrumb_popup.?.file != null);
+    try std.testing.expect(workbench.breadcrumb_popup.?.file.?.selectedPath() != null);
     var escape = ui.KeyEvent{ .key = .escape };
     try std.testing.expect(workbench.handleBreadcrumbPopupKey(&escape));
     try std.testing.expect(!workbench.breadcrumbPopupVisible());
