@@ -621,6 +621,18 @@ pub const TerminalViewHost = struct {
             const range = decoration.cell_range orelse continue;
             flags_len = @max(flags_len, @min(range.end, args.width_cells));
         }
+        // Upstream's selection overlay can extend one character past the text
+        // when the range crosses a newline. Keep that cell in the flag buffer so
+        // `ViewLine.paint` can draw it as a styled space after the last run.
+        const selection = self.getSelectionRanges(view_line);
+        if (selection) |rendered| {
+            for (rendered.ranges) |range| {
+                if (range.width <= 0) continue;
+                const start: usize = @intCast(@max(range.left, 0));
+                const end = start +| @as(usize, @intCast(range.width));
+                flags_len = @max(flags_len, end);
+            }
+        }
         const flags = try self.allocator.alloc(u32, flags_len);
         errdefer self.allocator.free(flags);
         @memset(flags, 0);
@@ -633,8 +645,8 @@ pub const TerminalViewHost = struct {
             self.applyRangeDecorationFlags(view_line, flags, bits_fn);
         }
 
-        if (self.getSelectionRanges(view_line)) |selection| {
-            for (selection.ranges) |range| {
+        if (selection) |rendered| {
+            for (rendered.ranges) |range| {
                 if (range.width <= 0) continue;
                 const start: usize = @intCast(@max(range.left, 0));
                 const end = @min(start +| @as(usize, @intCast(range.width)), flags.len);
@@ -991,6 +1003,76 @@ test "terminal view host renders lines through the ported ViewLines" {
     const cursors = host.getCursorRenderData();
     try std.testing.expect(cursors.len > 0);
     try std.testing.expectEqual(@as(usize, 1), cursors[0].position.lineNumber);
+}
+
+test "terminal view host selects wrapped continuation lines" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    // Gutter is six columns, so this wraps at five text columns:
+    // abcde / fghij.
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 11, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+
+    try host.renderRange(1, 2);
+    try editor.setSelection(Range.init(1, 1, 1, 11));
+    try host.renderRange(1, 2);
+
+    // Selection columns are view columns: the continuation view line starts at
+    // column 1, so both visual rows are covered from their first cell.
+    const first = host.getSelectionRanges(1).?;
+    try std.testing.expectEqual(@as(usize, 1), first.ranges.len);
+    try std.testing.expectEqual(@as(i32, 0), first.ranges[0].left);
+    try std.testing.expectEqual(@as(i32, 5), first.ranges[0].width);
+
+    const second = host.getSelectionRanges(2).?;
+    try std.testing.expectEqual(@as(usize, 1), second.ranges.len);
+    try std.testing.expectEqual(@as(i32, 0), second.ranges[0].left);
+    try std.testing.expectEqual(@as(i32, 5), second.ranges[0].width);
+
+    const view_lines = host.viewRef().getViewLines();
+    const visible = view_lines.linesVisibleRangesForRange(Range.init(1, 1, 2, 6), true).?;
+    try std.testing.expectEqual(@as(usize, 2), visible.len);
+    try std.testing.expect(visible[0].continuesOnNextLine);
+    try std.testing.expect(!visible[1].continuesOnNextLine);
+
+    // The same mapping is used for hit testing inside a wrapped line.
+    const position = view_lines.visibleRangeForPosition(Position.init(2, 2)).?;
+    try std.testing.expectEqual(@as(i32, 1), position.left);
+}
+
+test "terminal view host widens selection into a model line break" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abc\ndef", "test.txt", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+
+    try host.renderRange(1, 2);
+    try editor.setSelection(Range.init(1, 2, 2, 2));
+    try host.renderRange(1, 2);
+
+    // Upstream adds one character width on the line before a model line break,
+    // so the newline is part of the selected region.
+    const first = host.getSelectionRanges(1).?;
+    try std.testing.expectEqual(@as(usize, 1), first.ranges.len);
+    try std.testing.expectEqual(@as(i32, 1), first.ranges[0].left);
+    try std.testing.expectEqual(@as(i32, 3), first.ranges[0].width);
+
+    const second = host.getSelectionRanges(2).?;
+    try std.testing.expectEqual(@as(usize, 1), second.ranges.len);
+    try std.testing.expectEqual(@as(i32, 0), second.ranges[0].left);
+    try std.testing.expectEqual(@as(i32, 1), second.ranges[0].width);
 }
 
 test "terminal view host updates the current-line overlay on cursor moves" {

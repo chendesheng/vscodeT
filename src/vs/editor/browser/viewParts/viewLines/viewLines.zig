@@ -4,10 +4,10 @@
 // Terminal adaptation: upstream is a DOM view part that measures rendered
 // spans; the terminal version renders the visible line window into a
 // `StringBuilder` (`renderText`) and implements `IViewLines` with cell-column
-// ranges derived from `CursorColumns` instead of DOM reading. The TUI creates
-// one empty positioned line node per visible line for hit testing; the text is
-// painted from the retained `ViewLine` runs. The viewport inputs that parts
-// query between frames (view model + visible range) are stored by value, so a
+// ranges derived from the retained rendered lines instead of DOM reading. The
+// TUI creates one empty positioned line node per visible line for hit testing;
+// the text is painted from the retained `ViewLine` runs. The viewport inputs
+// that parts query between frames (view model + visible range) are stored by value, so a
 // caller's stack `ViewportData` is never dereferenced after it returns. The
 // reveal, sticky-scroll, GPU and line-width bookkeeping are browser/layout
 // concerns and are not ported here.
@@ -25,7 +25,6 @@ const viewport_data = @import("../../../common/viewLayout/viewLinesViewportData.
 const view_line = @import("./viewLine.zig");
 const view_line_options = @import("./viewLineOptions.zig");
 const StringBuilder = @import("../../../common/core/stringBuilder.zig").StringBuilder;
-const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
 
@@ -506,44 +505,84 @@ pub const ViewLines = struct {
     }
 
     /// The cell-column ranges covered by `range` on the rendered lines.
+    ///
+    /// Port of upstream `ViewLines.linesVisibleRangesForRange`. The range is
+    /// expressed in view coordinates and is clamped to the current viewport.
+    /// Columns are mapped per view line: continuation lines start at column 1
+    /// (which is the first cell of their synthetic wrapped indentation), not at
+    /// the model line's `minColumn`. When the range crosses a model line break,
+    /// upstream widens the last range by one character so the newline itself is
+    /// part of the selection; terminal cells use one cell for that character.
     pub fn linesVisibleRangesForRange(self: *ViewLines, range: Range, include_new_lines: bool) ?[]const LineVisibleRanges {
-        _ = include_new_lines;
+        const original_end_line_number = range.endLineNumber;
         const intersection = Range.intersectRanges(&range, &self.last_visible_range) orelse return null;
         const model = self.last_view_model orelse return null;
+        const converter = model.coordinates_converter;
 
         _ = self.scratch.reset(.retain_capacity);
         const allocator = self.scratch.allocator();
         var result = std.array_list.Managed(LineVisibleRanges).init(allocator);
 
+        var next_line_model_line_number: usize = 0;
+        if (include_new_lines) {
+            next_line_model_line_number = converter.convertViewPositionToModelPosition(
+                converter.context,
+                Position.init(intersection.startLineNumber, 1),
+            ).lineNumber;
+        }
+
+        const rendered_start_line_number = self.visible_lines.getStartLineNumber();
+        const rendered_end_line_number = self.visible_lines.getEndLineNumber();
+
         var line_number = intersection.startLineNumber;
         while (line_number <= intersection.endLineNumber) : (line_number += 1) {
-            const line_data = model.viewportViewLineRenderingData(self.last_visible_range, line_number) catch continue;
-            const start_column = if (line_number == intersection.startLineNumber)
-                @max(intersection.startColumn, line_data.minColumn)
-            else
-                line_data.minColumn;
-            const end_column = if (line_number == intersection.endLineNumber)
-                @min(intersection.endColumn, line_data.maxColumn)
-            else
-                line_data.maxColumn;
+            if (line_number < rendered_start_line_number or line_number > rendered_end_line_number) continue;
 
-            const start_visible = visibleColumnFor(line_data, start_column);
-            const end_visible = @max(start_visible, visibleColumnFor(line_data, end_column));
+            const start_column = if (line_number == intersection.startLineNumber)
+                intersection.startColumn
+            else
+                1;
+            const continues_in_next_line = line_number != original_end_line_number;
+            const end_column = if (continues_in_next_line)
+                model.lineMaxColumn(line_number)
+            else
+                intersection.endColumn;
+            const visible = self.visibleRangesForLineRange(line_number, start_column, end_column) orelse continue;
+
+            var width = visible.width;
+            if (include_new_lines and line_number < original_end_line_number) {
+                const current_line_model_line_number = next_line_model_line_number;
+                next_line_model_line_number = converter.convertViewPositionToModelPosition(
+                    converter.context,
+                    Position.init(line_number + 1, 1),
+                ).lineNumber;
+                if (current_line_model_line_number != next_line_model_line_number) {
+                    width += 1;
+                }
+            }
+
             const ranges = allocator.alloc(HorizontalRange, 1) catch return null;
-            ranges[0] = HorizontalRange.init(
-                @floatFromInt(start_visible),
-                @floatFromInt(end_visible - start_visible),
-            );
+            ranges[0] = HorizontalRange.init(visible.left, width);
             result.append(.{
-                .outsideRenderedLine = false,
+                .outsideRenderedLine = visible.outside_rendered_line,
                 .lineNumber = line_number,
                 .ranges = ranges,
-                .continuesOnNextLine = false,
+                .continuesOnNextLine = continues_in_next_line,
             }) catch return null;
         }
 
         if (result.items.len == 0) return null;
         return result.toOwnedSlice() catch null;
+    }
+
+    fn visibleRangesForLineRange(
+        self: *ViewLines,
+        line_number: usize,
+        start_column: usize,
+        end_column: usize,
+    ) ?ViewLine.VisibleRanges {
+        const line = self.getViewLine(line_number) orelse return null;
+        return line.getVisibleRangesForRange(start_column, end_column);
     }
 
     fn visibleRangeForPositionThunk(context: *anyopaque, position: Position) ?HorizontalPosition {
@@ -552,25 +591,11 @@ pub const ViewLines = struct {
     }
 
     /// The cell-column range of `position`, or null when the line is not
-    /// rendered in the current viewport.
+    /// rendered in the current viewport. Port of upstream
+    /// `ViewLines.visibleRangeForPosition`.
     pub fn visibleRangeForPosition(self: *ViewLines, position: Position) ?HorizontalPosition {
-        const model = self.last_view_model orelse return null;
-        if (position.lineNumber < self.last_visible_range.startLineNumber or
-            position.lineNumber > self.last_visible_range.endLineNumber)
-        {
-            return null;
-        }
-        const line_data = model.viewportViewLineRenderingData(self.last_visible_range, position.lineNumber) catch return null;
-        const column = @min(@max(position.column, line_data.minColumn), line_data.maxColumn);
-        return HorizontalPosition.init(false, @floatFromInt(visibleColumnFor(line_data, column)));
-    }
-
-    fn visibleColumnFor(line_data: anytype, column: usize) usize {
-        const visible = CursorColumns.visibleColumnFromColumn(line_data.content, column, line_data.tabSize);
-        // Wrapped continuation lines start at a non-zero visible column and are
-        // indented by their first model column.
-        const indent = line_data.minColumn - 1;
-        return (visible -| line_data.startVisibleColumn) + indent;
+        const visible = self.visibleRangesForLineRange(position.lineNumber, position.column, position.column) orelse return null;
+        return HorizontalPosition.init(visible.outside_rendered_line, visible.left);
     }
 
     // --- end IViewLines

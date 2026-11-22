@@ -305,6 +305,68 @@ pub const ViewLine = struct {
         return self.dom_node;
     }
 
+    /// Terminal `VisibleRanges` result. Upstream can return several horizontal
+    /// ranges for bidirectional text; the terminal renderer is a single LTR
+    /// run, so one range is the complete result.
+    pub const VisibleRanges = struct {
+        outside_rendered_line: bool,
+        left: f64,
+        width: f64,
+    };
+
+    /// Port of upstream `ViewLine.getVisibleRangesForRange`.
+    ///
+    /// The browser clamps the columns to the rendered line content and reads
+    /// the DOM; the terminal computes the cell offsets from the same content
+    /// and tab stops its renderer used. Keeping this on `ViewLine` matters for
+    /// wrapped lines: continuation lines carry synthetic indentation, and a
+    /// caller-supplied column 1 must map to the start of that content rather
+    /// than to the model column where the wrap occurred.
+    pub fn getVisibleRangesForRange(
+        self: *const ViewLine,
+        start_column: usize,
+        end_column: usize,
+    ) ?VisibleRanges {
+        const rendered = if (self.rendered_view_line) |*line| line else return null;
+        const content_len = rendered.input.content.len;
+
+        var start = @min(content_len + 1, @max(1, start_column));
+        var end = @min(content_len + 1, @max(1, end_column));
+
+        const stop_rendering_line_after = rendered.input.stop_rendering_line_after;
+        if (stop_rendering_line_after != -1) {
+            const stop_column: usize = @intCast(stop_rendering_line_after + 1);
+            if (start > stop_column and end > stop_column) {
+                // This range is obviously not visible.
+                return .{
+                    .outside_rendered_line = true,
+                    .left = @floatFromInt(self.getWidth()),
+                    .width = 0,
+                };
+            }
+            if (start > stop_column) start = stop_column;
+            if (end > stop_column) end = stop_column;
+        }
+
+        const start_offset = view_line_renderer.horizontalOffsetForColumn(
+            rendered.input.content,
+            start,
+            rendered.input.tab_size,
+            rendered.input.start_visible_column,
+        );
+        const end_offset = view_line_renderer.horizontalOffsetForColumn(
+            rendered.input.content,
+            end,
+            rendered.input.tab_size,
+            rendered.input.start_visible_column,
+        );
+        return .{
+            .outside_rendered_line = false,
+            .left = @floatFromInt(start_offset),
+            .width = @floatFromInt(end_offset -| start_offset),
+        };
+    }
+
     /// Terminal `ViewLine` DOM construction: upstream creates a `div.view-line`
     /// with one span per styled run. The terminal equivalent creates one `ui`
     /// element and text nodes for each run. `style_fn` is the paint-boundary

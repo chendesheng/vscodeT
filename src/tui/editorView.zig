@@ -2984,6 +2984,41 @@ test "View: selection paints the theme background and dims covered text" {
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(gutter + 2, 0)] & ui.cell.Attr.inverse);
 }
 
+test "View: selection spans wrapped continuation rows" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    // Six gutter columns and the two-column overview ruler leave five text
+    // columns, so this wraps as abcde / fghij.
+    const editor = try Editor.createFromText(allocator, io, "abcdefghij", "test.txt", 13, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    try editor.setSelection(Range.init(1, 1, 1, 11));
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
+    // Both visual rows belong to the selected model line; the continuation row
+    // must carry the selection background from its first cell.
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(selection_background_dark)),
+        grid.bg[grid.index(gutter, 0)],
+    );
+    try std.testing.expectEqual(
+        ui.cell.packColor(color(selection_background_dark)),
+        grid.bg[grid.index(gutter, 1)],
+    );
+}
+
 test "View: selection uses the installed theme colors" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

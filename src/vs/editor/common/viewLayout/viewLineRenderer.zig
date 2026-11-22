@@ -142,6 +142,36 @@ const PartSink = struct {
     }
 };
 
+/// Cell offset of a view column in the line's rendered content.
+///
+/// Terminal replacement for upstream `CharacterMapping.getHorizontalOffset`.
+/// The browser stores the pixel offset next to every character while it builds
+/// the spans; the terminal computes the same offset from the columns and tab
+/// stops it uses for rendering. The offset is relative to the line content
+/// (including a wrapped continuation line's synthetic indentation), not to the
+/// editor viewport.
+pub fn horizontalOffsetForColumn(
+    content: []const u8,
+    column: usize,
+    tab_size: usize,
+    start_visible_column: usize,
+) usize {
+    const target = @min(column -| 1, content.len);
+    var offset: usize = 0;
+    var visible_column = start_visible_column;
+    var cell_offset: usize = 0;
+    while (offset < target) {
+        const len = std.unicode.utf8ByteSequenceLength(content[offset]) catch 1;
+        const safe_len = @min(len, content.len - offset);
+        const cp = std.unicode.utf8Decode(content[offset .. offset + safe_len]) catch @as(u21, content[offset]);
+        const next = CursorColumns.nextVisibleColumn(cp, visible_column, tab_size);
+        cell_offset += next - visible_column;
+        visible_column = next;
+        offset += safe_len;
+    }
+    return cell_offset;
+}
+
 /// Expands tabs in `content` for a terminal with `tab_size` columns.
 pub fn expandTabs(
     allocator: Allocator,
