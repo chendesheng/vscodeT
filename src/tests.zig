@@ -353,6 +353,7 @@ comptime {
     _ = @import("./vs/editor/common/languages/language.zig");
     _ = @import("./vs/editor/common/languages/modesRegistry.zig");
     _ = @import("./vs/editor/common/languages/textToHtmlTokenizer.zig");
+    _ = @import("./vs/editor/common/languages/nullTokenize.zig");
     _ = @import("./vs/editor/common/languages/supports/tokenization.zig");
     _ = @import("./vs/editor/common/languages/defaultDocumentColorsComputer.zig");
     _ = @import("./vs/editor/common/commands/replaceCommand.zig");
