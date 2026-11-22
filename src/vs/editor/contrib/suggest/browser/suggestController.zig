@@ -86,6 +86,31 @@ pub const SuggestController = struct {
         return self.widget.interface();
     }
 
+    pub fn hasSnippetSession(self: *const SuggestController) bool {
+        return self.snippet_session != null;
+    }
+
+    pub fn nextSnippetPlaceholder(self: *SuggestController) !bool {
+        const session = self.snippet_session orelse return false;
+        if (session.isAtLastPlaceholder()) {
+            session.deinit();
+            self.snippet_session = null;
+            return false;
+        }
+        return try session.next();
+    }
+
+    pub fn previousSnippetPlaceholder(self: *SuggestController) !bool {
+        const session = self.snippet_session orelse return false;
+        if (session.isAtFirstPlaceholder()) return false;
+        return try session.previous();
+    }
+
+    pub fn cancelSnippetSession(self: *SuggestController) void {
+        if (self.snippet_session) |session| session.deinit();
+        self.snippet_session = null;
+    }
+
     pub fn setTheme(self: *SuggestController, theme: suggestWidget.Theme) void {
         self.widget.setTheme(theme);
     }

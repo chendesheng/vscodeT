@@ -574,3 +574,35 @@ test "SuggestController: accepting a snippet inside a placeholder merges it" {
     try std.testing.expectEqualStrings("inner", line.items);
     try std.testing.expect(controller.snippet_session != null);
 }
+
+test "SuggestController: snippet placeholder navigation helpers" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "", "test.txt", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const items = [_]completion.CompletionItem{.{
+        .label = "snippet",
+        .insert_text = "${1:one}-${2:two}$0",
+        .insert_text_rules = @backingInt(completion.CompletionItemInsertTextRule.InsertAsSnippet),
+    }};
+    var provider = StaticProvider{ .items = &items };
+    const providers = [_]completion.CompletionItemProvider{provider.interface()};
+    var harness = makeHarness(editor);
+    const controller = try makeController(allocator, editor, &harness, &providers);
+    defer controller.deinit();
+
+    _ = try controller.model.triggerExplicit(0);
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(try controller.handleKey(&enter, 0));
+    try std.testing.expect(controller.hasSnippetSession());
+    var moves: usize = 0;
+    while (try controller.nextSnippetPlaceholder()) : (moves += 1) {
+        if (moves > 8) break;
+    }
+    try std.testing.expect(moves >= 2);
+    try std.testing.expect(!controller.hasSnippetSession());
+}
