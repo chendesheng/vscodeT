@@ -4349,6 +4349,20 @@ pub const Workbench = struct {
         return diff_widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced;
     }
 
+    fn editorTabSizing(self: *Workbench) tab_bar.TabSizing {
+        const configuration = self.configuration orelse return .fit;
+        const value = configuration.getValue("workbench.editor.tabSizing", .{}) orelse return .fit;
+        return switch (value.*) {
+            .string => |text| if (std.mem.eql(u8, text, "shrink"))
+                .shrink
+            else if (std.mem.eql(u8, text, "fixed"))
+                .fixed
+            else
+                .fit,
+            else => .fit,
+        };
+    }
+
     fn editorTabCloseButton(self: *Workbench) []const u8 {
         const configuration = self.configuration orelse return "right";
         const value = configuration.getValue("workbench.editor.tabCloseButton", .{}) orelse return "right";
@@ -8314,6 +8328,7 @@ pub const Workbench = struct {
                 .group_active = active_group,
                 .hovered = hovered_index,
                 .close_button_left = std.mem.eql(u8, self.editorTabCloseButton(), "left"),
+                .tab_sizing = self.editorTabSizing(),
                 .title_action = title_action,
                 .drop_index = drop_index,
                 .cell_borders = self.part.cell_borders,
