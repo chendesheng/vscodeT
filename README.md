@@ -1421,10 +1421,11 @@ TUI editor:
   indentation scope around the caret and the bracket pair containing the caret
   are highlighted. Guides are only painted over leading whitespace or blank
   cells, so a guide never replaces a text glyph. A selected space marker `·` or
-  a one-cell tab arrow takes the shared cell; a wider tab keeps the guide and
-  repeats `→` in the next cell, so both stay visible. Horizontal guide segments
-  are not painted. Flow uses the same solid `│` glyph for its indent whitespace
-  mode.
+  a one-cell tab arrow shares the guide's cell, but the guide paints over it so
+  the indentation line stays visible; a wider tab keeps the guide and repeats
+  `→` in the next padding cell so the tab stays visible too. Horizontal guide
+  segments are not painted. Flow uses the same solid `│` glyph for its indent
+  whitespace mode.
 - Scrollbar and overview ruler: the scrollbar is right-aligned and 1.5 cells
   wide: the right half of the first reserved cell plus the whole second cell.
   It uses foreground block glyphs, so it carries no background run at the
@@ -1923,8 +1924,12 @@ Editor contributions:
   the view selections through `IViewModel.getSelections`). `selection` is the
   upstream default and stays enabled in the terminal, so selecting text reveals
   the hidden whitespace without any configuration; an explicit
-  `editor.renderWhitespace` setting still overrides it. Control characters
-  render as Unicode control pictures when `renderControlCharacters` is on.
+  `editor.renderWhitespace` setting still overrides it. Whitespace is emitted as
+  separate upstream `mtkw`-style parts with no token style, so every dot/arrow
+  paints one uniform `editorWhitespace.foreground` color instead of the
+  neighboring token color; themes without that id get a dimmed default
+  foreground. Control characters render as Unicode control pictures when
+  `renderControlCharacters` is on.
 
 - `WorkingCopyService` is ported
   (`workbench/services/workingCopy/common/workingCopyService.zig`): working-copy
