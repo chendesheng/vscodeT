@@ -52,7 +52,7 @@ pub const SearchParams = struct {
 
         const regex: ?RegExp = strings.createRegExp(allocator, self.searchString, self.isRegex, false, .{
             .ignore_case = !self.matchCase,
-            .multiline = multiline,
+            .singleline = multiline,
         }) catch null;
 
         if (regex == null) {
@@ -72,7 +72,7 @@ pub const SearchParams = struct {
 
         const classifier = if (self.wordSeparators) |wordSeparators| try getMapForWordSeparators(allocator, wordSeparators) else null;
         const simpleSearch = if (canUseSimpleSearch) self.searchString else null;
-        return SearchData.init(regex.?, classifier, simpleSearch);
+        return SearchData.init(regex.?, classifier, simpleSearch, multiline);
     }
 };
 
@@ -225,7 +225,7 @@ pub const TextModelSearch = struct {
         var params = searchParams;
         if (try params.parseSearchRequest(allocator)) |searchData| {
             defer searchData.regex.deinit();
-            if (searchData.regex.options().multiline) {
+            if (searchData.multiline) {
                 return _doFindMatchesMultiline(model, searchRange, Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0), captureMatches, limitResultCount);
             }
             return _doFindMatchesLineByLine(model, searchRange, searchData, captureMatches, limitResultCount);
@@ -379,7 +379,7 @@ pub const TextModelSearch = struct {
             defer searchData.regex.deinit();
             const searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
 
-            if (searchData.regex.options().multiline) {
+            if (searchData.multiline) {
                 return _doFindNextMatchMultiline(model, searchStart, searcher, captureMatches);
             }
             return _doFindNextMatchLineByLine(model, searchStart, searcher, captureMatches);
@@ -461,7 +461,7 @@ pub const TextModelSearch = struct {
             defer searchData.regex.deinit();
             const searcher = Searcher.init(searchData.wordSeparators, &searchData.regex, "", 0);
 
-            if (searchData.regex.options().multiline) {
+            if (searchData.multiline) {
                 return _doFindPreviousMatchMultiline(model, searchStart, searcher, captureMatches);
             }
             return _doFindPreviousMatchLineByLine(model, searchStart, searcher, captureMatches);
@@ -618,6 +618,8 @@ test "isValidMatch" {
 pub const Searcher = struct {
     wordSeparators: ?*const WordCharacterClassifier,
     _iterator: SearchResultIterator,
+    _prevMatchStartIndex: ?usize = null,
+    _prevMatchLength: usize = 0,
 
     pub fn init(classifier: ?*const WordCharacterClassifier, searchRegex: *const RegExp, input: []const u8, start: usize) Searcher {
         return Searcher{
@@ -628,18 +630,42 @@ pub const Searcher = struct {
 
     pub fn reset(self: *Searcher, input: []const u8, offset: usize) void {
         self._iterator.reset(input, offset);
+        self._prevMatchStartIndex = null;
+        self._prevMatchLength = 0;
     }
 
     pub fn next(self: *Searcher) ?SearchResult {
+        const input = self._iterator._input;
+        if (self._prevMatchStartIndex) |previous| {
+            if (previous + self._prevMatchLength == input.len) {
+                // Upstream Searcher stops once the previous match ended at the
+                // end of the line, even for zero-length matches.
+                return null;
+            }
+        }
+        if (self._iterator._lastIndex >= input.len) {
+            // JS `exec` at lastIndex == length still runs, matching `$` or an
+            // empty line; the guard above stops the next call.
+            const result = self._iterator._regex.searchFromEnd(input) orelse return null;
+            self._prevMatchStartIndex = result.index();
+            self._prevMatchLength = result.length();
+            return result;
+        }
+
         if (self.wordSeparators) |wordSeparators| {
             while (self._iterator.next()) |current| {
-                if (isValidMatch(wordSeparators, self._iterator._input, self._iterator._input.len, current.index(), current.length())) {
+                self._prevMatchStartIndex = current.index();
+                self._prevMatchLength = current.length();
+                if (isValidMatch(wordSeparators, input, input.len, current.index(), current.length())) {
                     return current;
                 }
             }
             return null;
         } else {
-            return self._iterator.next();
+            const current = self._iterator.next() orelse return null;
+            self._prevMatchStartIndex = current.index();
+            self._prevMatchLength = current.length();
+            return current;
         }
     }
 };

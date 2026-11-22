@@ -376,6 +376,32 @@ pub const RegExp = struct {
         return r >= 0;
     }
 
+    /// Searches starting at the end of the input, emulating JS
+    /// `regexp.lastIndex = input.length` for `Searcher`. The ordinary
+    /// `searchFrom` deliberately refuses an end offset so raw scanning loops
+    /// cannot spin on a terminal empty match.
+    pub fn searchFromEnd(self: *const RegExp, input: []const u8) ?SearchResult {
+        const region = Region.init();
+        const r = c.onig_search(
+            self.regex,
+            input.ptr,
+            input.ptr + input.len,
+            input.ptr + input.len,
+            input.ptr + input.len,
+            region._region,
+            c.ONIG_OPTION_DEFAULT,
+        );
+        if (r == c.ONIG_MISMATCH) {
+            region.deinit();
+            return null;
+        }
+        return SearchResult{
+            ._region = region,
+            ._input = input,
+            ._regex = self,
+        };
+    }
+
     pub fn encoding(self: *const RegExp) Encoding {
         return c.onig_get_encoding(self.regex);
     }

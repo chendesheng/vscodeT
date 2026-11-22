@@ -117,12 +117,17 @@ pub const SearchData = struct {
     wordSeparators: ?*const WordCharacterClassifier,
     // The simple string to search for (if possible).
     simpleSearch: ?[]const u8,
+    /// JS `m` flag for the compiled regex (not an Oniguruma option: JS `m`
+    /// makes `^`/`$` line anchors, while Oniguruma's SINGLELINE does the
+    /// opposite).
+    multiline: bool = false,
 
-    pub fn init(regex: RegExp, wordSeparators: ?*const WordCharacterClassifier, simpleSearch: ?[]const u8) SearchData {
+    pub fn init(regex: RegExp, wordSeparators: ?*const WordCharacterClassifier, simpleSearch: ?[]const u8, multiline: bool) SearchData {
         return SearchData{
             .regex = regex,
             .wordSeparators = wordSeparators,
             .simpleSearch = simpleSearch,
+            .multiline = multiline,
         };
     }
 };
