@@ -369,6 +369,13 @@ pub const FileSearchWorker = struct {
             self.result = null;
         }
         if (self.active_walker) |walker| walker.cancel();
+        // When no worker session is active, the pending session cleared above
+        // is the only thing that could have reset `listing`/`computing`. If
+        // `endSession` wins the race against the worker picking the session
+        // up, those flags would otherwise stay set and the wait loop below
+        // would never make progress. Clearing is safe here: with no active
+        // session the worker owns no cache or walker state.
+        if (self.active_session == null) self.clearSessionStateLocked();
         self.condition.broadcast(self.io);
 
         while (self.listing or self.computing or self.active_session != null or self.cache_ready or
