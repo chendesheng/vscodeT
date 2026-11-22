@@ -62,14 +62,14 @@ For each row:
 | Content widgets | `vs/editor/browser/viewParts/contentWidgets/` | same | **P** | Registry, anchor-to-cell mapping, above/below placement, clamping, hit rectangles and focus restore are ported; focused parity tests for clamping and multiple widgets are still missing. |
 | Overlay widgets | `vs/editor/browser/viewParts/overlayWidgets/` | same | **P** | Corner preferences, size, paint order, hit rectangles and focus handling are ported with two tests; broader widget-lifecycle/corner coverage is still missing. |
 | Block decorations | `vs/editor/browser/viewParts/blockDecorations/blockDecorations.zig` | `editor/browser/viewParts/blockDecorations/blockDecorations.ts` | **F** | Ported in `113764e`; block ranges, padding, `blockIsAfterEnd`/`blockDoesNotCollapse`; terminal maps moved classes to one-cell borders. Covered by `block decorations:` tests and `View: block decorations paint a bordered range under the text`. |
-| Suggest widget | `vs/editor/contrib/suggest/browser/*` | `editor/contrib/suggest/browser/*` | Pending audit | Widget/list/status/details, icons, theme, keyboard/mouse, scroll. |
-| Hover widget | `vs/editor/contrib/hover/browser/*` | `editor/contrib/hover/browser/*` | Pending audit | Content widget, status bar actions, scroll, sticky, theme. |
-| Sticky scroll | `vs/editor/contrib/stickyScroll/browser/*`, `src/tui/stickyScrollHost.zig` | `editor/contrib/stickyScroll/browser/*` | Pending audit | Overlay-vs-view-zone decision, options, folding, theme, focus. |
-| Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | Pending audit | Aligned rows, center gutter, overview ruler, theme, hit, documented omissions. |
-| Snippet tab stops | decorations in `src/tui/editorView.zig` | `editor/contrib/snippet/browser/*` | Pending audit | Decoration classes, selection behavior, theme. |
+| Suggest widget | `vs/editor/contrib/suggest/browser/*` | `editor/contrib/suggest/browser/*` | **P** | Trigger/session model, windowed list, one-cell scrollbar, selection, mouse listeners and plain-text documentation are ported (20 tests). The full details/status bar, icon/theme matrix and browser accessibility panes are not. |
+| Hover widget | `vs/editor/contrib/hover/browser/*` | `editor/contrib/hover/browser/*` | **P** | Content-hover controller, scheduling, markdown rendering and the marker participant are ported; browser-only sticky/pin, status-bar actions and code-action links are omitted. |
+| Sticky scroll | `vs/editor/contrib/stickyScroll/browser/*`, `src/tui/stickyScrollHost.zig` | `editor/contrib/stickyScroll/browser/*` | **T** | Candidate rebuild, folding, 25% cap, overlay focus and theme are ported; it paints as a top-left overlay instead of an upstream view zone. |
+| Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | **P** | Side-by-side aligned rows, gutter/overview-ruler features and snapshot editors are ported (20 tests). Inline diff mode, hide-unchanged regions and moved-block detection are documented omissions. |
+| Snippet tab stops | decorations in `src/tui/editorView.zig` | `editor/contrib/snippet/browser/*` | **P** | Parser/session, placeholder groups, transforms and `snippet-placeholder`/`finish-snippet-placeholder` themed decorations are ported. `SnippetController2` actions/context keys and full upstream session tests remain unported. |
 | Rulers | `vs/editor/browser/viewParts/rulers/rulers.zig` | `editor/browser/viewParts/rulers/rulers.ts` | **T** | Configured `editor.rulers` columns are mapped to visible cell columns and painted as one-cell vertical guides through the view-line guide layer; the guide is skipped where a text glyph occupies the cell because a cell cannot show both. Per-ruler CSS color overrides are not parsed; `editorRuler.foreground` is used. |
 | Scroll decoration | `vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig` + `src/tui/editorView.zig` | `editor/browser/viewParts/scrollDecoration/` | **T** | The shadow appears after the first view line scrolls away and tints the first text row with `scrollbar.shadow`; the terminal has no alpha/blur, so it is a solid one-row background instead of a CSS box shadow. Covered by a View test. |
-| View zones | absent | `editor/browser/viewParts/viewZones/` | **M** | Confirmed absent; sticky scroll paints as an overlay and find uses the inline bar. Decide whether diff/peek view zones need cell rows or remain documented omissions. |
+| View zones | absent | `editor/browser/viewParts/viewZones/` | **T** | Confirmed absent. Sticky scroll paints as a top-left overlay and find uses the inline bar; arbitrary-height browser view zones (peek/diff spacers) are not represented as cell rows. The terminal keeps those features as overlays/inline UI; this substitution is documented. |
 | Minimap | absent | `editor/browser/viewParts/minimap/` | **T** | Confirmed absent and documented as a terminal limitation (`README.md`: no minimap/pixel lanes); a cell-grid thumbnail is not the upstream minimap and is intentionally omitted. |
 
 ## Group 3 — workbench chrome
@@ -197,7 +197,10 @@ For each row:
 - Implemented the missing rulers view: mapped `editor.rulers` to one-cell
   vertical guides, skipping text-occupied cells; added a View test.
 - Implemented the scroll decoration: a one-row `scrollbar.shadow` tint after
-  scrolling, with a View test. View zones remain the only M decision.
+  scrolling, with a View test.
+- Audited the remaining editor contributions: suggest (**P**), hover (**P**),
+  sticky scroll (**T**), diff (**P**), snippet (**P**) and view zones (**T**,
+  overlay/inline substitution). No `M` rows remain in the editor-view section.
 
 ## Next slice
 
