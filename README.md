@@ -1488,8 +1488,9 @@ Editor contributions:
   Remaining host limits: the terminal has no clipboard service (clipboard text
   is supplied by the caller), workspace variables use the edited file's parent
   directory, time variables use UTC, Unicode case mapping is ASCII-only, and
-  `SnippetController2`'s actions/context keys/undo-stop options and a full
-  upstream snippet-session test suite adaptation are not ported.
+  Tab/Shift-Tab now move through snippet placeholders and Escape cancels the
+  session; `SnippetController2`'s remaining actions/context keys/undo-stop
+  options and the full upstream snippet-session test suite are not ported.
   The default provider suggests document words; language providers use the
   same `CompletionItemProvider` interface.
 - `src/vs/editor/contrib/hover` ports the content-hover contribution end to

@@ -1048,6 +1048,19 @@ fn handleKeyEvent(
         if (try controller.handleKey(event, now_ms)) return false;
     }
     if (hover.onKeyDown(event)) return false;
+    if (suggest) |controller| {
+        if (controller.hasSnippetSession()) {
+            switch (event.key) {
+                .tab => if (try controller.nextSnippetPlaceholder()) return false,
+                .backtab => if (try controller.previousSnippetPlaceholder()) return false,
+                .escape => {
+                    controller.cancelSnippetSession();
+                    return false;
+                },
+                else => {},
+            }
+        }
+    }
     if (word_highlighter.handleKey(event)) {
         find.onEditorChanged();
         return false;
