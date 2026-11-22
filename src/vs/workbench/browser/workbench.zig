@@ -13900,6 +13900,55 @@ test "Workbench: color theme settings load a registered theme palette" {
     try std.testing.expectEqual(@as(u8, 0xee), status.r);
 }
 
+test "Workbench: opening a themed file initializes the editor controllers" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "themed.txt", "themed");
+    defer allocator.free(path);
+
+    var theme_file = try tmp.dir.createFile(io, "theme.json", .{});
+    try theme_file.writeStreamingAll(io,
+        \\{ "colors": { "editor.background": "#101010", "editor.foreground": "#e0e0e0" } }
+    );
+    theme_file.close(io);
+    var settings_file = try tmp.dir.createFile(io, "settings.json", .{});
+    try settings_file.writeStreamingAll(io,
+        \\{ "workbench.colorTheme": "Test Theme" }
+    );
+    settings_file.close(io);
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = try allocator.dupe(u8, buffer[0..root_len]);
+    defer allocator.free(root);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 60, 12);
+    defer workbench.deinit();
+    try workbench.registerThemeSources(&.{
+        .{
+            .root = root,
+            .id = "Test Theme",
+            .settings_id = "Test Theme",
+            .label = "Test Theme",
+            .ui_theme = "vs",
+            .path = "theme.json",
+        },
+    });
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    workbench.applyThemeSettings();
+    try std.testing.expect(workbench.theme_palette != null);
+
+    // `openPath` applies the palette to the new view and then initializes its
+    // controllers; the suggest/hover widgets must already exist by that point.
+    try workbench.openPath(path);
+    try std.testing.expect(workbench.activeTab().?.controllers != null);
+}
+
 test "Workbench: Preferences JSON commands create and open the TUI layer" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
