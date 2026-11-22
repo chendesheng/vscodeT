@@ -1747,8 +1747,15 @@ pub const BracketPairsTextModelPart = struct {
 
 fn isClosingBracketOf(service: *LanguageService, languageId: []const u8, openingBracket: []const u8, closingText: []const u8) bool {
     const config = service.getLanguageConfiguration(languageId) orelse return false;
+    // Upstream resolves `brackets` and `colorizedBracketPairs` into one
+    // bracket table; a pair can be configured only as colorized.
     if (config.brackets) |brackets| {
         for (brackets) |pair| {
+            if (std.mem.eql(u8, pair[0], openingBracket) and std.mem.eql(u8, pair[1], closingText)) return true;
+        }
+    }
+    if (config.colorizedBracketPairs) |pairs| {
+        for (pairs) |pair| {
             if (std.mem.eql(u8, pair[0], openingBracket) and std.mem.eql(u8, pair[1], closingText)) return true;
         }
     }

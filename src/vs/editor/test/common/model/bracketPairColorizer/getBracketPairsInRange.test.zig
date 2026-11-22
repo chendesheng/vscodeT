@@ -18,7 +18,9 @@ const TokenMetadata = @import("../../../../common/encodedTokenAttributes.zig").T
 const LanguageConfiguration = @import("../../../../common/languages/languageConfiguration.zig").LanguageConfiguration;
 const CharacterPair = @import("../../../../common/languages/languageConfiguration.zig").CharacterPair;
 const Range = @import("../../../../common/core/range.zig").Range;
+const Position = @import("../../../../common/core/position.zig").Position;
 const BracketPairInfo = @import("../../../../common/model/bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairInfo;
+const BracketInfo = @import("../../../../common/model/bracketPairsTextModelPart/bracketPairsImpl.zig").BracketInfo;
 
 const language_id = "getBracketPairsLanguage";
 
@@ -71,13 +73,16 @@ fn parseAnnotated(allocator: Allocator, src: []const u8) !Annotated {
         try text.append(src[i]);
         i += 1;
     }
-    return .{ .text = try text.toOwnedSlice(), .first = first.?, .second = second.? };
+    const owned = try text.toOwnedSlice();
+    return .{ .text = owned, .first = first orelse 0, .second = second orelse owned.len };
 }
 
 const Fixture = struct {
     support: Support = .{},
     model: TestModel,
     annotated: Annotated,
+    brackets_storage: []CharacterPair,
+    colorized_storage: []CharacterPair,
 
     fn init(allocator: Allocator, src: []const u8) !Fixture {
         const annotated = try parseAnnotated(allocator, src);
@@ -93,21 +98,30 @@ const Fixture = struct {
             allocator.free(annotated.text);
             ctx.deinit();
         }
-        var brackets = [_]CharacterPair{.{ "<", ">" }};
-        var colorized = [_]CharacterPair{ .{ "{", "}" }, .{ "[", "]" }, .{ "(", ")" } };
+        const brackets_storage = try allocator.dupe(CharacterPair, &.{.{ "<", ">" }});
+        errdefer allocator.free(brackets_storage);
+        const colorized_storage = try allocator.dupe(CharacterPair, &.{ .{ "{", "}" }, .{ "[", "]" }, .{ "(", ")" } });
+        errdefer allocator.free(colorized_storage);
         var config = @import("../../../../common/languages/languageConfiguration.zig").empty();
-        config.brackets = &brackets;
-        config.colorizedBracketPairs = &colorized;
+        config.brackets = brackets_storage;
+        config.colorizedBracketPairs = colorized_storage;
         try ctx.languageService.registerLanguageConfiguration(language_id, config);
         ctx.model.forceTokenization(1);
         try ctx.model.bracketPairs().updateNow();
-        return .{ .model = ctx, .annotated = annotated };
+        return .{
+            .model = ctx,
+            .annotated = annotated,
+            .brackets_storage = brackets_storage,
+            .colorized_storage = colorized_storage,
+        };
     }
 
     fn deinit(self: *Fixture) void {
         TokenizationRegistry.instance.unregister(language_id);
         self.model.deinit();
         self.model.allocator.free(self.annotated.text);
+        self.model.allocator.free(self.brackets_storage);
+        self.model.allocator.free(self.colorized_storage);
     }
 
     fn queryRange(self: *Fixture) Range {
@@ -187,5 +201,70 @@ test "getBracketPairsInRange: Basic All" {
         .{ .level = 2, .range = Range.init(1, 14, 1, 17), .open = Range.init(1, 14, 1, 15), .close = Range.init(1, 16, 1, 17) },
         .{ .level = 1, .range = Range.init(1, 20, 1, 22), .open = Range.init(1, 20, 1, 21), .close = Range.init(1, 21, 1, 22) },
         .{ .level = 0, .range = Range.init(1, 25, 1, 27), .open = Range.init(1, 25, 1, 26), .close = Range.init(1, 26, 1, 27) },
+    });
+}
+
+test "getBracketPairsInRange: unmatched closing brackets after position" {
+    var fixture = try Fixture.init(std.testing.allocator, "} text }");
+    defer fixture.deinit();
+
+    try std.testing.expect(fixture.model.model.bracketPairs().hasUnmatchedClosingBracketAfter(Position.init(1, 1), "{"));
+    try std.testing.expect(fixture.model.model.bracketPairs().hasUnmatchedClosingBracketAfter(Position.init(1, 2), "{"));
+    try std.testing.expect(!fixture.model.model.bracketPairs().hasUnmatchedClosingBracketAfter(Position.init(1, 9), "{"));
+    try std.testing.expect(!fixture.model.model.bracketPairs().hasUnmatchedClosingBracketAfter(Position.init(1, 1), "["));
+}
+
+const ExpectedBracket = struct {
+    level: isize,
+    equal_level: usize,
+    range: Range,
+    invalid: bool = false,
+};
+
+fn expectBrackets(brackets: []const BracketInfo, expected: []const ExpectedBracket) !void {
+    try std.testing.expectEqual(expected.len, brackets.len);
+    for (expected, brackets) |want, got| {
+        try std.testing.expectEqual(want.level, got.nestingLevel);
+        try std.testing.expectEqual(want.equal_level, got.nestingLevelOfEqualBracketType);
+        try std.testing.expectEqualDeep(want.range, got.range);
+        try std.testing.expectEqual(want.invalid, got.isInvalid);
+    }
+}
+
+test "getBracketPairsInRange: getBracketsInRange" {
+    var fixture = try Fixture.init(std.testing.allocator, "¹ { [ ( [ [ (  ) ] ] ) ] } { } ²");
+    defer fixture.deinit();
+
+    var brackets = try fixture.model.model.bracketPairs().getBracketsInRange(fixture.queryRange(), false);
+    defer brackets.deinit();
+    try expectBrackets(brackets.items, &.{
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 2, 1, 3) },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 4, 1, 5) },
+        .{ .level = 2, .equal_level = 0, .range = Range.init(1, 6, 1, 7) },
+        .{ .level = 3, .equal_level = 1, .range = Range.init(1, 8, 1, 9) },
+        .{ .level = 4, .equal_level = 2, .range = Range.init(1, 10, 1, 11) },
+        .{ .level = 5, .equal_level = 1, .range = Range.init(1, 12, 1, 13) },
+        .{ .level = 5, .equal_level = 1, .range = Range.init(1, 15, 1, 16) },
+        .{ .level = 4, .equal_level = 2, .range = Range.init(1, 17, 1, 18) },
+        .{ .level = 3, .equal_level = 1, .range = Range.init(1, 19, 1, 20) },
+        .{ .level = 2, .equal_level = 0, .range = Range.init(1, 21, 1, 22) },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 23, 1, 24) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 25, 1, 26) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 27, 1, 28) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 29, 1, 30) },
+    });
+}
+
+test "getBracketPairsInRange: Test Error Brackets" {
+    var fixture = try Fixture.init(std.testing.allocator, "¹ { () ] ² ");
+    defer fixture.deinit();
+
+    var brackets = try fixture.model.model.bracketPairs().getBracketsInRange(fixture.queryRange(), false);
+    defer brackets.deinit();
+    try expectBrackets(brackets.items, &.{
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 2, 1, 3), .invalid = true },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 4, 1, 5) },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 5, 1, 6) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 7, 1, 8), .invalid = true },
     });
 }
