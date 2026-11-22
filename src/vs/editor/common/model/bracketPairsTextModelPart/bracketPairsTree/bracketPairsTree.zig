@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/`.
+//
+// This port keeps the upstream AST, tokenizer and parser modules in this file.
+// `concat23Trees.ts` is ported here as well, next to its `ListAstNode` helpers.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -265,6 +269,92 @@ pub const AstNode = struct {
             },
         }
         return node;
+    }
+
+    fn recomputeList(self: *AstNode) void {
+        const list = &self.data.list;
+        var length: Length = 0;
+        var missing = SmallImmutableSet.empty();
+        for (list.children.items) |c| {
+            length = lengthAdd(length, c.length);
+            missing = missing.merge(c.missing);
+        }
+        self.length = length;
+        self.missing = missing;
+        list.cached_min_indentation = -1;
+    }
+
+    pub fn toMutable(self: *AstNode) *AstNode {
+        return self;
+    }
+
+    pub fn makeLastElementMutable(self: *AstNode) ?*AstNode {
+        return switch (self.data) {
+            .list => |list| if (list.children.items.len > 0) list.children.items[list.children.items.len - 1] else null,
+            else => null,
+        };
+    }
+
+    pub fn makeFirstElementMutable(self: *AstNode) ?*AstNode {
+        return switch (self.data) {
+            .list => |list| if (list.children.items.len > 0) list.children.items[0] else null,
+            else => null,
+        };
+    }
+
+    pub fn appendChildOfSameHeight(self: *AstNode, node: *AstNode) void {
+        const list = &self.data.list;
+        list.children.append(node) catch return;
+        self.length = lengthAdd(self.length, node.length);
+        self.missing = self.missing.merge(node.missing);
+        list.cached_min_indentation = -1;
+    }
+
+    pub fn unappendChild(self: *AstNode) ?*AstNode {
+        const list = &self.data.list;
+        if (list.children.items.len == 0) return null;
+        const removed = list.children.pop().?;
+        self.recomputeList();
+        return removed;
+    }
+
+    pub fn prependChildOfSameHeight(self: *AstNode, node: *AstNode) void {
+        const list = &self.data.list;
+        list.children.insert(0, node) catch return;
+        self.length = lengthAdd(node.length, self.length);
+        self.missing = node.missing.merge(self.missing);
+        list.cached_min_indentation = -1;
+    }
+
+    pub fn unprependChild(self: *AstNode) ?*AstNode {
+        const list = &self.data.list;
+        if (list.children.items.len == 0) return null;
+        const removed = list.children.orderedRemove(0);
+        self.recomputeList();
+        return removed;
+    }
+
+    pub fn handleChildrenChanged(self: *AstNode) void {
+        self.recomputeList();
+    }
+
+    pub fn flattenLists(self: *AstNode, allocator: Allocator) !*AstNode {
+        switch (self.data) {
+            .list => |list| {
+                var items = ArrayList(*AstNode).init(allocator);
+                defer items.deinit();
+                for (list.children.items) |c| {
+                    const normalized = try c.flattenLists(allocator);
+                    if (normalized.data == .list) {
+                        try items.appendSlice(normalized.data.list.children.items);
+                    } else {
+                        try items.append(normalized);
+                    }
+                }
+                return try makeList(allocator, items.items, if (items.items.len > 0) items.items[0].list_height else 0);
+            },
+            else => return self,
+        }
     }
 
     pub fn canBeReused(self: *const AstNode, opened: SmallImmutableSet) bool {
@@ -718,8 +808,11 @@ const Parser = struct {
             if (child.kind == .list and child.data.list.children.items.len == 0) continue;
             try items.append(child);
         }
-        if (items.items.len == 0) return try makeEmptyList(self.allocator);
-        return try buildList(self.allocator, items.items);
+        const result = if (self.oldReader != null)
+            try concat23Trees(self.allocator, items.items)
+        else
+            try concat23TreesOfSameHeight(self.allocator, items.items);
+        return result orelse try makeEmptyList(self.allocator);
     }
 
     fn tryReadChildFromCache(self: *Parser, opened: SmallImmutableSet) !?*AstNode {
@@ -754,31 +847,158 @@ const Parser = struct {
     }
 };
 
-fn buildList(allocator: Allocator, items: []*AstNode) !*AstNode {
-    if (items.len == 0) return try makeEmptyList(allocator);
+/// Port of upstream `concat23Trees`. The input slice is not mutated; callers
+/// own the returned nodes.
+pub fn concat23Trees(allocator: Allocator, items: []const *AstNode) !?*AstNode {
+    if (items.len == 0) return null;
     if (items.len == 1) return items[0];
-    if (items.len <= 3) return try makeList(allocator, items, items[0].list_height + 1);
-    var groups = ArrayList(*AstNode).init(allocator);
-    defer groups.deinit();
+
     var i: usize = 0;
-    while (i < items.len) {
-        const remaining = items.len - i;
-        if (remaining <= 3) {
-            try groups.append(try makeList(allocator, items[i..], items[i].list_height + 1));
+    var first = (try readNode(allocator, items, &i)).?;
+    var second = try readNode(allocator, items, &i);
+    if (second == null) return first;
+
+    while (try readNode(allocator, items, &i)) |item| {
+        if (heightDiff(first, second.?) <= heightDiff(second.?, item)) {
+            first = try concat(allocator, first, second.?);
+            second = item;
+        } else {
+            second = try concat(allocator, second.?, item);
+        }
+    }
+
+    return try concat(allocator, first, second.?);
+}
+
+fn readNode(allocator: Allocator, items: []const *AstNode, i: *usize) !?*AstNode {
+    if (i.* >= items.len) return null;
+    const start = i.*;
+    const height = items[start].list_height;
+    i.* += 1;
+    while (i.* < items.len and items[i.*].list_height == height) i.* += 1;
+
+    if (i.* - start >= 2) {
+        const group = if (start == 0 and i.* == items.len) items else items[start..i.*];
+        return try concat23TreesOfSameHeight(allocator, group);
+    }
+    return items[start];
+}
+
+pub fn concat23TreesOfSameHeight(allocator: Allocator, items: []const *AstNode) !?*AstNode {
+    if (items.len == 0) return null;
+    if (items.len == 1) return items[0];
+
+    var current = try allocator.dupe(*AstNode, items);
+    defer allocator.free(current);
+
+    var length = current.len;
+    while (length > 3) {
+        const new_length = length >> 1;
+        var i: usize = 0;
+        while (i < new_length) : (i += 1) {
+            const j = i << 1;
+            current[i] = try create23(
+                allocator,
+                current[j],
+                current[j + 1],
+                if (j + 3 == length) current[j + 2] else null,
+            );
+        }
+        length = new_length;
+    }
+    return try create23(allocator, current[0], current[1], if (length >= 3) current[2] else null);
+}
+
+fn heightDiff(node1: *AstNode, node2: *AstNode) u32 {
+    return if (node1.list_height > node2.list_height)
+        node1.list_height - node2.list_height
+    else
+        node2.list_height - node1.list_height;
+}
+
+fn concat(allocator: Allocator, node1: *AstNode, node2: *AstNode) !*AstNode {
+    if (node1.list_height == node2.list_height) {
+        return try create23(allocator, node1, node2, null);
+    }
+    if (node1.list_height > node2.list_height) return try append(allocator, node1, node2);
+    return try prepend(allocator, node2, node1);
+}
+
+fn append(allocator: Allocator, list: *AstNode, node_to_append: *AstNode) !*AstNode {
+    var current = list;
+    var parents = ArrayList(*AstNode).init(allocator);
+    defer parents.deinit();
+    var pending: ?*AstNode = null;
+
+    while (true) {
+        if (node_to_append.list_height == current.list_height) {
+            pending = node_to_append;
             break;
         }
-        const take: usize = if (remaining - 3 == 1) 2 else 3;
-        try groups.append(try makeList(allocator, items[i .. i + take], items[i].list_height + 1));
-        i += take;
+        if (current.data != .list) return error.Unexpected;
+        try parents.append(current);
+        current = current.makeLastElementMutable() orelse return error.Unexpected;
     }
-    return buildList(allocator, groups.items);
+
+    var i = parents.items.len;
+    while (i > 0) {
+        i -= 1;
+        const parent = parents.items[i];
+        if (pending) |node| {
+            if (parent.childrenLength() >= 3) {
+                const removed = parent.unappendChild() orelse return error.Unexpected;
+                pending = try create23(allocator, removed, node, null);
+            } else {
+                parent.appendChildOfSameHeight(node);
+                pending = null;
+            }
+        } else {
+            parent.handleChildrenChanged();
+        }
+    }
+
+    if (pending) |node| return try create23(allocator, list, node, null);
+    return list;
+}
+
+fn prepend(allocator: Allocator, list: *AstNode, node_to_prepend: *AstNode) !*AstNode {
+    var current = list;
+    var parents = ArrayList(*AstNode).init(allocator);
+    defer parents.deinit();
+    var pending: ?*AstNode = node_to_prepend;
+
+    while (node_to_prepend.list_height != current.list_height) {
+        if (current.data != .list) return error.Unexpected;
+        try parents.append(current);
+        current = current.makeFirstElementMutable() orelse return error.Unexpected;
+    }
+
+    var i = parents.items.len;
+    while (i > 0) {
+        i -= 1;
+        const parent = parents.items[i];
+        if (pending) |node| {
+            if (parent.childrenLength() >= 3) {
+                const removed = parent.unprependChild() orelse return error.Unexpected;
+                pending = try create23(allocator, node, removed, null);
+            } else {
+                parent.prependChildOfSameHeight(node);
+                pending = null;
+            }
+        } else {
+            parent.handleChildrenChanged();
+        }
+    }
+
+    if (pending) |node| return try create23(allocator, node, list, null);
+    return list;
 }
 
 fn allocNode(allocator: Allocator) !*AstNode {
     return try allocator.create(AstNode);
 }
 
-fn makeText(allocator: Allocator, length: Length) !*AstNode {
+pub fn makeText(allocator: Allocator, length: Length) !*AstNode {
     const node = try allocNode(allocator);
     node.* = .{ .kind = .text, .length = length, .list_height = 0, .missing = SmallImmutableSet.empty(), .data = .{ .text = {} } };
     return node;
@@ -823,7 +1043,7 @@ fn makePair(allocator: Allocator, opening: *AstNode, child: *AstNode, closing: ?
     return node;
 }
 
-fn makeList(allocator: Allocator, items: []*AstNode, height: u32) !*AstNode {
+pub fn makeList(allocator: Allocator, items: []const *AstNode, height: u32) !*AstNode {
     var children = ArrayList(*AstNode).init(allocator);
     try children.appendSlice(items);
     var length: Length = 0;
@@ -843,6 +1063,23 @@ fn makeList(allocator: Allocator, items: []*AstNode, height: u32) !*AstNode {
     return node;
 }
 
-fn makeEmptyList(allocator: Allocator) !*AstNode {
+pub fn makeEmptyList(allocator: Allocator) !*AstNode {
     return try makeList(allocator, &[_]*AstNode{}, 0);
+}
+
+/// Upstream `ListAstNode.create23`.
+pub fn create23(allocator: Allocator, item1: *AstNode, item2: *AstNode, item3: ?*AstNode) !*AstNode {
+    if (item1.list_height != item2.list_height) return error.InvalidListHeights;
+    if (item3) |third| {
+        if (item1.list_height != third.list_height) return error.InvalidListHeights;
+    }
+    var items: [3]*AstNode = undefined;
+    items[0] = item1;
+    items[1] = item2;
+    var count: usize = 2;
+    if (item3) |third| {
+        items[2] = third;
+        count = 3;
+    }
+    return try makeList(allocator, items[0..count], item1.list_height + 1);
 }
