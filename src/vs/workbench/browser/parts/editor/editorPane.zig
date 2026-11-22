@@ -702,6 +702,14 @@ pub const Controllers = struct {
             if (colors.rawColor("editor.selectionForeground")) |raw| {
                 selection_foreground = colors.compositeColor(raw);
             }
+            const suggest_theme: @import("../../../../editor/contrib/suggest/browser/suggestWidget.zig").Theme = .{
+                .background = colors.color("editorSuggestWidget.background", .{ 30, 31, 38 }),
+                .foreground = colors.color("editorSuggestWidget.foreground", .{ 220, 220, 220 }),
+                .dim_foreground = colors.color("editorSuggestWidget.highlightForeground", .{ 140, 142, 150 }),
+                .selected_background = colors.color("editorSuggestWidget.selectedBackground", .{ 58, 62, 82 }),
+                .selected_foreground = colors.color("editorSuggestWidget.selectedForeground", .{ 255, 255, 255 }),
+                .scrollbar_foreground = colors.color("scrollbarSlider.background", .{ 160, 160, 170 }),
+            };
             self.find.setTheme(.{
                 .background = colors.color("editorWidget.background", .{ 45, 45, 55 }),
                 .foreground = colors.color("editorWidget.foreground", .{ 230, 230, 230 }),
@@ -715,6 +723,7 @@ pub const Controllers = struct {
                 .selection_background = selection_background,
                 .selection_foreground = selection_foreground,
             });
+            self.suggest.setTheme(suggest_theme);
         } else {
             self.find.setTheme(.{});
         }

@@ -62,7 +62,7 @@ For each row:
 | Content widgets | `vs/editor/browser/viewParts/contentWidgets/` | same | **F** | Registry, anchor-to-cell mapping, above/below placement, clamping, hit rectangles, insertion order and focus restore are ported. Below/above anchoring, clamping, multi-widget order and focus are covered by tests. |
 | Overlay widgets | `vs/editor/browser/viewParts/overlayWidgets/` | same | **F** | Corner preferences, size, insertion paint order, hit rectangles and focus restoration are ported; origin, top-right, bottom-right and top-center placement plus focus are covered by tests. |
 | Block decorations | `vs/editor/browser/viewParts/blockDecorations/blockDecorations.zig` | `editor/browser/viewParts/blockDecorations/blockDecorations.ts` | **F** | Ported in `113764e`; block ranges, padding, `blockIsAfterEnd`/`blockDoesNotCollapse`; terminal maps moved classes to one-cell borders. Covered by `block decorations:` tests and `View: block decorations paint a bordered range under the text`. |
-| Suggest widget | `vs/editor/contrib/suggest/browser/*` | `editor/contrib/suggest/browser/*` | **P** | Trigger/session model, windowed list, one-cell scrollbar, selection, mouse listeners and plain-text documentation are ported (20 tests). The full details/status bar, icon/theme matrix and browser accessibility panes are not. |
+| Suggest widget | `vs/editor/contrib/suggest/browser/*` | `editor/contrib/suggest/browser/*` | **P** | Trigger/session model, windowed list, one-cell scrollbar, selection, mouse listeners, plain-text documentation and the `editorSuggestWidget.*`/`scrollbarSlider.*` theme are ported (20 tests). The full details/status bar, icon matrix and browser accessibility panes are not. |
 | Hover widget | `vs/editor/contrib/hover/browser/*` | `editor/contrib/hover/browser/*` | **P** | Content-hover controller, scheduling, markdown rendering and the marker participant are ported; browser-only sticky/pin, status-bar actions and code-action links are omitted. |
 | Sticky scroll | `vs/editor/contrib/stickyScroll/browser/*`, `src/tui/stickyScrollHost.zig` | `editor/contrib/stickyScroll/browser/*` | **T** | Candidate rebuild, folding, 25% cap, overlay focus and theme are ported; it paints as a top-left overlay instead of an upstream view zone. |
 | Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | **P** | Side-by-side aligned rows, gutter/overview-ruler features and snapshot editors are ported (20 tests). Inline diff mode, hide-unchanged regions and moved-block detection are documented omissions. |
@@ -232,6 +232,8 @@ For each row:
 - Threaded the workbench theme into the terminal dialog (`dialog.*` and
   `button.*` colors), added a custom-theme UI test, and promoted the dialog row
   to **F**.
+- Resolved the suggest widget's `editorSuggestWidget.*`/`scrollbarSlider.*`
+  theme through `SuggestController.setTheme` in the editor pane.
 
 ## Next slice
 

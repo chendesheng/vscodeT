@@ -37,6 +37,15 @@ const RowHit = struct {
     index: usize,
 };
 
+pub const Theme = struct {
+    background: ui.Color = .{ .r = 30, .g = 31, .b = 38 },
+    foreground: ui.Color = .{ .r = 220, .g = 220, .b = 220 },
+    dim_foreground: ui.Color = .{ .r = 140, .g = 142, .b = 150 },
+    selected_background: ui.Color = .{ .r = 58, .g = 62, .b = 82 },
+    selected_foreground: ui.Color = .{ .r = 255, .g = 255, .b = 255 },
+    scrollbar_foreground: ui.Color = .{ .r = 160, .g = 160, .b = 170 },
+};
+
 pub const SuggestWidget = struct {
     allocator: Allocator,
     model: *SuggestModel,
@@ -45,6 +54,7 @@ pub const SuggestWidget = struct {
     focused: bool = false,
     scroll_top: usize = 0,
     root: ?*ui.Node = null,
+    theme: Theme = .{},
 
     pub fn init(allocator: Allocator, model: *SuggestModel, host: SuggestWidgetHost) !*SuggestWidget {
         const self = try allocator.create(SuggestWidget);
@@ -79,6 +89,10 @@ pub const SuggestWidget = struct {
         self.focused = false;
         self.scroll_top = 0;
         self.root = null;
+    }
+
+    pub fn setTheme(self: *SuggestWidget, theme: Theme) void {
+        self.theme = theme;
     }
 
     pub fn scrollBy(self: *SuggestWidget, delta: isize) void {
@@ -197,7 +211,7 @@ pub const SuggestWidget = struct {
             .height = .{ .percent = 100 },
             .display = .flex,
             .flex_direction = .column,
-            .background = background,
+            .background = self.theme.background,
             .overflow = .hidden,
         });
 
@@ -218,7 +232,7 @@ pub const SuggestWidget = struct {
                 .overflow = .hidden,
             });
             const text = try doc.createText(if (self.model.isLoading()) "Loading…" else "No suggestions");
-            text.setStyle(.{ .color = dim_foreground });
+            text.setStyle(.{ .color = self.theme.dim_foreground });
             _ = try message.appendChild(text);
             _ = try root.appendChild(message);
 
@@ -270,7 +284,7 @@ pub const SuggestWidget = struct {
                 .gap = .{ .column = 1 },
                 .padding = .{ .left = 1, .right = 1 },
                 .overflow = .hidden,
-                .background = if (selected) selected_background else null,
+                .background = if (selected) self.theme.selected_background else null,
                 .pointer = .pointer,
             });
 
@@ -282,7 +296,7 @@ pub const SuggestWidget = struct {
                 .flex_shrink = 0,
             });
             const kind_text = try doc.createText(kindLetter(item.kind));
-            kind_text.setStyle(.{ .color = if (selected) selected_foreground else dim_foreground });
+            kind_text.setStyle(.{ .color = if (selected) self.theme.selected_foreground else self.theme.dim_foreground });
             _ = try kind.appendChild(kind_text);
             _ = try row_node.appendChild(kind);
 
@@ -295,7 +309,7 @@ pub const SuggestWidget = struct {
                 .overflow = .hidden,
             });
             const label_text = try doc.createText(item.label);
-            label_text.setStyle(.{ .color = if (selected) selected_foreground else foreground });
+            label_text.setStyle(.{ .color = if (selected) self.theme.selected_foreground else self.theme.foreground });
             _ = try label.appendChild(label_text);
             _ = try row_node.appendChild(label);
 
@@ -310,7 +324,7 @@ pub const SuggestWidget = struct {
                     .overflow = .hidden,
                 });
                 const detail_text = try doc.createText(detail);
-                detail_text.setStyle(.{ .color = dim_foreground });
+                detail_text.setStyle(.{ .color = self.theme.dim_foreground });
                 _ = try detail_node.appendChild(detail_text);
                 _ = try row_node.appendChild(detail_node);
             }
@@ -339,7 +353,7 @@ pub const SuggestWidget = struct {
             else
                 0;
             const text = try doc.createText("█");
-            text.setStyle(.{ .color = scrollbar_foreground });
+            text.setStyle(.{ .color = self.theme.scrollbar_foreground });
             const span = try doc.createElement(.div);
             span.setStyle(.{
                 .position = .absolute,
@@ -364,7 +378,7 @@ pub const SuggestWidget = struct {
                     .height = .{ .cells = @floatFromInt(visible + 1) },
                     .flex_shrink = 0,
                     .border = .{ .left = 1 },
-                    .border_color = dim_foreground,
+                    .border_color = self.theme.dim_foreground,
                 });
                 _ = try body.appendChild(separator);
 
@@ -387,7 +401,7 @@ pub const SuggestWidget = struct {
                     .overflow = .hidden,
                 });
                 const header_text = try doc.createText(if (self.model.selectedItem()) |item| item.label else "");
-                header_text.setStyle(.{ .color = foreground, .bold = true });
+                header_text.setStyle(.{ .color = self.theme.foreground, .bold = true });
                 _ = try header.appendChild(header_text);
                 _ = try panel.appendChild(header);
 
@@ -403,7 +417,7 @@ pub const SuggestWidget = struct {
                         .overflow = .hidden,
                     });
                     const text = try doc.createText(line);
-                    text.setStyle(.{ .color = dim_foreground });
+                    text.setStyle(.{ .color = self.theme.dim_foreground });
                     _ = try line_node.appendChild(text);
                     _ = try panel.appendChild(line_node);
                     line_number += 1;
