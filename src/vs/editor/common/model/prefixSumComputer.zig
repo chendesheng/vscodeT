@@ -208,6 +208,10 @@ pub const ConstantTimePrefixSumComputer = struct {
                 for (0..value) |j| self.index_by_sum.items[sum_above + j] = i;
             }
         }
+        // Upstream trims indexBySum to the current total, so removed or
+        // zeroed trailing values shrink getTotalSum.
+        const total = if (self.values.items.len > 0) self.prefix_sum.items[self.values.items.len - 1] else 0;
+        self.index_by_sum.resize(total) catch unreachable;
         self.is_valid = true;
         self.valid_end_index = @as(isize, @intCast(self.values.items.len)) - 1;
     }
@@ -245,4 +249,17 @@ test "constant prefix sum: basic operations" {
     try std.testing.expectEqual(PrefixSumIndexOfResult{ .index = 1, .remainder = 1 }, computer.getIndexOf(3));
     computer.setValue(0, 1);
     try std.testing.expectEqual(@as(usize, 8), computer.getTotalSum());
+}
+
+test "constant prefix sum: total shrinks when trailing values are removed" {
+    const allocator = std.testing.allocator;
+    var computer = try ConstantTimePrefixSumComputer.init(allocator, &[_]usize{ 1, 2, 3 });
+    defer computer.deinit();
+    try std.testing.expectEqual(@as(usize, 6), computer.getTotalSum());
+
+    computer.removeValues(2, 1);
+    try std.testing.expectEqual(@as(usize, 3), computer.getTotalSum());
+
+    computer.setValue(0, 0);
+    try std.testing.expectEqual(@as(usize, 2), computer.getTotalSum());
 }

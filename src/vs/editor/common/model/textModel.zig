@@ -666,7 +666,8 @@ pub const TextModel = struct {
         return self._initialUndoRedoSnapshot;
     }
 
-    pub fn getOffsetAt(self: *const TextModel, position: Position) usize {
+    pub fn getOffsetAt(self: *const TextModel, rawPosition: Position) usize {
+        const position = self._validatePosition(rawPosition.lineNumber, rawPosition.column, StringOffsetValidationType.Relaxed);
         return self._buffer.getOffsetAt(position.lineNumber, position.column);
     }
 
@@ -850,7 +851,7 @@ pub const TextModel = struct {
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
     }
 
-    fn _isValidPosition(self: *TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) bool {
+    fn _isValidPosition(self: *const TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) bool {
         if (lineNumber < 1 or column < 1) {
             return false;
         }
@@ -878,7 +879,7 @@ pub const TextModel = struct {
         return true;
     }
 
-    fn _validatePosition(self: *TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) Position {
+    fn _validatePosition(self: *const TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) Position {
         const lineCount = self._buffer.getLineCount();
 
         if (lineNumber < 1) {
@@ -1121,8 +1122,10 @@ pub const TextModel = struct {
         }
         self._onDidChangeDecorations.beginDeferredEmit();
         self._eventEmitter.beginDeferredEmit();
-        defer self._eventEmitter.endDeferredEmit(null);
+        // LIFO defers: declare decorations first so the content event fires
+        // before decorations, matching upstream's `finally` order.
         defer self._onDidChangeDecorations.endDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit(null);
         if (self._initialUndoRedoSnapshot == null) {
             self._initialUndoRedoSnapshot = try self._undoRedoService.createSnapshot(self.uri());
         }
@@ -1822,7 +1825,7 @@ pub const TextModel = struct {
         const lineCount = self.getLineCount();
         const startLineNumber_ = @min(lineCount, @max(1, startLineNumber));
         const endLineNumber_ = @min(lineCount, @max(1, endLineNumber));
-        const endColumn = self.getLineMaxColumn(endLineNumber);
+        const endColumn = self.getLineMaxColumn(endLineNumber_);
         const range = Range.init(startLineNumber_, 1, endLineNumber_, endColumn);
 
         var decorations = try self._getDecorationsInRange(range, ownerId, filterOutValidation, onlyMarginDecorations);
@@ -2900,10 +2903,10 @@ const DidChangeDecorationsEmitter = struct {
     }
 
     pub fn checkAffectedAndFire(self: *DidChangeDecorationsEmitter, options: *ModelDecorationOptions) void {
-        self._affectsMinimap = options.minimap != null;
-        self._affectsOverviewRuler = options.overviewRuler != null;
-        self._affectsGlyphMargin = options.glyphMarginClassName != null;
-        self._affectsLineNumber = options.lineNumberClassName != null;
+        self._affectsMinimap = self._affectsMinimap or options.minimap != null;
+        self._affectsOverviewRuler = self._affectsOverviewRuler or options.overviewRuler != null;
+        self._affectsGlyphMargin = self._affectsGlyphMargin or options.glyphMarginClassName != null;
+        self._affectsLineNumber = self._affectsLineNumber or options.lineNumberClassName != null;
         self.tryFire();
     }
 
@@ -3196,4 +3199,30 @@ test "TextModel.setEOL resets the change cursor before the next insert" {
     const content = try textModel.getValue(.CRLF, false);
     defer content.deinit();
     try std.testing.expectEqualStrings("xa\r\nby", content.items);
+}
+
+test "TextModel.getOffsetAt clamps relaxed positions" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "abc\ndef", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), textModel.getOffsetAt(Position.init(1, 100)));
+    try std.testing.expectEqual(@as(usize, 0), textModel.getOffsetAt(Position.init(0, 5)));
+    try std.testing.expectEqual(@as(usize, 7), textModel.getOffsetAt(Position.init(9, 9)));
+}
+
+test "TextModel.getLinesDecorations clamps the end line for its column" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "a\nb", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    const decorations = try textModel.getLinesDecorations(0, 99, 0, false, false);
+    defer allocator.free(decorations);
+    try std.testing.expectEqual(@as(usize, 0), decorations.len);
 }

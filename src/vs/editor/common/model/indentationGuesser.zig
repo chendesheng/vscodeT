@@ -200,7 +200,7 @@ pub fn guessIndentation(source: *PieceTreeTextBuffer, defaultTabSize: usize, def
 
         // Let a tabSize of 2 win even if it is not the maximum
         // (only in case 4 was guessed)
-        if (tabSize == 4 and spacesDiffCount[4] > 0 and spacesDiffCount[2] > 0 and spacesDiffCount[2] >= spacesDiffCount[4] / 2) {
+        if (tabSize == 4 and spacesDiffCount[4] > 0 and spacesDiffCount[2] > 0 and spacesDiffCount[2] * 3 >= spacesDiffCount[4] * 2) {
             tabSize = 2;
         }
     }
@@ -241,4 +241,26 @@ test "guessIndentation handles lines without indentation after an indented line"
 
     const guessed = try guessIndentation(&source, 4, true);
     try std.testing.expect(guessed.tabSize >= 2 and guessed.tabSize <= 8);
+}
+
+test "guessIndentation: 2 wins only with two thirds of the 4-space diffs" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{
+        try StringBuffer.init(allocator, "A\n" ++
+            "    A\n" ++
+            "        A\n" ++
+            "            A\n" ++
+            "                A\n" ++
+            "                    A\n" ++
+            "                      A\n" ++
+            "                        A\n" ++
+            "                            A\n"),
+    };
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, false);
+    defer buffer.deinit();
+
+    const guessed = try guessIndentation(&buffer, 4, true);
+    // Five 4-space diffs and two 2-space diffs: 2/5 is below the upstream 2/3
+    // threshold, so 4 must win.
+    try std.testing.expectEqual(@as(usize, 4), guessed.tabSize);
 }

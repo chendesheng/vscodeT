@@ -46,9 +46,6 @@ pub fn fixBracketsInLine(
     defer scanner.deinit();
     try scanner.scan(line_tokens);
 
-    for (scanner.tokens.items) |t| {
-        std.debug.print("TOKEN kind={s} len={d} text={?s}\n", .{ @tagName(t.kind), t.length, if (t.bracket) |b| b.bracket_text else null });
-    }
     var document = try parseTokens(allocator, scanner.takeTokens());
     defer document.deinit();
 

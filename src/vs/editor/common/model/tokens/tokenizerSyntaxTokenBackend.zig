@@ -98,17 +98,17 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 const view = e.first;
                 const state = e.second;
                 if (state) |newState| {
-                    var existing = this._attachedViewStates.get(view);
-                    if (existing == null) {
-                        existing = AttachedViewHandler.init(this, struct {
+                    const entry = try this._attachedViewStates.getOrPut(view);
+                    if (!entry.found_existing) {
+                        entry.value_ptr.* = AttachedViewHandler.init(this, struct {
                             fn f(ctx: *anyopaque, handler: *AttachedViewHandler) void {
                                 const backend: *TokenizerSyntaxTokenBackend = @ptrCast(@alignCast(ctx));
                                 backend.refreshRanges(handler._lineRanges);
                             }
                         }.f);
-                        try this._attachedViewStates.put(view, existing.?);
                     }
-                    existing.?.handleStateChange(newState);
+                    // Mutate the stored handler, not a by-value copy.
+                    entry.value_ptr.handleStateChange(newState);
                 } else {
                     _ = this._attachedViewStates.remove(view);
                 }
