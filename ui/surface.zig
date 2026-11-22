@@ -8,9 +8,11 @@ const box = @import("box.zig");
 const frame_mod = @import("frame.zig");
 const layout = @import("layout.zig");
 const paint = @import("paint.zig");
+const pointer_mod = @import("pointer.zig");
 const style = @import("style.zig");
 
 pub const ColorDepth = cell.ColorDepth;
+pub const Pointer = style.Pointer;
 
 pub const Options = struct {
     cols: usize,
@@ -22,6 +24,10 @@ pub const Options = struct {
     /// probing the terminal; when false, borders keep their box-drawing
     /// fallback and reserve layout cells.
     cell_borders: bool = false,
+    /// Emit the kitty OSC 22 pointer shape when `pointer` changes. Off by
+    /// default because the pointer is terminal-global output, not part of the
+    /// grid; hosts that already track the mouse (the TUI) opt in.
+    pointer_shapes: bool = false,
 };
 
 pub const RenderOptions = struct {
@@ -34,6 +40,11 @@ pub const Surface = struct {
     box_tree: *box.BoxTree,
     frame: frame_mod.Frame,
     color_depth: ColorDepth,
+    pointer_shapes: bool = false,
+    /// Desired pointer shape for the next rendered frame. The host updates it
+    /// from mouse events; the renderer diffs it against `pointer_state`.
+    pointer: Pointer = .default,
+    pointer_state: pointer_mod.State = .{},
     first_frame: bool = true,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Surface {
@@ -60,6 +71,7 @@ pub const Surface = struct {
             .box_tree = box_tree,
             .frame = frame,
             .color_depth = options.color_depth,
+            .pointer_shapes = options.pointer_shapes,
         };
     }
 
@@ -86,6 +98,24 @@ pub const Surface = struct {
 
     pub fn cellBorders(self: *const Surface) bool {
         return self.box_tree.cell_borders;
+    }
+
+    /// Enables or disables OSC 22 emission. Disabling does not emit a reset;
+    /// the host owns that transition through `pointer_state`.
+    pub fn setPointerShapes(self: *Surface, enabled: bool) void {
+        self.pointer_shapes = enabled;
+    }
+
+    pub fn pointerShapes(self: *const Surface) bool {
+        return self.pointer_shapes;
+    }
+
+    /// Records the pointer shape the next render should show. Returns true when
+    /// the shape changed, so a host can schedule a redraw.
+    pub fn setPointer(self: *Surface, shape: Pointer) bool {
+        if (self.pointer == shape) return false;
+        self.pointer = shape;
+        return true;
     }
 
     pub fn grid(self: *Surface) *const cell.CellGrid {
@@ -138,6 +168,8 @@ pub const Surface = struct {
             self.first_frame = false;
         }
 
+        if (self.pointer_shapes) try self.pointer_state.update(writer, self.pointer);
+
         try self.ensureLayout();
         self.frame.begin();
         paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
@@ -166,6 +198,16 @@ pub const Surface = struct {
         const x = @as(f64, @floatFromInt(col)) + 0.5;
         const y = @as(f64, @floatFromInt(row)) + 0.5;
         return self.box_tree.elementFromPoint(x, y);
+    }
+
+    /// The computed mouse pointer shape under a viewport cell, or null when no
+    /// box contains it. Style inheritance and hit-test clipping follow
+    /// `elementFromPoint`; text nodes report the container's shape.
+    pub fn pointerAt(self: *Surface, col: usize, row: usize) !?Pointer {
+        try self.ensureLayout();
+        const x = @as(f64, @floatFromInt(col)) + 0.5;
+        const y = @as(f64, @floatFromInt(row)) + 0.5;
+        return self.box_tree.pointerAt(x, y);
     }
 
     fn ensureLayout(self: *Surface) !void {
@@ -500,4 +542,109 @@ test "Surface: cell-border render uses the pen and drops box glyphs" {
     try fallback.render(&fallback_out.writer, .{ .synchronized = false });
     try std.testing.expect(std.mem.indexOf(u8, fallback_out.written(), "┌") != null);
     try std.testing.expect(std.mem.indexOf(u8, fallback_out.written(), "cell-border") == null);
+}
+
+test "Surface: pointerAt resolves inherited styles and hit clipping" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 10, .rows = 3 });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+        .pointer = .text,
+    });
+    doc.setRoot(root);
+
+    const link = try doc.createElement(.div);
+    link.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 1 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .pointer = .pointer,
+    });
+    _ = try root.appendChild(link);
+    _ = try link.appendChild(try doc.createText("abc"));
+
+    // The link overrides the root's inherited text shape; text itself reports
+    // the container's shape; empty root area falls back to the inherited one.
+    try std.testing.expectEqual(Pointer.pointer, (try surface.pointerAt(2, 0)).?);
+    try std.testing.expectEqual(Pointer.text, (try surface.pointerAt(6, 1)).?);
+
+    // A clipping parent keeps the pointer out of the clipped area.
+    link.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 1 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+        .overflow = .hidden,
+        .pointer = .pointer,
+    });
+    const spill = try doc.createElement(.div);
+    spill.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 3 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 5 },
+        .height = .{ .cells = 1 },
+    });
+    _ = try link.appendChild(spill);
+    try std.testing.expectEqual(Pointer.text, (try surface.pointerAt(6, 0)).?);
+}
+
+test "Surface: render emits OSC 22 only when the pointer shape changes" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{
+        .cols = 8,
+        .rows = 2,
+        .pointer_shapes = true,
+    });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+        .pointer = .text,
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("hello"));
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    // Frames keep their exact cell output; the default pointer adds no bytes.
+    try surface.render(&out.writer, .{ .synchronized = false });
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
+
+    out.clearRetainingCapacity();
+    try std.testing.expect(surface.setPointer(.text));
+    try surface.render(&out.writer, .{ .synchronized = false });
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;text\x1b\\") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "hello") == null);
+
+    out.clearRetainingCapacity();
+    try surface.render(&out.writer, .{ .synchronized = false });
+    try std.testing.expectEqual(@as(usize, 0), out.written().len);
+
+    out.clearRetainingCapacity();
+    try std.testing.expect(surface.setPointer(.pointer));
+    try surface.render(&out.writer, .{ .synchronized = false });
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;pointer\x1b\\") != null);
+
+    out.clearRetainingCapacity();
+    surface.setPointerShapes(false);
+    try std.testing.expect(surface.setPointer(.default));
+    try surface.render(&out.writer, .{ .synchronized = false });
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
 }

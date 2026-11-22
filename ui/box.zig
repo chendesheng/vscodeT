@@ -59,6 +59,10 @@ pub const LayoutBox = struct {
     /// Inherited text properties, resolved from the direct styles on the way
     /// down the box tree.
     text_style: style_mod.TextStyle = .{},
+    /// Inherited mouse pointer shape, resolved from the direct styles on the
+    /// way down the box tree (CSS `cursor` inheritance). Text and anonymous
+    /// boxes carry the container's computed value.
+    pointer: style_mod.Pointer = .default,
     parent: ?*LayoutBox = null,
     children: std.ArrayList(*LayoutBox) = .empty,
     /// Border box.
@@ -178,6 +182,21 @@ pub const BoxTree = struct {
         return elementForNode(hit);
     }
 
+    /// The computed mouse pointer shape under a viewport point, or null when no
+    /// box contains it. Hit testing follows paint order and clipping exactly
+    /// like `elementFromPoint`; text hits read the text box's inherited shape.
+    ///
+    /// The tree must have been laid out; `Surface.pointerAt` does that before
+    /// calling here.
+    pub fn pointerAt(self: *const BoxTree, x: f64, y: f64) ?style_mod.Pointer {
+        const hit = hitTestBox(self.root, x, y, self.root.rect) orelse return null;
+        var node: ?*dom.Node = hit;
+        while (node) |current| : (node = current.parent) {
+            if (self.node_boxes.get(current)) |box| return box.pointer;
+        }
+        return null;
+    }
+
     pub fn clearNeedsLayout(self: *BoxTree) void {
         clearBoxNeedsLayout(self.root);
         self.needs_layout = false;
@@ -265,6 +284,8 @@ pub const BoxTree = struct {
                 if (box.parent) |parent| parent.text_style else .{},
                 box.style,
             );
+            const pointer = box.style.pointer orelse if (box.parent) |parent| parent.pointer else .default;
+            if (pointer != box.pointer) resolvePointers(box, pointer);
         }
         shiftBox(box, dx, dy);
         copyBoxRects(box);
@@ -443,6 +464,17 @@ fn shiftBox(box: *LayoutBox, dx: f64, dy: f64) void {
     for (box.children.items) |child| shiftBox(child, dx, dy);
 }
 
+/// Re-resolves the inherited pointer after an in-place style update. Anonymous
+/// and text boxes have no declaration of their own; only a principal element
+/// box keeps its direct `style.pointer`.
+fn resolvePointers(box: *LayoutBox, inherited: style_mod.Pointer) void {
+    box.pointer = if (box.kind == .element)
+        (box.style.pointer orelse inherited)
+    else
+        inherited;
+    for (box.children.items) |child| resolvePointers(child, box.pointer);
+}
+
 fn createElementBox(
     tree: *BoxTree,
     parent: *LayoutBox,
@@ -456,6 +488,7 @@ fn createElementBox(
         .owner = node,
         .style = element.style,
         .text_style = style_mod.TextStyle.resolve(parent.text_style, element.style),
+        .pointer = element.style.pointer orelse parent.pointer,
         .parent = parent,
     };
     if (tree.cell_borders) {
@@ -477,6 +510,7 @@ fn createTextBox(tree: *BoxTree, parent: *LayoutBox, node: *dom.Node, text: *dom
         .paint = text.paint,
         .paint_ref = text.paint_ref,
         .text_style = style_mod.TextStyle.resolveFlow(parent.text_style, text.flow),
+        .pointer = parent.pointer,
         .text = text.data,
         .parent = parent,
     };
@@ -598,6 +632,7 @@ fn flushRun(
         .kind = if (flex) .anonymous_flex_item else .anonymous_inline,
         .style = style,
         .text_style = parent.text_style,
+        .pointer = parent.pointer,
         .parent = parent,
     };
     try box.children.appendSlice(allocator, run.items);
@@ -819,4 +854,61 @@ test "BoxTree: text styles inherit from ancestors and can be overridden" {
     try std.testing.expectEqual(style_mod.WordBreak.keep_all, tree.find(plain).?.text_style.word_break);
     try std.testing.expectEqual(style_mod.WhiteSpace.pre, tree.find(override).?.text_style.white_space);
     try std.testing.expectEqual(style_mod.WordBreak.break_all, tree.find(override).?.text_style.word_break);
+}
+
+test "BoxTree: pointer inherits through elements and text boxes" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{ .pointer = .text });
+    doc.setRoot(root);
+
+    const plain = try doc.createText("a");
+    _ = try root.appendChild(plain);
+
+    const child = try doc.createElement(.div);
+    child.setStyle(.{ .pointer = .pointer });
+    _ = try root.appendChild(child);
+    const linked = try doc.createText("b");
+    _ = try child.appendChild(linked);
+
+    const reset = try doc.createElement(.div);
+    reset.setStyle(.{ .pointer = .default });
+    _ = try root.appendChild(reset);
+    const plain_again = try doc.createText("c");
+    _ = try reset.appendChild(plain_again);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+
+    try std.testing.expectEqual(style_mod.Pointer.default, tree.root.pointer);
+    try std.testing.expectEqual(style_mod.Pointer.text, tree.find(root).?.pointer);
+    try std.testing.expectEqual(style_mod.Pointer.text, tree.find(plain).?.pointer);
+    try std.testing.expectEqual(style_mod.Pointer.pointer, tree.find(child).?.pointer);
+    try std.testing.expectEqual(style_mod.Pointer.pointer, tree.find(linked).?.pointer);
+    try std.testing.expectEqual(style_mod.Pointer.default, tree.find(reset).?.pointer);
+    try std.testing.expectEqual(style_mod.Pointer.default, tree.find(plain_again).?.pointer);
+}
+
+test "BoxTree: translateSubtree refreshes descendant pointers" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    const text = try doc.createText("a");
+    _ = try root.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try std.testing.expectEqual(style_mod.Pointer.default, tree.find(text).?.pointer);
+
+    root.setStyle(.{ .pointer = .text });
+    try std.testing.expect(tree.translateSubtree(root, 0, 0));
+    try std.testing.expectEqual(style_mod.Pointer.text, tree.find(text).?.pointer);
 }

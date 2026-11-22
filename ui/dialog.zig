@@ -159,6 +159,13 @@ pub const Dialog = struct {
         return rect;
     }
 
+    /// The pointer shape the dialog asks for at a host cell: a hand over a
+    /// button, the terminal default over the dimmed backdrop and padding.
+    /// Valid after `render` has computed the button rectangles.
+    pub fn pointerAt(self: *const Dialog, x: usize, y: usize) style.Pointer {
+        return if (self.buttonAt(x, y) != null) .pointer else .default;
+    }
+
     pub fn focusNext(self: *Dialog) void {
         if (self.button_count == 0) return;
         self.focused = (self.focused + 1) % self.button_count;
@@ -824,6 +831,9 @@ test "Dialog: mouse press and release activate a button" {
 
     var outside = events.MouseEvent{ .kind = .down, .x = 0, .y = 0, .button = .left };
     try std.testing.expectEqual(@as(?usize, null), dialog.handleMouse(&outside));
+
+    try std.testing.expectEqual(style.Pointer.pointer, dialog.pointerAt(rect.x + 1, rect.y));
+    try std.testing.expectEqual(style.Pointer.default, dialog.pointerAt(0, 0));
 }
 
 fn allRows(allocator: Allocator, grid: *const CellGrid) ![]u8 {
