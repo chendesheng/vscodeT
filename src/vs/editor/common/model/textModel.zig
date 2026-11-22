@@ -957,9 +957,31 @@ pub const TextModel = struct {
         const endColumn = end.column;
 
         if (validationType == StringOffsetValidationType.Strict) {
-            const startCodepointRange = self._buffer.getLineCodepointRange(startLineNumber, startColumn - 1);
-            const endCodepointRange = self._buffer.getLineCodepointRange(endLineNumber, endColumn - 1);
-            return Range.init(startLineNumber, startCodepointRange[0] + 1, endLineNumber, endCodepointRange[1] + 1);
+            // UTF-8 adaptation of upstream's surrogate-pair check: expand only
+            // the endpoints that are inside a code point, and leave already
+            // valid endpoints untouched.
+            const start_offset = startColumn - 1;
+            const end_offset = endColumn - 1;
+            const startCodepointRange = self._buffer.getLineCodepointRange(startLineNumber, start_offset);
+            const endCodepointRange = self._buffer.getLineCodepointRange(endLineNumber, end_offset);
+            const start_inside = startCodepointRange[0] != start_offset;
+            const end_inside = endCodepointRange[0] != end_offset;
+
+            if (!start_inside and !end_inside) {
+                return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
+            }
+
+            if (startLineNumber == endLineNumber and startColumn == endColumn) {
+                // Do not expand a collapsed range, simply move it to a valid location.
+                return Range.init(startLineNumber, startCodepointRange[0] + 1, endLineNumber, endCodepointRange[0] + 1);
+            }
+
+            return Range.init(
+                startLineNumber,
+                if (start_inside) startCodepointRange[0] + 1 else startColumn,
+                endLineNumber,
+                if (end_inside) endCodepointRange[1] + 1 else endColumn,
+            );
         }
 
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
@@ -1407,7 +1429,10 @@ pub const TextModel = struct {
         for (allDecorations.items) |node| {
             const range = node.range.?; // the range is defined due to `_onBeforeEOLChange`
 
-            const delta = node.cachedAbsoluteStart - node.start;
+            // Upstream `delta` is a JS number and may be negative (an edit
+            // before the node shifted an ancestor delta left). Keep the
+            // arithmetic signed instead of underflowing `usize`.
+            const delta: isize = @as(isize, @intCast(node.cachedAbsoluteStart)) - @as(isize, @intCast(node.start));
 
             const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
             const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
@@ -1416,8 +1441,8 @@ pub const TextModel = struct {
             node.cachedAbsoluteEnd = endOffset;
             node.cachedVersionId = versionId;
 
-            node.start = startOffset - delta;
-            node.end = endOffset - delta;
+            node.start = @intCast(@as(isize, @intCast(startOffset)) - delta);
+            node.end = @intCast(@as(isize, @intCast(endOffset)) - delta);
 
             recomputeMaxEnd(node);
         }
@@ -2226,6 +2251,17 @@ test "TextModel.validateRange" {
     try std.testing.expectEqualDeep(Range.init(1, 1, 1, text.len + 1), textModel.validateRange(Range.init(1, 1, 1, 100)));
     try std.testing.expectEqualDeep(Range.init(1, 1, 1, 4), textModel.validateRange(Range.init(1, 1, 1, 2)));
     try std.testing.expectEqualDeep(Range.init(1, 1, 1, 7), textModel.validateRange(Range.init(1, 2, 1, 5)));
+
+    // A endpoint that is already on a code-point boundary is not expanded.
+    var asciiUndo = UndoRedoService.init(allocator);
+    defer asciiUndo.deinit();
+    var asciiModel = try createTestTextModel(allocator, "abc", &asciiUndo);
+    defer allocator.destroy(asciiModel);
+    defer asciiModel.deinit();
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 2), asciiModel.validateRange(Range.init(1, 0, 1, 2)));
+
+    // A collapsed range inside a multibyte code point moves before it.
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 1), textModel.validateRange(Range.init(1, 2, 1, 2)));
 }
 
 test "TextModel.applyEdits" {
@@ -2542,7 +2578,8 @@ pub const DecorationsTrees = struct {
     }
 
     fn ensureAllNodesHaveRanges(self: *DecorationsTrees, host: *TextModel) !void {
-        _ = try self.getAll(host, 0, false, false, false);
+        var all = try self.getAll(host, 0, false, false, false);
+        all.deinit();
     }
 
     fn _ensureNodesHaveRanges(host: *TextModel, nodes: ArrayList(*IntervalNode)) !ArrayList(ModelDecoration) {
@@ -3102,4 +3139,37 @@ test "TextModel.removeUnusualLineTerminators removes LS and PS" {
     var content = try test_model.model.getLineContent(1);
     defer content.deinit();
     try std.testing.expectEqualStrings("abc", content.items);
+}
+
+test "TextModel.setEOL keeps decorations with shifted deltas" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "0123456789 abcdefghij ABCDEFGHIJ", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var decorations = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 5, 1, 10), .options = @constCast(TRACKED_RANGE_OPTIONS[1]) },
+        .{ .range = Range.init(1, 15, 1, 20), .options = @constCast(TRACKED_RANGE_OPTIONS[1]) },
+        .{ .range = Range.init(1, 25, 1, 30), .options = @constCast(TRACKED_RANGE_OPTIONS[1]) },
+    };
+    const ids = try textModel.deltaDecorations(&.{}, &decorations, 1);
+    defer allocator.free(ids);
+
+    // Delete text before the decorations so their cached deltas differ from
+    // their relative starts, then change the EOL. Upstream's delta is signed.
+    var ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 1, 4), null),
+    };
+    _ = try textModel.applyEdits(&ops, false);
+
+    try textModel.setEOL(.CRLF);
+
+    const all = try textModel.getAllDecorations(0, false);
+    defer allocator.free(all);
+    try std.testing.expectEqual(@as(usize, 3), all.len);
+    var content = try textModel.getLineContent(1);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("3456789 abcdefghij ABCDEFGHIJ", content.items);
 }
