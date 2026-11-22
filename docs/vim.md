@@ -82,11 +82,13 @@ Command surface:
   `hlsearch`). `Enter` commits the pattern (a count before `/`/`?` commits to
   the count-th match), `Esc` restores the cursor and the previous pattern's
   highlights. `n`, `N` move through matches and move the current-match
-  emphasis; `:noh` clears the highlights; `*`/`#` highlight every occurrence
-  of the word under the cursor. `:set regex`/`:set noregex` selects regex or
-  literal matching.
-- `:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`, `:noh`,
-  `:set ignorecase`/`:set noignorecase`, line jumps and `:$`.
+  emphasis; `:noh`/`:nohlsearch` (any unambiguous prefix, like Vim) stops
+  painting the highlights but keeps the pattern, so `n`/`N` keep searching and
+  turn the paint back on; `*`/`#` highlight every occurrence of the word under
+  the cursor. `:set regex`/`:set noregex` selects regex or literal matching.
+- `:w`, `:q`, `:q!`, `:wq`, `:e`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`,
+  `:noh`/`:nohlsearch`, `:set ignorecase`/`:set noignorecase`, line jumps and
+  `:$`.
 - `gd`, `gD`, `gh`, `gO`, `gf`, `Ctrl-]`.
   `gh` opens the hover at the cursor. Editor keydown listeners run before Vim,
   so the next key dismisses the hover before Vim executes its command; a motion

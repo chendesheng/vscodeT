@@ -111,6 +111,10 @@ pub const VimEngine = struct {
     search_forward: bool = true,
     search_is_regex: bool = true,
     last_search_match: ?Range = null,
+    /// Vim's `no_hlsearch`: `:noh` clears the painted highlight but keeps the
+    /// pattern. A committed `/`/`?`, `*`/`#` or `n`/`N` resets the flag and
+    /// paints the matches again.
+    hlsearch_disabled: bool = false,
     /// Cursor position when the `/` or `?` prompt opened. Incremental previews
     /// always search from here, and Escape restores it.
     search_origin: ?Position = null,
@@ -1599,7 +1603,13 @@ pub const VimEngine = struct {
     }
 
     /// Repaints the highlights for the committed pattern and current match.
+    /// `:noh` keeps the pattern but suppresses the paint until a new search
+    /// runs again, like Vim's `no_hlsearch`.
     fn refreshCommittedHighlight(self: *VimEngine) !void {
+        if (self.hlsearch_disabled) {
+            self.editor.setSearchHighlights(&.{}, null);
+            return;
+        }
         try self.refreshSearchHighlights(self.last_search.items, self.search_is_regex, self.last_search_match);
     }
 
@@ -1663,9 +1673,11 @@ pub const VimEngine = struct {
             _ = try self.commands.execute("workbench.action.splitEditor");
         } else if (std.mem.eql(u8, command, "vsp")) {
             _ = try self.commands.execute("workbench.action.splitEditorOrthogonal");
-        } else if (std.mem.eql(u8, command, "noh")) {
-            self.last_search.clearRetainingCapacity();
-            self.last_search_match = null;
+        } else if (isNohlsearchCommand(command)) {
+            // `:noh` is only the shortest abbreviation of `:nohlsearch`; Vim
+            // keeps the pattern and clears the painted highlight until the
+            // next search runs.
+            self.hlsearch_disabled = true;
             self.editor.setSearchHighlights(&.{}, null);
         } else if (std.mem.eql(u8, command, "$")) {
             try self.editor.setCursor(self.firstNonBlank(self.editor.model.getLineCount()));
@@ -1745,6 +1757,7 @@ pub const VimEngine = struct {
         }
         const range = found orelse return;
         self.last_search_match = range;
+        self.hlsearch_disabled = false;
         try self.editor.setCursor(range.startPosition());
         try self.clampNormal();
         self.editor.revealRange(range);
@@ -2623,6 +2636,16 @@ pub const VimEngine = struct {
         return count;
     }
 };
+
+/// Vim accepts any unambiguous prefix of `:nohlsearch`; `noh` is the
+/// shortest form users type, while `:nohl`, `:nohlse` and the full name are
+/// equally valid.
+fn isNohlsearchCommand(command: []const u8) bool {
+    const name = "nohlsearch";
+    return command.len >= "noh".len and
+        command.len <= name.len and
+        std.mem.startsWith(u8, name, command);
+}
 
 const BracketKind = enum { open_paren, close_paren, open_square, close_square, open_brace, close_brace };
 

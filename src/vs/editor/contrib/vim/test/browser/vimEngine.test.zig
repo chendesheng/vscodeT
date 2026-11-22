@@ -474,6 +474,64 @@ test "Vim: committed search highlights all matches and n moves the current match
     try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
 }
 
+test "Vim: :noh keeps the search pattern and n re-enables the highlight" {
+    const h = try Harness.init(std.testing.allocator, "foo foo foo");
+    defer h.deinit();
+
+    try h.sendChar('/');
+    try h.sendText("foo");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 3), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 5, 1, 8), h.currentHighlight().?);
+
+    try h.sendChar(':');
+    try h.sendText("noh");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+    try std.testing.expectEqual(@as(?[]const u8, null), h.window.message);
+
+    // Cancelling a prompt after `:noh` must not repaint the old matches.
+    try h.sendChar('/');
+    try h.send(.escape);
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+
+    // Vim keeps the pattern: `n` searches again and turns the paint back on.
+    try h.sendChar('n');
+    try std.testing.expectEqual(@as(usize, 3), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 9, 1, 12), h.currentHighlight().?);
+}
+
+test "Vim: :nohl and :nohlsearch are accepted abbreviations" {
+    const h = try Harness.init(std.testing.allocator, "foo foo foo");
+    defer h.deinit();
+
+    try h.sendChar('/');
+    try h.sendText("foo");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 3), h.highlightCount());
+
+    try h.sendChar(':');
+    try h.sendText("nohl");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+    try std.testing.expectEqual(@as(?[]const u8, null), h.window.message);
+
+    try h.sendChar('n');
+    try std.testing.expectEqual(@as(usize, 3), h.highlightCount());
+
+    try h.sendChar(':');
+    try h.sendText("nohlsearch");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+    try std.testing.expectEqual(@as(?[]const u8, null), h.window.message);
+
+    // Anything that is not a prefix of `nohlsearch` stays unsupported.
+    try h.sendChar(':');
+    try h.sendText("nohlx");
+    try h.send(.enter);
+    try std.testing.expectEqualStrings("Vim: unsupported command", h.window.message.?);
+}
+
 test "Vim: incremental search backspace and no match" {
     const h = try Harness.init(std.testing.allocator, "abcabc");
     defer h.deinit();
