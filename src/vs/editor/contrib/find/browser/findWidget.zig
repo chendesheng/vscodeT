@@ -13,11 +13,12 @@
 // replace toggle/previous/next/close/preserve-case/replace/replace-all
 // controls.
 // TUI-specific: the key map (documented in the README), the cell layout, and
-// the absence of the browser sash and accessibility tree. Find-input history
-// is kept host-side and navigated with Up/Down. The
-// browser `FindWidgetViewZone` becomes a terminal top inset: while the bar is
-// visible and `editor.find.addExtraSpaceOnTop` is enabled, the editor reserves
-// the bar's 1-2 rows above line 1 and shifts text/hit testing below it. Ctrl-H cannot be used for replace because terminals report it as
+// the absence of the browser sash and accessibility tree. Find and replace
+// input histories are kept host-side and navigated with Up/Down. The browser
+// `FindWidgetViewZone` becomes a terminal top inset: while the bar is visible
+// and `editor.find.addExtraSpaceOnTop` is enabled, the editor reserves the
+// bar's 1-2 rows above line 1 and shifts text/hit testing below it.
+// Ctrl-H cannot be used for replace because terminals report it as
 // Backspace; the replace row is on Ctrl-R instead.
 
 const std = @import("std");
@@ -90,6 +91,8 @@ pub const FindWidget = struct {
     /// `IHistory<string>` for the find input, most-recent last.
     history: std.array_list.Managed([]u8),
     history_index: ?usize = null,
+    replace_history: std.array_list.Managed([]u8),
+    replace_history_index: ?usize = null,
     theme: Theme = Theme.dark(),
 
     focused: bool = false,
@@ -118,6 +121,7 @@ pub const FindWidget = struct {
             .find_input = ui.InputBox.init(allocator),
             .replace_input = ui.InputBox.init(allocator),
             .history = std.array_list.Managed([]u8).init(allocator),
+            .replace_history = std.array_list.Managed([]u8).init(allocator),
         };
         self.find_input.placeholder = "Find";
         self.find_input.color = foreground;
@@ -155,6 +159,8 @@ pub const FindWidget = struct {
     pub fn deinit(self: *FindWidget) void {
         for (self.history.items) |entry| self.allocator.free(entry);
         self.history.deinit();
+        for (self.replace_history.items) |entry| self.allocator.free(entry);
+        self.replace_history.deinit();
         self.find_input.deinit();
         self.replace_input.deinit();
         self.allocator.destroy(self);
@@ -233,8 +239,48 @@ pub const FindWidget = struct {
         self.focus_field = if (self.state.is_replace_revealed) .replace else .find;
     }
 
+    fn recordReplaceHistory(self: *FindWidget) void {
+        const value = self.replace_input.getValue();
+        if (value.len == 0) return;
+        if (self.replace_history.items.len > 0 and
+            std.mem.eql(u8, self.replace_history.items[self.replace_history.items.len - 1], value))
+        {
+            return;
+        }
+        const copy = self.allocator.dupe(u8, value) catch return;
+        self.replace_history.append(copy) catch {
+            self.allocator.free(copy);
+            return;
+        };
+        if (self.replace_history.items.len > 20) {
+            const oldest = self.replace_history.orderedRemove(0);
+            self.allocator.free(oldest);
+        }
+        self.replace_history_index = null;
+    }
+
+    fn navigateReplaceHistory(self: *FindWidget, backwards: bool) bool {
+        if (self.replace_history.items.len == 0) return false;
+        var index = self.replace_history_index orelse self.replace_history.items.len;
+        if (backwards) {
+            if (index == 0) return true;
+            index -= 1;
+        } else {
+            if (index + 1 >= self.replace_history.items.len) {
+                self.replace_history_index = null;
+                self.replace_input.clear() catch {};
+                return true;
+            }
+            index += 1;
+        }
+        self.replace_history_index = index;
+        self.replace_input.setValue(self.replace_history.items[index]) catch {};
+        return true;
+    }
+
     pub fn close(self: *FindWidget) void {
         self.recordHistory();
+        self.recordReplaceHistory();
         self.focused = false;
         self.hover_control = null;
         self.bar_root = null;
@@ -531,6 +577,7 @@ pub const FindWidget = struct {
             },
             .enter => {
                 self.recordHistory();
+                self.recordReplaceHistory();
                 if (event.mods.ctrl and event.mods.alt) {
                     self.model.replaceAll() catch |err| self.report(err);
                 } else if (event.mods.alt) {
@@ -548,11 +595,13 @@ pub const FindWidget = struct {
             },
             .up => {
                 if (self.focus_field == .find and self.navigateHistory(true)) return true;
+                if (self.focus_field == .replace and self.navigateReplaceHistory(true)) return true;
                 self.model.moveToPrevMatch() catch |err| self.report(err);
                 return true;
             },
             .down => {
                 if (self.focus_field == .find and self.navigateHistory(false)) return true;
+                if (self.focus_field == .replace and self.navigateReplaceHistory(false)) return true;
                 self.model.moveToNextMatch() catch |err| self.report(err);
                 return true;
             },

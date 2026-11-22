@@ -657,3 +657,36 @@ test "FindController: Up/Down navigate find input history" {
     try std.testing.expect(view.dispatchKey(&down));
     try std.testing.expectEqualStrings("", controller.widget().find_input.getValue());
 }
+
+test "FindController: replace input history survives close/reopen" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+
+    controller.widget().openReplace();
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+    try controller.widget().replace_input.setValue("replacement");
+    controller.widget().close();
+
+    controller.widget().openReplace();
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    try controller.widget().replace_input.clear();
+    var up = ui.KeyEvent{ .key = .up };
+    try std.testing.expect(view.dispatchKey(&up));
+    try std.testing.expectEqualStrings("replacement", controller.widget().replace_input.getValue());
+}
