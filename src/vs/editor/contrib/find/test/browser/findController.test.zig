@@ -690,3 +690,35 @@ test "FindController: replace input history survives close/reopen" {
     try std.testing.expect(view.dispatchKey(&up));
     try std.testing.expectEqualStrings("replacement", controller.widget().replace_input.getValue());
 }
+
+test "FindController: findOnType and closeOnResult options" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+    try controller.open(false);
+
+    const widget = controller.widget();
+    widget.setFindOnType(false);
+    var alpha = ui.KeyEvent{ .key = .{ .text = "alpha" } };
+    try std.testing.expect(view.dispatchKey(&alpha));
+    try std.testing.expectEqual(@as(usize, 0), controller.state.matches_count);
+
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(view.dispatchKey(&enter));
+    try std.testing.expectEqual(@as(usize, 2), controller.state.matches_count);
+
+    widget.setCloseOnResult(true);
+    try std.testing.expect(view.dispatchKey(&enter));
+    try std.testing.expect(!widget.state.is_revealed);
+}

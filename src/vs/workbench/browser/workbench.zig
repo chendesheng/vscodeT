@@ -4411,11 +4411,27 @@ pub const Workbench = struct {
     const ShowTabs = enum { none, single, multiple };
 
     fn findAddExtraSpaceOnTop(self: *Workbench) bool {
-        const configuration = self.configuration orelse return true;
-        const value = configuration.getValue("editor.find.addExtraSpaceOnTop", .{}) orelse return true;
+        return self.findBoolSetting("editor.find.addExtraSpaceOnTop", true);
+    }
+
+    fn findOnType(self: *Workbench) bool {
+        return self.findBoolSetting("editor.find.findOnType", true);
+    }
+
+    fn findCloseOnResult(self: *Workbench) bool {
+        return self.findBoolSetting("editor.find.closeOnResult", false);
+    }
+
+    fn findLoop(self: *Workbench) bool {
+        return self.findBoolSetting("editor.find.loop", true);
+    }
+
+    fn findBoolSetting(self: *Workbench, key: []const u8, default: bool) bool {
+        const configuration = self.configuration orelse return default;
+        const value = configuration.getValue(key, .{}) orelse return default;
         return switch (value.*) {
             .bool => |enabled| enabled,
-            else => true,
+            else => default,
         };
     }
 
@@ -8544,6 +8560,10 @@ pub const Workbench = struct {
         if (pane.activeTab()) |active| {
             if (active.controllers) |controllers| {
                 controllers.find_add_extra_space = self.findAddExtraSpaceOnTop();
+                const widget = controllers.find.widget();
+                widget.setFindOnType(self.findOnType());
+                widget.setCloseOnResult(self.findCloseOnResult());
+                controllers.find.state.loop = self.findLoop();
             }
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
         }
