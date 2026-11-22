@@ -1184,3 +1184,56 @@ test "Helix: text-object prefixes can arrive in one text run" {
     try h.sendChar('d');
     try h.expectValue(" world");
 }
+
+test "Helix: j and k keep the desired column across short lines" {
+    const h = try Harness.init(std.testing.allocator, "0123456789abcdef\nab\n0123456789abcdef");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 10));
+
+    // The short line clamps the caret and remembers the desired column.
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(2, 3), h.cursor());
+
+    // The next visual line restores it instead of staying pinned to the clamp.
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.cursor());
+
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(2, 3), h.cursor());
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 10), h.cursor());
+}
+
+test "Helix: counted j keeps the desired column" {
+    const h = try Harness.init(std.testing.allocator, "0123456789abcdef\nab\n0123456789abcdef");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 10));
+    try h.sendChar('2');
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.cursor());
+}
+
+test "Helix: select-mode j keeps the desired column" {
+    const h = try Harness.init(std.testing.allocator, "0123456789abcdef\nab\n0123456789abcdef");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 10));
+    try h.sendChar('v');
+    try h.sendChar('j');
+    try h.sendChar('j');
+    const selection = try h.firstSelection();
+    try std.testing.expectEqual(Position.init(1, 10), selection.getSelectionStart());
+    try std.testing.expectEqual(Position.init(3, 10), selection.getPosition());
+}
+
+test "Helix: j collapses the selection before moving" {
+    const h = try Harness.init(std.testing.allocator, "one two\nthree");
+    defer h.deinit();
+    try h.sendChar('w');
+    const word_selection = try h.firstSelection();
+    try std.testing.expect(!word_selection.isEmpty());
+
+    try h.sendChar('j');
+    const collapsed = try h.firstSelection();
+    try std.testing.expect(collapsed.isEmpty());
+    try std.testing.expectEqual(Position.init(2, 5), collapsed.getPosition());
+}

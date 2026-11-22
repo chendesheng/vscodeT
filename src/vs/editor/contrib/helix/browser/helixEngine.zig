@@ -1111,19 +1111,14 @@ pub const HelixEngine = struct {
         try self.setNormalizedSelections(updated);
     }
 
+    /// Helix `j`/`k`: one visual line at a time. The editor's wrapped-line
+    /// movement already collapses the selection when not extending and keeps
+    /// the cursor's desired column in `leftoverVisibleColumns`. Collapsing the
+    /// selection again from the model selections here would rebuild each
+    /// cursor state with a zero desired column, so crossing a short line would
+    /// lose the column and pin the following `j`/`k` to that short line.
     fn visualLine(self: *HelixEngine, down: bool, extend: bool, count: usize) !void {
         try self.editor.moveWrappedLine(down, extend, count);
-        if (!extend) {
-            const selections = try self.getSelections();
-            defer self.allocator.free(selections);
-            const updated = try self.allocator.alloc(Selection, selections.len);
-            defer self.allocator.free(updated);
-            for (selections, 0..) |selection, index| {
-                const position = selection.getPosition();
-                updated[index] = Selection.init(position.lineNumber, position.column, position.lineNumber, position.column);
-            }
-            try self.setNormalizedSelections(updated);
-        }
     }
 
     fn lineUp(self: *HelixEngine, extend: bool, count: usize) !void {

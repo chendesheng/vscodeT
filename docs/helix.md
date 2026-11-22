@@ -43,7 +43,9 @@ Everything else belongs to the editor:
   command is one editor undo group; the engine brackets it with
   `beginUndoGroup()`/`endUndoGroup()`.
 - `j`/`k` use the editor's visual-line movement and `gj`/`gk` its logical-line
-  movement, so wrapped lines and tabs keep their visible column.
+  movement, so wrapped lines and tabs keep their visible column. Repeated
+  vertical movement remembers the desired column, so crossing a shorter line
+  and moving on restores the original column instead of staying clamped.
 - Insert-mode text goes through `Editor.insertText`/`newline`, so auto-closing
   and auto-indent continue to work.
 - Search uses the model's regular-expression matcher. `ITextEditor` is the only
