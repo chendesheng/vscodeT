@@ -46,6 +46,7 @@ pub const InputBox = inputbox.InputBox;
 pub const ScrollView = scroll_view.ScrollView;
 pub const FocusEvent = event.FocusEvent;
 pub const Frame = frame.Frame;
+pub const HoverStyle = style.HoverStyle;
 pub const JustifyContent = style.JustifyContent;
 pub const Key = event.Key;
 pub const KeyEvent = event.KeyEvent;

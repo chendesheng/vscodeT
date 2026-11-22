@@ -111,6 +111,12 @@ const continuation_color = [3]u8{ 90, 90, 90 };
 const tilde_color = [3]u8{ 70, 70, 70 };
 const indent_guide_color = [3]u8{ 60, 62, 64 };
 const indent_guide_active_color = [3]u8{ 96, 100, 104 };
+/// Upstream `viewLines.css` paints visible whitespace with
+/// `editorWhitespace.foreground`. Themes that do not define it fall back here
+/// to the default foreground faded over the editor background, so whitespace
+/// is one dim color everywhere instead of the surrounding token color.
+const whitespace_foreground_id = "editorWhitespace.foreground";
+const whitespace_fallback_alpha = 0.3;
 const bracket_guide_ids = [_][]const u8{
     "editorBracketPairGuide.background1",
     "editorBracketPairGuide.background2",
@@ -368,6 +374,7 @@ const PaintStyleKey = struct {
     foreground: u9,
     attrs: u8,
     flags: u32,
+    is_whitespace: bool,
     class: []const u8,
 
     const Context = struct {
@@ -376,6 +383,7 @@ const PaintStyleKey = struct {
             hasher.update(std.mem.asBytes(&key.foreground));
             hasher.update(std.mem.asBytes(&key.attrs));
             hasher.update(std.mem.asBytes(&key.flags));
+            hasher.update(std.mem.asBytes(&key.is_whitespace));
             hasher.update(key.class);
             return hasher.final();
         }
@@ -384,6 +392,7 @@ const PaintStyleKey = struct {
             return a.foreground == b.foreground and
                 a.attrs == b.attrs and
                 a.flags == b.flags and
+                a.is_whitespace == b.is_whitespace and
                 std.mem.eql(u8, a.class, b.class);
         }
     };
@@ -1268,6 +1277,19 @@ pub const View = struct {
         return fadeOver(value, alpha, background);
     }
 
+    /// Uniform color for rendered whitespace. Upstream's `mtkw` rule uses
+    /// `editorWhitespace.foreground`; themes without it inherit the text color
+    /// in the browser, which looks too strong in a terminal cell, so the
+    /// fallback is the default foreground dimmed over the editor background.
+    fn whitespaceColor(self: *const View) ui.Color {
+        if (self.resolveThemeColor(whitespace_foreground_id)) |value| return value;
+        const foreground = if (self.theme_colors) |palette|
+            palette.foreground
+        else
+            color(default_text_color);
+        return self.fadedColor(foreground, whitespace_fallback_alpha);
+    }
+
     fn bracketGuideColors(self: *const View, level: usize, active: bool) ?ui.Color {
         if (self.bracket_guide_color_count == 0) return null;
         const colors = self.bracket_guide_colors[level % self.bracket_guide_color_count];
@@ -1588,6 +1610,7 @@ pub const View = struct {
             .foreground = part.foreground,
             .attrs = attrs,
             .flags = flag,
+            .is_whitespace = part.is_whitespace,
             .class = part.decoration_class orelse "",
         };
         if (self.paint_styles.get(key)) |style| return style;
@@ -1598,6 +1621,9 @@ pub const View = struct {
         // decorations only add a background/border, so the rainbow color
         // survives a highlight.
         if (part.decoration_class) |classes| applyBracketHighlightPaint(&value, classes, self);
+        // `viewLines.css` gives `mtkw` its own color with `!important`: uniform
+        // whitespace wins over token, selection and bracket colors.
+        if (part.is_whitespace) value.color = self.whitespaceColor();
 
         const class_copy = if (key.class.len > 0) try self.allocator.dupe(u8, key.class) else "";
         errdefer if (class_copy.len > 0) self.allocator.free(class_copy);
@@ -1608,6 +1634,7 @@ pub const View = struct {
             .foreground = key.foreground,
             .attrs = key.attrs,
             .flags = key.flags,
+            .is_whitespace = key.is_whitespace,
             .class = class_copy,
         }, style);
         return style;
@@ -4477,7 +4504,119 @@ test "View: indent guides mark leading whitespace and blank lines" {
     try std.testing.expectEqual(@as(u32, 'e'), grid.cluster[grid.index(gutter, 6)]);
 }
 
-test "View: selected whitespace marker keeps the selection background" {
+test "View: rendered whitespace uses one theme color and guides paint over it" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text =
+        "fn  a  b\n" ++
+        "    child\n" ++
+        "        grand\n";
+    const editor = try Editor.createFromText(allocator, io, text, "test.zig", 30, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+    const color_theme = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test-dark", &.{
+        .{ "editor.background", "#101010" },
+        .{ "editorWhitespace.foreground", "#00ff00" },
+        .{ "editorIndentGuide.background1", "#ff0000" },
+        .{ "editorIndentGuide.activeBackground1", "#ff0000" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+    view.setThemeColors(&palette);
+
+    view.terminal_view_host.options.set(.renderWhitespace, .all);
+    const option_count = @typeInfo(editor_options.EditorOption).@"enum".field_names.len;
+    var changed: [option_count]bool = @splat(false);
+    changed[@backingInt(editor_options.EditorOption.renderWhitespace)] = true;
+    const event = view_events.ViewConfigurationChangedEvent.init(
+        editor_options.ConfigurationChangedEvent.init(&changed),
+    );
+    _ = view.terminal_view_host.viewRef().onConfigurationChanged(&event);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const whitespace_fg = ui.cell.packColor(.{ .r = 0, .g = 255, .b = 0 });
+    const guide_fg = ui.cell.packColor(.{ .r = 255, .g = 0, .b = 0 });
+
+    // Every rendered space is the same mid-dot, regardless of the token that
+    // precedes or follows it.
+    for ([_]usize{ 2, 3, 5, 6 }) |column| {
+        try std.testing.expectEqual(@as(u32, 0x00B7), grid.cluster[grid.index(gutter + column, 0)]);
+        try std.testing.expectEqual(whitespace_fg, grid.fg[grid.index(gutter + column, 0)]);
+    }
+
+    // The indentation guide wins the cell over the whitespace dot at both
+    // nesting levels, and it keeps its own color.
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(gutter, 2)]);
+    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter, 2)]);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(gutter + 4, 2)]);
+    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter + 4, 2)]);
+
+    // The cells between the guides are still rendered whitespace.
+    for ([_]usize{ 1, 2, 3, 5, 6, 7 }) |column| {
+        try std.testing.expectEqual(@as(u32, 0x00B7), grid.cluster[grid.index(gutter + column, 2)]);
+        try std.testing.expectEqual(whitespace_fg, grid.fg[grid.index(gutter + column, 2)]);
+    }
+}
+
+test "View: rendered whitespace falls back to a dimmed foreground" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "a b", "test.txt", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    view.terminal_view_host.options.set(.renderWhitespace, .all);
+    const option_count = @typeInfo(editor_options.EditorOption).@"enum".field_names.len;
+    var changed: [option_count]bool = @splat(false);
+    changed[@backingInt(editor_options.EditorOption.renderWhitespace)] = true;
+    const event = view_events.ViewConfigurationChangedEvent.init(
+        editor_options.ConfigurationChangedEvent.init(&changed),
+    );
+    _ = view.terminal_view_host.viewRef().onConfigurationChanged(&event);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const cell = grid.index(gutter + 1, 0);
+    try std.testing.expectEqual(@as(u32, 0x00B7), grid.cluster[cell]);
+
+    // Themes without `editorWhitespace.foreground` get the default foreground
+    // faded over the editor background so the dot is dim but readable.
+    const expected = fadeOver(
+        color(default_text_color),
+        whitespace_fallback_alpha,
+        color([3]u8{ 30, 30, 33 }),
+    );
+    try std.testing.expectEqual(ui.cell.packColor(expected), grid.fg[cell]);
+    try std.testing.expect(ui.cell.unpackColor(grid.fg[cell]).r < default_text_color[0]);
+}
+
+test "View: selected whitespace guide keeps the selection background" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const editor = try Editor.createFromText(allocator, io, "    x", "test.txt", 20, 3);
@@ -4498,16 +4637,17 @@ test "View: selected whitespace marker keeps the selection background" {
     const grid = view.surface.grid();
     const gutter = editor.gutterWidth();
     const guide = grid.index(gutter, 0);
-    // The selected leading space renders a whitespace marker. The marker is
-    // text, so it wins the cell over the guide overlay and keeps the selection
-    // background instead of dropping out of the band as a dark cell, which is
-    // what the old inverse paint did.
-    try std.testing.expectEqual(@as(u32, '\u{00B7}'), grid.cluster[guide]);
+    // The selected leading spaces render whitespace markers, but the guide
+    // wins the shared cell. It must keep the selection background (the guide
+    // text run has no background of its own) instead of dropping out of the
+    // band as a dark cell, which is what the old inverse paint did.
+    try std.testing.expectEqual(@as(u32, '\u{2502}'), grid.cluster[guide]);
     try std.testing.expectEqual(
         ui.cell.packColor(color(selection_background_dark)),
         grid.bg[guide],
     );
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[guide] & ui.cell.Attr.inverse);
+    // The guide keeps its own foreground color rather than the terminal default.
     try std.testing.expect(grid.fg[guide] != 0);
 }
 
@@ -4590,7 +4730,7 @@ test "View: each selected tab renders after its own indent guide" {
     try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[grid.index(gutter + 5, 0)]);
 }
 
-test "View: one-cell tab keeps its arrow over the indent guide" {
+test "View: one-cell tab keeps its indent guide" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const editor = try Editor.createFromText(allocator, io, "\tfoo", "test.txt", 20, 3);
@@ -4599,8 +4739,8 @@ test "View: one-cell tab keeps its arrow over the indent guide" {
         allocator.destroy(editor);
     }
 
-    // A one-cell tab has no padding cell to move the arrow into, so the marker
-    // keeps the shared cell like the `·` space marker does.
+    // A one-cell tab has no padding cell to move the arrow into, so the guide
+    // wins the shared cell and the marker is not visible.
     const Settings = struct {
         detect_indentation: std.json.Value = .{ .bool = false },
         tab_size: std.json.Value = .{ .integer = 1 },
@@ -4631,8 +4771,8 @@ test "View: one-cell tab keeps its arrow over the indent guide" {
     const first_cell = grid.index(gutter, 0);
     const rendered = try rowText(view, allocator, 0);
     defer allocator.free(rendered);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{2192}foo") != null);
-    try std.testing.expectEqual(@as(u32, 0x2192), grid.cluster[first_cell]);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\u{2502}foo") != null);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[first_cell]);
     try std.testing.expectEqual(
         ui.cell.packColor(color(selection_background_dark)),
         grid.bg[first_cell],

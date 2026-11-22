@@ -19,9 +19,10 @@
 //! We only have terminal input, so only `key_down` exists: a terminal reports
 //! bytes, not key releases, and cannot report key repeat. Mouse motion is the
 //! all-motion report a terminal sends in mode 1003: button-held motion drives
-//! drags, idle motion lets widgets derive their hover state from the
-//! hit-tested target. This layer has no CSS `:hover` and no implicit
-//! enter/leave synthesis; the host decides what motion means.
+//! drags, and idle motion updates the document's hover target. The painter
+//! applies `Element.hover_style` to that element and its ancestors. There is no
+//! CSS cascade, no transition and no implicit enter/leave synthesis; the host
+//! decides what motion means beyond the hover chain.
 
 const std = @import("std");
 const dom = @import("dom.zig");
@@ -262,7 +263,9 @@ fn runDefaultAction(document: *dom.Document, event: *KeyEvent) void {
 /// Dispatches a mouse event at `target`, the element hit-tested for the cell.
 /// The propagation flags are reset before the dispatch. A non-canceled press
 /// focuses the nearest focusable ancestor (or blurs), as TermDOM and browsers
-/// do; motion, release, click and wheel have no library default.
+/// do; release, click and wheel have no library default. Motion additionally
+/// records `target` as the document's hover target; `Element.hover_style` is
+/// applied by the painter.
 pub fn dispatchMouse(document: *dom.Document, target: *dom.Node, event: *MouseEvent) void {
     event.target = target;
     event.current_target = null;
@@ -270,6 +273,11 @@ pub fn dispatchMouse(document: *dom.Document, target: *dom.Node, event: *MouseEv
     event.default_prevented = false;
     event.propagation_stopped = false;
     event.immediate_stopped = false;
+
+    // Idle motion moves the pointer target; hover chains are derived from it
+    // by `Node.isHovered` and painted from `Element.hover_style`. This is
+    // paint state only and never invalidates layout.
+    if (event.kind == .move) _ = document.setHoverTarget(target);
 
     dispatchMouseCapture(target, event);
     if (!event.propagation_stopped) dispatchMouseAtTarget(target, event);
@@ -1135,4 +1143,35 @@ test "event: click listeners run only for click and common ancestors are found" 
     try std.testing.expectEqual(root, commonInclusiveAncestor(left, right).?);
     try std.testing.expectEqual(left, commonInclusiveAncestor(left, left).?);
     try std.testing.expectEqual(root, commonInclusiveAncestor(left, root).?);
+}
+
+test "event: motion updates the hover target, other mouse events do not" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    _ = try root.appendChild(child);
+    doc.setRoot(root);
+
+    var move = MouseEvent{ .kind = .move, .x = 1, .y = 1 };
+    doc.dispatchMouse(child, &move);
+    try std.testing.expectEqual(child, doc.hoverTarget().?);
+
+    // A press or wheel at another target leaves the hover chain alone: only
+    // motion moves the pointer.
+    var down = MouseEvent{ .kind = .down, .x = 1, .y = 1, .button = .left };
+    doc.dispatchMouse(root, &down);
+    try std.testing.expectEqual(child, doc.hoverTarget().?);
+
+    var wheel = MouseEvent{ .kind = .wheel, .x = 1, .y = 1, .delta_y = 1 };
+    doc.dispatchMouse(root, &wheel);
+    try std.testing.expectEqual(child, doc.hoverTarget().?);
+
+    var leave = MouseEvent{ .kind = .move, .x = 9, .y = 4 };
+    doc.dispatchMouse(root, &leave);
+    try std.testing.expectEqual(root, doc.hoverTarget().?);
+    try std.testing.expect(root.isHovered());
+    try std.testing.expect(!child.isHovered());
 }

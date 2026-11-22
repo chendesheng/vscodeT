@@ -378,15 +378,10 @@ pub const ViewLine = struct {
         var run_start: usize = 0;
         var run_style: ?*const ui.style.PaintStyle = null;
 
-        // Whitespace markers (`·` for a space, `→` for a tab) are text, so the
-        // browser paints them above the indent/bracket guide background. A
-        // terminal cell holds one glyph:
-        // - a `·` or a one-cell tab has no room to move, so its guide is
-        //   skipped and the marker keeps the cell;
-        // - a wider tab keeps its guide at the tab's first cell and repeats the
-        //   arrow one cell later, in a cell of the tab's own padding.
-        // Bit i suppresses guide i; 64 guides is far beyond any nesting depth.
-        var marker_guides: u64 = 0;
+        // A tab's `→` marker is text in the browser and paints above the
+        // indent/bracket guide background. The terminal paints the guide over
+        // the marker cell, so a wide tab repeats the arrow one cell later in
+        // its own padding; `·` needs no overlay because the guide just wins.
         const ArrowOverlay = struct {
             cell: usize,
             style: *const ui.style.PaintStyle,
@@ -419,25 +414,19 @@ pub const ViewLine = struct {
             }
             const style = try style_fn.apply(style_fn.context, part, flag);
 
-            if (isWhitespaceMarker(decoded.cp)) {
-                var shares_guide = false;
+            if (decoded.cp == 0x2192) {
                 for (options.guides) |guide| {
-                    if (guide.column == cell) {
-                        shares_guide = true;
-                        break;
-                    }
-                }
-                if (shares_guide) {
-                    const tab_width = if (decoded.cp == 0x2192)
-                        renderedTabWidth(rendered.input.tab_size, rendered.input.start_visible_column, cell)
-                    else
-                        1;
+                    if (guide.column != cell) continue;
+                    const tab_width = renderedTabWidth(
+                        rendered.input.tab_size,
+                        rendered.input.start_visible_column,
+                        cell,
+                    );
                     if (tab_width > 1 and arrow_overlay_count < max_arrow_overlays) {
                         arrow_overlays[arrow_overlay_count] = .{ .cell = cell + 1, .style = style };
                         arrow_overlay_count += 1;
-                    } else {
-                        suppressGuidesAt(&marker_guides, options.guides, cell);
                     }
+                    break;
                 }
             }
 
@@ -508,29 +497,9 @@ pub const ViewLine = struct {
             _ = try line.appendChild(ellipsis);
         }
 
-        // Indent/bracket guides are overlay paint in the browser; terminal
-        // cells are children of the line so they can share its clipping. A
-        // guide yields to a `·` or a one-cell tab marker that shares its cell.
-        for (options.guides, 0..) |guide, guide_index| {
-            if (guide_index < 64 and ((marker_guides >> @intCast(guide_index)) & 1) != 0) continue;
-            const guide_node = try doc.createElement(.div);
-            guide_node.setStyle(.{
-                .position = .absolute,
-                .left = .{ .cells = @floatFromInt(guide.column) },
-                .top = .{ .cells = 0 },
-                .width = .{ .cells = 1 },
-                .height = .{ .cells = 1 },
-                .white_space = .pre,
-            });
-            const glyph = try doc.createText("\u{2502}");
-            glyph.setStyle(.{ .color = guide.color });
-            _ = try guide_node.appendChild(glyph);
-            _ = try line.appendChild(guide_node);
-        }
-
         // A wide tab repeats its marker one cell after the guide it shares the
-        // cell with. The overlay is appended after the guides, so a guide that
-        // also covers that padding cell yields to the arrow.
+        // cell with. Overlays paint before the guides, so a guide that also
+        // covers the padding cell still wins.
         for (arrow_overlays[0..arrow_overlay_count]) |arrow| {
             const arrow_node = try doc.createElement(.div);
             arrow_node.setStyle(.{
@@ -546,6 +515,27 @@ pub const ViewLine = struct {
             _ = try arrow_node.appendChild(glyph);
             _ = try line.appendChild(arrow_node);
         }
+
+        // Indent/bracket guides are overlay paint in the browser; terminal
+        // cells are children of the line so they can share its clipping.
+        // They are appended after the text runs so a guide wins the cell over
+        // a rendered whitespace glyph (`·`/`→`) at the same column.
+        for (options.guides) |guide| {
+            const guide_node = try doc.createElement(.div);
+            guide_node.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = @floatFromInt(guide.column) },
+                .top = .{ .cells = 0 },
+                .width = .{ .cells = 1 },
+                .height = .{ .cells = 1 },
+                .white_space = .pre,
+            });
+            const glyph = try doc.createText("\u{2502}");
+            glyph.setStyle(.{ .color = guide.color });
+            _ = try guide_node.appendChild(glyph);
+            _ = try line.appendChild(guide_node);
+        }
+
         return line;
     }
 
@@ -626,13 +616,6 @@ fn measureCellWidth(cp: u21) u2 {
     return @intCast(@min(next, 2));
 }
 
-/// The line renderer's visible-whitespace glyphs: `·` (U+00B7) for a space and
-/// `→` (U+2192) for a tab. They are the only non-space glyphs that can land on
-/// a guide cell.
-fn isWhitespaceMarker(cp: u21) bool {
-    return cp == 0x00B7 or cp == 0x2192;
-}
-
 /// Width in cells the renderer gave a `→` tab marker. `expandTabs` advances a
 /// tab to the next render tab stop, so the width is 1 only when the tab starts
 /// one column before a tab stop.
@@ -640,14 +623,6 @@ fn renderedTabWidth(tab_size: usize, start_visible_column: usize, cell: usize) u
     const size = @max(tab_size, 1);
     const visible = start_visible_column + cell;
     return size - (visible % size);
-}
-
-/// Marks every guide that shares `cell` for suppression. Bit i suppresses
-/// guide i; 64 guides is far beyond any terminal nesting depth.
-fn suppressGuidesAt(mask: *u64, guides: []const ViewLine.Guide, cell: usize) void {
-    for (guides, 0..) |guide, index| {
-        if (index < 64 and guide.column == cell) mask.* |= @as(u64, 1) << @intCast(index);
-    }
 }
 
 // ---------------------------------------------------------------------------

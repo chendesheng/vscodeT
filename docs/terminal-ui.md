@@ -245,9 +245,13 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
   TermDOM keeps them in `Input`: the TUI view tracks the press cell, drags a
   selection, clicks the press/release common ancestor, and scrolls three view
   lines per notch. Motion is the all-motion report of mode 1003: button-held
-  motion drives drags, and idle motion lets widgets derive their hover state
-  from the hit-tested target. There is no CSS `:hover` and no implicit
-  enter/leave synthesis in the library; hover is host/widget state.
+  motion drives drags, and idle motion updates the library's hover target.
+  `Document.hoverTarget` and `Node.isHovered` expose the CSS-like inclusive
+  ancestor chain, and `Element.hover_style` (a paint-only `HoverStyle`) is
+  applied by the painter. `Surface.updateHoverAt` is the coordinate entry point
+  for hosts that hit-test themselves and keeps its pointer cell across a tree
+  rebuild. There is no CSS cascade, no `mouseenter`/`mouseleave` synthesis and
+  no transition; hover never dirties layout.
 - `Element.focusable` opts a node into focus. `Element.tab_index` follows HTML:
   positive values come first in ascending order, `0` keeps tree order, and
   negative values are programmatically focusable but skipped by Tab. Tab is the
@@ -464,6 +468,17 @@ a transparent label over a filled panel shows the panel instead of punching a
 hole to the root color. Borders use the same rule. The POC paints all rows;
 row-level damage bands are part of the API so the view can later name only
 changed lines.
+
+Hover is the one live-DOM style input. When an element's box is painted and
+`Node.isHovered()` is true, the painter overlays `Element.hover_style` on the
+element's merged paint (colors and attributes; `false` clears an attribute,
+`border_color` repaints the edge). A hover background fills only the hovered
+element's own box; its color and attributes inherit to text and descendants.
+Anonymous inline/flex boxes paint from the inherited value directly, because
+their style is a copy of their container's style: re-merging that copy would
+re-apply the base paint over the hover override. Hover is paint-only by
+construction (no geometry or border-width fields), so the box tree and layout
+are untouched.
 
 ### 6.3 Frame diff
 
@@ -1051,11 +1066,19 @@ Library constraints:
   the caret is painted with the active indent-guide color. A guide is only
   painted in a leading-whitespace or blank cell, because one terminal cell
   cannot show both a guide and a text glyph. When `renderWhitespace` renders a
-  selected space (`·`) or a one-cell tab (`→`), the marker is text and keeps the
-  shared cell. A wider tab keeps the guide at its first cell and repeats the
-  arrow in the next padding cell, so the guide stays visible too. Horizontal
-  bracket guide segments are therefore not painted. Wrapped continuation lines
-  do not get guides.
+  selected space (`·`) or a one-cell tab (`→`), the guide paints over the
+  marker and keeps the shared cell. A wider tab keeps the guide at its first
+  cell and repeats the arrow in the next padding cell, so the guide stays
+  visible and the tab remains indicated. Horizontal bracket guide segments are
+  therefore not painted. Wrapped continuation lines do not get guides.
+- Visible whitespace (`renderWhitespace` `all`/`boundary`/`trailing`/
+  `selection`) is produced by the shared line renderer as upstream
+  `mtkw`-style runs: a space becomes `·`, a tab `→` plus its padding, and the
+  run carries no token metadata. The view paints every whitespace run with
+  `editorWhitespace.foreground`; when the theme does not define that id, the
+  default foreground is dimmed over the editor background instead of inheriting
+  the neighboring token color, so all whitespace cells share one subdued
+  color.
 - Find, bracket and word ranges are stored in the model as `TextModel`
   decorations (`findMatch`, `currentFindMatch`, `bracket-match`,
   `wordHighlight*`). `View.ModelDecorationSink` replaces each contribution's

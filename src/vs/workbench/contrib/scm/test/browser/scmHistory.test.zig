@@ -6,9 +6,10 @@
 // ids, parent ids and references into a per-test arena. The arena also owns
 // the returned view models, so no manual frees are needed.
 //
-// The last four tests are terminal additions: they pin the glyph cells
-// rasterized by `renderSCMHistoryItemGraph` / `renderSCMHistoryGraphPlaceholder`
-// (upstream asserts SVG element structure instead).
+// The terminal additions at the end pin the glyph cells rendered by
+// `renderSCMHistoryItemGraph` / `renderSCMHistoryGraphPlaceholder` (upstream
+// asserts SVG element structure instead), including the orthogonal
+// cell-connection rendering that replaced the diagonal SVG arcs.
 const std = @import("std");
 
 const history = @import("../../common/history.zig");
@@ -1072,14 +1073,143 @@ test "scmHistory golden cells: merge graph" {
         null,
     );
 
-    // Merge row `b(c,d)`: node `◎` in lane 0 and the `╲` shift to lane 1.
+    // Merge row `b(c,d)`: node `◎` in lane 0 and the closed `╮` corner into
+    // lane 1. The merge edge is orthogonal, never a diagonal.
     const cells = try scmHistory.renderSCMHistoryItemGraph(allocator, &view_models[1]);
     try testing.expectEqual(@as(usize, 3), cells.len);
     try testing.expectEqual(@as(u21, ' '), cells[0].cp);
     try testing.expectEqual(@as(u21, '\u{25CE}'), cells[1].cp);
     try testing.expectEqualStrings(scmHistory.color_registry[0], cells[1].color.?);
-    try testing.expectEqual(@as(u21, '\u{2572}'), cells[2].cp);
+    try testing.expectEqual(@as(u21, '\u{256E}'), cells[2].cp);
     try testing.expectEqualStrings(scmHistory.color_registry[1], cells[2].color.?);
+}
+
+test "scmHistory golden cells: merge edge crosses lanes with junctions" {
+    const allocator = std.testing.allocator;
+    // Deliberately non-palette node colors: the terminal renderer must key the
+    // lanes to the column, not carry these colors into the graph.
+    const input = [_]history.ISCMHistoryItemGraphNode{
+        .{ .id = "node", .color = "custom.circle" },
+        .{ .id = "lane1", .color = "custom.lane1" },
+        .{ .id = "lane2", .color = "custom.lane2" },
+    };
+    const output = [_]history.ISCMHistoryItemGraphNode{
+        .{ .id = "parent", .color = "custom.circle" },
+        .{ .id = "lane1", .color = "custom.lane1" },
+        .{ .id = "lane2", .color = "custom.lane2" },
+        .{ .id = "new", .color = "custom.new" },
+    };
+    const parents = [_][]const u8{ "parent", "new" };
+    const view_model = history.ISCMHistoryItemViewModel{
+        .history_item = .{
+            .id = "node",
+            .parent_ids = &parents,
+            .subject = "",
+            .message = "",
+        },
+        .input_swimlanes = @constCast(&input),
+        .output_swimlanes = @constCast(&output),
+        .kind = .node,
+    };
+
+    const cells = try scmHistory.renderSCMHistoryItemGraph(allocator, &view_model);
+    defer allocator.free(cells);
+    // Blank gutter, circle, two crossed lanes, and the `╮` corner into the new
+    // lane. The circle and every lane/edge glyph use the column palette, so
+    // the three columns are foreground1..3; the node colors are ignored.
+    try testing.expectEqual(@as(usize, 5), cells.len);
+    try testing.expectEqual(@as(u21, ' '), cells[0].cp);
+    try testing.expectEqual(@as(u21, '\u{25CE}'), cells[1].cp);
+    try testing.expectEqual(@as(u21, '\u{253C}'), cells[2].cp);
+    try testing.expectEqual(@as(u21, '\u{253C}'), cells[3].cp);
+    try testing.expectEqual(@as(u21, '\u{256E}'), cells[4].cp);
+    try testing.expectEqualStrings(scmHistory.color_registry[0], cells[1].color.?);
+    try testing.expectEqualStrings(scmHistory.color_registry[1], cells[2].color.?);
+    try testing.expectEqualStrings(scmHistory.color_registry[2], cells[3].color.?);
+    try testing.expectEqualStrings(scmHistory.color_registry[3], cells[4].color.?);
+}
+
+test "scmHistory golden cells: duplicate lane folds into the circle" {
+    const allocator = std.testing.allocator;
+    const c0 = scmHistory.color_registry[0];
+    const c1 = scmHistory.color_registry[1];
+
+    // A feature branch based on the very commit it was merged into leaves a
+    // duplicate expectation in the input swimlanes. It folds into the circle
+    // instead of producing a diagonal.
+    const input = [_]history.ISCMHistoryItemGraphNode{
+        .{ .id = "node", .color = c0 },
+        .{ .id = "node", .color = c1 },
+    };
+    const output = [_]history.ISCMHistoryItemGraphNode{
+        .{ .id = "parent", .color = c0 },
+        .{ .id = "new", .color = c1 },
+    };
+    const parents = [_][]const u8{ "parent", "new" };
+    const view_model = history.ISCMHistoryItemViewModel{
+        .history_item = .{
+            .id = "node",
+            .parent_ids = &parents,
+            .subject = "",
+            .message = "",
+        },
+        .input_swimlanes = @constCast(&input),
+        .output_swimlanes = @constCast(&output),
+        .kind = .node,
+    };
+
+    const cells = try scmHistory.renderSCMHistoryItemGraph(allocator, &view_model);
+    defer allocator.free(cells);
+    try testing.expectEqual(@as(usize, 3), cells.len);
+    try testing.expectEqual(@as(u21, '\u{25CE}'), cells[1].cp);
+    // Lane 1 comes from above, goes down to the new parent, and joins the
+    // circle from the left: the three-way `┤` junction.
+    try testing.expectEqual(@as(u21, '\u{2524}'), cells[2].cp);
+}
+
+test "scmHistory golden cells: merge history has no diagonal connectors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // A chain of merge commits whose second parents are not part of the loaded
+    // page: every row opens another lane, which used to rasterize as `╲` and
+    // read as one long slope across the graph.
+    var items = std.array_list.Managed(history.ISCMHistoryItem).init(allocator);
+    var index: usize = 10;
+    while (index >= 1) : (index -= 1) {
+        const id = try std.fmt.allocPrint(allocator, "m{d}", .{index});
+        const parent = if (index == 1) "root" else try std.fmt.allocPrint(allocator, "m{d}", .{index - 1});
+        const side = try std.fmt.allocPrint(allocator, "side{d}", .{index});
+        const parents = try allocator.alloc([]const u8, 2);
+        parents[0] = parent;
+        parents[1] = side;
+        try items.append(.{
+            .id = id,
+            .parent_ids = parents,
+            .subject = id,
+            .message = id,
+        });
+    }
+    const view_models = try scmHistory.toISCMHistoryItemViewModelArray(
+        allocator,
+        items.items,
+        null,
+        null,
+        null,
+        null,
+        false,
+        false,
+        null,
+    );
+
+    for (view_models) |*view_model| {
+        const cells = try scmHistory.renderSCMHistoryItemGraph(allocator, view_model);
+        for (cells) |cell| {
+            try testing.expect(cell.cp != '\u{2571}'); // ╱
+            try testing.expect(cell.cp != '\u{2572}'); // ╲
+        }
+    }
 }
 
 test "scmHistory golden cells: HEAD circle" {

@@ -3,13 +3,28 @@
 // The view-model generation, reference ordering, color assignment and
 // incoming/outgoing insertion are literal ports. The renderer is the terminal
 // adaptation: upstream emits SVG paths in 11 px × 22 px swimlanes; here one
-// swimlane is one cell and one row is one cell, so the same path decisions are
-// rasterized into box-drawing glyphs. Draw order is preserved (paths first,
-// circles last) and later writes overwrite earlier cells, like SVG paint order.
+// swimlane is one cell and one row is one cell. The canvas accumulates the
+// four cell edges (up/down/left/right) and maps them to box-drawing glyphs,
+// following lazygit's cell model: lanes are `│`, merge edges `─`, closed
+// corners are `╮`/`╭`/`╯`/`╰`, and a crossing is `┼`. No `╱`/`╲` diagonals are
+// emitted, because their rasterization reads as one continuous slope across
+// rows. Draw order still follows the SVG: lane connections first, merge edges
+// next, the commit circle last.
 //
 // Documented deviations:
 // - `renderSCMHistoryItemGraph` returns `GraphGlyph` cells instead of an
 //   `SVGElement`; circle strokes/curve radii collapse into single glyphs.
+// - A base-commit diagonal becomes a horizontal connector, and a
+//   horizontal-over-vertical crossing occupies one `┼` cell instead of
+//   lazygit's two-character `│─` cell.
+// - Lane and edge colors are keyed to the swimlane column, not to the moving
+//   branch node. Upstream carries a node's color to the lane's new column when
+//   duplicate swimlanes collapse; with one cell per lane that makes a screen
+//   column change color on almost every merge. Every graph glyph, including
+//   the commit circles, uses the `scmGraph.foreground1..5` palette by column
+//   index, so a lane and its nodes always match and each column keeps one color
+//   down the graph. The view model's node/reference colors still drive the ref
+//   badges and the hover, but not the graph cells.
 // - Hover content is plain text; markdown, avatars and command links are not
 //   ported.
 const std = @import("std");
@@ -607,11 +622,90 @@ pub const GraphGlyph = struct {
     color: ?[]const u8 = null,
 };
 
+const GraphCell = struct {
+    up: bool = false,
+    down: bool = false,
+    left: bool = false,
+    right: bool = false,
+    glyph: ?u21 = null,
+    glyph_color: ?[]const u8 = null,
+    vertical_color: ?[]const u8 = null,
+    horizontal_color: ?[]const u8 = null,
+
+    fn addUp(self: *GraphCell, color: ?[]const u8) void {
+        self.up = true;
+        self.vertical_color = color;
+    }
+
+    fn addDown(self: *GraphCell, color: ?[]const u8) void {
+        self.down = true;
+        self.vertical_color = color;
+    }
+
+    fn addLeft(self: *GraphCell, color: ?[]const u8) void {
+        self.left = true;
+        self.horizontal_color = color;
+    }
+
+    fn addRight(self: *GraphCell, color: ?[]const u8) void {
+        self.right = true;
+        self.horizontal_color = color;
+    }
+
+    /// Box-drawing glyph for the edges that touch this cell. The mapping is
+    /// lazygit's `getBoxDrawingChars`, collapsed from its two-character cell to
+    /// a single terminal cell: a crossing becomes `┼` instead of `│─`.
+    fn boxDrawingGlyph(self: *const GraphCell) u21 {
+        if (self.up and self.down and self.left and self.right) return '\u{253C}'; // ┼
+        if (self.up and self.down and self.left) return '\u{2524}'; // ┤
+        if (self.up and self.down and self.right) return '\u{251C}'; // ├
+        if (self.up and self.down) return '\u{2502}'; // │
+        if (self.up and self.left) return '\u{256F}'; // ╯
+        if (self.up and self.right) return '\u{2570}'; // ╰
+        if (self.down and self.left) return '\u{256E}'; // ╮
+        if (self.down and self.right) return '\u{256D}'; // ╭
+        if (self.left and self.right) return '\u{2500}'; // ─
+        if (self.up) return '\u{2575}'; // ╵
+        if (self.down) return '\u{2577}'; // ╷
+        if (self.left) return '\u{2574}'; // ╴
+        if (self.right) return '\u{2576}'; // ╶
+        return ' ';
+    }
+
+    fn colorIdentifier(self: *const GraphCell) ?[]const u8 {
+        if (self.glyph != null) return self.glyph_color;
+        // A cell that carries a lane keeps the lane's color even when a merge
+        // edge crosses it. VS Code paints one color per column: the vertical
+        // line owns the cell, and the horizontal edge only shows its own color
+        // where it runs between lanes or turns down into a new lane.
+        if (self.up or self.down) return self.vertical_color orelse self.horizontal_color;
+        return self.horizontal_color orelse self.vertical_color;
+    }
+
+    fn toGlyph(self: *const GraphCell) GraphGlyph {
+        return .{
+            .cp = self.glyph orelse self.boxDrawingGlyph(),
+            .color = self.colorIdentifier(),
+        };
+    }
+};
+
+/// Color of a swimlane column. Upstream ties the color to the branch node, so
+/// a lane that shifts left/right carries its color to the new column. In a
+/// one-cell terminal graph that makes the same screen column change color on
+/// almost every merge (duplicate lanes and first-parent replacements shift the
+/// lanes after them), which reads as a different color per row. The terminal
+/// adaptation keys the lane and edge color to the column instead, while commit
+/// circles keep the node/reference color.
+fn laneColor(lane: usize) ?[]const u8 {
+    return color_registry[lane % color_registry.len];
+}
+
 const GraphCanvas = struct {
-    cells: []GraphGlyph,
+    cells: []GraphCell,
 
     fn init(allocator: Allocator, width: usize) !GraphCanvas {
-        const cells = try allocator.alloc(GraphGlyph, width);
+        const cells = try allocator.alloc(GraphCell, width);
         for (cells) |*cell| cell.* = .{};
         return .{ .cells = cells };
     }
@@ -621,45 +715,85 @@ const GraphCanvas = struct {
         self.* = undefined;
     }
 
-    fn put(self: *GraphCanvas, column: usize, cp: u21, color: ?[]const u8) void {
-        if (column >= self.cells.len) return;
-        self.cells[column] = .{ .cp = cp, .color = color };
+    fn laneCell(self: *GraphCanvas, lane: usize) ?*GraphCell {
+        const column = SWIMLANE_WIDTH * (lane + 1);
+        if (column >= self.cells.len) return null;
+        return &self.cells[column];
     }
 
-    fn putLane(self: *GraphCanvas, lane: usize, cp: u21, color: ?[]const u8) void {
-        self.put(SWIMLANE_WIDTH * (lane + 1), cp, color);
+    fn putGlyph(self: *GraphCanvas, lane: usize, cp: u21, color: ?[]const u8) void {
+        const cell = self.laneCell(lane) orelse return;
+        cell.glyph = cp;
+        cell.glyph_color = color;
     }
 
-    fn drawVerticalLine(self: *GraphCanvas, lane: usize, color: ?[]const u8) void {
-        self.putLane(lane, '\u{2502}', color);
+    fn addUp(self: *GraphCanvas, lane: usize, color: ?[]const u8) void {
+        if (self.laneCell(lane)) |cell| cell.addUp(color);
     }
 
-    /// Rasterizes the direction of an upstream curve: moving right renders a
-    /// `╲` at the target lane, moving left a `╱` at the source lane, with `─`
-    /// for the skipped lanes.
-    fn drawShift(self: *GraphCanvas, from: usize, to: usize, color: ?[]const u8) void {
-        if (from == to) {
-            self.drawVerticalLine(from, color);
-            return;
-        }
-        if (to > from) {
-            var lane = from + 1;
-            while (lane < to) : (lane += 1) self.putLane(lane, '\u{2500}', color);
-            self.putLane(to, '\u{2572}', color);
+    fn addDown(self: *GraphCanvas, lane: usize, color: ?[]const u8) void {
+        if (self.laneCell(lane)) |cell| cell.addDown(color);
+    }
+
+    /// Adds a horizontal run between two lanes, including the side edges of
+    /// the endpoint cells.
+    fn addHorizontal(self: *GraphCanvas, from: usize, to: usize, color: ?[]const u8) void {
+        if (from == to) return;
+        const step: isize = if (to > from) 1 else -1;
+        const from_cell = self.laneCell(from);
+        if (step > 0) {
+            if (from_cell) |cell| cell.addRight(color);
         } else {
-            var lane = to + 1;
-            while (lane < from) : (lane += 1) self.putLane(lane, '\u{2500}', color);
-            self.putLane(from, '\u{2571}', color);
+            if (from_cell) |cell| cell.addLeft(color);
+        }
+        const to_cell = self.laneCell(to);
+        if (step > 0) {
+            if (to_cell) |cell| cell.addLeft(color);
+        } else {
+            if (to_cell) |cell| cell.addRight(color);
+        }
+        var lane: isize = @as(isize, @intCast(from)) + step;
+        const target: isize = @intCast(to);
+        while (lane != target) : (lane += step) {
+            if (self.laneCell(@as(usize, @intCast(lane)))) |cell| {
+                cell.addLeft(color);
+                cell.addRight(color);
+            }
         }
     }
 
-    fn drawCircle(self: *GraphCanvas, lane: usize, kind: history.HistoryItemKind, parents: usize, color: ?[]const u8) void {
+    /// Connects a swimlane from its cell in the previous row to its cell in the
+    /// next row: a straight `│` when the lane stays put, closed orthogonal
+    /// corners when it moves left or right. Each endpoint uses its own
+    /// column's color, so a shifted lane changes to the target column's color.
+    fn connect(self: *GraphCanvas, from: usize, to: usize) void {
+        self.addUp(from, laneColor(from));
+        self.addDown(to, laneColor(to));
+        self.addHorizontal(from, to, laneColor(to));
+    }
+
+    /// The extra-parent edge of a merge commit: a horizontal run away from the
+    /// commit circle, then a corner and a vertical line down the parent lane.
+    fn drawMergeEdge(self: *GraphCanvas, from: usize, to: usize) void {
+        if (from == to) return;
+        const color = laneColor(to);
+        self.addDown(to, color);
+        self.addHorizontal(from, to, color);
+    }
+
+    fn drawCircle(self: *GraphCanvas, lane: usize, kind: history.HistoryItemKind, parents: usize) void {
         const cp: u21 = switch (kind) {
             .head => '\u{25C9}', // ◉
             .incoming_changes, .outgoing_changes => '\u{25CC}', // ◌
             .node => if (parents > 1) '\u{25CE}' else '\u{25CF}', // ◎ / ●
         };
-        self.putLane(lane, cp, color);
+        self.putGlyph(lane, cp, laneColor(lane));
+    }
+
+    fn toGlyphs(self: *GraphCanvas, allocator: Allocator) ![]GraphGlyph {
+        const result = try allocator.alloc(GraphGlyph, self.cells.len);
+        for (self.cells, 0..) |cell, index| result[index] = cell.toGlyph();
+        return result;
     }
 };
 
@@ -673,61 +807,61 @@ pub fn renderSCMHistoryItemGraph(
 
     const input_index = findIndex(input_swimlanes, history_item.id);
     const circle_index = input_index orelse input_swimlanes.len;
-    const circle_color: ?[]const u8 = if (circle_index < output_swimlanes.len)
-        output_swimlanes[circle_index].color
-    else if (circle_index < input_swimlanes.len)
-        input_swimlanes[circle_index].color
-    else
-        history_item_ref_color;
 
     const width = SWIMLANE_WIDTH * (@max(@max(input_swimlanes.len, output_swimlanes.len), 1) + 1);
     var canvas = try GraphCanvas.init(allocator, width);
-    errdefer canvas.deinit(allocator);
+    defer canvas.deinit(allocator);
 
     var output_swimlane_index: usize = 0;
+    var first_parent_output: ?usize = null;
     for (input_swimlanes, 0..) |node, index| {
-        const color: ?[]const u8 = node.color;
         if (eql(node.id, history_item.id)) {
-            // Current commit, but in a different lane than the circle: draw the
-            // base-commit diagonal and horizontal connector.
-            if (index != circle_index) {
-                canvas.drawShift(index, circle_index, color);
-            } else {
-                output_swimlane_index += 1;
-            }
-        } else {
-            if (output_swimlane_index < output_swimlanes.len and
-                eql(node.id, output_swimlanes[output_swimlane_index].id))
-            {
-                if (index == output_swimlane_index) {
-                    canvas.drawVerticalLine(index, color);
-                } else {
-                    canvas.drawShift(index, output_swimlane_index, color);
+            if (index == circle_index) {
+                // The current commit ends here. Its first parent occupies the
+                // next output lane, which is where the vertical line resumes
+                // below the circle.
+                if (history_item.parent_ids.len > 0 and output_swimlane_index < output_swimlanes.len) {
+                    first_parent_output = output_swimlane_index;
+                    output_swimlane_index += 1;
                 }
-                output_swimlane_index += 1;
+            } else {
+                // Duplicate expectation of the same commit (a feature branch
+                // based on the commit it was merged into): fold that lane into
+                // the circle lane instead of rasterizing upstream's diagonal
+                // SVG arc.
+                canvas.connect(index, circle_index);
+            }
+            continue;
+        }
+        if (output_swimlane_index < output_swimlanes.len and
+            eql(node.id, output_swimlanes[output_swimlane_index].id))
+        {
+            canvas.connect(index, output_swimlane_index);
+            output_swimlane_index += 1;
+        }
+    }
+
+    // The circle continues into its first parent.
+    if (history_item.parent_ids.len > 0 and circle_index < output_swimlanes.len) {
+        const first_parent_lane = first_parent_output orelse circle_index;
+        canvas.addDown(first_parent_lane, laneColor(first_parent_lane));
+        if (first_parent_output) |parent_output| {
+            if (parent_output != circle_index) {
+                canvas.connect(circle_index, parent_output);
             }
         }
     }
 
-    // Add remaining parent(s).
+    // Remaining parents are merge edges to the lanes that hold them.
     var parent_index: usize = 1;
     while (parent_index < history_item.parent_ids.len) : (parent_index += 1) {
         const parent_output_index = findLastIndex(output_swimlanes, history_item.parent_ids[parent_index]) orelse continue;
-        canvas.drawShift(circle_index, parent_output_index, output_swimlanes[parent_output_index].color);
+        canvas.drawMergeEdge(circle_index, parent_output_index);
     }
 
-    // Draw | to * and | from *.
-    if (input_index) |index| {
-        canvas.drawVerticalLine(circle_index, input_swimlanes[index].color);
-    }
-    if (history_item.parent_ids.len > 0) {
-        canvas.drawVerticalLine(circle_index, circle_color);
-    }
+    canvas.drawCircle(circle_index, view_model.kind, history_item.parent_ids.len);
 
-    // Draw *.
-    canvas.drawCircle(circle_index, view_model.kind, history_item.parent_ids.len, circle_color);
-
-    return canvas.cells;
+    return canvas.toGlyphs(allocator);
 }
 
 pub fn renderSCMHistoryGraphPlaceholder(
@@ -737,15 +871,15 @@ pub fn renderSCMHistoryGraphPlaceholder(
 ) ![]GraphGlyph {
     const width = SWIMLANE_WIDTH * (columns.len + 1);
     var canvas = try GraphCanvas.init(allocator, width);
-    errdefer canvas.deinit(allocator);
-    for (columns, 0..) |node, index| {
+    defer canvas.deinit(allocator);
+    for (columns, 0..) |_, index| {
         const cp: u21 = if (highlight_index != null and highlight_index.? == index)
             '\u{2503}' // ┃
         else
             '\u{2502}'; // │
-        canvas.putLane(index, cp, node.color);
+        canvas.putGlyph(index, cp, laneColor(index));
     }
-    return canvas.cells;
+    return canvas.toGlyphs(allocator);
 }
 
 /// Rendered graph width in cells for a view model (exposed for the row layout).

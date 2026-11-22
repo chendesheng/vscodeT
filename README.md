@@ -500,7 +500,10 @@ console API for raw mode, sizing and input polling.
   that paint as cell-edge attributes under the draft cell-border protocol (with
   box-drawing fallback), block/inline/flex formatting contexts, CSS white-space
   and UAX #14 text wrapping, and a double-buffered cell renderer that emits only
-  an ANSI frame diff. Flex supports direction, wrap, grow/shrink/basis,
+  an ANSI frame diff. Elements declare paint-only hover styles; the library
+  tracks the pointer target from mouse motion and paints the declaration on the
+  target and its ancestors without touching layout. Flex supports direction,
+  wrap, grow/shrink/basis,
   content-box `min_width`/`max_width`, justify/align, gap, order, auto margins
   and content-derived auto sizes. Text
   fragments and inline-element fragments paint per line. On startup the TUI
@@ -856,8 +859,12 @@ console API for raw mode, sizing and input polling.
   SCM container. `src/vs/workbench/contrib/scm/browser/scmHistory.zig` ports the
   swimlane/color/reference/view-model generation, and `scmHistoryViewPane.zig`
   renders it on the `ui` DOM: one cell per swimlane, commit subjects/authors,
-  ref badges, `●`/`◉`/`◎`/`◌` circles and `│`/`╱`/`╲`/`─` lanes. Commits start
-  collapsed; expanding shows changed files in list or compressed tree mode;
+  ref badges, `●`/`◉`/`◎`/`◌` circles and orthogonal
+  `│`/`─`/`╮`/`╭`/`╯`/`╰`/`┼` lanes (no diagonals; the terminal adaptation
+  follows lazygit's cell-connection model). Lane/edge colors are keyed to the
+  swimlane column (`scmGraph.foreground1..5`), including the commit circles, so
+  a lane and its nodes match and a column keeps one color even when swimlanes
+  shift. Commits start collapsed; expanding shows changed files in list or compressed tree mode;
   `Enter` opens a parent↔commit diff and clicking the `Load More…` row pages
   older commits in. `scm.graph.pageSize` (50),
   `scm.graph.pageOnScroll` (true), `scm.graph.badges` (`filter`),
@@ -867,7 +874,13 @@ console API for raw mode, sizing and input polling.
   All/Auto/one history-item reference, reveal the current commit, refresh and
   toggle list/tree; background ref changes while scrolled show "Outdated".
   View sections are 1-row headers split into weighted bodies (Changes/Graph
-  40/40); with one visible view the header merges into the container title.
+  40/40). A left click on the header (or its chevron) toggles the section and
+  clicking a title action runs it without toggling, matching upstream's pane
+  header click listener. Pointer motion over a header never changes the
+  expansion state; the `ui` library's paint-only `HoverStyle` tracks the
+  pointer and highlights the title action, like the browser's `:hover`
+  background. With one visible view the header merges into the
+  container title.
   Not ported: multi-diff "Open Changes" for a whole commit (only per-file
   diffs), context menus, drag/drop, chat, clipboard copy actions and Git write
   operations (checkout/cherry-pick/push/publish); the ref picker is
@@ -1381,10 +1394,11 @@ TUI editor:
   indentation scope around the caret and the bracket pair containing the caret
   are highlighted. Guides are only painted over leading whitespace or blank
   cells, so a guide never replaces a text glyph. A selected space marker `·` or
-  a one-cell tab arrow takes the shared cell; a wider tab keeps the guide and
-  repeats `→` in the next cell, so both stay visible. Horizontal guide segments
-  are not painted. Flow uses the same solid `│` glyph for its indent whitespace
-  mode.
+  a one-cell tab arrow shares the guide's cell, but the guide paints over it so
+  the indentation line stays visible; a wider tab keeps the guide and repeats
+  `→` in the next padding cell so the tab stays visible too. Horizontal guide
+  segments are not painted. Flow uses the same solid `│` glyph for its indent
+  whitespace mode.
 - Scrollbar and overview ruler: the scrollbar is right-aligned and 1.5 cells
   wide: the right half of the first reserved cell plus the whole second cell.
   It uses foreground block glyphs, so it carries no background run at the
@@ -1883,9 +1897,12 @@ Editor contributions:
   the view selections through `IViewModel.getSelections`). `selection` is the
   upstream default and stays enabled in the terminal, so selecting text reveals
   the hidden whitespace without any configuration; an explicit
-  `editor.renderWhitespace` setting still overrides it. Control characters
-  render as Unicode control pictures when `renderControlCharacters` is on.
-
+  `editor.renderWhitespace` setting still overrides it. Whitespace is emitted as
+  separate upstream `mtkw`-style parts with no token style, so every dot/arrow
+  paints one uniform `editorWhitespace.foreground` color instead of the
+  neighboring token color; themes without that id get a dimmed default
+  foreground. Control characters render as Unicode control pictures when
+  `renderControlCharacters` is on.
 - `WorkingCopyService` is ported
   (`workbench/services/workingCopy/common/workingCopyService.zig`): working-copy
   registration/unregistration by resource/type, dirty/modified tracking,

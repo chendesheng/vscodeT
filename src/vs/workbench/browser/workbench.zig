@@ -2496,6 +2496,9 @@ pub const Workbench = struct {
     pub fn showActivity(self: *Workbench, index: usize) !void {
         const activity = self.activity_bar_part.activityAtVisibleIndex(index) orelse return;
         if (self.sidebar == null or self.search_view == null) try self.initSidebarFromWorkspace();
+        // Switching the visible view container invalidates the hover state
+        // painted by the previous one.
+        self.clearSidebarViewHover();
         _ = try self.activity_bar_part.setActive(activity.id);
         _ = try self.sidebar_part.openPaneComposite(activity.id);
         try self.setSidebarVisible(true);
@@ -7824,6 +7827,15 @@ pub const Workbench = struct {
         }
     }
 
+    /// Clears the side bar view hover state: the Explorer row hover, the SCM
+    /// pane header title action highlight and the Graph row hover. Called when
+    /// pointer motion leaves the view content for the chrome or another part.
+    fn clearSidebarViewHover(self: *Workbench) void {
+        if (self.sidebar) |sidebar| sidebar.clearHover();
+        if (self.scm_container) |container| container.clearHover();
+        if (self.scm_history_view) |view| view.clearHover();
+    }
+
     pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         if (isCtrlChar(event, 'b')) {
             try self.toggleSidebar();
@@ -7910,6 +7922,7 @@ pub const Workbench = struct {
         // The activity bar stays clickable while the side bar is hidden; an
         // entry click reveals the side bar again, like upstream.
         if (event.x < self.activityBarWidth()) {
+            if (event.kind == .move) self.clearSidebarViewHover();
             if (event.kind == .down) {
                 if (activity_bar_mod.overflowHitAt(&self.activity_bar_part, event.x, event.y, self.activityRect())) {
                     self.showActivityOverflowMenu() catch {};
@@ -7921,18 +7934,13 @@ pub const Workbench = struct {
         }
 
         if (!self.sidebarShown()) {
-            if (event.kind == .move) {
-                if (self.sidebar) |sidebar| sidebar.clearHover();
-            }
+            if (event.kind == .move) self.clearSidebarViewHover();
             return false;
         }
 
         const sidebar_right = self.activityBarWidth() + self.sidebarWidth();
         if (event.x > sidebar_right) {
-            if (event.kind == .move) {
-                if (self.sidebar) |sidebar| sidebar.clearHover();
-                if (self.scm_history_view) |view| view.clearHover();
-            }
+            if (event.kind == .move) self.clearSidebarViewHover();
             return false;
         }
 
@@ -7948,7 +7956,7 @@ pub const Workbench = struct {
             event.y >= content_top + content_height;
         if (in_chrome) {
             if (event.kind == .move) {
-                if (self.sidebar) |sidebar| sidebar.clearHover();
+                self.clearSidebarViewHover();
                 sidebar_part_mod.setHovered(
                     &self.sidebar_part,
                     sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y),
@@ -7975,41 +7983,50 @@ pub const Workbench = struct {
         const active_id = self.activity_bar_part.active_id orelse "";
         if (std.mem.eql(u8, active_id, "scm")) {
             if (self.scm_container) |container| {
-                if (container.hitTest(content, event.x, event.y)) |hit| {
-                    // Mode-1003 terminals report idle motion. Only a press or
-                    // click may run a title action or toggle a section; a move
-                    // over a header just clears the list hover.
-                    const activating = event.kind == .down or event.kind == .click;
-                    switch (hit) {
+                const hit = container.hitTest(content, event.x, event.y);
+                if (event.kind == .move) {
+                    // Mode-1003 terminals report idle motion. Motion only
+                    // paints the hovered title action or the view's row hover;
+                    // it never activates a title action or toggles a section.
+                    container.setHoveredAt(event.x, event.y);
+                    var over_history = false;
+                    if (hit) |value| switch (value) {
+                        .body => |id| {
+                            over_history = std.mem.eql(u8, id, "graph");
+                            _ = container.handleMouse(@constCast(event), content) catch false;
+                        },
+                        else => {},
+                    };
+                    if (!over_history) {
+                        if (self.scm_history_view) |view| view.clearHover();
+                        if (self.scm_view) |view| view.clearHover();
+                    }
+                    return true;
+                }
+                const activating = event.kind == .down or event.kind == .click;
+                if (activating) {
+                    // A click on a title action runs it without toggling the
+                    // section (upstream prevents the header click from the
+                    // actions container); every other header cell toggles.
+                    if (hit) |value| switch (value) {
                         .action => |action| {
-                            if (activating) {
-                                container.setActive(action.id);
-                                self.runSidebarTitleAction(action.action);
-                            }
+                            container.setActive(action.id);
+                            self.runSidebarTitleAction(action.action);
                         },
                         .toggle => |id| {
-                            if (activating) {
-                                container.model.setCollapsed(id, !container.model.isCollapsed(id));
-                                container.setActive(id);
-                            }
+                            container.model.setCollapsed(id, !container.model.isCollapsed(id));
+                            container.setActive(id);
                         },
                         .body => {
                             _ = container.handleMouse(@constCast(event), content) catch false;
                         },
-                    }
-                    if (event.kind == .move) {
-                        switch (hit) {
-                            .body => {},
-                            else => {
-                                if (self.scm_history_view) |view| view.clearHover();
-                                if (self.scm_view) |view| view.clearHover();
-                            },
-                        }
-                    }
-                } else if (event.kind == .move) {
-                    if (self.scm_history_view) |view| view.clearHover();
-                    if (self.scm_view) |view| view.clearHover();
+                    };
+                    return true;
                 }
+                if (hit) |value| switch (value) {
+                    .body => _ = container.handleMouse(@constCast(event), content) catch false,
+                    else => {},
+                };
             } else if (self.scm_view) |view| {
                 _ = view.handleMouse(@constCast(event), content) catch false;
             }
@@ -12725,7 +12742,7 @@ test "Workbench: editor settings apply to open editors and reload" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path = try seedFile(allocator, io, &tmp, "settings_editor.txt", "alpha\nbeta\n");
+    const path = try seedFile(allocator, io, &tmp, "settings_editor.txt", "alpha beta\nbeta\n");
     defer allocator.free(path);
     var settings_file = try tmp.dir.createFile(io, "editor-settings.json", .{});
     try settings_file.writeStreamingAll(io, "{\"editor.lineNumbers\":\"relative\",\"editor.renderWhitespace\":\"all\",\"editor.matchBrackets\":\"never\"}");
@@ -12753,6 +12770,15 @@ test "Workbench: editor settings apply to open editors and reload" {
         editor_options.MatchBrackets.never,
         tab.view.terminal_view_host.options.get(.matchBrackets),
     );
+
+    // The settings change must reach the view-line options, not just the
+    // computed-options store: the open editor renders middle dots for spaces.
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try workbench.render(&rendered.writer);
+    const frame = try frameText(allocator, &workbench.frame);
+    defer allocator.free(frame);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "\u{00B7}") != null);
 
     // Editing the file and re-applying the layer updates the open editor.
     var reloaded_settings = try tmp.dir.createFile(io, "editor-settings.json", .{ .truncate = true });
@@ -14450,14 +14476,23 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
         try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
     }
 
+    // Pointer motion over the Graph body still drives the row hover: body
+    // moves are forwarded to the pane while header moves only track the
+    // hovered title action.
+    var hover_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer hover_frame.deinit();
+    try workbench.render(&hover_frame.writer);
+    const graph_body = workbench.scm_container.?.bodyRect("graph") orelse return error.TestExpectedGraphBody;
+    var body_move = ui.MouseEvent{ .kind = .move, .x = ui.cell.snap(graph_body.x) + 2, .y = ui.cell.snap(graph_body.y) };
+    try std.testing.expect(workbench.handleSidebarMouse(&body_move));
+    try std.testing.expect(history_view.hoveredRow() != null);
+    try std.testing.expect(history_view.hoverContent() != null);
+    history_view.clearHover();
+
     // The history hover is a bordered overlay: every edge of its surface must
     // carry a border glyph. The DOM root is four cells smaller than the
     // surface (one cell border plus one cell padding on each side); sizing the
     // content box to the whole surface used to clip the right/bottom edges.
-    var hover_frame: std.Io.Writer.Allocating = .init(allocator);
-    defer hover_frame.deinit();
-    try workbench.render(&hover_frame.writer);
-    history_view.clearHover();
     history_view.hovered_row = 0;
     history_view.hover_content = try allocator.dupe(u8, "7d272ae workbench: report Explorer open failures on click\nA single click opened a preview editor and discarded the change.\nthat Enter and the async open path use, and keep focus in the editor.");
     var hovered_frame: std.Io.Writer.Allocating = .init(allocator);
@@ -14607,7 +14642,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     }
 }
 
-test "Workbench: clicking Load More pages the SCM history" {
+test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -14651,6 +14686,64 @@ test "Workbench: clicking Load More pages the SCM history" {
     try workbench.render(&out.writer);
 
     const container = workbench.scm_container orelse return error.TestExpectedScmContainer;
+
+    // Pointer motion over the Graph header never collapses the section and
+    // never runs a title action; only a left click does. Hovering a title
+    // action marks it in the ui surface's hover chain, which paints its
+    // declared hover style.
+    const header = container.sections.items[1].header_rect;
+    const graph_header_y = ui.cell.snap(header.y);
+    const header_start = ui.cell.snap(header.x);
+    const header_end = header_start + ui.cell.snap(header.w);
+    const header_surface = &(container.headers.items[1].surface orelse return error.TestExpectedScmContainer);
+    var over_title = ui.MouseEvent{ .kind = .move, .x = header_start + 1, .y = graph_header_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&over_title));
+    try std.testing.expect(!container.model.isCollapsed("graph"));
+    for (container.headers.items[1].nodes.items) |entry| {
+        if (entry.id.len != 0) try std.testing.expect(!entry.node.isHovered());
+    }
+    var action_x: ?usize = null;
+    var scan = header_end;
+    while (scan > header_start) {
+        scan -= 1;
+        const hit = container.hitTest(header, scan, graph_header_y) orelse continue;
+        if (std.meta.activeTag(hit) == .action) {
+            action_x = scan;
+            break;
+        }
+    }
+    try std.testing.expect(action_x != null);
+    const mode_before = view.view_mode;
+    var over_action = ui.MouseEvent{ .kind = .move, .x = action_x.?, .y = graph_header_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&over_action));
+    try std.testing.expectEqual(mode_before, view.view_mode);
+    try std.testing.expect(!container.model.isCollapsed("graph"));
+    const hovered = header_surface.document().hoverTarget();
+    try std.testing.expect(hovered != null);
+    var on_action = false;
+    for (container.headers.items[1].nodes.items) |entry| {
+        if (entry.id.len != 0 and entry.node == hovered.?) on_action = true;
+    }
+    try std.testing.expect(on_action);
+
+    // Moving back over the title clears the action hover.
+    try std.testing.expect(workbench.handleSidebarMouse(&over_title));
+    for (container.headers.items[1].nodes.items) |entry| {
+        if (entry.id.len != 0) try std.testing.expect(!entry.node.isHovered());
+    }
+
+    // The left click toggles the section; a second click restores it for the
+    // Load More click below.
+    var header_click = ui.MouseEvent{ .kind = .down, .x = header_start + 1, .y = graph_header_y, .button = .left };
+    try std.testing.expect(workbench.handleSidebarMouse(&header_click));
+    try std.testing.expect(container.model.isCollapsed("graph"));
+    try workbench.render(&out.writer);
+    const collapsed_y = ui.cell.snap(container.sections.items[1].header_rect.y);
+    var expand_click = ui.MouseEvent{ .kind = .down, .x = header_start + 1, .y = collapsed_y, .button = .left };
+    try std.testing.expect(workbench.handleSidebarMouse(&expand_click));
+    try std.testing.expect(!container.model.isCollapsed("graph"));
+    try workbench.render(&out.writer);
+
     const body = container.bodyRect("graph") orelse return error.TestExpectedGraphBody;
     try std.testing.expect(ui.cell.snap(body.h) >= 3);
     const x = ui.cell.snap(body.x) + 2;
