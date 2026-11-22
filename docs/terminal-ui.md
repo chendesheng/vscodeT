@@ -920,6 +920,11 @@ Library constraints:
     Indentation guides keep the selection background and their guide color. The
     cursor line uses a background and the hardware cursor is moved to the caret
     cell after layout.
+  - Shows hidden whitespace like VS Code: the shared line renderer applies
+    `editor.renderWhitespace`, whose upstream default is `selection`, so
+    selected spaces become `·` and tabs `→` while the selection is active. The
+    other modes (`all`, `boundary`, `trailing`) and `none` are honored when the
+    setting is present.
   - Turns the cached bracket-matching data into model decorations and paints
     them through `LineDecoration.filter`/`extractWrapped`, the same per-wrapped-
     line route as find ranges. Highlights are hidden while a widget owns focus
@@ -1094,8 +1099,12 @@ Library constraints:
   full opacity (active pair), matching upstream. The indentation scope around
   the caret is painted with the active indent-guide color. A guide is only
   painted in a leading-whitespace or blank cell, because one terminal cell
-  cannot show both a guide and a text glyph; horizontal bracket guide segments
-  are therefore not painted. Wrapped continuation lines do not get guides.
+  cannot show both a guide and a text glyph. When `renderWhitespace` renders a
+  selected space (`·`) or a one-cell tab (`→`), the marker is text and keeps the
+  shared cell. A wider tab keeps the guide at its first cell and repeats the
+  arrow in the next padding cell, so the guide stays visible too. Horizontal
+  bracket guide segments are therefore not painted. Wrapped continuation lines
+  do not get guides.
 - Find, bracket and word ranges are stored in the model as `TextModel`
   decorations (`findMatch`, `currentFindMatch`, `bracket-match`,
   `wordHighlight*`). `View.ModelDecorationSink` replaces each contribution's
@@ -1665,13 +1674,14 @@ pane is not keyboard-focusable.
   right-aligned line numbers, empty lines, tabs, CJK/emoji wide characters,
   wrapped lines, long-line clipping, gutters for lines past 9 and 99.
 - Snapshot tests in `src/tui/` assert text rows and per-cell styles for ASCII,
-  CJK, tabs, wrapping and long-line clipping; selection background/dimming and
-  the guide cells inside a selection; the hardware cursor cell; an unchanged
-  refresh writing no bytes; mouse click/shift-click/drag/wheel caret and
-  viewport effects; find-control hover highlighting and click activation; input
-  click-to-caret; plus keyboard scrolling and Ctrl-Q through the library
-  dispatcher. Content-widget tests cover model-position anchoring, wrapped
-  anchors, above/below flipping and cell clamping; the hover
+  CJK, tabs, wrapping and long-line clipping; selection background/dimming,
+  visible-whitespace markers inside a selection, and the guide cells inside a
+  selection; the hardware cursor cell; an unchanged refresh writing no bytes;
+  mouse click/shift-click/drag/wheel caret and viewport effects; find-control
+  hover highlighting and click activation; input click-to-caret; plus keyboard
+  scrolling and Ctrl-Q through the library dispatcher. Content-widget tests
+  cover model-position anchoring, wrapped anchors, above/below flipping and
+  cell clamping; the hover
   contribution tests cover the upstream `contentHover.test.ts` placement cases,
   markdown/decoration participants, rendering the box and highlight, focus with
   Escape, and wheel scrolling of long hover content without moving the

@@ -427,16 +427,17 @@ test "terminalEditorConfiguration: sticky scroll settings map and clamp" {
     try std.testing.expect(changed[@backingInt(EditorOption.stickyScroll)]);
 }
 
-test "terminalEditorConfiguration: absent settings keep terminal defaults" {
+test "terminalEditorConfiguration: absent settings keep upstream defaults" {
     const allocator = std.testing.allocator;
     var settings = FakeSettings.init(allocator);
     defer settings.deinit();
 
     var options = ComputedEditorOptions.init();
-    options.set(.renderWhitespace, .none); // terminal default overrides upstream
     var changed: ChangeSet = undefined;
     try std.testing.expect(!applyViewSettings(&options, settings.reader(), null, null, &changed));
-    try std.testing.expectEqual(RenderWhitespace.none, options.get(.renderWhitespace));
+    // `null` from the reader means "not configured": the computed default is
+    // untouched, including the upstream `selection` whitespace mode.
+    try std.testing.expectEqual(RenderWhitespace.selection, options.get(.renderWhitespace));
     try std.testing.expectEqual(RenderLineNumbersType.On, options.get(.lineNumbers).render_type);
 }
 

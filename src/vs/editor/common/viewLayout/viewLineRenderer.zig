@@ -190,8 +190,9 @@ fn shouldRenderWhitespace(context: *const WhitespaceContext, absolute_index: usi
         .all => true,
         .boundary => absolute_index < context.first_non_whitespace or absolute_index > context.last_non_whitespace,
         .trailing => absolute_index > context.last_non_whitespace,
-        // Selection-only rendering needs selection ranges, which are not part
-        // of the shared terminal renderer yet.
+        // Selection mode receives the view selections as absolute byte ranges
+        // into `content` (the terminal model's column unit) and renders only
+        // the whitespace inside them, like upstream `_applyRenderWhitespace`.
         .selection => blk: {
             for (context.selection_ranges) |range| {
                 if (absolute_index >= range.start and absolute_index < range.endExclusive) break :blk true;
