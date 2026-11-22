@@ -245,3 +245,72 @@ test "overlay widgets places a top-right widget and records its rect" {
     try testing.expect(part.remove("fake"));
     try testing.expectEqual(@as(usize, 0), part.widgets.items.len);
 }
+
+test "overlay widgets place bottom-right/top-center and restore focus" {
+    const allocator = testing.allocator;
+    var doc = try ui.Document.init(allocator, .{ .cols = 20, .rows = 10 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+
+    const FlexWidget = struct {
+        node: ?*ui.Node = null,
+        pref: editorBrowser.OverlayWidgetPositionPreference,
+        w: usize,
+        h: usize,
+        focused: bool,
+
+        fn id(_: *anyopaque) []const u8 {
+            return "flex";
+        }
+        fn position(context: *anyopaque) editorBrowser.OverlayWidgetPositionPreference {
+            return @as(*@This(), @ptrCast(@alignCast(context))).pref;
+        }
+        fn width(context: *anyopaque, _: usize) usize {
+            return @as(*@This(), @ptrCast(@alignCast(context))).w;
+        }
+        fn height(context: *anyopaque) usize {
+            return @as(*@This(), @ptrCast(@alignCast(context))).h;
+        }
+        fn build(context: *anyopaque, d: *ui.Document) anyerror!*ui.Node {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const node = try d.createElement(.div);
+            node.asElement().focusable = true;
+            self.node = node;
+            return node;
+        }
+        fn focusNode(context: *anyopaque) ?*ui.Node {
+            return @as(*@This(), @ptrCast(@alignCast(context))).node;
+        }
+        fn isFocused(context: *anyopaque) bool {
+            return @as(*@This(), @ptrCast(@alignCast(context))).focused;
+        }
+        fn interface(self: *@This()) editorBrowser.IOverlayWidget {
+            return .{
+                .context = self,
+                .get_id = id,
+                .get_position = position,
+                .width = width,
+                .height = height,
+                .build = build,
+                .focus_node = focusNode,
+                .is_focused = isFocused,
+            };
+        }
+    };
+
+    var bottom = FlexWidget{ .pref = .bottom_right_corner, .w = 5, .h = 2, .focused = false };
+    var center = FlexWidget{ .pref = .top_center, .w = 4, .h = 1, .focused = true };
+    var part = ViewOverlayWidgets.init(allocator);
+    defer part.deinit();
+    try part.add(bottom.interface());
+    try part.add(center.interface());
+    try part.render(&doc, root, 20, 10);
+
+    try testing.expectEqual(@as(usize, 2), part.entries.items.len);
+    try testing.expectEqual(@as(usize, 15), part.entries.items[0].left);
+    try testing.expectEqual(@as(usize, 8), part.entries.items[0].top);
+    try testing.expectEqual(@as(usize, 8), part.entries.items[1].left);
+    try testing.expectEqual(@as(usize, 0), part.entries.items[1].top);
+    try testing.expectEqual(center.node.?, doc.activeElement());
+}
