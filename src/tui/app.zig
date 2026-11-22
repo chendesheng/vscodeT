@@ -312,6 +312,11 @@ pub fn main(init: std.process.Init) !void {
         .read = ProbeHost.read,
     });
     defer border_probe.deinit(allocator);
+    infoLog(log_service, "cell borders: supported={} version={d} features=0x{x}", .{
+        border_probe.supported,
+        border_probe.capabilities.version,
+        border_probe.capabilities.features,
+    });
 
     // The kitty graphics probe is separate because its replies are APC
     // strings rather than the cell-border DCS. Known placeholder-capable
