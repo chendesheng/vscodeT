@@ -39,6 +39,7 @@ pub const FlexWrap = style.FlexWrap;
 pub const FocusDirection = event.FocusDirection;
 pub const Gap = style.Gap;
 pub const Dialog = dialog.Dialog;
+pub const DialogTheme = dialog.Theme;
 pub const DialogAction = dialog.Action;
 pub const DialogButtonRect = dialog.ButtonRect;
 pub const DialogLayout = dialog.Layout;

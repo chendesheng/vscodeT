@@ -6030,6 +6030,22 @@ pub const Workbench = struct {
     /// Opens the modal save confirmation. Upstream reveals the editor before
     /// asking (`doHandleCloseConfirmation`); the terminal does the same by
     /// activating the tab so the user sees which buffer is being closed.
+    fn dialogTheme(self: *Workbench) ui.DialogTheme {
+        return .{
+            .background = self.themeColor("dialog.background", .{ 0x25, 0x25, 0x26 }),
+            .border = self.themeColor("dialog.border", .{ 0x58, 0x58, 0x5A }),
+            .text = self.themeColor("foreground", .{ 0xEB, 0xEB, 0xEB }),
+            .detail = self.themeColor("descriptionForeground", .{ 0xC4, 0xC4, 0xC4 }),
+            .warning = self.themeColor("editorWarning.foreground", .{ 0xE8, 0xC2, 0x5A }),
+            .primary_background = self.themeColor("button.background", .{ 0x0E, 0x63, 0x9C }),
+            .primary_focused_background = self.themeColor("button.hoverBackground", .{ 0x11, 0x77, 0xBB }),
+            .primary_foreground = self.themeColor("button.foreground", .{ 0xFF, 0xFF, 0xFF }),
+            .secondary_background = self.themeColor("button.secondaryBackground", .{ 0x3A, 0x3D, 0x41 }),
+            .secondary_focused_background = self.themeColor("button.secondaryHoverBackground", .{ 0x45, 0x49, 0x4E }),
+            .secondary_foreground = self.themeColor("button.secondaryForeground", .{ 0xFF, 0xFF, 0xFF }),
+        };
+    }
+
     fn openSaveConfirm(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
         if (self.dialog != null) return;
 
@@ -6042,6 +6058,7 @@ pub const Workbench = struct {
             &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
         );
         errdefer dialog.deinit();
+        dialog.theme = self.dialogTheme();
 
         self.part.active_sash = null;
         self.clearTabDrag();
@@ -6083,6 +6100,7 @@ pub const Workbench = struct {
             &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
         );
         errdefer dialog.deinit();
+        dialog.theme = self.dialogTheme();
 
         self.part.active_sash = null;
         self.clearTabDrag();
