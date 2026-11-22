@@ -180,6 +180,8 @@ Small commits, each with a regression test:
     `serialize`, `deserialize`) with a round-trip test.
 44. `32cb2ab` `ModelDecorationOptions` font fields and
     `TextModel.getFontDecorationsInRange`.
+45. `f35cf62` ported `concat23Trees.ts`, its AST mutation helpers and tests;
+    the parser now uses it instead of `buildList`.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -189,14 +191,13 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 
 - **Bracket-pair core is a merged reimplementation.** `bracketPairsTree.zig`
   keeps the `bracketPairsTree.ts` query/document logic in one file and has
-  no upstream `concat23Trees` (the parser uses `buildList`), streaming
-  `TextBufferTokenizer`/`FastTokenizer`, or two-tree mode
+  no streaming `TextBufferTokenizer`/`FastTokenizer` or two-tree mode
   (`initialAstWithoutTokens`/`astWithTokens`). Queries use flat sorted lists
   for pair APIs, so many operations remain O(document) and incremental
   parses deep-clone cached nodes. Delimiter matching (case folding, word
-  boundaries, token clamping) and the upstream module split for `ast`,
-  `brackets`, `length`, `parser`, `smallImmutableSet` and `tokenizer` are
-  done. See findings F9/F15 for the remaining plan.
+  boundaries, token clamping), `concat23Trees`, and the upstream module
+  split for `ast`, `brackets`, `length`, `parser`, `smallImmutableSet` and
+  `tokenizer` are done. See findings F9/F15 for the remaining plan.
 - **Piece-tree public APIs still have byte/UTF-16 and safety gaps.**
   `getLineCharCode`/`getCharCode` are byte accessors next to the codepoint
   helpers; `getNearestChunk` returns a borrowed slice into mutable buffers;
@@ -248,8 +249,8 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   `brackets`, `concat23Trees`, full `getBracketPairsInRange`,
   `tokenizer`; most of `pieceTreeTextBuffer.test.ts` (CRLF/random and
   snapshot suites partly ported); `textModelTokens.test.ts`,
-  `editableTextModel*.test.ts`, `model*.test.ts`. The before-edit mapper
-  suite, annotations suite, and the anchor/simple/multiline/find-next/
+  `editableTextModel*.test.ts`, `model*.test.ts`. The before-edit mapper,
+  annotations, concat23Trees, and the anchor/simple/multiline/find-next/
   capturing portions of `textModelSearch.test.ts` are ported.
 - Dead/malformed declarations that only compile because they are never
   analyzed: `rbTreeBase.TreeNode.iterate`, `intervalTree` font bit,
@@ -268,7 +269,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3078 tests, 19 skipped; the only observed
+The full suite currently passes (3084 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
@@ -277,8 +278,8 @@ which passes on re-run).
 1. Port the upstream model test suites listed above; they are the safety net
    for the remaining bracket-pair/piece-tree behavior.
 2. Fix the piece-tree snapshot API and the interval-tree `maxEnd` seed.
-3. Split `bracketPairsTree.zig` into the upstream modules and restore
-   `concat23Trees`, streaming tokenizers and AST query helpers.
+3. Finish splitting `bracketPairsTree.zig` and port the streaming
+   tokenizers/two-tree mode.
 4. Port bracket colorization levels and the AST-only matching choice.
 5. Document the deliberate unported pieces (tree-sitter backend, font
    decorations, horizontal guide painting) in `README.md` and in the file
