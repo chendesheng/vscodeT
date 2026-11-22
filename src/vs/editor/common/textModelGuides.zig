@@ -32,6 +32,10 @@ pub const BracketGuideOptions = struct {
     highlightActive: bool,
 };
 
+/// Owned list of guides for one view line. The model and view-model guide
+/// queries return one of these per requested line.
+pub const LineGuides = std.array_list.Managed(IndentGuide);
+
 pub const IndentGuide = struct {
     /// `-1` if this is a horizontal guide.
     visibleColumn: isize,

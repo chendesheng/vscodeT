@@ -13,6 +13,7 @@ const Color = @import("../../../base/common/color.zig").Color;
 const Position = @import("../../common/core/position.zig").Position;
 const Range = @import("../../common/core/range.zig").Range;
 const PositionAffinity = @import("../../common/model.zig").PositionAffinity;
+const text_model_guides = @import("../../common/textModelGuides.zig");
 
 pub const TestCoordinatesConverter = struct {
     pub fn interface() coordinates.ICoordinatesConverter {
@@ -160,9 +161,40 @@ pub const TestViewModel = struct {
             .getViewportViewLineRenderingData = getViewportViewLineRenderingData,
             .getViewLineContinuesWithWrappedLine = getViewLineContinuesWithWrappedLine,
             .getDecorationsInViewport = getDecorationsInViewport,
+            .getIndentSize = getIndentSize,
+            .getActiveIndentGuide = getActiveIndentGuide,
+            .getLinesIndentGuides = getLinesIndentGuides,
+            .getBracketGuidesInRangeByLine = getBracketGuidesInRangeByLine,
             .add_view_event_handler = addViewEventHandler,
             .remove_view_event_handler = removeViewEventHandler,
         };
+    }
+
+    fn getIndentSize(_: *anyopaque) usize {
+        return 4;
+    }
+
+    fn getActiveIndentGuide(_: *anyopaque, line_number: usize, _: usize, _: usize) anyerror!text_model_guides.IActiveIndentGuideInfo {
+        return .{ .startLineNumber = line_number, .endLineNumber = line_number, .indent = 0 };
+    }
+
+    fn getLinesIndentGuides(_: *anyopaque, start_line_number: usize, end_line_number: usize, allocator: std.mem.Allocator) anyerror![]usize {
+        const result = try allocator.alloc(usize, end_line_number - start_line_number + 1);
+        @memset(result, 0);
+        return result;
+    }
+
+    fn getBracketGuidesInRangeByLine(
+        _: *anyopaque,
+        start_line_number: usize,
+        end_line_number: usize,
+        _: ?Position,
+        _: text_model_guides.BracketGuideOptions,
+        allocator: std.mem.Allocator,
+    ) anyerror![]text_model_guides.LineGuides {
+        const result = try allocator.alloc(text_model_guides.LineGuides, end_line_number - start_line_number + 1);
+        for (result) |*line| line.* = text_model_guides.LineGuides.init(allocator);
+        return result;
     }
 
     fn getLineMinColumn(_: *anyopaque, _: usize) usize {

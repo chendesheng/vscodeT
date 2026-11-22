@@ -1114,18 +1114,23 @@ Library constraints:
   layer by the editor's horizontal offset. No CSS border/shadow, context menu,
   go-to-definition from a sticky row or embedded-editor peek styling is
   ported.
-- Indentation guides are painted by the terminal editor render pass from the ported
-  `src/vs/editor/common/model/guidesTextModelPart.zig` indentation subset. The
-  model computes a guide count per visible model line, including the upstream
-  blank-line rule that inherits from the surrounding content, and the view
-  overlays a dim `│` at each `(level - 1) * indentSize` column inside the
-  leading whitespace. This follows Flow's whitespace-indent glyph. Indent
-  guide colors follow upstream's cycled
-  `editorIndentGuide.background1..6` / `activeBackground1..6` pools; because
-  the default themes only define level 1, the guides are a single gray unless
-  a theme opts into per-level colors. Vertical bracket-pair guides come from
-  `src/vs/editor/browser/viewParts/indentGuides/indentGuides.zig`, which reads
-  the existing bracket-pairs model. They use
+- Indentation guides are owned by the ported `IndentGuidesOverlay` in
+  `src/vs/editor/browser/viewParts/indentGuides/indentGuides.zig`, which runs
+  upstream's `prepareRender`/`render` overlay lifecycle against the view
+  model's `getLinesIndentGuides`, `getBracketGuidesInRangeByLine` and
+  `getActiveIndentGuide`. Like upstream it requests `visibleEndLineNumber + 1`,
+  so a bracket pair closing just below the viewport still draws its guide on
+  the last visible line. The model-side counts come from
+  `src/vs/editor/common/model/guidesTextModelPart.zig`, including the upstream
+  blank-line rule that inherits from the surrounding content; the view-model
+  queries in `viewModelLines.zig` repeat/block those counts across wrapped
+  lines. The terminal compositor maps the guide class names to colors and
+  paints a dim `│` at each `(level - 1) * indentSize` view column inside the
+  leading whitespace. This follows Flow's whitespace-indent glyph. Indent guide
+  colors follow upstream's cycled `editorIndentGuide.background1..6` /
+  `activeBackground1..6` pools; because the default themes only define level 1,
+  the guides are a single gray unless a theme opts into per-level colors.
+  Bracket-pair guides use
   `editorBracketPairGuide.background1..6` / `activeBackground1..6` when the
   theme defines them, and otherwise derive from the same-level
   `editorBracketHighlight.foreground1..6` color at 30% opacity (inactive) or
@@ -1137,7 +1142,11 @@ Library constraints:
   marker and keeps the shared cell. A wider tab keeps the guide at its first
   cell and repeats the arrow in the next padding cell, so the guide stays
   visible and the tab remains indicated. Horizontal bracket guide segments are
-  therefore not painted. Wrapped continuation lines do not get guides.
+  therefore not painted, and wrapped continuation rows do not paint guides in
+  the terminal compositor even though the view-model query returns their
+  blocked counts. `editor.guides.*` settings are not mapped by the terminal
+  configuration reader yet; the terminal keeps indentation and bracket-pair
+  guides enabled with horizontal segments off.
 - Visible whitespace (`renderWhitespace` `all`/`boundary`/`trailing`/
   `selection`) is produced by the shared line renderer as upstream
   `mtkw`-style runs: a space becomes `·`, a tab `→` plus its padding, and the

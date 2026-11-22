@@ -535,25 +535,43 @@ test "bracket pairs: guide view merges indentation and bracket guides" {
     fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
     try fixture.ctx.model.bracketPairs().updateNow();
 
-    var guides_part = @import("../../../../common/model/guidesTextModelPart.zig").GuidesTextModelPart.init(
-        fixture.ctx.model,
-        fixture.ctx.languageService,
-    );
-    defer guides_part.dispose();
-
-    const lines = try indent_guides.getGuidesByLine(
+    const guides_part = fixture.ctx.model.guides();
+    const indent_guides_counts = try guides_part.getLinesIndentGuides(
         allocator,
-        fixture.ctx.model,
-        &guides_part,
+        1,
+        fixture.ctx.model.getLineCount(),
+    );
+    defer allocator.free(indent_guides_counts);
+    const bracket_guides = try guides_part.getLinesBracketGuides(
+        allocator,
         1,
         fixture.ctx.model.getLineCount(),
         Position.init(2, 1),
         .{
-            .include_inactive_bracket_pairs = true,
-            .horizontal_guides = .Disabled,
-            .highlight_active_bracket_pair = true,
-            .highlight_active_indentation = .enabled,
+            .includeInactive = true,
+            .horizontalGuides = .Disabled,
+            .highlightActive = true,
         },
+    );
+    defer {
+        for (bracket_guides) |*line| line.deinit();
+        allocator.free(bracket_guides);
+    }
+    const active_indent_info = try guides_part.getActiveIndentGuide(
+        2,
+        1,
+        fixture.ctx.model.getLineCount(),
+    );
+
+    const lines = try indent_guides.assembleGuides(
+        allocator,
+        1,
+        fixture.ctx.model.getLineCount(),
+        bracket_guides,
+        indent_guides_counts,
+        active_indent_info,
+        fixture.ctx.model.getOptions().indentSize,
+        .enabled,
     );
     defer {
         for (lines) |*line| line.deinit();

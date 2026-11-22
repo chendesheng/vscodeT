@@ -22,6 +22,7 @@ const view_mod = @import("../../view.zig");
 const StringBuilder = @import("../../../common/core/stringBuilder.zig").StringBuilder;
 const view_model_decorations = @import("../../../common/viewModel/viewModelDecorations.zig");
 const line_numbers_mod = @import("../../viewParts/lineNumbers/lineNumbers.zig");
+const indent_guides_mod = @import("../../viewParts/indentGuides/indentGuides.zig");
 const selections_mod = @import("../../viewParts/selections/selections.zig");
 const current_line_mod = @import("../../viewParts/currentLineHighlight/currentLineHighlight.zig");
 const view_cursors_mod = @import("../../viewParts/viewCursors/viewCursors.zig");
@@ -44,6 +45,9 @@ const Range = @import("../../../common/core/range.zig").Range;
 const Selection = @import("../../../common/core/selection.zig").Selection;
 const Position = @import("../../../common/core/position.zig").Position;
 const TextDirection = @import("../../../common/standalone/standaloneEnums.zig").TextDirection;
+const IActiveIndentGuideInfo = @import("../../../common/textModelGuides.zig").IActiveIndentGuideInfo;
+const BracketGuideOptions = @import("../../../common/textModelGuides.zig").BracketGuideOptions;
+const LineGuides = @import("../../../common/textModelGuides.zig").LineGuides;
 
 const IViewModel = view_model.IViewModel;
 const IViewLayout = view_model.IViewLayout;
@@ -55,6 +59,7 @@ const ViewEventHandler = view_event_handler.ViewEventHandler;
 const ViewEvent = view_events.ViewEvent;
 const ViewModelDecorations = view_model_decorations.ViewModelDecorations;
 const LineNumbersOverlay = line_numbers_mod.LineNumbersOverlay;
+const IndentGuidesOverlay = indent_guides_mod.IndentGuidesOverlay;
 const RenderedLineNumber = line_numbers_mod.RenderedLineNumber;
 const RenderingContext = rendering_context.RenderingContext;
 const SelectionsOverlay = selections_mod.SelectionsOverlay;
@@ -174,6 +179,7 @@ pub const TerminalViewHost = struct {
     scratch_text: StringBuilder,
     decorations: *ViewModelDecorations,
     line_numbers: LineNumbersOverlay,
+    indent_guides: IndentGuidesOverlay,
     line_decorations: LinesDecorationsOverlay,
     decorations_overlay: DecorationsOverlay,
     block_decorations: BlockDecorations,
@@ -212,6 +218,7 @@ pub const TerminalViewHost = struct {
             .scratch_text = undefined,
             .decorations = undefined,
             .line_numbers = undefined,
+            .indent_guides = undefined,
             .line_decorations = undefined,
             .decorations_overlay = undefined,
             .block_decorations = undefined,
@@ -233,6 +240,16 @@ pub const TerminalViewHost = struct {
         // arrow for tabs. An explicit `editor.renderWhitespace` setting still
         // overrides it in `applyEditorSettings`.
         self.options.set(.experimentalWhitespaceRendering, .off);
+        // The terminal configuration surface does not map `editor.guides.*`
+        // yet; keep the renderer's existing indentation and bracket-pair
+        // defaults until that mapping is ported.
+        self.options.set(.guides, .{
+            .bracket_pairs = .on,
+            .bracket_pairs_horizontal = .off,
+            .highlight_active_bracket_pair = true,
+            .indentation = true,
+            .highlight_active_indentation = .on,
+        });
         self.options.set(.wordWrap, .on);
         self.options.set(.stopRenderingLineAfter, -1);
         self.syncGutterOptions();
@@ -256,6 +273,7 @@ pub const TerminalViewHost = struct {
         self.view.init(allocator, &self.context);
         self.scratch_text = try StringBuilder.init(allocator, 256);
         self.line_numbers.init(allocator, &self.context);
+        self.indent_guides.init(allocator, &self.context);
         self.line_decorations.init(allocator, &self.context);
         self.decorations_overlay.init(allocator, &self.context);
         self.block_decorations.init(allocator, &self.context);
@@ -269,6 +287,7 @@ pub const TerminalViewHost = struct {
         // The ported `View` coordinates the render pass. Register the overlays
         // as content overlays exactly like upstream `ContentViewOverlays`.
         try self.view.addContentOverlay(&self.line_numbers.base);
+        try self.view.addContentOverlay(&self.indent_guides.base);
         try self.view.addContentOverlay(&self.line_decorations.base);
         try self.view.addContentOverlay(&self.decorations_overlay.base);
         try self.view.addContentOverlay(&self.selections_overlay.base);
@@ -340,6 +359,7 @@ pub const TerminalViewHost = struct {
         self.decorations_overlay.deinit();
         self.line_decorations.deinit();
         self.line_numbers.deinit();
+        self.indent_guides.deinit();
         self.decorations.destroy();
         self.lines_adapter.deinit();
         self.offsets.deinit(self.allocator);
@@ -392,6 +412,15 @@ pub const TerminalViewHost = struct {
             } });
         }
         const viewport = ViewportData.init(self.selections, partial, &.{}, self.modelInterface());
+        // A viewport resize changes the visible line range without raising a
+        // view event. Force the retained line window to render the new range
+        // instead of keeping the old (shorter) window.
+        const view_lines = self.view.getViewLines();
+        if (view_lines.windowStart() != viewport.startLineNumber or
+            view_lines.windowEnd() != viewport.endLineNumber)
+        {
+            view_lines.base.handler.forceShouldRender();
+        }
         // ViewLine owns copies of its render input, so scrolling can retain
         // unchanged rendered lines instead of invalidating the whole window.
         // `ViewLines` is dirtied by the view events (scroll/tokens/decorations/
@@ -399,6 +428,14 @@ pub const TerminalViewHost = struct {
         // viewport record is refreshed every pass because the parts query it
         // after `View.renderText` returns.
         self.view.getViewLines().setViewportData(&viewport);
+
+        // A viewport resize changes the visible range without a guide-relevant
+        // view event; force the overlay to cover the new range so the last
+        // rows are not left without guides.
+        const guide_end_line = @min(partial.endLineNumber + 1, self.editor.viewLineCount());
+        if (!self.indent_guides.coversLines(partial.startLineNumber, guide_end_line)) {
+            self.indent_guides.base.handler.forceShouldRender();
+        }
 
         self.selections_overlay.setSelections(self.selections);
 
@@ -758,6 +795,11 @@ pub const TerminalViewHost = struct {
         return self.line_numbers.renderedLine(view_line);
     }
 
+    /// The ported `IndentGuidesOverlay`, painted by the terminal compositor.
+    pub fn indentGuides(self: *TerminalViewHost) *IndentGuidesOverlay {
+        return &self.indent_guides;
+    }
+
     /// The line-decoration classes for a view line, from the ported
     /// `LinesDecorationsOverlay`.
     pub fn lineDecorations(self: *const TerminalViewHost, view_line: usize) ?*const @import("../../viewParts/glyphMargin/glyphMargin.zig").VisibleLineDecorationsToRender {
@@ -828,6 +870,10 @@ pub const TerminalViewHost = struct {
             .getViewportViewLineRenderingData = getViewportViewLineRenderingData,
             .getViewLineContinuesWithWrappedLine = getViewLineContinuesWithWrappedLine,
             .getDecorationsInViewport = getDecorationsInViewport,
+            .getIndentSize = getIndentSize,
+            .getActiveIndentGuide = getActiveIndentGuide,
+            .getLinesIndentGuides = getLinesIndentGuides,
+            .getBracketGuidesInRangeByLine = getBracketGuidesInRangeByLine,
         };
     }
 
@@ -949,6 +995,24 @@ pub const TerminalViewHost = struct {
     fn getViewLineContinuesWithWrappedLine(context: *anyopaque, line_number: usize) bool {
         const data = host(context).editor.viewLineData(line_number) catch return false;
         return data.continuesWithWrappedLine;
+    }
+    fn getIndentSize(context: *anyopaque) usize {
+        return host(context).editor.model.getOptions().indentSize;
+    }
+    fn getActiveIndentGuide(context: *anyopaque, line_number: usize, min_line_number: usize, max_line_number: usize) anyerror!IActiveIndentGuideInfo {
+        return host(context).editor.view_lines.getActiveIndentGuide(line_number, min_line_number, max_line_number);
+    }
+    fn getLinesIndentGuides(context: *anyopaque, start_line_number: usize, end_line_number: usize, allocator: Allocator) anyerror![]usize {
+        return host(context).editor.view_lines.getViewLinesIndentGuides(allocator, start_line_number, end_line_number);
+    }
+    fn getBracketGuidesInRangeByLine(context: *anyopaque, start_line_number: usize, end_line_number: usize, active_position: ?Position, options: BracketGuideOptions, allocator: Allocator) anyerror![]LineGuides {
+        return host(context).editor.view_lines.getViewLinesBracketGuides(
+            allocator,
+            start_line_number,
+            end_line_number,
+            active_position,
+            options,
+        );
     }
     fn getDecorationsInViewport(context: *anyopaque, visible_range: Range, allocator: Allocator) anyerror![]view_model.ViewModelDecoration {
         const self = host(context);

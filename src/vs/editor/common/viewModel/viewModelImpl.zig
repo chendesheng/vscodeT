@@ -31,6 +31,9 @@ const ICoordinatesConverter = coordinates_converter.ICoordinatesConverter;
 const ViewLineData = view_model.ViewLineData;
 const ViewLineRenderingData = view_model.ViewLineRenderingData;
 const ViewModelDecoration = @import("./viewModelDecoration.zig").ViewModelDecoration;
+const IActiveIndentGuideInfo = @import("../textModelGuides.zig").IActiveIndentGuideInfo;
+const BracketGuideOptions = @import("../textModelGuides.zig").BracketGuideOptions;
+const LineGuides = @import("../textModelGuides.zig").LineGuides;
 const ModelDecoration = @import("../model.zig").ModelDecoration;
 const InternalModelContentChangeEvent = @import("../textModelEvents.zig").InternalModelContentChangeEvent;
 const view_events = @import("../viewEvents.zig");
@@ -235,6 +238,10 @@ pub const ViewModel = struct {
             .getViewportViewLineRenderingData = getViewportViewLineRenderingDataFn,
             .getViewLineContinuesWithWrappedLine = getViewLineContinuesWithWrappedLineFn,
             .getDecorationsInViewport = getDecorationsInViewportFn,
+            .getIndentSize = getIndentSizeFn,
+            .getActiveIndentGuide = getActiveIndentGuideFn,
+            .getLinesIndentGuides = getLinesIndentGuidesFn,
+            .getBracketGuidesInRangeByLine = getBracketGuidesInRangeByLineFn,
         };
     }
 
@@ -445,6 +452,39 @@ pub const ViewModel = struct {
             };
         }
         return result;
+    }
+
+    fn getIndentSizeFn(context: *anyopaque) usize {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        return self.model.getOptions().indentSize;
+    }
+
+    fn getActiveIndentGuideFn(context: *anyopaque, line_number: usize, min_line_number: usize, max_line_number: usize) anyerror!IActiveIndentGuideInfo {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        return self.lines.getActiveIndentGuide(line_number, min_line_number, max_line_number);
+    }
+
+    fn getLinesIndentGuidesFn(context: *anyopaque, start_line_number: usize, end_line_number: usize, allocator: Allocator) anyerror![]usize {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        return self.lines.getViewLinesIndentGuides(allocator, start_line_number, end_line_number);
+    }
+
+    fn getBracketGuidesInRangeByLineFn(
+        context: *anyopaque,
+        start_line_number: usize,
+        end_line_number: usize,
+        active_position: ?Position,
+        options: BracketGuideOptions,
+        allocator: Allocator,
+    ) anyerror![]LineGuides {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        return self.lines.getViewLinesBracketGuides(
+            allocator,
+            start_line_number,
+            end_line_number,
+            active_position,
+            options,
+        );
     }
 };
 

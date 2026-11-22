@@ -247,6 +247,30 @@ test "view overlays concatenate dynamic overlays per line" {
                 return @constCast(&[_]view_model.ViewModelDecoration{});
             }
         }.f,
+        .getIndentSize = struct {
+            fn f(_: *anyopaque) usize {
+                return 4;
+            }
+        }.f,
+        .getActiveIndentGuide = struct {
+            fn f(_: *anyopaque, line_number: usize, _: usize, _: usize) anyerror!view_model.IActiveIndentGuideInfo {
+                return .{ .startLineNumber = line_number, .endLineNumber = line_number, .indent = 0 };
+            }
+        }.f,
+        .getLinesIndentGuides = struct {
+            fn f(_: *anyopaque, start_line_number: usize, end_line_number: usize, allocator: Allocator) anyerror![]usize {
+                const result = try allocator.alloc(usize, end_line_number - start_line_number + 1);
+                @memset(result, 0);
+                return result;
+            }
+        }.f,
+        .getBracketGuidesInRangeByLine = struct {
+            fn f(_: *anyopaque, start_line_number: usize, end_line_number: usize, _: ?@import("../../common/core/position.zig").Position, _: view_model.BracketGuideOptions, allocator: Allocator) anyerror![]view_model.LineGuides {
+                const result = try allocator.alloc(view_model.LineGuides, end_line_number - start_line_number + 1);
+                for (result) |*line| line.* = view_model.LineGuides.init(allocator);
+                return result;
+            }
+        }.f,
     };
 
     const Overlay = struct {

@@ -78,6 +78,7 @@ const TextModelSearch = @import("./textModelSearch.zig").TextModelSearch;
 const String = @import("../../../base/common/strings.zig").String;
 const TokenizationTextModelPart = @import("./tokens/tokenizationTextModelPart.zig").TokenizationTextModelPart;
 const BracketPairsTextModelPart = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairsTextModelPart;
+const GuidesTextModelPart = @import("./guidesTextModelPart.zig").GuidesTextModelPart;
 const BracketInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketInfo;
 const BracketPairInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairInfo;
 const BracketPairWithMinIndentationInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairWithMinIndentationInfo;
@@ -198,6 +199,7 @@ pub const TextModel = struct {
     _decorationsTree: DecorationsTrees,
     _decorationProvider: ColorizedBracketPairsDecorationProvider,
     _bracketPairs: BracketPairsTextModelPart,
+    _guides: GuidesTextModelPart,
     //#endregion
 
     _languageService: *LanguageService,
@@ -448,6 +450,7 @@ pub const TextModel = struct {
             ._decorationsTree = DecorationsTrees.init(allocator),
             ._decorationProvider = ColorizedBracketPairsDecorationProvider.init(allocator, model),
             ._bracketPairs = BracketPairsTextModelPart.init(allocator, model, languageService),
+            ._guides = GuidesTextModelPart.init(model, languageService),
             ._commandManager = EditStack.init(model, undoRedoService),
             ._isUndoing = false,
             ._isRedoing = false,
@@ -532,6 +535,7 @@ pub const TextModel = struct {
         }
         self._tokenizationTextModelPart.deinit();
         self._bracketPairs.deinit();
+        self._guides.dispose();
         self._decorationProvider.deinit();
         self._attachedViews.deinit();
     }
@@ -2192,6 +2196,11 @@ pub const TextModel = struct {
 
     pub fn bracketPairs(self: *TextModel) *BracketPairsTextModelPart {
         return &self._bracketPairs;
+    }
+
+    /// Upstream `TextModel.guides`: bracket-pair and indentation guide queries.
+    pub fn guides(self: *TextModel) *GuidesTextModelPart {
+        return &self._guides;
     }
 
     pub fn getBracketPairsInRange(self: *TextModel, range: Range) !ArrayList(BracketPairInfo) {

@@ -9,6 +9,10 @@ const TextDirection = @import("./standalone/standaloneEnums.zig").TextDirection;
 const IViewLineTokens = @import("./tokens/lineTokens.zig").IViewLineTokens;
 const InlineDecoration = @import("./viewModel/inlineDecorations.zig").InlineDecoration;
 const ICoordinatesConverter = @import("./coordinatesConverter.zig").ICoordinatesConverter;
+const text_model_guides = @import("./textModelGuides.zig");
+pub const IActiveIndentGuideInfo = text_model_guides.IActiveIndentGuideInfo;
+pub const BracketGuideOptions = text_model_guides.BracketGuideOptions;
+pub const LineGuides = text_model_guides.LineGuides;
 
 pub const ViewModelDecoration = @import("./viewModel/viewModelDecoration.zig").ViewModelDecoration;
 
@@ -261,6 +265,23 @@ pub const IViewModel = struct {
     /// Upstream returns a GC-managed array; the terminal port makes the
     /// allocator explicit, so the caller owns and frees the result.
     getDecorationsInViewport: *const fn (context: *anyopaque, visibleRange: Range, allocator: std.mem.Allocator) anyerror![]ViewModelDecoration,
+    /// Terminal adaptation: upstream `viewModel.model.getOptions().indentSize`
+    /// is reached through the view model for the guide overlay.
+    getIndentSize: *const fn (context: *anyopaque) usize,
+    /// Upstream `IViewModel.getActiveIndentGuide`.
+    getActiveIndentGuide: *const fn (context: *anyopaque, lineNumber: usize, minLineNumber: usize, maxLineNumber: usize) anyerror!IActiveIndentGuideInfo,
+    /// Upstream `IViewModel.getLinesIndentGuides`; the caller owns the result.
+    getLinesIndentGuides: *const fn (context: *anyopaque, startLineNumber: usize, endLineNumber: usize, allocator: std.mem.Allocator) anyerror![]usize,
+    /// Upstream `IViewModel.getBracketGuidesInRangeByLine`; the caller owns the
+    /// result and each per-line list.
+    getBracketGuidesInRangeByLine: *const fn (
+        context: *anyopaque,
+        startLineNumber: usize,
+        endLineNumber: usize,
+        activePosition: ?@import("./core/position.zig").Position,
+        options: BracketGuideOptions,
+        allocator: std.mem.Allocator,
+    ) anyerror![]LineGuides,
 
     pub fn lineMinColumn(self: IViewModel, line_number: usize) usize {
         return self.getLineMinColumn(self.context, line_number);
@@ -288,6 +309,36 @@ pub const IViewModel = struct {
 
     pub fn decorationsInViewport(self: IViewModel, visible_range: Range, allocator: std.mem.Allocator) ![]ViewModelDecoration {
         return self.getDecorationsInViewport(self.context, visible_range, allocator);
+    }
+
+    pub fn indentSize(self: IViewModel) usize {
+        return self.getIndentSize(self.context);
+    }
+
+    pub fn activeIndentGuide(self: IViewModel, line_number: usize, min_line_number: usize, max_line_number: usize) !IActiveIndentGuideInfo {
+        return self.getActiveIndentGuide(self.context, line_number, min_line_number, max_line_number);
+    }
+
+    pub fn linesIndentGuides(self: IViewModel, start_line_number: usize, end_line_number: usize, allocator: std.mem.Allocator) ![]usize {
+        return self.getLinesIndentGuides(self.context, start_line_number, end_line_number, allocator);
+    }
+
+    pub fn bracketGuidesInRangeByLine(
+        self: IViewModel,
+        start_line_number: usize,
+        end_line_number: usize,
+        active_position: ?@import("./core/position.zig").Position,
+        options: BracketGuideOptions,
+        allocator: std.mem.Allocator,
+    ) ![]LineGuides {
+        return self.getBracketGuidesInRangeByLine(
+            self.context,
+            start_line_number,
+            end_line_number,
+            active_position,
+            options,
+            allocator,
+        );
     }
 
     pub fn getSelections(self: IViewModel) []const @import("./core/selection.zig").Selection {

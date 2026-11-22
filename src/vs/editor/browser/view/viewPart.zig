@@ -190,6 +190,30 @@ test "view part registers renders and unregisters" {
                 return @constCast(&[_]@import("../../common/viewModel/viewModelDecoration.zig").ViewModelDecoration{});
             }
         }.f,
+        .getIndentSize = struct {
+            fn f(_: *anyopaque) usize {
+                return 4;
+            }
+        }.f,
+        .getActiveIndentGuide = struct {
+            fn f(_: *anyopaque, line_number: usize, _: usize, _: usize) anyerror!@import("../../common/textModelGuides.zig").IActiveIndentGuideInfo {
+                return .{ .startLineNumber = line_number, .endLineNumber = line_number, .indent = 0 };
+            }
+        }.f,
+        .getLinesIndentGuides = struct {
+            fn f(_: *anyopaque, start_line_number: usize, end_line_number: usize, allocator: std.mem.Allocator) anyerror![]usize {
+                const result = try allocator.alloc(usize, end_line_number - start_line_number + 1);
+                @memset(result, 0);
+                return result;
+            }
+        }.f,
+        .getBracketGuidesInRangeByLine = struct {
+            fn f(_: *anyopaque, start_line_number: usize, end_line_number: usize, _: ?@import("../../common/core/position.zig").Position, _: @import("../../common/textModelGuides.zig").BracketGuideOptions, allocator: std.mem.Allocator) anyerror![]@import("../../common/textModelGuides.zig").LineGuides {
+                const result = try allocator.alloc(@import("../../common/textModelGuides.zig").LineGuides, end_line_number - start_line_number + 1);
+                for (result) |*line| line.* = @import("../../common/textModelGuides.zig").LineGuides.init(allocator);
+                return result;
+            }
+        }.f,
     };
 
     var configuration = editor_configuration.IEditorConfiguration{ .is_simple_widget = false, .context_menu_id = actions.menu_ids.EditorContext };

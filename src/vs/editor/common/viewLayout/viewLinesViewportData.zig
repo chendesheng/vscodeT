@@ -178,6 +178,30 @@ const TestModel = struct {
             .getViewportViewLineRenderingData = viewportViewLineRenderingData,
             .getViewLineContinuesWithWrappedLine = viewLineContinuesWithWrappedLine,
             .getDecorationsInViewport = decorationsInViewport,
+            .getIndentSize = struct {
+                fn f(_: *anyopaque) usize {
+                    return 4;
+                }
+            }.f,
+            .getActiveIndentGuide = struct {
+                fn f(_: *anyopaque, line_number: usize, _: usize, _: usize) anyerror!@import("../textModelGuides.zig").IActiveIndentGuideInfo {
+                    return .{ .startLineNumber = line_number, .endLineNumber = line_number, .indent = 0 };
+                }
+            }.f,
+            .getLinesIndentGuides = struct {
+                fn f(_: *anyopaque, start_line_number: usize, end_line_number: usize, allocator: std.mem.Allocator) anyerror![]usize {
+                    const result = try allocator.alloc(usize, end_line_number - start_line_number + 1);
+                    @memset(result, 0);
+                    return result;
+                }
+            }.f,
+            .getBracketGuidesInRangeByLine = struct {
+                fn f(_: *anyopaque, start_line_number: usize, end_line_number: usize, _: ?@import("../core/position.zig").Position, _: @import("../textModelGuides.zig").BracketGuideOptions, allocator: std.mem.Allocator) anyerror![]@import("../textModelGuides.zig").LineGuides {
+                    const result = try allocator.alloc(@import("../textModelGuides.zig").LineGuides, end_line_number - start_line_number + 1);
+                    for (result) |*line| line.* = @import("../textModelGuides.zig").LineGuides.init(allocator);
+                    return result;
+                }
+            }.f,
         };
     }
 };

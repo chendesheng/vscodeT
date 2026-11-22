@@ -41,10 +41,11 @@
 //! cells made an indentation guide's overlay glyph fall out of the selection
 //! band and read as a black line.
 //!
-//! Indentation guides are painted as dim `│` cells over the leading
-//! whitespace, using the ported `GuidesTextModelPart` count. Vertical
-//! bracket-pair guides and the active indentation/bracket scope are painted
-//! with brighter colors. A visible-whitespace marker keeps its cell: a `·` or a
+//! The ported `IndentGuidesOverlay` owns the guide assembly (indentation,
+//! bracket pairs and the active scope); this file maps its class names to theme
+//! colors and paints them as dim `│` cells over the leading whitespace.
+//! Vertical bracket-pair guides and the active indentation/bracket scope use
+//! brighter colors. A visible-whitespace marker keeps its cell: a `·` or a
 //! one-cell tab's `→` replaces a guide that shares the cell, while a wider tab
 //! keeps the guide and repeats the arrow in the next (padding) cell. Horizontal
 //! guide segments are not terminal cells, so they are not painted.
@@ -61,7 +62,6 @@ const ui = @import("ui");
 const cellMetrics = @import("./cellMetrics.zig");
 
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const indent_guides = @import("../vs/editor/browser/viewParts/indentGuides/indentGuides.zig");
 const TerminalViewHost = @import("../vs/editor/browser/widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
 const tokenization = @import("../vs/editor/common/tokenizationRegistry.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
@@ -82,7 +82,6 @@ const MarkerService = @import("../vs/platform/markers/common/markerService.zig")
 const MarkerDecorationsService = @import("../vs/editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
 const markers_mod = @import("../vs/platform/markers/common/markers.zig");
 const scrollbar_state = @import("../vs/base/browser/ui/scrollbar/scrollbarState.zig");
-const GuidesTextModelPart = @import("../vs/editor/common/model/guidesTextModelPart.zig").GuidesTextModelPart;
 const computeIndentLevel = @import("../vs/editor/common/model/utils.zig").computeIndentLevel;
 const rulers_mod = @import("../vs/editor/browser/viewParts/rulers/rulers.zig");
 const scroll_decoration = @import("../vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig");
@@ -506,7 +505,6 @@ const GlyphTooltip = struct {
 pub const View = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
-    guides: GuidesTextModelPart,
     surface: ui.Surface,
     /// Overlay widgets anchored to an editor corner, painted above the lines
     /// and the status row.
@@ -618,7 +616,6 @@ pub const View = struct {
         self.* = .{
             .allocator = allocator,
             .editor = editor,
-            .guides = GuidesTextModelPart.init(editor.model, editor.language_service),
             .surface = undefined,
             .block_nodes = std.array_list.Managed(*ui.Node).init(allocator),
             .configuration_listeners = std.array_list.Managed(ConfigurationListener).init(allocator),
@@ -645,7 +642,6 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
-        self.guides.dispose();
         self.block_nodes.deinit();
         self.clearPaintStyles();
         self.paint_styles.deinit(self.allocator);
@@ -1914,6 +1910,13 @@ pub const View = struct {
         const top = editor.topViewLine();
         const tab_size = editor.tabSize();
 
+        // Terminal performance gate: while a large document's bracket AST is
+        // deferred, the ported overlay skips bracket guides but still paints
+        // indentation guides and the active indentation scope.
+        const defer_bracket_guides = editor.shouldDeferBracketGuides();
+        if (defer_bracket_guides) editor.scheduleBracketGuides(time_compat.milliTimestamp());
+        self.terminal_view_host.indentGuides().setBracketGuidesEnabled(!defer_bracket_guides);
+
         if (top <= total) {
             try self.terminal_view_host.renderViewport();
         }
@@ -1923,55 +1926,27 @@ pub const View = struct {
             @as(usize, @intFromFloat(editor.viewLayout().getScrollWidth())),
         );
 
-        var guide_lines: []indent_guides.LineGuides = &.{};
-        var guide_start_model_line: usize = 0;
-        var guide_end_model_line: usize = 0;
-        if (top <= total) {
-            const end_view_line = @min(total, top + text_height -| 1);
-            // Upstream `indentGuides.ts` asks for `visibleEndLineNumber + 1`:
-            // a bracket pair that closes just below the viewport still draws
-            // its guide on the last visible line, and that guide in turn
-            // suppresses the active indent guide there. The extra line is
-            // never painted (`viewRowForModelLine` rejects it).
-            const guide_end_view_line = @min(total, end_view_line + 1);
-            guide_start_model_line = editor.modelLineNumber(top);
-            guide_end_model_line = editor.modelLineNumber(guide_end_view_line);
-            const defer_bracket_guides = editor.shouldDeferBracketGuides();
-            if (defer_bracket_guides) editor.scheduleBracketGuides(time_compat.milliTimestamp());
-            guide_lines = try indent_guides.getGuidesByLine(
-                self.allocator,
-                editor.model,
-                &self.guides,
-                guide_start_model_line,
-                guide_end_model_line,
-                editor.modelCursorPosition(),
-                .{
-                    .include_inactive_bracket_pairs = true,
-                    .horizontal_guides = .Disabled,
-                    .highlight_active_bracket_pair = true,
-                    .highlight_active_indentation = .enabled,
-                    .include_bracket_guides = !defer_bracket_guides,
-                },
-            );
-        }
-        defer {
-            for (guide_lines) |*line| line.deinit();
-            if (guide_lines.len > 0) self.allocator.free(guide_lines);
-        }
-
         var guide_specs = std.array_list.Managed(GuideSpec).init(self.allocator);
         defer guide_specs.deinit();
 
-        if (guide_lines.len > 0) {
-            // The view part has already merged indent guides, the active
-            // indentation scope and bracket-pair guides in upstream order.
-            for (guide_lines, 0..) |line, index| {
-                const model_line = guide_start_model_line + index;
-                const row = viewRowForModelLine(editor, top, model_line) orelse continue;
+        if (top <= total) {
+            // The ported `IndentGuidesOverlay` has already merged indent
+            // guides, the active indentation scope and bracket-pair guides in
+            // upstream order. The terminal compositor only owns the cell
+            // mapping: a guide is painted in a leading-whitespace cell of a
+            // model line's first row; wrapped continuation rows are skipped.
+            const guides_overlay = self.terminal_view_host.indentGuides();
+            const end_view_line = @min(total, top + text_height -| 1);
+            var view_line = top;
+            while (view_line <= end_view_line) : (view_line += 1) {
+                if (editor.view_lines.getOutputLineIndex(view_line) != 0) continue;
+                const line_guides = guides_overlay.renderedLine(view_line) orelse continue;
+                const row = view_line - top;
+                const model_line = editor.modelLineNumber(view_line);
                 var content = try editor.model.getLineContent(model_line);
                 defer content.deinit();
                 const indent_width = computeIndentLevel(content.items, tab_size);
-                for (line.items) |guide| {
+                for (line_guides) |guide| {
                     // Horizontal guide segments need a multi-cell horizontal
                     // line; the terminal guide layer only paints verticals.
                     if (guide.horizontalLine != null) continue;
@@ -2690,17 +2665,6 @@ fn decorationBit(class_name: []const u8) ?u32 {
 
 fn ceilDiv(value: usize, divisor: usize) usize {
     return value / divisor + @intFromBool(value % divisor != 0);
-}
-
-fn viewRowForModelLine(editor: *Editor, top: usize, model_line: usize) ?usize {
-    // Hidden lines map to the preceding visible line; a guide computed for one
-    // of them would otherwise overwrite that line's text.
-    if (!editor.isModelLineVisible(model_line)) return null;
-    const view_position = editor.viewPositionOfModelPosition(Position.init(model_line, 1));
-    if (view_position.lineNumber < top) return null;
-    const row = view_position.lineNumber - top;
-    if (row >= editor.textHeight()) return null;
-    return row;
 }
 
 fn color(rgb: [3]u8) ui.Color {
@@ -5166,6 +5130,43 @@ test "View: last visible line keeps bracket guides closing below the viewport" {
     try std.testing.expectEqual(bracket_fg, grid.fg[grid.index(gutter, 3)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 3)]);
     try std.testing.expectEqual(bracket_fg, grid.fg[grid.index(gutter + 4, 3)]);
+}
+
+test "View: resizing the viewport recomputes guides for the new rows" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text =
+        "if x:\n" ++
+        "    if y:\n" ++
+        "        z()\n" ++
+        "    w()\n" ++
+        "end";
+    // Height 3 reserves the status row, so only lines 1-2 are visible.
+    const editor = try Editor.createFromText(allocator, io, text, "test.zig", 40, 3);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.paint();
+
+    // Grow the viewport; `z()` is now the last visible line and must receive
+    // its new guides even though the size change raises no guide event.
+    editor.setViewport(40, 6);
+    view.invalidate();
+    try view.paint();
+
+    const gutter = editor.gutterWidth();
+    const grid = view.surface.grid();
+    const guide_fg = ui.cell.packColor(color(indent_guide_color));
+    const active_fg = ui.cell.packColor(color(indent_guide_active_color));
+    // The caret on the unindented first line makes the level-1 scope active.
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 2)]);
+    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 2)]);
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 2)]);
+    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter + 4, 2)]);
 }
 
 test "View: active indentation guide follows the cursor scope" {

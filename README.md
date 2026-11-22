@@ -1245,10 +1245,12 @@ View model:
   injected-text decoration computers.
 - The TUI uses a reduced port of `viewModelLines`: wrapped model-line
   projections, view-line prefix sums, view/model conversion, incremental line
-  mapping, and hidden model-line ranges. Folding uses the hidden ranges to
-  project a smaller view (see below); view zones, decorations, and the
-  browser-facing `viewModelImpl` rendering stack are not ported. Indentation
-  guides are ported separately at the model/view boundary (see below).
+  mapping, hidden model-line ranges, and the guide queries
+  (`getViewLinesIndentGuides`, `getViewLinesBracketGuides`,
+  `getActiveIndentGuide`) with upstream's wrapped-line blocking/filtering.
+  Folding uses the hidden ranges to project a smaller view (see below); view
+  zones, decorations, and the browser-facing `viewModelImpl` rendering stack
+  are not ported.
 
 TextMate tokenization:
 
@@ -1428,10 +1430,15 @@ TUI editor:
   `( )` pairs are painted by nesting level with the theme's
   `editorBracketHighlight.foreground1..6` colors, and an unmatched closing
   bracket is red. `editor.bracketPairColorization.enabled` turns it off.
-- Indentation and bracket guides: a dim `│` is drawn at each indentation
-  column of a line's leading whitespace, using the ported
-  `common/model/guidesTextModelPart.zig` rules. Blank lines inherit the guide
-  count from the surrounding content. Indentation guides cycle the
+- Indentation and bracket guides: the ported `IndentGuidesOverlay`
+  (`browser/viewParts/indentGuides/indentGuides.zig`) runs upstream's
+  `prepareRender`/event lifecycle against the view model and asks for one line
+  past the viewport, so a bracket pair closing just below it still reaches the
+  last visible line. The terminal compositor maps its guide classes to colors
+  and paints a dim `│` at each indentation column of a line's leading
+  whitespace, using the ported `common/model/guidesTextModelPart.zig` rules.
+  Blank lines inherit the guide count from the surrounding content. Indentation
+  guides cycle the
   `editorIndentGuide.background1..6` / `activeBackground1..6` pools (the
   deprecated unnumbered ids supply level 1); the default themes only define
   level 1, so indentation guides are a single gray, matching upstream.
