@@ -15192,3 +15192,42 @@ test "Workbench: tab context menu closes saved tabs" {
     _ = try workbench.handleQuickAccessKey(&enter);
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
+
+test "Workbench: close saved keeps dirty tabs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "dirty_saved_a.txt", "a");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "dirty_saved_b.txt", "b");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    defer workbench.deinit();
+    try workbench.activateIndex(0);
+    try workbench.activeTab().?.editor.insertText("x");
+    try std.testing.expect(workbench.activeTab().?.editor.isDirty());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    var down = ui.MouseEvent{
+        .kind = .down,
+        .x = pane.hits.items[0].start + 1,
+        .y = ui.cell.snap(pane.rect.y),
+        .button = .right,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+    const picker = workbench.quick_access.inputService().pickerRef();
+    picker.setActiveIndex(3);
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try workbench.handleQuickAccessKey(&enter);
+
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+    try std.testing.expectEqualStrings("dirty_saved_a.txt", workbench.activeTab().?.input.getName());
+    try std.testing.expect(workbench.activeTab().?.editor.isDirty());
+}
