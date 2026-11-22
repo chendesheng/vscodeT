@@ -93,6 +93,9 @@ pub const BracketPairsTextModelPart = struct {
     /// tree has to be rebuilt when background tokenization completes.
     _uses_fast_tokens: bool,
     _queuedEdits: ArrayList(TextEditInfo),
+    /// Stable opening-bracket ids for the lifetime of this tree, matching
+    /// upstream's single `DenseKeyProvider`.
+    _ids: tree.StringIdProvider,
     _onDidChange: Emitter(void),
     language_configuration_provider: ?LanguageConfigurationProvider = null,
 
@@ -109,6 +112,7 @@ pub const BracketPairsTextModelPart = struct {
             ._document = null,
             ._uses_fast_tokens = true,
             ._queuedEdits = ArrayList(TextEditInfo).init(allocator),
+            ._ids = tree.StringIdProvider.init(allocator),
             ._onDidChange = Emitter(void).init(allocator),
         };
     }
@@ -117,6 +121,7 @@ pub const BracketPairsTextModelPart = struct {
         self._pairs.deinit();
         self._brackets.deinit();
         self._queuedEdits.deinit();
+        self._ids.deinit();
         if (self._document) |*doc| doc.deinit();
         self._onDidChange.deinit();
     }
@@ -309,13 +314,13 @@ pub const BracketPairsTextModelPart = struct {
 
         var doc: tree.ParsedDocument = undefined;
         if (full_rebuild) {
-            doc = tree.parseDocument(self.allocator, self.textModel, self.languageService) catch |err| {
+            doc = tree.parseDocument(self.allocator, self.textModel, self.languageService, &self._ids) catch |err| {
                 self._dirty = true;
                 return err;
             };
         } else {
-            doc = tree.parseDocumentIncremental(self.allocator, self.textModel, self.languageService, self._queuedEdits.items, self._document.?.root) catch blk: {
-                break :blk try tree.parseDocument(self.allocator, self.textModel, self.languageService);
+            doc = tree.parseDocumentIncremental(self.allocator, self.textModel, self.languageService, self._queuedEdits.items, self._document.?.root, &self._ids) catch blk: {
+                break :blk try tree.parseDocument(self.allocator, self.textModel, self.languageService, &self._ids);
             };
         }
         if (self._document) |*old| old.deinit();

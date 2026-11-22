@@ -568,3 +568,27 @@ test "bracket pairs: guide view merges indentation and bracket guides" {
     // Bracket guides on the line disable the default active indent highlight.
     try std.testing.expect(std.mem.indexOf(u8, lines[1].items[0].className, "indent-active") == null);
 }
+
+test "bracket pairs: stable ids keep pairings after an incremental edit" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{ .{ "(", ")" }, .{ "[", "]" } };
+    var fixture = try Fixture.init(allocator, "[a)", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    try fixture.ctx.applyEdit(Range.init(1, 1, 1, 1), "(");
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var pairs = try fixture.ctx.model.getBracketPairsInRange(fixture.ctx.model.getFullModelRange());
+    defer pairs.deinit();
+
+    var found_parentheses = false;
+    for (pairs.items) |pair| {
+        if (std.mem.eql(u8, pair.openingBracket, "(") and pair.closingBracket != null and std.mem.eql(u8, pair.closingBracket.?, ")")) {
+            found_parentheses = true;
+        }
+    }
+    try std.testing.expect(found_parentheses);
+}

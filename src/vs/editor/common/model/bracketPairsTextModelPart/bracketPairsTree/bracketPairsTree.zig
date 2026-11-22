@@ -704,8 +704,8 @@ pub fn allLinesHaveAccurateTokens(model: *TextModel) bool {
     return model.getLineCount() == 0 or model.hasAccurateTokensForLine(model.getLineCount());
 }
 
-pub fn parseDocument(allocator: Allocator, model: *TextModel, languageService: *LanguageService) !ParsedDocument {
-    return parseDocumentIncremental(allocator, model, languageService, &.{}, null);
+pub fn parseDocument(allocator: Allocator, model: *TextModel, languageService: *LanguageService, ids: *StringIdProvider) !ParsedDocument {
+    return parseDocumentIncremental(allocator, model, languageService, &.{}, null, ids);
 }
 
 /// Parses an already tokenized stream. Takes ownership of `tokens`.
@@ -719,13 +719,13 @@ pub fn parseTokens(allocator: Allocator, tokens: ArrayList(Token)) !ParsedDocume
     return .{ .arena = arena, .root = root };
 }
 
-pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languageService: *LanguageService, edits: []const TextEditInfo, oldRoot: ?*AstNode) !ParsedDocument {
+pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languageService: *LanguageService, edits: []const TextEditInfo, oldRoot: ?*AstNode, ids: *StringIdProvider) !ParsedDocument {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    var ids = StringIdProvider.init(allocator);
-    defer ids.deinit();
+    // Bracket ids must stay stable for the lifetime of the tree: cached nodes
+    // carry ids and `canBeReused` compares them against freshly tokenized text.
     var brackets = std.StringHashMap(LanguageBrackets).init(allocator);
     defer {
         var it = brackets.valueIterator();
@@ -736,7 +736,7 @@ pub fn parseDocumentIncremental(allocator: Allocator, model: *TextModel, languag
         brackets.deinit();
     }
 
-    var tokenizer = Tokenizer.init(allocator, model, languageService, &ids, &brackets);
+    var tokenizer = Tokenizer.init(allocator, model, languageService, ids, &brackets);
     defer tokenizer.deinit();
     // Terminal adaptation: colorization consumes token types. The fast tree is
     // only used for the *initial* build while tokens are incomplete; once an
