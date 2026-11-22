@@ -159,6 +159,11 @@ Small commits, each with a regression test:
 32. `820b8ab` search line-by-line scopes clamp/swap like JS substring.
 33. `f40eece` attached-view handlers own their visible-line ranges and are
     deinitialized on view removal/backend teardown.
+34. `77e5210` split `length.ts` and `smallImmutableSet.ts` out of the merged
+    bracket-pair tree into their upstream-named modules.
+35. `278b457` JS `m` now maps to Oniguruma line anchors (not dotAll),
+    Searcher handles end-of-line matches, and the core
+    `textModelSearch.test.ts` cases are ported.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -167,7 +172,7 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 ### High
 
 - **Bracket-pair core is a merged reimplementation.** `bracketPairsTree.zig`
-  carries eight upstream modules in one file and has no `concat23Trees`,
+  carries the remaining upstream modules in one file and has no `concat23Trees`,
   streaming `TextBufferTokenizer`/`FastTokenizer`, or two-tree mode
   (`initialAstWithoutTokens`/`astWithTokens`). Queries use flat sorted lists
   for pair APIs, so many operations remain O(document) and incremental
@@ -213,9 +218,9 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   JS-specific overhead constant; the multi-model/delegate path is unreachable.
 - `annotations`: serialization (`ISerializedAnnotation`, `serialize`,
   `deserialize`) is absent; the port uses its own worker protocol.
-- `textModelSearch`: line-by-line ranges now clamp like JS substring; the
-  remaining difference is the buffer-level path returning empty for invalid
-  node positions (same as upstream) while the line path clamps.
+- `textModelSearch`: line-by-line ranges now clamp like JS substring and JS
+  `m`/end-of-input semantics match upstream. The buffer-level path returns
+  empty for invalid node positions, as upstream does.
 - `guidesTextModelPart`: horizontal guide segments are produced but the
   terminal view intentionally skips them; wrapping columns are unused.
 
@@ -226,7 +231,8 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   `brackets`, `concat23Trees`, full `getBracketPairsInRange`,
   `tokenizer`; most of `pieceTreeTextBuffer.test.ts` (CRLF/random and
   snapshot suites partly ported); `annotations.test.ts`,
-  `textModelTokens.test.ts`, `editableTextModel*.test.ts`, `model*.test.ts`,
+  `textModelTokens.test.ts`, `editableTextModel*.test.ts`, `model*.test.ts`;
+  the anchor/simple/multiline/find-next/capturing parts of
   `textModelSearch.test.ts`.
 - Dead/malformed declarations that only compile because they are never
   analyzed: `rbTreeBase.TreeNode.iterate`, `intervalTree` font bit,
@@ -245,7 +251,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3052 tests, 19 skipped; the only observed
+The full suite currently passes (3057 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
