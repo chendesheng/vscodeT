@@ -1,4 +1,6 @@
+// Port of `src/vs/editor/common/core/2d/size.ts`.
 const std = @import("std");
+const Io = std.Io;
 const IDimension = @import("dimension.zig").IDimension;
 
 pub const Size2D = struct {
@@ -20,6 +22,22 @@ pub const Size2D = struct {
     pub fn scale(self: Size2D, factor: f64) Size2D {
         return .{ .width = self.width * factor, .height = self.height * factor };
     }
+    pub fn deltaX(self: Size2D, delta: f64) Size2D {
+        return .{ .width = self.width + delta, .height = self.height };
+    }
+
+    pub fn deltaY(self: Size2D, delta: f64) Size2D {
+        return .{ .width = self.width, .height = self.height + delta };
+    }
+
+    pub fn mapComponents(self: Size2D, context: anytype, map: fn (value: f64, ctx: @TypeOf(context)) f64) Size2D {
+        return .{ .width = map(self.width, context), .height = map(self.height, context) };
+    }
+
+    pub fn toString(self: Size2D, writer: *Io.Writer) !void {
+        try writer.print("({d},{d})", .{ self.width, self.height });
+    }
+
     pub fn scaleWidth(self: Size2D, factor: f64) Size2D {
         return .{ .width = self.width * factor, .height = self.height };
     }
@@ -39,4 +57,22 @@ test "size: arithmetic and transpose" {
     try std.testing.expect(Size2D.equals(Size2D.init(4, 6), size.scale(2)));
     try std.testing.expect(Size2D.equals(Size2D.init(3, 2), size.transpose()));
     try std.testing.expect(Size2D.equals(Size2D.init(1, 3), size.subtract(Size2D.init(1, 0))));
+}
+
+test "size: deltas, mapComponents and toString" {
+    const size = Size2D.init(2, 3);
+    try std.testing.expectEqual(Size2D.init(5, 3), size.deltaX(3));
+    try std.testing.expectEqual(Size2D.init(2, 8), size.deltaY(5));
+
+    const Context = struct {
+        fn negate(value: f64, _: void) f64 {
+            return -value;
+        }
+    };
+    try std.testing.expectEqual(Size2D.init(-2, -3), size.mapComponents({}, Context.negate));
+
+    var buffer: [32]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try size.toString(&writer);
+    try std.testing.expectEqualStrings("(2,3)", writer.buffered());
 }

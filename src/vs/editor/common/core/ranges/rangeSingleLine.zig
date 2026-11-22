@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/ranges/rangeSingleLine.ts`.
 const std = @import("std");
 const ColumnRange = @import("columnRange.zig").ColumnRange;
 const Range = @import("../range.zig").Range;

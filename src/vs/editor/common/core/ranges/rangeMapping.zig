@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/ranges/rangeMapping.ts`.
 const std = @import("std");
 const Position = @import("../position.zig").Position;
 const Range = @import("../range.zig").Range;
@@ -15,13 +16,28 @@ pub const SingleRangeMapping = struct {
     pub fn reverse(self: SingleRangeMapping) SingleRangeMapping {
         return .{ .original = self.modified, .modified = self.original };
     }
+
+    pub fn toString(self: SingleRangeMapping, writer: *std.Io.Writer) !void {
+        try self.original.toString(writer);
+        try writer.writeAll(" -> ");
+        try self.modified.toString(writer);
+    }
 };
 
 pub const RangeMapping = struct {
     mappings: []const SingleRangeMapping,
+    // Set when `mappings` was allocated by `reverse`; released by `deinit`.
+    owned_allocator: ?std.mem.Allocator = null,
 
     pub fn init(mappings: []const SingleRangeMapping) RangeMapping {
         return .{ .mappings = mappings };
+    }
+
+    pub fn deinit(self: *RangeMapping) void {
+        if (self.owned_allocator) |allocator| {
+            allocator.free(self.mappings);
+            self.owned_allocator = null;
+        }
     }
 
     pub fn mapPosition(self: RangeMapping, position: Position) PositionOrRange {
@@ -59,7 +75,7 @@ pub const RangeMapping = struct {
     pub fn reverse(self: RangeMapping, allocator: std.mem.Allocator) !RangeMapping {
         const result = try allocator.alloc(SingleRangeMapping, self.mappings.len);
         for (self.mappings, 0..) |mapping, i| result[i] = mapping.reverse();
-        return .{ .mappings = result };
+        return .{ .mappings = result, .owned_allocator = allocator };
     }
 };
 
@@ -77,4 +93,9 @@ test "rangeMapping: maps positions and ranges" {
     const range = mapping.mapRange(Range.init(1, 3, 1, 5));
     try std.testing.expectEqual(@as(usize, 2), range.startLineNumber);
     try std.testing.expectEqual(@as(usize, 8), range.endColumn);
+
+    var reversed = try mapping.reverse(std.testing.allocator);
+    defer reversed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), reversed.mappings[0].original.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 1), reversed.mappings[0].modified.startLineNumber);
 }

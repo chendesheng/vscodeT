@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/edits/edit.ts`.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;

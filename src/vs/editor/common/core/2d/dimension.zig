@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/2d/dimension.ts`.
 const std = @import("std");
 const Io = std.Io;
 

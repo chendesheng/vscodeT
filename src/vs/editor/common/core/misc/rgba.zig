@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/misc/rgba.ts`.
 const std = @import("std");
 /// A VM-friendly RGBA8 color: each channel is clamped to [0, 255].
 pub const RGBA8 = struct {

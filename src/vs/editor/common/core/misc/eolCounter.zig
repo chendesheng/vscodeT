@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/misc/eolCounter.ts`.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 

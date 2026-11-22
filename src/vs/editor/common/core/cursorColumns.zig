@@ -1,4 +1,7 @@
+// Port of `src/vs/editor/common/core/cursorColumns.ts`.
 const std = @import("std");
+const strings = @import("../../../base/common/strings.zig");
+const grapheme = @import("../../../base/common/graphemeBreak.zig");
 
 /// A column in a position is the gap between two adjacent characters. These
 /// helpers work with a "visible column": a rough approximation of the screen
@@ -6,20 +9,20 @@ const std = @import("std");
 pub const CursorColumns = struct {
     pub fn nextVisibleColumn(codePoint: u21, visibleColumn: usize, tabSize: usize) usize {
         if (codePoint == '\t') return nextRenderTabStop(visibleColumn, tabSize);
-        if (isFullWidthCharacter(codePoint) or isEmojiImprecise(codePoint)) return visibleColumn + 2;
+        if (strings.isFullWidthCharacter(codePoint) or isEmojiImprecise(codePoint)) return visibleColumn + 2;
         return visibleColumn + 1;
     }
 
     pub fn visibleColumnFromColumn(lineContent: []const u8, column: usize, tabSize: usize) usize {
         const textLen = @min(column -| 1, lineContent.len);
+        const text = lineContent[0..textLen];
+
         var result: usize = 0;
-        var offset: usize = 0;
-        while (offset < textLen) {
-            const decoded = decodeAt(lineContent, offset);
-            const next_offset = @min(offset + decoded.len, textLen);
-            if (next_offset == offset) break;
+        var iterator = grapheme.GraphemeIterator.init(text);
+        while (!iterator.eol()) {
+            const decoded = grapheme.nextCodePoint(text, iterator.offset);
+            _ = iterator.nextGraphemeLength();
             result = nextVisibleColumn(decoded.code_point, result, tabSize);
-            offset = next_offset;
         }
         return result;
     }
@@ -58,11 +61,12 @@ pub const CursorColumns = struct {
 
         var beforeVisibleColumn = startVisibleColumn;
         var beforeColumn: usize = 1;
-        var offset: usize = 0;
-        while (offset < lineContent.len) {
-            const decoded = decodeAt(lineContent, offset);
+        var iterator = grapheme.GraphemeIterator.init(lineContent);
+        while (!iterator.eol()) {
+            const decoded = grapheme.nextCodePoint(lineContent, iterator.offset);
             const afterVisibleColumn = nextVisibleColumn(decoded.code_point, beforeVisibleColumn, tabSize);
-            const afterColumn = offset + decoded.len + 1;
+            _ = iterator.nextGraphemeLength();
+            const afterColumn = iterator.offset + 1;
 
             if (afterVisibleColumn >= visibleColumn) {
                 const beforeDelta = visibleColumn - beforeVisibleColumn;
@@ -72,7 +76,6 @@ pub const CursorColumns = struct {
 
             beforeVisibleColumn = afterVisibleColumn;
             beforeColumn = afterColumn;
-            offset += decoded.len;
         }
 
         return lineContent.len + 1;
@@ -104,32 +107,16 @@ fn decodeAt(text: []const u8, offset: usize) Decoded {
     return .{ .code_point = code_point, .len = len };
 }
 
-fn inRange(c: u21, start: u21, end: u21) bool {
-    return c >= start and c <= end;
-}
-
-fn isFullWidthCharacter(c: u21) bool {
-    return inRange(c, 0x1100, 0x115F) or
-        inRange(c, 0x2E80, 0x303E) or
-        inRange(c, 0x3041, 0x33FF) or
-        inRange(c, 0x3400, 0x4DBF) or
-        inRange(c, 0x4E00, 0x9FFF) or
-        inRange(c, 0xA000, 0xA4CF) or
-        inRange(c, 0xAC00, 0xD7A3) or
-        inRange(c, 0xF900, 0xFAFF) or
-        inRange(c, 0xFE10, 0xFE19) or
-        inRange(c, 0xFE30, 0xFE6F) or
-        inRange(c, 0xFF00, 0xFF60) or
-        inRange(c, 0xFFE0, 0xFFE6) or
-        inRange(c, 0x1F300, 0x1F64F) or
-        inRange(c, 0x1F900, 0x1F9FF) or
-        inRange(c, 0x20000, 0x3FFFD);
-}
-
 fn isEmojiImprecise(c: u21) bool {
-    return inRange(c, 0x1F000, 0x1FAFF) or
-        inRange(c, 0x2600, 0x27BF) or
-        inRange(c, 0x2B00, 0x2BFF);
+    return (c >= 0x1F1E6 and c <= 0x1F1FF) or
+        c == 0x231A or c == 0x231B or c == 0x23F0 or c == 0x23F3 or
+        (c >= 0x2600 and c <= 0x27BF) or
+        c == 0x2B50 or c == 0x2B55 or
+        (c >= 0x1F300 and c <= 0x1F5FF) or
+        (c >= 0x1F680 and c <= 0x1F8FC) or
+        (c >= 0x1F7E0 and c <= 0x1F7F0) or
+        (c >= 0x1F900 and c <= 0x1F9FF) or
+        (c >= 0x1FA70 and c <= 0x1FAF6);
 }
 
 test "cursorColumns: tab stops" {
@@ -151,6 +138,10 @@ test "cursorColumns: visible and statusbar columns" {
     try std.testing.expectEqual(@as(usize, 2), CursorColumns.visibleColumnFromColumn("何何", 4, 4));
     try std.testing.expectEqual(@as(usize, 2), CursorColumns.visibleColumnFromColumn("📚az", 5, 4));
     try std.testing.expectEqual(@as(usize, 3), CursorColumns.visibleColumnFromColumn("📚az", 6, 4));
+    // A combining sequence is one grapheme (one visible column).
+    try std.testing.expectEqual(@as(usize, 1), CursorColumns.visibleColumnFromColumn("e\u{0301}x", 4, 4));
+    // A ZWJ emoji sequence is one grapheme (two visible columns).
+    try std.testing.expectEqual(@as(usize, 2), CursorColumns.visibleColumnFromColumn("👨‍👩‍👧a", 19, 4));
 }
 
 test "cursorColumns: column from visible column" {

@@ -419,6 +419,14 @@ terminal renderer; navigation and reference results open in the terminal
 quick pick, while code actions still have no TUI command surface. Configuration writes are accepted in memory and are not
 persisted.
 
+The editor core itself stays UTF-8: model text, positions, columns and edit
+offsets are byte-based, and core code never converts to or from UTF-16. This is
+a deliberate difference from VS Code, whose string lengths and columns are
+UTF-16 code units; for example `TextLength` and `TextChange` serialization use
+UTF-8 byte lengths. UTF-16 conversion is confined to the extension-host RPC and
+TextMate adapter boundaries. Cursor visible columns are computed over UTF-8
+grapheme clusters.
+
 Extensions can also contribute language features through the ported
 language-feature bridge: hover, completion, definition, declaration,
 implementation, type definition, references, document symbols, code actions and

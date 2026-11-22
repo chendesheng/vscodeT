@@ -1,5 +1,6 @@
+// Port of `src/vs/editor/common/core/selection.ts`.
 const std = @import("std");
-const fmt = std.fmt;
+const Io = std.Io;
 const Position = @import("./position.zig").Position;
 const Range = @import("./range.zig").Range;
 
@@ -56,14 +57,26 @@ pub const Selection = struct {
     }
 
     // Transform to a human-readable representation.
-    pub fn toString(self: *const Selection) []const u8 {
-        var buf: [1024]u8 = undefined;
-        return fmt.bufPrint(&buf, "[{d},{d} -> {d},{d}]", .{ self.selectionStartLineNumber, self.selectionStartColumn, self.positionLineNumber, self.positionColumn });
+    pub fn toString(self: *const Selection, writer: *Io.Writer) !void {
+        try writer.print("[{d},{d} -> {d},{d}]", .{ self.selectionStartLineNumber, self.selectionStartColumn, self.positionLineNumber, self.positionColumn });
     }
 
     // Test if equals other selection.
     pub fn equalsSelection(a: *const Selection, b: *const Selection) bool {
         return selectionsEqual(a, b);
+    }
+
+    // Test if the two selections are equal.
+    pub fn selectionsEqual(a: *const Selection, b: *const Selection) bool {
+        return a.selectionStartLineNumber == b.selectionStartLineNumber and
+            a.selectionStartColumn == b.selectionStartColumn and
+            a.positionLineNumber == b.positionLineNumber and
+            a.positionColumn == b.positionColumn;
+    }
+
+    // Create a new selection with the same fields.
+    pub fn liftSelection(sel: Selection) Selection {
+        return sel;
     }
 
     // Get directions (LTR or RTL).
@@ -75,7 +88,7 @@ pub const Selection = struct {
     }
 
     // Create a new selection with a different `positionLineNumber` and `positionColumn`.
-    pub fn setEndPosition(self: *Selection, endLineNumber: usize, endColumn: usize) void {
+    pub fn setEndPosition(self: *const Selection, endLineNumber: usize, endColumn: usize) Selection {
         if (self.getDirection() == .LTR) {
             return Selection.init(self.startLineNumber, self.startColumn, endLineNumber, endColumn);
         } else {
@@ -118,7 +131,7 @@ pub const Selection = struct {
     }
 
     // Create a new selection with a different `selectionStartLineNumber` and `selectionStartColumn`.
-    pub fn setSelectionStart(self: *Selection, startLineNumber: usize, startColumn: usize) void {
+    pub fn setSelectionStart(self: *const Selection, startLineNumber: usize, startColumn: usize) Selection {
         if (self.getDirection() == .LTR) {
             return Selection.init(startLineNumber, startColumn, self.endLineNumber, self.endColumn);
         } else {
@@ -126,6 +139,31 @@ pub const Selection = struct {
         }
     }
 };
+
+test "Selection: setters, toString, equality" {
+    const ltr = Selection.init(1, 1, 3, 3);
+    const moved_end = ltr.setEndPosition(4, 5);
+    try std.testing.expectEqual(Position{ .lineNumber = 1, .column = 1 }, moved_end.getSelectionStart());
+    try std.testing.expectEqual(Position{ .lineNumber = 4, .column = 5 }, moved_end.getPosition());
+
+    const rtl = Selection.init(3, 3, 1, 1);
+    const moved_end_rtl = rtl.setEndPosition(2, 2);
+    try std.testing.expectEqual(Position{ .lineNumber = 2, .column = 2 }, moved_end_rtl.getSelectionStart());
+    try std.testing.expectEqual(Position{ .lineNumber = 1, .column = 1 }, moved_end_rtl.getPosition());
+
+    const moved_start = ltr.setSelectionStart(2, 2);
+    try std.testing.expectEqual(Position{ .lineNumber = 2, .column = 2 }, moved_start.getSelectionStart());
+    try std.testing.expectEqual(Position{ .lineNumber = 3, .column = 3 }, moved_start.getPosition());
+
+    try std.testing.expect(ltr.equalsSelection(&Selection.init(1, 1, 3, 3)));
+    try std.testing.expect(Selection.selectionsEqual(&ltr, &Selection.init(1, 1, 3, 3)));
+    try std.testing.expect(!ltr.equalsSelection(&moved_end));
+
+    var buffer: [64]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try ltr.toString(&writer);
+    try std.testing.expectEqualStrings("[1,1 -> 3,3]", writer.buffered());
+}
 
 // Create a `Selection` from one or two positions
 pub fn fromPositions(start: Position, end: ?Position) Selection {
@@ -151,7 +189,7 @@ pub fn selectionsArrEqual(a: []const Selection, b: []const Selection) bool {
         return false;
     }
     for (a, b) |itemA, itemB| {
-        if (!selectionsEqual(&itemA, &itemB)) {
+        if (!Selection.selectionsEqual(&itemA, &itemB)) {
             return false;
         }
     }
@@ -165,9 +203,4 @@ pub fn createWithDirection(startLineNumber: usize, startColumn: usize, endLineNu
     } else {
         return Selection.init(endLineNumber, endColumn, startLineNumber, startColumn);
     }
-}
-
-// Test if the two selections are equal.
-fn selectionsEqual(a: *const Selection, b: *const Selection) bool {
-    return a.selectionStartLineNumber == b.selectionStartLineNumber and a.selectionStartColumn == b.selectionStartColumn and a.positionLineNumber == b.positionLineNumber and a.positionColumn == b.positionColumn;
 }

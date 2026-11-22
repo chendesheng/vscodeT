@@ -193,6 +193,20 @@ pub const PositionOffsetTransformer = struct {
         return Position.init(idx + 1, offset - line_start_offsets[idx] + 1);
     }
 
+    pub fn getOffsetRange(self: *PositionOffsetTransformer, range: Range) OffsetRange {
+        return OffsetRange.init(
+            self.getOffset(range.getStartPosition()),
+            self.getOffset(range.getEndPosition()),
+        );
+    }
+
+    pub fn getRange(self: *PositionOffsetTransformer, offset_range: OffsetRange) Range {
+        return range_module.fromPositions(
+            self.getPosition(offset_range.start),
+            self.getPosition(offset_range.endExclusive),
+        );
+    }
+
     pub fn getTextLength(self: *PositionOffsetTransformer, offset_range: OffsetRange) TextLength {
         return TextLength.ofRange(self.getRange(offset_range));
     }

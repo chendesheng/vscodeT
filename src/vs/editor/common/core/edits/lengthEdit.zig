@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/edits/lengthEdit.ts`.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -63,7 +64,7 @@ pub const LengthReplacement = struct {
     }
 
     pub fn toString(self: Self, writer: *Io.Writer) !void {
-        try writer.print("[{d}, +{d}) -> +{d}", .{ self.replaceRange.start, self.replaceRange.length(), self.newLength });
+        try writer.print("[{d}, +{d}) -> +{d}}}", .{ self.replaceRange.start, self.replaceRange.length(), self.newLength });
     }
 };
 

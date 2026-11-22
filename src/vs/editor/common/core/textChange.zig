@@ -1,3 +1,9 @@
+// Port of `src/vs/editor/common/core/textChange.ts`.
+//
+// Serialization note: editor positions and offsets in this port are UTF-8 byte
+// offsets, not JavaScript's UTF-16 code-unit offsets. The wire format below
+// therefore stores UTF-8 byte lengths. It is self-consistent but intentionally
+// not byte-compatible with upstream's UTF-16 serialization.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -29,6 +35,15 @@ pub const TextChange = struct {
         self.newText.deinit();
     }
 
+    pub fn clone(self: *const TextChange, allocator: Allocator) !TextChange {
+        return TextChange.init(
+            self.oldPosition,
+            try String.allocPrint(allocator, "{s}", .{self.oldText.items()}),
+            self.newPosition,
+            try String.allocPrint(allocator, "{s}", .{self.newText.items()}),
+        );
+    }
+
     pub fn oldLength(self: *const TextChange) usize {
         return self.oldText.len();
     }
@@ -49,20 +64,20 @@ pub const TextChange = struct {
         if (self.oldText.isEmpty()) {
             const escaped = try strings.escapeNewLine(self.newText.items(), allocator);
             defer allocator.free(escaped);
-            return try std.fmt.allocPrint(allocator, "(inserted@{d} \"{s}\")", .{ self.oldPosition, escaped });
+            return try std.fmt.allocPrint(allocator, "(insert@{d} \"{s}\")", .{ self.oldPosition, escaped });
         }
 
         if (self.newText.isEmpty()) {
             const escaped = try strings.escapeNewLine(self.oldText.items(), allocator);
             defer allocator.free(escaped);
-            return try std.fmt.allocPrint(allocator, "(deleted@{d} \"{s}\")", .{ self.oldPosition, escaped });
+            return try std.fmt.allocPrint(allocator, "(delete@{d} \"{s}\")", .{ self.oldPosition, escaped });
         }
 
         const escapedOldText = try strings.escapeNewLine(self.oldText.items(), allocator);
         const escapedNewText = try strings.escapeNewLine(self.newText.items(), allocator);
         defer allocator.free(escapedOldText);
         defer allocator.free(escapedNewText);
-        return try std.fmt.allocPrint(allocator, "(replaced@{d} \"{s}\" with \"{s}\")", .{
+        return try std.fmt.allocPrint(allocator, "(replace@{d} \"{s}\" with \"{s}\")", .{
             self.oldPosition,
             escapedOldText,
             escapedNewText,
@@ -95,7 +110,14 @@ pub const TextChange = struct {
 pub fn compressConsecutiveTextChanges(allocator: Allocator, prevEdits: ArrayList(TextChange), currEdits: []const TextChange) !ArrayList(TextChange) {
     if (prevEdits.items.len == 0) {
         var result = ArrayList(TextChange).init(allocator);
-        try result.appendSlice(currEdits);
+        errdefer {
+            for (result.items) |*change| change.deinit();
+            result.deinit();
+        }
+        try result.ensureTotalCapacity(currEdits.len);
+        for (currEdits) |change| {
+            result.appendAssumeCapacity(try change.clone(allocator));
+        }
         return result;
     }
 
@@ -303,29 +325,41 @@ pub const TextChangeCompressor = struct {
         }
 
         const allocator = self._result.allocator;
-        var result = &self._result;
-        var write_index: usize = 0;
-        var prev = &result.items[write_index];
-        for (1..result.items.len) |i| {
-            const curr = &result.items[i];
+        var merged = ArrayList(TextChange).init(allocator);
+        errdefer merged.deinit();
+        try merged.ensureTotalCapacity(self._result.items.len);
 
+        var prev = self._result.items[0];
+        for (self._result.items[1..]) |curr| {
             if (prev.oldEnd() == curr.oldPosition) {
-                // Merge into `prev`
-                var oldText = prev.oldText;
-                defer oldText.deinit();
-                var newText = prev.newText;
-                defer newText.deinit();
-                prev.oldText = String.initOwned(try strings.concat(allocator, prev.oldText.items(), curr.oldText.items()));
-                prev.newText = String.initOwned(try strings.concat(allocator, prev.newText.items(), curr.newText.items()));
+                // Merge into `prev`. `curr` is consumed by this replacement.
+                var old_text = try strings.concat(allocator, prev.oldText.items(), curr.oldText.items());
+                const new_text = strings.concat(allocator, prev.newText.items(), curr.newText.items()) catch |err| {
+                    old_text.deinit();
+                    return err;
+                };
+
+                prev.oldText.deinit();
+                prev.newText.deinit();
+                var consumed = curr;
+                consumed.oldText.deinit();
+                consumed.newText.deinit();
+
+                prev = TextChange.init(
+                    prev.oldPosition,
+                    String.initOwned(old_text),
+                    prev.newPosition,
+                    String.initOwned(new_text),
+                );
             } else {
-                write_index += 1;
-                prev = &result.items[write_index];
-                if (prev != curr) {
-                    prev.* = curr.*;
-                }
+                merged.appendAssumeCapacity(prev);
+                prev = curr;
             }
         }
-        try self._result.resize(write_index + 1);
+        merged.appendAssumeCapacity(prev);
+
+        self._result.deinit();
+        self._result = merged;
     }
 
     pub fn _removeNoOps(self: *TextChangeCompressor) !void {
@@ -333,17 +367,22 @@ pub const TextChangeCompressor = struct {
             return;
         }
 
-        var result = &self._result;
-        var write_index: usize = 0;
-        for (result.items) |edit| {
+        const allocator = self._result.allocator;
+        var cleaned = ArrayList(TextChange).init(allocator);
+        errdefer cleaned.deinit();
+        try cleaned.ensureTotalCapacity(self._result.items.len);
+
+        for (self._result.items) |item| {
+            var edit = item;
             if (edit.oldText.eql(edit.newText)) {
+                edit.deinit();
                 continue;
             }
-            result.items[write_index] = edit;
-            write_index += 1;
+            cleaned.appendAssumeCapacity(edit);
         }
 
-        try result.resize(write_index);
+        self._result.deinit();
+        self._result = cleaned;
     }
 };
 
@@ -352,8 +391,7 @@ fn _wriateStringSize(str: []const u8) usize {
 }
 
 fn _writeString(writer: *Io.Writer, str: []const u8) !void {
-    const len: u32 = @intCast(str.len);
-    try writer.writeInt(u32, len, .big);
+    try writer.writeInt(u32, @intCast(str.len), .big);
     try writer.writeAll(str);
 }
 
@@ -361,25 +399,49 @@ fn _readString(reader: *Io.Reader, allocator: Allocator) !ArrayList(u8) {
     const len: usize = @intCast(try reader.takeInt(u32, .big));
     var str = try ArrayList(u8).initCapacity(allocator, len);
     try str.resize(len);
-    const readLen = try reader.readSliceShort(str.items);
-    std.debug.assert(readLen == len);
+    const read_len = try reader.readSliceShort(str.items);
+    if (read_len != len) return error.UnexpectedEof;
     return str;
 }
 
-test "textChange" {
-    var change = TextChange.init(0, .initBorrowed("Hello"), 0, .initBorrowed("World"));
-    defer change.deinit();
+test "compress consecutive insertions with owned strings" {
+    const allocator = std.testing.allocator;
 
-    const result = try change.toString(std.testing.allocator);
-    defer std.testing.allocator.free(result);
+    var prev = ArrayList(TextChange).init(allocator);
+    defer prev.deinit();
+    try prev.append(TextChange.init(
+        0,
+        try String.allocPrint(allocator, "{s}", .{""}),
+        0,
+        try String.allocPrint(allocator, "{s}", .{"a"}),
+    ));
 
-    try std.testing.expectEqualStrings("(replaced@0 \"Hello\" with \"World\")", result);
+    var curr = ArrayList(TextChange).init(allocator);
+    defer curr.deinit();
+    try curr.append(TextChange.init(
+        1,
+        try String.allocPrint(allocator, "{s}", .{""}),
+        1,
+        try String.allocPrint(allocator, "{s}", .{"b"}),
+    ));
+
+    var result = try compressConsecutiveTextChanges(allocator, prev, curr.items);
+    defer {
+        for (result.items) |*change| change.deinit();
+        result.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualStrings("ab", result.items[0].newText.items());
 }
 
-test "textChange read/write" {
+test "textChange wire format uses UTF-8 byte lengths" {
     const allocator = std.testing.allocator;
-    var change = TextChange.init(0, .initBorrowed("Hello"), 0, .initBorrowed("World"));
+    var change = TextChange.init(0, .initBorrowed("aé😀"), 0, .initBorrowed("😀é"));
     defer change.deinit();
+
+    // 8 + (4 + 7) + (4 + 6)
+    try std.testing.expectEqual(@as(usize, 29), change.writeSize());
 
     var buf: [1024]u8 = undefined;
     var writer = Io.Writer.fixed(&buf);
@@ -389,16 +451,13 @@ test "textChange read/write" {
     var readChanges = ArrayList(TextChange).init(allocator);
     defer readChanges.deinit();
     defer {
-        for (readChanges.items) |*item| {
-            item.deinit();
-        }
+        for (readChanges.items) |*item| item.deinit();
     }
     try TextChange.read(&reader, allocator, &readChanges);
 
-    try std.testing.expectEqual(change.newPosition, readChanges.items[0].newPosition);
-    try std.testing.expectEqualStrings(change.newText.items(), readChanges.items[0].newText.items());
-    try std.testing.expectEqual(change.oldPosition, readChanges.items[0].oldPosition);
-    try std.testing.expectEqualStrings(change.oldText.items(), readChanges.items[0].oldText.items());
+    try std.testing.expectEqual(@as(usize, 1), readChanges.items.len);
+    try std.testing.expectEqualStrings("aé😀", readChanges.items[0].oldText.items());
+    try std.testing.expectEqualStrings("😀é", readChanges.items[0].newText.items());
 }
 
 test "compress consecutive insertions" {
@@ -414,4 +473,13 @@ test "compress consecutive insertions" {
     }
     try std.testing.expectEqual(@as(usize, 1), result.items.len);
     try std.testing.expectEqualStrings("ab", result.items[0].newText.items());
+}
+
+test "textChange toString labels" {
+    var change = TextChange.init(0, .initBorrowed("Hello"), 0, .initBorrowed("World"));
+    defer change.deinit();
+
+    const result = try change.toString(std.testing.allocator);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("(replace@0 \"Hello\" with \"World\")", result);
 }

@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/edits/lineEdit.ts`.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -31,9 +32,20 @@ pub const LineReplacement = struct {
 
     lineRange: LineRange,
     newLines: []const []const u8,
+    /// True when `newLines` and every line were allocated by this replacement.
+    owns_lines: bool = false,
 
     pub fn init(line_range: LineRange, new_lines: []const []const u8) Self {
         return .{ .lineRange = line_range, .newLines = new_lines };
+    }
+
+    /// Releases the `newLines` array and every line. Only call this on a
+    /// replacement returned by `fromSingleTextEdit` (or otherwise constructed
+    /// with owned lines); `LineEdit` replacements are owned by its arena.
+    pub fn deinit(self: Self, allocator: Allocator) void {
+        if (!self.owns_lines) return;
+        for (self.newLines) |line| allocator.free(line);
+        allocator.free(self.newLines);
     }
 
     pub fn deserialize(data: SerializedLineReplacement) Self {
@@ -47,16 +59,27 @@ pub const LineReplacement = struct {
         const transformer = try initial_value.getTransformer();
 
         var new_lines = ArrayList([]const u8).init(allocator);
+        errdefer {
+            for (new_lines.items) |line| allocator.free(line);
+            new_lines.deinit();
+        }
         const split = try strings.splitLines(allocator, edit.text);
         defer split.deinit();
-        try new_lines.appendSlice(split.items);
+        try new_lines.ensureTotalCapacity(split.items.len);
+        // Own every returned line so `LineReplacement.deinit` has a clear contract.
+        for (split.items) |line| {
+            new_lines.appendAssumeCapacity(try allocator.dupe(u8, line));
+        }
 
         var start_line_number = edit.range.startLineNumber;
         const surviving_first_line_text = try initial_value.getValueOfRange(range.fromPositions(
             Position.init(edit.range.startLineNumber, 1),
             edit.range.getStartPosition(),
         ));
-        new_lines.items[0] = try concat2(allocator, surviving_first_line_text, new_lines.items[0]);
+        const surviving_first_line_length = surviving_first_line_text.len;
+        const old_first_line = new_lines.items[0];
+        new_lines.items[0] = try concat2(allocator, surviving_first_line_text, old_first_line);
+        allocator.free(old_first_line);
         allocator.free(surviving_first_line_text);
 
         var end_line_number_ex = edit.range.endLineNumber + 1;
@@ -65,8 +88,11 @@ pub const LineReplacement = struct {
             edit.range.getEndPosition(),
             Position.init(edit.range.endLineNumber, edit_end_line_number_max_column),
         ));
+        const surviving_end_line_length = surviving_end_line_text.len;
         const last_index = new_lines.items.len - 1;
-        new_lines.items[last_index] = try concat2(allocator, new_lines.items[last_index], surviving_end_line_text);
+        const old_last_line = new_lines.items[last_index];
+        new_lines.items[last_index] = try concat2(allocator, old_last_line, surviving_end_line_text);
+        allocator.free(old_last_line);
         allocator.free(surviving_end_line_text);
 
         // Replacing [startLineNumber, endLineNumberEx) with newLines would be
@@ -74,21 +100,27 @@ pub const LineReplacement = struct {
         const start_before_new_line = edit.range.startColumn == transformer.getLineLength(edit.range.startLineNumber) + 1;
         const end_after_new_line = edit.range.endColumn == 1;
 
-        if (start_before_new_line and new_lines.items[0].len == surviving_first_line_text.len) {
+        if (start_before_new_line and new_lines.items[0].len == surviving_first_line_length) {
             // The replacement would not delete any text on the first line.
             start_line_number += 1;
-            _ = new_lines.orderedRemove(0);
+            allocator.free(new_lines.orderedRemove(0));
         }
 
         if (new_lines.items.len > 0 and start_line_number < end_line_number_ex and end_after_new_line and
-            new_lines.items[new_lines.items.len - 1].len == surviving_end_line_text.len)
+            new_lines.items[new_lines.items.len - 1].len == surviving_end_line_length)
         {
             // The replacement would not delete any text on the last line.
             end_line_number_ex -= 1;
-            _ = new_lines.pop();
+            const removed_last = new_lines.pop().?;
+            allocator.free(removed_last);
         }
 
-        return Self.init(LineRange.init(start_line_number, end_line_number_ex), new_lines.items);
+        const owned_lines = try new_lines.toOwnedSlice();
+        return .{
+            .lineRange = LineRange.init(start_line_number, end_line_number_ex),
+            .newLines = owned_lines,
+            .owns_lines = true,
+        };
     }
 
     pub fn equals(self: Self, other: Self) bool {
@@ -108,7 +140,7 @@ pub const LineReplacement = struct {
         for (self.newLines, 0..) |line, i| {
             new_lines[i] = try allocator.dupe(u8, line);
         }
-        return Self.init(self.lineRange, new_lines);
+        return .{ .lineRange = self.lineRange, .newLines = new_lines, .owns_lines = true };
     }
 
     pub fn toSingleTextEdit(self: Self, allocator: Allocator, initial_value: *AbstractText) !TextReplacement {
@@ -192,10 +224,10 @@ pub const LineReplacement = struct {
 
     pub fn toString(self: Self, writer: *Io.Writer) !void {
         try self.lineRange.toString(writer);
-        try writer.print("->[", .{});
+        try writer.writeAll("->[");
         for (self.newLines, 0..) |line, i| {
             if (i > 0) try writer.writeByte(',');
-            try writer.print("\"{s}\"", .{line});
+            try writeJsonString(writer, line);
         }
         try writer.writeByte(']');
     }
@@ -241,6 +273,27 @@ pub const LineReplacement = struct {
         return LineEdit.create(allocator, &.{self});
     }
 };
+
+fn writeJsonString(writer: *Io.Writer, text: []const u8) !void {
+    try writer.writeByte('"');
+    for (text) |ch| {
+        switch (ch) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => {
+                if (ch < 0x20) {
+                    try writer.print("\\u{x:0>4}", .{ch});
+                } else {
+                    try writer.writeByte(ch);
+                }
+            },
+        }
+    }
+    try writer.writeByte('"');
+}
 
 fn concat2(allocator: Allocator, a: []const u8, b: []const u8) ![]u8 {
     const result = try allocator.alloc(u8, a.len + b.len);
@@ -541,6 +594,10 @@ pub const LineEdit = struct {
             group_start = group_end;
         }
 
+        // Upstream joins the lines with '\n'; do not leave a trailing newline.
+        if (result.items.len > 0 and result.items[result.items.len - 1] == '\n') {
+            _ = result.pop();
+        }
         return result.toOwnedSlice();
     }
 
@@ -674,6 +731,38 @@ test "LineEdit: inverse" {
     try std.testing.expectEqual(LineRange.init(2, 3), inversed.replacements[0].lineRange);
     try std.testing.expectEqual(@as(usize, 1), inversed.replacements[0].newLines.len);
     try std.testing.expectEqualStrings("b", inversed.replacements[0].newLines[0]);
+}
+
+test "LineReplacement: fromSingleTextEdit owns its lines" {
+    const allocator = std.testing.allocator;
+    var text = AbstractText.initString(allocator, "alpha\nbeta\ngamma");
+    defer text.deinit();
+
+    const replacement = try LineReplacement.fromSingleTextEdit(
+        allocator,
+        TextReplacement.init(Range.init(2, 1, 2, 5), "BETA"),
+        &text,
+    );
+    defer replacement.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), replacement.newLines.len);
+    try std.testing.expectEqualStrings("BETA", replacement.newLines[0]);
+    try std.testing.expectEqual(LineRange.init(2, 3), replacement.lineRange);
+}
+
+test "LineEdit: humanReadablePatch has no trailing newline" {
+    const allocator = std.testing.allocator;
+    var line_edit = try LineEdit.create(allocator, &.{
+        LineReplacement.init(LineRange.init(2, 3), &.{"X"}),
+    });
+    defer line_edit.deinit();
+
+    const original = [_][]const u8{ "a", "b", "c" };
+    const patch = try line_edit.humanReadablePatch(allocator, &original);
+    defer allocator.free(patch);
+
+    try std.testing.expect(!std.mem.endsWith(u8, patch, "\n"));
+    try std.testing.expect(std.mem.indexOf(u8, patch, "X") != null);
 }
 
 test "LineEdit: deserialize and serialize" {

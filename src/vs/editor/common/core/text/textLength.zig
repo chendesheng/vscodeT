@@ -1,4 +1,6 @@
+// Port of `src/vs/editor/common/core/text/textLength.ts`.
 const std = @import("std");
+const Io = std.Io;
 const LineRange = @import("../ranges/lineRange.zig").LineRange;
 const Position = @import("../position.zig").Position;
 const Range = @import("../range.zig").Range;
@@ -50,6 +52,18 @@ pub const TextLength = struct {
 
     pub fn ofSubstr(text: []const u8, range: OffsetRange) TextLength {
         return ofText(range.substring(text));
+    }
+
+    pub fn sum(comptime T: type, context: anytype, fragments: []const T, get_length: fn (T, @TypeOf(context)) TextLength) TextLength {
+        var result = zero;
+        for (fragments) |fragment| {
+            result = result.add(get_length(fragment, context));
+        }
+        return result;
+    }
+
+    pub fn toString(self: TextLength, writer: *Io.Writer) !void {
+        try writer.print("{d},{d}", .{ self.lineCount, self.columnCount });
     }
 
     pub fn isZero(self: TextLength) bool {
@@ -127,4 +141,19 @@ test "textLength: positions, text, and arithmetic" {
     try std.testing.expectEqual(@as(usize, 2), pos.lineNumber);
     try std.testing.expectEqual(@as(usize, 3), pos.column);
     try std.testing.expect(TextLength.zero.isZero());
+}
+
+test "TextLength: sum and toString" {
+    const lengths = [_]TextLength{ .{ .lineCount = 1, .columnCount = 2 }, .{ .lineCount = 0, .columnCount = 3 } };
+    const Context = struct {
+        fn identity(value: TextLength, _: void) TextLength {
+            return value;
+        }
+    };
+    try std.testing.expectEqual(TextLength{ .lineCount = 1, .columnCount = 5 }, TextLength.sum(TextLength, {}, &lengths, Context.identity));
+
+    var buffer: [32]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try (TextLength{ .lineCount = 2, .columnCount = 7 }).toString(&writer);
+    try std.testing.expectEqualStrings("2,7", writer.buffered());
 }

@@ -627,7 +627,7 @@ test "SingleModelEditStackElement" {
     try element.append(&[_]TextChange{TextChange.init(0, .initBorrowed("a"), 0, .initBorrowed("b"))}, .LF, 2, null);
     const str = try element.toString();
     defer str.deinit();
-    try std.testing.expectEqualStrings("(replaced@0 \"a\" with \"b\")", str.items);
+    try std.testing.expectEqualStrings("(replace@0 \"a\" with \"b\")", str.items);
 }
 
 pub const MultiModelEditStackElement = struct {

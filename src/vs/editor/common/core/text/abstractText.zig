@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/core/text/abstractText.ts`.
+//
+// Zig adaptation: upstream's `AbstractText` class hierarchy (`LineBasedText`,
+// `ArrayText`, `StringText`) is represented by one tagged union. Text and
+// columns remain UTF-8 bytes; no UTF-16 conversion happens here.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -106,7 +111,8 @@ pub const AbstractText = struct {
     }
 
     pub fn getValueOfOffsetRange(self: *AbstractText, range: OffsetRange) ![]u8 {
-        return self.getValueOfRange(try self.getTransformer().getRange(range));
+        const transformer = try self.getTransformer();
+        return self.getValueOfRange(transformer.getRange(range));
     }
 
     pub fn getLineLength(self: *AbstractText, lineNumber: usize) usize {
@@ -122,7 +128,7 @@ pub const AbstractText = struct {
             const transformer = try self.allocator.create(PositionOffsetTransformer);
             errdefer self.allocator.destroy(transformer);
             const value = try self.getValue();
-            transformer.* = try PositionOffsetTransformer.init(self.allocator, value);
+            transformer.* = PositionOffsetTransformer.init(self.allocator, value);
             self.transformer = transformer;
         }
         return self.transformer.?;
@@ -275,7 +281,16 @@ fn offsetAt(text: []const u8, lineNumber: usize, column: usize) usize {
     }
     var lineEnd = offset;
     while (lineEnd < text.len and text[lineEnd] != '\n') : (lineEnd += 1) {}
-    return @min(offset + column - 1, lineEnd);
+    // Match PositionOffsetTransformer: the line ends before a CR of a CRLF pair.
+    if (lineEnd > offset and text[lineEnd - 1] == '\r') {
+        lineEnd -= 1;
+    }
+    // Avoid overflow for callers that pass `maxInt(usize)` as the column.
+    const column_delta = column - 1;
+    if (column_delta > lineEnd - offset) {
+        return lineEnd;
+    }
+    return offset + column_delta;
 }
 
 test "abstractText: string value and ranges" {
@@ -299,6 +314,14 @@ test "abstractText: string value and ranges" {
     try std.testing.expectEqual(@as(usize, 5), text.getLineLength(2));
 
     try std.testing.expectEqual(Position.init(2, 6), text.endPositionExclusive());
+
+    const line2 = try text.getLineAt(2);
+    defer allocator.free(line2);
+    try std.testing.expectEqualStrings("world", line2);
+
+    const offset_value = try text.getValueOfOffsetRange(OffsetRange.init(1, 5));
+    defer allocator.free(offset_value);
+    try std.testing.expectEqualStrings("ello", offset_value);
 }
 
 test "abstractText: array text" {
@@ -354,6 +377,20 @@ test "abstractText: line based text" {
 
     const transformer = try text.getTransformer();
     try std.testing.expectEqual(Position.init(2, 2), transformer.getPosition(5));
+}
+
+test "abstractText: CRLF columns are clamped before the CR" {
+    const allocator = std.testing.allocator;
+    var text = AbstractText.initString(allocator, "ab\r\ncd");
+    defer text.deinit();
+
+    const value = try text.getValueOfRange(Range.init(1, 1, 1, 4));
+    defer allocator.free(value);
+    try std.testing.expectEqualStrings("ab", value);
+
+    const line = try text.getLineAt(1);
+    defer allocator.free(line);
+    try std.testing.expectEqualStrings("ab", line);
 }
 
 test "abstractText: equals" {

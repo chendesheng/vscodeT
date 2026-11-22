@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/edits/arrayEdit.ts`.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -68,8 +69,11 @@ pub fn ArrayReplacement(comptime T: type) type {
         }
 
         pub fn toString(self: Self, writer: *Io.Writer) !void {
+            // Match upstream `BaseReplacement.toString`, which ArrayReplacement
+            // does not override.
+            try writer.print("{{ ", .{});
             try self.replaceRange.toString(writer);
-            try writer.print(" -> [{d} items]", .{self.newValue.len});
+            try writer.print(" -> {d} }}", .{self.newValue.len});
         }
     };
 }
