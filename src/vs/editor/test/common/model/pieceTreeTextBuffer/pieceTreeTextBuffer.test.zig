@@ -105,3 +105,81 @@ test "piece tree: deterministic random insert/delete over CR/LF alphabet" {
         try verify(allocator, &tree, ref.items);
     }
 }
+
+fn createTreeFromChunks(allocator: Allocator, chunks: []const []const u8) !PieceTreeBase {
+    const buffers = try allocator.alloc(StringBuffer, chunks.len);
+    defer allocator.free(buffers);
+    var initialized: usize = 0;
+    errdefer {
+        for (buffers[0..initialized]) |*buffer| buffer.deinit();
+    }
+    for (chunks, 0..) |chunk, i| {
+        buffers[i] = try StringBuffer.init(allocator, chunk);
+        initialized += 1;
+    }
+    return PieceTreeBase.init(allocator, null, buffers, .LF, false);
+}
+
+test "piece tree buffer api: equal ignores chunk boundaries" {
+    const allocator = std.testing.allocator;
+    var a = try createTreeFromChunks(allocator, &.{"abc"});
+    defer a.deinit();
+    var b = try createTreeFromChunks(allocator, &.{ "ab", "c" });
+    defer b.deinit();
+    var c = try createTreeFromChunks(allocator, &.{"abd"});
+    defer c.deinit();
+    var d = try createTreeFromChunks(allocator, &.{"abcd"});
+    defer d.deinit();
+    try std.testing.expect(try a.equal(&b));
+    try std.testing.expect(!try a.equal(&c));
+    try std.testing.expect(!try a.equal(&d));
+
+    var e = try createTreeFromChunks(allocator, &.{ "ab", "cd", "e" });
+    defer e.deinit();
+    var f = try createTreeFromChunks(allocator, &.{ "ab", "c", "de" });
+    defer f.deinit();
+    try std.testing.expect(try e.equal(&f));
+
+    var empty1 = try createTreeFromChunks(allocator, &.{""});
+    defer empty1.deinit();
+    var empty2 = try createTreeFromChunks(allocator, &.{""});
+    defer empty2.deinit();
+    try std.testing.expect(try empty1.equal(&empty2));
+
+    var one = try createTreeFromChunks(allocator, &.{"a"});
+    defer one.deinit();
+    try std.testing.expect(!try one.equal(&empty1));
+}
+
+test "piece tree buffer api: getNearestChunk follows edits" {
+    const allocator = std.testing.allocator;
+    var tree = try createTreeFromChunks(allocator, &.{"012345678"});
+    defer tree.deinit();
+    try tree.insert(3, "ABC", false);
+    var line = try tree.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("012ABC345678", line.items);
+    try std.testing.expectEqualStrings("ABC", tree.getNearestChunk(3));
+    try std.testing.expectEqualStrings("345678", tree.getNearestChunk(6));
+
+    try tree.delete(9, 1);
+    line.deinit();
+    line = try tree.getLineContent(1);
+    try std.testing.expectEqualStrings("012ABC34578", line.items);
+    try std.testing.expectEqualStrings("345", tree.getNearestChunk(6));
+    try std.testing.expectEqualStrings("78", tree.getNearestChunk(9));
+}
+
+test "piece tree buffer api: getLineCharCode over line breaks" {
+    const allocator = std.testing.allocator;
+    var tree = try createTreeFromChunks(allocator, &.{"LINE1\nline2"});
+    defer tree.deinit();
+    const expected_first = "LINE1\n";
+    const expected_second = "line2";
+    for (expected_first, 0..) |ch, i| {
+        try std.testing.expectEqual(ch, tree.getLineCharCode(1, i));
+    }
+    for (expected_second, 0..) |ch, i| {
+        try std.testing.expectEqual(ch, tree.getLineCharCode(2, i));
+    }
+}
