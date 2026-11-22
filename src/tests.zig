@@ -234,6 +234,7 @@ comptime {
     _ = @import("./vs/editor/test/common/model/editStack.test.zig");
     _ = @import("./vs/editor/test/common/model/textModelSearch.test.zig");
     _ = @import("./vs/editor/test/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.test.zig");
+    _ = @import("./vs/editor/test/common/model/annotations.test.zig");
     _ = @import("./vs/editor/test/common/model/modelModesTests.zig");
     _ = @import("./vs/editor/test/common/model/textModelWithTokens.test.zig");
     _ = @import("./vs/editor/test/common/port/integrationTests.zig");
