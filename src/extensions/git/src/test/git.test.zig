@@ -90,6 +90,53 @@ test "parseGitCommits: fields, decorations, messages and shortstat" {
     try testing.expect(commits[1].short_stat == null);
 }
 
+test "parseGitCommits: singular shortstat keeps the following commits" {
+    const allocator = testing.allocator;
+    var out = std.array_list.Managed(u8).init(allocator);
+    defer out.deinit();
+
+    const first = try fmtAlloc(allocator, "{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "Ada Lovelace",
+        "ada@example.com",
+        "1700000000",
+        "1700000100",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "HEAD -> refs/heads/main",
+        "single file commit\n",
+    });
+    defer allocator.free(first);
+    try out.appendSlice(first);
+    try out.append(0);
+    // Git prints the singular form when exactly one file changed.
+    try out.appendSlice("\n 1 file changed, 2 insertions(+), 1 deletion(-)\n");
+
+    const second = try fmtAlloc(allocator, "{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "Grace Hopper",
+        "grace@example.com",
+        "1699990000",
+        "1699990100",
+        "",
+        "",
+        "root commit",
+    });
+    defer allocator.free(second);
+    try out.appendSlice(second);
+    try out.append(0);
+
+    const commits = try git.parseGitCommits(allocator, out.items);
+    defer commonFree(allocator, commits);
+
+    try testing.expectEqual(@as(usize, 2), commits.len);
+    try testing.expectEqualStrings("single file commit", commits[0].message);
+    try testing.expectEqual(@as(usize, 1), commits[0].short_stat.?.files);
+    try testing.expectEqual(@as(usize, 2), commits[0].short_stat.?.insertions);
+    try testing.expectEqual(@as(usize, 1), commits[0].short_stat.?.deletions);
+    try testing.expectEqualStrings("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", commits[1].hash);
+    try testing.expectEqualStrings("root commit", commits[1].message);
+}
+
 fn commonFree(allocator: Allocator, commits: []git.GitCommit) void {
     git.freeGitCommits(allocator, commits);
 }

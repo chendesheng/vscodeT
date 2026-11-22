@@ -817,7 +817,8 @@ console API for raw mode, sizing and input polling.
   renders it on the `ui` DOM: one cell per swimlane, commit subjects/authors,
   ref badges, `●`/`◉`/`◎`/`◌` circles and `│`/`╱`/`╲`/`─` lanes. Commits start
   collapsed; expanding shows changed files in list or compressed tree mode;
-  `Enter` opens a parent↔commit diff. `scm.graph.pageSize` (50),
+  `Enter` opens a parent↔commit diff and clicking the `Load More…` row pages
+  older commits in. `scm.graph.pageSize` (50),
   `scm.graph.pageOnScroll` (true), `scm.graph.badges` (`filter`),
   `scm.graph.showIncomingChanges`/`showOutgoingChanges` (true),
   `scm.defaultViewMode` (`list`), `scm.compactFolders` (true) and
