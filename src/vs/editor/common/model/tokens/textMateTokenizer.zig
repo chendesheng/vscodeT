@@ -207,10 +207,17 @@ const TextMateSupport = struct {
         else
             null;
         const previous = if (input) |textmate_state| (if (textmate_state.first_line) null else textmate_state.stack) else null;
-        const result = try self.grammar.tokenizeLine(line, previous, 0);
+        // Upstream limits a line to 500 ms. A partial tokenization keeps the
+        // input state so following lines are not derived from truncated token
+        // state.
+        const result = try self.grammar.tokenizeLine(line, previous, 500);
 
-        const next = try allocator.create(TextMateState);
-        next.* = .{ .stack = result.rule_stack, .first_line = false };
+        var end_state = state;
+        if (!result.stopped_early) {
+            const next = try allocator.create(TextMateState);
+            next.* = .{ .stack = result.rule_stack, .first_line = false };
+            end_state = .{ .context = next, .vtable = &TextMateState.vtable };
+        }
         const active_theme = tokenization.lockActiveTokenTheme();
         defer tokenization.unlockActiveTokenTheme();
         return .{
@@ -220,7 +227,7 @@ const TextMateSupport = struct {
                 result.tokens,
                 active_theme,
             ),
-            .endState = .{ .context = next, .vtable = &TextMateState.vtable },
+            .endState = end_state,
         };
     }
 

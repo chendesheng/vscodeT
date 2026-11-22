@@ -134,6 +134,11 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         const line_count = self.textModel().getLineCount();
         const start = @max(@as(usize, 1), @min(startLineNumber, line_count));
         const end = @max(@as(usize, 1), @min(endLineNumber, line_count));
+        // A start state is only trustworthy when no earlier end state is
+        // invalid. Otherwise the heuristic guessed it, and recording the
+        // downstream states would mark guessed tokens as accurate.
+        const first_invalid = self.getStore().getFirstInvalidEndStateLineNumberOrMax();
+        const can_record_states = start <= first_invalid and self.getStartState(start) != null;
         var state = self.getStartState(start) orelse try self.guessStartState(start);
         const languageId = self.textModel().getLanguageId();
         const allocator = self.super.stateAllocator();
@@ -145,7 +150,9 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             self.super.resetScratch();
             const r = try safeTokenize(self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
             try builder.add(lineNumber, r.tokens);
-            _ = try self.getStore().setEndState(lineNumber, r.endState);
+            if (can_record_states) {
+                _ = try self.getStore().setEndState(lineNumber, r.endState);
+            }
             state = r.endState;
         }
     }
@@ -616,4 +623,36 @@ test "tokenization: token arrays stay in the scratch arena" {
     // Only the 5000 small end states live in the state arena; the 64-token
     // arrays must not accumulate there.
     try std.testing.expect(state_arena.queryCapacity() < 256 * 1024);
+}
+
+test "forceTokenizeRange does not record guessed end states as accurate" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+
+    var text = std.array_list.Managed(u8).init(allocator);
+    defer text.deinit();
+    for (0..60) |i| {
+        if (i > 0) try text.append('\n');
+        try text.appendSlice("x = 1;");
+    }
+
+    const TokenizationRegistry = @import("../tokenizationRegistry.zig").TokenizationRegistry;
+    const support = ITokenizationSupport{ .context = undefined, .vtable = &test_support_vtable };
+    try TokenizationRegistry.instance.register("auditTokens", support);
+    defer TokenizationRegistry.instance.unregister("auditTokens");
+
+    var test_model = try TestModel.init(allocator, text.items, "auditTokens");
+    defer test_model.deinit();
+
+    try std.testing.expect(!test_model.model.hasAccurateTokensForLine(50));
+
+    // The start state is guessed (an earlier end state is invalid), so the
+    // range must stay marked as needing background repair.
+    test_model.model.tokenization().forceTokenizeRange(40, 50);
+    try std.testing.expect(!test_model.model.hasAccurateTokensForLine(50));
+
+    // From a valid start state the states are recorded.
+    test_model.model.tokenization().forceTokenizeRange(1, 10);
+    try std.testing.expect(test_model.model.hasAccurateTokensForLine(10));
+    try std.testing.expect(!test_model.model.hasAccurateTokensForLine(11));
 }

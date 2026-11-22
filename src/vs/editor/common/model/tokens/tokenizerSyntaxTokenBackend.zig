@@ -49,6 +49,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     _registryListener: ?usize = null,
     _attachedViewsListener: ?usize = null,
     _attachedViews: ?*AttachedViews = null,
+    _callbacks_registered: bool = false,
 
     pub fn init(languageIdCodec: *LanguageIdCodec, textModel_: *TextModel, languageId: []const u8) TokenizerSyntaxTokenBackend {
         const allocator = textModel_.getAllocator();
@@ -85,6 +86,8 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     pub fn registerCallbacks(self: *TokenizerSyntaxTokenBackend, attachedViews: *AttachedViews) void {
+        if (self._callbacks_registered) return;
+        self._callbacks_registered = true;
         self._attachedViews = attachedViews;
         self._registryListener = TokenizationRegistry.instance.onDidChange(self, struct {
             fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) !void {
