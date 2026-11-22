@@ -31,6 +31,10 @@ pub const RenderedPart = struct {
     italic: bool = false,
     underline: bool = false,
     strikethrough: bool = false,
+    /// Upstream `LinePartMetadata.IS_WHITESPACE`: the run renders visible
+    /// whitespace (`·`/`→` and tab padding). It carries no token metadata and
+    /// paints with `editorWhitespace.foreground`.
+    is_whitespace: bool = false,
     /// Normalized inline-decoration classes covering this part, if any. The
     /// slice is owned by the `RenderedLine` that produced the part.
     decoration_class: ?[]const u8 = null,
@@ -113,6 +117,29 @@ const PartRange = struct {
     end: usize,
     metadata: TokenMetadata,
     decoration_class: ?[]const u8 = null,
+    is_whitespace: bool = false,
+};
+
+/// Collects the rendered pieces of one content span as `PartRange`s. The
+/// expansion splits at visible-whitespace boundaries so every whitespace run
+/// becomes an upstream `mtkw`-style part with no token style of its own.
+const PartSink = struct {
+    ranges: *std.ArrayList(PartRange),
+    metadata: TokenMetadata,
+    decoration_class: ?[]const u8,
+
+    fn emit(self: *const PartSink, allocator: Allocator, start: usize, end: usize, is_whitespace: bool) !void {
+        if (end <= start) return;
+        try self.ranges.append(allocator, .{
+            .start = start,
+            .end = end,
+            // Upstream `mtkw` parts use `LinePartMetadata.IS_WHITESPACE`
+            // instead of the surrounding token metadata.
+            .metadata = if (is_whitespace) TokenMetadata.default else self.metadata,
+            .decoration_class = self.decoration_class,
+            .is_whitespace = is_whitespace,
+        });
+    }
 };
 
 /// Expands tabs in `content` for a terminal with `tab_size` columns.
@@ -135,7 +162,7 @@ pub fn expandTabs(
         .render_control_characters = false,
         .offset = &offset,
     };
-    try appendExpanded(&out, allocator, content, tab_size, &column, &whitespace);
+    try appendExpanded(&out, allocator, content, tab_size, &column, &whitespace, null);
     return out.toOwnedSlice(allocator);
 }
 
@@ -146,14 +173,36 @@ fn appendExpanded(
     tab_size: usize,
     column: *usize,
     whitespace: *WhitespaceContext,
+    parts: ?*PartSink,
 ) !void {
     var offset: usize = 0;
+    var chunk_open = false;
+    var chunk_start: usize = 0;
+    var chunk_is_whitespace = false;
     while (offset < text.len) {
         const len = std.unicode.utf8ByteSequenceLength(text[offset]) catch 1;
         const safe_len = @min(len, text.len - offset);
         const cp = std.unicode.utf8Decode(text[offset .. offset + safe_len]) catch @as(u21, text[offset]);
         const absolute = whitespace.offset.*;
         const render_whitespace = shouldRenderWhitespace(whitespace, absolute);
+        const is_whitespace = render_whitespace and (cp == '\t' or cp == ' ');
+        const output_start = out.items.len;
+
+        // Close the current upstream-style part when the visible-whitespace
+        // kind changes. This is the run counterpart of `_applyRenderWhitespace`
+        // replacing whitespace with `mtkw` line parts.
+        if (parts) |sink| {
+            if (chunk_open and is_whitespace != chunk_is_whitespace) {
+                try sink.emit(allocator, chunk_start, output_start, chunk_is_whitespace);
+                chunk_open = false;
+            }
+            if (!chunk_open) {
+                chunk_start = output_start;
+                chunk_is_whitespace = is_whitespace;
+                chunk_open = true;
+            }
+        }
+
         if (cp == '\t') {
             const next = CursorColumns.nextRenderTabStop(column.*, tab_size);
             var spaces = next - column.*;
@@ -182,6 +231,9 @@ fn appendExpanded(
         }
         whitespace.offset.* += safe_len;
         offset += safe_len;
+    }
+    if (parts) |sink| {
+        if (chunk_open) try sink.emit(allocator, chunk_start, out.items.len, chunk_is_whitespace);
     }
 }
 
@@ -319,6 +371,7 @@ pub fn renderLine(allocator: Allocator, input: Input) !RenderedLine {
             .italic = metadata.fontStyle.italic,
             .underline = metadata.fontStyle.underline,
             .strikethrough = metadata.fontStyle.strikethrough,
+            .is_whitespace = range.is_whitespace,
             .decoration_class = range.decoration_class,
         };
     }
@@ -366,14 +419,12 @@ fn appendSpan(
             }
         }
 
-        const output_start = bytes.items.len;
-        try appendExpanded(bytes, allocator, content[position..piece_end], tab_size, column, whitespace);
-        try ranges.append(allocator, .{
-            .start = output_start,
-            .end = bytes.items.len,
+        var sink = PartSink{
+            .ranges = ranges,
             .metadata = metadata,
             .decoration_class = decoration_class,
-        });
+        };
+        try appendExpanded(bytes, allocator, content[position..piece_end], tab_size, column, whitespace, &sink);
         position = piece_end;
     }
 }
@@ -438,6 +489,68 @@ test "renderLine: visible whitespace modes" {
     const none = try renderTestLine(allocator, "a\tb", .none);
     defer allocator.free(none);
     try std.testing.expectEqualStrings("a   b", none);
+}
+
+test "renderLine: visible whitespace becomes whitespace parts without token styles" {
+    const allocator = std.testing.allocator;
+    const languages = @import("../languages.zig");
+    const line_tokens = @import("../tokens/lineTokens.zig");
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var owned = std.array_list.Managed(u8).init(allocator);
+    errdefer owned.deinit();
+    try owned.appendSlice("  a b  ");
+    var tokens = try line_tokens.LineTokens.createEmpty(allocator, owned, &codec);
+    defer tokens.deinit();
+
+    const rendered = try renderLine(allocator, .{
+        .content = "  a b  ",
+        .tokens = line_tokens.IViewLineTokens.init(&tokens),
+        .tab_size = 4,
+        .render_whitespace = .all,
+    });
+    defer rendered.deinit(allocator);
+
+    try std.testing.expectEqualStrings("\u{00B7}\u{00B7}a\u{00B7}b\u{00B7}\u{00B7}", rendered.bytes);
+    try std.testing.expectEqual(@as(usize, 5), rendered.parts.len);
+    try std.testing.expectEqualStrings("\u{00B7}\u{00B7}", rendered.parts[0].text);
+    try std.testing.expect(rendered.parts[0].is_whitespace);
+    try std.testing.expectEqual(TokenMetadata.default.foreground, rendered.parts[0].foreground);
+    try std.testing.expectEqualStrings("a", rendered.parts[1].text);
+    try std.testing.expect(!rendered.parts[1].is_whitespace);
+    try std.testing.expectEqualStrings("\u{00B7}", rendered.parts[2].text);
+    try std.testing.expect(rendered.parts[2].is_whitespace);
+    try std.testing.expectEqualStrings("b", rendered.parts[3].text);
+    try std.testing.expect(!rendered.parts[3].is_whitespace);
+    try std.testing.expectEqualStrings("\u{00B7}\u{00B7}", rendered.parts[4].text);
+    try std.testing.expect(rendered.parts[4].is_whitespace);
+}
+
+test "renderLine: rendered tabs are a single whitespace part including padding" {
+    const allocator = std.testing.allocator;
+    const languages = @import("../languages.zig");
+    const line_tokens = @import("../tokens/lineTokens.zig");
+    var codec = try languages.LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var owned = std.array_list.Managed(u8).init(allocator);
+    errdefer owned.deinit();
+    try owned.appendSlice("a\tb");
+    var tokens = try line_tokens.LineTokens.createEmpty(allocator, owned, &codec);
+    defer tokens.deinit();
+
+    const rendered = try renderLine(allocator, .{
+        .content = "a\tb",
+        .tokens = line_tokens.IViewLineTokens.init(&tokens),
+        .tab_size = 4,
+        .render_whitespace = .all,
+    });
+    defer rendered.deinit(allocator);
+
+    try std.testing.expectEqualStrings("a\u{2192}  b", rendered.bytes);
+    try std.testing.expectEqual(@as(usize, 3), rendered.parts.len);
+    try std.testing.expectEqualStrings("\u{2192}  ", rendered.parts[1].text);
+    try std.testing.expect(rendered.parts[1].is_whitespace);
+    try std.testing.expectEqualStrings("b", rendered.parts[2].text);
 }
 
 test "renderLine: selection-only whitespace" {

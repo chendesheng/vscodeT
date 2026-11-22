@@ -403,7 +403,11 @@ pub const View = struct {
     // --- begin event fan-out
 
     pub fn onConfigurationChanged(self: *View, event: *const view_events.ViewConfigurationChangedEvent) bool {
-        var should_render = false;
+        // `ViewLines` is a `ViewPart` registered on the view context, like
+        // upstream. The terminal host's manual fan-out must include it or
+        // `ViewLineOptions` (renderWhitespace, control characters, ...) never
+        // refresh after a settings change.
+        var should_render = self.view_lines.base.handler.onConfigurationChanged(event);
         for (self.view_parts.items) |part| should_render = part.handler.onConfigurationChanged(event) or should_render;
         for (self.content_overlays.items) |overlay| should_render = overlay.handler.onConfigurationChanged(event) or should_render;
         return should_render;
@@ -474,7 +478,9 @@ pub const View = struct {
 
     pub fn onThemeChanged(self: *View, event: *const view_events.ViewThemeChangedEvent) bool {
         self.context.theme.update(event.theme);
-        var should_render = false;
+        // `ViewLines.onThemeChanged` refreshes its `ViewLineOptions` snapshot
+        // (theme type feeds high-contrast and whitespace decisions).
+        var should_render = self.view_lines.base.handler.onThemeChanged(event);
         for (self.view_parts.items) |part| should_render = part.handler.onThemeChanged(event) or should_render;
         for (self.content_overlays.items) |overlay| should_render = overlay.handler.onThemeChanged(event) or should_render;
         return should_render;
@@ -746,11 +752,20 @@ test "view fans configuration and focus events out to parts and overlays" {
     const editor_options = @import("../common/config/editorOptions.zig");
     const option_count = @typeInfo(editor_options.EditorOption).@"enum".field_names.len;
     var values: [option_count]bool = @splat(false);
+    // `ViewLines` is a view part registered on the context; it must receive
+    // the same configuration event or its line options stay at their initial
+    // values (for example `renderWhitespace` would never turn on).
+    values[@backingInt(editor_options.EditorOption.renderWhitespace)] = true;
+    fixture.options.set(.renderWhitespace, .all);
     const configuration_event = view_events.ViewConfigurationChangedEvent.init(
         editor_options.ConfigurationChangedEvent.init(&values),
     );
     try testing.expect(view.onConfigurationChanged(&configuration_event));
     try testing.expectEqual(@as(usize, 1), part.configurations);
+    try testing.expectEqual(
+        editor_options.RenderWhitespace.all,
+        view.view_lines.view_line_options.render_whitespace,
+    );
 
     try testing.expect(view.setFocused(true));
     try testing.expect(view.hasFocus());

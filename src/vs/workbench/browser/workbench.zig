@@ -12245,7 +12245,7 @@ test "Workbench: editor settings apply to open editors and reload" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path = try seedFile(allocator, io, &tmp, "settings_editor.txt", "alpha\nbeta\n");
+    const path = try seedFile(allocator, io, &tmp, "settings_editor.txt", "alpha beta\nbeta\n");
     defer allocator.free(path);
     var settings_file = try tmp.dir.createFile(io, "editor-settings.json", .{});
     try settings_file.writeStreamingAll(io, "{\"editor.lineNumbers\":\"relative\",\"editor.renderWhitespace\":\"all\",\"editor.matchBrackets\":\"never\"}");
@@ -12273,6 +12273,15 @@ test "Workbench: editor settings apply to open editors and reload" {
         editor_options.MatchBrackets.never,
         tab.view.terminal_view_host.options.get(.matchBrackets),
     );
+
+    // The settings change must reach the view-line options, not just the
+    // computed-options store: the open editor renders middle dots for spaces.
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try workbench.render(&rendered.writer);
+    const frame = try frameText(allocator, &workbench.frame);
+    defer allocator.free(frame);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "\u{00B7}") != null);
 
     // Editing the file and re-applying the layer updates the open editor.
     var reloaded_settings = try tmp.dir.createFile(io, "editor-settings.json", .{ .truncate = true });

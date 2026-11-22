@@ -471,6 +471,8 @@ pub const ViewLine = struct {
 
         // Indent/bracket guides are overlay paint in the browser; terminal
         // cells are children of the line so they can share its clipping.
+        // They are appended after the text runs so a guide wins the cell over
+        // a rendered whitespace glyph (`·`/`→`) at the same column.
         for (options.guides) |guide| {
             const guide_node = try doc.createElement(.div);
             guide_node.setStyle(.{

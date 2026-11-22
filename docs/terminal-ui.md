@@ -1054,8 +1054,18 @@ Library constraints:
   full opacity (active pair), matching upstream. The indentation scope around
   the caret is painted with the active indent-guide color. A guide is only
   painted in a leading-whitespace or blank cell, because one terminal cell
-  cannot show both a guide and a text glyph; horizontal bracket guide segments
-  are therefore not painted. Wrapped continuation lines do not get guides.
+  cannot show both a guide and a text glyph; when visible whitespace is on, the
+  guide glyph wins the cell over the rendered `·`/`→` whitespace glyph so the
+  indentation line stays visible. Horizontal bracket guide segments are
+  therefore not painted. Wrapped continuation lines do not get guides.
+- Visible whitespace (`renderWhitespace` `all`/`boundary`/`trailing`/
+  `selection`) is produced by the shared line renderer as upstream
+  `mtkw`-style runs: a space becomes `·`, a tab `→` plus its padding, and the
+  run carries no token metadata. The view paints every whitespace run with
+  `editorWhitespace.foreground`; when the theme does not define that id, the
+  default foreground is dimmed over the editor background instead of inheriting
+  the neighboring token color, so all whitespace cells share one subdued
+  color.
 - Find, bracket and word ranges are stored in the model as `TextModel`
   decorations (`findMatch`, `currentFindMatch`, `bracket-match`,
   `wordHighlight*`). `View.ModelDecorationSink` replaces each contribution's

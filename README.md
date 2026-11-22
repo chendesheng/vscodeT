@@ -1344,9 +1344,10 @@ TUI editor:
   bracket guides are rainbow-tinted while indentation guides are not. The
   indentation scope around the caret and the bracket pair containing the caret
   are highlighted. Guides are only painted over leading whitespace or blank
-  cells, so a guide never replaces a text glyph; horizontal guide segments are
-  not painted. Flow uses the same solid `│` glyph for its indent whitespace
-  mode.
+  cells, so a guide never replaces a text glyph; when visible whitespace is on,
+  the guide glyph wins the cell over the rendered `·`/`→` whitespace glyph so
+  the indentation line stays visible. Horizontal guide segments are not
+  painted. Flow uses the same solid `│` glyph for its indent whitespace mode.
 - Scrollbar and overview ruler: the scrollbar is right-aligned and 1.5 cells
   wide: the right half of the first reserved cell plus the whole second cell.
   It uses foreground block glyphs, so it carries no background run at the
@@ -1841,8 +1842,12 @@ Editor contributions:
 - Visible whitespace rendering is ported through the shared line renderer:
   `renderWhitespace` modes `all`, `boundary`, `trailing` and `selection` draw
   middle dots for spaces and a right arrow for tabs (selection mode receives
-  the view selections through `IViewModel.getSelections`). Control characters
-  render as Unicode control pictures when `renderControlCharacters` is on.
+  the view selections through `IViewModel.getSelections`). Whitespace is
+  emitted as separate upstream `mtkw`-style parts with no token style, so every
+  dot/arrow paints one uniform `editorWhitespace.foreground` color instead of
+  the neighboring token color; themes without that id get a dimmed default
+  foreground. Indent guides paint over those cells. Control characters render
+  as Unicode control pictures when `renderControlCharacters` is on.
 
 - `WorkingCopyService` is ported
   (`workbench/services/workingCopy/common/workingCopyService.zig`): working-copy
