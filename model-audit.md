@@ -172,6 +172,10 @@ Small commits, each with a regression test:
 38. `79abc90` split `ast.ts` and `parser.ts` out of the merged tree.
 39. `9454db5` completed the nine-case before-edit position mapper suite.
 40. `ae139c9` ported the `getBracketPairsInRange` Basic All case.
+41. `58ffc26` ported the piece-tree buffer API cases (`equal`,
+    `getNearestChunk`, `getLineCharCode`).
+42. `f59bdd8` `EditStackElement.split` deep-clones elements; the multi-model
+    `toString` appends were fixed.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -224,8 +228,9 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   reports `BracketSetOverflow` rather than implementing upstream's
   `additionalItems`; `colorizedBracketPairsDecorationProvider` returns no
   decorations while dirty (documented terminal adaptation).
-- `editStack`: `split()` copies heap-owning elements; `heapSize` contains a
-  JS-specific overhead constant; the multi-model/delegate path is unreachable.
+- `editStack`: `split()` now returns owned deep copies; `heapSize` still
+  contains a JS-specific overhead constant and the multi-model/delegate path
+  is unreachable (bulk editing is not produced by the port).
 - `annotations`: serialization (`ISerializedAnnotation`, `serialize`,
   `deserialize`) is absent; the port uses its own worker protocol.
 - `textModelSearch`: line-by-line ranges now clamp like JS substring and JS
@@ -261,7 +266,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3072 tests, 19 skipped; the only observed
+The full suite currently passes (3076 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
