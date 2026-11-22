@@ -242,7 +242,6 @@ test "tokensStore: addSparseTokens skips overlapping semantic tokens" {
     var pieces = [_]SparseMultilineTokens{piece};
     try store.set(&pieces, true, null);
 
-    const tmMeta = (3 << FOREGROUND_OFFSET);
     var text = ArrayList(u8).init(allocator);
     try text.appendSlice("f=1+a2");
     var tokens = ArrayList(@import("../../../common/tokens/lineTokens.zig").TokenPacked).init(allocator);
@@ -252,7 +251,6 @@ test "tokensStore: addSparseTokens skips overlapping semantic tokens" {
     const aTokens = @import("../../../common/tokens/lineTokens.zig").LineTokens.init(tokens, text, &codec);
     var lineTokens = try store.addSparseTokens(1, aTokens);
     defer lineTokens.deinit();
-    _ = tmMeta;
 
     var i: usize = 1;
     while (i < lineTokens.getCount()) : (i += 1) {
@@ -260,6 +258,12 @@ test "tokensStore: addSparseTokens skips overlapping semantic tokens" {
     }
 
     try std.testing.expectEqualStrings("f=1+a2", lineTokens.getLineContent());
+
+    var withInjected = try lineTokens.withInserted(&.{
+        .{ .offset = 0, .text = "  ", .tokenMetadata = TokenMetadata.default },
+    });
+    defer withInjected.deinit();
+    try std.testing.expectEqualStrings("  f=1+a2", withInjected.getLineContent());
 }
 
 test "tokensStore: encompassing deletion makes store empty" {
