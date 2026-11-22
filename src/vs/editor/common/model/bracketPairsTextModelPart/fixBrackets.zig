@@ -124,21 +124,21 @@ const Scanner = struct {
                 if (matchAt(text, pos, defs, false)) |close| {
                     if (close.len >= open.len) {
                         try self.emitText(last_pos, pos);
-                        try self.emitBracket(pos, close, false, language);
+                        try self.emitBracket(close, false, language);
                         pos += close.len;
                         last_pos = pos;
                         continue;
                     }
                 }
                 try self.emitText(last_pos, pos);
-                try self.emitBracket(pos, open, true, language);
+                try self.emitBracket(open, true, language);
                 pos += open.len;
                 last_pos = pos;
                 continue;
             }
             if (matchAt(text, pos, defs, false)) |close| {
                 try self.emitText(last_pos, pos);
-                try self.emitBracket(pos, close, false, language);
+                try self.emitBracket(close, false, language);
                 pos += close.len;
                 last_pos = pos;
                 continue;
@@ -153,13 +153,12 @@ const Scanner = struct {
         try self.tokens.append(.{ .kind = .text, .length = toLength(0, to - from) });
     }
 
-    fn emitBracket(self: *Scanner, pos: usize, bracket_text: []const u8, is_opening: bool, language: []const u8) !void {
+    fn emitBracket(self: *Scanner, bracket_text: []const u8, is_opening: bool, language: []const u8) !void {
         const info = tree.BracketInfo{
             .bracket_text = bracket_text,
             .language_id = language,
             .is_opening = is_opening,
             .colorized = self.isColorized(language, bracket_text, is_opening),
-            .range = @import("../../core/range.zig").Range.init(1, pos + 1, 1, pos + 1 + bracket_text.len),
         };
         var bracket_id: usize = 0;
         var bracket_ids = SmallImmutableSet.empty();

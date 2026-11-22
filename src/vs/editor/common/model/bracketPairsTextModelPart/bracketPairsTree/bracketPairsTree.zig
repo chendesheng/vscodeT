@@ -63,6 +63,18 @@ pub fn lengthToPosition(length: Length) Position {
     return Position.init(lengthLineCount(length) + 1, lengthColumnCount(length) + 1);
 }
 
+/// Upstream `lengthsToRange`: turn an AST span into a document range. Cached
+/// nodes are reused after edits, so a bracket position can only be derived
+/// from the node's current offset, never from its tokenization position.
+pub fn lengthsToRange(start: Length, end: Length) Range {
+    return Range.init(
+        lengthLineCount(start) + 1,
+        lengthColumnCount(start) + 1,
+        lengthLineCount(end) + 1,
+        lengthColumnCount(end) + 1,
+    );
+}
+
 pub fn lengthDiff(start: Length, end: Length) Length {
     if (lengthLineCount(start) != lengthLineCount(end)) {
         return toLength(lengthLineCount(end) - lengthLineCount(start), lengthColumnCount(end));
@@ -160,7 +172,6 @@ pub const BracketInfo = struct {
     language_id: []const u8,
     is_opening: bool,
     colorized: bool,
-    range: Range,
 };
 
 pub const Token = struct {
@@ -549,13 +560,11 @@ const Tokenizer = struct {
     fn emitBracket(self: *Tokenizer, lineNumber: usize, pos: usize, bracketText: []const u8, isOpening: bool, language: []const u8) !void {
         const start = Position.init(lineNumber, pos + 1);
         try self.emitText(start);
-        const range = Range.init(lineNumber, pos + 1, lineNumber, pos + 1 + bracketText.len);
         const info = BracketInfo{
             .bracket_text = bracketText,
             .language_id = language,
             .is_opening = isOpening,
             .colorized = self.colorized(language, bracketText, isOpening),
-            .range = range,
         };
         var bracket_id: usize = 0;
         var bracket_ids = SmallImmutableSet.empty();
