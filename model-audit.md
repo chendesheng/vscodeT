@@ -142,7 +142,7 @@ Small commits, each with a regression test:
 24. `cfe655d` bracket matching is case-insensitive with upstream `\b`
     boundaries and token-end clamping; ported the randomized
     combineTextEditInfos test (50 seeds).
-25. `2b654d8` ported the length and smallImmutableSet test suites.
+25. `38004d8` ported the length and smallImmutableSet test suites.
 26. `9ad3231` ported the getBracketPairsInRange Basic cases with an
     annotated-position helper.
 27. `3830ce3` ported the piece-tree CRLF cases and a 500-step seeded random
