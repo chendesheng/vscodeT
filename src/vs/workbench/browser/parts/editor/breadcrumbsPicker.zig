@@ -612,8 +612,24 @@ fn renderFileRow(context: *anyopaque, row: *const list_mod.Row, node: *const Fil
     const item = node.element orelse return;
     const base = rowPaint(self.theme, row);
     row.grid.fillRect(@floatFromInt(row.x), @floatFromInt(row.y), @floatFromInt(row.width), 1, base);
-    const indent = node.depth * 2;
-    var col = row.x + @min(indent, row.width -| 1);
+    var col = row.x + @min(2, row.width);
+    const indent_width = (node.depth -| 1) * 2;
+    var indent: usize = 0;
+    while (indent < indent_width and col < row.x + row.width) : (indent += 1) {
+        if (row.render_indent_guides and indent % 2 == 0) {
+            const guide_color = if (self.theme) |theme|
+                theme.color("tree.indentGuidesStroke", .{ 80, 80, 80 })
+            else
+                ui.Color{ .r = 80, .g = 80, .b = 80 };
+            row.grid.putCodepoint(col, row.y, 0x2502, 1, .{
+                .fg = ui.cell.packColor(guide_color),
+                .bg = base.bg,
+            });
+        } else {
+            row.grid.putSpace(col, row.y, base);
+        }
+        col += 1;
+    }
     if (col < row.x + row.width) {
         if (node.has_children) {
             row.grid.putCodepoint(col, row.y, if (node.collapsed) 0x25B8 else 0x25BE, 1, base);
@@ -675,8 +691,24 @@ fn renderOutlineRow(context: *anyopaque, row: *const list_mod.Row, node: *const 
     const item = node.element orelse return;
     const base = rowPaint(self.theme, row);
     row.grid.fillRect(@floatFromInt(row.x), @floatFromInt(row.y), @floatFromInt(row.width), 1, base);
-    const indent = node.depth * 2;
-    var col = row.x + @min(indent, row.width -| 1);
+    var col = row.x + @min(2, row.width);
+    const indent_width = (node.depth -| 1) * 2;
+    var indent: usize = 0;
+    while (indent < indent_width and col < row.x + row.width) : (indent += 1) {
+        if (row.render_indent_guides and indent % 2 == 0) {
+            const guide_color = if (self.theme) |theme|
+                theme.color("tree.indentGuidesStroke", .{ 80, 80, 80 })
+            else
+                ui.Color{ .r = 80, .g = 80, .b = 80 };
+            row.grid.putCodepoint(col, row.y, 0x2502, 1, .{
+                .fg = ui.cell.packColor(guide_color),
+                .bg = base.bg,
+            });
+        } else {
+            row.grid.putSpace(col, row.y, base);
+        }
+        col += 1;
+    }
     if (col < row.x + row.width) {
         if (node.has_children) {
             row.grid.putCodepoint(col, row.y, if (node.collapsed) 0x25B8 else 0x25BE, 1, base);

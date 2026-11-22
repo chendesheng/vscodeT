@@ -98,6 +98,11 @@ test "breadcrumbsPicker: file tree expands folders inline" {
     try std.testing.expectEqual(@as(usize, 3), ui.cell.snap(file_picker.rect.x));
     try std.testing.expectEqual(@as(usize, 5), file_picker.arrow_offset);
 
+    // Hovering the tree paints the ancestor guide under the parent's twistie.
+    _ = file_picker.handleMouse(&.{ .kind = .move, .x = 6, .y = 3 });
+    try file_picker.render(&grid);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(6, 3)]);
+
     try std.testing.expect(file_picker.handleKey(&.{ .key = .left }));
     try std.testing.expectEqual(@as(usize, 2), file_picker.count());
 }
