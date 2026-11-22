@@ -190,6 +190,9 @@ Small commits, each with a regression test:
 48. `de4b82d` `tokenForText` builds canonical bracket tokens (upstream
     `BracketTokens.getToken`), reused by the tokenizer; ported the brackets
     Basic case (Verilog/LaTeX families).
+49. `ace3b9e` unmatched-closing checks include colorized-only pairs; the
+    range-query fixture owns its config arrays. Ported unmatched-closing,
+    getBracketsInRange and error-bracket cases.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -260,7 +263,9 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   ported); `textModelTokens.test.ts`, `editableTextModel*.test.ts`,
   `model*.test.ts`. The before-edit mapper, annotations, concat23Trees, and
   the anchor/simple/multiline/find-next/capturing portions of
-  `textModelSearch.test.ts` are ported.
+  `textModelSearch.test.ts` are ported; the remaining
+  `getBracketPairsInRange` cases are the colorized-vs-brackets and
+  background-tokenization variants.
 - Dead/malformed declarations that only compile because they are never
   analyzed: `rbTreeBase.TreeNode.iterate`, `intervalTree` font bit,
   `model.zig` `initModelDecorationOptionsDefaults`.
@@ -278,7 +283,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3109 tests, 19 skipped; the only observed
+The full suite currently passes (3112 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
