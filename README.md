@@ -1922,3 +1922,6 @@ Editor contributions:
   configuration service applies
   language overrides, application/machine scope filtering, and untrusted
   workspace filtering for restricted/unregistered settings.
+
+- There is no notification center: transient errors and messages are shown in
+  the status bar, save/quit dialogs and the terminal status row instead.

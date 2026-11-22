@@ -76,28 +76,28 @@ For each row:
 
 | View | Local | Upstream | Verdict | Evidence / next action |
 |------|-------|----------|---------|------------------------|
-| Activity bar | `vs/workbench/browser/parts/activitybar/activitybarPart.zig` | `workbench/browser/parts/activitybar/activitybarPart.ts` | Pending audit | Glyphs/icons, order/visibility, bottom entries, overflow, hit, context menu. |
-| Composite bar | `vs/workbench/browser/parts/compositeBar.zig` | `workbench/browser/parts/compositeBar.ts` | Pending audit | Model/view split, pinned/unpinned, overflow, badges, menu. |
-| Side bar | `vs/workbench/browser/parts/sidebar/sidebarPart.zig` | `workbench/browser/parts/sidebar/sidebarPart.ts` | Pending audit | Size/position, title, actions/overflow, persistence, focus. |
-| Panel | `vs/workbench/browser/parts/panel/panelPart.zig` | `workbench/browser/parts/panel/panelPart.ts` | Pending audit | Composite tabs, `showLabels`, position, active border, overflow, preferred size. |
-| View panes/container | `vs/workbench/browser/parts/views/viewPane.zig`, `viewPaneContainer.zig` | `workbench/browser/parts/views/viewPane.ts`, `viewPaneContainer.ts` | Pending audit | Real ViewPane vs header painter, split/sash, actions, progress, events, view cap. |
-| Editor part/group/panes | `vs/workbench/browser/parts/editor/editorPart.zig`, `editorGroupView.zig`, `editorPanes.zig`, `editorDropTarget.zig` | same | Pending audit | Group lifecycle/events, watermark, maximize, serialization, split math, drop target. |
-| Editor status | `vs/workbench/browser/parts/editor/editorStatus.zig` | `workbench/browser/parts/editor/editorStatus.ts` | Pending audit | All entries (selection/indent/encoding/EOL/language/info/accessibility/overtype/column/problem), pickers. |
-| Quick input/access | `vs/platform/quickinput/browser/*`, `vs/workbench/browser/quickaccess.zig`, `vs/workbench/contrib/quickaccess/browser/*` | `platform/quickinput/browser/*`, `workbench/browser/quickaccess.ts`, `workbench/contrib/quickaccess/*` | Pending audit | List rows, icons, buttons, keybinding labels, history, theme. |
-| Dialog | `ui/dialog.zig` + save/quit path in `workbench.zig` | `base/browser/ui/dialog/dialog.ts` | Pending audit | Structure vs terminal widget, theme, focus, button order, detail/message. |
+| Activity bar | `vs/workbench/browser/parts/activitybar/activitybarPart.zig` | `workbench/browser/parts/activitybar/activitybarPart.ts` | **P** | Glyphs, order/visibility, bottom entries, hit testing and layout are ported (2 tests); overflow and the context menu remain browser-only/terminal quick-pick gaps. |
+| Composite bar | `vs/workbench/browser/parts/compositeBar.zig` | `workbench/browser/parts/compositeBar.ts` | **P** | Portable model, pinned/unpinned behavior, badges and order are ported (2 tests); the browser composite-bar view, overflow menu and drag/drop are not. |
+| Side bar | `vs/workbench/browser/parts/sidebar/sidebarPart.zig` | `workbench/browser/parts/sidebar/sidebarPart.ts` | **P** | Size/position, one-cell title, focus and persistence are ported (6 tests); title actions/overflow and browser sash behavior are reduced to the terminal layout. |
+| Panel | `vs/workbench/browser/parts/panel/panelPart.zig` | `workbench/browser/parts/panel/panelPart.ts` | **P** | Composite tabs, `showLabels`, position and active border are ported (2 tests); overflow and preferred-size behavior are simplified for cells. |
+| View panes/container | `vs/workbench/browser/parts/views/viewPane.zig`, `viewPaneContainer.zig` | `workbench/browser/parts/views/viewPane.ts`, `viewPaneContainer.ts` | **P** | Terminal header/content painters, actions, progress and event wiring exist, but there are no focused pane tests and the browser split/sash/view-cap behavior is simplified. |
+| Editor part/group/panes | `vs/workbench/browser/parts/editor/editorPart.zig`, `editorGroupView.zig`, `editorDropTarget.zig` | same | **P** | Group lifecycle, split/grid math, panes and drop-target decisions are ported (4+3+3+1 tests); watermark/maximize/serialization and some drop-edge cases remain. |
+| Editor status | `vs/workbench/browser/parts/editor/editorStatus.zig` | `workbench/browser/parts/editor/editorStatus.ts` | **P** | Selection/indent/encoding/EOL/language/problem entries and their pickers are ported; accessibility, overtype and the full status-entry matrix lack focused tests. |
+| Quick input/access | `vs/platform/quickinput/browser/*`, `vs/workbench/browser/quickaccess.zig`, `vs/workbench/contrib/quickaccess/browser/*` | `platform/quickinput/browser/*`, `workbench/browser/quickaccess.ts`, `workbench/contrib/quickaccess/*` | **P** | List rows, filtering, history, keybinding labels and theme are ported; browser buttons/accessibility and some quick-access providers are reduced to terminal pick rows. |
+| Dialog | `ui/dialog.zig` + save/quit path in `workbench.zig` | `base/browser/ui/dialog/dialog.ts` | **P** | Terminal dialog structure, focus and save/quit flows are ported; button order/theme/detail variants lack focused coverage. |
 
 ## Group 4 — workbench content views
 
 | View | Local | Upstream | Verdict | Evidence / next action |
 |------|-------|----------|---------|------------------------|
-| Explorer | `vs/workbench/contrib/files/browser/views/explorerView.zig`, `explorerViewer.zig` | `workbench/contrib/files/browser/views/explorerView.ts`, `explorerViewer.ts` | Pending audit | Tree/renderer/filter, async data tree, DnD, sticky, theme, selection. |
-| Search | `vs/workbench/contrib/search/browser/searchView*.zig`, `searchWidget.zig`, `searchResultsView.zig` | `workbench/contrib/search/browser/*` | Pending audit | Controller/data source/view split, results tree, widget, theme. |
-| SCM / Graph | `vs/workbench/contrib/scm/browser/scmViewPane.zig`, `scmHistoryViewPane.zig`, `quickDiffDecorator.zig` | `workbench/contrib/scm/browser/*` | Pending audit | Documented read-only scope, rendering, theme, hit. |
-| Problems | `vs/workbench/contrib/markers/browser/markersView.zig`, `src/tui/problemsView.zig` | `workbench/contrib/markers/browser/markersView.ts` | Pending audit | Model/view split, filter/tree/context/quick-fix/related, theme. |
-| Terminal panel | `vs/workbench/contrib/terminal/browser/terminalTabbedView.zig`, `terminalRenderer.zig` | `workbench/contrib/terminal/browser/terminalTabbedView.ts` | Pending audit | Tab strip/renderer, theme, selection, focus. |
-| Markdown preview | `vs/workbench/contrib/markdown/browser/*`, `src/tui/markdownPreview.zig` | markdown preview webview | Pending audit | Scroll sync, theme, chrome. |
-| Image preview | `vs/workbench/contrib/mediaPreview/browser/*`, `src/tui/imagePreview.zig` | media preview | Pending audit | Theme, status, zoom, hit. |
-| Notifications | absent | `workbench/browser/parts/notifications/*` | M — decision pending | Confirm absence; backlog decision. |
+| Explorer | `vs/workbench/contrib/files/browser/views/explorerView.zig`, `explorerViewer.zig` | `workbench/contrib/files/browser/views/explorerView.ts`, `explorerViewer.ts` | **P** | Tree/filter/selection and themed rows are ported; async data-tree behavior, DnD, sticky rows and some context actions are simplified. |
+| Search | `vs/workbench/contrib/search/browser/searchView*.zig`, `searchWidget.zig`, `searchResultsView.zig` | `workbench/contrib/search/browser/*` | **P** | Controller/data-source/view split, result tree and widget are ported (2 widget tests); replace-preview and some result-row/action details remain. |
+| SCM / Graph | `vs/workbench/contrib/scm/browser/scmViewPane.zig`, `scmHistoryViewPane.zig`, `quickDiffDecorator.zig` | `workbench/contrib/scm/browser/*` | **P** | Documented read-only scope, themed rows, hit testing and quick-diff decorations are ported (2+3 tests); Git write actions and some graph interactions remain out of scope. |
+| Problems | `vs/workbench/contrib/markers/browser/markersView.zig`, `src/tui/problemsView.zig` | `workbench/contrib/markers/browser/markersView.ts` | **P** | Model/view split, filters, tree, themed severity rows and quick-fix entries are ported (1 test); related information and the browser context menu are omitted. |
+| Terminal panel | `vs/workbench/contrib/terminal/browser/terminalTabbedView.zig`, `terminalRenderer.zig` | `workbench/contrib/terminal/browser/terminalTabbedView.ts` | **P** | Tab strip/renderer, theme, selection and focus are ported (tab + renderer tests); browser terminal services/accessibility remain reduced. |
+| Markdown preview | `vs/workbench/contrib/markdown/browser/*`, `src/tui/markdownPreview.zig` | markdown preview webview | **P** | Scroll sync, themed cell rendering and chrome are ported; the webview’s HTML/CSS/script and in-preview link/action surface are terminal-rendered. |
+| Image preview | `vs/workbench/contrib/mediaPreview/browser/*`, `src/tui/imagePreview.zig` | media preview | **P** | Cell image rendering, status and theme are ported; browser zoom/pan and image context actions are omitted. |
+| Notifications | absent | `workbench/browser/parts/notifications/*` | **T** | Confirmed absent; the terminal routes errors/messages through the status bar and save/quit dialogs instead of a notification center. This is documented as a terminal omission. |
 
 ## Work log
 
@@ -201,6 +201,10 @@ For each row:
 - Audited the remaining editor contributions: suggest (**P**), hover (**P**),
   sticky scroll (**T**), diff (**P**), snippet (**P**) and view zones (**T**,
   overlay/inline substitution). No `M` rows remain in the editor-view section.
+- Audited the workbench and content rows: parts/editor/quick-input/dialog and
+  explorer/search/SCM/Problems/terminal/preview are **P** with their remaining
+  gaps recorded; the absent notification center is **T** (status/dialog
+  substitution). No `M` rows remain in the ledger.
 
 ## Next slice
 
