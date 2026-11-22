@@ -1324,6 +1324,11 @@ fn isCtrlChar(event: input.KeyEvent, wanted: u21) bool {
     };
 }
 
+fn requestViewRender(context: ?*anyopaque) void {
+    const view: *View = @ptrCast(@alignCast(context orelse return));
+    view.invalidate();
+}
+
 fn setViewDecorations(context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void {
     const view: *View = @ptrCast(@alignCast(context orelse return));
     view.setDecorations(decorations) catch {};
@@ -1612,6 +1617,8 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
         .set = setViewDecorations,
     });
     defer find.deinit();
+    find.widget().layout_context = view;
+    find.widget().on_layout = requestViewRender;
     // Keep the search string empty regardless of the seeding default; this
     // test covers the Ctrl-F byte decoder and the widget's open/close state.
     find.setSeedSearchStringFromSelection(.never);
