@@ -14,7 +14,8 @@
 // controls.
 // TUI-specific: the key map (documented in the README), the cell layout, and
 // the absence of the browser sash and accessibility tree. Find and replace
-// input histories are kept host-side and navigated with Up/Down. The browser
+// input histories are kept host-side and navigated with Up/Down.
+// `findOnType`, `closeOnResult` and `loop` are host-resolved options. The browser
 // `FindWidgetViewZone` becomes a terminal top inset: while the bar is visible
 // and `editor.find.addExtraSpaceOnTop` is enabled, the editor reserves the
 // bar's 1-2 rows above line 1 and shifts text/hit testing below it.
@@ -93,6 +94,8 @@ pub const FindWidget = struct {
     history_index: ?usize = null,
     replace_history: std.array_list.Managed([]u8),
     replace_history_index: ?usize = null,
+    find_on_type: bool = true,
+    close_on_result: bool = false,
     theme: Theme = Theme.dark(),
 
     focused: bool = false,
@@ -290,6 +293,34 @@ pub const FindWidget = struct {
 
     pub fn setAddExtraSpaceOnTop(self: *FindWidget, enabled: bool) void {
         self.add_extra_space_on_top = enabled;
+    }
+
+    pub fn setFindOnType(self: *FindWidget, enabled: bool) void {
+        self.find_on_type = enabled;
+    }
+
+    pub fn setCloseOnResult(self: *FindWidget, enabled: bool) void {
+        self.close_on_result = enabled;
+    }
+
+    fn finishNavigation(self: *FindWidget) void {
+        if (self.close_on_result and self.state.current_match != null) self.close();
+    }
+
+    fn navigateNext(self: *FindWidget) void {
+        self.model.moveToNextMatch() catch |err| {
+            self.report(err);
+            return;
+        };
+        self.finishNavigation();
+    }
+
+    fn navigatePrevious(self: *FindWidget) void {
+        self.model.moveToPrevMatch() catch |err| {
+            self.report(err);
+            return;
+        };
+        self.finishNavigation();
     }
 
     /// Upstream `editor.find.addExtraSpaceOnTop` + `_getHeight()`: the find
@@ -553,8 +584,8 @@ pub const FindWidget = struct {
             .whole_word => self.state.change(.{ .whole_word = !self.state.wholeWord() }, true, true),
             .regex => self.state.change(.{ .is_regex = !self.state.isRegex() }, true, true),
             .scope => self.toggleSearchScope(),
-            .prev => self.model.moveToPrevMatch() catch |err| self.report(err),
-            .next => self.model.moveToNextMatch() catch |err| self.report(err),
+            .prev => self.navigatePrevious(),
+            .next => self.navigateNext(),
             .close => self.close(),
             .preserve_case => self.state.change(.{ .preserve_case = !self.state.preserveCase() }, true, true),
             .replace_one => self.model.replace() catch |err| self.report(err),
@@ -578,6 +609,9 @@ pub const FindWidget = struct {
             .enter => {
                 self.recordHistory();
                 self.recordReplaceHistory();
+                if (!self.find_on_type) {
+                    self.state.change(.{ .search_string = self.find_input.getValue() }, true, true);
+                }
                 if (event.mods.ctrl and event.mods.alt) {
                     self.model.replaceAll() catch |err| self.report(err);
                 } else if (event.mods.alt) {
@@ -585,24 +619,24 @@ pub const FindWidget = struct {
                 } else if (event.mods.ctrl) {
                     self.model.replace() catch |err| self.report(err);
                 } else if (event.mods.shift) {
-                    self.model.moveToPrevMatch() catch |err| self.report(err);
+                    self.navigatePrevious();
                 } else if (self.focus_field == .replace) {
                     self.model.replace() catch |err| self.report(err);
                 } else {
-                    self.model.moveToNextMatch() catch |err| self.report(err);
+                    self.navigateNext();
                 }
                 return true;
             },
             .up => {
                 if (self.focus_field == .find and self.navigateHistory(true)) return true;
                 if (self.focus_field == .replace and self.navigateReplaceHistory(true)) return true;
-                self.model.moveToPrevMatch() catch |err| self.report(err);
+                self.navigatePrevious();
                 return true;
             },
             .down => {
                 if (self.focus_field == .find and self.navigateHistory(false)) return true;
                 if (self.focus_field == .replace and self.navigateReplaceHistory(false)) return true;
-                self.model.moveToNextMatch() catch |err| self.report(err);
+                self.navigateNext();
                 return true;
             },
             .char => |ch| {
@@ -814,6 +848,7 @@ fn onBlur(context: ?*anyopaque, _: *ui.FocusEvent) void {
 
 fn onFindChanged(context: ?*anyopaque, value: []const u8) void {
     const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    if (!self.find_on_type) return;
     self.state.change(.{ .search_string = value }, true, true);
 }
 
