@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/tokens/sparseMultilineTokens.ts`.
+//
+// Zig adaptation: the storage keeps `SparseToken` structs instead of a flat
+// `Uint32Array`, and line numbers are `usize` (upstream's empty piece has
+// `endLineNumber === startLineNumber - 1`, which saturates at 0 here).
 const std = @import("std");
 const Io = std.Io;
 const ArrayList = std.array_list.Managed;
@@ -41,11 +46,13 @@ pub const SparseMultilineTokens = struct {
     }
 
     pub fn init(startLineNumber: usize, tokens: SparseMultilineTokensStorage) SparseMultilineTokens {
-        return .{
+        var self = SparseMultilineTokens{
             ._startLineNumber = startLineNumber,
+            ._endLineNumber = startLineNumber -| 1,
             ._tokens = tokens,
-            ._endLineNumber = tokens.addStartLineNumber(startLineNumber),
         };
+        self._updateEndLineNumber();
+        return self;
     }
 
     pub fn deinit(self: *SparseMultilineTokens) void {
@@ -53,11 +60,17 @@ pub const SparseMultilineTokens = struct {
     }
 
     pub fn toString(self: *SparseMultilineTokens) !ArrayList(u8) {
-        return try self._tokens.toString(self._startLineNumber);
+        var out: Io.Writer.Allocating = .init(self._tokens._tokens.allocator);
+        errdefer out.deinit();
+        try self._tokens.toString(&out.writer, self._startLineNumber);
+        return ArrayList(u8).fromOwnedSlice(self._tokens._tokens.allocator, try out.toOwnedSlice());
     }
 
     fn _updateEndLineNumber(self: *SparseMultilineTokens) void {
-        self._endLineNumber = self._tokens.addStartLineNumber(self._startLineNumber);
+        self._endLineNumber = if (self._tokens.getMaxDeltaLine()) |maxDeltaLine|
+            self._startLineNumber + maxDeltaLine
+        else
+            self._startLineNumber -| 1;
     }
 
     pub fn isEmpty(self: *SparseMultilineTokens) bool {
@@ -65,6 +78,7 @@ pub const SparseMultilineTokens = struct {
     }
 
     pub fn getLineTokens(self: *SparseMultilineTokens, lineNumber: usize) ?SparseLineTokens {
+        if (self.isEmpty()) return null;
         if (self._startLineNumber <= lineNumber and lineNumber <= self._endLineNumber) {
             return self._tokens.getLineTokens(lineNumber - self._startLineNumber);
         }
@@ -92,8 +106,12 @@ pub const SparseMultilineTokens = struct {
         if (range.endLineNumber < self._startLineNumber or range.startLineNumber > self._endLineNumber) {
             return null;
         }
-        const startsBefore = range.startLineNumber <= self._startLineNumber;
-        const endsAfter = range.endLineNumber >= self._endLineNumber;
+        // Only a range starting on an earlier line makes the character clamp
+        // irrelevant. A range starting on the piece's first line keeps its
+        // column: upstream passes `range.startColumn - 1` even when it is
+        // greater than 0, and tokens ending before it must survive.
+        const startsBefore = range.startLineNumber < self._startLineNumber;
+        const endsAfter = range.endLineNumber > self._endLineNumber;
         return .{
             .startLineIndex = if (startsBefore) 0 else range.startLineNumber - self._startLineNumber,
             .startCharacter = if (startsBefore) 0 else range.startColumn - 1,
@@ -234,13 +252,6 @@ pub const SparseMultilineTokensStorage = struct {
         try writer.writeAll("]");
     }
 
-    pub fn addStartLineNumber(self: *const SparseMultilineTokensStorage, startLineNumber: usize) usize {
-        if (self.getMaxDeltaLine()) |maxDeltaLine| {
-            return startLineNumber + maxDeltaLine + 1;
-        }
-        return startLineNumber;
-    }
-
     pub fn getMaxDeltaLine(self: *const SparseMultilineTokensStorage) ?usize {
         const tokenCount = self._getTokenCount();
         if (tokenCount == 0) {
@@ -286,6 +297,7 @@ pub const SparseMultilineTokensStorage = struct {
     }
 
     pub fn getLineTokens(self: *const SparseMultilineTokensStorage, deltaLine: usize) ?SparseLineTokens {
+        if (self._getTokenCount() == 0) return null;
         var low: usize = 0;
         var high = self._getTokenCount() - 1;
 
@@ -324,7 +336,6 @@ pub const SparseMultilineTokensStorage = struct {
     pub fn removeTokens(self: *SparseMultilineTokensStorage, startDeltaLine: usize, startChar: usize, endDeltaLine: usize, endChar: usize) usize {
         const tokens = self._tokens.items;
         var newTokenCount: usize = 0;
-        var hasDeletedTokens = false;
         var firstDeltaLine: usize = 0;
         for (tokens) |*token| {
             const tokenDeltaLine = token.deltaLine;
@@ -332,19 +343,22 @@ pub const SparseMultilineTokensStorage = struct {
             const tokenEndCharacter = token.endCharacter;
 
             if ((tokenDeltaLine > startDeltaLine or (tokenDeltaLine == startDeltaLine and tokenEndCharacter >= startChar)) and (tokenDeltaLine < endDeltaLine or (tokenDeltaLine == endDeltaLine and tokenStartCharacter <= endChar))) {
-                hasDeletedTokens = true;
-            } else {
-                if (newTokenCount == 0) {
-                    firstDeltaLine = tokenDeltaLine;
-                }
-                if (hasDeletedTokens) {
-                    // must move the token to the left
-                    token.deltaLine = @intCast(tokenDeltaLine - firstDeltaLine);
-                    token.startCharacter = tokenStartCharacter;
-                    token.endCharacter = tokenEndCharacter;
-                }
-                newTokenCount += 1;
+                // This token is deleted.
+                continue;
             }
+
+            if (newTokenCount == 0) {
+                firstDeltaLine = tokenDeltaLine;
+            }
+            // Compact kept tokens to the left, like upstream's
+            // `destOffset = 4 * newTokenCount` write.
+            tokens[newTokenCount] = .{
+                .deltaLine = @intCast(tokenDeltaLine - firstDeltaLine),
+                .startCharacter = tokenStartCharacter,
+                .endCharacter = tokenEndCharacter,
+                .metadata = token.metadata,
+            };
+            newTokenCount += 1;
         }
 
         self._tokens.items.len = newTokenCount;
@@ -509,11 +523,16 @@ pub const SparseMultilineTokensStorage = struct {
                 unreachable;
             }
 
-            token.deltaLine = tokenDeltaLine;
-            token.startCharacter = tokenStartCharacter;
-            token.endCharacter = tokenEndCharacter;
+            tokens[newTokenCount] = .{
+                .deltaLine = tokenDeltaLine,
+                .startCharacter = tokenStartCharacter,
+                .endCharacter = tokenEndCharacter,
+                .metadata = token.metadata,
+            };
             newTokenCount += 1;
         }
+
+        self._tokens.items.len = newTokenCount;
     }
 
     pub fn acceptInsertText(self: *SparseMultilineTokensStorage, deltaLine: usize, character: usize, eolCount: usize, firstLineLength: usize, lastLineLength: usize, firstCharCode: usize) void {
@@ -598,15 +617,19 @@ pub const SparseMultilineTokensStorage = struct {
         for (0..self._tokens.items.len) |i| {
             const lineNumber = self._getDeltaLine(i) + startLineNumber;
 
-            if (lineNumber > model.getLineCount()) {
+            if (lineNumber < 1) {
+                _rateLimiter.runIfNotLimited({}, struct {
+                    fn run(_: void) void {
+                        std.debug.print("Invalid Semantic Tokens Data From Extension: lineNumber < 1\n", .{});
+                    }
+                }.run);
+            } else if (lineNumber > model.getLineCount()) {
                 _rateLimiter.runIfNotLimited({}, struct {
                     fn run(_: void) void {
                         std.debug.print("Invalid Semantic Tokens Data From Extension: lineNumber > model.getLineCount()\n", .{});
                     }
                 }.run);
-            }
-
-            if (self._getEndCharacter(i) > model.getLineLength(lineNumber)) {
+            } else if (self._getEndCharacter(i) > model.getLineLength(lineNumber)) {
                 _rateLimiter.runIfNotLimited({}, struct {
                     fn run(_: void) void {
                         std.debug.print("Invalid Semantic Tokens Data From Extension: end character > model.getLineLength(lineNumber)\n", .{});
