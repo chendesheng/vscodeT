@@ -2738,7 +2738,7 @@ test "View: content requests text, chrome requests default" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try view.render(&out.writer);
+    try view.renderAnsi(&out.writer);
 
     // Text cells, the empty space after the line, and the content area below
     // the last line all take the browser's I-beam.
