@@ -228,9 +228,9 @@ comptime {
     _ = @import("./vs/editor/common/tokens/contiguousTokensEditing.zig");
     _ = @import("./vs/editor/common/tokens/sparseMultilineTokens.zig");
     _ = @import("./vs/editor/common/tokens/tokenWithTextArray.zig");
-    _ = @import("./vs/editor/test/common/core/lineTokensTests.zig");
+    _ = @import("./vs/editor/test/common/core/lineTokens.test.zig");
     _ = @import("./vs/editor/test/common/port/smokeTests.zig");
-    _ = @import("./vs/editor/test/common/model/tokensStoreTests.zig");
+    _ = @import("./vs/editor/test/common/model/tokensStore.test.zig");
     _ = @import("./vs/editor/test/common/model/editStack.test.zig");
     _ = @import("./vs/editor/test/common/model/modelModesTests.zig");
     _ = @import("./vs/editor/test/common/port/integrationTests.zig");
@@ -353,6 +353,7 @@ comptime {
     _ = @import("./vs/editor/common/languages/language.zig");
     _ = @import("./vs/editor/common/languages/modesRegistry.zig");
     _ = @import("./vs/editor/common/languages/textToHtmlTokenizer.zig");
+    _ = @import("./vs/editor/common/languages/nullTokenize.zig");
     _ = @import("./vs/editor/common/languages/supports/tokenization.zig");
     _ = @import("./vs/editor/common/languages/defaultDocumentColorsComputer.zig");
     _ = @import("./vs/editor/common/commands/replaceCommand.zig");

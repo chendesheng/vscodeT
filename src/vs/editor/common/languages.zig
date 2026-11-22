@@ -110,12 +110,12 @@ test "ILanguageIdCodec: adapts the concrete codec" {
 pub const Token = struct {
     offset: usize,
     type_: []const u8,
-    language: u8,
+    language: []const u8,
 
     pub fn init(
         offset: usize,
         type_: []const u8,
-        language: u8,
+        language: []const u8,
     ) Token {
         return Token{
             .offset = offset,

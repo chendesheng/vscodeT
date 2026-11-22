@@ -1,3 +1,9 @@
+// Port of `src/vs/editor/common/tokens/lineTokens.ts`.
+//
+// Zig adaptations: token pairs are stored as packed `TokenPacked` values
+// rather than a flat `Uint32Array`; `IViewLineTokens` is a tagged union of
+// `LineTokens`/`SliceLineTokens`; and `withInserted` returns a deep copy
+// because Zig values do not have reference identity.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
@@ -33,7 +39,16 @@ pub const LineTokens = struct {
 
     /// Takes ownership of both `tokens` and `text`.
     pub fn init(tokens: ArrayList(TokenPacked), text: ArrayList(u8), decoder: *LanguageIdCodec) LineTokens {
-        std.debug.assert(if (tokens.items.len > 0) tokens.items[tokens.items.len - 1].endOffset == text.items.len else text.items.len == 0);
+        // Upstream reports this through `onUnexpectedError` and keeps going.
+        // There is no global error reporter in the port, so print the same
+        // message instead of failing the assertion.
+        const matches = if (tokens.items.len > 0)
+            tokens.items[tokens.items.len - 1].endOffset == text.items.len
+        else
+            text.items.len == 0;
+        if (!matches) {
+            std.debug.print("Token length and text length do not match!\n", .{});
+        }
         return .{ ._tokens = tokens, ._text = text, .languageIdCodec = decoder };
     }
 
@@ -114,9 +129,13 @@ pub const LineTokens = struct {
     }
 
     pub fn slicedEquals(self: *const LineTokens, other: *const LineTokens, sliceFromTokenIndex: usize, sliceTokenCount: usize) bool {
+        // Upstream compares the whole text and token count first; `===` on
+        // strings is reference identity there, while the port compares the
+        // text content.
         if (!std.mem.eql(u8, self._text.items, other._text.items)) return false;
+        if (self._tokens.items.len != other._tokens.items.len) return false;
         if (sliceFromTokenIndex > self._tokens.items.len) return false;
-        if (sliceFromTokenIndex + sliceTokenCount > other._tokens.items.len) return false;
+        if (sliceTokenCount > self._tokens.items.len - sliceFromTokenIndex) return false;
         for (0..sliceTokenCount) |i| {
             if (self._tokens.items[sliceFromTokenIndex + i] != other._tokens.items[sliceFromTokenIndex + i]) {
                 return false;

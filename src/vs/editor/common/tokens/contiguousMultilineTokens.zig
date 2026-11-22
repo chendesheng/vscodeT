@@ -1,5 +1,10 @@
+// Port of `src/vs/editor/common/tokens/contiguousMultilineTokens.ts`.
+//
+// Zig adaptation: each line is an `ArrayList(TokenPacked)` instead of a raw
+// `Uint32Array`, and serialization goes through `Io.Reader`/`Io.Writer`.
 const std = @import("std");
 const Io = std.Io;
+const native_endian = @import("builtin").cpu.arch.endian();
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 const Range = @import("../core/range.zig").Range;
@@ -9,7 +14,6 @@ const Position = @import("../core/position.zig").Position;
 const ContiguousTokensEditing = @import("./contiguousTokensEditing.zig").ContiguousTokensEditing;
 const TokenPacked = @import("./lineTokens.zig").TokenPacked;
 const LineTokens = @import("./lineTokens.zig").LineTokens;
-const usizeAdd = @import("../../../base/common/utils.zig").usizeAdd;
 
 pub const ContiguousMultilineTokens = struct {
     _startLineNumber: usize,
@@ -43,14 +47,16 @@ pub const ContiguousMultilineTokens = struct {
         }
         var i: usize = 0;
         while (i < count) : (i += 1) {
-            const byteCount: u32 = @bitCast(try buff.takeInt(u32, .big));
+            const byteCount = try buff.takeInt(u32, .big);
             const tokensCount: usize = byteCount / @sizeOf(TokenPacked);
             var tokens = ArrayList(TokenPacked).init(allocator);
             errdefer tokens.deinit();
             var j: usize = 0;
             while (j < tokensCount) : (j += 1) {
-                const offset = try buff.takeInt(u32, .big);
-                const metadata = try buff.takeInt(u32, .big);
+                // Upstream copies the `Uint32Array` bytes verbatim, so the
+                // token payload uses the host endianness (headers stay BE).
+                const offset = try buff.takeInt(u32, native_endian);
+                const metadata = try buff.takeInt(u32, native_endian);
                 try tokens.append(LineTokens.initTokenPacked(offset, @bitCast(metadata)));
             }
             try multilineTokens.append(tokens);
@@ -63,6 +69,7 @@ pub const ContiguousMultilineTokens = struct {
     }
 
     pub fn getEndLineNumber(self: *const ContiguousMultilineTokens) usize {
+        if (self._tokens.items.len == 0) return self._startLineNumber -| 1;
         return self._startLineNumber + self._tokens.items.len - 1;
     }
 
@@ -71,6 +78,7 @@ pub const ContiguousMultilineTokens = struct {
     }
 
     pub fn getLineTokens(self: *const ContiguousMultilineTokens, lineNumber: usize) ?[]TokenPacked {
+        if (lineNumber < self._startLineNumber) return null;
         const index = lineNumber - self._startLineNumber;
         if (index >= self._tokens.items.len) return null;
         if (self._tokens.items[index]) |lineTokens| return lineTokens.items;
@@ -79,7 +87,9 @@ pub const ContiguousMultilineTokens = struct {
 
     pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: []const TokenPacked) !void {
         const allocator = self._tokens.allocator;
-        try self._tokens.append(ArrayList(TokenPacked).fromOwnedSlice(allocator, try allocator.dupe(TokenPacked, lineTokens)));
+        var owned = ArrayList(TokenPacked).fromOwnedSlice(allocator, try allocator.dupe(TokenPacked, lineTokens));
+        errdefer owned.deinit();
+        try self._tokens.append(owned);
     }
 
     pub fn serializeSize(self: *const ContiguousMultilineTokens) !usize {
@@ -98,8 +108,10 @@ pub const ContiguousMultilineTokens = struct {
             const lineTokens = entry orelse return error.NotSupported;
             try destination.writeInt(u32, @intCast(lineTokens.items.len * @sizeOf(TokenPacked)), .big);
             for (lineTokens.items) |token| {
-                try destination.writeInt(u32, token.endOffset, .big);
-                try destination.writeInt(u32, @bitCast(token.metadata), .big);
+                // See `deserialize`: upstream serializes raw `Uint32Array`
+                // bytes, which are host-endian.
+                try destination.writeInt(u32, token.endOffset, native_endian);
+                try destination.writeInt(u32, @bitCast(token.metadata), native_endian);
             }
         }
     }
@@ -188,7 +200,10 @@ pub const ContiguousMultilineTokens = struct {
 
         try ContiguousTokensEditing.deleteEnding(&self._tokens.items[index], position.column - 1);
         ContiguousTokensEditing.insert(&self._tokens.items[index], position.column - 1, firstLineLength);
-        const insert_index = index + 1;
+        // Upstream calls `_insertLines(position.lineNumber, eolCount)`; its
+        // `arrayInsert` appends when the index is past the end, so clamp to
+        // the list length here.
+        const insert_index = @min(position.lineNumber, self._tokens.items.len);
         var i: usize = 0;
         while (i < eolCount) : (i += 1) {
             try self._tokens.insert(insert_index + i, @as(?ArrayList(TokenPacked), null));
