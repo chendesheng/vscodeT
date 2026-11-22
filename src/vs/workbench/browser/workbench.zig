@@ -7893,7 +7893,10 @@ pub const Workbench = struct {
             if (std.mem.eql(u8, active_id, "explorer")) {
                 if (self.sidebar) |sidebar| {
                     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
-                    try sidebar.render(&self.frame.next, content, focused, .{ .show_header = false });
+                    try sidebar.render(&self.frame.next, content, focused, .{
+                        .show_header = false,
+                        .cell_borders = self.part.cell_borders,
+                    });
                 } else {
                     self.renderPlaceholder(content, focused);
                 }

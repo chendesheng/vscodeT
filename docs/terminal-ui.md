@@ -1231,7 +1231,12 @@ Library constraints:
   `workbench.tree.enableStickyScroll` / `stickyScrollMaxItemCount` select the
   behavior. Sticky rows are overlays painted after the list rows through the
   same renderer, so they keep indentation, twisties, icons and compressed
-  labels. There is no retained overlay or scroll event in the terminal view,
+  labels. They use a distinct header tint (`sideBarStickyScroll.background`,
+  falling back to `sideBarSectionHeader.background` and then a derived shade)
+  so they are visible on every terminal; when the host reports cell-border
+  support, the last pinned row also gets a `sideBarStickyScroll.border` bottom
+  border as a cell attribute, which costs no row (the background is the
+  fallback on terminals without the protocol). There is no retained overlay or scroll event in the terminal view,
   so the pinned state is recomputed before every paint. Clicking a pinned row
   reproduces upstream's `handleStickyScrollMouseEvent`: the tree scrolls the
   node below the remaining sticky rows and selects it; a click on the row's

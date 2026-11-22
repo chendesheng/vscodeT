@@ -80,6 +80,42 @@ fn sidebarBackground(palette: ?*const theme_colors_mod.ThemeColors) PaintStyle {
         .{};
 }
 
+/// Background for pinned sticky rows. Upstream's `sideBarStickyScroll
+/// .background` defaults to the side bar background, so fall back to the
+/// section-header tint (and finally a derived shade) when the theme does not
+/// separate the two. This keeps the pinned rows visible on terminals without
+/// cell-border support, where the bottom border cannot be drawn.
+fn stickyRowBackground(palette: ?*const theme_colors_mod.ThemeColors) ui.Color {
+    const theme = palette orelse return .{ .r = 42, .g = 45, .b = 46 };
+    const side_bar = theme.color("sideBar.background", .{ 30, 30, 33 });
+    const sticky = theme.colorOr("sideBarStickyScroll.background", side_bar);
+    if (!colorsEqual(sticky, side_bar)) return sticky;
+    const section_header = theme.colorOr("sideBarSectionHeader.background", .{ .r = 38, .g = 38, .b = 42 });
+    if (!colorsEqual(section_header, side_bar)) return section_header;
+    return shiftColor(side_bar, 12);
+}
+
+fn stickyScrollBorderColor(palette: ?*const theme_colors_mod.ThemeColors) ui.Color {
+    const theme = palette orelse return .{ .r = 70, .g = 70, .b = 70 };
+    return theme.color("sideBarStickyScroll.border", .{ 70, 70, 70 });
+}
+
+fn colorsEqual(a: ui.Color, b: ui.Color) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b;
+}
+
+/// Lightens dark colors and darkens light colors so the derived sticky
+/// background always differs from the side bar background.
+fn shiftColor(color: ui.Color, amount: i16) ui.Color {
+    const luminance = @divTrunc(@as(i32, color.r) * 299 + @as(i32, color.g) * 587 + @as(i32, color.b) * 114, 1000);
+    const delta: i32 = if (luminance < 128) amount else -amount;
+    return .{
+        .r = @intCast(std.math.clamp(@as(i32, color.r) + delta, 0, 255)),
+        .g = @intCast(std.math.clamp(@as(i32, color.g) + delta, 0, 255)),
+        .b = @intCast(std.math.clamp(@as(i32, color.b) + delta, 0, 255)),
+    };
+}
+
 pub const Action = union(enum) {
     none,
     handled,
@@ -90,6 +126,10 @@ pub const Action = union(enum) {
 /// workbench renders the content without the view's own section header.
 pub const RenderOptions = struct {
     show_header: bool = true,
+    /// The terminal accepted the cell-border protocol. Sticky rows then get a
+    /// bottom border as a cell attribute (no extra row); otherwise the row
+    /// background alone distinguishes them.
+    cell_borders: bool = false,
 };
 
 /// One async directory listing. It owns only the raw entry data; the tree item
@@ -662,6 +702,9 @@ pub const Sidebar = struct {
             .w = @floatFromInt(list_width),
             .h = @floatFromInt(rows),
         });
+        if (options.cell_borders) {
+            renderStickyScrollBorder(self, grid, x, y + self.header_rows, list_width, rows);
+        }
 
         if (show_scrollbar) {
             const scrollbar_x = x + width - 1;
@@ -693,6 +736,41 @@ pub const Sidebar = struct {
         }
     }
 };
+
+/// Port of upstream's `treeStickyScrollBorder` list style: the sticky
+/// container's bottom border. The terminal draws it as a cell-border attribute
+/// on the last pinned row, so it costs no row. Terminals without the protocol
+/// fall back to the sticky row background.
+fn renderStickyScrollBorder(
+    self: *Sidebar,
+    grid: *CellGrid,
+    list_x: usize,
+    list_y: usize,
+    list_width: usize,
+    rows: usize,
+) void {
+    const sticky_nodes = self.tree.stickyScrollNodes();
+    if (sticky_nodes.len == 0 or list_width == 0 or rows == 0) return;
+
+    var visible_bottom: f64 = 0;
+    for (sticky_nodes) |sticky| {
+        if (sticky.position >= @as(f64, @floatFromInt(rows))) continue;
+        visible_bottom = @max(visible_bottom, @floor(sticky.position + sticky.height));
+    }
+    if (visible_bottom <= 0) return;
+
+    const row_offset: usize = @min(@as(usize, @intFromFloat(visible_bottom)) - 1, rows - 1);
+    const stroke = ui.cell_border.Stroke{
+        .width = 16,
+        .color = .{ .rgb = stickyScrollBorderColor(self.theme) },
+        .placement = .centered,
+        .layer = .below_text,
+    };
+    var col = list_x;
+    while (col < list_x + list_width) : (col += 1) {
+        grid.addBorder(col, list_y + row_offset, ui.cell_border.Segment.bottom, stroke);
+    }
+}
 
 fn filterItem(context: *anyopaque, item: ?*ExplorerItem, parent_visibility: tree.TreeVisibility) tree.TreeVisibility {
     if (parent_visibility == .hidden) return .hidden;
@@ -818,6 +896,10 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
             .fg = ui.cell.packColor(palette.color("sideBar.foreground", .{ 190, 190, 190 })),
             .bg = row_background,
         };
+    }
+
+    if (row.sticky and !sticky_highlight) {
+        paint.bg = ui.cell.packColor(stickyRowBackground(sidebar.theme));
     }
 
     if (sticky_highlight) {
@@ -1739,4 +1821,85 @@ test "explorer tree sidebar: sticky headers honor the tree settings" {
     try disabled_sidebar.revealPath(deep);
     try disabled_sidebar.render(&disabled_grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
     try std.testing.expectEqual(@as(usize, 0), disabled_sidebar.tree.stickyScrollNodes().len);
+}
+
+test "explorer tree sidebar: sticky rows use a header tint and bottom cell border" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const color_theme = @import("../../../../services/themes/common/colorThemeData.zig");
+    const color_utils = @import("../../../../../platform/theme/common/colorUtils.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "aaa/bbb/ccc");
+    var file_a = try tmp.dir.createFile(io, "aaa/a.txt", .{});
+    try file_a.writeStreamingAll(io, "a");
+    file_a.close(io);
+    var file_b = try tmp.dir.createFile(io, "aaa/bbb/b.txt", .{});
+    try file_b.writeStreamingAll(io, "b");
+    file_b.close(io);
+    for (0..12) |i| {
+        var name_buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "aaa/bbb/ccc/f{d:0>2}.txt", .{i});
+        var file = try tmp.dir.createFile(io, name, .{});
+        try file.writeStreamingAll(io, "x");
+        file.close(io);
+    }
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test", &.{
+        .{ "sideBar.background", "#101010" },
+        .{ "sideBarSectionHeader.background", "#202020" },
+        .{ "sideBarStickyScroll.border", "#abcdef" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+    sidebar.setThemeColors(&palette);
+
+    var grid = try ui.CellGrid.init(allocator, 32, 8);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+
+    const deep = try std.fs.path.join(allocator, &.{ root, "aaa", "bbb", "ccc", "f11.txt" });
+    defer allocator.free(deep);
+    try sidebar.revealPath(deep);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+    try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
+
+    // Pinned rows use the section-header tint, while a normal row keeps the
+    // side bar background.
+    const sticky_bg = ui.cell.packColor(palette.color("sideBarSectionHeader.background", .{ 0, 0, 0 }));
+    const side_bar_bg = ui.cell.packColor(palette.color("sideBar.background", .{ 0, 0, 0 }));
+    try std.testing.expectEqual(sticky_bg, grid.bg[grid.index(0, 0)]);
+    try std.testing.expectEqual(sticky_bg, grid.bg[grid.index(0, 2)]);
+    try std.testing.expectEqual(side_bar_bg, grid.bg[grid.index(0, 3)]);
+
+    // Without the cell-border protocol there is no border (the background is
+    // the fallback). With it, the last pinned row carries a bottom border on
+    // its existing cells, so no extra row is used.
+    try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 2));
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{
+        .show_header = false,
+        .cell_borders = true,
+    });
+    const border = grid.borderSetAt(0, 2);
+    try std.testing.expect(border.count > 0);
+    var has_bottom = false;
+    for (border.groups[0..border.count]) |group| {
+        if (group.mask & ui.cell_border.Segment.bottom != 0) has_bottom = true;
+    }
+    try std.testing.expect(has_bottom);
+    try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 3));
 }

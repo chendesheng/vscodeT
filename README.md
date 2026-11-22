@@ -593,7 +593,12 @@ console API for raw mode, sizing and input polling.
   pixel unit). Sticky scroll is ported from the generic tree (not an Explorer
   special case): as the file tree scrolls, the folder ancestors of the first
   visible row pin above it, and overflow chains collapse into one compressed
-  row through `CompressibleStickyScrollDelegate`.
+  row through `CompressibleStickyScrollDelegate`. Pinned rows use a distinct
+  header tint (`sideBarStickyScroll.background`, then
+  `sideBarSectionHeader.background`, then a derived shade) and, on terminals
+  that speak the cell-border protocol, a bottom border drawn as a cell
+  attribute on the last pinned row, so the separator costs no extra row.
+  Terminals without cell borders fall back to the background difference.
   `workbench.tree.enableStickyScroll` (default on) and
   `workbench.tree.stickyScrollMaxItemCount` (default 7) are read when the
   Explorer is created. `Tab` focuses the sticky widget (the TUI key for
