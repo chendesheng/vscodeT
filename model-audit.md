@@ -137,6 +137,20 @@ Small commits, each with a regression test:
     event releases per-line arrays.
 22. `746dd42` find-next returns null after the two line-by-line scans; the
     middle-line loop stops at the result limit.
+23. `7b01abd` decoration options are normalized (stickiness/zIndex/lineHeight
+    clamp) at insertion and option changes.
+24. `cfe655d` bracket matching is case-insensitive with upstream `\b`
+    boundaries and token-end clamping; ported the randomized
+    combineTextEditInfos test (50 seeds).
+25. `2b654d8` ported the length and smallImmutableSet test suites.
+26. `9ad3231` ported the getBracketPairsInRange Basic cases with an
+    annotated-position helper.
+27. `3830ce3` ported the piece-tree CRLF cases and a 500-step seeded random
+    CR/LF insert/delete test.
+28. `092ffa3` attached views follow upstream ownership: `detachView` leaves
+    the allocation to the caller.
+29. `e06d22f` bracket-id set overflow is a typed error instead of a silent
+    dropped bit.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -176,19 +190,18 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   keeps `
 `; RTL/unusual-terminator checks inspect only the new chunk;
   factory/create ownership allows a second `create` to alias the same chunks.
-- `textModel`: `changeDecorations` accessor methods are private and unused;
-  raw-content injected-text slices reference short-lived buffers;
-  `onWillDispose` is never fired and there is no disposed guard;
-  `_deltaDecorationsImpl` never normalizes options; `MultiModelEditStackElement`
-  and `split()` are unreachable and would double-free if wired.
-- `tokens`: non-stabilized visible-range refresh has no 50 ms scheduler;
-  attached views are destroyed by `AttachedViews` even though upstream lets the
-  consumer own them; `tokenizeHeuristically`/`forceTokenizeRange` callers still
-  have scheduler-specific differences; `onDidChangeFontTokens` is absent.
-- `bracketPairsTree`: `SmallImmutableSet` silently drops ids ≥ 256;
-  `colorizedBracketPairsDecorationProvider` still returns no decorations
-  while dirty (documented terminal adaptation) and uses hashed ids unless
-  cached.
+- `textModel`: there is no disposed guard on public members;
+  `MultiModelEditStackElement` and `split()` are unreachable and would
+  double-free if wired; class-name cleaning/tooltip encoding in decoration
+  normalization remain unported.
+- `tokens`: non-stabilized visible-range refresh has no 50 ms scheduler (the
+  TUI drives refresh); `tokenizeHeuristically`/`forceTokenizeRange` callers
+  still have scheduler-specific differences; `onDidChangeFontTokens` is
+  absent.
+- `bracketPairsTree`: `SmallImmutableSet` is still inline (ids 0..255) and
+  reports `BracketSetOverflow` rather than implementing upstream's
+  `additionalItems`; `colorizedBracketPairsDecorationProvider` returns no
+  decorations while dirty (documented terminal adaptation).
 - `editStack`: `split()` copies heap-owning elements; `heapSize` contains a
   JS-specific overhead constant; the multi-model/delegate path is unreachable.
 - `annotations`: serialization (`ISerializedAnnotation`, `serialize`,
@@ -225,7 +238,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3034 tests, 19 skipped; the only observed
+The full suite currently passes (3047 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
