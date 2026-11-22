@@ -13,7 +13,8 @@
 // replace toggle/previous/next/close/preserve-case/replace/replace-all
 // controls.
 // TUI-specific: the key map (documented in the README), the cell layout, and
-// the absence of the browser sash, input history and accessibility tree. The
+// the absence of the browser sash and accessibility tree. Find-input history
+// is kept host-side and navigated with Up/Down. The
 // browser `FindWidgetViewZone` becomes a terminal top inset: while the bar is
 // visible and `editor.find.addExtraSpaceOnTop` is enabled, the editor reserves
 // the bar's 1-2 rows above line 1 and shifts text/hit testing below it. Ctrl-H cannot be used for replace because terminals report it as
@@ -86,6 +87,9 @@ pub const FindWidget = struct {
 
     find_input: ui.InputBox,
     replace_input: ui.InputBox,
+    /// `IHistory<string>` for the find input, most-recent last.
+    history: std.array_list.Managed([]u8),
+    history_index: ?usize = null,
     theme: Theme = Theme.dark(),
 
     focused: bool = false,
@@ -113,6 +117,7 @@ pub const FindWidget = struct {
             .model = model,
             .find_input = ui.InputBox.init(allocator),
             .replace_input = ui.InputBox.init(allocator),
+            .history = std.array_list.Managed([]u8).init(allocator),
         };
         self.find_input.placeholder = "Find";
         self.find_input.color = foreground;
@@ -148,9 +153,50 @@ pub const FindWidget = struct {
     }
 
     pub fn deinit(self: *FindWidget) void {
+        for (self.history.items) |entry| self.allocator.free(entry);
+        self.history.deinit();
         self.find_input.deinit();
         self.replace_input.deinit();
         self.allocator.destroy(self);
+    }
+
+    fn recordHistory(self: *FindWidget) void {
+        const value = self.find_input.getValue();
+        if (value.len == 0) return;
+        if (self.history.items.len > 0 and
+            std.mem.eql(u8, self.history.items[self.history.items.len - 1], value))
+        {
+            return;
+        }
+        const copy = self.allocator.dupe(u8, value) catch return;
+        self.history.append(copy) catch {
+            self.allocator.free(copy);
+            return;
+        };
+        if (self.history.items.len > 20) {
+            const oldest = self.history.orderedRemove(0);
+            self.allocator.free(oldest);
+        }
+        self.history_index = null;
+    }
+
+    fn navigateHistory(self: *FindWidget, backwards: bool) bool {
+        if (self.history.items.len == 0) return false;
+        var index = self.history_index orelse self.history.items.len;
+        if (backwards) {
+            if (index == 0) return true;
+            index -= 1;
+        } else {
+            if (index + 1 >= self.history.items.len) {
+                self.history_index = null;
+                self.find_input.clear() catch {};
+                return true;
+            }
+            index += 1;
+        }
+        self.history_index = index;
+        self.find_input.setValue(self.history.items[index]) catch {};
+        return true;
     }
 
     pub fn interface(self: *FindWidget) editorBrowser.IOverlayWidget {
@@ -188,6 +234,7 @@ pub const FindWidget = struct {
     }
 
     pub fn close(self: *FindWidget) void {
+        self.recordHistory();
         self.focused = false;
         self.hover_control = null;
         self.bar_root = null;
@@ -483,6 +530,7 @@ pub const FindWidget = struct {
                 return true;
             },
             .enter => {
+                self.recordHistory();
                 if (event.mods.ctrl and event.mods.alt) {
                     self.model.replaceAll() catch |err| self.report(err);
                 } else if (event.mods.alt) {
@@ -499,10 +547,12 @@ pub const FindWidget = struct {
                 return true;
             },
             .up => {
+                if (self.focus_field == .find and self.navigateHistory(true)) return true;
                 self.model.moveToPrevMatch() catch |err| self.report(err);
                 return true;
             },
             .down => {
+                if (self.focus_field == .find and self.navigateHistory(false)) return true;
                 self.model.moveToNextMatch() catch |err| self.report(err);
                 return true;
             },

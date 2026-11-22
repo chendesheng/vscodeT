@@ -1179,8 +1179,9 @@ Library constraints:
   scrolling, enable/disable, and the upstream
   `select`/`getSelection`/`isSelectionAtEnd`/`insertAtCursor` shape.
   Placeholder, `on_change`/`on_enter`/`on_escape` and the block caret are
-  unchanged. Up/Down and Tab stay host-owned; history, validation messages and
-  action bars remain host concerns. Terminal limits: no double-click word
+  unchanged. Up/Down and Tab stay host-owned; the find widget owns its search
+  history, other input validation/history stays host-owned, and action bars
+  remain host concerns. Terminal limits: no double-click word
   selection (reports carry no click counts) and no grapheme/IME segmentation.
 - `src/vs/editor/contrib/find/browser/replacePattern.zig` and
   `src/vs/base/common/search.zig` port the replace-string parser and
