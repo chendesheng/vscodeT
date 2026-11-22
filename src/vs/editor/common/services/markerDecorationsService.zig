@@ -203,6 +203,14 @@ pub const MarkerDecorationsService = struct {
         }
     }
 
+    /// Port of `IMarkerDecorationsService.getMarker`: resolves the marker a
+    /// marker decoration was created for, which the hover participant uses to
+    /// render the diagnostic popup.
+    pub fn getMarker(self: *MarkerDecorationsService, model: *TextModel, decoration_id: u64) ?*Marker {
+        const entry = self.entryFor(model) orelse return null;
+        return entry.decorations.by_decoration.get(decoration_id);
+    }
+
     fn entryFor(self: *MarkerDecorationsService, model: *TextModel) ?*ModelEntry {
         for (self.models.items) |entry| {
             if (entry.model == model) return entry;

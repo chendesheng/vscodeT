@@ -35,6 +35,7 @@ const languages = @import("../../../../editor/common/languages.zig");
 const hoverTypes = @import("../../../../editor/contrib/hover/browser/hoverTypes.zig");
 const ContentHoverController = @import("../../../../editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
 const MarkdownHoverParticipant = @import("../../../../editor/contrib/hover/browser/markdownHoverParticipant.zig").MarkdownHoverParticipant;
+const MarkerHoverParticipant = @import("../../../../editor/contrib/hover/browser/markerHoverParticipant.zig").MarkerHoverParticipant;
 const WordHighlighterContribution = @import("../../../../editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
 const SuggestController = @import("../../../../editor/contrib/suggest/browser/suggestController.zig").SuggestController;
 const WordBasedCompletionProvider = @import("../../../../editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
@@ -651,7 +652,8 @@ pub const Controllers = struct {
     hover_provider: TuiHoverProvider,
     hover_providers: [1]languages.HoverProvider,
     hover_participant: MarkdownHoverParticipant,
-    participants: [1]hoverTypes.IEditorHoverParticipant,
+    marker_hover_participant: MarkerHoverParticipant,
+    participants: [2]hoverTypes.IEditorHoverParticipant,
     hover: *ContentHoverController,
     word_highlighter: *WordHighlighterContribution,
     word_provider: WordBasedCompletionProvider,
@@ -736,7 +738,16 @@ pub const Controllers = struct {
             MarkdownHoverParticipant.init(allocator, editor.model, &self.hover_providers);
         errdefer self.hover_participant.deinit();
         self.setThemeColors(view.theme_colors);
-        self.participants = .{self.hover_participant.interface()};
+        self.marker_hover_participant = MarkerHoverParticipant.init(
+            allocator,
+            editor.model,
+            editor.marker_decorations,
+        );
+        errdefer self.marker_hover_participant.deinit();
+        self.participants = .{
+            self.marker_hover_participant.interface(),
+            self.hover_participant.interface(),
+        };
 
         self.hover = try ContentHoverController.init(allocator, editor.model, &self.participants, .{}, .{
             .context = view,
@@ -787,6 +798,7 @@ pub const Controllers = struct {
 
     pub fn attachLanguageRegistry(self: *Controllers, features: *LanguageFeaturesService) void {
         self.hover_participant.registry = &features.hover_provider;
+        self.marker_hover_participant.marker_decorations = self.view.editor.marker_decorations;
         self.suggest.model.registry = &features.completion_provider;
         if (self.hover_registration == null) {
             self.hover_registration = features.hover_provider.register(
@@ -803,6 +815,7 @@ pub const Controllers = struct {
         self.suggest.deinit();
         self.word_highlighter.deinit();
         self.hover.deinit();
+        self.marker_hover_participant.deinit();
         self.hover_participant.deinit();
         self.hover_provider.deinit();
         self.find.deinit();

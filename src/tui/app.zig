@@ -1719,8 +1719,14 @@ test "app: hover coordinate host uses the wrapped segment start" {
     defer view.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), viewModelColumnAtViewLineStart(view, Position.init(1, 3)));
-    // `dddd` wraps to the second view line, which starts at model column 16.
-    try std.testing.expectEqual(@as(usize, 16), viewModelColumnAtViewLineStart(view, Position.init(1, 18)));
+    // The final word wraps to the second view line. The gutter width decides
+    // where the break lands, so derive the expected column from the view line
+    // data instead of hard-coding a text-area width.
+    const wrapped = editor.viewPositionOfModelPosition(Position.init(1, 18));
+    try std.testing.expect(wrapped.lineNumber > 1);
+    const wrapped_data = try editor.viewLineData(wrapped.lineNumber);
+    const expected_column = editor.modelColumnOfViewPosition(wrapped.lineNumber, wrapped_data.minColumn);
+    try std.testing.expectEqual(expected_column, viewModelColumnAtViewLineStart(view, Position.init(1, 18)));
 }
 
 test "app: hovering a word shows the rendered markdown hover" {

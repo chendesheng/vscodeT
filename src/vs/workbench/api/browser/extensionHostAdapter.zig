@@ -2094,14 +2094,14 @@ test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "broken.js", .data =
+    try tmp.dir.writeFile(io, .{ .sub_path = "broken.cjs", .data =
         \\function f() {
         \\    return 1;
         \\}
         \\
     });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_length = try tmp.dir.realPathFile(io, "broken.js", &path_buffer);
+    const path_length = try tmp.dir.realPathFile(io, "broken.cjs", &path_buffer);
 
     var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
     defer workbench.deinit();
@@ -2140,6 +2140,8 @@ test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
 
     const deadline = time_compat.milliTimestamp() + 60_000;
     var found_error = false;
+    var marker_line: u32 = 0;
+    var marker_column: u32 = 0;
     while (!found_error and time_compat.milliTimestamp() < deadline) {
         _ = extension_host.pump();
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -2148,12 +2150,25 @@ test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
         for (list) |marker| {
             if (marker.severity == markers_mod.MarkerSeverity.Error) {
                 found_error = true;
+                marker_line = marker.start_line_number;
+                marker_column = marker.start_column;
                 break;
             }
         }
         if (!found_error) time_compat.sleepMillis(20);
     }
     try std.testing.expect(found_error);
+
+    // The same marker feeds the workbench hover: moving the caret into the
+    // diagnostic range and opening the hover (the `gh` path) must show the
+    // severity/message rows.
+    try tab.ensureControllers();
+    try tab.editor.setCursorPosition(Position.init(marker_line, marker_column));
+    try std.testing.expect(try workbench.showHover());
+    const controllers = tab.controllers orelse return error.TestUnexpectedResult;
+    try std.testing.expect(controllers.hover.isVisible());
+    const content = controllers.hover.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, content, "Error:") != null);
 }
 
 test "Extensions: showDocument applies a line selection" {

@@ -447,12 +447,14 @@ comptime {
     _ = @import("./vs/workbench/contrib/mediaPreview/test/common/mediaPreview.test.zig");
     _ = @import("./vs/workbench/contrib/mediaPreview/test/common/mediaImage.test.zig");
     _ = @import("./vs/editor/contrib/hover/browser/markdownHoverParticipant.zig");
+    _ = @import("./vs/editor/contrib/hover/browser/markerHoverParticipant.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverStatusBar.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverRendered.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverWidget.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverWidgetWrapper.zig");
     _ = @import("./vs/editor/contrib/hover/browser/contentHoverController.zig");
     _ = @import("./vs/editor/contrib/hover/test/browser/contentHover.test.zig");
+    _ = @import("./vs/editor/contrib/hover/test/browser/markerHoverParticipant.test.zig");
     _ = @import("./vs/editor/contrib/wordHighlighter/browser/highlightDecorations.zig");
     _ = @import("./vs/editor/contrib/wordHighlighter/browser/textualHighlightProvider.zig");
     _ = @import("./vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig");

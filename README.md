@@ -425,7 +425,9 @@ implementation, type definition, references, document symbols, code actions and
 document/range/on-type formatting register in `LanguageFeaturesService`, and
 diagnostics feed the marker service, which paints severity-colored squiggly
 range underlines, overview-ruler marks, the `Problems` panel view and the workspace
-error/warning/info status counts. Selecting a problem highlights its code range
+error/warning/info status counts. Hovering a squiggle (or `gh` with the caret in
+the range) shows the severity and marker message in the content-hover popup.
+Selecting a problem highlights its code range
 in the editor while the Problems view owns focus. Hover, completion, the
 navigation actions, breadcrumb symbols and document formatting are wired to the
 terminal editor. Code-action providers are transported but have no TUI command
@@ -1463,23 +1465,28 @@ Editor contributions:
   parsed by the pinned `taggon/markdown-zig` CommonMark + GFM parser (commit
   `85bcc67`, MIT) and rendered to styled cells by
   `markdownTerminalRenderer.zig`; tables, nested/task lists, setext and indented code, autolinks and reference
-  links are supported. The hovered range is painted through the same
-  `LineDecoration.filter`/`extractWrapped` path as find and bracket highlights
-  (`hoverHighlight`). The app registers a TUI-local provider
+  links are supported. The marker participant resolves marker decorations
+  through `MarkerDecorationsService.getMarker` and renders the severity glyph,
+  diagnostic message, and dim `source(code)` line, so hovering a squiggle and
+  `gh` both show the error in the popup. The hovered range is painted through
+  the same `LineDecoration.filter`/`extractWrapped` path as find and bracket
+  highlights (`hoverHighlight`). The app registers a TUI-local provider
   (`src/vs/editor/contrib/hover/browser/terminalHoverProvider.zig`) that reports the word, language and token type,
   because VS Code gets hover contents from language extensions. Not ported,
   each because the corresponding infrastructure has no terminal counterpart:
-  marker/glyph/color-picker/inlay-hint hover participants (no marker service,
-  glyph margin, color picker or inlay hints), hover verbosity actions (no
-  command/keybinding service), the copy button (no clipboard plumbing),
-  accessible hover views (no screen-reader/accessible-view service),
-  horizontal scrolling, status-bar actions (the bar renders
-  labels but no participant adds one), and a keyboard "show hover" command
-  (no hover action is wired to the keybinding host yet). Hover over the empty area *after* a line needs
-  sub-cell horizontal distances, so only a zero-cell distance (the first cell
-  past the text) anchors a hover. Mouse leave is inferred from motion over the
-  gutter, the status row or another widget; a pointer that leaves the terminal
-  window without another event leaves the hover visible until the next input.
+  glyph/color-picker/inlay-hint hover participants (no glyph margin, color
+  picker or inlay hints), marker related-information links and quick-fix /
+  "View Problem" status-bar actions (no code-action controller), hover
+  verbosity actions (no command/keybinding service), the copy button (no
+  clipboard plumbing), accessible hover views (no screen-reader/accessible-view
+  service), horizontal scrolling, and participant-supplied status-bar actions
+  (the bar renders labels but no participant adds one). Keyboard `gh` opens the
+  hover through `editor.action.showHover`. Hover over the empty area *after* a
+  line needs sub-cell horizontal distances, so only a zero-cell distance (the
+  first cell past the text) anchors a hover. Mouse leave is inferred from
+  motion over the gutter, the status row or another widget; a pointer that
+  leaves the terminal window without another event leaves the hover visible
+  until the next input.
   A focused hover returns the keyboard to the editor with Tab, and Escape
   closes it. The read-only `--preview` mode does not wire the hover
   contribution.

@@ -431,6 +431,26 @@ pub const ViewLine = struct {
             _ = try line.appendChild(node);
         }
 
+        // Overlay decorations can cover cells past the final text run, such as
+        // a collapsed marker reported at the end of a line. There is no glyph
+        // to style there, so paint a styled space to carry the underline.
+        var tail = cell;
+        const trailing_part = view_line_renderer.RenderedPart{ .text = " ", .foreground = 0 };
+        while (tail < options.flags.len) : (tail += 1) {
+            const flag = options.flags[tail];
+            if (flag == 0) continue;
+            var end = tail + 1;
+            while (end < options.flags.len and options.flags[end] == flag) : (end += 1) {}
+            const count = end - tail;
+            const spaces_text = try doc.arena.allocator().alloc(u8, count);
+            @memset(spaces_text, ' ');
+            const trailing = try doc.createTextBorrowed(spaces_text);
+            const style = try style_fn.apply(style_fn.context, trailing_part, flag);
+            trailing.setPaintRef(style);
+            _ = try line.appendChild(trailing);
+            tail = end - 1;
+        }
+
         if (options.folded_ellipsis) {
             // `inline-folded` after-content, painted at the end of the text
             // and outside the selectable line width.

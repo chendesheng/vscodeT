@@ -14862,3 +14862,50 @@ test "Workbench: inactive breadcrumbs reuse a persistent control" {
     try std.testing.expectEqual(@as(usize, 1), workbench.breadcrumbs_inactive.count());
     try std.testing.expectEqual(first, workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?);
 }
+
+test "Workbench: hover shows the marker message" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "hover-diagnostic.txt", "one\ntwo\nthree");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 16);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.enableLanguageFeatures();
+    const service = workbench.marker_service orelse return error.TestUnexpectedResult;
+    const tab = workbench.activeTab() orelse return error.TestExpectedTab;
+
+    var resource = markers_mod.Resource.fromUri(allocator, tab.editor.model.uri()) catch return error.TestUnexpectedResult;
+    defer resource.deinit(allocator);
+    try service.changeOne("test", resource, &.{
+        .{
+            .severity = markers_mod.MarkerSeverity.Error,
+            .message = "boom",
+            .source = "test",
+            .start_line_number = 2,
+            .start_column = 1,
+            .end_line_number = 2,
+            .end_column = 4,
+        },
+    }, null);
+
+    try tab.editor.setCursorPosition(Position.init(2, 2));
+    try std.testing.expect(try workbench.showHover());
+    const controllers = tab.controllers orelse return error.TestUnexpectedResult;
+    try std.testing.expect(controllers.hover.isVisible());
+    const content = controllers.hover.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, content, "Error: boom") != null);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const rendered = try frameText(allocator, &workbench.frame);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "boom") != null);
+}

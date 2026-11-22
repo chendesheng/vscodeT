@@ -592,7 +592,16 @@ pub const TerminalViewHost = struct {
         const editor = self.editor;
 
         const line_width = self.getLineWidth(view_line);
-        const flags = try self.allocator.alloc(u32, @max(line_width, 1));
+        // Keep one extra flag cell for a collapsed marker just past the last
+        // rendered glyph (for example a missing `}` reported at end of line).
+        // ViewLine paints those cells as underlined spaces because they have
+        // no text run of their own.
+        var flags_len = @max(line_width, 1);
+        for (self.decorationsForLine(view_line)) |decoration| {
+            const range = decoration.cell_range orelse continue;
+            flags_len = @max(flags_len, @min(range.end, args.width_cells));
+        }
+        const flags = try self.allocator.alloc(u32, flags_len);
         errdefer self.allocator.free(flags);
         @memset(flags, 0);
 
