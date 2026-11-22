@@ -4,9 +4,9 @@
 // - The repository map is an ordered list of local-path providers (one Git
 //   repository per workspace folder in this milestone); resource lookups use
 //   the upstream longest-root match on filesystem paths.
-// - Context keys, storage-backed input history, validation and the history
-//   provider are outside the read-only terminal scope and are not ported. The
-//   minimal `SCMInput` keeps the value/enablement/visibility shape.
+// - Context keys, storage-backed input history and validation are not ported.
+//   The terminal `SCMInput` keeps the value, placeholder, enablement and
+//   visibility shape the commit input needs.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -69,8 +69,12 @@ pub const SCMInput = struct {
             .context = self,
             .value_fn = valueThunk,
             .set_value_fn = setValueThunk,
+            .placeholder_fn = placeholderThunk,
+            .set_placeholder_fn = setPlaceholderThunk,
             .enabled_fn = enabledThunk,
+            .set_enabled_fn = setEnabledThunk,
             .visible_fn = visibleThunk,
+            .set_visible_fn = setVisibleThunk,
             .on_did_change = &self.change,
         };
     }
@@ -85,14 +89,34 @@ pub const SCMInput = struct {
         self.setValue(value) catch {};
     }
 
+    fn placeholderThunk(context: *anyopaque) []const u8 {
+        const self: *SCMInput = @ptrCast(@alignCast(context));
+        return self.placeholder;
+    }
+
+    fn setPlaceholderThunk(context: *anyopaque, placeholder: []const u8) void {
+        const self: *SCMInput = @ptrCast(@alignCast(context));
+        self.setPlaceholder(placeholder) catch {};
+    }
+
     fn enabledThunk(context: *anyopaque) bool {
         const self: *SCMInput = @ptrCast(@alignCast(context));
         return self.enabled;
     }
 
+    fn setEnabledThunk(context: *anyopaque, enabled: bool) void {
+        const self: *SCMInput = @ptrCast(@alignCast(context));
+        self.enabled = enabled;
+    }
+
     fn visibleThunk(context: *anyopaque) bool {
         const self: *SCMInput = @ptrCast(@alignCast(context));
         return self.visible;
+    }
+
+    fn setVisibleThunk(context: *anyopaque, visible: bool) void {
+        const self: *SCMInput = @ptrCast(@alignCast(context));
+        self.visible = visible;
     }
 };
 
