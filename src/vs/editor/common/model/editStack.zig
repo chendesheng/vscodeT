@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/model/editStack.ts`.
+//
+// The serialized edit stack stores UTF-8 byte lengths and byte offsets, the
+// documented port-wide adaptation from UTF-16 code units. The multi-model
+// element is ported but no bulk-edit producer exists in this port yet.
 const std = @import("std");
 const Io = std.Io;
 const ArrayList = std.array_list.Managed;

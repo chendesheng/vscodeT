@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/model/tokens/abstractSyntaxTokenBackend.ts`.
+//
+// The 50 ms RunOnceScheduler is replaced by the TUI's frame-driven refresh;
+// the attached-view visible-range plumbing is kept.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;

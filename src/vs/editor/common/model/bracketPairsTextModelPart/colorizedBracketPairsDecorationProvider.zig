@@ -1,3 +1,9 @@
+// Port of `src/vs/editor/common/model/bracketPairsTextModelPart/colorizedBracketPairsDecorationProvider.ts`.
+//
+// Terminal adaptation: the view builds the AST before resolving decorations,
+// so the provider reports no decorations while the tree is dirty instead of
+// triggering a parse from a decoration query. Decoration ids are stable
+// range+level hashes in the provider's high-id range (upstream uses strings).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;

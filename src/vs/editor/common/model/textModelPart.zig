@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/textModelPart.ts`.
 const std = @import("std");
 pub const TextModelPart = struct {
     is_disposed: bool = false,

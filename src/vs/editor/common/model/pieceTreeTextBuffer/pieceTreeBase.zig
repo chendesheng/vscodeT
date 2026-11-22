@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/model/pieceTreeTextBuffer/pieceTreeBase.ts`.
+//
+// The port uses UTF-8 byte offsets/columns instead of UTF-16 code units.
+// `getCharCode` returns the byte at the offset; the codepoint helpers are the
+// UTF-8-aware replacements used by the text model.
 const std = @import("std");
 const Io = std.Io;
 const rbt = @import("./rbTreeBase.zig");

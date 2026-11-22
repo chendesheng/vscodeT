@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/model/textModel.ts`.
+//
+// All columns and offsets are UTF-8 bytes (see AGENTS.md). Font decorations
+// are not tracked because the terminal has one font/size/line height; the
+// parameter is documented on the decoration provider instead.
 const std = @import("std");
 const Uri = std.Uri;
 const unicode = std.unicode;

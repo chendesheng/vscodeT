@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/tokens/tokenizerSyntaxTokenBackend.ts`.
 const std = @import("std");
 const AutoHashMap = std.AutoHashMap;
 const ArrayList = std.array_list.Managed;

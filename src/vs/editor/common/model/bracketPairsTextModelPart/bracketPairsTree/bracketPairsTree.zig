@@ -1,3 +1,11 @@
+// Port of `src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/bracketPairsTree.ts`.
+//
+// This file also contains the merged upstream modules `ast.ts`, `brackets.ts`,
+// `length.ts`, `parser.ts`, `smallImmutableSet.ts` and `tokenizer.ts`. The
+// port merges them into one module (a deviation from the upstream file layout)
+// and replaces `concat23Trees.ts` with a simpler `buildList`; lengths, nodes,
+// the tokenizer/parser and the min-indentation cache keep the upstream
+// behavior. Colors are UTF-8 byte lengths, not UTF-16 code units.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;

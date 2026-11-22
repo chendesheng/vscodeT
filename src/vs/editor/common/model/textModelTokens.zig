@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/model/textModelTokens.ts`.
+//
+// End states live in a long-lived arena; token arrays use a per-line scratch
+// arena. The TUI drives background tokenization with `poll` instead of the
+// upstream scheduler; the state/accuracy rules stay upstream-shaped.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;

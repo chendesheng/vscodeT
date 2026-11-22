@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/fixedArray.ts`.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;

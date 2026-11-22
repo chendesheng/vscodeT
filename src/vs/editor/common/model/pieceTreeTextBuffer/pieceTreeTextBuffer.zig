@@ -1,3 +1,6 @@
+// Port of `src/vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.ts`.
+//
+// Positions, offsets and serialized text changes are UTF-8 bytes.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;

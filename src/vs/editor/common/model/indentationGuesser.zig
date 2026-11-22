@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/indentationGuesser.ts`.
 const std = @import("std");
 const PieceTreeTextBuffer = @import("./pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const StringBuffer = @import("./pieceTreeTextBuffer/pieceTreeBase.zig").StringBuffer;

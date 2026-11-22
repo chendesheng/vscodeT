@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/textModelSearch.ts`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;

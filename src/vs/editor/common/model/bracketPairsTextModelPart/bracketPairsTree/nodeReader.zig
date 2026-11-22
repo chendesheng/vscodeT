@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/nodeReader.ts`.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const tree = @import("./bracketPairsTree.zig");

@@ -1,3 +1,5 @@
+// Project-specific regression test: tokenization and rendered colors stay
+// stable through undo/redo. There is no upstream counterpart at this pin.
 // Regression: undo/redo must leave grammar token boundaries stable.
 const std = @import("std");
 const Editor = @import("../../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;

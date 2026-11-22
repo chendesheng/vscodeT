@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder.ts`.
 const std = @import("std");
 
 const strings = @import("../../../../base/common/strings.zig");

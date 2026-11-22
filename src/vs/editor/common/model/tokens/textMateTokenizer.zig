@@ -1,3 +1,10 @@
+// Port of the editor side of `src/vs/editor/common/model/tokens/textMateTokenizer.ts`
+// and `textMateTokenizationSupport.ts`, backed by the standalone
+// `vscode_textmate` package.
+//
+// Token indices from the engine are UTF-16 code units; this adapter converts
+// token starts to UTF-8 byte offsets. Embedded-language attribution and the
+// font-token pipeline are not ported (single-language terminal tokens).
 // TextMate tokenization backed by the faithful `vscode_textmate` port.
 //
 // The port works in UTF-16 code units; this adapter converts token starts to

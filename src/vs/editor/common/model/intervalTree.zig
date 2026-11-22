@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/model/intervalTree.ts`.
+//
+// Offsets are UTF-8 byte offsets. Font-decoration bits are not tracked (the
+// terminal has one font); owner, validation and margin filters are ported.
 const std = @import("std");
 const ModelDecoration = @import("../model.zig").ModelDecoration;
 const ModelDecorationOptions = @import("../model.zig").ModelDecorationOptions;

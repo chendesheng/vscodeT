@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/model/tokens/annotations.ts`.
+//
+// The ported subset covers set/rebase/applyEdit. The upstream textmate worker
+// serialization format is not ported (the port uses its own worker protocol),
+// so `ISerializedAnnotation`/serialize/deserialize are absent.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;

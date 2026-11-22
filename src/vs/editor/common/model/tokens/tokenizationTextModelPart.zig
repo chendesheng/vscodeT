@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/model/tokens/tokenizationTextModelPart.ts`.
+//
+// Semantic tokens, language/config events and word helpers are ported; font
+// token events are absent because the terminal has one font.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const TextModel = @import("../textModel.zig").TextModel;

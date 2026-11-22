@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/utils.ts`.
 const std = @import("std");
 
 /// Returns:
