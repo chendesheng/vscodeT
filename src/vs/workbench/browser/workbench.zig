@@ -4349,6 +4349,19 @@ pub const Workbench = struct {
         return diff_widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced;
     }
 
+    fn editorTabCloseButton(self: *Workbench) []const u8 {
+        const configuration = self.configuration orelse return "right";
+        const value = configuration.getValue("workbench.editor.tabCloseButton", .{}) orelse return "right";
+        return switch (value.*) {
+            .string => |text| text,
+            else => "right",
+        };
+    }
+
+    fn tabCloseButtonVisible(setting: []const u8) bool {
+        return !std.mem.eql(u8, setting, "off");
+    }
+
     fn editorLabelFormat(self: *Workbench) []const u8 {
         const configuration = self.configuration orelse return "default";
         const value = configuration.getValue("workbench.editor.labelFormat", .{}) orelse return "default";
@@ -8237,6 +8250,7 @@ pub const Workbench = struct {
         const infos = try self.allocator.alloc(tab_bar.TabInfo, ordered.items.len);
         defer self.allocator.free(infos);
         const label_format = self.editorLabelFormat();
+        const close_button_visible = tabCloseButtonVisible(self.editorTabCloseButton());
         var descriptions = std.array_list.Managed([]u8).init(self.allocator);
         defer {
             for (descriptions.items) |description| self.allocator.free(description);
@@ -8249,7 +8263,8 @@ pub const Workbench = struct {
                 .dirty = tab.input.isDirty(),
                 .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
                 .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
-                .closeable = !tab.input.hasCapability(editor_mod.EditorInputCapabilities.CannotClose),
+                .closeable = close_button_visible and
+                    !tab.input.hasCapability(editor_mod.EditorInputCapabilities.CannotClose),
             };
             var duplicate = false;
             for (ordered.items, 0..) |other, other_index| {
@@ -12499,6 +12514,12 @@ test "Workbench: status bar context menu hides an entry" {
     var enter = ui.KeyEvent{ .key = .enter };
     _ = try workbench.handleQuickAccessKey(&enter);
     try std.testing.expect(model.isHidden(id));
+}
+
+test "Workbench: tab close button honors the off setting" {
+    try std.testing.expect(Workbench.tabCloseButtonVisible("right"));
+    try std.testing.expect(Workbench.tabCloseButtonVisible("left"));
+    try std.testing.expect(!Workbench.tabCloseButtonVisible("off"));
 }
 
 test "Workbench: duplicate tab labels show their directories" {
