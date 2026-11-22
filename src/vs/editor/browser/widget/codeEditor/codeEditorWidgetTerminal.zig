@@ -1397,6 +1397,7 @@ pub const Editor = struct {
         self.view_lines.deinit();
         if (self.attached_view) |view| {
             self.model.onBeforeDetached(view) catch {};
+            self.allocator.destroy(view);
             self.attached_view = null;
         }
         self.model.deinit();
@@ -6489,7 +6490,7 @@ test "Editor: large document defers the initial bracket AST build" {
     try std.testing.expect(!editor.prepareBracketPairs(0));
 }
 
-test "Editor: fallback bracket matching (colorization disabled)" {
+test "Editor: AST bracket matching (colorization disabled)" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var editor = try Editor.createFromText(allocator, io, "(a)", "test.zig", 40, 8);
@@ -6499,7 +6500,9 @@ test "Editor: fallback bracket matching (colorization disabled)" {
     }
     disableBracketColorization(editor.model);
     editor.ensureTokensVisible();
-    try std.testing.expect(editor.model.bracketPairs().useFallbackMatcher());
+    // Match upstream: colorization settings do not switch matching to the
+    // legacy fallback scanner.
+    try std.testing.expect(!editor.model.bracketPairs().useFallbackMatcher());
     const bracket_pairs = editor.model.bracketPairs();
     const matched = bracket_pairs.matchBracket(Position.init(1, 2), null);
     try std.testing.expect(matched != null);

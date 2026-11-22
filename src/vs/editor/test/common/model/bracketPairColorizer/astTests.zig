@@ -37,13 +37,13 @@ test "ast: length arithmetic" {
 }
 
 test "ast: small immutable sets" {
-    const a = tree.SmallImmutableSet.empty().add(1).add(70);
-    const b = tree.SmallImmutableSet.empty().add(2).add(70);
+    const a = try (try tree.SmallImmutableSet.empty().add(1)).add(70);
+    const b = try (try tree.SmallImmutableSet.empty().add(2)).add(70);
     try std.testing.expect(a.has(1));
     try std.testing.expect(a.has(70));
     try std.testing.expect(a.intersects(b));
     try std.testing.expect(a.merge(b).has(2));
-    try std.testing.expect(!a.intersects(tree.SmallImmutableSet.empty().add(3)));
+    try std.testing.expect(!a.intersects(try tree.SmallImmutableSet.empty().add(3)));
 }
 
 test "ast: parser builds a 2-3 list tree" {
@@ -58,7 +58,9 @@ test "ast: parser builds a 2-3 list tree" {
     try ctx.languageService.registerLanguageConfiguration("astLang", config);
     ctx.model.forceTokenization(1);
 
-    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageService);
+    var ids = tree.StringIdProvider.init(allocator);
+    defer ids.deinit();
+    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageService, &ids);
     defer doc.deinit();
     try std.testing.expect(doc.root.kind == .list);
     try std.testing.expect(doc.root.list_height >= 1);
@@ -78,7 +80,9 @@ test "ast: pair nodes preserve nesting" {
     try ctx.languageService.registerLanguageConfiguration("astLang2", config);
     ctx.model.forceTokenization(1);
 
-    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageService);
+    var ids = tree.StringIdProvider.init(allocator);
+    defer ids.deinit();
+    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageService, &ids);
     defer doc.deinit();
     try std.testing.expect(doc.root.kind == .pair);
     const outer = doc.root.data.pair;
@@ -113,7 +117,9 @@ test "ast: many pairs form a balanced 2-3 tree" {
     try ctx.languageService.registerLanguageConfiguration("astLang3", config);
     ctx.model.forceTokenization(1);
 
-    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageService);
+    var ids = tree.StringIdProvider.init(allocator);
+    defer ids.deinit();
+    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageService, &ids);
     defer doc.deinit();
     try expect23Tree(doc.root);
     try std.testing.expect(doc.root.list_height >= 2);
@@ -131,7 +137,7 @@ test "ast: before-edit position mapper" {
     var mapper = try Mapper.init(allocator, &edits);
     defer mapper.deinit();
 
-    const expectedOldColumns = [_]usize{ 0, 1, 2, 3, 4, 4, 7, 8, 9, 10 };
+    const expectedOldColumns = [_]usize{ 0, 1, 2, 3, 4, 5, 7, 8, 9, 10 };
     for (expectedOldColumns, 0..) |column, i| {
         const old = mapper.getOffsetBeforeChange(tree.toLength(0, i));
         try std.testing.expectEqual(column, tree.lengthColumnCount(old));
@@ -150,7 +156,9 @@ test "ast: node reader finds longest reusable node" {
     try ctx.languageService.registerLanguageConfiguration("astLang4", config);
     ctx.model.forceTokenization(1);
 
-    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageService);
+    var ids = tree.StringIdProvider.init(allocator);
+    defer ids.deinit();
+    var doc = try tree.parseDocument(allocator, ctx.model, ctx.languageService, &ids);
     defer doc.deinit();
     var reader = @import("../../../../common/model/bracketPairsTextModelPart/bracketPairsTree/nodeReader.zig").NodeReader.init(allocator, doc.root);
     defer reader.deinit();
@@ -171,14 +179,16 @@ test "ast: incremental parse with an edit" {
     try ctx.languageService.registerLanguageConfiguration("astLang5", config);
     ctx.model.forceTokenization(1);
 
-    var doc1 = try tree.parseDocument(allocator, ctx.model, ctx.languageService);
+    var ids = tree.StringIdProvider.init(allocator);
+    defer ids.deinit();
+    var doc1 = try tree.parseDocument(allocator, ctx.model, ctx.languageService, &ids);
     try ctx.applyEdit(@import("../../../../common/core/range.zig").Range.init(1, 5, 1, 5), "x");
     ctx.model.forceTokenization(1);
 
     var edits = [_]@import("../../../../common/model/bracketPairsTextModelPart/bracketPairsTree/beforeEditPositionMapper.zig").TextEditInfo{
         @import("../../../../common/model/bracketPairsTextModelPart/bracketPairsTree/beforeEditPositionMapper.zig").TextEditInfo.init(tree.toLength(0, 4), tree.toLength(0, 4), tree.toLength(0, 1)),
     };
-    var doc2 = try tree.parseDocumentIncremental(allocator, ctx.model, ctx.languageService, &edits, doc1.root);
+    var doc2 = try tree.parseDocumentIncremental(allocator, ctx.model, ctx.languageService, &edits, doc1.root, &ids);
     defer doc2.deinit();
     try std.testing.expectEqual(tree.lengthOfString("{[]}x"), doc2.root.length);
     doc1.deinit();

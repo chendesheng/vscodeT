@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/pieceTreeTextBuffer/rbTreeBase.ts`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Piece = @import("./pieceTreeBase.zig").Piece;
@@ -40,19 +41,6 @@ pub const TreeNode = struct {
             current = node.parent;
         }
         return h;
-    }
-
-    fn iterate(self: *TreeNode, callback: fn (ctx: anytype, node: *TreeNode) bool, ctx: anytype) bool {
-        if (self == SENTINEL) {
-            return callback(ctx, SENTINEL);
-        }
-
-        const leftRet = self.left.iterate(callback);
-        if (!leftRet) {
-            return leftRet;
-        }
-
-        return callback(ctx, self) and self.right.iterate(callback, ctx);
     }
 
     pub fn iterator(self: *TreeNode) Iterator {

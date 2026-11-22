@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/model/tokens/abstractSyntaxTokenBackend.ts`.
+//
+// The 50 ms RunOnceScheduler is replaced by the TUI's frame-driven refresh;
+// the attached-view visible-range plumbing is kept.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -38,6 +42,9 @@ pub const AttachedViews = struct {
     }
 
     pub fn deinit(self: *AttachedViews) void {
+        // Upstream consumers own their IAttachedView. The port keeps the model
+        // as owner for views that were never detached (e.g. model teardown),
+        // while `detachView` hands the allocation back to the caller.
         for (self._views.items) |view| {
             view.deinit();
             self.allocator.destroy(view);
@@ -92,8 +99,9 @@ pub const AttachedViews = struct {
             if (candidate == view) {
                 _ = self._views.orderedRemove(i);
                 try self._onDidChangeVisibleRanges.fire(.{ .first = view, .second = null });
+                // Upstream `detachView` only removes the view from the set; the
+                // caller owns the object and destroys it after this call.
                 view.deinit();
-                self.allocator.destroy(view);
                 try self.triggerViewChanged();
                 return;
             }
@@ -159,13 +167,18 @@ pub const AttachedView = struct {
 };
 
 pub const AttachedViewHandler = struct {
+    allocator: Allocator,
     _computedLineRanges: []const LineRange,
     _lineRanges: []const LineRange,
+    /// Owned copy of the last visible ranges. The view's state array is freed
+    /// on the next `setVisibleLines`, while upstream keeps the JS array alive.
+    _ownedLineRanges: []LineRange = &[_]LineRange{},
     refreshTokens: *const fn (ctx: *anyopaque, handler: *AttachedViewHandler) void,
     _ctx: *anyopaque,
 
-    pub fn init(ctx: *anyopaque, refreshTokens: *const fn (ctx: *anyopaque, handler: *AttachedViewHandler) void) AttachedViewHandler {
+    pub fn init(allocator: Allocator, ctx: *anyopaque, refreshTokens: *const fn (ctx: *anyopaque, handler: *AttachedViewHandler) void) AttachedViewHandler {
         return .{
+            .allocator = allocator,
             ._computedLineRanges = &[_]LineRange{},
             ._lineRanges = &[_]LineRange{},
             .refreshTokens = refreshTokens,
@@ -173,7 +186,12 @@ pub const AttachedViewHandler = struct {
         };
     }
 
-    pub fn deinit(_: *AttachedViewHandler) void {}
+    pub fn deinit(self: *AttachedViewHandler) void {
+        if (self._ownedLineRanges.len > 0) self.allocator.free(self._ownedLineRanges);
+        self._ownedLineRanges = &[_]LineRange{};
+        self._lineRanges = &[_]LineRange{};
+        self._computedLineRanges = &[_]LineRange{};
+    }
 
     pub fn update(self: *AttachedViewHandler) void {
         if (lineRangeSliceEquals(self._computedLineRanges, self._lineRanges)) return;
@@ -182,7 +200,13 @@ pub const AttachedViewHandler = struct {
     }
 
     pub fn handleStateChange(self: *AttachedViewHandler, state: AttachedViewState) void {
-        self._lineRanges = state.visibleLineRanges.items;
+        const new_ranges = self.allocator.dupe(LineRange, state.visibleLineRanges.items) catch {
+            self._lineRanges = &[_]LineRange{};
+            return;
+        };
+        if (self._ownedLineRanges.len > 0) self.allocator.free(self._ownedLineRanges);
+        self._ownedLineRanges = new_ranges;
+        self._lineRanges = self._ownedLineRanges;
         if (state.stabilized) {
             self.update();
         }

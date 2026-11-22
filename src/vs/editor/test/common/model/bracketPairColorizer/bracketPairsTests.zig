@@ -432,3 +432,322 @@ test "bracket pairs: cached ranges follow edits before them" {
     try std.testing.expectEqual(@as(usize, 1), second.items[1].openingBracketRange.startColumn);
     try std.testing.expectEqual(@as(usize, 5), second.items[1].closingBracketRange.?.startLineNumber);
 }
+
+test "bracket pairs: min indentation query" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "{\n    a\n        b\n}", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var pairs = try fixture.ctx.model.getBracketPairsInRangeWithMinIndentation(fixture.ctx.model.getFullModelRange());
+    defer pairs.deinit();
+    try std.testing.expectEqual(@as(usize, 1), pairs.items.len);
+    // Upstream's text-node calculation includes the closing-bracket line, so
+    // the unindented `}` contributes visible column 0.
+    try std.testing.expectEqual(@as(i64, 0), pairs.items[0].minVisibleColumnIndentation);
+    try std.testing.expectEqual(@as(usize, 1), pairs.items[0].pair.range.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 4), pairs.items[0].pair.range.endLineNumber);
+}
+
+test "bracket pairs: guides carry class names and wrapping columns" {
+    const allocator = std.testing.allocator;
+    const GuidesTextModelPart = @import("../../../../common/model/guidesTextModelPart.zig").GuidesTextModelPart;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "fn main() {\n    x\n}", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var guides = GuidesTextModelPart.init(fixture.ctx.model, fixture.ctx.languageService);
+    defer guides.dispose();
+    const lines = try guides.getLinesBracketGuides(
+        allocator,
+        1,
+        3,
+        null,
+        .{ .includeInactive = true, .horizontalGuides = .Disabled, .highlightActive = false },
+    );
+    defer {
+        for (lines) |*line| line.deinit();
+        allocator.free(lines);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    // The pair starts at column 11 and ends at column 1; the closing line
+    // contributes visible column 0, so the guide sits at visible column 1.
+    // Without horizontal guides the closing line has no vertical segment.
+    try std.testing.expectEqual(@as(usize, 1), lines[0].items.len);
+    try std.testing.expectEqual(@as(usize, 1), lines[1].items.len);
+    try std.testing.expectEqual(@as(usize, 0), lines[2].items.len);
+    for (lines[0..2]) |line| {
+        const guide = line.items[0];
+        try std.testing.expectEqual(@as(isize, 1), guide.visibleColumn);
+        try std.testing.expectEqual(@as(isize, -1), guide.column);
+        try std.testing.expectEqualStrings("bracket-indent-guide lvl-0", guide.className);
+        try std.testing.expect(guide.horizontalLine == null);
+    }
+    try std.testing.expectEqual(@as(isize, 11), lines[0].items[0].forWrappedLinesAfterColumn);
+    try std.testing.expectEqual(@as(isize, -1), lines[1].items[0].forWrappedLinesAfterColumn);
+}
+
+test "bracket pairs: text before the closing bracket keeps the closing guide line" {
+    const allocator = std.testing.allocator;
+    const GuidesTextModelPart = @import("../../../../common/model/guidesTextModelPart.zig").GuidesTextModelPart;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "fn main() {\n    x\n    y }", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var pairs = try fixture.ctx.model.getBracketPairsInRangeWithMinIndentation(fixture.ctx.model.getFullModelRange());
+    defer pairs.deinit();
+    try std.testing.expectEqual(@as(i64, 4), pairs.items[0].minVisibleColumnIndentation);
+
+    var guides = GuidesTextModelPart.init(fixture.ctx.model, fixture.ctx.languageService);
+    defer guides.dispose();
+    const lines = try guides.getLinesBracketGuides(
+        allocator,
+        1,
+        3,
+        null,
+        .{ .includeInactive = true, .horizontalGuides = .Disabled, .highlightActive = false },
+    );
+    defer {
+        for (lines) |*line| line.deinit();
+        allocator.free(lines);
+    }
+    // Text before the closing bracket makes upstream render the horizontal
+    // end line at the bottom, so the vertical guide also covers line 3.
+    try std.testing.expectEqual(@as(usize, 1), lines[2].items.len);
+    const closing_guide = lines[2].items[0];
+    try std.testing.expectEqual(@as(isize, 5), closing_guide.visibleColumn);
+    try std.testing.expectEqual(@as(isize, 7), closing_guide.forWrappedLinesBeforeOrAtColumn);
+}
+
+test "bracket pairs: guide view merges indentation and bracket guides" {
+    const allocator = std.testing.allocator;
+    const indent_guides = @import("../../../../browser/viewParts/indentGuides/indentGuides.zig");
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "root\n    if (x) {\n        y\n    }", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var guides_part = @import("../../../../common/model/guidesTextModelPart.zig").GuidesTextModelPart.init(
+        fixture.ctx.model,
+        fixture.ctx.languageService,
+    );
+    defer guides_part.dispose();
+
+    const lines = try indent_guides.getGuidesByLine(
+        allocator,
+        fixture.ctx.model,
+        &guides_part,
+        1,
+        fixture.ctx.model.getLineCount(),
+        Position.init(2, 1),
+        .{
+            .include_inactive_bracket_pairs = true,
+            .horizontal_guides = .Disabled,
+            .highlight_active_bracket_pair = true,
+            .highlight_active_indentation = .enabled,
+        },
+    );
+    defer {
+        for (lines) |*line| line.deinit();
+        allocator.free(lines);
+    }
+
+    // Line 2 has a level-1 indent guide and the bracket guide for `{ }`.
+    try std.testing.expectEqual(@as(usize, 2), lines[1].items.len);
+    try std.testing.expectEqualStrings("core-guide-indent lvl-0", lines[1].items[0].className);
+    try std.testing.expectEqual(@as(isize, 5), lines[1].items[1].visibleColumn);
+    try std.testing.expect(std.mem.startsWith(u8, lines[1].items[1].className, "bracket-indent-guide"));
+    // Bracket guides on the line disable the default active indent highlight.
+    try std.testing.expect(std.mem.indexOf(u8, lines[1].items[0].className, "indent-active") == null);
+}
+
+test "bracket pairs: stable ids keep pairings after an incremental edit" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{ .{ "(", ")" }, .{ "[", "]" } };
+    var fixture = try Fixture.init(allocator, "[a)", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    try fixture.ctx.applyEdit(Range.init(1, 1, 1, 1), "(");
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var pairs = try fixture.ctx.model.getBracketPairsInRange(fixture.ctx.model.getFullModelRange());
+    defer pairs.deinit();
+
+    var found_parentheses = false;
+    for (pairs.items) |pair| {
+        if (std.mem.eql(u8, pair.openingBracket, "(") and pair.closingBracket != null and std.mem.eql(u8, pair.closingBracket.?, ")")) {
+            found_parentheses = true;
+        }
+    }
+    try std.testing.expect(found_parentheses);
+}
+
+test "bracket pairs: a configuration change invalidates the tree" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator, "{}", null);
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var before = try fixture.ctx.model.getBracketPairsInRange(fixture.ctx.model.getFullModelRange());
+    defer before.deinit();
+    try std.testing.expectEqual(@as(usize, 0), before.items.len);
+
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    try fixture.ctx.languageService.registerLanguageConfiguration(languageId, makeConfig(&brackets, &brackets));
+
+    var after = try fixture.ctx.model.getBracketPairsInRange(fixture.ctx.model.getFullModelRange());
+    defer after.deinit();
+    try std.testing.expectEqual(@as(usize, 1), after.items.len);
+}
+
+test "bracket pairs: matching uses the AST when colorization is disabled" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "{}", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+
+    fixture.ctx.model.updateOptions(.{
+        .tabSize = null,
+        .indentSize = null,
+        .insertSpaces = null,
+        .trimAutoWhitespace = null,
+        .bracketColorizationOptions = .{ .enabled = false, .independentColorPoolPerBracketType = false },
+    });
+
+    try std.testing.expect(!fixture.ctx.model.bracketPairs().useFallbackMatcher());
+}
+
+test "bracket pairs: colorized levels use colorizedBracketPairs relations" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "<", ">" }};
+    var colorized = [_]CharacterPair{ .{ "{", "}" }, .{ "[", "]" }, .{ "(", ")" } };
+    var fixture = try Fixture.init(allocator, " {} [<()>] <{>} ", makeConfig(&brackets, &colorized));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+    try fixture.ctx.model.bracketPairs().updateNow();
+    const full = fixture.ctx.model.getFullModelRange();
+
+    var only_colorized = try fixture.ctx.model.getBracketsInRange(full, true);
+    defer only_colorized.deinit();
+    const expected_colorized = [_]struct { start: usize, end: usize, level: isize }{
+        .{ .start = 2, .end = 3, .level = 0 },
+        .{ .start = 3, .end = 4, .level = 0 },
+        .{ .start = 5, .end = 6, .level = 0 },
+        .{ .start = 7, .end = 8, .level = 1 },
+        .{ .start = 8, .end = 9, .level = 1 },
+        .{ .start = 10, .end = 11, .level = 0 },
+        .{ .start = 13, .end = 14, .level = 0 },
+        .{ .start = 15, .end = 16, .level = -1 },
+    };
+    try std.testing.expectEqual(expected_colorized.len, only_colorized.items.len);
+    for (expected_colorized, only_colorized.items) |expected, actual| {
+        try std.testing.expectEqual(expected.start, actual.range.startColumn);
+        try std.testing.expectEqual(expected.end, actual.range.endColumn);
+        try std.testing.expectEqual(expected.level, actual.nestingLevel);
+    }
+
+    var all = try fixture.ctx.model.getBracketsInRange(full, false);
+    defer all.deinit();
+    const expected_all = [_]struct { start: usize, end: usize, level: isize }{
+        .{ .start = 2, .end = 3, .level = 0 },
+        .{ .start = 3, .end = 4, .level = 0 },
+        .{ .start = 5, .end = 6, .level = 0 },
+        .{ .start = 6, .end = 7, .level = 1 },
+        .{ .start = 7, .end = 8, .level = 2 },
+        .{ .start = 8, .end = 9, .level = 2 },
+        .{ .start = 9, .end = 10, .level = 1 },
+        .{ .start = 10, .end = 11, .level = 0 },
+        .{ .start = 12, .end = 13, .level = 0 },
+        .{ .start = 13, .end = 14, .level = 1 },
+        .{ .start = 14, .end = 15, .level = 0 },
+        .{ .start = 15, .end = 16, .level = -1 },
+    };
+    try std.testing.expectEqual(expected_all.len, all.items.len);
+    for (expected_all, all.items) |expected, actual| {
+        try std.testing.expectEqual(expected.start, actual.range.startColumn);
+        try std.testing.expectEqual(expected.end, actual.range.endColumn);
+        try std.testing.expectEqual(expected.level, actual.nestingLevel);
+    }
+}
+
+test "bracket pairs: navigation skips invalid closers and uses strict containment" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "} {", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    // The leading `}` is an unexpected closer and is skipped.
+    try std.testing.expect(fixture.ctx.model.bracketPairs().findPrevBracket(Position.init(1, 3)) == null);
+    const next = fixture.ctx.model.bracketPairs().findNextBracket(Position.init(1, 1)).?;
+    try std.testing.expectEqualStrings("{", next.bracketText);
+
+    var braces = try Fixture.init(allocator, "{}", makeConfig(&brackets, &brackets));
+    defer braces.deinit();
+    braces.ctx.model.forceTokenization(1);
+    try braces.ctx.model.bracketPairs().updateNow();
+    // Strict containment: a position on the bracket itself is not enclosed.
+    try std.testing.expect(braces.ctx.model.bracketPairs().findEnclosingBrackets(Position.init(1, 1), null) == null);
+    const enclosing = braces.ctx.model.bracketPairs().findEnclosingBrackets(Position.init(1, 2), null).?;
+    try std.testing.expectEqual(@as(usize, 1), enclosing[0].startColumn);
+    try std.testing.expectEqual(@as(usize, 2), enclosing[1].startColumn);
+}
+
+test "bracket pairs: word delimiters are case-insensitive and honor boundaries" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "begin", "end" }};
+
+    var lower = try Fixture.init(allocator, "begin end", makeConfig(&brackets, &brackets));
+    defer lower.deinit();
+    lower.ctx.model.forceTokenization(1);
+    try lower.ctx.model.bracketPairs().updateNow();
+    var lower_pairs = try lower.ctx.model.getBracketPairsInRange(lower.ctx.model.getFullModelRange());
+    defer lower_pairs.deinit();
+    try std.testing.expectEqual(@as(usize, 1), lower_pairs.items.len);
+    try std.testing.expect(lower_pairs.items[0].closingBracketRange != null);
+
+    var upper = try Fixture.init(allocator, "Begin END", makeConfig(&brackets, &brackets));
+    defer upper.deinit();
+    upper.ctx.model.forceTokenization(1);
+    try upper.ctx.model.bracketPairs().updateNow();
+    var upper_pairs = try upper.ctx.model.getBracketPairsInRange(upper.ctx.model.getFullModelRange());
+    defer upper_pairs.deinit();
+    try std.testing.expectEqual(@as(usize, 1), upper_pairs.items.len);
+    try std.testing.expect(upper_pairs.items[0].closingBracketRange != null);
+
+    // No prefix boundary: `unbegin` does not open, so `end` is unexpected.
+    var prefixed = try Fixture.init(allocator, "unbegin end", makeConfig(&brackets, &brackets));
+    defer prefixed.deinit();
+    prefixed.ctx.model.forceTokenization(1);
+    try prefixed.ctx.model.bracketPairs().updateNow();
+    var prefixed_pairs = try prefixed.ctx.model.getBracketPairsInRange(prefixed.ctx.model.getFullModelRange());
+    defer prefixed_pairs.deinit();
+    for (prefixed_pairs.items) |pair| {
+        try std.testing.expect(pair.closingBracketRange == null);
+    }
+
+    // No suffix boundary: `endx` does not close `begin`.
+    var suffixed = try Fixture.init(allocator, "begin endx", makeConfig(&brackets, &brackets));
+    defer suffixed.deinit();
+    suffixed.ctx.model.forceTokenization(1);
+    try suffixed.ctx.model.bracketPairs().updateNow();
+    var suffixed_pairs = try suffixed.ctx.model.getBracketPairsInRange(suffixed.ctx.model.getFullModelRange());
+    defer suffixed_pairs.deinit();
+    for (suffixed_pairs.items) |pair| {
+        try std.testing.expect(pair.closingBracketRange == null);
+    }
+}

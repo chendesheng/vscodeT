@@ -61,6 +61,7 @@ const ui = @import("ui");
 const cellMetrics = @import("./cellMetrics.zig");
 
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const indent_guides = @import("../vs/editor/browser/viewParts/indentGuides/indentGuides.zig");
 const TerminalViewHost = @import("../vs/editor/browser/widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
 const tokenization = @import("../vs/editor/common/tokenizationRegistry.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
@@ -83,7 +84,6 @@ const markers_mod = @import("../vs/platform/markers/common/markers.zig");
 const scrollbar_state = @import("../vs/base/browser/ui/scrollbar/scrollbarState.zig");
 const GuidesTextModelPart = @import("../vs/editor/common/model/guidesTextModelPart.zig").GuidesTextModelPart;
 const computeIndentLevel = @import("../vs/editor/common/model/utils.zig").computeIndentLevel;
-const indent_guides = @import("../vs/editor/browser/viewParts/indentGuides/indentGuides.zig");
 const rulers_mod = @import("../vs/editor/browser/viewParts/rulers/rulers.zig");
 const scroll_decoration = @import("../vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig");
 const overlay_widgets_mod = @import("../vs/editor/browser/viewParts/overlayWidgets/overlayWidgets.zig");
@@ -615,7 +615,7 @@ pub const View = struct {
         self.* = .{
             .allocator = allocator,
             .editor = editor,
-            .guides = GuidesTextModelPart.init(editor.model),
+            .guides = GuidesTextModelPart.init(editor.model, editor.language_service),
             .surface = undefined,
             .block_nodes = std.array_list.Managed(*ui.Node).init(allocator),
             .configuration_listeners = std.array_list.Managed(ConfigurationListener).init(allocator),
@@ -642,6 +642,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.guides.dispose();
         self.block_nodes.deinit();
         self.clearPaintStyles();
         self.paint_styles.deinit(self.allocator);
@@ -1330,6 +1331,19 @@ pub const View = struct {
         return self.fadedColor(foreground, whitespace_fallback_alpha);
     }
 
+    /// Extracts the `lvl-N` suffix from an upstream guide class name.
+    fn guideLevel(class_name: []const u8) usize {
+        const marker = "lvl-";
+        const index = std.mem.lastIndexOf(u8, class_name, marker) orelse return 0;
+        var value: usize = 0;
+        var i = index + marker.len;
+        while (i < class_name.len and class_name[i] >= '0' and class_name[i] <= '9') : (i += 1) {
+            value = value * 10 + (class_name[i] - '0');
+        }
+        return value;
+    }
+    }
+
     fn bracketGuideColors(self: *const View, level: usize, active: bool) ?ui.Color {
         if (self.bracket_guide_color_count == 0) return null;
         const colors = self.bracket_guide_colors[level % self.bracket_guide_color_count];
@@ -1865,7 +1879,6 @@ pub const View = struct {
         const total = editor.viewLineCount();
         const top = editor.topViewLine();
         const tab_size = editor.tabSize();
-        const indent_size = @max(editor.indentSize(), 1);
 
         if (top <= total) {
             try self.terminal_view_host.renderViewport();
@@ -1876,108 +1889,67 @@ pub const View = struct {
             @as(usize, @intFromFloat(editor.viewLayout().getScrollWidth())),
         );
 
-        var guide_counts: []usize = &.{};
+        var guide_lines: []indent_guides.LineGuides = &.{};
         var guide_start_model_line: usize = 0;
         var guide_end_model_line: usize = 0;
         if (top <= total) {
             const end_view_line = @min(total, top + text_height -| 1);
             guide_start_model_line = editor.modelLineNumber(top);
             guide_end_model_line = editor.modelLineNumber(end_view_line);
-            guide_counts = try self.guides.getLinesIndentGuides(
+            const defer_bracket_guides = editor.shouldDeferBracketGuides();
+            if (defer_bracket_guides) editor.scheduleBracketGuides(time_compat.milliTimestamp());
+            guide_lines = try indent_guides.getGuidesByLine(
                 self.allocator,
+                editor.model,
+                &self.guides,
                 guide_start_model_line,
                 guide_end_model_line,
+                editor.modelCursorPosition(),
+                .{
+                    .include_inactive_bracket_pairs = true,
+                    .horizontal_guides = .Disabled,
+                    .highlight_active_bracket_pair = true,
+                    .highlight_active_indentation = .enabled,
+                    .include_bracket_guides = !defer_bracket_guides,
+                },
             );
         }
-        defer if (guide_counts.len > 0) self.allocator.free(guide_counts);
+        defer {
+            for (guide_lines) |*line| line.deinit();
+            if (guide_lines.len > 0) self.allocator.free(guide_lines);
+        }
 
         var guide_specs = std.array_list.Managed(GuideSpec).init(self.allocator);
         defer guide_specs.deinit();
 
-        if (guide_counts.len > 0) {
-            // Passive indentation guides first; bracket pairs and the active
-            // scope paint over them when they share a cell.
-            for (guide_counts, 0..) |guide_count, index| {
+        if (guide_lines.len > 0) {
+            // The view part has already merged indent guides, the active
+            // indentation scope and bracket-pair guides in upstream order.
+            for (guide_lines, 0..) |line, index| {
                 const model_line = guide_start_model_line + index;
                 const row = viewRowForModelLine(editor, top, model_line) orelse continue;
                 var content = try editor.model.getLineContent(model_line);
                 defer content.deinit();
                 const indent_width = computeIndentLevel(content.items, tab_size);
-                var level: usize = 0;
-                while (level < guide_count) : (level += 1) {
-                    const guide_col = level * indent_size;
-                    if (indent_width >= 0 and guide_col >= @as(usize, @intCast(indent_width))) break;
-                    try guide_specs.append(.{ .row = row, .col = guide_col, .color = rgbOf(self.indentGuideColors(level).inactive) });
-                }
-            }
-
-            // Active indentation scope: the contiguous block around the caret
-            // with at least the caret line's guide level.
-            const cursor_model_line = editor.modelCursorPosition().lineNumber;
-            if (cursor_model_line >= guide_start_model_line and
-                cursor_model_line - guide_start_model_line < guide_counts.len)
-            {
-                const cursor_index = cursor_model_line - guide_start_model_line;
-                var cursor_content = try editor.model.getLineContent(cursor_model_line);
-                defer cursor_content.deinit();
-                const cursor_indent = computeIndentLevel(cursor_content.items, tab_size);
-                const active_level = if (cursor_indent >= 0)
-                    ceilDiv(@as(usize, @intCast(cursor_indent)), indent_size)
-                else
-                    guide_counts[cursor_index];
-                if (active_level > 0) {
-                    var first = cursor_index;
-                    while (first > 0 and guide_counts[first - 1] >= active_level) first -= 1;
-                    var last = cursor_index;
-                    while (last + 1 < guide_counts.len and guide_counts[last + 1] >= active_level) last += 1;
-                    var index = first;
-                    while (index <= last) : (index += 1) {
-                        const model_line = guide_start_model_line + index;
-                        const row = viewRowForModelLine(editor, top, model_line) orelse continue;
-                        try guide_specs.append(.{
-                            .row = row,
-                            .col = (active_level - 1) * indent_size,
-                            .color = rgbOf(self.indentGuideColors(active_level - 1).active),
-                        });
-                    }
-                }
-            }
-
-            // Vertical bracket-pair guides. They are only painted where the
-            // underlying cell is leading whitespace; a terminal cell cannot
-            // show both the guide and a text glyph.
-            if (guide_end_model_line >= guide_start_model_line) {
-                if (editor.shouldDeferBracketGuides()) {
-                    editor.scheduleBracketGuides(time_compat.milliTimestamp());
-                } else {
-                    const bracket_guides = try indent_guides.getBracketGuides(
-                        self.allocator,
-                        editor.model,
-                        guide_start_model_line,
-                        guide_end_model_line,
-                        editor.modelCursorPosition(),
-                    );
-                    defer {
-                        for (bracket_guides) |*line_guides| line_guides.deinit();
-                        self.allocator.free(bracket_guides);
-                    }
-
-                    for (bracket_guides, 0..) |line_guides, index| {
-                        const model_line = guide_start_model_line + index;
-                        const row = viewRowForModelLine(editor, top, model_line) orelse continue;
-                        var content = try editor.model.getLineContent(model_line);
-                        defer content.deinit();
-                        const indent_width = computeIndentLevel(content.items, tab_size);
-                        for (line_guides.items) |guide| {
-                            if (indent_width >= 0 and guide.column >= @as(usize, @intCast(indent_width))) continue;
-                            const guide_color = self.bracketGuideColors(guide.level, guide.active) orelse continue;
-                            try guide_specs.append(.{
-                                .row = row,
-                                .col = guide.column,
-                                .color = rgbOf(guide_color),
-                            });
-                        }
-                    }
+                for (line.items) |guide| {
+                    // Horizontal guide segments need a multi-cell horizontal
+                    // line; the terminal guide layer only paints verticals.
+                    if (guide.horizontalLine != null) continue;
+                    if (guide.visibleColumn < 0) continue;
+                    const column: usize = @intCast(guide.visibleColumn - 1);
+                    if (column >= text_width) continue;
+                    if (indent_width >= 0 and column >= @as(usize, @intCast(indent_width))) continue;
+                    const level = guideLevel(guide.className);
+                    const active = std.mem.indexOf(u8, guide.className, "indent-active") != null;
+                    const guide_color = if (std.mem.startsWith(u8, guide.className, "core-guide-indent"))
+                        rgbOf(if (active) self.indentGuideColors(level).active else self.indentGuideColors(level).inactive)
+                    else
+                        rgbOf(self.bracketGuideColors(level, active) orelse continue);
+                    try guide_specs.append(.{
+                        .row = row,
+                        .col = column,
+                        .color = guide_color,
+                    });
                 }
             }
         }
@@ -4631,18 +4603,25 @@ test "View: indent guides mark leading whitespace and blank lines" {
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
     const guide_fg = ui.cell.packColor(color(indent_guide_color));
+    const active_fg = ui.cell.packColor(color(indent_guide_active_color));
 
-    // Level 1 on the first indented line.
+    // Level 1 on the first indented line. The caret is on the unindented first
+    // line, which upstream treats as the start of the indented scope, so this
+    // guide is the active scope.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 1)]);
-    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 1)]);
 
-    // Level 2 adds a guide at the next indentation column.
+    // Level 2 adds a normal guide at the next indentation column; the active
+    // level-1 scope continues through the whole indented block.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 2)]);
+    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 2)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 2)]);
+    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter + 4, 2)]);
 
     // The blank line inherits both guides from the surrounding block.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 3)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 3)]);
+    try std.testing.expectEqual(guide_fg, grid.fg[grid.index(gutter + 4, 3)]);
 
     // The unindented first and last lines have no guides.
     try std.testing.expectEqual(@as(u32, 'i'), grid.cluster[grid.index(gutter, 0)]);
@@ -4951,7 +4930,9 @@ test "View: indent guides honor per-level theme colors" {
     defer theme.deinit();
     const palette = theme_colors_mod.ThemeColors.init(theme);
 
-    try editor.setCursorPosition(Position.init(1, 1));
+    // The caret on `grand` makes line 3's level-2 guide the active scope;
+    // line 2 keeps the normal level-1 color.
+    try editor.setCursorPosition(Position.init(3, 1));
     const view = try View.init(allocator, editor);
     defer view.deinit();
     view.setThemeColors(&palette);
@@ -4964,7 +4945,7 @@ test "View: indent guides honor per-level theme colors" {
     const level1 = grid.fg[grid.index(gutter, 1)];
     try std.testing.expectEqual(ui.cell.packColor(.{ .r = 255, .g = 0, .b = 0 }), level1);
     const level2 = grid.fg[grid.index(gutter + 4, 2)];
-    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 0, .g = 255, .b = 0 }), level2);
+    try std.testing.expectEqual(ui.cell.packColor(.{ .r = 0, .g = 170, .b = 0 }), level2);
 }
 
 test "View: bracket guides follow pairs and highlight the active pair" {
@@ -5048,17 +5029,18 @@ test "View: active indentation guide follows the cursor scope" {
     const active_fg = ui.cell.packColor(color(indent_guide_active_color));
     const normal_fg = ui.cell.packColor(color(indent_guide_color));
 
-    // The whole cursor scope (rows 1-3) highlights level 1 at column 0.
+    // Upstream highlights the child scope opened by the caret line: `child`
+    // opens `grand`, so line 3's level-2 guide is the active one.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 1)]);
-    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 1)]);
+    try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter, 1)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 2)]);
-    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 2)]);
-    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 3)]);
-    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter, 3)]);
-
-    // Level 2 on `grand` remains a normal guide.
+    try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter, 2)]);
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 2)]);
-    try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter + 4, 2)]);
+    try std.testing.expectEqual(active_fg, grid.fg[grid.index(gutter + 4, 2)]);
+
+    // `sibling` and the closing `root` keep normal guides.
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 3)]);
+    try std.testing.expectEqual(normal_fg, grid.fg[grid.index(gutter, 3)]);
 }
 
 test "View: contribution highlights are stored as model decorations" {

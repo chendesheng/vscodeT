@@ -488,6 +488,9 @@ console API for raw mode, sizing and input polling.
 - [TUI review](docs/tui-review.md) — current file-by-file verdict on `src/tui/`:
   what still has a VS Code port, what moves into `ui/`, what is dead or
   duplicated, and the dependency-ordered path to a thin host.
+- [Model audit](model-audit.md) — file-by-file audit of
+  `src/vs/editor/common/model` against VS Code 1.147.0, with the fixed defects
+  and the remaining divergences.
 - [Git integration and diff view plan](docs/git-diff-plan.md) — proposed
   read-only Git/SCM integration, quick-diff decorations and a terminal
   side-by-side diff viewer, with the view-parts wiring and test plan.

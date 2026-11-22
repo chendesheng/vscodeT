@@ -1,3 +1,6 @@
+// Port of `src/vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer.ts`.
+//
+// Positions, offsets and serialized text changes are UTF-8 bytes.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
@@ -73,7 +76,7 @@ pub const PieceTreeTextBuffer = struct {
         self._pieceTree.deinit();
     }
 
-    pub fn equals(self: *const PieceTreeTextBuffer, other: *const PieceTreeTextBuffer) bool {
+    pub fn equals(self: *const PieceTreeTextBuffer, other: *const PieceTreeTextBuffer) !bool {
         if (!std.mem.eql(self._BOM, other._BOM)) {
             return false;
         }
@@ -82,7 +85,7 @@ pub const PieceTreeTextBuffer = struct {
             return false;
         }
 
-        return self._pieceTree.equal(other._pieceTree);
+        return try self._pieceTree.equal(other._pieceTree);
     }
 
     pub fn getMightContainRTL(self: *const PieceTreeTextBuffer) bool {
@@ -158,7 +161,7 @@ pub const PieceTreeTextBuffer = struct {
         const actualEOLLength: usize = if (actualEOL == .CRLF) 2 else 1;
 
         if (desiredEOLLength != actualEOLLength) {
-            const delta = usizeSub(actualEOLLength, desiredEOLLength);
+            const delta: isize = @as(isize, @intCast(desiredEOLLength)) - @as(isize, @intCast(actualEOLLength));
             const eolCount = range.endLineNumber - range.startLineNumber;
             eolOffsetCompensation = delta * @as(isize, @intCast(eolCount));
         }
@@ -484,17 +487,19 @@ pub const PieceTreeTextBuffer = struct {
             return;
         }
 
-        for (operations.items) |*op| {
-            op.text.deinit();
-        }
-
         // At one point, due to how events are emitted and how each operation is handled,
         // some operations can trigger a high amount of temporary string allocations,
         // that will immediately get edited again.
         // e.g. a formatter inserting ridiculous ammounts of \n on a model with a single line
         // Therefore, the strategy is to collapse all the operations into a huge single edit operation
-        try operations.resize(1);
-        operations.items[0] = try self._toSingleEditOperation(operations.items);
+        // (built from the full list before the original replacement strings are released).
+        try operations.ensureTotalCapacity(1);
+        const collapsed = try self._toSingleEditOperation(operations.items);
+        for (operations.items) |*op| {
+            op.text.deinit();
+        }
+        operations.shrinkRetainingCapacity(1);
+        operations.items[0] = collapsed;
     }
 
     fn _toSingleEditOperation(self: *PieceTreeTextBuffer, operations: []ValidatedEditOperation) !ValidatedEditOperation {
@@ -509,25 +514,32 @@ pub const PieceTreeTextBuffer = struct {
             .endColumn = lastEditRange.endColumn,
         };
 
-        var lastEndLineNumber = firstEditRange.endLineNumber;
-        var lastEndColumn = firstEditRange.endColumn;
+        var lastEndLineNumber = firstEditRange.startLineNumber;
+        var lastEndColumn = firstEditRange.startColumn;
 
         var result = ArrayList([]const u8).init(allocator);
         defer result.deinit();
+
+        // Keep every fetched old-text buffer alive until after the join; the
+        // slices in `result` point into these allocations.
+        var oldTexts = ArrayList(ArrayList(u8)).init(allocator);
+        defer {
+            for (oldTexts.items) |*oldText| oldText.deinit();
+            oldTexts.deinit();
+        }
 
         for (operations) |operation| {
             const range = operation.range;
             forceMoveMarkers = forceMoveMarkers or operation.forceMoveMarkers;
 
-            // (1) -- Push old text
-            const oldText = try self.getValueInRange(Range{
+            // (1) -- Push old text between the previous end and this start
+            try oldTexts.append(try self.getValueInRange(Range{
                 .startLineNumber = lastEndLineNumber,
                 .startColumn = lastEndColumn,
-                .endLineNumber = lastEndLineNumber,
-                .endColumn = lastEndColumn,
-            }, .TextDefined);
-            defer oldText.deinit();
-            try result.append(oldText.items);
+                .endLineNumber = range.startLineNumber,
+                .endColumn = range.startColumn,
+            }, .TextDefined));
+            try result.append(oldTexts.items[oldTexts.items.len - 1].items);
 
             // (2) -- Push new text
             if (!operation.text.isEmpty()) {
@@ -539,12 +551,8 @@ pub const PieceTreeTextBuffer = struct {
             lastEndColumn = range.endColumn;
         }
 
-        const text = String.initOwned(ArrayList(u8){
-            .allocator = allocator,
-            .capacity = result.items.len,
-            .items = try std.mem.join(allocator, "", result.items),
-            .pointer_stability = .{},
-        });
+        const joined = try std.mem.join(allocator, "", result.items);
+        const text = String.initOwned(ArrayList(u8).fromOwnedSlice(allocator, joined));
         const eolResult = countEOL(text.items());
         return ValidatedEditOperation{
             .sortIndex = 0,
@@ -863,4 +871,88 @@ test "getCharacterCountInRange" {
         .endLineNumber = 1,
         .endColumn = 10,
     }, .TextDefined));
+}
+
+test "applyEdits: collapses 1000+ operations without losing text" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../../test/common/port/testSupport.zig").TestModel;
+
+    var source: [2000]u8 = undefined;
+    @memset(&source, 'a');
+    var test_model = try TestModel.init(allocator, &source, "plaintext");
+    defer test_model.deinit();
+
+    var operations = std.array_list.Managed(Model.IdentifiedSingleEditOperation).init(allocator);
+    defer operations.deinit();
+    for (0..1000) |i| {
+        const column = i * 2 + 1;
+        try operations.append(Model.IdentifiedSingleEditOperation.init(
+            Range.init(1, column, 1, column + 1),
+            String.initBorrowed("b"),
+        ));
+    }
+    _ = try test_model.model.applyEdits(operations.items, false);
+
+    var content = try test_model.model.getLineContent(1);
+    defer content.deinit();
+    var expected = std.array_list.Managed(u8).init(allocator);
+    defer expected.deinit();
+    for (0..2000) |i| {
+        try expected.append(if (i % 2 == 0) 'b' else 'a');
+    }
+    try std.testing.expectEqualStrings(expected.items, content.items);
+}
+
+test "getValueLengthInRange compensates EOL length in both directions" {
+    const allocator = std.testing.allocator;
+    var crlf_buffers = [_]StringBuffer{try StringBuffer.init(allocator, "a\r\nb\r\nc")};
+    var crlf = try PieceTreeTextBuffer.init(allocator, &crlf_buffers, "", .CRLF, false, false, true, true);
+    defer crlf.deinit();
+    const full = Range.init(1, 1, 3, 2);
+    try std.testing.expectEqual(@as(usize, 7), crlf.getValueLengthInRange(full, .CRLF));
+    try std.testing.expectEqual(@as(usize, 5), crlf.getValueLengthInRange(full, .LF));
+
+    var lf_buffers = [_]StringBuffer{try StringBuffer.init(allocator, "a\nb\nc")};
+    var lf = try PieceTreeTextBuffer.init(allocator, &lf_buffers, "", .LF, false, false, true, true);
+    defer lf.deinit();
+    try std.testing.expectEqual(@as(usize, 7), lf.getValueLengthInRange(full, .CRLF));
+    try std.testing.expectEqual(@as(usize, 5), lf.getValueLengthInRange(full, .LF));
+}
+
+test "createSnapshot: immutable, BOM on first read, empty snapshot reads BOM once" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "abc")};
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, true);
+    defer buffer.deinit();
+
+    var snapshot = try buffer.createSnapshot(true);
+    defer snapshot.deinit();
+
+    try std.testing.expectEqualStrings("abc", snapshot.read().?);
+    try std.testing.expect(snapshot.read() == null);
+}
+
+test "createSnapshot: prepends the BOM to the first piece" {
+    const allocator = std.testing.allocator;
+    const bom = "\xEF\xBB\xBF";
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "abc")};
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, bom, .LF, false, false, true, true);
+    defer buffer.deinit();
+
+    var snapshot = try buffer.createSnapshot(true);
+    defer snapshot.deinit();
+    try std.testing.expectEqualStrings("\xEF\xBB\xBFabc", snapshot.read().?);
+    try std.testing.expect(snapshot.read() == null);
+}
+
+test "createSnapshot: empty text reads the BOM once" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "")};
+    var buffer = try PieceTreeTextBuffer.init(allocator, &buffers, "", .LF, false, false, true, true);
+    defer buffer.deinit();
+
+    var snapshot = try buffer.createSnapshot(true);
+    defer snapshot.deinit();
+    try std.testing.expectEqualStrings("", snapshot.read().?);
+    try std.testing.expect(snapshot.read() == null);
 }

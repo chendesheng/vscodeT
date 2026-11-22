@@ -1,3 +1,10 @@
+// Port of the editor side of `src/vs/editor/common/model/tokens/textMateTokenizer.ts`
+// and `textMateTokenizationSupport.ts`, backed by the standalone
+// `vscode_textmate` package.
+//
+// Token indices from the engine are UTF-16 code units; this adapter converts
+// token starts to UTF-8 byte offsets. Embedded-language attribution and the
+// font-token pipeline are not ported (single-language terminal tokens).
 // TextMate tokenization backed by the faithful `vscode_textmate` port.
 //
 // The port works in UTF-16 code units; this adapter converts token starts to
@@ -207,10 +214,17 @@ const TextMateSupport = struct {
         else
             null;
         const previous = if (input) |textmate_state| (if (textmate_state.first_line) null else textmate_state.stack) else null;
-        const result = try self.grammar.tokenizeLine(line, previous, 0);
+        // Upstream limits a line to 500 ms. A partial tokenization keeps the
+        // input state so following lines are not derived from truncated token
+        // state.
+        const result = try self.grammar.tokenizeLine(line, previous, 500);
 
-        const next = try allocator.create(TextMateState);
-        next.* = .{ .stack = result.rule_stack, .first_line = false };
+        var end_state = state;
+        if (!result.stopped_early) {
+            const next = try allocator.create(TextMateState);
+            next.* = .{ .stack = result.rule_stack, .first_line = false };
+            end_state = .{ .context = next, .vtable = &TextMateState.vtable };
+        }
         const active_theme = tokenization.lockActiveTokenTheme();
         defer tokenization.unlockActiveTokenTheme();
         return .{
@@ -220,7 +234,7 @@ const TextMateSupport = struct {
                 result.tokens,
                 active_theme,
             ),
-            .endState = .{ .context = next, .vtable = &TextMateState.vtable },
+            .endState = end_state,
         };
     }
 

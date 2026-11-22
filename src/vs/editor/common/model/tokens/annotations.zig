@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/model/tokens/annotations.ts`.
+//
+// Covers set/rebase/applyEdit plus the worker serialization helpers
+// (`ISerializedAnnotation`, `serialize`, `deserialize`). Serialized annotation
+// values are opaque to this module; the caller supplies the codec.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -363,6 +368,51 @@ pub fn AnnotationsUpdate(comptime T: type) type {
                 });
             }
         }
+
+        pub fn ISerializedAnnotation(comptime S: type) type {
+            return struct {
+                range: OffsetRange,
+                annotation: ?S,
+            };
+        }
+
+        /// Serializes the updates. The returned slice is owned by the caller;
+        /// any values allocated by `serializing_func` are owned by the caller
+        /// as well.
+        pub fn serialize(
+            self: *const Self,
+            allocator: Allocator,
+            comptime S: type,
+            serializing_func: *const fn (T) S,
+        ) ![]ISerializedAnnotation(S) {
+            const result = try allocator.alloc(ISerializedAnnotation(S), self.updates.items.len);
+            errdefer allocator.free(result);
+            for (self.updates.items, 0..) |update, i| {
+                result[i] = .{
+                    .range = update.range,
+                    .annotation = if (update.annotation) |value| serializing_func(value) else null,
+                };
+            }
+            return result;
+        }
+
+        pub fn deserialize(
+            comptime S: type,
+            allocator: Allocator,
+            serialized: []const ISerializedAnnotation(S),
+            deserializing_func: *const fn (S) T,
+        ) !Self {
+            var result = Self.init(allocator);
+            errdefer result.deinit();
+            try result.updates.ensureTotalCapacity(serialized.len);
+            for (serialized) |item| {
+                result.updates.appendAssumeCapacity(.{
+                    .range = item.range,
+                    .annotation = if (item.annotation) |value| deserializing_func(value) else null,
+                });
+            }
+            return result;
+        }
     };
 }
 
@@ -430,4 +480,38 @@ test "AnnotationsUpdate: rebase" {
     try update.rebase(&edit);
     try std.testing.expectEqual(@as(usize, 1), update.annotations().len);
     try std.testing.expectEqual(OffsetRange.init(3, 4), update.annotations()[0].range);
+}
+
+fn serializeIdentity(value: u32) u32 {
+    return value;
+}
+
+fn deserializeIdentity(value: u32) u32 {
+    return value;
+}
+
+test "AnnotationsUpdate: serialize and deserialize round trip" {
+    const allocator = std.testing.allocator;
+
+    var update = try AnnotationsUpdate(u32).create(allocator, &.{
+        .{ .range = OffsetRange.init(1, 3), .annotation = 7 },
+        .{ .range = OffsetRange.init(5, 8), .annotation = null },
+        .{ .range = OffsetRange.init(9, 12), .annotation = 9 },
+    });
+    defer update.deinit();
+
+    const serialized = try update.serialize(allocator, u32, serializeIdentity);
+    defer allocator.free(serialized);
+    try std.testing.expectEqual(@as(usize, 3), serialized.len);
+    try std.testing.expectEqual(@as(?u32, 7), serialized[0].annotation);
+    try std.testing.expectEqual(@as(?u32, null), serialized[1].annotation);
+    try std.testing.expectEqualDeep(OffsetRange.init(9, 12), serialized[2].range);
+
+    var restored = try AnnotationsUpdate(u32).deserialize(u32, allocator, serialized, deserializeIdentity);
+    defer restored.deinit();
+    try std.testing.expectEqual(@as(usize, 3), restored.annotations().len);
+    try std.testing.expectEqualDeep(update.annotations()[0].range, restored.annotations()[0].range);
+    try std.testing.expectEqual(@as(?u32, 7), restored.annotations()[0].annotation);
+    try std.testing.expectEqual(@as(?u32, null), restored.annotations()[1].annotation);
+    try std.testing.expectEqual(@as(?u32, 9), restored.annotations()[2].annotation);
 }

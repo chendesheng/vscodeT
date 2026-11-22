@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/model/pieceTreeTextBuffer/pieceTreeBase.ts`.
+//
+// The port uses UTF-8 byte offsets/columns instead of UTF-16 code units.
+// `getCharCode` returns the byte at the offset; the codepoint helpers are the
+// UTF-8-aware replacements used by the text model.
 const std = @import("std");
 const Io = std.Io;
 const rbt = @import("./rbTreeBase.zig");
@@ -131,6 +136,15 @@ pub const Piece = struct {
     lineFeedCnt: usize,
 };
 
+/// JS `String.prototype.substring` semantics: clamp to the string and swap
+/// reversed offsets instead of panicking the Zig slice.
+fn jsSubstring(str: []const u8, start_: usize, end_: usize) []const u8 {
+    var start = @min(start_, str.len);
+    var end = @min(end_, str.len);
+    if (start > end) std.mem.swap(usize, &start, &end);
+    return str[start..end];
+}
+
 pub const StringBuffer = struct {
     buffer: ArrayList(u8),
     lineStarts: ArrayList(usize),
@@ -175,11 +189,11 @@ pub const StringBuffer = struct {
     }
 
     fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
-        return self.buffer.items[start..end];
+        return jsSubstring(self.buffer.items, start, end);
     }
 
     fn substr(self: *const StringBuffer, start: usize, len: usize) []const u8 {
-        return self.buffer.items[start .. start + len];
+        return jsSubstring(self.buffer.items, start, start +| len);
     }
 
     fn append(self: *StringBuffer, value: []const u8) !void {
@@ -195,53 +209,76 @@ pub const StringBuffer = struct {
     }
 };
 
-// Readonly snapshot for piece tree.
-// In a real multiple thread environment, to make snapshot reading always work correctly, we need to
-// 1. Make TreeNode.piece immutable, then reading and writing can run in parallel.
-// 2. TreeNode/Buffers normalization should not happen during snapshot reading.
-const PieceTreeSnapshot = struct {
-    _pieces: ArrayList(*const Piece),
-    _index: ?usize, // null is for BOM
+/// Readonly snapshot for piece tree.
+///
+/// The port copies `Piece` values instead of referencing live tree nodes, so
+/// later edits cannot mutate a snapshot. The tree itself must outlive the
+/// snapshot because piece contents are read from its buffers lazily.
+pub const PieceTreeSnapshot = struct {
+    allocator: Allocator,
+    _pieces: ArrayList(Piece),
+    _index: usize,
     _tree: *const PieceTreeBase,
+    /// First read with a BOM is `BOM + first piece`; precomputed so `read`
+    /// stays infallible.
+    _first_read: ?ArrayList(u8),
     _BOM: []const u8,
 
     fn init(tree: *const PieceTreeBase, BOM: []const u8) !PieceTreeSnapshot {
-        var pieces = ArrayList(*const Piece).init(tree.allocator);
+        var pieces = ArrayList(Piece).init(tree.allocator);
+        errdefer pieces.deinit();
 
         var iter = tree.root.iterator();
         while (iter.next()) |node| {
-            if (node.piece) |*piece| {
+            if (node.piece) |piece| {
                 try pieces.append(piece);
             }
         }
 
+        var first_read: ?ArrayList(u8) = null;
+        if (pieces.items.len > 0 and BOM.len > 0) {
+            var joined = ArrayList(u8).init(tree.allocator);
+            errdefer joined.deinit();
+            try joined.appendSlice(BOM);
+            try joined.appendSlice(tree.getPieceContent(&pieces.items[0]));
+            first_read = joined;
+        }
+
         return .{
+            .allocator = tree.allocator,
             ._pieces = pieces,
-            ._index = if (BOM.len > 0) null else 0,
+            ._index = 0,
             ._tree = tree,
+            ._first_read = first_read,
             ._BOM = BOM,
         };
     }
 
-    fn deinit(self: *const PieceTreeSnapshot) void {
+    pub fn deinit(self: *PieceTreeSnapshot) void {
+        if (self._first_read) |*first| first.deinit();
         self._pieces.deinit();
     }
 
-    fn read(self: *PieceTreeSnapshot) ?[]const u8 {
-        if (self._index == null) {
-            self._index = 0;
-            return self._BOM;
-        }
-
-        const i = self._index.?;
-
-        if (i >= self._pieces.items.len) {
+    pub fn read(self: *PieceTreeSnapshot) ?[]const u8 {
+        if (self._pieces.items.len == 0) {
+            if (self._index == 0) {
+                self._index = 1;
+                return self._BOM;
+            }
             return null;
         }
 
-        const ret = self._tree.getPieceContent(self._pieces.items[i]);
-        self._index = i + 1;
-        return ret;
+        if (self._index >= self._pieces.items.len) {
+            return null;
+        }
+
+        const index = self._index;
+        self._index += 1;
+        if (index == 0) {
+            if (self._first_read) |*first| return first.items;
+            return self._tree.getPieceContent(&self._pieces.items[0]);
+        }
+        return self._tree.getPieceContent(&self._pieces.items[index]);
     }
 };
 
@@ -463,7 +500,7 @@ pub const PieceTreeBase = struct {
                 try tempChunk.appendSlice(str);
             } else {
                 // flush anyways
-                try replaceEOL(&tempChunk, self._EOL);
+                try replaceEOL(&tempChunk, eol);
                 try chunks.append(try StringBuffer.init(self.allocator, tempChunk.items));
                 try tempChunk.replaceRange(0, tempChunk.items.len, str);
             }
@@ -482,6 +519,9 @@ pub const PieceTreeBase = struct {
         self._EOLLength = if (eol == .CRLF) 2 else 1;
         try self._searchCache.reset();
         try self._lastVisitedLine.reset();
+        // Upstream `create()` starts from a fresh tree state; without this the
+        // next insert uses a cursor from the previous document.
+        self._lastChangeBufferPos = .{ .line = 0, .column = 0 };
         try self.resetBuffers(chunks.items);
     }
 
@@ -507,7 +547,7 @@ pub const PieceTreeBase = struct {
         try self.normalizeEOL(self._EOL);
     }
 
-    pub fn createSnapshot(self: *PieceTreeBase, BOM: []u8) !PieceTreeSnapshot {
+    pub fn createSnapshot(self: *const PieceTreeBase, BOM: []const u8) !PieceTreeSnapshot {
         return try PieceTreeSnapshot.init(self, BOM);
     }
 
@@ -529,8 +569,8 @@ pub const PieceTreeBase = struct {
             }
 
             const str = self.getNodeContent(node);
-            const startPosition = other.nodeAt(offset);
-            const endPosition = other.nodeAt(offset + str.len);
+            const startPosition = other.nodeAt(offset) orelse return false;
+            const endPosition = other.nodeAt(offset + str.len) orelse return false;
             const val = try other.getValueInRange2(startPosition, endPosition);
             defer val.deinit();
 
@@ -744,9 +784,7 @@ pub const PieceTreeBase = struct {
                 danglingCR = true;
                 if (piece.end.column == 0) {
                     // The last line ended with a \r, let's undo the push, it will be pushed by next iteration
-                    if (lines.pop()) |last| {
-                        last.deinit();
-                    }
+                    _ = lines.pop();
                 } else {
                     currentLine = ArrayList(u8).init(self.allocator);
                     try currentLine.appendSlice(buffer.substr(lineStarts[pieceEndLine], piece.end.column - 1));
@@ -886,13 +924,13 @@ pub const PieceTreeBase = struct {
         return self.getOffsetAt(lineNumber + 1, 1) - self.getOffsetAt(lineNumber, 1) - self._EOLLength;
     }
 
-    pub fn getCharCode(self: *const PieceTreeBase, offset: usize) usize {
-        const nodePos = self.nodeAt(offset);
+    pub fn getCharCode(self: *const PieceTreeBase, offset: usize) u8 {
+        const nodePos = self.nodeAt(offset) orelse return 0;
         return self._getCharCode(nodePos);
     }
 
     pub fn getNearestChunk(self: *const PieceTreeBase, offset: usize) []const u8 {
-        const nodePos = self.nodeAt(offset);
+        const nodePos = self.nodeAt(offset) orelse return "";
         if (nodePos.remainder == nodePos.node.piece.?.length) {
             // the offset is at the head of next node.
             const matchingNode = nodePos.node.next();
@@ -1014,14 +1052,14 @@ pub const PieceTreeBase = struct {
             if (startLineNumber == searchRange.endLineNumber) {
                 const lineContent = try self.getLineContent(startLineNumber);
                 defer lineContent.deinit();
-                const text = lineContent.items[startColumn .. searchRange.endColumn - 1];
+                const text = jsSubstring(lineContent.items, startColumn, searchRange.endColumn -| 1);
                 try _findMatchesInLine(searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
                 return result;
             }
 
             const lineContent = try self.getLineContent(startLineNumber);
             defer lineContent.deinit();
-            const text = lineContent.items[startColumn..];
+            const text = jsSubstring(lineContent.items, startColumn, lineContent.items.len);
             try _findMatchesInLine(searchData, text, startLineNumber, startColumn, &result, captureMatches, limitResultCount);
 
             if (result.items.len >= limitResultCount) {
@@ -1038,7 +1076,7 @@ pub const PieceTreeBase = struct {
             const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn - 1 else 0;
             const lineContent = try self.getLineContent(startLineNumber);
             defer lineContent.deinit();
-            const text = lineContent.items[startColumn .. searchRange.endColumn - 1];
+            const text = jsSubstring(lineContent.items, startColumn, searchRange.endColumn -| 1);
             try _findMatchesInLine(searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
             return result;
         }
@@ -1104,7 +1142,7 @@ pub const PieceTreeBase = struct {
         defer self._searchCache.reset() catch {};
 
         if (self.root != SENTINEL) {
-            const n = self.nodeAt(offset);
+            const n = self.nodeAt(offset) orelse return error.InvalidOffset;
             const node = n.node;
             const remainder = n.remainder;
             const nodeStartOffset = n.nodeStartOffset;
@@ -1239,8 +1277,8 @@ pub const PieceTreeBase = struct {
             return;
         }
 
-        const startPosition = self.nodeAt(offset);
-        const endPosition = self.nodeAt(offset + cnt);
+        const startPosition = self.nodeAt(offset) orelse return error.InvalidOffset;
+        const endPosition = self.nodeAt(offset + cnt) orelse return error.InvalidOffset;
         const startNode = startPosition.node;
         const endNode = endPosition.node;
 
@@ -1466,14 +1504,14 @@ pub const PieceTreeBase = struct {
             var newPieces = ArrayList(Piece).init(self.allocator);
             var txt = text;
             while (txt.len > AverageBufferSize) {
-                const lastChar = txt[txt.len - 1];
-                var splitText: []const u8 = undefined;
-
-                if (lastChar == '\r') {
-                    splitText = txt[0 .. AverageBufferSize - 1];
-                } else {
-                    splitText = safeUtf8Prefix(txt, AverageBufferSize);
+                // Upstream inspects the character at the split boundary, not
+                // the last character of the whole remaining text: a CRLF (or
+                // a multibyte character) must not be split across buffers.
+                var splitLength = safeUtf8Prefix(txt, AverageBufferSize).len;
+                if (splitLength == AverageBufferSize and txt[AverageBufferSize - 1] == '\r') {
+                    splitLength = safeUtf8Prefix(txt, AverageBufferSize - 1).len;
                 }
+                const splitText = txt[0..splitLength];
                 txt = txt[splitText.len..];
 
                 const buf = try StringBuffer.init(self.allocator, splitText);
@@ -1807,7 +1845,7 @@ pub const PieceTreeBase = struct {
         self.updateTreeMetadata(node, @intCast(val.len), lf_delta);
     }
 
-    fn nodeAt(self: *const PieceTreeBase, offset: usize) NodePosition {
+    fn nodeAt(self: *const PieceTreeBase, offset: usize) ?NodePosition {
         var offs = offset;
         var x = self.root;
         if (self._searchCache.get(offs)) |cache| {
@@ -1839,7 +1877,7 @@ pub const PieceTreeBase = struct {
             }
         }
 
-        return undefined;
+        return null;
     }
 
     fn nodeAtPosition(self: *const PieceTreeBase, lineNumber: usize, column: usize) ?NodePosition {
@@ -2000,7 +2038,7 @@ pub const PieceTreeBase = struct {
             .start = prevPiece.start,
             .end = if (prevPieceEnd.column == 0)
                 // it means, last line ends with \r, not \r\n
-                .{ .line = prevPieceEnd.line - 1, .column = lineStarts[prevPieceEnd.line] - lineStarts[prevPieceEnd.line - 1] }
+                .{ .line = prevPieceEnd.line - 1, .column = lineStarts[prevPieceEnd.line] - lineStarts[prevPieceEnd.line - 1] - 1 }
             else
                 .{ .line = prevPieceEnd.line, .column = prevPieceEnd.column - 1 },
             .lineFeedCnt = prevPiece.lineFeedCnt - 1,
@@ -2769,4 +2807,68 @@ test "getLineCodepointRange at the end of an empty line" {
     try std.testing.expectEqual([2]usize{ 0, 0 }, empty);
     const end = tree.getLineCodepointRange(1, 1);
     try std.testing.expectEqual([2]usize{ 1, 1 }, end);
+}
+
+test "getLinesContent: dangling CR at the end of a piece does not double free" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "")};
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    try tree.insert(0, "a\r\nb", false);
+    try tree.insert(2, "X", false);
+
+    const lines = try tree.getLinesContent();
+    defer {
+        for (lines.items) |line| line.deinit();
+        lines.deinit();
+    }
+    try std.testing.expect(lines.items.len > 0);
+}
+
+test "insert: a large insert keeps CRLF at buffer boundaries intact" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "")};
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    var text = try allocator.alloc(u8, 65537);
+    defer allocator.free(text);
+    @memset(text[0..65534], 'a');
+    text[65534] = '\r';
+    text[65535] = '\n';
+    text[65536] = 'b';
+
+    try tree.insert(0, text, false);
+
+    try std.testing.expectEqual(@as(usize, 2), tree.getLineCount());
+    var second = try tree.getLineContent(2);
+    defer second.deinit();
+    try std.testing.expectEqualStrings("b", second.items);
+}
+
+test "StringBuffer.substring clamps and swaps like JS" {
+    const allocator = std.testing.allocator;
+    var buffer = try StringBuffer.init(allocator, "abc");
+    defer buffer.deinit();
+
+    try std.testing.expectEqualStrings("bc", buffer.substring(1, 99));
+    try std.testing.expectEqualStrings("abc", buffer.substring(3, 0));
+    try std.testing.expectEqualStrings("", buffer.substr(10, 5));
+    try std.testing.expectEqualStrings("bc", buffer.substr(1, 2));
+}
+
+test "piece tree: out-of-range offsets are safe" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "abc")};
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), tree.getCharCode(10));
+    try std.testing.expectEqualStrings("", tree.getNearestChunk(10));
+    try std.testing.expectError(error.InvalidOffset, tree.insert(10, "x", false));
+    try std.testing.expectError(error.InvalidOffset, tree.delete(10, 1));
+    var content = try tree.getLineContent(1);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("abc", content.items);
 }

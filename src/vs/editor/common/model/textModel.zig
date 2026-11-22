@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/model/textModel.ts`.
+//
+// All columns and offsets are UTF-8 bytes (see AGENTS.md). Font decorations
+// are not tracked because the terminal has one font/size/line height; the
+// parameter is documented on the decoration provider instead.
 const std = @import("std");
 const Uri = std.Uri;
 const unicode = std.unicode;
@@ -20,6 +25,7 @@ const ModelDeltaDecoration = Model.ModelDeltaDecoration;
 const SearchData = Model.SearchData;
 const FindMatch = Model.FindMatch;
 const ModelContentChangedEvent = @import("../textModelEvents.zig").ModelContentChangedEvent;
+const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
 const ModelRawContentChangedEvent = @import("../textModelEvents.zig").ModelRawContentChangedEvent;
 const PieceTreeTextBuffer = @import("./pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const EditStack = @import("./editStack.zig").EditStack;
@@ -74,6 +80,7 @@ const TokenizationTextModelPart = @import("./tokens/tokenizationTextModelPart.zi
 const BracketPairsTextModelPart = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairsTextModelPart;
 const BracketInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketInfo;
 const BracketPairInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairInfo;
+const BracketPairWithMinIndentationInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairWithMinIndentationInfo;
 const ColorizedBracketPairsDecorationProvider = @import("./bracketPairsTextModelPart/colorizedBracketPairsDecorationProvider.zig").ColorizedBracketPairsDecorationProvider;
 const WordAtPosition = @import("../../../base/common/utils.zig").WordAtPosition;
 const ModelTokensChangedEvent = @import("../textModelEvents.zig").ModelTokensChangedEvent;
@@ -113,13 +120,17 @@ pub const TextModelSnapshot = struct {
         return TextModelSnapshot{ ._source = source, ._eos = false };
     }
 
-    pub fn read(self: *TextModelSnapshot) ?[]const u8 {
+    pub fn deinit(self: *TextModelSnapshot) void {
+        self._source.deinit();
+    }
+
+    pub fn read(self: *TextModelSnapshot) !?[]const u8 {
         if (self._eos) {
             return null;
         }
 
         const allocator = self._source.allocator;
-        const result: ArrayList(u8) = ArrayList(u8).init(allocator);
+        var result: ArrayList(u8) = ArrayList(u8).init(allocator);
         defer result.deinit();
 
         while (true) {
@@ -130,7 +141,7 @@ pub const TextModelSnapshot = struct {
                 if (result.items.len == 0) {
                     return null;
                 } else {
-                    return std.mem.join(allocator, "", result.items);
+                    return try std.mem.join(allocator, "", result.items);
                 }
             }
 
@@ -141,7 +152,7 @@ pub const TextModelSnapshot = struct {
             }
 
             if (result.items.len >= 64 * 1024) {
-                return std.mem.join(allocator, "", result.items);
+                return try std.mem.join(allocator, "", result.items);
             }
         }
     }
@@ -453,6 +464,12 @@ pub const TextModel = struct {
                 pairs.handleDidChangeBackgroundTokenizationState();
             }
         }.cb) catch {};
+        model._languageService.onDidChangeLanguageConfiguration.event(model, struct {
+            fn cb(e: LanguageConfigurationServiceChangeEvent, m: *TextModel) !void {
+                m._bracketPairs.handleLanguageConfigurationServiceChange(e);
+                m._tokenizationTextModelPart.handleLanguageConfigurationServiceChange(e);
+            }
+        }.cb) catch {};
         // Upstream event chain: bracket tree change -> colorization provider
         // change -> model decorations changed (the view invalidates its
         // resolved decorations and repaints with the new colors).
@@ -471,6 +488,7 @@ pub const TextModel = struct {
 
     pub fn deinit(self: *TextModel) void {
         self.__isDisposing = true;
+        self._onWillDispose.fire({}) catch {};
         const allocator = self._buffer.getAllocator();
         self._buffer.deinit();
         self._decorationsTree.deinit();
@@ -503,8 +521,8 @@ pub const TextModel = struct {
         return (self._onWillDispose.hasListeners() or self._onDidChangeDecorations.hasListeners() or self._tokenizationTextModelPart._hasListeners() or self._onDidChangeOptions.hasListeners() or self._onDidChangeAttached.hasListeners() or self._onDidChangeInjectedText.hasListeners() or self._onDidChangeLineHeight.hasListeners() or self._eventEmitter.hasListeners());
     }
 
-    pub fn equalsTextBuffer(self: *const TextModel, other: *const PieceTreeTextBuffer) bool {
-        return self._buffer.equals(other);
+    pub fn equalsTextBuffer(self: *const TextModel, other: *const PieceTreeTextBuffer) !bool {
+        return try self._buffer.equals(other);
     }
 
     pub fn getTextBuffer(self: *const TextModel) PieceTreeTextBuffer {
@@ -639,7 +657,7 @@ pub const TextModel = struct {
         return self._buffer.getMightContainUnusualLineTerminators();
     }
 
-    pub fn removeUnusualLineTerminators(self: *TextModel, selections: ?[]const Selection) !void {
+    pub fn removeUnusualLineTerminators(self: *TextModel, selections: ?[]Selection) !void {
         const matches = try self.findMatches(strings.UNUSUAL_LINE_TERMINATORS, null, true, false, null, false, std.math.maxInt(usize));
         defer matches.deinit();
 
@@ -650,7 +668,7 @@ pub const TextModel = struct {
         for (matches.items) |match| {
             try editOperations.append(IdentifiedSingleEditOperation.init(match.range, null));
         }
-        try self.pushEditOperations(selections, editOperations.items, null, null);
+        _ = try self.pushEditOperations(selections, editOperations.items, null, null);
     }
 
     pub fn mightContainNonBasicASCII(self: *const TextModel) bool {
@@ -665,7 +683,8 @@ pub const TextModel = struct {
         return self._initialUndoRedoSnapshot;
     }
 
-    pub fn getOffsetAt(self: *const TextModel, position: Position) usize {
+    pub fn getOffsetAt(self: *const TextModel, rawPosition: Position) usize {
+        const position = self._validatePosition(rawPosition.lineNumber, rawPosition.column, StringOffsetValidationType.Relaxed);
         return self._buffer.getOffsetAt(position.lineNumber, position.column);
     }
 
@@ -849,7 +868,7 @@ pub const TextModel = struct {
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
     }
 
-    fn _isValidPosition(self: *TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) bool {
+    fn _isValidPosition(self: *const TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) bool {
         if (lineNumber < 1 or column < 1) {
             return false;
         }
@@ -877,7 +896,7 @@ pub const TextModel = struct {
         return true;
     }
 
-    fn _validatePosition(self: *TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) Position {
+    fn _validatePosition(self: *const TextModel, lineNumber: usize, column: usize, validationType: StringOffsetValidationType) Position {
         const lineCount = self._buffer.getLineCount();
 
         if (lineNumber < 1) {
@@ -956,9 +975,31 @@ pub const TextModel = struct {
         const endColumn = end.column;
 
         if (validationType == StringOffsetValidationType.Strict) {
-            const startCodepointRange = self._buffer.getLineCodepointRange(startLineNumber, startColumn - 1);
-            const endCodepointRange = self._buffer.getLineCodepointRange(endLineNumber, endColumn - 1);
-            return Range.init(startLineNumber, startCodepointRange[0] + 1, endLineNumber, endCodepointRange[1] + 1);
+            // UTF-8 adaptation of upstream's surrogate-pair check: expand only
+            // the endpoints that are inside a code point, and leave already
+            // valid endpoints untouched.
+            const start_offset = startColumn - 1;
+            const end_offset = endColumn - 1;
+            const startCodepointRange = self._buffer.getLineCodepointRange(startLineNumber, start_offset);
+            const endCodepointRange = self._buffer.getLineCodepointRange(endLineNumber, end_offset);
+            const start_inside = startCodepointRange[0] != start_offset;
+            const end_inside = endCodepointRange[0] != end_offset;
+
+            if (!start_inside and !end_inside) {
+                return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
+            }
+
+            if (startLineNumber == endLineNumber and startColumn == endColumn) {
+                // Do not expand a collapsed range, simply move it to a valid location.
+                return Range.init(startLineNumber, startCodepointRange[0] + 1, endLineNumber, endCodepointRange[0] + 1);
+            }
+
+            return Range.init(
+                startLineNumber,
+                if (start_inside) startCodepointRange[0] + 1 else startColumn,
+                endLineNumber,
+                if (end_inside) endCodepointRange[1] + 1 else endColumn,
+            );
         }
 
         return Range.init(startLineNumber, startColumn, endLineNumber, endColumn);
@@ -1064,6 +1105,10 @@ pub const TextModel = struct {
                 if (ret2.items.len > 0) {
                     return ret2.items[0];
                 }
+
+                // Upstream returns null after both line-by-line scans; regex
+                // sources are the only path that reaches the multiline search.
+                return null;
             } else {
                 return null;
             }
@@ -1098,8 +1143,10 @@ pub const TextModel = struct {
         }
         self._onDidChangeDecorations.beginDeferredEmit();
         self._eventEmitter.beginDeferredEmit();
-        defer self._eventEmitter.endDeferredEmit(null);
+        // LIFO defers: declare decorations first so the content event fires
+        // before decorations, matching upstream's `finally` order.
         defer self._onDidChangeDecorations.endDeferredEmit();
+        defer self._eventEmitter.endDeferredEmit(null);
         if (self._initialUndoRedoSnapshot == null) {
             self._initialUndoRedoSnapshot = try self._undoRedoService.createSnapshot(self.uri());
         }
@@ -1406,7 +1453,10 @@ pub const TextModel = struct {
         for (allDecorations.items) |node| {
             const range = node.range.?; // the range is defined due to `_onBeforeEOLChange`
 
-            const delta = node.cachedAbsoluteStart - node.start;
+            // Upstream `delta` is a JS number and may be negative (an edit
+            // before the node shifted an ancestor delta left). Keep the
+            // arithmetic signed instead of underflowing `usize`.
+            const delta: isize = @as(isize, @intCast(node.cachedAbsoluteStart)) - @as(isize, @intCast(node.start));
 
             const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
             const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
@@ -1415,8 +1465,8 @@ pub const TextModel = struct {
             node.cachedAbsoluteEnd = endOffset;
             node.cachedVersionId = versionId;
 
-            node.start = startOffset - delta;
-            node.end = endOffset - delta;
+            node.start = @intCast(@as(isize, @intCast(startOffset)) - delta);
+            node.end = @intCast(@as(isize, @intCast(endOffset)) - delta);
 
             recomputeMaxEnd(node);
         }
@@ -1529,13 +1579,18 @@ pub const TextModel = struct {
                             }
                         }.predicate);
 
-                        try rawContentChanges.append(.{
-                            .lineChanged = ModelRawLineChanged.init(
-                                editLineNumber,
-                                try self.getLineContent(currentEditLineNumber),
-                                decorationsInCurrentLine,
-                            ),
-                        });
+                        const copied_injected: ?[]const LineInjectedText = if (decorationsInCurrentLine) |slice|
+                            try allocator.dupe(LineInjectedText, slice)
+                        else
+                            null;
+                        var line_changed = ModelRawLineChanged.init(
+                            editLineNumber,
+                            try self.getLineContent(currentEditLineNumber),
+                            copied_injected,
+                        );
+                        line_changed.owns_injected_text = true;
+                        errdefer line_changed.deinit();
+                        try rawContentChanges.append(.{ .lineChanged = line_changed });
 
                         if (j == 0) break;
                         j -= 1;
@@ -1566,14 +1621,21 @@ pub const TextModel = struct {
                                 return r.lineNumber < ctx;
                             }
                         }.predicate);
-                        try injectedTexts.append(injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
+                        const line_injected = injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
                             fn predicate(ctx: usize, r: LineInjectedText) bool {
                                 return r.lineNumber == ctx;
                             }
-                        }.predicate));
+                        }.predicate);
+                        const copied_injected: ?[]const LineInjectedText = if (line_injected) |slice|
+                            try allocator.dupe(LineInjectedText, slice)
+                        else
+                            null;
+                        try injectedTexts.append(copied_injected);
                     }
 
-                    try rawContentChanges.append(.{ .linesInserted = ModelRawLinesInserted.init(spliceLineNumber + 1, startLineNumber + insertingLinesCnt, newLines, injectedTexts) });
+                    var inserted_event = ModelRawLinesInserted.init(spliceLineNumber + 1, startLineNumber + insertingLinesCnt, newLines, injectedTexts);
+                    errdefer inserted_event.deinit();
+                    try rawContentChanges.append(.{ .linesInserted = inserted_event });
                 }
 
                 lineCount += changeLineCountDelta;
@@ -1640,10 +1702,15 @@ pub const TextModel = struct {
                 const affectedLines = lines.list;
 
                 var lineChangeEvents = ArrayList(ModelRawLineChanged).init(self.getAllocator());
-                defer lineChangeEvents.deinit();
+                defer {
+                    for (lineChangeEvents.items) |*event| event.deinit();
+                    lineChangeEvents.deinit();
+                }
 
                 for (affectedLines.items) |lineNumber| {
-                    try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self._getInjectedTextInLine(lineNumber)));
+                    var event = ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self._getInjectedTextInLine(lineNumber));
+                    event.owns_injected_text = true;
+                    try lineChangeEvents.append(event);
                 }
                 try self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
             }
@@ -1774,7 +1841,7 @@ pub const TextModel = struct {
         if (node == null) {
             return null;
         }
-        return node.options;
+        return node.?.options.*;
     }
 
     pub fn getDecorationRange(self: *TextModel, decorationId: u64) ?Range {
@@ -1796,7 +1863,7 @@ pub const TextModel = struct {
         const lineCount = self.getLineCount();
         const startLineNumber_ = @min(lineCount, @max(1, startLineNumber));
         const endLineNumber_ = @min(lineCount, @max(1, endLineNumber));
-        const endColumn = self.getLineMaxColumn(endLineNumber);
+        const endColumn = self.getLineMaxColumn(endLineNumber_);
         const range = Range.init(startLineNumber_, 1, endLineNumber_, endColumn);
 
         var decorations = try self._getDecorationsInRange(range, ownerId, filterOutValidation, onlyMarginDecorations);
@@ -1819,6 +1886,29 @@ pub const TextModel = struct {
     pub fn getOverviewRulerDecorations(self: *TextModel, ownerId: usize, filterOutValidation: bool) ![]ModelDecoration {
         var decorations = try self._decorationsTree.getAll(self, ownerId, filterOutValidation, true, false);
         return decorations.toOwnedSlice();
+    }
+
+    /// Upstream `getFontDecorationsInRange`: only decorations that opt into
+    /// font overriding, from the model tree (token font decorations have no
+    /// provider in this port).
+    pub fn getFontDecorationsInRange(self: *TextModel, range: Range, ownerId: usize) ![]ModelDecoration {
+        const validated = self.validateRange(range);
+        var decorations = try self._decorationsTree.getAllInInterval(
+            self,
+            self.getOffsetAt(validated.getStartPosition()),
+            self.getOffsetAt(validated.getEndPosition()),
+            ownerId,
+            false,
+            false,
+        );
+        defer decorations.deinit();
+
+        var result = ArrayList(ModelDecoration).init(self.getAllocator());
+        errdefer result.deinit();
+        for (decorations.items) |decoration| {
+            if (decoration.options.affectsFont orelse false) try result.append(decoration);
+        }
+        return result.toOwnedSlice();
     }
 
     pub fn getInjectedTextDecorations(self: *TextModel, ownerId: usize) ![]ModelDecoration {
@@ -1902,6 +1992,7 @@ pub const TextModel = struct {
     }
 
     fn _changeDecorationOptionsImpl(self: *TextModel, ownerId: usize, decorationId: u64, options: *ModelDecorationOptions) void {
+        self._normalizeDecorationOptions(options);
         if (self._decorations.get(decorationId)) |node| {
             const nodeWasInOverviewRuler = (node.options.overviewRuler != null and node.options.overviewRuler.?.color != null);
             const nodeIsInOverviewRuler = (options.overviewRuler != null and options.overviewRuler.?.color != null);
@@ -1931,6 +2022,19 @@ pub const TextModel = struct {
             } else {
                 node.setOptions(options);
             }
+        }
+    }
+
+    /// Upstream normalizes options into a fresh `ModelDecorationOptions`
+    /// instance. The port normalizes the caller's object in place (idempotent);
+    /// class-name cleaning and tooltip HTML encoding remain unported.
+    fn _normalizeDecorationOptions(_: *TextModel, options: *ModelDecorationOptions) void {
+        if (options.stickiness == null) {
+            options.stickiness = .AlwaysGrowsWhenTypingAtEdges;
+        }
+        if (options.zIndex == null) options.zIndex = 0;
+        if (options.lineHeight) |height| {
+            if (height > LINE_HEIGHT_CEILING) options.lineHeight = LINE_HEIGHT_CEILING;
         }
     }
 
@@ -2006,7 +2110,8 @@ pub const TextModel = struct {
                 var node_ = node.?;
                 const newDecoration = newDecorations[newDecorationIndex];
                 const range = self._validateRangeRelaxedNoAllocations(newDecoration.range);
-                const options = newDecoration.options; // TODO: normalize options ??
+                const options = newDecoration.options;
+                self._normalizeDecorationOptions(options);
                 const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
                 const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
 
@@ -2066,6 +2171,13 @@ pub const TextModel = struct {
 
     pub fn getBracketPairsInRange(self: *TextModel, range: Range) !ArrayList(BracketPairInfo) {
         return self._bracketPairs.getBracketPairsInRange(range);
+    }
+
+    pub fn getBracketPairsInRangeWithMinIndentation(
+        self: *TextModel,
+        range: Range,
+    ) !ArrayList(BracketPairWithMinIndentationInfo) {
+        return self._bracketPairs.getBracketPairsInRangeWithMinIndentation(range);
     }
 
     pub fn getBracketsInRange(self: *TextModel, range: Range, onlyColorized: bool) !ArrayList(BracketInfo) {
@@ -2218,6 +2330,17 @@ test "TextModel.validateRange" {
     try std.testing.expectEqualDeep(Range.init(1, 1, 1, text.len + 1), textModel.validateRange(Range.init(1, 1, 1, 100)));
     try std.testing.expectEqualDeep(Range.init(1, 1, 1, 4), textModel.validateRange(Range.init(1, 1, 1, 2)));
     try std.testing.expectEqualDeep(Range.init(1, 1, 1, 7), textModel.validateRange(Range.init(1, 2, 1, 5)));
+
+    // A endpoint that is already on a code-point boundary is not expanded.
+    var asciiUndo = UndoRedoService.init(allocator);
+    defer asciiUndo.deinit();
+    var asciiModel = try createTestTextModel(allocator, "abc", &asciiUndo);
+    defer allocator.destroy(asciiModel);
+    defer asciiModel.deinit();
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 2), asciiModel.validateRange(Range.init(1, 0, 1, 2)));
+
+    // A collapsed range inside a multibyte code point moves before it.
+    try std.testing.expectEqualDeep(Range.init(1, 1, 1, 1), textModel.validateRange(Range.init(1, 2, 1, 2)));
 }
 
 test "TextModel.applyEdits" {
@@ -2534,7 +2657,8 @@ pub const DecorationsTrees = struct {
     }
 
     fn ensureAllNodesHaveRanges(self: *DecorationsTrees, host: *TextModel) !void {
-        _ = try self.getAll(host, 0, false, false, false);
+        var all = try self.getAll(host, 0, false, false, false);
+        all.deinit();
     }
 
     fn _ensureNodesHaveRanges(host: *TextModel, nodes: ArrayList(*IntervalNode)) !ArrayList(ModelDecoration) {
@@ -2731,7 +2855,7 @@ pub const DecorationsTrees = struct {
     }
 };
 pub fn createTextBuffer(allocator: Allocator, source: *Io.Reader, defaultEOL: EOL) !PieceTreeTextBuffer {
-    const factory = try createTextBufferFactory(allocator, source);
+    var factory = try createTextBufferFactory(allocator, source);
     defer factory.deinit();
     return try factory.create(defaultEOL);
 }
@@ -2855,10 +2979,10 @@ const DidChangeDecorationsEmitter = struct {
     }
 
     pub fn checkAffectedAndFire(self: *DidChangeDecorationsEmitter, options: *ModelDecorationOptions) void {
-        self._affectsMinimap = options.minimap != null;
-        self._affectsOverviewRuler = options.overviewRuler != null;
-        self._affectsGlyphMargin = options.glyphMarginClassName != null;
-        self._affectsLineNumber = options.lineNumberClassName != null;
+        self._affectsMinimap = self._affectsMinimap or options.minimap != null;
+        self._affectsOverviewRuler = self._affectsOverviewRuler or options.overviewRuler != null;
+        self._affectsGlyphMargin = self._affectsGlyphMargin or options.glyphMarginClassName != null;
+        self._affectsLineNumber = self._affectsLineNumber or options.lineNumberClassName != null;
         self.tryFire();
     }
 
@@ -3006,25 +3130,25 @@ pub const ModelDecorationsChangeAccessor = struct {
     // @param range Range that this decoration covers.
     // @param options Options associated with this decoration.
     // @return An unique identifier associated with this decoration.
-    fn addDecoration(self: *ModelDecorationsChangeAccessor, range: Range, options: *ModelDecorationOptions) !u64 {
+    pub fn addDecoration(self: *ModelDecorationsChangeAccessor, range: Range, options: *ModelDecorationOptions) !u64 {
         const ids = try self.model._deltaDecorationsImpl(self.ownerId, &[_]u64{}, &[_]ModelDeltaDecoration{.{ .range = range, .options = options }});
         return if (ids.len > 0) ids[0] else 0;
     }
     // Change the range that an existing decoration covers.
     // @param id The unique identifier associated with the decoration.
     // @param newRange The new range that this decoration covers.
-    fn changeDecoration(self: *ModelDecorationsChangeAccessor, id: u64, newRange: Range) void {
+    pub fn changeDecoration(self: *ModelDecorationsChangeAccessor, id: u64, newRange: Range) void {
         self.model._changeDecorationImpl(self.ownerId, id, newRange);
     }
     // Change the options associated with an existing decoration.
     // @param id The unique identifier associated with the decoration.
     // @param newOptions The new options associated with this decoration.
-    fn changeDecorationOptions(self: *ModelDecorationsChangeAccessor, id: u64, newOptions: *ModelDecorationOptions) void {
+    pub fn changeDecorationOptions(self: *ModelDecorationsChangeAccessor, id: u64, newOptions: *ModelDecorationOptions) void {
         self.model._changeDecorationOptionsImpl(self.ownerId, id, newOptions);
     }
     // Remove an existing decoration.
     // @param id The unique identifier associated with the decoration.
-    fn removeDecoration(self: *ModelDecorationsChangeAccessor, id: u64) void {
+    pub fn removeDecoration(self: *ModelDecorationsChangeAccessor, id: u64) void {
         self.model._deltaDecorationsImpl(self.ownerId, &[_]u64{id}, &[_]ModelDeltaDecoration{}) catch unreachable;
     }
     // Perform a minimum amount of operations, in order to transform the decorations
@@ -3034,7 +3158,7 @@ pub const ModelDecorationsChangeAccessor = struct {
     // @param oldDecorations Array containing previous decorations identifiers.
     // @param newDecorations Array describing what decorations should result after the call.
     // @return An array containing the new decorations identifiers.
-    fn deltaDecorations(self: *ModelDecorationsChangeAccessor, oldDecorations: []const u64, newDecorations: []const ModelDeltaDecoration) ![]u64 {
+    pub fn deltaDecorations(self: *ModelDecorationsChangeAccessor, oldDecorations: []const u64, newDecorations: []const ModelDeltaDecoration) ![]u64 {
         if (oldDecorations.len == 0 and newDecorations.len == 0) {
             return &[_]u64{};
         }
@@ -3080,4 +3204,149 @@ test "TextModel model decorations: add, query and remove" {
     const empty = try model.getAllDecorations(7, false);
     defer allocator.free(empty);
     try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test "TextModel.removeUnusualLineTerminators removes LS and PS" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+
+    var test_model = try TestModel.init(allocator, "a\u{2028}b\u{2029}c", "plaintext");
+    defer test_model.deinit();
+
+    try test_model.model.removeUnusualLineTerminators(null);
+
+    var content = try test_model.model.getLineContent(1);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("abc", content.items);
+}
+
+test "TextModel.setEOL keeps decorations with shifted deltas" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "0123456789 abcdefghij ABCDEFGHIJ", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var decorations = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 5, 1, 10), .options = @constCast(TRACKED_RANGE_OPTIONS[1]) },
+        .{ .range = Range.init(1, 15, 1, 20), .options = @constCast(TRACKED_RANGE_OPTIONS[1]) },
+        .{ .range = Range.init(1, 25, 1, 30), .options = @constCast(TRACKED_RANGE_OPTIONS[1]) },
+    };
+    const ids = try textModel.deltaDecorations(&.{}, &decorations, 1);
+    defer allocator.free(ids);
+
+    // Delete text before the decorations so their cached deltas differ from
+    // their relative starts, then change the EOL. Upstream's delta is signed.
+    var ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 1, 4), null),
+    };
+    _ = try textModel.applyEdits(&ops, false);
+
+    try textModel.setEOL(.CRLF);
+
+    const all = try textModel.getAllDecorations(0, false);
+    defer allocator.free(all);
+    try std.testing.expectEqual(@as(usize, 3), all.len);
+    var content = try textModel.getLineContent(1);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("3456789 abcdefghij ABCDEFGHIJ", content.items);
+}
+
+test "TextModel.setEOL resets the change cursor before the next insert" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "a\nb", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var append_ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(2, 2, 2, 2), String.initBorrowed("y")),
+    };
+    _ = try textModel.applyEdits(&append_ops, false);
+    try textModel.setEOL(.CRLF);
+
+    var insert_ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 1, 1), String.initBorrowed("x")),
+    };
+    _ = try textModel.applyEdits(&insert_ops, false);
+
+    const content = try textModel.getValue(.CRLF, false);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("xa\r\nby", content.items);
+}
+
+test "TextModel.getOffsetAt clamps relaxed positions" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "abc\ndef", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), textModel.getOffsetAt(Position.init(1, 100)));
+    try std.testing.expectEqual(@as(usize, 0), textModel.getOffsetAt(Position.init(0, 5)));
+    try std.testing.expectEqual(@as(usize, 7), textModel.getOffsetAt(Position.init(9, 9)));
+}
+
+test "TextModel.getLinesDecorations clamps the end line for its column" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "a\nb", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    const decorations = try textModel.getLinesDecorations(0, 99, 0, false, false);
+    defer allocator.free(decorations);
+    try std.testing.expectEqual(@as(usize, 0), decorations.len);
+}
+
+test "TextModel normalizes decoration options" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "abc", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var options = ModelDecorationOptions.init("test", .NeverGrowsWhenTypingAtEdges);
+    options.stickiness = null;
+    options.zIndex = null;
+    options.lineHeight = 400;
+    var decorations = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 1, 1, 2), .options = &options },
+    };
+    const ids = try textModel.deltaDecorations(&.{}, &decorations, 1);
+    defer allocator.free(ids);
+
+    const normalized = textModel.getDecorationOptions(ids[0]).?;
+    try std.testing.expectEqual(TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges, normalized.stickiness.?);
+    try std.testing.expectEqual(@as(usize, 0), normalized.zIndex.?);
+    try std.testing.expectEqual(@as(?usize, 300), normalized.lineHeight);
+}
+
+test "TextModel: getFontDecorationsInRange filters affectsFont" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "abcdef", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var font_options = ModelDecorationOptions.init("font", .NeverGrowsWhenTypingAtEdges);
+    font_options.affectsFont = true;
+    var plain_options = ModelDecorationOptions.init("plain", .NeverGrowsWhenTypingAtEdges);
+    var decorations = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 1, 1, 3), .options = &font_options },
+        .{ .range = Range.init(1, 3, 1, 5), .options = &plain_options },
+    };
+    const ids = try textModel.deltaDecorations(&.{}, &decorations, 1);
+    defer allocator.free(ids);
+
+    const found = try textModel.getFontDecorationsInRange(Range.init(1, 1, 1, 6), 0);
+    defer allocator.free(found);
+    try std.testing.expectEqual(@as(usize, 1), found.len);
+    try std.testing.expectEqual(ids[0], found[0].id);
 }

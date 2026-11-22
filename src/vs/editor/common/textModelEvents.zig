@@ -197,6 +197,8 @@ pub const ModelRawLineChanged = struct {
     detail: ArrayList(u8),
     // The injected text on the line.
     injectedText: ?[]const LineInjectedText,
+    /// The port stores an owned copy in deferred events; upstream relies on GC.
+    owns_injected_text: bool = false,
 
     pub fn init(lineNumber: usize, detail: ArrayList(u8), injectedText: ?[]const LineInjectedText) ModelRawLineChanged {
         return ModelRawLineChanged{
@@ -207,6 +209,9 @@ pub const ModelRawLineChanged = struct {
     }
 
     pub fn deinit(self: *const ModelRawLineChanged) void {
+        if (self.owns_injected_text) {
+            if (self.injectedText) |injected| self.detail.allocator.free(injected);
+        }
         self.detail.deinit();
     }
 };
@@ -251,6 +256,9 @@ pub const ModelRawLinesInserted = struct {
     pub fn deinit(self: *const ModelRawLinesInserted) void {
         for (self.detail.items) |*line| line.deinit();
         self.detail.deinit();
+        for (self.injectedTexts.items) |maybe_injected| {
+            if (maybe_injected) |injected| self.injectedTexts.allocator.free(injected);
+        }
         self.injectedTexts.deinit();
     }
 };

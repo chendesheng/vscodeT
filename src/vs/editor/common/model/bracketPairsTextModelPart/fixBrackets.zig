@@ -46,9 +46,6 @@ pub fn fixBracketsInLine(
     defer scanner.deinit();
     try scanner.scan(line_tokens);
 
-    for (scanner.tokens.items) |t| {
-        std.debug.print("TOKEN kind={s} len={d} text={?s}\n", .{ @tagName(t.kind), t.length, if (t.bracket) |b| b.bracket_text else null });
-    }
     var document = try parseTokens(allocator, scanner.takeTokens());
     defer document.deinit();
 
@@ -120,8 +117,8 @@ const Scanner = struct {
                 continue;
             }
 
-            if (matchAt(text, pos, defs, true)) |open| {
-                if (matchAt(text, pos, defs, false)) |close| {
+            if (matchAt(text, pos, text.len, defs, true)) |open| {
+                if (matchAt(text, pos, text.len, defs, false)) |close| {
                     if (close.len >= open.len) {
                         try self.emitText(last_pos, pos);
                         try self.emitBracket(close, false, language);
@@ -136,7 +133,7 @@ const Scanner = struct {
                 last_pos = pos;
                 continue;
             }
-            if (matchAt(text, pos, defs, false)) |close| {
+            if (matchAt(text, pos, text.len, defs, false)) |close| {
                 try self.emitText(last_pos, pos);
                 try self.emitBracket(close, false, language);
                 pos += close.len;
@@ -166,7 +163,7 @@ const Scanner = struct {
             const key = try std.fmt.allocPrint(self.allocator, "{s}:::{s}", .{ language, bracket_text });
             defer self.allocator.free(key);
             bracket_id = try self.ids.get(key);
-            bracket_ids = bracket_ids.add(bracket_id);
+            bracket_ids = try bracket_ids.add(bracket_id);
         } else {
             const defs = try self.getBrackets(language);
             for (defs.defs.items) |def| {
@@ -175,7 +172,7 @@ const Scanner = struct {
                 defer self.allocator.free(key);
                 const id = try self.ids.get(key);
                 if (bracket_id == 0) bracket_id = id;
-                bracket_ids = bracket_ids.add(id);
+                bracket_ids = try bracket_ids.add(id);
             }
         }
         try self.tokens.append(.{

@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/model/tokens/tokenizationTextModelPart.ts`.
+//
+// Semantic tokens, language/config events and word helpers are ported; font
+// token events are absent because the terminal has one font.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const TextModel = @import("../textModel.zig").TextModel;
@@ -266,7 +270,8 @@ pub const TokenizationTextModelPart = struct {
 
         if (tokenIndex > 0 and rightBoundaries[0] == position.column - 1) {
             const leftBoundaries = findLanguageBoundaries(&lineTokens, tokenIndex - 1);
-            if (wordHelper.getWordAtText(position.column, wordDefinition, lineContent.items[leftBoundaries[0]..leftBoundaries[1]], leftBoundaries[0])) |match| {
+            const leftWordDefinition = self.getWordDefinition(lineTokens.getLanguageId(tokenIndex - 1));
+            if (wordHelper.getWordAtText(position.column, leftWordDefinition, lineContent.items[leftBoundaries[0]..leftBoundaries[1]], leftBoundaries[0])) |match| {
                 if (match.startColumn <= _position.column and _position.column <= match.endColumn) {
                     return makeOwnedWord(self.textModel().getAllocator(), match);
                 }

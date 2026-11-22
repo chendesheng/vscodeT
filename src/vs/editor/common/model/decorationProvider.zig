@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/decorationProvider.ts`.
 const std = @import("std");
 const Range = @import("../core/range.zig").Range;
 const ModelDecoration = @import("../model.zig").ModelDecoration;

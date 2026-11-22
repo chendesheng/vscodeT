@@ -4,6 +4,7 @@ const Emitter = @import("../../../base/common/event.zig").Emitter;
 const Uri = std.Uri;
 const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const LanguageConfiguration = @import("../languages/languageConfiguration.zig").LanguageConfiguration;
+const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
 
 const language = @import("../languages/language.zig");
 const languages_associations = @import("./languagesAssociations.zig");
@@ -65,6 +66,10 @@ pub const LanguageService = struct {
     // An event emitted when languages have changed.
     onDidChange: Emitter(void),
 
+    // Upstream `ILanguageConfigurationService.onDidChange`: fired when a
+    // language configuration is registered or replaced.
+    onDidChangeLanguageConfiguration: Emitter(LanguageConfigurationServiceChangeEvent),
+
     pub fn init(allocator: Allocator, languageIdCodec: *LanguageIdCodec) LanguageService {
         return LanguageService{
             .languageIdCodec = languageIdCodec,
@@ -80,6 +85,7 @@ pub const LanguageService = struct {
             .onDidRequestBasicLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidRequestRichLanguageFeatures = Emitter([]const u8).init(allocator),
             .onDidChange = Emitter(void).init(allocator),
+            .onDidChangeLanguageConfiguration = Emitter(LanguageConfigurationServiceChangeEvent).init(allocator),
         };
     }
 
@@ -357,11 +363,13 @@ pub const LanguageService = struct {
         if (self._languageConfigurations.getEntry(languageId)) |entry| {
             entry.value_ptr.deinit();
             entry.value_ptr.* = configuration;
+            self.onDidChangeLanguageConfiguration.fire(.{ .languageId = languageId }) catch {};
             return;
         }
         const key = try self._languageConfigurations.allocator.dupe(u8, languageId);
         errdefer self._languageConfigurations.allocator.free(key);
         try self._languageConfigurations.put(key, configuration);
+        self.onDidChangeLanguageConfiguration.fire(.{ .languageId = languageId }) catch {};
     }
 
     pub fn getLanguageConfiguration(self: *LanguageService, languageId: []const u8) ?LanguageConfiguration {
@@ -388,6 +396,7 @@ pub const LanguageService = struct {
         self.onDidRequestBasicLanguageFeatures.deinit();
         self.onDidRequestRichLanguageFeatures.deinit();
         self.onDidChange.deinit();
+        self.onDidChangeLanguageConfiguration.deinit();
     }
 };
 

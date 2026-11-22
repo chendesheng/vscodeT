@@ -376,6 +376,32 @@ pub const RegExp = struct {
         return r >= 0;
     }
 
+    /// Searches starting at the end of the input, emulating JS
+    /// `regexp.lastIndex = input.length` for `Searcher`. The ordinary
+    /// `searchFrom` deliberately refuses an end offset so raw scanning loops
+    /// cannot spin on a terminal empty match.
+    pub fn searchFromEnd(self: *const RegExp, input: []const u8) ?SearchResult {
+        const region = Region.init();
+        const r = c.onig_search(
+            self.regex,
+            input.ptr,
+            input.ptr + input.len,
+            input.ptr + input.len,
+            input.ptr + input.len,
+            region._region,
+            c.ONIG_OPTION_DEFAULT,
+        );
+        if (r == c.ONIG_MISMATCH) {
+            region.deinit();
+            return null;
+        }
+        return SearchResult{
+            ._region = region,
+            ._input = input,
+            ._regex = self,
+        };
+    }
+
     pub fn encoding(self: *const RegExp) Encoding {
         return c.onig_get_encoding(self.regex);
     }
@@ -486,6 +512,13 @@ pub const SearchResultIterator = struct {
     fn nextIndex(current: *const SearchResult) usize {
         const input = current._input;
         const index = current.index();
+        // Like JS `RegExp.exec` with a global regexp, the next search starts
+        // at the end of the previous match. Only empty matches advance by one
+        // code point so iteration terminates.
+        const match_length = current.length();
+        if (match_length > 0) {
+            return index + match_length;
+        }
         const rest = input[index..];
         if (rest.len == 0) {
             return input.len;
@@ -615,10 +648,27 @@ test "SearchResultIterator" {
         try matches.append(current.groupN(0));
     }
 
-    try std.testing.expectEqual(3, matches.items.len);
+    // Like JS `RegExp.exec` with /g, the next search starts after the match.
+    try std.testing.expectEqual(1, matches.items.len);
     try std.testing.expectEqualSlices(u8, "123", matches.items[0]);
-    try std.testing.expectEqualSlices(u8, "234", matches.items[1]);
-    try std.testing.expectEqualSlices(u8, "345", matches.items[2]);
+}
+
+test "SearchResultIterator advances over empty matches" {
+    try initialize(null);
+    defer uninitialize();
+
+    const regex = try RegExp.init("a*", .{ .ignore_case = true });
+    defer regex.deinit();
+
+    var iter = regex.searchIterator("ba", 0);
+    var iterations: usize = 0;
+    while (iter.next()) |current| {
+        defer current.deinit();
+        iterations += 1;
+        if (iterations > 10) break;
+    }
+    try std.testing.expect(iterations <= 10);
+    try std.testing.expect(iterations >= 2);
 }
 
 test "SearchResultIterator not match" {

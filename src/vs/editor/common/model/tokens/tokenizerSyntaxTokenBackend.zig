@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/model/tokens/tokenizerSyntaxTokenBackend.ts`.
 const std = @import("std");
 const AutoHashMap = std.AutoHashMap;
 const ArrayList = std.array_list.Managed;
@@ -49,6 +50,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     _registryListener: ?usize = null,
     _attachedViewsListener: ?usize = null,
     _attachedViews: ?*AttachedViews = null,
+    _callbacks_registered: bool = false,
 
     pub fn init(languageIdCodec: *LanguageIdCodec, textModel_: *TextModel, languageId: []const u8) TokenizerSyntaxTokenBackend {
         const allocator = textModel_.getAllocator();
@@ -80,11 +82,15 @@ pub const TokenizerSyntaxTokenBackend = struct {
             self._allocator.destroy(tokenizer);
         }
         self._tokens.deinit();
+        var view_states = self._attachedViewStates.valueIterator();
+        while (view_states.next()) |handler| handler.deinit();
         self._attachedViewStates.deinit();
         self.super.deinit();
     }
 
     pub fn registerCallbacks(self: *TokenizerSyntaxTokenBackend, attachedViews: *AttachedViews) void {
+        if (self._callbacks_registered) return;
+        self._callbacks_registered = true;
         self._attachedViews = attachedViews;
         self._registryListener = TokenizationRegistry.instance.onDidChange(self, struct {
             fn cb(e: TokenizationSupportChangedEvent, this: *TokenizerSyntaxTokenBackend) !void {
@@ -98,19 +104,22 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 const view = e.first;
                 const state = e.second;
                 if (state) |newState| {
-                    var existing = this._attachedViewStates.get(view);
-                    if (existing == null) {
-                        existing = AttachedViewHandler.init(this, struct {
+                    const entry = try this._attachedViewStates.getOrPut(view);
+                    if (!entry.found_existing) {
+                        entry.value_ptr.* = AttachedViewHandler.init(this._allocator, this, struct {
                             fn f(ctx: *anyopaque, handler: *AttachedViewHandler) void {
                                 const backend: *TokenizerSyntaxTokenBackend = @ptrCast(@alignCast(ctx));
                                 backend.refreshRanges(handler._lineRanges);
                             }
                         }.f);
-                        try this._attachedViewStates.put(view, existing.?);
                     }
-                    existing.?.handleStateChange(newState);
+                    // Mutate the stored handler, not a by-value copy.
+                    entry.value_ptr.handleStateChange(newState);
                 } else {
-                    _ = this._attachedViewStates.remove(view);
+                    if (this._attachedViewStates.fetchRemove(view)) |removed| {
+                        var handler = removed.value;
+                        handler.deinit();
+                    }
                 }
             }
         }.cb) catch null;

@@ -49,7 +49,7 @@ pub const ILanguageConfigurationService = struct {
 pub const LanguageConfigurationServiceChangeEvent = struct {
     languageId: ?[]const u8,
 
-    pub fn affects(self: *LanguageConfigurationServiceChangeEvent, languageId: []const u8) bool {
+    pub fn affects(self: *const LanguageConfigurationServiceChangeEvent, languageId: []const u8) bool {
         if (self.languageId) |id| {
             return std.mem.eql(u8, id, languageId);
         }

@@ -42,7 +42,10 @@ test "threaded textmate tokenizer: initial tokens and edits reach the renderer" 
     defer ctx.deinit();
     try std.testing.expectEqual(@as(usize, 1), factory.controllerCount());
     const view = try ctx.model.onBeforeAttached();
-    defer ctx.model.onBeforeDetached(view) catch {};
+    defer {
+        ctx.model.onBeforeDetached(view) catch {};
+        ctx.allocator.destroy(view);
+    }
 
     try waitForWorker(factory, ctx.model);
     try std.testing.expect(try hasCommentToken(ctx.model, 2));

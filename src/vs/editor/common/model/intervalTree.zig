@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/model/intervalTree.ts`.
+//
+// Offsets are UTF-8 byte offsets. Font-decoration bits are not tracked (the
+// terminal has one font); owner, validation and margin filters are ported.
 const std = @import("std");
 const ModelDecoration = @import("../model.zig").ModelDecoration;
 const ModelDecorationOptions = @import("../model.zig").ModelDecorationOptions;
@@ -1274,7 +1278,9 @@ fn rightRotate(T: *IntervalTree, y: *IntervalNode) void {
 }
 
 fn computeMaxEnd(node: *const IntervalNode) usize {
-    var maxEnd = node.maxEnd;
+    // Upstream seeds from the node's own absolute end, so the bound shrinks
+    // again when the right-most interval is shortened.
+    var maxEnd = node.end;
     if (node.left != SENTINEL) {
         const leftMaxEnd = node.left.maxEnd;
         if (leftMaxEnd > maxEnd) {
@@ -1314,4 +1320,15 @@ pub fn intervalCompare(aStart: usize, aEnd: usize, bStart: usize, bEnd: usize) i
         return usizeSub(aEnd, bEnd);
     }
     return usizeSub(aStart, bStart);
+}
+
+test "computeMaxEnd shrinks with the node end" {
+    const node = try IntervalNode.init(std.testing.allocator, 1, 10, 20);
+    defer std.testing.allocator.destroy(node);
+    node.left = SENTINEL;
+    node.right = SENTINEL;
+    node.end = 15;
+    node.maxEnd = 20;
+    recomputeMaxEnd(node);
+    try std.testing.expectEqual(@as(usize, 15), node.maxEnd);
 }

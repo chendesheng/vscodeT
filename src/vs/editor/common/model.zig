@@ -117,12 +117,17 @@ pub const SearchData = struct {
     wordSeparators: ?*const WordCharacterClassifier,
     // The simple string to search for (if possible).
     simpleSearch: ?[]const u8,
+    /// JS `m` flag for the compiled regex (not an Oniguruma option: JS `m`
+    /// makes `^`/`$` line anchors, while Oniguruma's SINGLELINE does the
+    /// opposite).
+    multiline: bool = false,
 
-    pub fn init(regex: RegExp, wordSeparators: ?*const WordCharacterClassifier, simpleSearch: ?[]const u8) SearchData {
+    pub fn init(regex: RegExp, wordSeparators: ?*const WordCharacterClassifier, simpleSearch: ?[]const u8, multiline: bool) SearchData {
         return SearchData{
             .regex = regex,
             .wordSeparators = wordSeparators,
             .simpleSearch = simpleSearch,
+            .multiline = multiline,
         };
     }
 };
@@ -629,6 +634,14 @@ pub const ModelDecorationOptions = struct {
     glyphMargin: ?ModelDecorationGlyphMarginOptions,
     // If set, the decoration will override the line height of the lines it spans. Maximum value is 300px.
     lineHeight: ?usize,
+    // Optionally override the font family of the decorated text.
+    fontFamily: ?[]const u8,
+    // Optionally override the font size of the decorated text.
+    fontSize: ?[]const u8,
+    // Optionally override the font weight of the decorated text.
+    fontWeight: ?[]const u8,
+    // Optionally override the font style of the decorated text.
+    fontStyle: ?[]const u8,
     // If set, the decoration will be rendered in the lines decorations with this CSS class name.
     linesDecorationsClassName: ?[]const u8,
     // Controls the tooltip text of the line decoration.
@@ -679,6 +692,10 @@ pub const ModelDecorationOptions = struct {
             .lineNumberHoverMessage = null,
             .isWholeLine = null,
             .lineHeight = null,
+            .fontFamily = null,
+            .fontSize = null,
+            .fontWeight = null,
+            .fontStyle = null,
             .showIfCollapsed = null,
             .collapseOnReplaceEdit = null,
             .overviewRuler = null,
@@ -700,15 +717,6 @@ pub const ModelDecorationOptions = struct {
             .hideInCommentTokens = null,
             .hideInStringTokens = null,
         };
-    }
-
-    fn initModelDecorationOptionsDefaults(options: *ModelDecorationOptions) void {
-        options.stickiness = options.stickiness orelse TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges;
-        options.zIndex = options.zIndex orelse 0;
-        options.overviewRuler = if (options.overviewRuler) |overviewRuler| ModelDecorationOverviewRulerOptions.init(overviewRuler) else null;
-        options.minimap = if (options.minimap) |minimap| ModelDecorationMinimapOptions.init(minimap) else null;
-        options.glyphMargin = if (options.glyphMargin) |glyphMargin| ModelDecorationGlyphMarginOptions.init(glyphMargin) else null;
-        options.linesDecorationsTooltip = if (options.linesDecorationsTooltip) |tooltip| strings.htmlAttributeEncodeValue(tooltip) else null;
     }
 };
 

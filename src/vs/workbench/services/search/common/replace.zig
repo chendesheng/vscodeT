@@ -37,7 +37,7 @@ pub const ReplacePattern = struct {
             strings.containsLF(source_pattern);
         const regex = try strings.createRegExp(allocator, source_pattern, info.is_regex, info.is_word_match, .{
             .ignore_case = !info.is_case_sensitive,
-            .multiline = multiline,
+            .singleline = !multiline,
         });
 
         return .{
