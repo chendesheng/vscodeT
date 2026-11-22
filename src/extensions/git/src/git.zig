@@ -1398,6 +1398,11 @@ pub fn parseGitDiffShortStat(line: []const u8) GitCommitShortStat {
     };
 }
 
+fn isGitShortStatLine(line: []const u8) bool {
+    return std.mem.indexOf(u8, line, "file changed") != null or
+        std.mem.indexOf(u8, line, "files changed") != null;
+}
+
 /// Port of the extension's `parseGitCommits` for the `-z` output described in
 /// the module header: seven newline fields, the message up to a NUL, then an
 /// optional shortstat line.
@@ -1430,7 +1435,11 @@ pub fn parseGitCommits(allocator: Allocator, bytes: []const u8) ![]GitCommit {
         if (position < bytes.len and bytes[position] == '\n') {
             if (findByte(bytes, position + 1, '\n')) |end| {
                 const stat_line = bytes[position + 1 .. end];
-                if (std.mem.indexOf(u8, stat_line, "files changed") != null) {
+                // Upstream matches `files? changed`: git prints "1 file changed"
+                // for a single-file commit. Requiring the plural here used to
+                // leave the shortstat line in the stream, so the next record
+                // was read as a hash and every later commit was dropped.
+                if (isGitShortStatLine(stat_line)) {
                     short_stat = parseGitDiffShortStat(stat_line);
                     position = end + 1;
                 }

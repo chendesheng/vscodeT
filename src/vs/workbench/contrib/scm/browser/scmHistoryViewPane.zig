@@ -766,6 +766,13 @@ pub const SCMHistoryViewPane = struct {
             return false;
         }
         if (row_index >= self.rows.items.len) return false;
+        // Upstream opens the Load More element on click (`onDidOpen`), so the
+        // first click must page in history instead of only moving the cursor.
+        if (std.meta.activeTag(self.rows.items[row_index]) == .load_more) {
+            try self.loadMoreFromRow();
+            self.ensureSelectionVisible();
+            return true;
+        }
         if (row_index == self.selection) {
             try self.toggleSelected();
         } else {
@@ -972,6 +979,9 @@ pub const SCMHistoryViewPane = struct {
                     .flex_shrink = 1,
                     .color = foreground,
                     .bold = vm.kind == .head,
+                    // Upstream's `IconLabel` keeps a four-pixel gap after the
+                    // leading graph/icon; the terminal equivalent is one cell.
+                    .padding = .{ .left = 1 },
                 });
                 const subject_text = try truncate(self.allocator, vm.history_item.subject, label_width);
                 defer self.allocator.free(subject_text);

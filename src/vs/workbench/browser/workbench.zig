@@ -8062,25 +8062,22 @@ pub const Workbench = struct {
         if (x >= self.cols) return;
         const max_width = self.cols - x - 1;
         if (max_width < 12) return;
-        const width = @min(max_width, 60);
         var lines: usize = 1;
         for (content) |ch| {
             if (ch == '\n') lines += 1;
         }
         const max_height = self.workbenchRows() -| ui.cell.snap(rect.y) -| 2;
-        if (max_height < 3) return;
-        const height = @min(max_height, @min(lines + 2, 12));
+        if (max_height < scm_history_hover_chrome + 1) return;
+        const size = scmHistoryHoverSize(max_width, max_height, lines);
 
-        if (self.scm_hover_surface == null or self.scm_hover_surface.?.doc.cols != width or self.scm_hover_surface.?.doc.rows != height) {
+        if (self.scm_hover_surface == null or self.scm_hover_surface.?.doc.cols != size.width or self.scm_hover_surface.?.doc.rows != size.height) {
             if (self.scm_hover_surface) |*surface| {
-                try surface.resize(width, height);
+                try surface.resize(size.width, size.height);
             } else {
-                self.scm_hover_surface = try ui.Surface.init(self.allocator, .{ .cols = width, .rows = height });
+                self.scm_hover_surface = try ui.Surface.init(self.allocator, .{ .cols = size.width, .rows = size.height });
             }
         }
         const surface = &self.scm_hover_surface.?;
-        const doc = surface.document();
-        doc.clear();
         var background = ui.Color{ .r = 37, .g = 37, .b = 38 };
         var foreground = ui.Color{ .r = 204, .g = 204, .b = 204 };
         var border = ui.Color{ .r = 69, .g = 69, .b = 69 };
@@ -8089,25 +8086,8 @@ pub const Workbench = struct {
             foreground = palette.color("editorHoverWidget.foreground", .{ 204, 204, 204 });
             border = palette.color("editorHoverWidget.border", .{ 69, 69, 69 });
         }
-        const root = try doc.createElement(.div);
-        root.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(width) },
-            .height = .{ .cells = @floatFromInt(height) },
-            .background = background,
-            .color = foreground,
-            .border = .all(1),
-            .border_color = border,
-            .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .white_space = .pre,
-            .overflow = .hidden,
-        });
-        _ = try root.appendText(content);
-        doc.setRoot(root);
-        try surface.paintFrame();
-        try self.frame.next.blit(surface.grid(), x, ui.cell.snap(rect.y), width, height);
+        try paintScmHistoryHover(surface, content, size, background, foreground, border);
+        try self.frame.next.blit(surface.grid(), x, ui.cell.snap(rect.y), size.width, size.height);
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
@@ -9456,6 +9436,65 @@ fn commandGitOpenFile(context: *anyopaque) anyerror!void {
     const tab = self.activeTab() orelse return;
     const diff = tab.diff orelse return;
     try self.openPath(diff.model.modified_path);
+}
+
+/// The SCM history hover is an `editorHoverWidget`: one cell of border plus
+/// one cell of content padding on every side. `ui` `width`/`height` describe
+/// the content box, so the allocated surface is the border box and the DOM
+/// root stays four cells smaller; sizing the root to the surface clipped the
+/// right and bottom edges.
+const scm_history_hover_chrome: usize = 4;
+const scm_history_hover_max_width: usize = 60;
+const scm_history_hover_max_height: usize = 12;
+
+const ScmHistoryHoverSize = struct {
+    /// Border-box size of the overlay surface.
+    width: usize,
+    height: usize,
+    /// Content-box size of the DOM root inside border and padding.
+    content_width: usize,
+    content_height: usize,
+};
+
+fn scmHistoryHoverSize(max_width: usize, max_height: usize, lines: usize) ScmHistoryHoverSize {
+    const width = @min(max_width, scm_history_hover_max_width);
+    const height = @min(max_height, @min(lines + scm_history_hover_chrome, scm_history_hover_max_height));
+    return .{
+        .width = width,
+        .height = height,
+        .content_width = width -| scm_history_hover_chrome,
+        .content_height = height -| scm_history_hover_chrome,
+    };
+}
+
+fn paintScmHistoryHover(
+    surface: *ui.Surface,
+    content: []const u8,
+    size: ScmHistoryHoverSize,
+    background: ui.Color,
+    foreground: ui.Color,
+    border: ui.Color,
+) !void {
+    const doc = surface.document();
+    doc.clear();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = @floatFromInt(size.content_width) },
+        .height = .{ .cells = @floatFromInt(size.content_height) },
+        .background = background,
+        .color = foreground,
+        .border = .all(1),
+        .border_color = border,
+        .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+        .white_space = .pre,
+        .overflow = .hidden,
+    });
+    _ = try root.appendText(content);
+    doc.setRoot(root);
+    try surface.paintFrame();
 }
 
 fn commandDiffNext(context: *anyopaque) anyerror!void {
@@ -14072,6 +14111,28 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Graph") != null);
     workbench.scm_view_model.?.setCollapsed("graph", false);
 
+    // The history hover is a bordered overlay: every edge of its surface must
+    // carry a border glyph. The DOM root is four cells smaller than the
+    // surface (one cell border plus one cell padding on each side); sizing the
+    // content box to the whole surface used to clip the right/bottom edges.
+    var hover_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer hover_frame.deinit();
+    try workbench.render(&hover_frame.writer);
+    history_view.clearHover();
+    history_view.hovered_row = 0;
+    history_view.hover_content = try allocator.dupe(u8, "7d272ae workbench: report Explorer open failures on click\nA single click opened a preview editor and discarded the change.\nthat Enter and the async open path use, and keep focus in the editor.");
+    var hovered_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer hovered_frame.deinit();
+    try workbench.render(&hovered_frame.writer);
+    const hover_surface = &(workbench.scm_hover_surface orelse return error.TestExpectedHoverSurface);
+    const hover_grid = hover_surface.grid();
+    try std.testing.expect(hover_grid.cols >= 12 and hover_grid.rows >= 5);
+    try std.testing.expectEqual(@as(u32, '┌'), hover_grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, '┐'), hover_grid.cluster[hover_grid.cols - 1]);
+    try std.testing.expectEqual(@as(u32, '└'), hover_grid.cluster[(hover_grid.rows - 1) * hover_grid.cols]);
+    try std.testing.expectEqual(@as(u32, '┘'), hover_grid.cluster[hover_grid.rows * hover_grid.cols - 1]);
+    history_view.clearHover();
+
     // Expanding the first commit appends its changed-file rows.
     history_view.selection = 0;
     const rows_before_expand = history_view.rows.items.len;
@@ -14173,6 +14234,59 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expectEqual(@as(usize, 0), file_tab.editor.lineDecorationsWidth());
     workbench.quick_diff_controller.?.setConfig(.{ .decorations = .all });
     try std.testing.expectEqual(@as(usize, 1), file_tab.editor.lineDecorationsWidth());
+}
+
+test "Workbench: clicking Load More pages the SCM history" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(allocator, root, &.{ "symbolic-ref", "HEAD", "refs/heads/main" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    var number: usize = 0;
+    while (number < 4) : (number += 1) {
+        const contents = try std.fmt.allocPrint(allocator, "commit {d}\n", .{number});
+        defer allocator.free(contents);
+        try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = contents });
+        if (!try runGitTest(allocator, root, &.{ "add", "a.txt" })) return error.SkipZigTest;
+        const message = try std.fmt.allocPrint(allocator, "commit {d}", .{number});
+        defer allocator.free(message);
+        if (!try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", message })) return error.SkipZigTest;
+    }
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/a.txt", .{root});
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.initGit();
+    _ = try workbench.showActivityById("scm");
+
+    const view = workbench.scm_history_view orelse return error.TestExpectedHistoryView;
+    view.setConfig(.{ .page_size = 2, .page_on_scroll = false });
+    try view.refresh(.reload);
+    try std.testing.expectEqual(@as(usize, 3), view.rows.items.len);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const container = workbench.scm_container orelse return error.TestExpectedScmContainer;
+    const body = container.bodyRect("graph") orelse return error.TestExpectedGraphBody;
+    try std.testing.expect(ui.cell.snap(body.h) >= 3);
+    const x = ui.cell.snap(body.x) + 2;
+    const y = ui.cell.snap(body.y) + 2;
+    var click = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
+    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expectEqual(@as(usize, 4), view.rows.items.len);
 }
 
 fn runGitTest(allocator: Allocator, root: []const u8, args: []const []const u8) !bool {
