@@ -13,8 +13,10 @@
 // replace toggle/previous/next/close/preserve-case/replace/replace-all
 // controls.
 // TUI-specific: the key map (documented in the README), the cell layout, and
-// the absence of the browser sash, view zone, input history and accessibility
-// tree. Ctrl-H cannot be used for replace because terminals report it as
+// the absence of the browser sash, input history and accessibility tree. The
+// browser `FindWidgetViewZone` becomes a terminal top inset: while the bar is
+// visible and `editor.find.addExtraSpaceOnTop` is enabled, the editor reserves
+// the bar's 1-2 rows above line 1 and shifts text/hit testing below it. Ctrl-H cannot be used for replace because terminals report it as
 // Backspace; the replace row is on Ctrl-R instead.
 
 const std = @import("std");
@@ -89,6 +91,7 @@ pub const FindWidget = struct {
     focused: bool = false,
     focus_field: FocusField = .find,
     widget_width: usize = 0,
+    add_extra_space_on_top: bool = true,
     focus_node_value: ?*ui.Node = null,
     /// The control under the pointer last frame, for the hover style.
     hover_control: ?Control = null,
@@ -190,6 +193,17 @@ pub const FindWidget = struct {
         self.bar_root = null;
         self.state.change(.{ .is_revealed = false }, false, true);
         if (self.on_close) |callback| callback(self.close_context);
+    }
+
+    pub fn setAddExtraSpaceOnTop(self: *FindWidget, enabled: bool) void {
+        self.add_extra_space_on_top = enabled;
+    }
+
+    /// Upstream `editor.find.addExtraSpaceOnTop` + `_getHeight()`: the find
+    /// view zone occupies the widget's own rows at the top of the editor.
+    pub fn viewZoneRows(self: *const FindWidget) usize {
+        if (!self.state.is_revealed or !self.add_extra_space_on_top) return 0;
+        return if (self.state.is_replace_revealed) 2 else 1;
     }
 
     fn getId(context: *anyopaque) []const u8 {

@@ -4410,6 +4410,15 @@ pub const Workbench = struct {
 
     const ShowTabs = enum { none, single, multiple };
 
+    fn findAddExtraSpaceOnTop(self: *Workbench) bool {
+        const configuration = self.configuration orelse return true;
+        const value = configuration.getValue("editor.find.addExtraSpaceOnTop", .{}) orelse return true;
+        return switch (value.*) {
+            .bool => |enabled| enabled,
+            else => true,
+        };
+    }
+
     fn editorShowTabs(self: *Workbench) ShowTabs {
         const configuration = self.configuration orelse return .multiple;
         const value = configuration.getValue("workbench.editor.showTabs", .{}) orelse return .multiple;
@@ -8533,6 +8542,9 @@ pub const Workbench = struct {
             try self.renderBreadcrumbs(pane, x, y + pane.titleHeight(), width, active_group);
         }
         if (pane.activeTab()) |active| {
+            if (active.controllers) |controllers| {
+                controllers.find_add_extra_space = self.findAddExtraSpaceOnTop();
+            }
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
         }
     }
@@ -15646,4 +15658,31 @@ test "Workbench: hiding the tab row reclaims it for content" {
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "alpha") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "hidden_tabs.txt") == null);
+}
+
+test "Workbench: the find bar reserves a view-zone row" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "find_zone.txt", "alpha\nbeta");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    const tab = workbench.activeTab().?;
+    try tab.ensureControllers();
+    tab.controllers.?.find.widget().open();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    const top = ui.cell.snap(pane.rect.y) + pane.chromeHeight();
+    const row = try workbench.frame.prev.rowText(allocator, top + 1);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "alpha") != null);
+    try std.testing.expectEqual(@as(usize, 1), tab.top_view_zone_rows);
 }

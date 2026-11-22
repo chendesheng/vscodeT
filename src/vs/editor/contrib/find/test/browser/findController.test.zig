@@ -589,3 +589,30 @@ test "FindController: replace-row controls preserve case and replace one" {
     defer first_line.deinit();
     try std.testing.expectEqualStrings("omega", first_line.items);
 }
+
+test "FindController: addExtraSpaceOnTop controls the view-zone rows" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+
+    const widget = controller.widget();
+    try controller.open(false);
+    try std.testing.expectEqual(@as(usize, 1), widget.viewZoneRows());
+    widget.toggleReplace();
+    try std.testing.expectEqual(@as(usize, 2), widget.viewZoneRows());
+
+    widget.setAddExtraSpaceOnTop(false);
+    try std.testing.expectEqual(@as(usize, 0), widget.viewZoneRows());
+    widget.setAddExtraSpaceOnTop(true);
+    try std.testing.expectEqual(@as(usize, 2), widget.viewZoneRows());
+}

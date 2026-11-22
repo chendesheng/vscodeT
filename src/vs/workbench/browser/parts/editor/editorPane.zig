@@ -72,6 +72,7 @@ pub const Tab = struct {
     async_io: ?Io = null,
     last_width: usize = 0,
     last_height: usize = 0,
+    top_view_zone_rows: usize = 0,
     preview_rect: ?ui.Rect = null,
     selection_listeners: ?*std.array_list.Managed(SelectionListener) = null,
     selection_handler: ViewEventHandler = .{},
@@ -274,6 +275,13 @@ pub const Tab = struct {
     /// Paints the tab into `frame`. A file tab paints its single view; a diff
     /// tab paints both panes plus the center gutter.
     pub fn paint(self: *Tab, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
+        if (self.controllers) |controllers| {
+            controllers.find.widget().setAddExtraSpaceOnTop(controllers.find_add_extra_space);
+        }
+        const zone_rows = self.findViewZoneRows();
+        if (zone_rows != self.top_view_zone_rows and self.last_width > 0 and self.last_height > 0) {
+            self.layoutCells(self.last_width, self.last_height);
+        }
         if (self.image_preview) |pane| {
             if (self.last_width != w or self.last_height != h) try self.layoutImage(w, h);
             try pane.paint(frame, x, y, w, h);
@@ -429,6 +437,11 @@ pub const Tab = struct {
         return if (self.image_input) |input| input.path else null;
     }
 
+    fn findViewZoneRows(self: *Tab) usize {
+        const controllers = self.controllers orelse return 0;
+        return controllers.find.widget().viewZoneRows();
+    }
+
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
         self.last_width = width;
         self.last_height = height;
@@ -442,7 +455,11 @@ pub const Tab = struct {
         }
         const preview_width = if (self.markdown_preview_visible) markdownPreviewWidth(width) else 0;
         const editor_width = if (preview_width > 0) width -| preview_width -| 1 else width;
+        const zone_rows = self.findViewZoneRows();
+        self.top_view_zone_rows = zone_rows;
         self.editor.setViewport(@max(editor_width, 1), @max(height, 1));
+        self.editor.setTopInset(zone_rows);
+        self.view.setTopInset(zone_rows);
         self.view.invalidate();
         if (preview_width > 0) {
             if (self.markdown_preview) |preview| {
@@ -683,6 +700,7 @@ pub const Controllers = struct {
     completion_providers: [2]completion.CompletionItemProvider,
     completion_count: usize = 1,
     hover_registration: ?IDisposable = null,
+    find_add_extra_space: bool = true,
     suggest: *SuggestController,
 
     /// Applies the palette-derived hover code-block background and the find
