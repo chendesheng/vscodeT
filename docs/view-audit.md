@@ -65,7 +65,7 @@ For each row:
 | Suggest widget | `vs/editor/contrib/suggest/browser/*` | `editor/contrib/suggest/browser/*` | **T** | Trigger/session model, windowed list, one-cell scrollbar, selection, mouse listeners, plain-text documentation and the `editorSuggestWidget.*`/`scrollbarSlider.*` theme are ported (20 tests); browser details/status chrome and accessibility panes are replaced by the terminal list/docs panes. |
 | Hover widget | `vs/editor/contrib/hover/browser/*` | `editor/contrib/hover/browser/*` | **T** | Content-hover controller, scheduling, markdown rendering, the marker participant and the `editorHoverWidget.*`/`focusBorder`/scrollbar theme are ported; browser sticky/pin chrome, status-bar actions and code-action links are terminal omissions. |
 | Sticky scroll | `vs/editor/contrib/stickyScroll/browser/*`, `src/tui/stickyScrollHost.zig` | `editor/contrib/stickyScroll/browser/*` | **T** | Candidate rebuild, folding, 25% cap, overlay focus and theme are ported; it paints as a top-left overlay instead of an upstream view zone. |
-| Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | **P** | Side-by-side aligned rows, gutter/overview-ruler features and snapshot editors are ported (20 tests). Inline diff mode, hide-unchanged regions and moved-block detection are documented omissions. |
+| Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | **T** | Side-by-side aligned rows, filler rows, gutter/overview-ruler features, decorations, navigation and snapshot editors are ported (20 tests). The terminal uses two cell panes with a one-cell center gutter; inline diff mode, hide-unchanged regions and moved-block detection are documented terminal/view-layout omissions. |
 | Snippet tab stops | decorations in `src/tui/editorView.zig` | `editor/contrib/snippet/browser/*` | **T** | Parser/session, placeholder groups, transforms, `snippet-placeholder`/`finish-snippet-placeholder` themed decorations and TUI Tab/Shift-Tab/Escape placeholder navigation are ported. The browser controller's remaining action/context-key plumbing and full upstream session tests are terminal command-layer omissions. |
 | Rulers | `vs/editor/browser/viewParts/rulers/rulers.zig` | `editor/browser/viewParts/rulers/rulers.ts` | **T** | Configured `editor.rulers` columns are mapped to visible cell columns and painted as one-cell vertical guides through the view-line guide layer; the guide is skipped where a text glyph occupies the cell because a cell cannot show both. Per-ruler CSS color overrides are not parsed; `editorRuler.foreground` is used. |
 | Scroll decoration | `vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig` + `src/tui/editorView.zig` | `editor/browser/viewParts/scrollDecoration/` | **T** | The shadow appears after the first view line scrolls away and tints the first text row with `scrollbar.shadow`; the terminal has no alpha/blur, so it is a solid one-row background instead of a CSS box shadow. Covered by a View test. |
@@ -245,8 +245,9 @@ For each row:
   panes, editor part, editor status, quick input).
 - Classified the content views and suggest/hover as **T** where the remaining
   gaps are browser chrome/accessibility. Snippet tab stops are **T** after the
-  TUI placeholder navigation; the diff editor remains **P** for its portable
-  inline/hide-unchanged/moved-block features.
+  TUI placeholder navigation. The diff editor is **T**: the terminal side-by-side
+  cell panes replace inline mode/hide-unchanged/moved-block layout, with the
+  omissions documented. All ledger rows now have a terminal-aware verdict.
 - Resolved the suggest widget's `editorSuggestWidget.*`/`scrollbarSlider.*`
   theme through `SuggestController.setTheme` in the editor pane.
 - Resolved the content-hover widget's `editorHoverWidget.*`, `focusBorder` and
@@ -254,12 +255,9 @@ For each row:
 
 ## Next slice
 
-All listed rows have a verdict and evidence; no `Pending audit` or `M` rows
-remain. The remaining work is the recorded **P** gaps:
-
-1. Tab control-layer variants, actions/toolbar and sticky rows.
-2. The remaining workbench/content **P** gaps.
-3. The remaining editor-contribution **P** gaps (suggest/hover/diff/snippet).
-
-Each fix lands in a small commit with tests and the corresponding ledger
-update.
+The audit is complete: every listed view has an **F** or **T** verdict with
+evidence, and no `Pending audit`, **P** or **M** rows remain. The terminal
+adaptations' remaining optional enhancements are recorded in the **T** rows,
+for example diff inline/hide-unchanged layout, the separate pinned-tab row and
+the browser menu/accessibility surfaces. Further work should start from those
+documented omissions rather than reopen a view's verdict.
