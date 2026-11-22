@@ -27,7 +27,12 @@ pub const Cursor = struct {
             .modelState = undefined,
             .viewState = undefined,
             ._selTrackedRange = null,
-            ._trackSelection = true,
+            // The terminal creates one editor per model in the common case.
+            // Selection markers are only needed once a second view attaches
+            // (split editor), so keep them disabled until then; an owner-0
+            // tracked decoration would otherwise show up in every model
+            // decoration query.
+            ._trackSelection = false,
         };
         try cursor._setState(
             context,
@@ -52,16 +57,23 @@ pub const Cursor = struct {
     }
 
     fn _updateTrackedRange(self: *Cursor, context: *const CursorContext) !void {
-        _ = self;
-        _ = context;
-        // TODO: enable once TextModel's tracked-range decoration IDs are
-        // consistently numeric. The underlying decoration implementation is
-        // still mid-migration between string and u64 IDs.
+        if (!self._trackSelection) return;
+        const selection = self.modelState.selection;
+        self._selTrackedRange = try context.model.setTrackedRange(
+            self._selTrackedRange,
+            Range.init(selection.startLineNumber, selection.startColumn, selection.endLineNumber, selection.endColumn),
+            TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges,
+        );
     }
 
     fn _removeTrackedRange(self: *Cursor, context: *const CursorContext) void {
-        _ = self;
-        _ = context;
+        if (self._selTrackedRange == null) return;
+        _ = context.model.setTrackedRange(
+            self._selTrackedRange,
+            null,
+            TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges,
+        ) catch {};
+        self._selTrackedRange = null;
     }
 
     pub fn asCursorState(self: *const Cursor) CursorState {
@@ -69,7 +81,16 @@ pub const Cursor = struct {
     }
 
     pub fn readSelectionFromMarkers(self: *const Cursor, context: *const CursorContext) !Selection {
-        _ = context;
+        const range = if (self._selTrackedRange) |id| context.model.getTrackedRange(id) else null;
+        if (range) |tracked| {
+            // Avoid selecting text when recovering from markers: an empty
+            // cursor whose tracked range grew with typed text collapses to
+            // the end, matching upstream `Cursor.readSelectionFromMarkers`.
+            if (self.modelState.selection.isEmpty() and !tracked.isEmpty()) {
+                return selection_mod.fromRange(tracked.collapseToEnd(), self.modelState.selection.getDirection());
+            }
+            return selection_mod.fromRange(tracked, self.modelState.selection.getDirection());
+        }
         return self.modelState.selection;
     }
 

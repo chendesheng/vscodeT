@@ -64,6 +64,23 @@ pub const FileEditorInput = struct {
         self.allocator.destroy(self);
     }
 
+    /// Terminal adaptation of upstream `EditorInput.copy()`. Upstream returns
+    /// the same input because a `TextFileEditorInput` does not own the editor
+    /// pane; here the input owns a text-editor view, so a split copy needs a
+    /// new view over the shared `EditorDocument`.
+    pub fn copyInput(self: *FileEditorInput) !*FileEditorInput {
+        const editor = try Editor.createViewFromEditor(
+            self.editor,
+            self.editor.screen_width,
+            self.editor.screen_height,
+        );
+        errdefer {
+            editor.deinit();
+            self.allocator.destroy(editor);
+        }
+        return FileEditorInput.init(self.allocator, editor);
+    }
+
     pub fn interface(self: *FileEditorInput) *EditorInput {
         return &self.base;
     }

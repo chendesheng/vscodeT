@@ -219,6 +219,15 @@ pub const TextModel = struct {
         try self._onDidChangeDecorations.eventWithContext(ctx, callback);
     }
 
+    /// Removable form of `onDidChangeDecorationsWithContext`.
+    pub fn onDidChangeDecorationsWithContextId(self: *TextModel, ctx: anytype, callback: fn (ModelDecorationsChangedEvent, @TypeOf(ctx)) anyerror!void) !Emitter(ModelDecorationsChangedEvent).ListenerId {
+        return try self._onDidChangeDecorations.listenWithContext(ctx, callback);
+    }
+
+    pub fn removeDidChangeDecorationsListener(self: *TextModel, id: Emitter(ModelDecorationsChangedEvent).ListenerId) void {
+        self._onDidChangeDecorations.unlisten(id);
+    }
+
     pub fn onDidChangeLanguage(self: *TextModel, ctx: anytype, callback: fn (ModelLanguageChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
         try self._tokenizationTextModelPart.onDidChangeLanguage(ctx, callback);
     }
@@ -354,6 +363,16 @@ pub const TextModel = struct {
 
     pub fn onDidChangeContentWithContext(self: *TextModel, context: anytype, callback: fn (InternalModelContentChangeEvent, @TypeOf(context)) anyerror!void) !void {
         try self._eventEmitter.slowEvent(context, callback);
+    }
+
+    /// Removable form of `onDidChangeContentWithContext`. The returned id must
+    /// be passed to `removeDidChangeContentListener` before `context` dies.
+    pub fn onDidChangeContentWithContextId(self: *TextModel, context: anytype, callback: fn (InternalModelContentChangeEvent, @TypeOf(context)) anyerror!void) !Emitter(InternalModelContentChangeEvent).ListenerId {
+        return try self._eventEmitter.slowEventId(context, callback);
+    }
+
+    pub fn removeDidChangeContentListener(self: *TextModel, id: Emitter(InternalModelContentChangeEvent).ListenerId) void {
+        self._eventEmitter.unlistenSlow(id);
     }
 
     pub fn init(allocator: Allocator, source: *Io.Reader, languageId: []const u8, creationOptions: TextModelCreationOptions, associatedResource: ?Uri, undoRedoService: *UndoRedoService, languageService: *LanguageService) !*TextModel {
@@ -1753,6 +1772,12 @@ pub const TextModel = struct {
         return (try self._setTrackedRange(null, range, stickiness)) orelse error.TrackedRangeFailed;
     }
 
+    /// Port of `_setTrackedRange`: updates an existing tracked range in place
+    /// or creates one. Used by cursor selection markers.
+    pub fn setTrackedRange(self: *TextModel, id: ?u64, range: ?Range, stickiness: TrackedRangeStickiness) !?u64 {
+        return self._setTrackedRange(id, range, stickiness);
+    }
+
     pub fn getTrackedRange(self: *TextModel, id: u64) ?Range {
         return self.getDecorationRange(id);
     }
@@ -2813,6 +2838,17 @@ const DidChangeDecorationsEmitter = struct {
         try self._actual.event(ctx, callback);
     }
 
+    /// Registers a removable listener. Multiple editors can share a model, so
+    /// a closing editor must be able to unregister itself before the model
+    /// outlives it.
+    pub fn listenWithContext(self: *DidChangeDecorationsEmitter, ctx: anytype, callback: fn (ModelDecorationsChangedEvent, @TypeOf(ctx)) anyerror!void) !Emitter(ModelDecorationsChangedEvent).ListenerId {
+        return try self._actual.listen(ctx, callback);
+    }
+
+    pub fn unlisten(self: *DidChangeDecorationsEmitter, id: Emitter(ModelDecorationsChangedEvent).ListenerId) void {
+        self._actual.unlisten(id);
+    }
+
     pub fn hasListeners(self: *DidChangeDecorationsEmitter) bool {
         return self._actual.hasListeners();
     }
@@ -2939,6 +2975,16 @@ pub const DidChangeContentEmitter = struct {
     }
     pub fn slowEvent(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, @TypeOf(context)) anyerror!void) !void {
         try self._slowEmitter.event(context, callback);
+    }
+
+    /// Removable variant of `slowEvent`; used by editor views that can be
+    /// destroyed while the shared model stays alive.
+    pub fn slowEventId(self: *DidChangeContentEmitter, context: anytype, callback: fn (InternalModelContentChangeEvent, @TypeOf(context)) anyerror!void) !Emitter(InternalModelContentChangeEvent).ListenerId {
+        return try self._slowEmitter.listen(context, callback);
+    }
+
+    pub fn unlistenSlow(self: *DidChangeContentEmitter, id: Emitter(InternalModelContentChangeEvent).ListenerId) void {
+        self._slowEmitter.unlisten(id);
     }
 
     pub fn hasListeners(self: *DidChangeContentEmitter) bool {
