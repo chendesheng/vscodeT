@@ -20,6 +20,7 @@ const ModelDeltaDecoration = Model.ModelDeltaDecoration;
 const SearchData = Model.SearchData;
 const FindMatch = Model.FindMatch;
 const ModelContentChangedEvent = @import("../textModelEvents.zig").ModelContentChangedEvent;
+const LanguageConfigurationServiceChangeEvent = @import("../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
 const ModelRawContentChangedEvent = @import("../textModelEvents.zig").ModelRawContentChangedEvent;
 const PieceTreeTextBuffer = @import("./pieceTreeTextBuffer/pieceTreeTextBuffer.zig").PieceTreeTextBuffer;
 const EditStack = @import("./editStack.zig").EditStack;
@@ -452,6 +453,12 @@ pub const TextModel = struct {
         model._tokenizationTextModelPart.onDidChangeBackgroundTokenizationStateWithContext(&model._bracketPairs, struct {
             fn cb(_: void, pairs: *BracketPairsTextModelPart) !void {
                 pairs.handleDidChangeBackgroundTokenizationState();
+            }
+        }.cb) catch {};
+        model._languageService.onDidChangeLanguageConfiguration.event(model, struct {
+            fn cb(e: LanguageConfigurationServiceChangeEvent, m: *TextModel) !void {
+                m._bracketPairs.handleLanguageConfigurationServiceChange(e);
+                m._tokenizationTextModelPart.handleLanguageConfigurationServiceChange(e);
             }
         }.cb) catch {};
         // Upstream event chain: bracket tree change -> colorization provider

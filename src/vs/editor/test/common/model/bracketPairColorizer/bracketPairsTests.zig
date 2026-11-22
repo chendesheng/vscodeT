@@ -592,3 +592,40 @@ test "bracket pairs: stable ids keep pairings after an incremental edit" {
     }
     try std.testing.expect(found_parentheses);
 }
+
+test "bracket pairs: a configuration change invalidates the tree" {
+    const allocator = std.testing.allocator;
+    var fixture = try Fixture.init(allocator, "{}", null);
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var before = try fixture.ctx.model.getBracketPairsInRange(fixture.ctx.model.getFullModelRange());
+    defer before.deinit();
+    try std.testing.expectEqual(@as(usize, 0), before.items.len);
+
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    try fixture.ctx.languageService.registerLanguageConfiguration(languageId, makeConfig(&brackets, &brackets));
+
+    var after = try fixture.ctx.model.getBracketPairsInRange(fixture.ctx.model.getFullModelRange());
+    defer after.deinit();
+    try std.testing.expectEqual(@as(usize, 1), after.items.len);
+}
+
+test "bracket pairs: matching uses the AST when colorization is disabled" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "{}", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(1);
+
+    fixture.ctx.model.updateOptions(.{
+        .tabSize = null,
+        .indentSize = null,
+        .insertSpaces = null,
+        .trimAutoWhitespace = null,
+        .bracketColorizationOptions = .{ .enabled = false, .independentColorPoolPerBracketType = false },
+    });
+
+    try std.testing.expect(!fixture.ctx.model.bracketPairs().useFallbackMatcher());
+}

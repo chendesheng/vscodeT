@@ -22,6 +22,7 @@ const tree = @import("./bracketPairsTree/bracketPairsTree.zig");
 const TextEditInfo = @import("./bracketPairsTree/beforeEditPositionMapper.zig").TextEditInfo;
 const combineTextEditInfos = @import("./bracketPairsTree/combineTextEditInfos.zig").combineTextEditInfos;
 const ModelContentChangedEvent = @import("../../textModelEvents.zig").ModelContentChangedEvent;
+const LanguageConfigurationServiceChangeEvent = @import("../../languages/languageConfigurationRegistry.zig").LanguageConfigurationServiceChangeEvent;
 const ModelTokensChangedEvent = @import("../../textModelEvents.zig").ModelTokensChangedEvent;
 const ResolvedLanguageConfiguration = @import("../../languages/languageConfigurationRegistry.zig").ResolvedLanguageConfiguration;
 const RichEditBrackets = @import("../../languages/supports/richEditBrackets.zig").RichEditBrackets;
@@ -143,12 +144,12 @@ pub const BracketPairsTextModelPart = struct {
         return self.textModel.getValueLength(null, false) <= max_supported_document_length;
     }
 
-    /// The terminal has no background tokenizer and disables bracket-pair
-    /// colorization, so the AST has no consumer beyond guides; matching uses
-    /// the upstream fallback (which tokenizes only the lines it scans) when
-    /// colorization is off or the document is too large for the AST.
+    /// Matching uses upstream's fallback only for documents too large for the
+    /// AST; colorization settings do not change matching semantics.
     pub fn useFallbackMatcher(self: *Self) bool {
-        return !self.textModel.getOptions().bracketPairColorizationOptions.enabled or !self.canBuildAst();
+        // Upstream chooses the AST branch solely by `canBuildAST`; the
+        // colorization setting must not change matching semantics.
+        return !self.canBuildAst();
     }
 
     pub fn onDidChange(self: *Self, callback: *const fn (void) void) !void {
@@ -202,6 +203,15 @@ pub const BracketPairsTextModelPart = struct {
     }
 
     pub fn handleDidChangeLanguage(self: *Self) void {
+        self.markDirty();
+        self._onDidChange.fire({}) catch {};
+    }
+
+    /// Upstream invalidates the tree when a language configuration changes.
+    /// Any changed language can affect this document (its own language or an
+    /// embedded one), so the port conservatively rebuilds.
+    pub fn handleLanguageConfigurationServiceChange(self: *Self, e: LanguageConfigurationServiceChangeEvent) void {
+        _ = e;
         self.markDirty();
         self._onDidChange.fire({}) catch {};
     }

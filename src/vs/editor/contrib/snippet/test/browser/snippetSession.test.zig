@@ -250,7 +250,8 @@ test "SnippetSession: does not grow final tabstop" {
     try std.testing.expect(try session.prev());
     try expectSelections(editor, &.{Selection.init(1, 5, 1, 9)});
     try std.testing.expect(try session.next());
-    try expectSelections(editor, &.{Selection.init(1, 12, 1, 12)});
+    // Upstream keeps the final tabstop collapsed after the typed text.
+    try expectSelections(editor, &.{Selection.init(1, 15, 1, 15)});
 }
 
 test "SnippetSession: touching tabstops stay separate" {

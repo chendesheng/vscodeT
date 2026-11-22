@@ -1321,6 +1321,8 @@ pub fn intervalCompare(aStart: usize, aEnd: usize, bStart: usize, bEnd: usize) i
 test "computeMaxEnd shrinks with the node end" {
     const node = try IntervalNode.init(std.testing.allocator, 1, 10, 20);
     defer std.testing.allocator.destroy(node);
+    node.left = SENTINEL;
+    node.right = SENTINEL;
     node.end = 15;
     node.maxEnd = 20;
     recomputeMaxEnd(node);
