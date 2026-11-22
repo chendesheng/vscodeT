@@ -83,6 +83,7 @@ const GuidesTextModelPart = @import("../vs/editor/common/model/guidesTextModelPa
 const computeIndentLevel = @import("../vs/editor/common/model/utils.zig").computeIndentLevel;
 const indent_guides = @import("../vs/editor/browser/viewParts/indentGuides/indentGuides.zig");
 const rulers_mod = @import("../vs/editor/browser/viewParts/rulers/rulers.zig");
+const scroll_decoration = @import("../vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig");
 const overlay_widgets_mod = @import("../vs/editor/browser/viewParts/overlayWidgets/overlayWidgets.zig");
 const mouse_target = @import("../vs/editor/browser/controller/mouseTarget.zig");
 const mouse_handler_mod = @import("../vs/editor/browser/controller/mouseHandler.zig");
@@ -1836,6 +1837,11 @@ pub const View = struct {
         defer self.allocator.free(line_backgrounds);
         @memset(line_backgrounds, null);
         if (top <= total) {
+            if (text_height > 0 and scroll_decoration.isVisible(top)) {
+                line_backgrounds[0] = scroll_decoration.shadowColor(
+                    themedColor(self.theme_colors, "scrollbar.shadow", .{ 0, 0, 0 }),
+                );
+            }
             const end_view_line = @min(total, top + text_height -| 1);
             var view_line = top;
             while (view_line <= end_view_line) : (view_line += 1) {
@@ -3988,9 +3994,13 @@ test "View: right column paints markers and the overlapping thumb" {
     try std.testing.expectEqual(find_fg, grid.fg[grid.index(marker_col, 3)]);
 
     // The shared area is two cells wide: the cell immediately to its left is
-    // the end of the text area, not another scrollbar column.
-    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(marker_col - 1, 0)]);
-    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(marker_col - 1, 3)]);
+    // the end of the text area, not another scrollbar column. A background
+    // fill (for example the scroll shadow) may materialize trailing cells as
+    // spaces, so accept either an empty or a blank cell.
+    try std.testing.expect(grid.cluster[grid.index(marker_col - 1, 0)] == 0 or
+        grid.cluster[grid.index(marker_col - 1, 0)] == ' ');
+    try std.testing.expect(grid.cluster[grid.index(marker_col - 1, 3)] == 0 or
+        grid.cluster[grid.index(marker_col - 1, 3)] == ' ');
 }
 
 test "View: short document has no scrollbar thumb" {
@@ -5147,4 +5157,27 @@ test "View: rulers paint a guide column" {
     const grid = view.surface.grid();
     const col = editor.gutterWidth() + 10 - 1;
     try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(col, 0)]);
+}
+
+test "View: scroll decoration shadows the first row" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11", "test.txt", 30, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+    const shadow = ui.cell.packColor(.{ .r = 0, .g = 0, .b = 0 });
+    try std.testing.expect(view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 0)] != shadow);
+
+    _ = editor.scrollViewLines(3);
+    view.invalidate();
+    try view.renderAnsi(&out.writer);
+    try std.testing.expectEqual(shadow, view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 0)]);
 }
