@@ -1342,7 +1342,6 @@ pub const View = struct {
         }
         return value;
     }
-    }
 
     fn bracketGuideColors(self: *const View, level: usize, active: bool) ?ui.Color {
         if (self.bracket_guide_color_count == 0) return null;
