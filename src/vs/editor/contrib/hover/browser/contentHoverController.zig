@@ -375,6 +375,10 @@ pub const ContentHoverController = struct {
         self.wrapper.startShowingAtRange(range, mode, source, focus);
     }
 
+    pub fn setTheme(self: *ContentHoverController, theme: @import("./contentHoverWidget.zig").Theme) void {
+        self.wrapper.setTheme(theme);
+    }
+
     pub fn updateSettings(self: *ContentHoverController, settings: HoverSettings) void {
         self.settings = settings;
     }

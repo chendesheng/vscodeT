@@ -103,6 +103,10 @@ pub const ContentHoverWidgetWrapper = struct {
         return self;
     }
 
+    pub fn setTheme(self: *ContentHoverWidgetWrapper, theme: @import("./contentHoverWidget.zig").Theme) void {
+        self.widget.setTheme(theme);
+    }
+
     pub fn deinit(self: *ContentHoverWidgetWrapper) void {
         self.hide();
         self.operation.deinit();

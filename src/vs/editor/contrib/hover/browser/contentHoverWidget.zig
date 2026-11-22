@@ -29,6 +29,15 @@ const scrollbar_color = ui.Color{ .r = 90, .g = 90, .b = 90 };
 const scrollbar_thumb = ui.Color{ .r = 160, .g = 160, .b = 160 };
 const focused_border_color = ui.Color{ .r = 96, .g = 130, .b = 200 };
 
+pub const Theme = struct {
+    background: ui.Color = .{ .r = 37, .g = 37, .b = 38 },
+    border: ui.Color = .{ .r = 69, .g = 69, .b = 69 },
+    foreground: ui.Color = .{ .r = 204, .g = 204, .b = 204 },
+    scrollbar: ui.Color = .{ .r = 90, .g = 90, .b = 90 },
+    scrollbar_thumb: ui.Color = .{ .r = 160, .g = 160, .b = 160 },
+    focused_border: ui.Color = .{ .r = 96, .g = 130, .b = 200 },
+};
+
 /// Upstream `ContentHoverWidget.ID`.
 pub const widget_id = "editor.contrib.resizableContentHoverWidget";
 
@@ -50,6 +59,7 @@ pub const ContentHoverWidgetHost = struct {
 pub const ContentHoverWidget = struct {
     allocator: Allocator,
     host: ContentHoverWidgetHost,
+    theme: Theme = .{},
     /// Owned by the widget; replaced on every `show`.
     rendered: ?*RenderedContentHover = null,
     scroll_top: usize = 0,
@@ -76,6 +86,10 @@ pub const ContentHoverWidget = struct {
             .host = host,
         };
         return self;
+    }
+
+    pub fn setTheme(self: *ContentHoverWidget, theme: Theme) void {
+        self.theme = theme;
     }
 
     pub fn deinit(self: *ContentHoverWidget) void {
@@ -347,11 +361,11 @@ pub const ContentHoverWidget = struct {
             .width = .{ .cells = @floatFromInt(root_width) },
             .height = .{ .cells = @floatFromInt(root_height) },
             .overflow = .hidden,
-            .background = background,
-            .color = foreground,
+            .background = self.theme.background,
+            .color = self.theme.foreground,
             .border = .all(@floatFromInt(border_width)),
             .border_style = .single,
-            .border_color = if (self.focused) focused_border_color else border_color,
+            .border_color = if (self.focused) self.theme.focused_border else self.theme.border,
         });
         try root.addEventListener(.{ .context = self, .key_down = onKey });
         try root.addEventListener(.{ .context = self, .wheel = onWheel });
@@ -410,11 +424,11 @@ pub const ContentHoverWidget = struct {
                 .width = .{ .cells = 1 },
                 .height = .{ .cells = 1 },
                 .white_space = .pre,
-                .color = scrollbar_color,
+                .color = self.theme.scrollbar,
             });
             const is_thumb = row >= thumb_top and row < thumb_top + thumb_height;
             const text = try doc.createText(if (is_thumb) "█" else "│");
-            text.setStyle(.{ .color = if (is_thumb) scrollbar_thumb else scrollbar_color });
+            text.setStyle(.{ .color = if (is_thumb) self.theme.scrollbar_thumb else self.theme.scrollbar });
             _ = try cell.appendChild(text);
             _ = try root.appendChild(cell);
         }
