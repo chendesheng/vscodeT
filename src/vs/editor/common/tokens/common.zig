@@ -1,22 +1,27 @@
+// Port of `src/vs/editor/common/tokens/common.ts`.
+//
+// Zig adaptation: there are no closures or default arguments, so
+// `runIfNotLimited` takes an explicit context plus callback and `init` takes
+// `timesPerSecond` explicitly (upstream defaults it to 5).
 const std = @import("std");
 const time = @import("../../../base/common/timeCompat.zig");
 
 pub const RateLimiter = struct {
     _lastRun: i64,
-    _minimumTimeBetweenRuns: i64, // in ms
+    _minimumTimeBetweenRuns: f64, // in ms
     timesPerSecond: f64,
 
     pub fn init(timesPerSecond: f64) RateLimiter {
         return RateLimiter{
             ._lastRun = 0,
-            ._minimumTimeBetweenRuns = @intFromFloat(std.time.ms_per_s / timesPerSecond),
+            ._minimumTimeBetweenRuns = 1000.0 / timesPerSecond,
             .timesPerSecond = timesPerSecond,
         };
     }
 
     pub fn runIfNotLimited(self: *RateLimiter, context: anytype, callback: fn (@TypeOf(context)) void) void {
         const now = time.milliTimestamp();
-        if (now - self._lastRun >= self._minimumTimeBetweenRuns) {
+        if (@as(f64, @floatFromInt(now - self._lastRun)) >= self._minimumTimeBetweenRuns) {
             self._lastRun = now;
             callback(context);
         }
