@@ -72,6 +72,7 @@ const Range = @import("../vs/editor/common/core/range.zig").Range;
 const Selection = @import("../vs/editor/common/core/selection.zig").Selection;
 const line_renderer = @import("../vs/editor/common/viewLayout/viewLineRenderer.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
+const editor_css = @import("../vs/editor/browser/editorCss.zig");
 const decorationsOverviewRuler = @import("../vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig");
 const model_module = @import("../vs/editor/common/model.zig");
 const TextModel = @import("../vs/editor/common/model/textModel.zig").TextModel;
@@ -635,6 +636,7 @@ pub const View = struct {
             .measure_width = cellMetrics.measureCodepoint,
         });
         errdefer self.surface.deinit();
+        try editor_css.register(self.surface.document());
         // The first paint/render flushes the initial render. Callers that only
         // construct a view (the workbench open path) can batch widget and
         // layout changes before paying for it.
@@ -1574,6 +1576,7 @@ pub const View = struct {
             }
 
             const node = try doc.createElement(.div);
+            try node.addClass(editor_css.block_decorations.Class.block_decorations_block);
             node.setStyle(.{
                 .position = .absolute,
                 .left = .{ .cells = @floatFromInt(left) },
@@ -1826,6 +1829,7 @@ pub const View = struct {
                 .width = .{ .percent = 100 },
                 .height = .{ .percent = 100 },
             });
+            try block_root.addClass(editor_css.block_decorations.Class.block_decorations_container);
             block_root.setPointerEvents(false);
             _ = try root.appendChild(block_root);
             const content_root = try doc.createElement(.div);
@@ -1854,6 +1858,7 @@ pub const View = struct {
                 .on_scroll = .{ .context = self, .callback = lineScrollCallback },
             });
             self.line_scroll_ready = true;
+            try self.line_scroll.contentNode().addClass(editor_css.view_lines.Class.view_lines);
 
             const chrome_root = try doc.createElement(.div);
             chrome_root.setStyle(.{
@@ -1877,6 +1882,7 @@ pub const View = struct {
             self.gutter_root = try appendChromePartRoot(doc, chrome_root);
             self.scrollbar_root = try appendChromePartRoot(doc, chrome_root);
             self.overlay_widgets_root = try appendChromePartRoot(doc, chrome_root);
+            try self.overlay_widgets_root.?.addClass(editor_css.overlay_widgets.Class.overlay_widgets);
             self.content_widgets_root = try appendChromePartRoot(doc, chrome_root);
             self.status_root = try appendChromePartRoot(doc, chrome_root);
             self.applyTopInset();
@@ -5406,6 +5412,7 @@ test "View: block decorations paint a bordered range under the text" {
 
     try std.testing.expectEqual(@as(usize, 1), view.block_nodes.items.len);
     const node = view.block_nodes.items[0];
+    try std.testing.expect(node.hasClass(editor_css.block_decorations.Class.block_decorations_block));
     const style = node.style();
     try std.testing.expect(style.border_color != null);
     try std.testing.expectEqual(@as(f64, 1), style.border.?.top.?);

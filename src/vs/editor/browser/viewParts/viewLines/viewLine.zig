@@ -13,6 +13,7 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
 const view_line_options = @import("./viewLineOptions.zig");
+const view_lines_css = @import("./viewLines_css.zig");
 const view_line_renderer = @import("../../../common/viewLayout/viewLineRenderer.zig");
 const line_tokens_mod = @import("../../../common/tokens/lineTokens.zig");
 const LineTokens = line_tokens_mod.LineTokens;
@@ -410,7 +411,11 @@ pub const ViewLine = struct {
         options: PaintOptions,
         style_fn: PartStyleFn,
     ) !*ui.Node {
-        const line = self.dom_node orelse try doc.createElement(.div);
+        const line = self.dom_node orelse blk: {
+            const node = try doc.createElement(.div);
+            try node.addClass(view_lines_css.Class.view_line);
+            break :blk node;
+        };
         self.dom_node = line;
         line.setStyle(.{
             .position = .absolute,

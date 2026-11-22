@@ -1,0 +1,53 @@
+//! Registry for the hand-ported VSCode CSS files.
+//!
+//! Each `*_css.zig` file owns a disjoint `u16` class-ID range and an
+//! array-backed `Sheet`. The document stores the styles; nodes only hold the
+//! integer class IDs. There is no generator: new ports pick a free block and
+//! are registered here.
+
+const std = @import("std");
+const ui = @import("ui");
+
+const block_decorations_css = @import("viewParts/blockDecorations/blockDecorations_css.zig");
+const view_lines_css = @import("viewParts/viewLines/viewLines_css.zig");
+const overlay_widgets_css = @import("viewParts/overlayWidgets/overlayWidgets_css.zig");
+
+pub const block_decorations = block_decorations_css;
+pub const view_lines = view_lines_css;
+pub const overlay_widgets = overlay_widgets_css;
+
+/// Registers every ported sheet. Safe to call once per document; `Document.clear`
+/// keeps the stylesheet. Re-registering a themed sheet would overwrite its own
+/// range in place.
+pub fn register(doc: *ui.Document) !void {
+    _ = try doc.registerSheet(block_decorations_css.sheet);
+    _ = try doc.registerSheet(view_lines_css.sheet);
+    _ = try doc.registerSheet(overlay_widgets_css.sheet);
+}
+
+test "editor css: sheets register into disjoint class ranges" {
+    const allocator = std.testing.allocator;
+    var doc = try ui.Document.init(allocator, .{ .cols = 20, .rows = 4 });
+    defer doc.deinit();
+
+    try register(&doc);
+
+    const block = doc.classStyle(@backingInt(block_decorations_css.Class.block_decorations_block)).?;
+    try std.testing.expectEqual(ui.Position.absolute, block.position.?);
+
+    const container = doc.classStyle(@backingInt(block_decorations_css.Class.block_decorations_container)).?;
+    try std.testing.expectEqual(ui.Position.absolute, container.position.?);
+
+    const lines = doc.classStyle(@backingInt(view_lines_css.Class.view_lines)).?;
+    try std.testing.expectEqual(ui.WhiteSpace.nowrap, lines.white_space.?);
+
+    const line = doc.classStyle(@backingInt(view_lines_css.Class.view_line)).?;
+    try std.testing.expectEqual(ui.Position.absolute, line.position.?);
+
+    const overlays = doc.classStyle(@backingInt(overlay_widgets_css.Class.overlay_widgets)).?;
+    try std.testing.expectEqual(ui.Position.absolute, overlays.position.?);
+
+    // Ranges are disjoint.
+    try std.testing.expect(block_decorations_css.base < view_lines_css.base);
+    try std.testing.expect(view_lines_css.base < overlay_widgets_css.base);
+}

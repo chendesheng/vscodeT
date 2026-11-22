@@ -610,6 +610,7 @@ comptime {
     _ = @import("./vs/editor/common/languages/languageConfigurationRegistry.zig");
     _ = @import("./vs/editor/browser/view/renderingContext.zig");
     _ = @import("./vs/editor/browser/view.zig");
+    _ = @import("./vs/editor/browser/editorCss.zig");
     _ = @import("./vs/editor/browser/widget/codeEditor/codeEditorWidget.zig");
     _ = @import("./vs/editor/browser/view/viewUserInputEvents.zig");
     _ = @import("./vs/editor/browser/view/viewController.zig");
