@@ -103,6 +103,29 @@ pub fn applyViewSettings(
             options.set(.renderWhitespace, value);
         }
     }
+    if (readString(reader, "editor.wordWrap", language_id, resource)) |text| {
+        if (parseWordWrap(text)) |value| {
+            const previous = options.get(.wordWrap);
+            mark(changed, .wordWrap, previous != value);
+            any = any or previous != value;
+            options.set(.wordWrap, value);
+        }
+    }
+    if (readInt(reader, "editor.wordWrapColumn", language_id, resource)) |value| {
+        const clamped: i32 = @intCast(std.math.clamp(value, 1, std.math.maxInt(i32)));
+        const previous = options.get(.wordWrapColumn);
+        mark(changed, .wordWrapColumn, previous != clamped);
+        any = any or previous != clamped;
+        options.set(.wordWrapColumn, clamped);
+    }
+    if (readString(reader, "editor.wrappingIndent", language_id, resource)) |text| {
+        if (parseWrappingIndent(text)) |value| {
+            const previous = options.get(.wrappingIndent);
+            mark(changed, .wrappingIndent, previous != value);
+            any = any or previous != value;
+            options.set(.wrappingIndent, value);
+        }
+    }
     if (readBool(reader, "editor.renderControlCharacters", language_id, resource)) |value| {
         const previous = options.get(.renderControlCharacters);
         mark(changed, .renderControlCharacters, previous != value);
@@ -259,6 +282,22 @@ pub fn applyModelSettings(model: *text_model_mod.TextModel, reader: Reader, lang
     return changed;
 }
 
+fn parseWordWrap(text: []const u8) ?editorOptions.WordWrap {
+    if (std.mem.eql(u8, text, "off")) return .off;
+    if (std.mem.eql(u8, text, "on")) return .on;
+    if (std.mem.eql(u8, text, "wordWrapColumn")) return .word_wrap_column;
+    if (std.mem.eql(u8, text, "bounded")) return .bounded;
+    return null;
+}
+
+fn parseWrappingIndent(text: []const u8) ?editorOptions.WrappingIndent {
+    if (std.mem.eql(u8, text, "none")) return .None;
+    if (std.mem.eql(u8, text, "same")) return .Same;
+    if (std.mem.eql(u8, text, "indent")) return .Indent;
+    if (std.mem.eql(u8, text, "deepIndent")) return .DeepIndent;
+    return null;
+}
+
 fn parseLineNumbers(text: []const u8) ?RenderLineNumbersType {
     if (std.mem.eql(u8, text, "on")) return .On;
     if (std.mem.eql(u8, text, "off")) return .Off;
@@ -382,6 +421,9 @@ test "terminalEditorConfiguration: view settings map onto computed options" {
     try settings.set("editor.cursorStyle", .{ .string = "underline" });
     try settings.set("editor.multiCursorModifier", .{ .string = "ctrlCmd" });
     try settings.set("editor.matchBrackets", .{ .string = "never" });
+    try settings.set("editor.wordWrap", .{ .string = "bounded" });
+    try settings.set("editor.wordWrapColumn", .{ .integer = 120 });
+    try settings.set("editor.wrappingIndent", .{ .string = "deepIndent" });
 
     var options = ComputedEditorOptions.init();
     var changed: ChangeSet = undefined;
@@ -397,6 +439,12 @@ test "terminalEditorConfiguration: view settings map onto computed options" {
     try std.testing.expectEqual(TextEditorCursorStyle.Underline, options.get(.effectiveCursorStyle));
     try std.testing.expectEqual(MultiCursorModifier.ctrl_key, options.get(.multiCursorModifier));
     try std.testing.expectEqual(MatchBrackets.never, options.get(.matchBrackets));
+    try std.testing.expectEqual(editorOptions.WordWrap.bounded, options.get(.wordWrap));
+    try std.testing.expectEqual(@as(i32, 120), options.get(.wordWrapColumn));
+    try std.testing.expectEqual(editorOptions.WrappingIndent.DeepIndent, options.get(.wrappingIndent));
+    try std.testing.expect(changed[@backingInt(EditorOption.wordWrap)]);
+    try std.testing.expect(changed[@backingInt(EditorOption.wordWrapColumn)]);
+    try std.testing.expect(changed[@backingInt(EditorOption.wrappingIndent)]);
     try std.testing.expect(changed[@backingInt(EditorOption.lineNumbers)]);
     try std.testing.expect(changed[@backingInt(EditorOption.matchBrackets)]);
 

@@ -30,6 +30,7 @@ const CoordinatesConverter = @import("../../../common/viewModel/viewModelLines.z
 const ViewLineData = @import("../../../common/viewModel.zig").ViewLineData;
 const WordBreak = @import("../../../common/modelLineProjectionData.zig").WordBreak;
 const WrappingIndent = @import("../../../common/config/editorOptions.zig").WrappingIndent;
+const WordWrap = @import("../../../common/config/editorOptions.zig").WordWrap;
 const terminal_editor_config = @import("../../config/terminalEditorConfiguration.zig");
 const resolved_keybinding_item = @import("../../../../platform/keybinding/common/resolvedKeybindingItem.zig");
 const EditorAutoIndentStrategy = @import("../../../common/config/editorOptions.zig").EditorAutoIndentStrategy;
@@ -92,6 +93,7 @@ const time_compat = @import("../../../../base/common/timeCompat.zig");
 const async_mod = @import("../../../../base/common/async.zig");
 const languagesAssociations = @import("../../../common/services/languagesAssociations.zig");
 const input = @import("ui").input;
+const ui_scroll = @import("ui").scroll;
 const keybinding_service = @import("../../../../workbench/services/keybinding/browser/keybindingService.zig");
 const key_codes = @import("../../../../base/common/keyCodes.zig");
 const keybinding_registry = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
@@ -365,6 +367,12 @@ pub const Editor = struct {
     on_did_change_dirty: Emitter(void),
     screen_width: usize,
     screen_height: usize,
+    /// Terminal default is soft wrap on; a configured `editor.wordWrap`
+    /// overrides it. Zero wrapping column means no soft wrap.
+    wrap_mode: WordWrap = .on,
+    wrap_column: i32 = 80,
+    wrapping_indent: WrappingIndent = .Same,
+    word_wrap_indicator: bool = false,
     top_inset_rows: usize = 0,
     /// The screen height includes a one-row status line when true. The
     /// multi-group workbench uses a workbench-level status bar and disables
@@ -2434,6 +2442,46 @@ pub const Editor = struct {
         self.ensureCursorVisible();
     }
 
+    /// Applies `editor.wordWrap`, `editor.wordWrapColumn` and
+    /// `editor.wrappingIndent`; rewraps when any value changes.
+    pub fn setWordWrapOptions(
+        self: *Editor,
+        mode: WordWrap,
+        column: i32,
+        indent: WrappingIndent,
+        indicator: bool,
+    ) void {
+        if (self.wrap_mode == mode and
+            self.wrap_column == column and
+            self.wrapping_indent == indent and
+            self.word_wrap_indicator == indicator)
+        {
+            return;
+        }
+        self.wrap_mode = mode;
+        self.wrap_column = column;
+        self.wrapping_indent = indent;
+        self.word_wrap_indicator = indicator;
+        self.refreshLayout() catch |err| self.setMessage("layout error: {s}", .{@errorName(err)});
+        if (self.wrap_mode != .off) _ = self.setScrollLeft(0);
+        self.ensureCursorVisible();
+    }
+
+    /// Upstream `EditorLayoutInfoComputer` wrapping decision, expressed in
+    /// terminal cells. Zero means no soft wrap.
+    fn effectiveWrappingColumn(self: *const Editor, text_width: usize) usize {
+        const viewport_column = @max(
+            @as(usize, 1),
+            text_width -| @intFromBool(self.word_wrap_indicator),
+        );
+        return switch (self.wrap_mode) {
+            .off => 0,
+            .on => viewport_column,
+            .bounded => @min(viewport_column, @as(usize, @intCast(@max(self.wrap_column, 1)))),
+            .word_wrap_column => @intCast(@max(self.wrap_column, 1)),
+        };
+    }
+
     fn refreshLayout(self: *Editor) !void {
         const digits = digitsFor(self.model.getLineCount());
         self.gutter_number_width = if (self.gutter_line_numbers)
@@ -2449,7 +2497,10 @@ pub const Editor = struct {
         self.cursor_config.pageSize = self.textHeight();
         self.syncViewportDimensions();
 
-        if (try self.view_lines.setWrappingColumn(text_width)) {
+        if (try self.view_lines.setWrappingOptions(
+            self.effectiveWrappingColumn(text_width),
+            self.wrapping_indent,
+        )) {
             self.view_layout.onFlushed(self.view_lines.getViewLineCount());
             self.emitViewEvent(.{ .ViewFlushed = .{} });
             self.emitViewEvent(.{ .ViewLineMappingChanged = .{} });
@@ -2513,6 +2564,54 @@ pub const Editor = struct {
             next = position.lineNumber - height + 1;
         }
         if (next != top) _ = self.applyTopViewLine(next);
+        self.ensureCursorVisibleHorizontal();
+    }
+
+    /// First visible text cell (upstream `ViewLayout.getCurrentScrollLeft`).
+    pub fn scrollLeft(self: *const Editor) usize {
+        return @intFromFloat(self.view_layout.getCurrentScrollLeft());
+    }
+
+    /// Maximum horizontal offset for the current content width.
+    pub fn maxScrollLeft(self: *const Editor) usize {
+        const scroll_width: usize = @intFromFloat(self.view_layout.getScrollWidth());
+        return scroll_width -| self.textAreaWidth();
+    }
+
+    /// Sets the horizontal offset without moving the cursor.
+    pub fn setScrollLeft(self: *Editor, cell: usize) bool {
+        const wanted = @min(cell, self.maxScrollLeft());
+        if (wanted == self.scrollLeft()) return false;
+        self.view_layout.setScrollPositionNow(.{ .scrollLeft = @floatFromInt(wanted) });
+        return true;
+    }
+
+    /// Scrolls horizontally by `delta` cells without moving the cursor.
+    pub fn scrollColumns(self: *Editor, delta: isize) bool {
+        const current: isize = @intCast(self.scrollLeft());
+        const max: isize = @intCast(self.maxScrollLeft());
+        const wanted: usize = @intCast(@max(0, @min(max, current + delta)));
+        return self.setScrollLeft(wanted);
+    }
+
+    /// Brings the primary caret column into the text viewport. This is the
+    /// terminal equivalent of the browser's horizontal reveal request.
+    fn ensureCursorVisibleHorizontal(self: *Editor) void {
+        const position = self.viewCursorPosition();
+        if (position.lineNumber == 0) return;
+        const data = self.viewLineData(position.lineNumber) catch return;
+        const column = @min(@max(position.column, data.minColumn), data.maxColumn);
+        const visible = CursorColumns.visibleColumnFromColumn(
+            data.content,
+            column,
+            self.cursor_config.tabSize,
+        );
+        const viewport = self.textAreaWidth();
+        const width = @max(self.maxScrollLeft() +| viewport, visible +| 1);
+        var window = ui_scroll.ScrollWindow.init(viewport, width, self.scrollLeft());
+        if (window.ensureVisible(visible, visible +| 1, 1)) {
+            _ = self.setScrollLeft(window.offset);
+        }
     }
 
     fn maxTopViewLine(self: *Editor) usize {
@@ -5709,6 +5808,8 @@ const shortcut_specs = [_]struct {
     .{ .id = "cursorTopSelect", .run = cmd_cursorTopSelect },
     .{ .id = "cursorBottom", .run = cmd_cursorBottom },
     .{ .id = "cursorBottomSelect", .run = cmd_cursorBottomSelect },
+    .{ .id = "scrollLeft", .run = cmd_scrollLeft },
+    .{ .id = "scrollRight", .run = cmd_scrollRight },
     .{ .id = "editor.action.moveLinesUp", .run = cmd_editor_action_moveLinesUp },
     .{ .id = "editor.action.copyLinesUp", .run = cmd_editor_action_copyLinesUp },
     .{ .id = "editor.action.moveLinesDown", .run = cmd_editor_action_moveLinesDown },
@@ -5878,6 +5979,12 @@ fn cmd_cursorBottom(context: *anyopaque) anyerror!void {
 }
 fn cmd_cursorBottomSelect(context: *anyopaque) anyerror!void {
     return editorOf(context).moveDocEnd(true);
+}
+fn cmd_scrollLeft(context: *anyopaque) anyerror!void {
+    _ = editorOf(context).scrollColumns(-2);
+}
+fn cmd_scrollRight(context: *anyopaque) anyerror!void {
+    _ = editorOf(context).scrollColumns(2);
 }
 
 fn cmd_editor_action_moveLinesUp(context: *anyopaque) anyerror!void {

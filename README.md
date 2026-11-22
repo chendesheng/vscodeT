@@ -1089,8 +1089,9 @@ console API for raw mode, sizing and input polling.
   Idle motion drives hover in the find bar: the option toggles and `All`
   highlight, clicking them runs the action without stealing input focus, and
   clicking an input places its byte caret. Clicking the editor blurs the find
-  bar so the keyboard returns to the editor. Double-click, context menus and
-  horizontal scrolling are not wired.
+  bar so the keyboard returns to the editor. Double-click and context menus
+  are not wired. Horizontal wheel/Shift+wheel scroll the line content when
+  wrapping is off; the editor still has no horizontal scrollbar.
 - Keyboard events and focus are library features: nodes take listeners, the
   active element receives keys, and Tab/Shift-Tab move through focusable nodes
   (`Element.focusable` / `Element.tab_index`). See `ui/README.md` and
@@ -1352,8 +1353,13 @@ TUI editor:
 
 - The app edits through `TextModel` (not `PieceTreeTextBuffer` directly) and uses
   the ported wrapping stack.
-- Text soft-wraps at the terminal width. Wrapped continuation lines are indented
-  (`WrappingIndent.Same`) and marked with an arrow in the gutter. The generic
+- Text soft-wraps at the terminal width by default. `editor.wordWrap` is
+  honored (`off`/`on`/`wordWrapColumn`/`bounded`, with `editor.wordWrapColumn`
+  and `editor.wrappingIndent`); `off` disables wrapping and long lines scroll
+  horizontally through the UI library's `ScrollView`. Horizontal wheel or
+  Shift+wheel scrolls, `scrollLeft`/`scrollRight` are bindable command ids, and
+  the caret/reveal paths keep the cursor visible. Wrapped continuation lines
+  are indented (`WrappingIndent.Same`) and marked with an arrow in the gutter. The generic
   `ui` text engine (UAX #14, `white-space`, line fragments) wraps widget and
   prose text; editor line boxes stay `pre` so the view-model wrapping is not
   applied twice.
@@ -1484,8 +1490,9 @@ TUI editor:
   coalesces edits but does not cancel an in-flight provider call.
   Terminal limits: no CSS border/shadow, no sub-row/partial scrolling (the
   header is not duplicated while its line is still the first visible row), no
-  horizontal `scrollWithEditor` coupling, no context menu or go-to-definition
-  from a sticky row, and no preview syntax folding provider.
+  context menu or go-to-definition from a sticky row, and no preview syntax
+  folding provider. `stickyScroll.scrollWithEditor` follows the editor's
+  horizontal offset.
 - Multi-cursor: `Ctrl-Alt-Up`/`Ctrl-Alt-Down` add a cursor above/below,
   `Ctrl-D` adds the next occurrence of the selection, and `Alt-D` selects all
   occurrences. `Escape` removes secondary cursors before clearing a selection.

@@ -233,6 +233,7 @@ pub const TerminalViewHost = struct {
         // arrow for tabs. An explicit `editor.renderWhitespace` setting still
         // overrides it in `applyEditorSettings`.
         self.options.set(.experimentalWhitespaceRendering, .off);
+        self.options.set(.wordWrap, .on);
         self.options.set(.stopRenderingLineAfter, -1);
         self.syncGutterOptions();
         self.configuration = .{
@@ -303,6 +304,12 @@ pub const TerminalViewHost = struct {
         self.options.set(.experimentalWhitespaceRendering, .off);
         self.options.set(.stopRenderingLineAfter, -1);
         self.syncGutterOptions();
+        self.editor.setWordWrapOptions(
+            self.options.get(.wordWrap),
+            self.options.get(.wordWrapColumn),
+            self.options.get(.wrappingIndent),
+            self.options.get(.wordWrapIndicator),
+        );
         self.glyph_margin_dirty = true;
         self.line_decorations_dirty = true;
         return any;

@@ -34,10 +34,12 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   `min_width`/`max_width` clamp content-box widths; there is no
   `min-height`/`max-height`, grid or table layout. Inline line boxes follow CSS
   text flow and wrap at UAX #14 opportunities. See the limitations below.
-- A reusable `ScrollView` for content that can overflow: a clipped viewport,
-  whole-cell translated content, a proportional scrollbar and wheel handling.
-  There is no CSS `overflow: scroll`; list-style windowing and editor scrolling
-  keep their own view-model state.
+- A reusable two-axis `ScrollView` for content that can overflow: a clipped
+  viewport, whole-cell translated content, optional vertical and horizontal
+  proportional scrollbars and wheel handling. It is built on the shared
+  `ScrollWindow` state, which also backs the single-line `InputBox` horizontal
+  window. There is no CSS `overflow: scroll`; list-style windowing and editor
+  vertical scrolling keep their own view-model state.
 - A reusable modal `Dialog` for confirmations: a warning icon, wrapped message
   and detail, up to three focusable buttons, keyboard wrapping and mouse
   press/release activation. It composites into a host `CellGrid` and dims the
@@ -342,11 +344,14 @@ flex-start under `wrap-reverse`; `position: fixed` resolves like `absolute`;
 and there is no grid, table layout or z-index compositing. Text inside flex
 items wraps at the item's resolved content width.
 
-Scrolling is opt-in: `ui.ScrollView` handles arbitrary content with a clipped
-viewport, translated content and a proportional scrollbar. There is no
-layout-level `overflow: scroll`/`auto` on every element yet; that would move
-scroll state into the box tree, clip automatically, paint scrollbars and add a
-wheel default action.
+Scrolling is opt-in: `ui.ScrollView` handles arbitrary content on both axes
+with a clipped viewport, translated content and optional proportional
+scrollbars. `content_width` defaults to the viewport width, so existing
+vertical-only callers are unchanged; horizontal scrolling is enabled by passing
+a larger `content_width` and `horizontal_scrollbar`. There is no layout-level
+`overflow: scroll`/`auto` on every element yet; that would move scroll state
+into the box tree, clip automatically, paint scrollbars and add a wheel default
+action.
 
 ## Text wrapping and white space
 
