@@ -34,8 +34,15 @@ pub fn nullTokenize(languageId: []const u8, state: IState) TokenizationResult {
 }
 
 pub fn nullTokenizeEncoded(allocator: Allocator, languageId: LanguageId, state: ?IState) !EncodedTokenizationResult {
-    _ = languageId;
     const tokens = try allocator.alloc(TokenPacked, 1);
-    tokens[0] = .{ .endOffset = 0, .metadata = TokenMetadata.default };
+    var metadata = TokenMetadata.default;
+    metadata.languageId = @backingInt(languageId);
+    tokens[0] = .{ .endOffset = 0, .metadata = metadata };
     return EncodedTokenizationResult.init(tokens, if (state) |s| s else NullState);
+}
+
+test "nullTokenizeEncoded: carries the encoded language id" {
+    const result = try nullTokenizeEncoded(std.testing.allocator, .PlainText, null);
+    defer std.testing.allocator.free(result.tokens);
+    try std.testing.expectEqual(@as(u8, @backingInt(LanguageId.PlainText)), result.tokens[0].metadata.languageId);
 }

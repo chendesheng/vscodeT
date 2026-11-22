@@ -43,6 +43,9 @@ pub const Tokenizer = struct {
     max_tokenization_line_length: usize,
     support: ?ITokenizationSupport = null,
     tokenizer: ?TokenizerWithStateStore = null,
+    /// Per-line scratch space for token arrays; end states are cloned into the
+    /// tokenizer's long-lived state arena.
+    scratch: *std.heap.ArenaAllocator,
     next_tokenize_at_ms: i64 = 0,
     disposed: bool = false,
 
@@ -56,6 +59,10 @@ pub const Tokenizer = struct {
 
         const self = try allocator.create(Tokenizer);
         errdefer allocator.destroy(self);
+        const scratch = try allocator.create(std.heap.ArenaAllocator);
+        errdefer allocator.destroy(scratch);
+        scratch.* = std.heap.ArenaAllocator.init(allocator);
+        errdefer scratch.deinit();
         self.* = .{
             .allocator = allocator,
             .registry = registry,
@@ -63,6 +70,7 @@ pub const Tokenizer = struct {
             .language_id = try allocator.dupe(u8, data.language_id),
             .encoded_language_id = data.encoded_language_id,
             .max_tokenization_line_length = data.max_tokenization_line_length,
+            .scratch = scratch,
         };
         errdefer {
             self.mirror.deinit();
@@ -83,6 +91,8 @@ pub const Tokenizer = struct {
         self.support = null;
         self.mirror.deinit();
         self.allocator.free(self.language_id);
+        self.scratch.deinit();
+        self.allocator.destroy(self.scratch);
         self.allocator.destroy(self);
     }
 
@@ -189,7 +199,13 @@ pub const Tokenizer = struct {
             tokenized_lines += 1;
 
             const line = self.mirror.getLineContent(line_to_tokenize.first);
-            const result = self.tokenizeLine(line, line_to_tokenize.second) orelse break;
+            _ = self.scratch.reset(.retain_capacity);
+            const result = self.tokenizeLine(
+                self.scratch.allocator(),
+                tokenizer.stateAllocator(),
+                line,
+                line_to_tokenize.second,
+            ) orelse break;
             const changed = tokenizer.store.setEndState(line_to_tokenize.first, result.endState) catch false;
             if (changed) {
                 const start_stack = textMateTokenizer.stackOfState(line_to_tokenize.second) orelse tm_main.INITIAL;
@@ -241,16 +257,30 @@ pub const Tokenizer = struct {
         };
     }
 
-    fn tokenizeLine(self: *Tokenizer, line: []const u8, state: IState) ?EncodedTokenizationResult {
+    fn tokenizeLine(
+        self: *Tokenizer,
+        scratch: Allocator,
+        state_allocator: Allocator,
+        line: []const u8,
+        state: IState,
+    ) ?EncodedTokenizationResult {
         const support = self.support orelse return null;
+        var result: ?EncodedTokenizationResult = null;
         if (self.max_tokenization_line_length != 0 and self.max_tokenization_line_length != std.math.maxInt(usize) and line.len >= self.max_tokenization_line_length) {
-            return nullTokenizeEncoded(self.allocator, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;
+            result = nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;
+        } else if (self.tokenizer != null) {
+            result = support.tokenizeEncoded(scratch, line, true, state) catch null;
         }
-        const tokenizer = if (self.tokenizer) |*value| value else return null;
-        if (support.tokenizeEncoded(tokenizer.stateAllocator(), line, true, state)) |result| {
-            return result;
-        } else |_| {}
-        return nullTokenizeEncoded(self.allocator, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;
+        if (result == null) {
+            result = nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;
+        }
+        if (result) |r| {
+            // The token array belongs to the caller-owned scratch arena; the
+            // end state must outlive the next reset.
+            const end_state = r.endState.clone(state_allocator) catch return null;
+            return .{ .tokens = r.tokens, .endState = end_state };
+        }
+        return null;
     }
 };
 

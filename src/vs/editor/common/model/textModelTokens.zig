@@ -19,6 +19,7 @@ const LanguageIdCodec = @import("../languages.zig").LanguageIdCodec;
 const IState = @import("../languages.zig").IState;
 const EncodedTokenizationResult = @import("../languages.zig").EncodedTokenizationResult;
 const StandardTokenType = @import("../encodedTokenAttributes.zig").StandardTokenType;
+const TokenMetadata = @import("../encodedTokenAttributes.zig").TokenMetadata;
 const nullTokenizeEncoded = @import("../languages/nullTokenize.zig").nullTokenizeEncoded;
 const StopWatch = @import("../../../base/common/stopwatch.zig").StopWatch;
 const IBackgroundTokenizationStore = @import("../languages.zig").IBackgroundTokenizationStore;
@@ -30,7 +31,10 @@ pub const TokenizerWithStateStore = struct {
 
     initialState: IState,
     store: TrackingTokenizationStateStore,
+    /// Long-lived states (and only states) live here for the tokenizer's life.
     arena: *std.heap.ArenaAllocator,
+    /// Per-tokenization scratch space for token arrays; reset after every line.
+    scratch: *std.heap.ArenaAllocator,
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, lineCount: usize, tokenizationSupport: ITokenizationSupport) !Self {
@@ -39,11 +43,17 @@ pub const TokenizerWithStateStore = struct {
         arena.* = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
 
+        const scratch = try allocator.create(std.heap.ArenaAllocator);
+        errdefer allocator.destroy(scratch);
+        scratch.* = std.heap.ArenaAllocator.init(allocator);
+        errdefer scratch.deinit();
+
         const initial_state = try tokenizationSupport.getInitialState(arena.allocator());
         return Self{
             .initialState = initial_state,
             .store = try TrackingTokenizationStateStore.init(allocator, lineCount),
             .arena = arena,
+            .scratch = scratch,
             .allocator = allocator,
         };
     }
@@ -52,10 +62,20 @@ pub const TokenizerWithStateStore = struct {
         self.store.deinit();
         self.arena.deinit();
         self.allocator.destroy(self.arena);
+        self.scratch.deinit();
+        self.allocator.destroy(self.scratch);
     }
 
     pub fn stateAllocator(self: *Self) Allocator {
         return self.arena.allocator();
+    }
+
+    pub fn scratchAllocator(self: *Self) Allocator {
+        return self.scratch.allocator();
+    }
+
+    pub fn resetScratch(self: *Self) void {
+        _ = self.scratch.reset(.retain_capacity);
     }
 
     pub fn getStartState(self: *Self, lineNumber: usize) ?IState {
@@ -122,7 +142,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         while (lineNumber <= end) : (lineNumber += 1) {
             var text = try self.textModel().getLineContent(lineNumber);
             defer text.deinit();
-            const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
+            self.super.resetScratch();
+            const r = try safeTokenize(self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
             try builder.add(lineNumber, r.tokens);
             _ = try self.getStore().setEndState(lineNumber, r.endState);
             state = r.endState;
@@ -140,7 +161,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
             var text = try self.textModel().getLineContent(lineToTokenize.first);
             defer text.deinit();
 
-            const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.second);
+            self.super.resetScratch();
+            const r = try safeTokenize(self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineToTokenize.second);
             try builder.add(lineToTokenize.first, r.tokens);
             _ = try self.getStore().setEndState(lineToTokenize.first, r.endState);
         }
@@ -161,7 +183,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         try text.appendSlice(lineContent.items[position.column - 1 ..]);
 
         const allocator = self.super.stateAllocator();
-        const r = try safeTokenize(allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineStartState);
+        self.super.resetScratch();
+        const r = try safeTokenize(self.super.scratchAllocator(), allocator, self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, lineStartState);
 
         var tokens = ArrayList(TokenPacked).init(self.textModel().getAllocator());
         errdefer tokens.deinit();
@@ -188,7 +211,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
 
         var state = lineStartState;
         for (lines) |line| {
-            const r = try safeTokenize(self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, line, true, state);
+            self.super.resetScratch();
+            const r = try safeTokenize(self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, line, true, state);
             var tokens = ArrayList(TokenPacked).init(allocator);
             errdefer tokens.deinit();
             try tokens.appendSlice(r.tokens);
@@ -230,7 +254,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         while (lineNumber <= endLineNumber) : (lineNumber += 1) {
             var text = try self.textModel().getLineContent(lineNumber);
             defer text.deinit();
-            const r = try safeTokenize(self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
+            self.super.resetScratch();
+            const r = try safeTokenize(self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, text.items, true, state);
             try builder.add(lineNumber, r.tokens);
             state = r.endState;
         }
@@ -250,7 +275,8 @@ pub const TokenizerWithStateStoreAndTextModel = struct {
         const languageId = self.textModel().getLanguageId();
         var state = initialState orelse (self.tokenizationSupport.getInitialState(self.super.stateAllocator()) catch return error.StartStateMustBeDefined);
         for (likelyRelevantLines.items) |line| {
-            const r = try safeTokenize(self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, line.items, false, state);
+            self.super.resetScratch();
+            const r = try safeTokenize(self.super.scratchAllocator(), self.super.stateAllocator(), self._languageIdCodec, languageId, self.tokenizationSupport, line.items, false, state);
             state = r.endState;
         }
         return state;
@@ -402,12 +428,16 @@ pub const TokenizationStateStore = struct {
     }
 };
 
-fn safeTokenize(allocator: Allocator, languageIdCodec: *LanguageIdCodec, languageId: []const u8, tokenizationSupport: ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
-    var r: ?EncodedTokenizationResult = tokenizationSupport.tokenizeEncoded(allocator, text, hasEOL, state) catch null;
+/// Tokenize one line. Token arrays are allocated in the caller-owned scratch
+/// arena and copied by the caller before the next reset; the end state is
+/// cloned into the long-lived state arena so it survives the reset.
+fn safeTokenize(scratch: Allocator, state_allocator: Allocator, languageIdCodec: *LanguageIdCodec, languageId: []const u8, tokenizationSupport: ITokenizationSupport, text: []const u8, hasEOL: bool, state: IState) !EncodedTokenizationResult {
+    var r: ?EncodedTokenizationResult = tokenizationSupport.tokenizeEncoded(scratch, text, hasEOL, state) catch null;
     if (r == null) {
-        r = try nullTokenizeEncoded(allocator, @fromBackingInt(@intCast(try languageIdCodec.encodeLanguageId(languageId))), state);
+        r = try nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(try languageIdCodec.encodeLanguageId(languageId))), state);
     }
     LineTokens.convertToEndOffset(r.?.tokens, text.len);
+    r.?.endState = try r.?.endState.clone(state_allocator);
     return r.?;
 }
 
@@ -505,3 +535,85 @@ pub const DefaultBackgroundTokenizer = struct {
         if (!self._isDisposed and self.tokenizerWithStateStore.textModel().isAttachedToEditor()) self._hasPendingWork = true;
     }
 };
+
+const TestTokenState = struct {
+    value: usize = 0,
+};
+
+fn testStateClone(context: *anyopaque, allocator: Allocator) anyerror!IState {
+    const copy = try allocator.create(TestTokenState);
+    copy.* = @as(*TestTokenState, @ptrCast(@alignCast(context))).*;
+    return .{ .context = copy, .vtable = &test_state_vtable };
+}
+
+fn testStateEquals(context: *anyopaque, other: IState) bool {
+    if (other.vtable != &test_state_vtable) return false;
+    const self: *TestTokenState = @ptrCast(@alignCast(context));
+    const other_state: *TestTokenState = @ptrCast(@alignCast(other.context));
+    return self.value == other_state.value;
+}
+
+const test_state_vtable: IState.VTable = .{
+    .clone = testStateClone,
+    .equals = testStateEquals,
+};
+
+fn testGetInitialState(_: *anyopaque, allocator: Allocator) anyerror!IState {
+    const state = try allocator.create(TestTokenState);
+    state.* = .{};
+    return .{ .context = state, .vtable = &test_state_vtable };
+}
+
+fn testTokenizeEncoded(_: *anyopaque, allocator: Allocator, line: []const u8, _: bool, state: IState) anyerror!EncodedTokenizationResult {
+    const tokens = try allocator.alloc(TokenPacked, 64);
+    for (tokens, 0..) |*token, i| {
+        token.* = .{
+            .endOffset = @intCast(@min(line.len, i + 1)),
+            .metadata = TokenMetadata.default,
+        };
+    }
+    const next = try allocator.create(TestTokenState);
+    next.* = @as(*TestTokenState, @ptrCast(@alignCast(state.context))).*;
+    next.value += 1;
+    return .{ .tokens = tokens, .endState = .{ .context = next, .vtable = &test_state_vtable } };
+}
+
+const test_support_vtable: ITokenizationSupport.VTable = .{
+    .getInitialState = testGetInitialState,
+    .tokenizeEncoded = testTokenizeEncoded,
+};
+
+test "tokenization: token arrays stay in the scratch arena" {
+    const allocator = std.testing.allocator;
+    var state_arena = std.heap.ArenaAllocator.init(allocator);
+    defer state_arena.deinit();
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+
+    const support = ITokenizationSupport{ .context = undefined, .vtable = &test_support_vtable };
+    var state = try support.getInitialState(state_arena.allocator());
+    var line: [64]u8 = undefined;
+    @memset(&line, 'a');
+
+    for (0..5000) |_| {
+        _ = scratch.reset(.retain_capacity);
+        const result = try safeTokenize(
+            scratch.allocator(),
+            state_arena.allocator(),
+            &codec,
+            "test",
+            support,
+            &line,
+            true,
+            state,
+        );
+        state = result.endState;
+    }
+
+    // Only the 5000 small end states live in the state arena; the 64-token
+    // arrays must not accumulate there.
+    try std.testing.expect(state_arena.queryCapacity() < 256 * 1024);
+}
