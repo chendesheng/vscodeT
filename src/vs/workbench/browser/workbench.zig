@@ -513,6 +513,11 @@ pub const Workbench = struct {
     drag_target: ?DropTarget = null,
     drag_tab_drop: ?TabDrop = null,
     sidebar: ?*Sidebar = null,
+    /// Port of the Explorer viewlet's view-pane container: the Explorer tree
+    /// and the Outline view are stacked sections in the same SidebarPart.
+    explorer_container: ?*view_pane_container_mod.ViewPaneContainer = null,
+    explorer_view_model: ?*view_container_model_mod.ViewContainerModel = null,
+    explorer_panes: ?[]view_pane_container_mod.Pane = null,
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
     layout_model: LayoutModel,
@@ -757,6 +762,9 @@ pub const Workbench = struct {
         self.drag_tab_drop = null;
         self.focus = .editor;
         self.sidebar = null;
+        self.explorer_container = null;
+        self.explorer_view_model = null;
+        self.explorer_panes = null;
         self.search_view = null;
         self.search_service = null;
         try self.initShellModels();
@@ -918,6 +926,9 @@ pub const Workbench = struct {
         self.drag_tab_drop = null;
         self.focus = .editor;
         self.sidebar = null;
+        self.explorer_container = null;
+        self.explorer_view_model = null;
+        self.explorer_panes = null;
         self.search_view = null;
         self.search_service = null;
         try self.initShellModels();
@@ -1112,6 +1123,9 @@ pub const Workbench = struct {
         self.drag_tab_drop = null;
         self.focus = .editor;
         self.sidebar = null;
+        self.explorer_container = null;
+        self.explorer_view_model = null;
+        self.explorer_panes = null;
         self.search_view = null;
         self.search_service = null;
         try self.initShellModels();
@@ -1273,6 +1287,7 @@ pub const Workbench = struct {
         try self.activity_bar_part.setVisible(true);
 
         try self.registerViewContainers();
+        try self.initExplorerContainer();
         try self.sidebar_part.setWidth(28);
         self.cursor_handler = ViewEventHandler.init(self, .{
             .onCursorStateChanged = onWorkbenchCursorStateChanged,
@@ -1309,13 +1324,6 @@ pub const Workbench = struct {
             .glyph = 'G',
             .order = 2,
         }, .sidebar, .{});
-        _ = try registry.register(.{
-            .id = outline_contrib.outline_id,
-            .title = "Outline",
-            .glyph = 'O',
-            .order = 3,
-        }, .sidebar, .{});
-
         // Panel containers: Problems order 0, Terminal order 3, matching
         // `markers.contribution.ts` and `terminal.contribution.ts`.
         _ = try registry.register(.{
@@ -1343,6 +1351,46 @@ pub const Workbench = struct {
                 _ = try self.panel_part.pane.setPaneCompositeVisible(container.id, false);
             }
         }
+    }
+
+    /// Port of the Explorer viewlet's two stacked views. Upstream registers
+    /// Explorer and Outline in the Explorer view container; the terminal
+    /// `ViewPaneContainer` renders their section headers and splits the body.
+    fn initExplorerContainer(self: *Workbench) !void {
+        const model = try self.allocator.create(view_container_model_mod.ViewContainerModel);
+        errdefer self.allocator.destroy(model);
+        model.* = view_container_model_mod.ViewContainerModel.init(self.allocator, .{
+            .id = "explorer",
+            .title = "Explorer",
+            .icon = "E",
+        });
+        errdefer model.deinit();
+        try model.addView(.{ .id = "explorer", .name = "Explorer", .order = 0, .weight = 70 });
+        try model.addView(.{ .id = "outline", .name = "Outline", .order = 1, .weight = 30, .collapsed = true });
+        model.setActiveView("explorer");
+
+        const panes = try self.allocator.alloc(view_pane_container_mod.Pane, 2);
+        panes[0] = .{
+            .id = "explorer",
+            .title = "Explorer",
+            .context = self,
+            .render_body = explorerPaneRenderBody,
+            .handle_key = explorerPaneHandleKey,
+            .handle_mouse = explorerPaneHandleMouse,
+            .title_actions = explorerPaneTitleActions,
+        };
+        panes[1] = .{
+            .id = "outline",
+            .title = "Outline",
+            .context = self,
+            .render_body = outlinePaneRenderBody,
+            .handle_key = outlinePaneHandleKey,
+            .handle_mouse = outlinePaneHandleMouse,
+            .title_actions = outlinePaneTitleActions,
+        };
+        self.explorer_panes = panes;
+        self.explorer_view_model = model;
+        self.explorer_container = try view_pane_container_mod.ViewPaneContainer.init(self.allocator, model, panes);
     }
 
     fn fillPaneComposites(self: *Workbench, part: *pane_composite_mod.PaneCompositePart, location: views_mod.ViewContainerLocation) !void {
@@ -1392,6 +1440,20 @@ pub const Workbench = struct {
         if (self.markers_status) |status| {
             status.deinit();
             self.markers_status = null;
+        }
+        if (self.explorer_container) |container| {
+            container.deinit();
+            self.allocator.destroy(container);
+            self.explorer_container = null;
+        }
+        if (self.explorer_view_model) |model| {
+            model.deinit();
+            self.allocator.destroy(model);
+            self.explorer_view_model = null;
+        }
+        if (self.explorer_panes) |panes| {
+            self.allocator.free(panes);
+            self.explorer_panes = null;
         }
         self.activity_service.deinit();
         self.statusbar.deinit();
@@ -2086,12 +2148,6 @@ pub const Workbench = struct {
             else
                 null;
             self.sidebar_part.pane.setTitleActions(merged orelse &.{}, &.{}) catch {};
-        } else if (std.mem.eql(u8, container, outline_contrib.outline_id)) {
-            if (self.outline_view) |view| {
-                self.sidebar_part.pane.setTitleActions(view.titleActions(), &.{}) catch {};
-            } else {
-                self.sidebar_part.pane.setTitleActions(&.{}, &.{}) catch {};
-            }
         } else {
             self.sidebar_part.pane.setTitleActions(&.{}, &.{}) catch {};
         }
@@ -2641,10 +2697,6 @@ pub const Workbench = struct {
         self.statusbar.main_part.clearFocus();
         if (std.mem.eql(u8, activity.id, "search")) {
             if (self.search_view) |view| view.focus();
-        }
-        if (std.mem.eql(u8, activity.id, outline_contrib.outline_id)) {
-            self.syncOutlineView() catch {};
-            self.updateSidebarTitleActions();
         }
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         self.layoutAll();
@@ -8589,14 +8641,6 @@ pub const Workbench = struct {
             }
             return true;
         }
-        if (std.mem.eql(u8, active_id, outline_contrib.outline_id)) {
-            self.syncOutlineView() catch {};
-            if (self.outline_view) |view| {
-                _ = view.handleKey(event) catch {};
-            }
-            return true;
-        }
-
         if (!std.mem.eql(u8, active_id, "explorer")) {
             const current = self.activeActivity();
             if (event.key == .up) try self.showActivity(self.activity_bar_part.next(current, -1));
@@ -8604,6 +8648,10 @@ pub const Workbench = struct {
             return true;
         }
 
+        if (self.explorer_container) |container| {
+            _ = container.handleKey(@constCast(event)) catch {};
+            return true;
+        }
         if (self.sidebar == null) return false;
         switch (try self.sidebar.?.handleKey(event)) {
             .open => |path| {
@@ -8738,18 +8786,69 @@ pub const Workbench = struct {
             if (self.search_view) |view| _ = view.handleMouse(event);
             return true;
         }
-        if (std.mem.eql(u8, active_id, outline_contrib.outline_id)) {
-            self.syncOutlineView() catch {};
-            if (self.outline_view) |view| {
-                const handled = view.handleMouse(event, content);
-                if (event.kind == .move) {
-                    self.pointer = if (view.hasHoveredRow()) .pointer else .default;
-                }
-                if (!handled and event.kind == .move) self.pointer = .default;
-            }
-            return true;
-        }
         if (!std.mem.eql(u8, active_id, "explorer")) return true;
+
+        // Explorer viewlet: the Explorer tree and the Outline section share one
+        // container. Header clicks/toggles and the Outline body are routed
+        // here; an Explorer body click falls through to the tree click path
+        // below so preview opening stays unchanged.
+        if (self.explorer_container) |container| {
+            const hit = container.hitTest(content, event.x, event.y);
+            if (event.kind == .move) {
+                container.setHoveredAt(event.x, event.y);
+                if (hit) |value| switch (value) {
+                    .body => |id| {
+                        if (std.mem.eql(u8, id, "outline")) {
+                            self.syncOutlineView() catch {};
+                            if (self.outline_view) |view| {
+                                _ = view.handleMouse(@constCast(event), container.bodyRect(id) orelse content);
+                                self.pointer = if (view.hasHoveredRow()) .pointer else .default;
+                            }
+                            return true;
+                        }
+                        if (std.mem.eql(u8, id, "explorer")) {
+                            if (self.sidebar) |sidebar| {
+                                _ = sidebar.handleMouse(@constCast(event));
+                                self.pointer = if (sidebar.hasHoveredRow()) .pointer else .default;
+                            }
+                            return true;
+                        }
+                    },
+                    else => {},
+                };
+                if (self.sidebar) |sidebar| sidebar.clearHover();
+                if (self.outline_view) |view| view.clearHover();
+                self.pointer = .default;
+                return true;
+            }
+            const activating = event.kind == .down or event.kind == .click;
+            if (activating) {
+                if (hit) |value| switch (value) {
+                    .action => |action| {
+                        container.setActive(action.id);
+                        self.runSidebarTitleAction(action.action);
+                        return true;
+                    },
+                    .toggle => |id| {
+                        container.model.setCollapsed(id, !container.model.isCollapsed(id));
+                        container.setActive(id);
+                        return true;
+                    },
+                    .body => |id| {
+                        container.setActive(id);
+                        if (std.mem.eql(u8, id, "outline")) {
+                            self.syncOutlineView() catch {};
+                            if (self.outline_view) |view| {
+                                _ = view.handleMouse(@constCast(event), container.bodyRect(id) orelse content);
+                                self.pointer = if (view.hasHoveredRow()) .pointer else .default;
+                            }
+                            return true;
+                        }
+                    },
+                };
+                if (hit == null) return true;
+            }
+        }
 
         const sidebar = self.sidebar orelse return false;
         if (event.kind == .move) {
@@ -9190,7 +9289,9 @@ pub const Workbench = struct {
             const content = sidebar_part_mod.contentRect(&self.sidebar_part, rect);
             const active_id = self.activity_bar_part.active_id orelse "";
             if (std.mem.eql(u8, active_id, "explorer")) {
-                if (self.sidebar) |sidebar| {
+                if (self.explorer_container) |container| {
+                    try container.render(&self.frame.next, content, focused, self.theme_palette);
+                } else if (self.sidebar) |sidebar| {
                     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
                     try sidebar.render(&self.frame.next, content, focused, .{
                         .show_header = false,
@@ -9212,13 +9313,6 @@ pub const Workbench = struct {
                 } else if (self.scm_view) |view| {
                     if (self.theme_palette) |palette| view.setThemeColors(palette);
                     try view.render(&self.frame.next, content, focused, .{ .show_header = false });
-                } else {
-                    self.renderPlaceholder(content, focused);
-                }
-            } else if (std.mem.eql(u8, active_id, outline_contrib.outline_id)) {
-                self.syncOutlineView() catch {};
-                if (self.outline_view) |view| {
-                    try view.render(&self.frame.next, content, focused);
                 } else {
                     self.renderPlaceholder(content, focused);
                 }
@@ -9787,8 +9881,16 @@ pub const Workbench = struct {
 
     pub fn pollOutline(self: *Workbench, now_ms: i64) bool {
         self.syncCursorHandler();
-        if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", outline_contrib.outline_id)) {
+        const explorer_active = std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "explorer");
+        const outline_visible = if (explorer_active) blk: {
+            const container = self.explorer_container orelse break :blk false;
+            const rect = container.bodyRect("outline") orelse break :blk false;
+            break :blk rect.h > 0;
+        } else false;
+        if (outline_visible) {
             self.syncOutlineView() catch {};
+        } else if (self.outline_view) |view| {
+            if (view.editor != null) view.setEditor(null) catch {};
         }
         const view = self.outline_view orelse return false;
         if (view.poll(now_ms)) {
@@ -10139,6 +10241,69 @@ fn onWorkbenchLinesDeleted(context: *anyopaque, _: *const view_events.ViewLinesD
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
     return false;
+}
+
+fn explorerPaneRenderBody(context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const sidebar = self.sidebar orelse return;
+    if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
+    try sidebar.render(grid, rect, focused, .{
+        .show_header = false,
+        .cell_borders = self.part.cell_borders,
+    });
+}
+
+fn explorerPaneHandleKey(context: *anyopaque, event: *ui.KeyEvent) !bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const sidebar = self.sidebar orelse return false;
+    switch (try sidebar.handleKey(event)) {
+        .open => |path| {
+            self.requestOpenPath(path);
+            self.focus = .editor;
+            return true;
+        },
+        .handled, .none => return true,
+    }
+}
+
+fn explorerPaneHandleMouse(context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) !bool {
+    _ = rect;
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const sidebar = self.sidebar orelse return false;
+    return sidebar.handleMouse(event);
+}
+
+fn explorerPaneTitleActions(_: *anyopaque) []const views_mod.TitleAction {
+    return &.{};
+}
+
+fn outlinePaneRenderBody(context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.syncOutlineView() catch {};
+    if (self.outline_view) |view| {
+        view.setThemeColors(self.theme_palette);
+        try view.render(grid, rect, focused);
+    }
+}
+
+fn outlinePaneHandleKey(context: *anyopaque, event: *ui.KeyEvent) !bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.syncOutlineView() catch {};
+    if (self.outline_view) |view| return view.handleKey(event);
+    return false;
+}
+
+fn outlinePaneHandleMouse(context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) !bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.syncOutlineView() catch {};
+    if (self.outline_view) |view| return view.handleMouse(event, rect);
+    return false;
+}
+
+fn outlinePaneTitleActions(context: *anyopaque) []const views_mod.TitleAction {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.outline_view) |view| return view.titleActions();
+    return &.{};
 }
 
 fn outlineActiveEditor(context: *anyopaque) ?OutlineEditor {
@@ -10960,8 +11125,13 @@ fn commandFocusBreadcrumbs(context: *anyopaque) anyerror!void {
 
 fn commandFocusOutline(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    _ = try self.showActivityById(outline_contrib.outline_id);
+    _ = try self.showActivityById("explorer");
+    if (self.explorer_container) |container| {
+        container.model.setCollapsed("outline", false);
+        container.setActive("outline");
+    }
     self.focusSidebar();
+    self.syncOutlineView() catch {};
     if (self.outline_view) |view| view.setFocused(true);
     self.updateSidebarTitleActions();
 }
@@ -13421,7 +13591,8 @@ test "Workbench: sidebar renders and opens a file" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXPLORER") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "side_open.txt") != null);
 
-    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 2 };
+    const explorer_body = workbench.explorer_container.?.bodyRect("explorer").?;
+    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = ui.cell.snap(explorer_body.y) + 1 };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
     pumpOpenForTests(workbench);
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
@@ -13686,22 +13857,14 @@ test "Workbench: activity bar switches view containers" {
     try workbench.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SOURCE CONTROL") != null);
 
-    // The Outline container follows Source Control in the terminal rail.
-    const outline_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
-    try std.testing.expect(workbench.handleSidebarMouse(&outline_click));
-    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
-    out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "OUTLINE") != null);
-
     // Upstream has no Settings view container: its activity bar gear is the
     // `workbench.actions.manage` global action that opens the Settings editor
     // as an editor tab, which is not ported. A click below the last entry
     // changes nothing.
-    const empty_rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 5 };
+    const empty_rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 4 };
     try std.testing.expect(workbench.handleSidebarMouse(&empty_rail_click));
-    try std.testing.expectEqual(@as(usize, 3), workbench.activeActivity());
-    try std.testing.expectEqual(@as(usize, 4), workbench.activity_bar_part.count());
+    try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
+    try std.testing.expectEqual(@as(usize, 3), workbench.activity_bar_part.count());
 
     // Problems is a panel container: no activity-bar entry and no sidebar
     // container (upstream registers it in `ViewContainerLocation.Panel`).
@@ -14063,7 +14226,8 @@ test "Workbench: opens a folder workspace with no initial tabs" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXPLORER") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "folder_file.txt") != null);
 
-    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = 1 };
+    const explorer_body = workbench.explorer_container.?.bodyRect("explorer").?;
+    const click = ui.MouseEvent{ .kind = .down, .x = 4, .y = ui.cell.snap(explorer_body.y) };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
     pumpOpenForTests(workbench);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
@@ -15801,7 +15965,11 @@ test "Workbench: outline side panel shows provider symbols" {
     defer registration.dispose();
     try workbench.openPath(path);
     try workbench.activeTab().?.ensureControllers();
-    _ = try workbench.showActivityById(outline_contrib.outline_id);
+    _ = try workbench.showActivityById("explorer");
+    try std.testing.expect(workbench.explorer_container.?.model.isCollapsed("outline"));
+    workbench.explorer_container.?.model.setCollapsed("outline", false);
+    workbench.explorer_container.?.setActive("outline");
+    try workbench.syncOutlineView();
 
     const view = workbench.outline_view.?;
     try std.testing.expectEqual(@as(usize, 2), view.rowCount());
@@ -17437,11 +17605,13 @@ test "Workbench: explorer sticky headers pin the folder ancestors" {
     try workbench.render(&frame.writer);
 
     try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
-    const sticky_a = try workbench.frame.present().rowText(allocator, 1);
+    const explorer_body = workbench.explorer_container.?.bodyRect("explorer").?;
+    const sticky_top = ui.cell.snap(explorer_body.y);
+    const sticky_a = try workbench.frame.present().rowText(allocator, sticky_top);
     defer allocator.free(sticky_a);
-    const sticky_b = try workbench.frame.present().rowText(allocator, 2);
+    const sticky_b = try workbench.frame.present().rowText(allocator, sticky_top + 1);
     defer allocator.free(sticky_b);
-    const sticky_c = try workbench.frame.present().rowText(allocator, 3);
+    const sticky_c = try workbench.frame.present().rowText(allocator, sticky_top + 2);
     defer allocator.free(sticky_c);
     try std.testing.expect(std.mem.indexOf(u8, sticky_a, "aaa") != null);
     try std.testing.expect(std.mem.indexOf(u8, sticky_b, "bbb") != null);

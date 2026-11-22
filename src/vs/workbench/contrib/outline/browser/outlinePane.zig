@@ -812,14 +812,23 @@ fn drawRow(self: *OutlinePane, row: *const list_mod.Row, item: *const Row) void 
     if (width == 0) return;
     row.grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, base);
 
-    const indent = item.depth * 2;
-    var col = x + @min(indent, width -| 1);
-    if (item.depth > 0 and x + indent < x + width) {
-        row.grid.putCodepoint(x + indent - 1, y, 0x2502, 1, .{
-            .fg = ui.cell.packColor(if (palette) |theme| theme.color("tree.indentGuidesStroke", .{ 88, 88, 88 }) else ui.Color{ .r = 88, .g = 88, .b = 88 }),
-            .bg = ui.cell.packColor(bg),
-            .attrs = ui.cell.Attr.dim,
-        });
+    // Same layout as the ported Explorer tree renderer: two leading cells for
+    // the twistie, then one indent guide per ancestor level. Guides sit under
+    // the parent's twistie column instead of at an arbitrary offset.
+    var col = x + @min(2, width);
+    const indent_width = item.depth * 2;
+    var indent: usize = 0;
+    while (indent < indent_width and col < x + width) : (indent += 1) {
+        if (indent % 2 == 0) {
+            row.grid.putCodepoint(col, y, 0x2502, 1, .{
+                .fg = ui.cell.packColor(if (palette) |theme| theme.color("tree.indentGuidesStroke", .{ 88, 88, 88 }) else ui.Color{ .r = 88, .g = 88, .b = 88 }),
+                .bg = ui.cell.packColor(bg),
+                .attrs = ui.cell.Attr.dim,
+            });
+        } else {
+            row.grid.putSpace(col, y, base);
+        }
+        col += 1;
     }
     if (item.collapsible and col < x + width) {
         row.grid.putCodepoint(col, y, if (item.collapsed) 0x25B8 else 0x25BE, 1, base);
@@ -979,6 +988,14 @@ test "OutlinePane: tree rows, collapsing, filtering and sorting" {
     try std.testing.expectEqualStrings("Root", pane.rowLabel(0).?);
     try std.testing.expectEqual(@as(usize, 1), pane.rowDepth(1).?);
     try std.testing.expectEqualStrings("zeta", pane.rowLabel(1).?);
+
+    // Indent guides sit under the parent's twistie column: the child row has
+    // a guide at the second cell, matching the Explorer renderer.
+    var grid = try ui.CellGrid.init(allocator, 20, 5);
+    defer grid.deinit();
+    try pane.render(&grid, .{ .x = 0, .y = 0, .w = 20, .h = 5 }, true);
+    try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(2, 1)]);
+    try std.testing.expect(grid.cluster[grid.index(1, 1)] != 0x2502);
 
     try pane.toggleRow(0);
     try std.testing.expectEqual(@as(usize, 1), pane.rowCount());

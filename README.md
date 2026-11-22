@@ -570,10 +570,11 @@ console API for raw mode, sizing and input polling.
   Position/Name/Category title actions, and problem count/rollup badges from
   the marker service. Cursor and content changes come through the editor's
   `ViewCursorStateChanged` / `ViewLinesChanged` view events; content rebuilds
-  are debounced like upstream. Terminal adaptations: the side bar hosts one
-  container at a time, so Outline is its own activity-bar container instead of
-  a second view stacked under Explorer; tree state is not persisted, and the
-  browser data-tree find widget is replaced by typing directly in the pane.
+  are debounced like upstream. It is the Outline view of the Explorer view
+  container, stacked under the file tree with its own collapsible section
+  header, matching upstream `outline.contribution.ts`; `outline.focus` expands
+  and focuses it. Tree state is not persisted, and the browser data-tree find
+  widget is replaced by typing directly in the pane.
 - The breadcrumb row shows the workspace-relative file path (absolute segments
   outside the workspace) with `>` separators and the Explorer's Nerd Font file
   icon; `>` and the segments follow the upstream focus/selection rules. Each

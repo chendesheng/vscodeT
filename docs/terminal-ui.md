@@ -730,10 +730,11 @@ selection/hover/focus colors, wheel scrolling and Enter-to-reveal. The title
 actions are Collapse All, Expand All, Follow Cursor, Filter on Type and the
 three Sort By commands. Follow Cursor selects the symbol enclosing the cursor;
 content changes schedule a 200 ms rebuild, matching upstream's debounce.
-Terminal adaptations: Outline is a separate activity-bar container because the
-terminal side bar hosts one container at a time (upstream stacks it under the
-Explorer view), tree state is not persisted, and the find widget's separate
-input row is not drawn (typed filter text is appended to the pane's filter).
+The view lives in the Explorer view container, stacked under the file tree with
+its own collapsible section header, matching upstream `outline.contribution.ts`;
+`outline.focus` expands the section and focuses it. Terminal adaptations: tree
+state is not persisted, and the find widget's separate input row is not drawn
+(typed filter text is appended to the pane's filter).
 
 Limitations of the current wire encoder: it emits solid strokes only, with
 square joints, `placement=1` and `layer=0`. `Set` carries joint flags and the
