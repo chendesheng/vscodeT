@@ -60,6 +60,14 @@ pub const BracketPairInfo = struct {
     _endOffset: usize,
 };
 
+/// Upstream `BracketPairWithMinIndentationInfo`. The port keeps the pair info
+/// and the computed indentation side by side instead of subclassing.
+pub const BracketPairWithMinIndentationInfo = struct {
+    pair: BracketPairInfo,
+    /// `tree.max_safe_integer` when the pair contains no non-whitespace text.
+    minVisibleColumnIndentation: i64,
+};
+
 /// Upstream obtains `RichEditBrackets`/`bracketsNew` from the language
 /// configuration service. The terminal host owns the resolved configuration
 /// in its registry, so the provider hands out a stable pointer instead of a
@@ -415,8 +423,119 @@ pub const BracketPairsTextModelPart = struct {
         return result;
     }
 
-    pub fn getBracketPairsInRangeWithMinIndentation(self: *Self, range: Range) !ArrayList(BracketPairInfo) {
-        return self.getBracketPairsInRange(range);
+    pub fn getBracketPairsInRangeWithMinIndentation(self: *Self, range: Range) !ArrayList(BracketPairWithMinIndentationInfo) {
+        if (!self.canBuildAst()) return ArrayList(BracketPairWithMinIndentationInfo).init(self.allocator);
+        try self.ensureUpToDate();
+
+        const document = self._document orelse return ArrayList(BracketPairWithMinIndentationInfo).init(self.allocator);
+        const start_length = tree.positionToLength(range.getStartPosition());
+        const end_length = tree.positionToLength(range.getEndPosition());
+
+        var result = ArrayList(BracketPairWithMinIndentationInfo).init(self.allocator);
+        errdefer result.deinit();
+        var counts = std.StringHashMap(usize).init(self.allocator);
+        defer counts.deinit();
+        _ = try self.collectBracketPairsWithMinIndentation(
+            document.root,
+            0,
+            start_length,
+            end_length,
+            0,
+            &counts,
+            &result,
+        );
+        return result;
+    }
+
+    /// Upstream `collectBracketPairs` with `includeMinIndentation = true`.
+    fn collectBracketPairsWithMinIndentation(
+        self: *Self,
+        node: *tree.AstNode,
+        node_offset: tree.Length,
+        start_offset: tree.Length,
+        end_offset: tree.Length,
+        level: usize,
+        counts: *std.StringHashMap(usize),
+        result: *ArrayList(BracketPairWithMinIndentationInfo),
+    ) !bool {
+        if (level > 200) {
+            return true;
+        }
+
+        switch (node.data) {
+            .pair => |pair| {
+                const info = pair.opening.data.bracket.info;
+                const equal_level = counts.get(info.bracket_text) orelse 0;
+                try counts.put(info.bracket_text, equal_level + 1);
+                defer counts.put(info.bracket_text, equal_level) catch {};
+
+                const opening_end = tree.lengthAdd(node_offset, pair.opening.length);
+                const pair_end = tree.lengthAdd(node_offset, node.length);
+                const pair_range = tree.lengthsToRange(node_offset, pair_end);
+                const min_indentation = try tree.computeMinIndentation(node, node_offset, self.textModel);
+                const child_length: tree.Length = if (pair.child) |child| child.length else 0;
+
+                try result.append(.{
+                    .pair = .{
+                        .range = pair_range,
+                        .openingBracketRange = tree.lengthsToRange(node_offset, opening_end),
+                        .closingBracketRange = if (pair.closing != null)
+                            tree.lengthsToRange(tree.lengthAdd(opening_end, child_length), pair_end)
+                        else
+                            null,
+                        .nestingLevel = level,
+                        .nestingLevelOfEqualBracketType = equal_level,
+                        .openingBracket = info.bracket_text,
+                        .closingBracket = if (pair.closing) |closing| closing.data.bracket.info.bracket_text else null,
+                        .isColorized = info.colorized,
+                        ._startOffset = self.textModel.getOffsetAt(pair_range.startPosition()),
+                        ._endOffset = self.textModel.getOffsetAt(pair_range.endPosition()),
+                    },
+                    .minVisibleColumnIndentation = min_indentation,
+                });
+
+                if (pair.child) |child| {
+                    const child_end = tree.lengthAdd(opening_end, child.length);
+                    if (tree.lengthLessThanEqual(opening_end, end_offset) and
+                        tree.lengthLessThanEqual(start_offset, child_end))
+                    {
+                        if (!try self.collectBracketPairsWithMinIndentation(
+                            child,
+                            opening_end,
+                            start_offset,
+                            end_offset,
+                            level + 1,
+                            counts,
+                            result,
+                        )) return false;
+                    }
+                }
+            },
+            .list => |list| {
+                var offset = node_offset;
+                for (list.children.items) |child| {
+                    const child_offset = offset;
+                    offset = tree.lengthAdd(offset, child.length);
+
+                    if (tree.lengthLessThanEqual(child_offset, end_offset) and
+                        tree.lengthLessThanEqual(start_offset, offset))
+                    {
+                        if (!try self.collectBracketPairsWithMinIndentation(
+                            child,
+                            child_offset,
+                            start_offset,
+                            end_offset,
+                            level,
+                            counts,
+                            result,
+                        )) return false;
+                    }
+                }
+            },
+            .text, .bracket, .invalid_bracket => {},
+        }
+
+        return true;
     }
 
     pub fn getBracketsInRange(self: *Self, range: Range, onlyColorized: bool) !ArrayList(BracketInfo) {

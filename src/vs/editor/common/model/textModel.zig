@@ -74,6 +74,7 @@ const TokenizationTextModelPart = @import("./tokens/tokenizationTextModelPart.zi
 const BracketPairsTextModelPart = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairsTextModelPart;
 const BracketInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketInfo;
 const BracketPairInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairInfo;
+const BracketPairWithMinIndentationInfo = @import("./bracketPairsTextModelPart/bracketPairsImpl.zig").BracketPairWithMinIndentationInfo;
 const ColorizedBracketPairsDecorationProvider = @import("./bracketPairsTextModelPart/colorizedBracketPairsDecorationProvider.zig").ColorizedBracketPairsDecorationProvider;
 const WordAtPosition = @import("../../../base/common/utils.zig").WordAtPosition;
 const ModelTokensChangedEvent = @import("../textModelEvents.zig").ModelTokensChangedEvent;
@@ -2066,6 +2067,13 @@ pub const TextModel = struct {
 
     pub fn getBracketPairsInRange(self: *TextModel, range: Range) !ArrayList(BracketPairInfo) {
         return self._bracketPairs.getBracketPairsInRange(range);
+    }
+
+    pub fn getBracketPairsInRangeWithMinIndentation(
+        self: *TextModel,
+        range: Range,
+    ) !ArrayList(BracketPairWithMinIndentationInfo) {
+        return self._bracketPairs.getBracketPairsInRangeWithMinIndentation(range);
     }
 
     pub fn getBracketsInRange(self: *TextModel, range: Range, onlyColorized: bool) !ArrayList(BracketInfo) {

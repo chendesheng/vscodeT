@@ -7,6 +7,7 @@ const LanguageConfiguration = @import("../../../languages/languageConfiguration.
 const CharacterPair = @import("../../../languages/languageConfiguration.zig").CharacterPair;
 const Range = @import("../../../core/range.zig").Range;
 const Position = @import("../../../core/position.zig").Position;
+const CursorColumns = @import("../../../core/cursorColumns.zig").CursorColumns;
 const BeforeEditPositionMapper = @import("./beforeEditPositionMapper.zig").BeforeEditPositionMapper;
 const TextEditInfo = @import("./beforeEditPositionMapper.zig").TextEditInfo;
 const NodeReader = @import("./nodeReader.zig").NodeReader;
@@ -277,6 +278,65 @@ pub const AstNode = struct {
         };
     }
 };
+
+/// Upstream uses `Number.MAX_SAFE_INTEGER` for "no indentation found".
+pub const max_safe_integer: i64 = 9007199254740991;
+
+/// Upstream `AstNode.computeMinIndentation`.
+///
+/// The minimum visible column of the first non-whitespace character in the
+/// subtree's text. Text nodes that start mid-line contribute nothing for that
+/// first line (the tokenizer guarantees they have no partial indentation).
+/// Bracket leaf nodes contribute nothing.
+pub fn computeMinIndentation(node: *AstNode, offset: Length, model: *TextModel) anyerror!i64 {
+    switch (node.data) {
+        .text => {
+            const start_line_count = lengthLineCount(offset);
+            const start_column_count = lengthColumnCount(offset);
+            const start_line_number = (if (start_column_count == 0) start_line_count else start_line_count + 1) + 1;
+            const end_line_number = lengthLineCount(lengthAdd(offset, node.length)) + 1;
+
+            var result = max_safe_integer;
+            var line_number = start_line_number;
+            while (line_number <= end_line_number) : (line_number += 1) {
+                const first_non_ws_column = try model.getLineFirstNonWhitespaceColumn(line_number);
+                if (first_non_ws_column == 0) continue;
+
+                var line_content = try model.getLineContent(line_number);
+                defer line_content.deinit();
+                const visible_column = CursorColumns.visibleColumnFromColumn(
+                    line_content.items,
+                    first_non_ws_column,
+                    model.getOptions().tabSize,
+                );
+                result = @min(result, @as(i64, @intCast(visible_column)));
+            }
+            return result;
+        },
+        .bracket, .invalid_bracket => return max_safe_integer,
+        .pair => |pair| {
+            if (pair.child) |child| {
+                return computeMinIndentation(child, lengthAdd(offset, pair.opening.length), model);
+            }
+            return max_safe_integer;
+        },
+        .list => |*list| {
+            if (list.cached_min_indentation != -1) {
+                return list.cached_min_indentation;
+            }
+
+            var min_indentation = max_safe_integer;
+            var child_offset = offset;
+            for (list.children.items) |child| {
+                min_indentation = @min(min_indentation, try computeMinIndentation(child, child_offset, model));
+                child_offset = lengthAdd(child_offset, child.length);
+            }
+
+            list.cached_min_indentation = min_indentation;
+            return min_indentation;
+        },
+    }
+}
 
 pub const ParsedDocument = struct {
     arena: std.heap.ArenaAllocator,

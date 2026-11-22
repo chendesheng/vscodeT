@@ -432,3 +432,96 @@ test "bracket pairs: cached ranges follow edits before them" {
     try std.testing.expectEqual(@as(usize, 1), second.items[1].openingBracketRange.startColumn);
     try std.testing.expectEqual(@as(usize, 5), second.items[1].closingBracketRange.?.startLineNumber);
 }
+
+test "bracket pairs: min indentation query" {
+    const allocator = std.testing.allocator;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "{\n    a\n        b\n}", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var pairs = try fixture.ctx.model.getBracketPairsInRangeWithMinIndentation(fixture.ctx.model.getFullModelRange());
+    defer pairs.deinit();
+    try std.testing.expectEqual(@as(usize, 1), pairs.items.len);
+    // Upstream's text-node calculation includes the closing-bracket line, so
+    // the unindented `}` contributes visible column 0.
+    try std.testing.expectEqual(@as(i64, 0), pairs.items[0].minVisibleColumnIndentation);
+    try std.testing.expectEqual(@as(usize, 1), pairs.items[0].pair.range.startLineNumber);
+    try std.testing.expectEqual(@as(usize, 4), pairs.items[0].pair.range.endLineNumber);
+}
+
+test "bracket pairs: guides carry class names and wrapping columns" {
+    const allocator = std.testing.allocator;
+    const GuidesTextModelPart = @import("../../../../common/model/guidesTextModelPart.zig").GuidesTextModelPart;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "fn main() {\n    x\n}", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var guides = GuidesTextModelPart.init(fixture.ctx.model, fixture.ctx.languageService);
+    defer guides.dispose();
+    const lines = try guides.getLinesBracketGuides(
+        allocator,
+        1,
+        3,
+        null,
+        .{ .includeInactive = true, .horizontalGuides = .Disabled, .highlightActive = false },
+    );
+    defer {
+        for (lines) |*line| line.deinit();
+        allocator.free(lines);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    // The pair starts at column 11 and ends at column 1; the closing line
+    // contributes visible column 0, so the guide sits at visible column 1.
+    // Without horizontal guides the closing line has no vertical segment.
+    try std.testing.expectEqual(@as(usize, 1), lines[0].items.len);
+    try std.testing.expectEqual(@as(usize, 1), lines[1].items.len);
+    try std.testing.expectEqual(@as(usize, 0), lines[2].items.len);
+    for (lines[0..2]) |line| {
+        const guide = line.items[0];
+        try std.testing.expectEqual(@as(isize, 1), guide.visibleColumn);
+        try std.testing.expectEqual(@as(isize, -1), guide.column);
+        try std.testing.expectEqualStrings("bracket-indent-guide lvl-0", guide.className);
+        try std.testing.expect(guide.horizontalLine == null);
+    }
+    try std.testing.expectEqual(@as(isize, 11), lines[0].items[0].forWrappedLinesAfterColumn);
+    try std.testing.expectEqual(@as(isize, -1), lines[1].items[0].forWrappedLinesAfterColumn);
+}
+
+test "bracket pairs: text before the closing bracket keeps the closing guide line" {
+    const allocator = std.testing.allocator;
+    const GuidesTextModelPart = @import("../../../../common/model/guidesTextModelPart.zig").GuidesTextModelPart;
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "fn main() {\n    x\n    y }", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var pairs = try fixture.ctx.model.getBracketPairsInRangeWithMinIndentation(fixture.ctx.model.getFullModelRange());
+    defer pairs.deinit();
+    try std.testing.expectEqual(@as(i64, 4), pairs.items[0].minVisibleColumnIndentation);
+
+    var guides = GuidesTextModelPart.init(fixture.ctx.model, fixture.ctx.languageService);
+    defer guides.dispose();
+    const lines = try guides.getLinesBracketGuides(
+        allocator,
+        1,
+        3,
+        null,
+        .{ .includeInactive = true, .horizontalGuides = .Disabled, .highlightActive = false },
+    );
+    defer {
+        for (lines) |*line| line.deinit();
+        allocator.free(lines);
+    }
+    // Text before the closing bracket makes upstream render the horizontal
+    // end line at the bottom, so the vertical guide also covers line 3.
+    try std.testing.expectEqual(@as(usize, 1), lines[2].items.len);
+    const closing_guide = lines[2].items[0];
+    try std.testing.expectEqual(@as(isize, 5), closing_guide.visibleColumn);
+    try std.testing.expectEqual(@as(isize, 7), closing_guide.forWrappedLinesBeforeOrAtColumn);
+}

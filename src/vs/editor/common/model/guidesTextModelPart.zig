@@ -14,8 +14,15 @@ const TextModel = @import("./textModel.zig").TextModel;
 const TextModelPart = @import("./textModelPart.zig").TextModelPart;
 const LanguageService = @import("../services/languageService.zig").LanguageService;
 const computeIndentLevel = @import("./utils.zig").computeIndentLevel;
+const CursorColumns = @import("../core/cursorColumns.zig").CursorColumns;
+const Position = @import("../core/position.zig").Position;
+const Range = @import("../core/range.zig").Range;
+const strings = @import("../../../base/common/strings.zig");
 const textModelGuides = @import("../textModelGuides.zig");
 const IActiveIndentGuideInfo = textModelGuides.IActiveIndentGuideInfo;
+const BracketGuideOptions = textModelGuides.BracketGuideOptions;
+const IndentGuide = textModelGuides.IndentGuide;
+const IndentGuideHorizontalLine = textModelGuides.IndentGuideHorizontalLine;
 
 pub const GuidesTextModelPart = struct {
     part: TextModelPart = .{},
@@ -403,6 +410,212 @@ pub const GuidesTextModelPart = struct {
         }
 
         return result;
+    }
+
+    /// Bracket-pair guides for each requested line, using the model part's
+    /// bracket-pair tree. The returned slice is indexed by
+    /// `lineNumber - startLineNumber`; each list owns its guides and the slice
+    /// itself is owned by the caller.
+    pub fn getLinesBracketGuides(
+        self: *GuidesTextModelPart,
+        allocator: Allocator,
+        start_line_number: usize,
+        end_line_number: usize,
+        active_position: ?Position,
+        options: BracketGuideOptions,
+    ) ![]std.array_list.Managed(IndentGuide) {
+        try self.assertNotDisposed();
+        const line_count = self.model.getLineCount();
+        if (start_line_number < 1 or start_line_number > line_count) {
+            return error.IllegalValueForStartLineNumber;
+        }
+        if (end_line_number < 1 or end_line_number > line_count) {
+            return error.IllegalValueForEndLineNumber;
+        }
+        if (end_line_number < start_line_number) {
+            return error.IllegalValueForEndLineNumber;
+        }
+
+        const result = try allocator.alloc(std.array_list.Managed(IndentGuide), end_line_number - start_line_number + 1);
+        var initialized: usize = 0;
+        errdefer {
+            for (result[0..initialized]) |*line_guides| line_guides.deinit();
+            allocator.free(result);
+        }
+        for (result) |*line_guides| {
+            line_guides.* = std.array_list.Managed(IndentGuide).init(allocator);
+            initialized += 1;
+        }
+
+        // Upstream always includes single-line pairs.
+        const include_single_line_pairs = true;
+
+        const query_range = Range.init(
+            start_line_number,
+            1,
+            end_line_number,
+            self.model.getLineMaxColumn(end_line_number),
+        );
+        var bracket_pairs = try self.model.bracketPairs().getBracketPairsInRangeWithMinIndentation(query_range);
+        defer bracket_pairs.deinit();
+
+        var active_bracket_pair_range: ?Range = null;
+        if (active_position) |position| {
+            if (bracket_pairs.items.len > 0) {
+                if (position.lineNumber >= start_line_number and position.lineNumber <= end_line_number) {
+                    // We don't need to query the brackets again if the cursor is in the viewport.
+                    var containing: ?Range = null;
+                    for (bracket_pairs.items) |pair| {
+                        if (Range.strictContainsPosition(&pair.pair.range, &position)) {
+                            if (include_single_line_pairs or
+                                pair.pair.range.startLineNumber != pair.pair.range.endLineNumber)
+                            {
+                                containing = pair.pair.range;
+                            }
+                        }
+                    }
+                    active_bracket_pair_range = containing;
+                } else {
+                    var containing_range = try self.model.getBracketPairsInRange(Range.init(position.lineNumber, position.column, position.lineNumber, position.column));
+                    defer containing_range.deinit();
+                    var containing: ?Range = null;
+                    for (containing_range.items) |pair| {
+                        if (Range.strictContainsPosition(&pair.range, &position)) {
+                            if (include_single_line_pairs or
+                                pair.range.startLineNumber != pair.range.endLineNumber)
+                            {
+                                containing = pair.range;
+                            }
+                        }
+                    }
+                    active_bracket_pair_range = containing;
+                }
+            }
+        }
+
+        const independent_color_pool_per_bracket_type =
+            self.model.getOptions().bracketPairColorizationOptions.independentColorPoolPerBracketType;
+        const color_provider = BracketPairGuidesClassNames{};
+
+        for (bracket_pairs.items) |pair_info| {
+            const pair = pair_info.pair;
+            const closing_bracket_range = pair.closingBracketRange orelse continue;
+
+            const is_active = if (active_bracket_pair_range) |active_range|
+                Range.equalsRange(active_range, pair.range)
+            else
+                false;
+
+            if (!is_active and !options.includeInactive) {
+                continue;
+            }
+
+            const class_name = color_provider.getInlineClassNameWithActive(
+                pair.nestingLevel,
+                pair.nestingLevelOfEqualBracketType,
+                independent_color_pool_per_bracket_type,
+                options.highlightActive and is_active,
+            );
+
+            const start = pair.openingBracketRange.getStartPosition();
+            const end = closing_bracket_range.getStartPosition();
+
+            const horizontal_guides = options.horizontalGuides == .Enabled or
+                (options.horizontalGuides == .EnabledForActive and is_active);
+
+            if (pair.range.startLineNumber == pair.range.endLineNumber) {
+                if (include_single_line_pairs and horizontal_guides) {
+                    try result[pair.range.startLineNumber - start_line_number].append(try IndentGuide.init(
+                        -1,
+                        @intCast(pair.openingBracketRange.getEndPosition().column),
+                        class_name,
+                        .{ .top = false, .endColumn = end.column },
+                        -1,
+                        -1,
+                    ));
+                }
+                continue;
+            }
+
+            const end_visible_column = try self.getVisibleColumnFromPosition(end);
+            const start_visible_column = try self.getVisibleColumnFromPosition(pair.openingBracketRange.getStartPosition());
+            const min_visible_column: usize = @intCast(pair_info.minVisibleColumnIndentation + 1);
+            const guide_visible_column = @min(@min(start_visible_column, end_visible_column), min_visible_column);
+
+            var render_horizontal_end_line_at_the_bottom = false;
+
+            var closing_line_content = try self.model.getLineContent(closing_bracket_range.startLineNumber);
+            defer closing_line_content.deinit();
+            const first_non_ws_index: isize = if (strings.firstNonWhitespaceIndex(closing_line_content.items)) |index|
+                @intCast(index)
+            else
+                -1;
+            const has_text_before_closing_bracket = first_non_ws_index < @as(isize, @intCast(closing_bracket_range.startColumn)) - 1;
+            if (has_text_before_closing_bracket) {
+                render_horizontal_end_line_at_the_bottom = true;
+            }
+
+            const visible_guide_start_line_number = @max(start.lineNumber, start_line_number);
+            const visible_guide_end_line_number = @min(end.lineNumber, end_line_number);
+
+            const offset: usize = if (render_horizontal_end_line_at_the_bottom) 1 else 0;
+
+            var l = visible_guide_start_line_number;
+            while (l < visible_guide_end_line_number + offset) : (l += 1) {
+                try result[l - start_line_number].append(try IndentGuide.init(
+                    @intCast(guide_visible_column),
+                    -1,
+                    class_name,
+                    null,
+                    if (l == start.lineNumber) @intCast(start.column) else -1,
+                    if (l == end.lineNumber) @intCast(end.column) else -1,
+                ));
+            }
+
+            if (horizontal_guides) {
+                if (start.lineNumber >= start_line_number and start_visible_column > guide_visible_column) {
+                    try result[start.lineNumber - start_line_number].append(try IndentGuide.init(
+                        @intCast(guide_visible_column),
+                        -1,
+                        class_name,
+                        .{ .top = false, .endColumn = start.column },
+                        -1,
+                        -1,
+                    ));
+                }
+
+                if (end.lineNumber <= end_line_number and end_visible_column > guide_visible_column) {
+                    try result[end.lineNumber - start_line_number].append(try IndentGuide.init(
+                        @intCast(guide_visible_column),
+                        -1,
+                        class_name,
+                        .{ .top = !render_horizontal_end_line_at_the_bottom, .endColumn = end.column },
+                        -1,
+                        -1,
+                    ));
+                }
+            }
+        }
+
+        for (result) |*line_guides| {
+            std.mem.sort(IndentGuide, line_guides.items, {}, struct {
+                fn lessThan(_: void, a: IndentGuide, b: IndentGuide) bool {
+                    return a.visibleColumn < b.visibleColumn;
+                }
+            }.lessThan);
+        }
+
+        return result;
+    }
+
+    fn getVisibleColumnFromPosition(self: *GuidesTextModelPart, position: Position) !usize {
+        var content = try self.model.getLineContent(position.lineNumber);
+        defer content.deinit();
+        return CursorColumns.visibleColumnFromColumn(
+            content.items,
+            position.column,
+            self.model.getOptions().tabSize,
+        ) + 1;
     }
 };
 
