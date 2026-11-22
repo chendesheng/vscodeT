@@ -50,6 +50,20 @@ const secondary_background = style.Color{ .r = 0x3a, .g = 0x3a, .b = 0x3c };
 const secondary_focused_background = style.Color{ .r = 0x5a, .g = 0x5a, .b = 0x5c };
 const secondary_foreground = style.Color{ .r = 0xed, .g = 0xed, .b = 0xed };
 
+pub const Theme = struct {
+    background: style.Color = dialog_background,
+    border: style.Color = dialog_border,
+    text: style.Color = text_color,
+    detail: style.Color = detail_color,
+    warning: style.Color = warning_color,
+    primary_background: style.Color = primary_background,
+    primary_focused_background: style.Color = primary_focused_background,
+    primary_foreground: style.Color = primary_foreground,
+    secondary_background: style.Color = secondary_background,
+    secondary_focused_background: style.Color = secondary_focused_background,
+    secondary_foreground: style.Color = secondary_foreground,
+};
+
 const background_paint = PaintStyle{
     .fg = cell.packColor(text_color),
     .bg = cell.packColor(dialog_background),
@@ -104,6 +118,20 @@ pub const Dialog = struct {
     pressed: ?usize = null,
     layout: Layout = .{},
     button_rects: [max_buttons]ButtonRect = [_]ButtonRect{ .{}, .{}, .{} },
+    theme: Theme = .{},
+
+    fn backgroundPaint(self: *const Dialog) PaintStyle {
+        return .{ .fg = cell.packColor(self.theme.text), .bg = cell.packColor(self.theme.background) };
+    }
+    fn messagePaint(self: *const Dialog) PaintStyle {
+        return .{ .fg = cell.packColor(self.theme.text), .bg = cell.packColor(self.theme.background), .attrs = cell.Attr.bold };
+    }
+    fn detailPaint(self: *const Dialog) PaintStyle {
+        return .{ .fg = cell.packColor(self.theme.detail), .bg = cell.packColor(self.theme.background) };
+    }
+    fn warningPaint(self: *const Dialog) PaintStyle {
+        return .{ .fg = cell.packColor(self.theme.warning), .bg = cell.packColor(self.theme.background), .attrs = cell.Attr.bold };
+    }
 
     pub fn init(
         allocator: Allocator,
@@ -250,7 +278,7 @@ pub const Dialog = struct {
             @floatFromInt(layout.y),
             @floatFromInt(layout.width),
             @floatFromInt(layout.height),
-            background_paint,
+            self.backgroundPaint(),
         );
 
         self.renderContent(grid, layout);
@@ -297,7 +325,7 @@ pub const Dialog = struct {
 
         if (!layout.compact) {
             if (row < content_bottom) {
-                grid.putCodepoint(inner_x, row, warning_glyph, 1, warning_paint);
+                grid.putCodepoint(inner_x, row, warning_glyph, 1, self.warningPaint());
                 row += 1;
             }
         }
@@ -310,7 +338,7 @@ pub const Dialog = struct {
             layout.content_width,
             content_bottom -| row,
             self.message,
-            message_paint,
+            self.messagePaint(),
         );
         row = message_start + message_drawn;
         if (message_drawn < layout.message_rows) return;
@@ -325,7 +353,7 @@ pub const Dialog = struct {
                 layout.content_width,
                 content_bottom -| row,
                 self.detail,
-                detail_paint,
+                self.detailPaint(),
             );
             row = detail_start + detail_drawn;
             if (detail_drawn < layout.detail_rows) return;
@@ -385,12 +413,12 @@ pub const Dialog = struct {
         const focused = index == self.focused;
         const hovered = self.hovered != null and self.hovered.? == index;
 
-        var background = if (primary) primary_background else secondary_background;
+        var background = if (primary) self.theme.primary_background else self.theme.secondary_background;
         if (hovered or focused) {
-            background = if (primary) primary_focused_background else secondary_focused_background;
+            background = if (primary) self.theme.primary_focused_background else self.theme.secondary_focused_background;
         }
         const paint = PaintStyle{
-            .fg = cell.packColor(if (primary) primary_foreground else secondary_foreground),
+            .fg = cell.packColor(if (primary) self.theme.primary_foreground else self.theme.secondary_foreground),
             .bg = cell.packColor(background),
             .attrs = if (focused) cell.Attr.bold else 0,
         };
@@ -406,14 +434,13 @@ pub const Dialog = struct {
     }
 
     fn renderFrame(self: *const Dialog, grid: *CellGrid, layout: Layout) void {
-        _ = self;
         const x = layout.x;
         const y = layout.y;
         const right = x + layout.width -| 1;
         const bottom = y + layout.height -| 1;
         const paint = PaintStyle{
-            .fg = cell.packColor(dialog_border),
-            .bg = cell.packColor(dialog_background),
+            .fg = cell.packColor(self.theme.border),
+            .bg = cell.packColor(self.theme.background),
         };
 
         if (layout.width == 1 and layout.height == 1) {
@@ -739,6 +766,23 @@ test "Dialog: renders warning, message, detail and vertical buttons" {
     try std.testing.expect(std.mem.indexOf(u8, rows, "Don't Save") != null);
     try std.testing.expect(std.mem.indexOf(u8, rows, "Cancel") != null);
     try std.testing.expect(std.mem.indexOf(u8, rows, "\u{26A0}") != null);
+}
+
+test "Dialog: custom theme colors" {
+    const allocator = std.testing.allocator;
+    const dialog = try Dialog.init(allocator, "Message", "Detail", &.{"OK"});
+    defer dialog.deinit();
+    dialog.theme = .{
+        .background = .{ .r = 10, .g = 20, .b = 30 },
+        .text = .{ .r = 200, .g = 210, .b = 220 },
+    };
+    var grid = try CellGrid.init(allocator, 40, 10);
+    defer grid.deinit();
+    dialog.render(&grid);
+    try std.testing.expectEqual(
+        cell.packColor(.{ .r = 10, .g = 20, .b = 30 }),
+        grid.bg[grid.index(dialog.layout.x + 1, dialog.layout.y + 1)],
+    );
 }
 
 test "Dialog: compact layout keeps the actions on a short terminal" {

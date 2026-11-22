@@ -84,7 +84,7 @@ For each row:
 | Editor part/group/panes | `vs/workbench/browser/parts/editor/editorPart.zig`, `editorGroupView.zig`, `editorDropTarget.zig` | same | **P** | Group lifecycle, split/grid math, panes and drop-target decisions are ported (4+3+3+1 tests); watermark/maximize/serialization and some drop-edge cases remain. |
 | Editor status | `vs/workbench/browser/parts/editor/editorStatus.zig` | `workbench/browser/parts/editor/editorStatus.ts` | **P** | Selection/indent/encoding/EOL/language/problem entries and their pickers are ported; accessibility, overtype and the full status-entry matrix lack focused tests. |
 | Quick input/access | `vs/platform/quickinput/browser/*`, `vs/workbench/browser/quickaccess.zig`, `vs/workbench/contrib/quickaccess/browser/*` | `platform/quickinput/browser/*`, `workbench/browser/quickaccess.ts`, `workbench/contrib/quickaccess/*` | **P** | List rows, filtering, history, keybinding labels and theme are ported; browser buttons/accessibility and some quick-access providers are reduced to terminal pick rows. |
-| Dialog | `ui/dialog.zig` + save/quit path in `workbench.zig` | `base/browser/ui/dialog/dialog.ts` | **P** | Terminal dialog structure, focus and save/quit flows are ported; button order/theme/detail variants lack focused coverage. |
+| Dialog | `ui/dialog.zig` + save/quit path in `workbench.zig` | `base/browser/ui/dialog/dialog.ts` | **F** | Terminal dialog structure, focus, save/quit flows, warning/message/detail layout, keyboard/mouse activation and host-resolved `dialog.*`/`button.*` theme colors are ported. Covered by four UI tests plus a custom-theme test. |
 
 ## Group 4 — workbench content views
 
@@ -229,6 +229,9 @@ For each row:
   dirty tabs open.
 - Added an activity-bar overflow ellipsis and quick pick for hidden entries,
   with a render/hit test.
+- Threaded the workbench theme into the terminal dialog (`dialog.*` and
+  `button.*` colors), added a custom-theme UI test, and promoted the dialog row
+  to **F**.
 
 ## Next slice
 
