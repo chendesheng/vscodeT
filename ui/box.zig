@@ -432,7 +432,15 @@ fn rootStyle() style_mod.Style {
 }
 
 fn removeBoxMappings(tree: *BoxTree, box: *LayoutBox) void {
-    if (box.owner) |owner| _ = tree.node_boxes.remove(owner);
+    // A DOM node is only mapped to its current box. Retained parts recycle DOM
+    // nodes before the owning line rebuilds, so an about-to-be-dropped box can
+    // name a node that already belongs to a different box; removing that entry
+    // would strand the newer box in the tree without a mapping.
+    if (box.owner) |owner| {
+        if (tree.node_boxes.get(owner)) |mapped| {
+            if (mapped == box) _ = tree.node_boxes.remove(owner);
+        }
+    }
     for (box.children.items) |child| removeBoxMappings(tree, child);
 }
 
@@ -911,4 +919,60 @@ test "BoxTree: translateSubtree refreshes descendant pointers" {
     root.setStyle(.{ .pointer = .text });
     try std.testing.expect(tree.translateSubtree(root, 0, 0));
     try std.testing.expectEqual(style_mod.Pointer.text, tree.find(text).?.pointer);
+}
+
+test "BoxTree: rebuilding a line keeps boxes of recycled DOM nodes" {
+    // Retained view parts recycle DOM nodes before the owning line is rebuilt:
+    // `ViewLine.paint` drops the line's children while their boxes are still in
+    // the tree, and a part rendered later in the same frame may reuse those
+    // nodes and give them new boxes. Rebuilding the line afterwards must only
+    // drop the old boxes, not the mappings of the reused nodes.
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 4 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    const line = try doc.createElement(.div);
+    _ = try root.appendChild(line);
+    const run = try doc.createElement(.span);
+    _ = try line.appendChild(run);
+    const run_text = try doc.createText("x");
+    _ = try run.appendChild(run_text);
+    const gutter = try doc.createElement(.div);
+    _ = try root.appendChild(gutter);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    const line_box = tree.find(line).?;
+
+    // The retained line drops its children. Their boxes stay in the tree until
+    // `syncBoxes` rebuilds the line.
+    line.clearChildren();
+
+    // A part rendered before that rebuild reuses the recycled nodes (the free
+    // list is LIFO: the element and then its text node).
+    const row = try doc.createElement(.div);
+    try std.testing.expectEqual(run, row);
+    _ = try gutter.appendChild(row);
+    const label = try doc.createTextBorrowed("y");
+    try std.testing.expectEqual(run_text, label);
+    _ = try row.appendChild(label);
+    const row_box = (try tree.addSubtree(row)).?;
+    try std.testing.expectEqual(row_box, tree.find(row).?);
+    try std.testing.expect(tree.find(label) != null);
+
+    // Rebuilding the line drops its stale boxes without unlinking the
+    // recycled nodes' current mappings.
+    _ = try tree.rebuildSubtree(line);
+    try std.testing.expectEqual(@as(usize, 0), line_box.children.items.len);
+    try std.testing.expectEqual(row_box, tree.find(row).?);
+    try std.testing.expect(tree.find(label) != null);
+
+    // The reused subtree is still removable: its parent box finds it by the
+    // mapping that the line rebuild preserved.
+    tree.removeSubtree(row);
+    try std.testing.expect(tree.find(row) == null);
+    try std.testing.expect(tree.find(label) == null);
 }
