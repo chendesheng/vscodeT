@@ -141,6 +141,7 @@ pub const Glyph = struct {
     codepoint: u21,
     color: ui.Color,
     class_name: []const u8,
+    tooltip: ?[]const u8 = null,
 };
 
 /// One line's compacted lane glyphs. `lanes[i]` is the glyph for lane index
@@ -289,7 +290,12 @@ pub const GlyphMarginOverlay = struct {
                     }
                 }
                 slot.* = .{
-                    .glyph = .{ .codepoint = glyph.codepoint, .color = glyph.color, .class_name = class_name },
+                    .glyph = .{
+                        .codepoint = glyph.codepoint,
+                        .color = glyph.color,
+                        .class_name = class_name,
+                        .tooltip = decoration.options.glyphMarginHoverMessage,
+                    },
                     .z_index = z_index,
                 };
             }

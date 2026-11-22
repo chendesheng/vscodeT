@@ -444,6 +444,14 @@ pub const TerminalViewHost = struct {
         return &self.glyph_margin;
     }
 
+    /// The glyph-margin hover message for a visible line/lane, if any.
+    pub fn glyphTooltipAt(self: *TerminalViewHost, view_line: usize, lane: usize) ?[]const u8 {
+        if (lane >= 3) return null;
+        const line = self.glyph_margin.renderedLine(view_line);
+        const slot = line.lanes[lane] orelse return null;
+        return slot.glyph.tooltip;
+    }
+
     /// The ported `marginClassName` overlay.
     pub fn marginDecorations(self: *TerminalViewHost) *margin_decorations_mod.MarginViewLineDecorationsOverlay {
         return &self.margin_decorations;
