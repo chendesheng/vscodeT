@@ -80,7 +80,7 @@ For each row:
 | Composite bar | `vs/workbench/browser/parts/compositeBar.zig` | `workbench/browser/parts/compositeBar.ts` | **P** | Portable model, pinned/unpinned behavior, badges and order are ported (2 tests); the browser composite-bar view, overflow menu and drag/drop are not. |
 | Side bar | `vs/workbench/browser/parts/sidebar/sidebarPart.zig` | `workbench/browser/parts/sidebar/sidebarPart.ts` | **P** | Size/position, one-cell title, focus and persistence are ported (6 tests); title actions/overflow and browser sash behavior are reduced to the terminal layout. |
 | Panel | `vs/workbench/browser/parts/panel/panelPart.zig` | `workbench/browser/parts/panel/panelPart.ts` | **P** | Composite tabs, `showLabels`, position and active border are ported (2 tests); overflow and preferred-size behavior are simplified for cells. |
-| View panes/container | `vs/workbench/browser/parts/views/viewPane.zig`, `viewPaneContainer.zig` | `workbench/browser/parts/views/viewPane.ts`, `viewPaneContainer.ts` | **P** | Terminal header/content painters, actions, progress and event wiring exist, but there are no focused pane tests and the browser split/sash/view-cap behavior is simplified. |
+| View panes/container | `vs/workbench/browser/parts/views/viewPane.zig`, `viewPaneContainer.zig` | `workbench/browser/parts/views/viewPane.ts`, `viewPaneContainer.ts` | **P** | Terminal header/content painters, actions, progress and event wiring exist; the header title/action/outdated/hit-test path now has a focused test. Browser split/sash/view-cap behavior is still simplified. |
 | Editor part/group/panes | `vs/workbench/browser/parts/editor/editorPart.zig`, `editorGroupView.zig`, `editorDropTarget.zig` | same | **P** | Group lifecycle, split/grid math, panes and drop-target decisions are ported (4+3+3+1 tests); watermark/maximize/serialization and some drop-edge cases remain. |
 | Editor status | `vs/workbench/browser/parts/editor/editorStatus.zig` | `workbench/browser/parts/editor/editorStatus.ts` | **P** | Selection/indent/encoding/EOL/language/problem entries and their pickers are ported; accessibility, overtype and the full status-entry matrix lack focused tests. |
 | Quick input/access | `vs/platform/quickinput/browser/*`, `vs/workbench/browser/quickaccess.zig`, `vs/workbench/contrib/quickaccess/browser/*` | `platform/quickinput/browser/*`, `workbench/browser/quickaccess.ts`, `workbench/contrib/quickaccess/*` | **P** | List rows, filtering, history, keybinding labels and theme are ported; browser buttons/accessibility and some quick-access providers are reduced to terminal pick rows. |
@@ -215,6 +215,8 @@ For each row:
 - Added multi-widget/focus coverage for content widgets; that row is now **F**.
 - Honored `workbench.editor.tabCloseButton` off/left/right for the tab close
   cell, with helper and left-cell tests.
+- Added a view-pane header test for title/action/outdated painting and hit
+  testing, tightening the **P** evidence.
 
 ## Next slice
 
