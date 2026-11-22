@@ -3764,6 +3764,23 @@ pub const Workbench = struct {
             options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
             options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
             options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
+            options.hide_unchanged_regions = configuration.getBool("diffEditor.hideUnchangedRegions.enabled", false);
+            if (configuration.getValue("diffEditor.hideUnchangedRegions.contextLineCount", .{})) |value| {
+                switch (value.*) {
+                    .integer => |number| if (number >= 0) {
+                        options.hide_unchanged_regions_context_line_count = @intCast(number);
+                    },
+                    else => {},
+                }
+            }
+            if (configuration.getValue("diffEditor.hideUnchangedRegions.minimumLineCount", .{})) |value| {
+                switch (value.*) {
+                    .integer => |number| if (number >= 0) {
+                        options.hide_unchanged_regions_minimum_line_count = @intCast(number);
+                    },
+                    else => {},
+                }
+            }
             if (configuration.getValue("diffEditor.maxComputationTime", .{})) |value| {
                 switch (value.*) {
                     .integer => |number| options.max_computation_time_ms = number,
