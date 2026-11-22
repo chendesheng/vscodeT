@@ -724,6 +724,14 @@ pub const Controllers = struct {
                 .selection_foreground = selection_foreground,
             });
             self.suggest.setTheme(suggest_theme);
+            self.hover.setTheme(.{
+                .background = colors.color("editorHoverWidget.background", .{ 37, 37, 38 }),
+                .foreground = colors.color("editorHoverWidget.foreground", .{ 204, 204, 204 }),
+                .border = colors.color("editorHoverWidget.border", .{ 69, 69, 69 }),
+                .focused_border = colors.color("focusBorder", .{ 96, 130, 200 }),
+                .scrollbar = colors.color("scrollbarSlider.background", .{ 90, 90, 90 }),
+                .scrollbar_thumb = colors.color("scrollbarSlider.hoverBackground", .{ 160, 160, 160 }),
+            });
         } else {
             self.find.setTheme(.{});
         }
