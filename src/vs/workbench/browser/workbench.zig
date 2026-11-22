@@ -127,6 +127,7 @@ const breadcrumbs_control_mod = @import("./parts/editor/breadcrumbsControl.zig")
 const BreadcrumbsControl = breadcrumbs_control_mod.BreadcrumbsControl;
 const BreadcrumbsSelection = breadcrumbs_control_mod.Selection;
 const BreadcrumbsSelectMode = breadcrumbs_control_mod.SelectMode;
+const BreadcrumbsAnchor = breadcrumbs_control_mod.Anchor;
 const BreadcrumbsHost = breadcrumbs_control_mod.Host;
 const outline_service_mod = @import("../services/outline/browser/outlineService.zig");
 const OutlineService = outline_service_mod.OutlineService;
@@ -9978,7 +9979,7 @@ pub const Workbench = struct {
     /// Opens the anchored file picker for `file`. Upstream
     /// `BreadcrumbsFilePicker` sets the tree input to the workspace for a root
     /// folder and to the clicked element's parent directory otherwise.
-    pub fn showBreadcrumbPicker(self: *Workbench, file: *const breadcrumbs_model.FileElement, anchor_x: usize) !void {
+    pub fn showBreadcrumbPicker(self: *Workbench, file: *const breadcrumbs_model.FileElement, anchor: BreadcrumbsAnchor) !void {
         if (self.breadcrumb_popup) |popup| popup.close();
         _ = self.breadcrumbs_arena.reset(.retain_capacity);
         const arena = self.breadcrumbs_arena.allocator();
@@ -9991,10 +9992,10 @@ pub const Workbench = struct {
             for (workspace.folders.items) |folder| {
                 try folders.append(.{ .path = folder.resource, .name = folder.name });
             }
-            try picker.showFileWorkspace(folders.items, file.path, anchor_x, anchor_y);
+            try picker.showFileWorkspace(folders.items, file.path, pickerAnchor(anchor), anchor_y);
         } else {
             const directory = breadcrumbs_picker.inputDirectory(file);
-            try picker.showFileDirectory(directory, file.path, anchor_x, anchor_y);
+            try picker.showFileDirectory(directory, file.path, pickerAnchor(anchor), anchor_y);
         }
         self.breadcrumbs_dirty = true;
     }
@@ -10005,13 +10006,21 @@ pub const Workbench = struct {
         self: *Workbench,
         outline: *outline_mod.IOutline,
         element: *anyopaque,
-        anchor_x: usize,
+        anchor: BreadcrumbsAnchor,
     ) !void {
         if (self.breadcrumb_popup) |popup| popup.close();
         _ = self.breadcrumbs_arena.reset(.retain_capacity);
         const picker = try self.ensureBreadcrumbPopup();
-        try picker.showOutline(outline, element, anchor_x, self.breadcrumbAnchorY());
+        try picker.showOutline(outline, element, pickerAnchor(anchor), self.breadcrumbAnchorY());
         self.breadcrumbs_dirty = true;
+    }
+
+    fn pickerAnchor(anchor: BreadcrumbsAnchor) breadcrumbs_picker.Anchor {
+        return .{
+            .start = anchor.start,
+            .end = anchor.end,
+            .cursor = anchor.cursor,
+        };
     }
 
     fn breadcrumbAnchorY(self: *Workbench) usize {
@@ -10509,7 +10518,7 @@ fn breadcrumbSymbolIcon(_: *anyopaque, kind: ?u32) []const u8 {
     };
 }
 
-fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, mode: BreadcrumbsSelectMode, anchor_x: usize) anyerror!void {
+fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, mode: BreadcrumbsSelectMode, anchor: BreadcrumbsAnchor) anyerror!void {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     self.activate();
     switch (selection) {
@@ -10517,12 +10526,12 @@ fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, m
             if (mode == .reveal and file.kind == .FILE) {
                 try self.workbench.openBreadcrumbFile(file.path);
             } else {
-                try self.workbench.showBreadcrumbPicker(file, anchor_x);
+                try self.workbench.showBreadcrumbPicker(file, anchor);
             }
         },
         .outline => |outline| {
             if (mode == .pick) {
-                try self.workbench.showBreadcrumbOutlinePicker(outline.outline, outline.element, anchor_x);
+                try self.workbench.showBreadcrumbOutlinePicker(outline.outline, outline.element, anchor);
             } else {
                 try self.workbench.revealBreadcrumbElement(outline.outline, outline.element);
             }

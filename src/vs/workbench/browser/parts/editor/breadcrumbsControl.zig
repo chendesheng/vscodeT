@@ -46,6 +46,15 @@ const file_icon_mod = @import("../../fileIcon.zig");
 
 pub const SelectMode = enum { pick, reveal };
 
+/// Geometry of the breadcrumb item that opened the picker. Upstream anchors
+/// the context view to the item node and, for a mouse click, points the arrow
+/// at the cursor within that item.
+pub const Anchor = struct {
+    start: usize,
+    end: usize,
+    cursor: ?usize = null,
+};
+
 pub const Selection = union(enum) {
     file: *const FileElement,
     outline: OutlineElement2,
@@ -59,7 +68,7 @@ pub const Host = struct {
     outline_editor: *const fn (context: *anyopaque) ?OutlineEditor,
     file_icon: *const fn (context: *anyopaque) ?file_icon_mod.Icon,
     symbol_icon: *const fn (context: *anyopaque, kind: ?u32) []const u8,
-    open_element: *const fn (context: *anyopaque, selection: Selection, mode: SelectMode, anchor_x: usize) anyerror!void,
+    open_element: *const fn (context: *anyopaque, selection: Selection, mode: SelectMode, anchor: Anchor) anyerror!void,
     reveal_element: *const fn (context: *anyopaque, outline: *IOutline, element: *anyopaque) anyerror!void,
     request_render: *const fn (context: *anyopaque) void,
     focus_editor: *const fn (context: *anyopaque) void,
@@ -341,14 +350,23 @@ pub const BreadcrumbsControl = struct {
 
     pub fn click(self: *BreadcrumbsControl, x: usize) !bool {
         const index = self.widget.hitAt(x) orelse return false;
-        return self.activateIndex(index, .pick, x);
+        return self.activateIndex(index, .pick, self.anchorFor(index, x));
     }
 
     pub fn selectIndex(self: *BreadcrumbsControl, index: usize) !bool {
-        return self.activateIndex(index, .pick, self.widget.hitStart(index) orelse 0);
+        return self.activateIndex(index, .pick, self.anchorFor(index, null));
     }
 
-    fn activateIndex(self: *BreadcrumbsControl, index: usize, mode: SelectMode, anchor_x: usize) !bool {
+    fn anchorFor(self: *const BreadcrumbsControl, index: usize, cursor: ?usize) Anchor {
+        const start = self.widget.hitStart(index) orelse 0;
+        return .{
+            .start = start,
+            .end = self.widget.hitEnd(index) orelse start,
+            .cursor = cursor,
+        };
+    }
+
+    fn activateIndex(self: *BreadcrumbsControl, index: usize, mode: SelectMode, anchor: Anchor) !bool {
         const model = self.model orelse return false;
         const elements = model.getElements();
         if (index >= elements.len) return false;
@@ -358,7 +376,7 @@ pub const BreadcrumbsControl = struct {
             .outline => |outline| .{ .outline = outline },
             .placeholder => .placeholder,
         };
-        try self.host.open_element(self.host.context, selection, mode, anchor_x);
+        try self.host.open_element(self.host.context, selection, mode, anchor);
         return true;
     }
 
@@ -401,7 +419,7 @@ pub const BreadcrumbsControl = struct {
         if (index >= elements.len) return false;
         switch (elements[index]) {
             .outline => |outline| try self.host.reveal_element(self.host.context, outline.outline, outline.element),
-            else => return self.activateIndex(index, .reveal, self.widget.hitStart(index) orelse 0),
+            else => return self.activateIndex(index, .reveal, self.anchorFor(index, null)),
         }
         return true;
     }

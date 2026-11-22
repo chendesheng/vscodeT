@@ -207,6 +207,14 @@ pub const BreadcrumbsWidget = struct {
         return null;
     }
 
+    /// End column (exclusive) of an item's painted rectangle.
+    pub fn hitEnd(self: *const BreadcrumbsWidget, index: usize) ?usize {
+        for (self.hits.items) |hit| {
+            if (hit.index == index) return hit.end;
+        }
+        return null;
+    }
+
     /// Paints the widget. `row_style` is the base row background/foreground;
     /// `focus`/`hover` styling is applied per item.
     pub fn draw(

@@ -162,6 +162,15 @@ pub const FolderRef = struct {
     name: []const u8,
 };
 
+/// Port of upstream's `event.node` plus `event.payload.posx`: the picker is
+/// anchored to the breadcrumb item rectangle, not to the mouse cursor. The
+/// arrow offset still follows the cursor for mouse activation.
+pub const Anchor = struct {
+    start: usize,
+    end: usize,
+    cursor: ?usize = null,
+};
+
 pub const FileHost = struct {
     context: *anyopaque,
     io: Io,
@@ -188,8 +197,9 @@ pub const FilePicker = struct {
     host: FileHost,
     tree: *FileTree,
     folders: []const FolderRef = &.{},
-    anchor_x: usize = 0,
+    anchor: Anchor = .{ .start = 0, .end = 0 },
     anchor_y: usize = 0,
+    arrow_offset: usize = 0,
     rect: ui.Rect = .{},
     visible: bool = false,
     theme: ?*const theme_colors_mod.ThemeColors = null,
@@ -276,9 +286,11 @@ pub const FilePicker = struct {
 
     pub fn render(self: *FilePicker, grid: *ui.CellGrid) !void {
         if (!self.visible) return;
-        self.rect = overlayRect(self.anchor_x, self.anchor_y, grid.cols, grid.rows);
+        const layout = overlayLayout(self.anchor, self.anchor_y, grid.cols, grid.rows);
+        self.rect = layout.rect;
+        self.arrow_offset = layout.arrow_offset;
         if (ui.cell.snap(self.rect.w) < 3 or ui.cell.snap(self.rect.h) < 3) return;
-        renderOverlayFrame(grid, self.rect, self.theme);
+        renderOverlayFrame(grid, self.rect, self.theme, self.arrow_offset);
         self.tree.render(grid, innerRect(self.rect));
     }
 
@@ -321,8 +333,9 @@ pub const OutlinePicker = struct {
     host: OutlineHost,
     tree: *OutlineTree,
     outline: ?*outline_mod.IOutline = null,
-    anchor_x: usize = 0,
+    anchor: Anchor = .{ .start = 0, .end = 0 },
     anchor_y: usize = 0,
+    arrow_offset: usize = 0,
     rect: ui.Rect = .{},
     visible: bool = false,
     theme: ?*const theme_colors_mod.ThemeColors = null,
@@ -411,9 +424,11 @@ pub const OutlinePicker = struct {
 
     pub fn render(self: *OutlinePicker, grid: *ui.CellGrid) !void {
         if (!self.visible) return;
-        self.rect = overlayRect(self.anchor_x, self.anchor_y, grid.cols, grid.rows);
+        const layout = overlayLayout(self.anchor, self.anchor_y, grid.cols, grid.rows);
+        self.rect = layout.rect;
+        self.arrow_offset = layout.arrow_offset;
         if (ui.cell.snap(self.rect.w) < 3 or ui.cell.snap(self.rect.h) < 3) return;
-        renderOverlayFrame(grid, self.rect, self.theme);
+        renderOverlayFrame(grid, self.rect, self.theme, self.arrow_offset);
         self.tree.render(grid, innerRect(self.rect));
     }
 
@@ -485,35 +500,35 @@ pub const Picker = struct {
         if (self.outline) |picker| picker.setThemeColors(palette);
     }
 
-    pub fn showFileWorkspace(self: *Picker, folders: []const FolderRef, focus_path: ?[]const u8, anchor_x: usize, anchor_y: usize) !void {
+    pub fn showFileWorkspace(self: *Picker, folders: []const FolderRef, focus_path: ?[]const u8, anchor: Anchor, anchor_y: usize) !void {
         self.closeOutline();
         if (self.file == null) {
             self.file = try FilePicker.init(self.allocator, self.file_host);
             self.file.?.setThemeColors(self.theme);
         }
-        self.file.?.anchor_x = anchor_x;
+        self.file.?.anchor = anchor;
         self.file.?.anchor_y = anchor_y;
         try self.file.?.showWorkspace(folders, focus_path);
     }
 
-    pub fn showFileDirectory(self: *Picker, directory: []const u8, focus_path: ?[]const u8, anchor_x: usize, anchor_y: usize) !void {
+    pub fn showFileDirectory(self: *Picker, directory: []const u8, focus_path: ?[]const u8, anchor: Anchor, anchor_y: usize) !void {
         self.closeOutline();
         if (self.file == null) {
             self.file = try FilePicker.init(self.allocator, self.file_host);
             self.file.?.setThemeColors(self.theme);
         }
-        self.file.?.anchor_x = anchor_x;
+        self.file.?.anchor = anchor;
         self.file.?.anchor_y = anchor_y;
         try self.file.?.showDirectory(directory, focus_path);
     }
 
-    pub fn showOutline(self: *Picker, outline: *outline_mod.IOutline, element: *anyopaque, anchor_x: usize, anchor_y: usize) !void {
+    pub fn showOutline(self: *Picker, outline: *outline_mod.IOutline, element: *anyopaque, anchor: Anchor, anchor_y: usize) !void {
         self.closeFile();
         if (self.outline == null) {
             self.outline = try OutlinePicker.init(self.allocator, self.outline_host);
             self.outline.?.setThemeColors(self.theme);
         }
-        self.outline.?.anchor_x = anchor_x;
+        self.outline.?.anchor = anchor;
         self.outline.?.anchor_y = anchor_y;
         try self.outline.?.show(outline, element);
     }
@@ -722,19 +737,38 @@ fn rowPaint(theme: ?*const theme_colors_mod.ThemeColors, row: *const list_mod.Ro
     return .{ .fg = ui.cell.packColor(fg), .bg = ui.cell.packColor(bg) };
 }
 
-fn overlayRect(anchor_x: usize, anchor_y: usize, cols: usize, rows: usize) ui.Rect {
+const OverlayLayout = struct {
+    rect: ui.Rect,
+    arrow_offset: usize,
+};
+
+/// Port of the context-view anchor math: left edge from the breadcrumb item,
+/// arrow from the mouse cursor (or 30% into the item for keyboard activation).
+fn overlayLayout(anchor: Anchor, anchor_y: usize, cols: usize, rows: usize) OverlayLayout {
     const width = @min(@max(cols -| 4, 20), 64);
     const height = @min(@max(rows -| 3, 4), 14);
-    var x = anchor_x;
+    var x = anchor.start;
     if (x + width > cols) x = cols -| width;
+    var arrow_offset = if (anchor.cursor) |cursor| cursor -| x else blk: {
+        const item_width = anchor.end -| anchor.start;
+        break :blk (anchor.start + item_width * 3 / 10) -| x;
+    };
+    const max_arrow = width -| 2;
+    if (arrow_offset > max_arrow) {
+        x = @min(cols -| width, x + arrow_offset - max_arrow);
+        arrow_offset = max_arrow;
+    }
     var y = anchor_y + 1;
     if (y + height > rows) y = anchor_y -| height;
     if (y + height > rows) y = rows -| height;
     return .{
-        .x = @floatFromInt(x),
-        .y = @floatFromInt(y),
-        .w = @floatFromInt(width),
-        .h = @floatFromInt(height),
+        .rect = .{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(y),
+            .w = @floatFromInt(width),
+            .h = @floatFromInt(height),
+        },
+        .arrow_offset = arrow_offset,
     };
 }
 
@@ -747,7 +781,7 @@ fn innerRect(rect: ui.Rect) ui.Rect {
     };
 }
 
-fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_colors_mod.ThemeColors) void {
+fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_colors_mod.ThemeColors, arrow_offset: usize) void {
     const x = ui.cell.snap(rect.x);
     const y = ui.cell.snap(rect.y);
     const width = ui.cell.snap(rect.w);
@@ -774,6 +808,8 @@ fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_co
         grid.putCodepoint(x, y + row, 0x2502, 1, border_style);
         grid.putCodepoint(x + width - 1, y + row, 0x2502, 1, border_style);
     }
+    const arrow = x + @min(arrow_offset, width -| 2);
+    grid.putCodepoint(arrow, y, 0x25B2, 1, border_style);
 }
 
 fn findElementInTree(roots: []const outline_mod.TreeElement, element: *anyopaque) ?outline_mod.TreeElement {

@@ -88,10 +88,15 @@ test "breadcrumbsPicker: file tree expands folders inline" {
     try std.testing.expect(file_picker.handleKey(&.{ .key = .right }));
     try std.testing.expectEqual(@as(usize, 3), file_picker.count());
 
+    file_picker.anchor = .{ .start = 3, .end = 10, .cursor = 8 };
     var grid = try ui.CellGrid.init(allocator, 40, 12);
     defer grid.deinit();
     try file_picker.render(&grid);
     try std.testing.expect(ui.cell.snap(file_picker.rect.w) > 3);
+    // The overlay is anchored to the breadcrumb item's left edge; the arrow
+    // follows the cursor inside that item.
+    try std.testing.expectEqual(@as(usize, 3), ui.cell.snap(file_picker.rect.x));
+    try std.testing.expectEqual(@as(usize, 5), file_picker.arrow_offset);
 
     try std.testing.expect(file_picker.handleKey(&.{ .key = .left }));
     try std.testing.expectEqual(@as(usize, 2), file_picker.count());
