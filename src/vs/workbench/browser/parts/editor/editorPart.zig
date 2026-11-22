@@ -222,6 +222,17 @@ pub fn EditorPart(comptime GroupView: type) type {
             return findDivider(self, self.root, x, y);
         }
 
+        /// The resize pointer a split boundary asks for: horizontal splits put
+        /// panes side by side, so their boundary is an east-west resize handle;
+        /// vertical splits use the north-south shape.
+        pub fn sashPointer(self: *const Self, node: *LayoutNode) ui.Pointer {
+            _ = self;
+            return switch (node.kind) {
+                .split => |split| if (split.direction == .horizontal) .ew_resize else .ns_resize,
+                .leaf => .default,
+            };
+        }
+
         /// Starts, updates and ends a sash drag. Returns true while the pointer
         /// belongs to the sash.
         pub fn resizeSash(self: *Self, node: *LayoutNode, x: usize, y: usize) void {

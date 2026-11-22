@@ -414,6 +414,18 @@ pub const DiffEditorWidget = struct {
         }
     }
 
+    /// The pointer shape under a pane-relative cell: text from the side that
+    /// owns the cell, the split-view resize cursor over the center gutter.
+    pub fn pointerAt(self: *DiffEditorWidget, x: usize, y: usize) !ui.Pointer {
+        const widths = self.paneWidths();
+        if (self.sideBySide()) {
+            if (x < widths.original) return self.original_view.pointerAt(x, y);
+            if (x < widths.original + widths.gutter) return .ew_resize;
+            return self.modified_view.pointerAt(x -| (widths.original + widths.gutter), y);
+        }
+        return self.modified_view.pointerAt(x, y);
+    }
+
     fn paintGutter(self: *DiffEditorWidget, frame: *ui.Frame, x: usize, y: usize, height: usize) void {
         const normal = ui.cell.PaintStyle{
             .fg = ui.cell.packColor(.{ .r = 80, .g = 80, .b = 80 }),

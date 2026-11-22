@@ -403,6 +403,15 @@ pub const MarkdownPreview = struct {
         try ui.CellGrid.blit(&frame.next, surface.grid(), x, y, w, h);
     }
 
+    /// The pointer shape under a preview-relative cell. The content root is
+    /// text; link spans and the scrollbar track override it.
+    pub fn pointerAt(self: *MarkdownPreview, x: usize, y: usize) !?ui.Pointer {
+        if (!self.visible) return null;
+        if (self.dirty) try self.buildNodes();
+        const surface = &(self.surface orelse return null);
+        return surface.pointerAt(x, y);
+    }
+
     pub fn handleMouse(self: *MarkdownPreview, event: *ui.MouseEvent, now_ms: i64) bool {
         if (!self.visible) return false;
         if (event.kind == .wheel) {
@@ -1073,6 +1082,9 @@ pub const MarkdownPreview = struct {
             .width = .{ .cells = @floatFromInt(self.width) },
             .height = .{ .cells = @floatFromInt(self.height) },
             .background = preview_background,
+            // Markdown body text uses the browser's I-beam; link spans and
+            // the scrollbar override it.
+            .pointer = .text,
         });
         doc.setRoot(root);
 
@@ -1145,6 +1157,7 @@ pub const MarkdownPreview = struct {
                 .width = .{ .cells = 1 },
                 .height = .{ .cells = @floatFromInt(self.height) },
                 .background = scrollbar_track,
+                .pointer = .default,
             });
             _ = try root.appendChild(track);
             const thumb_height = @max(@as(usize, 1), (self.height * self.height) / document.rows.len);
@@ -1223,6 +1236,17 @@ const ScrollSource = enum { editor, preview };
 fn appendSpans(doc: *ui.Document, parent: *ui.Node, spans: []const markdown.Span) !void {
     for (spans) |span| {
         if (span.text.len == 0) continue;
+        if (span.link != null) {
+            // A link is an inline element with the pointer cursor; the text
+            // run keeps its span paint style unchanged.
+            const link = try doc.createElement(.span);
+            link.setStyle(.{ .display = .inline_, .pointer = .pointer });
+            const text = try doc.createText(span.text);
+            text.setStyle(span.style);
+            _ = try link.appendChild(text);
+            _ = try parent.appendChild(link);
+            continue;
+        }
         const text = try doc.createText(span.text);
         text.setStyle(span.style);
         _ = try parent.appendChild(text);
@@ -1306,6 +1330,41 @@ test "markdownPreview: async local image load lands on the poll tick" {
     }
     try std.testing.expect(preview.usesImagePath(path));
     try std.testing.expect(!preview.image_loading.contains(path));
+}
+
+test "markdownPreview: links request the pointer shape" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "See [link](https://example.com)\n\ntext\n\ntext\n\ntext\n\ntext",
+        "/tmp/docs/readme.md",
+        40,
+        4,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const preview = try MarkdownPreview.init(allocator, editor);
+    defer preview.deinit();
+
+    try preview.resize(40, 4);
+    try preview.open(null);
+    var frame = try ui.Frame.init(allocator, 40, 4);
+    defer frame.deinit();
+    frame.begin();
+    try preview.paint(&frame, 0, 0, 40, 4);
+
+    // The line node starts after the one-cell content margin: "See " is text,
+    // "link" is an inline link element with the hand shape.
+    try std.testing.expectEqual(ui.Pointer.text, (try preview.pointerAt(1, 0)).?);
+    try std.testing.expectEqual(ui.Pointer.pointer, (try preview.pointerAt(5, 0)).?);
+
+    // The overflowing document paints a scrollbar in the last column; it is
+    // chrome, not text.
+    try std.testing.expectEqual(ui.Pointer.default, (try preview.pointerAt(39, 0)).?);
 }
 
 test "markdownPreview: percent decoding keeps malformed escapes" {
