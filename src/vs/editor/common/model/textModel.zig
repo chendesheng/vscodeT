@@ -1841,7 +1841,7 @@ pub const TextModel = struct {
         if (node == null) {
             return null;
         }
-        return node.options;
+        return node.?.options.*;
     }
 
     pub fn getDecorationRange(self: *TextModel, decorationId: u64) ?Range {
@@ -1969,6 +1969,7 @@ pub const TextModel = struct {
     }
 
     fn _changeDecorationOptionsImpl(self: *TextModel, ownerId: usize, decorationId: u64, options: *ModelDecorationOptions) void {
+        self._normalizeDecorationOptions(options);
         if (self._decorations.get(decorationId)) |node| {
             const nodeWasInOverviewRuler = (node.options.overviewRuler != null and node.options.overviewRuler.?.color != null);
             const nodeIsInOverviewRuler = (options.overviewRuler != null and options.overviewRuler.?.color != null);
@@ -1998,6 +1999,19 @@ pub const TextModel = struct {
             } else {
                 node.setOptions(options);
             }
+        }
+    }
+
+    /// Upstream normalizes options into a fresh `ModelDecorationOptions`
+    /// instance. The port normalizes the caller's object in place (idempotent);
+    /// class-name cleaning and tooltip HTML encoding remain unported.
+    fn _normalizeDecorationOptions(_: *TextModel, options: *ModelDecorationOptions) void {
+        if (options.stickiness == null) {
+            options.stickiness = .AlwaysGrowsWhenTypingAtEdges;
+        }
+        if (options.zIndex == null) options.zIndex = 0;
+        if (options.lineHeight) |height| {
+            if (height > LINE_HEIGHT_CEILING) options.lineHeight = LINE_HEIGHT_CEILING;
         }
     }
 
@@ -2073,7 +2087,8 @@ pub const TextModel = struct {
                 var node_ = node.?;
                 const newDecoration = newDecorations[newDecorationIndex];
                 const range = self._validateRangeRelaxedNoAllocations(newDecoration.range);
-                const options = newDecoration.options; // TODO: normalize options ??
+                const options = newDecoration.options;
+                self._normalizeDecorationOptions(options);
                 const startOffset = self._buffer.getOffsetAt(range.startLineNumber, range.startColumn);
                 const endOffset = self._buffer.getOffsetAt(range.endLineNumber, range.endColumn);
 
@@ -3263,4 +3278,28 @@ test "TextModel.getLinesDecorations clamps the end line for its column" {
     const decorations = try textModel.getLinesDecorations(0, 99, 0, false, false);
     defer allocator.free(decorations);
     try std.testing.expectEqual(@as(usize, 0), decorations.len);
+}
+
+test "TextModel normalizes decoration options" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "abc", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var options = ModelDecorationOptions.init("test", .NeverGrowsWhenTypingAtEdges);
+    options.stickiness = null;
+    options.zIndex = null;
+    options.lineHeight = 400;
+    var decorations = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 1, 1, 2), .options = &options },
+    };
+    const ids = try textModel.deltaDecorations(&.{}, &decorations, 1);
+    defer allocator.free(ids);
+
+    const normalized = textModel.getDecorationOptions(ids[0]).?;
+    try std.testing.expectEqual(TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges, normalized.stickiness.?);
+    try std.testing.expectEqual(@as(usize, 0), normalized.zIndex.?);
+    try std.testing.expectEqual(@as(?usize, 300), normalized.lineHeight);
 }
