@@ -369,7 +369,8 @@ setting. It uses the same editor-state ownership and raw key-input contract as
 Vim, but follows Helix's selection-first model: `w` selects a word, `d` acts on
 the selection, `x` selects a line, `%` selects the file, `s` selects regex
 matches, and editing commands work on every selection. The normal/insert/select
-modes, multiple selections, registers, macros, `.` repeat, search, command line,
+modes, multiple selections, registers, macros, `.` repeat, incremental search
+with find-match highlighting, command line,
 goto/match/view/window/space minor modes, linewise, surround and text-object
 operations (`mi`/`ma`), and the `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`,
 `:reload`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`, `:noh`, `:set`) are implemented

@@ -6,12 +6,15 @@ const extension_api = @import("../../../../../workbench/api/common/extensionApi.
 const builtin_host = @import("../../../../../workbench/api/browser/builtinExtensionHost.zig");
 const HelixEngine = @import("../../browser/helixEngine.zig").HelixEngine;
 const Position = @import("../../../../common/core/position.zig").Position;
+const Range = @import("../../../../common/core/range.zig").Range;
 const Selection = @import("../../../../common/core/selection.zig").Selection;
+const editorBrowser = @import("../../../../browser/editorBrowser.zig");
 
 const Harness = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
     engine: *HelixEngine,
+    highlights: HighlightRecorder,
     commands: CommandState,
     window: WindowState,
     history: HistoryState,
@@ -33,10 +36,12 @@ const Harness = struct {
             .allocator = allocator,
             .editor = editor,
             .engine = undefined,
+            .highlights = HighlightRecorder.init(allocator),
             .commands = .{},
             .window = .{},
             .history = .{},
         };
+        editor.setSearchHighlightSink(.{ .context = &self.highlights, .set = HighlightRecorder.set });
         self.engine = try HelixEngine.init(
             allocator,
             builtin_host.editorInterface(editor),
@@ -50,9 +55,21 @@ const Harness = struct {
 
     fn deinit(self: *Harness) void {
         self.engine.deinit();
+        self.highlights.deinit();
         self.editor.deinit();
         self.allocator.destroy(self.editor);
         self.allocator.destroy(self);
+    }
+
+    fn highlightCount(self: *Harness) usize {
+        return self.highlights.decorations.items.len;
+    }
+
+    fn currentHighlight(self: *Harness) ?Range {
+        for (self.highlights.decorations.items) |decoration| {
+            if (decoration.kind == .current_find_match) return decoration.range;
+        }
+        return null;
     }
 
     fn send(self: *Harness, key: ui.Key) !void {
@@ -104,6 +121,26 @@ const Harness = struct {
         const selections = try self.editor.getSelections();
         defer self.allocator.free(selections);
         return selections[0];
+    }
+};
+
+/// Captures the decorations the engine pushes through the editor's search
+/// highlight sink, mirroring what the TUI view would paint.
+const HighlightRecorder = struct {
+    decorations: std.array_list.Managed(editorBrowser.Decoration),
+
+    fn init(allocator: std.mem.Allocator) HighlightRecorder {
+        return .{ .decorations = std.array_list.Managed(editorBrowser.Decoration).init(allocator) };
+    }
+
+    fn deinit(self: *HighlightRecorder) void {
+        self.decorations.deinit();
+    }
+
+    fn set(context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void {
+        const self: *HighlightRecorder = @ptrCast(@alignCast(context orelse return));
+        self.decorations.clearRetainingCapacity();
+        self.decorations.appendSlice(decorations) catch {};
     }
 };
 
@@ -334,6 +371,75 @@ test "Helix: search and n/N move through matches" {
     try std.testing.expectEqual(@as(usize, 9), (try h.firstSelection()).startColumn);
     try h.sendChar('N');
     try std.testing.expectEqual(@as(usize, 5), (try h.firstSelection()).startColumn);
+}
+
+test "Helix: incremental search previews the match and Escape restores selections" {
+    const h = try Harness.init(std.testing.allocator, "foo bar foo");
+    defer h.deinit();
+
+    try h.sendChar('/');
+    try h.sendText("bar");
+    try std.testing.expectEqual(@as(usize, 5), (try h.firstSelection()).startColumn);
+    try std.testing.expectEqual(@as(usize, 8), (try h.firstSelection()).endColumn);
+    try std.testing.expectEqual(@as(usize, 1), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 5, 1, 8), h.currentHighlight().?);
+
+    try h.send(.escape);
+    try std.testing.expectEqual(@as(usize, 1), (try h.firstSelection()).startColumn);
+    try std.testing.expectEqual(@as(usize, 1), (try h.firstSelection()).endColumn);
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
+}
+
+test "Helix: committed search highlights matches and n updates the current one" {
+    const h = try Harness.init(std.testing.allocator, "foo bar foo");
+    defer h.deinit();
+
+    try h.sendChar('/');
+    try h.sendText("foo");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 2), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 1, 1, 4), h.currentHighlight().?);
+
+    try h.sendChar('n');
+    try std.testing.expectEqual(@as(usize, 9), (try h.firstSelection()).startColumn);
+    try std.testing.expectEqual(Range.init(1, 9, 1, 12), h.currentHighlight().?);
+
+    try h.sendChar('N');
+    try std.testing.expectEqual(@as(usize, 1), (try h.firstSelection()).startColumn);
+    try std.testing.expectEqual(Range.init(1, 1, 1, 4), h.currentHighlight().?);
+}
+
+test "Helix: cancelling a prompt restores the committed highlights" {
+    const h = try Harness.init(std.testing.allocator, "foo bar foo");
+    defer h.deinit();
+
+    try h.sendChar('/');
+    try h.sendText("foo");
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 2), h.highlightCount());
+
+    try h.sendChar('/');
+    try h.sendText("bar");
+    try std.testing.expectEqual(@as(usize, 1), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 5, 1, 8), h.currentHighlight().?);
+
+    try h.send(.escape);
+    try std.testing.expectEqual(@as(usize, 2), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 1, 1, 4), h.currentHighlight().?);
+}
+
+test "Helix: search in select mode previews and commits an extended selection" {
+    const h = try Harness.init(std.testing.allocator, "foo bar foo");
+    defer h.deinit();
+
+    try h.sendChar('v');
+    try h.sendChar('/');
+    try h.sendText("bar");
+    try std.testing.expectEqual(@as(usize, 2), try h.selectionCount());
+    try h.send(.enter);
+    try std.testing.expectEqual(@as(usize, 2), try h.selectionCount());
+    try std.testing.expectEqual(@as(usize, 1), h.highlightCount());
+    try std.testing.expectEqual(Range.init(1, 5, 1, 8), h.currentHighlight().?);
 }
 
 test "Helix: command line save and switch buffer" {
@@ -943,6 +1049,7 @@ test "Helix: noh clears the search" {
     try h.sendText("noh");
     try h.send(.enter);
     try std.testing.expectEqual(@as(usize, 0), h.engine.last_search.items.len);
+    try std.testing.expectEqual(@as(usize, 0), h.highlightCount());
     try h.sendChar('n');
 }
 

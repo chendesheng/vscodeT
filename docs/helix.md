@@ -48,8 +48,12 @@ Everything else belongs to the editor:
   and moving on restores the original column instead of staying clamped.
 - Insert-mode text goes through `Editor.insertText`/`newline`, so auto-closing
   and auto-indent continue to work.
-- Search uses the model's regular-expression matcher. `ITextEditor` is the only
-  editor surface the engine sees.
+- Search uses the model's regular-expression matcher. `/` and `?` preview
+  matches while the prompt is edited: the selection moves to the match (or,
+  in select mode, is extended with it) and every match is highlighted with the
+  Ctrl+F find-match colors. `Enter` commits and `Esc` restores the prompt-start
+  selections and the previous pattern's highlights; `n`/`N` keep the current
+  match emphasized. `ITextEditor` is the only editor surface the engine sees.
 
 There is no Helix-owned undo history and no separate selection store. The engine
 stores the last selection set only for `gv`.
@@ -102,8 +106,8 @@ Changes:
 - `Ctrl-a`/`Ctrl-x` increment/decrement the number at or after each selection.
 - `Ctrl-c` toggles line comments.
 - `"` selects a register; `Q` starts/stops macro recording and `q` replays.
-- `/`, `?`, `n`, `N`, `*` (word-boundary search), `Alt-*` (raw selection
-  regex).
+- `/`, `?` (incremental, with match highlighting), `n`, `N`, `*`
+  (word-boundary search), `Alt-*` (raw selection regex).
 
 ### Minor modes
 
