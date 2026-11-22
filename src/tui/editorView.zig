@@ -1928,8 +1928,14 @@ pub const View = struct {
         var guide_end_model_line: usize = 0;
         if (top <= total) {
             const end_view_line = @min(total, top + text_height -| 1);
+            // Upstream `indentGuides.ts` asks for `visibleEndLineNumber + 1`:
+            // a bracket pair that closes just below the viewport still draws
+            // its guide on the last visible line, and that guide in turn
+            // suppresses the active indent guide there. The extra line is
+            // never painted (`viewRowForModelLine` rejects it).
+            const guide_end_view_line = @min(total, end_view_line + 1);
             guide_start_model_line = editor.modelLineNumber(top);
-            guide_end_model_line = editor.modelLineNumber(end_view_line);
+            guide_end_model_line = editor.modelLineNumber(guide_end_view_line);
             const defer_bracket_guides = editor.shouldDeferBracketGuides();
             if (defer_bracket_guides) editor.scheduleBracketGuides(time_compat.milliTimestamp());
             guide_lines = try indent_guides.getGuidesByLine(
@@ -5097,6 +5103,69 @@ test "View: bracket guides follow pairs and highlight the active pair" {
     // The inner pair has its own guide at column 4 and is not active.
     try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 2)]);
     try std.testing.expectEqual(inner_fg, grid.fg[grid.index(gutter + 4, 2)]);
+}
+
+test "View: last visible line keeps bracket guides closing below the viewport" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text =
+        "fn main() {\n" ++
+        "    if (x) {\n" ++
+        "        y();\n" ++
+        "        z();\n" ++
+        "    }\n" ++
+        "}";
+    // The status row leaves four text rows: lines 1-4 are visible.
+    const editor = try Editor.createFromText(allocator, io, text, "test.zig", 40, 5);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const color_utils = @import("../vs/platform/theme/common/colorUtils.zig");
+    const color_theme = @import("../vs/workbench/services/themes/common/colorThemeData.zig");
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    // Distinct colors make the source of a guide unambiguous. The two pairs
+    // use bracket levels 1 and 2, so both theme entries are needed.
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test-dark", &.{
+        .{ "editor.background", "#101010" },
+        .{ "editorIndentGuide.background1", "#00ff00" },
+        .{ "editorIndentGuide.activeBackground1", "#00ff00" },
+        .{ "editorIndentGuide.background2", "#00ff00" },
+        .{ "editorIndentGuide.activeBackground2", "#00ff00" },
+        .{ "editorBracketPairGuide.background1", "#ff0000" },
+        .{ "editorBracketPairGuide.activeBackground1", "#ff0000" },
+        .{ "editorBracketPairGuide.background2", "#ff0000" },
+        .{ "editorBracketPairGuide.activeBackground2", "#ff0000" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+
+    try editor.setCursorPosition(Position.init(3, 1));
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    view.setThemeColors(&palette);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const gutter = editor.gutterWidth();
+    const grid = view.surface.grid();
+    const bracket_fg = ui.cell.packColor(.{ .r = 255, .g = 0, .b = 0 });
+
+    // Line 3 sees the inner pair's guide at the shared level-2 cell.
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 2)]);
+    try std.testing.expectEqual(bracket_fg, grid.fg[grid.index(gutter + 4, 2)]);
+
+    // The enclosing pairs close on lines 5 and 6, below the viewport. Upstream
+    // `indentGuides.ts` requests `visibleEndLineNumber + 1` so those guides
+    // still reach the last visible line; without it the active indent guide
+    // takes over that cell with the wrong color and position.
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter, 3)]);
+    try std.testing.expectEqual(bracket_fg, grid.fg[grid.index(gutter, 3)]);
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(gutter + 4, 3)]);
+    try std.testing.expectEqual(bracket_fg, grid.fg[grid.index(gutter + 4, 3)]);
 }
 
 test "View: active indentation guide follows the cursor scope" {
