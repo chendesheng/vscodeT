@@ -310,6 +310,7 @@ pub const TextModelSearch = struct {
 
         // Collect results from middle lines
         for (searchRange.startLineNumber + 1..searchRange.endLineNumber) |lineNumber| {
+            if (result.items.len >= limitResultCount) break;
             const text2 = try model.getLineContent(lineNumber);
             defer text2.deinit();
             try _findMatchesInLine(searchData, text2.items, lineNumber, 0, &result, captureMatches, limitResultCount);

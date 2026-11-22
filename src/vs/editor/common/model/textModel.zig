@@ -1105,6 +1105,10 @@ pub const TextModel = struct {
                 if (ret2.items.len > 0) {
                     return ret2.items[0];
                 }
+
+                // Upstream returns null after both line-by-line scans; regex
+                // sources are the only path that reaches the multiline search.
+                return null;
             } else {
                 return null;
             }
