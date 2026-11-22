@@ -82,6 +82,8 @@ pub const TokenizerSyntaxTokenBackend = struct {
             self._allocator.destroy(tokenizer);
         }
         self._tokens.deinit();
+        var view_states = self._attachedViewStates.valueIterator();
+        while (view_states.next()) |handler| handler.deinit();
         self._attachedViewStates.deinit();
         self.super.deinit();
     }
@@ -104,7 +106,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 if (state) |newState| {
                     const entry = try this._attachedViewStates.getOrPut(view);
                     if (!entry.found_existing) {
-                        entry.value_ptr.* = AttachedViewHandler.init(this, struct {
+                        entry.value_ptr.* = AttachedViewHandler.init(this._allocator, this, struct {
                             fn f(ctx: *anyopaque, handler: *AttachedViewHandler) void {
                                 const backend: *TokenizerSyntaxTokenBackend = @ptrCast(@alignCast(ctx));
                                 backend.refreshRanges(handler._lineRanges);
@@ -114,7 +116,10 @@ pub const TokenizerSyntaxTokenBackend = struct {
                     // Mutate the stored handler, not a by-value copy.
                     entry.value_ptr.handleStateChange(newState);
                 } else {
-                    _ = this._attachedViewStates.remove(view);
+                    if (this._attachedViewStates.fetchRemove(view)) |removed| {
+                        var handler = removed.value;
+                        handler.deinit();
+                    }
                 }
             }
         }.cb) catch null;

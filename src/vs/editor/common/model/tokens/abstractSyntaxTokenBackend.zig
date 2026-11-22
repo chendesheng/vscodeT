@@ -167,13 +167,18 @@ pub const AttachedView = struct {
 };
 
 pub const AttachedViewHandler = struct {
+    allocator: Allocator,
     _computedLineRanges: []const LineRange,
     _lineRanges: []const LineRange,
+    /// Owned copy of the last visible ranges. The view's state array is freed
+    /// on the next `setVisibleLines`, while upstream keeps the JS array alive.
+    _ownedLineRanges: []LineRange = &[_]LineRange{},
     refreshTokens: *const fn (ctx: *anyopaque, handler: *AttachedViewHandler) void,
     _ctx: *anyopaque,
 
-    pub fn init(ctx: *anyopaque, refreshTokens: *const fn (ctx: *anyopaque, handler: *AttachedViewHandler) void) AttachedViewHandler {
+    pub fn init(allocator: Allocator, ctx: *anyopaque, refreshTokens: *const fn (ctx: *anyopaque, handler: *AttachedViewHandler) void) AttachedViewHandler {
         return .{
+            .allocator = allocator,
             ._computedLineRanges = &[_]LineRange{},
             ._lineRanges = &[_]LineRange{},
             .refreshTokens = refreshTokens,
@@ -181,7 +186,12 @@ pub const AttachedViewHandler = struct {
         };
     }
 
-    pub fn deinit(_: *AttachedViewHandler) void {}
+    pub fn deinit(self: *AttachedViewHandler) void {
+        if (self._ownedLineRanges.len > 0) self.allocator.free(self._ownedLineRanges);
+        self._ownedLineRanges = &[_]LineRange{};
+        self._lineRanges = &[_]LineRange{};
+        self._computedLineRanges = &[_]LineRange{};
+    }
 
     pub fn update(self: *AttachedViewHandler) void {
         if (lineRangeSliceEquals(self._computedLineRanges, self._lineRanges)) return;
@@ -190,7 +200,13 @@ pub const AttachedViewHandler = struct {
     }
 
     pub fn handleStateChange(self: *AttachedViewHandler, state: AttachedViewState) void {
-        self._lineRanges = state.visibleLineRanges.items;
+        const new_ranges = self.allocator.dupe(LineRange, state.visibleLineRanges.items) catch {
+            self._lineRanges = &[_]LineRange{};
+            return;
+        };
+        if (self._ownedLineRanges.len > 0) self.allocator.free(self._ownedLineRanges);
+        self._ownedLineRanges = new_ranges;
+        self._lineRanges = self._ownedLineRanges;
         if (state.stabilized) {
             self.update();
         }
