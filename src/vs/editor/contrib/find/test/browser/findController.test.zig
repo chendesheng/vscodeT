@@ -840,3 +840,44 @@ test "FindController: find history can be disabled" {
     try std.testing.expect(view.dispatchKey(&up));
     try std.testing.expectEqualStrings("", controller.widget().find_input.getValue());
 }
+
+test "FindController: dragging the sash resizes the find widget" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    controller.setSeedSearchStringFromSelection(.never);
+    try view.addOverlayWidget(controller.widget().interface());
+    try controller.open(false);
+    try view.refresh();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const widget = controller.widget();
+    const iface = widget.interface();
+    const width_cells = iface.width(iface.context, 60);
+    const initial_preferred = widget.preferred_width;
+    const left = 60 - width_cells;
+
+    var down = ui.MouseEvent{ .kind = .down, .x = left, .y = 0, .button = .left };
+    _ = try view.dispatchMouse(&down);
+    try std.testing.expect(widget.resizing);
+    var move = ui.MouseEvent{ .kind = .move, .x = left + 10, .y = 0 };
+    _ = try view.dispatchMouse(&move);
+    try std.testing.expect(widget.resizing);
+    try std.testing.expect(widget.preferred_width != initial_preferred);
+    var up = ui.MouseEvent{ .kind = .up, .x = left + 10, .y = 0, .button = .left };
+    _ = try view.dispatchMouse(&up);
+
+    try std.testing.expectEqual(width_cells -| 10, widget.preferred_width);
+}

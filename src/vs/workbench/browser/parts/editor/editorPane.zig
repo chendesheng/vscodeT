@@ -666,6 +666,11 @@ pub const Tab = struct {
     }
 };
 
+fn requestViewRender(context: ?*anyopaque) void {
+    const view: *View = @ptrCast(@alignCast(context orelse return));
+    view.invalidate();
+}
+
 fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib/suggest/browser/suggestController.zig").SuggestControllerHost {
     return .{
         .context = view,
@@ -769,6 +774,8 @@ pub const Controllers = struct {
             .set = View.ModelDecorationSink.set,
         });
         errdefer self.find.deinit();
+        self.find.widget().layout_context = view;
+        self.find.widget().on_layout = requestViewRender;
         editor.setFindController(self.find, FindController.startFromContext);
 
         self.view = view;

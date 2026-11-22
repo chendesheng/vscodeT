@@ -13,7 +13,8 @@
 // replace toggle/previous/next/close/preserve-case/replace/replace-all
 // controls.
 // TUI-specific: the key map (documented in the README), the cell layout, and
-// the absence of the browser sash and accessibility tree. Find and replace
+// the absence of the browser accessibility tree. The browser sash becomes a
+// draggable terminal sash. Find and replace
 // input histories are kept host-side and navigated with Up/Down.
 // `findOnType`, `closeOnResult`, `loop`, `seedSearchStringFromSelection` and
 // history enablement are host-resolved options. The browser
@@ -104,6 +105,12 @@ pub const FindWidget = struct {
     focused: bool = false,
     focus_field: FocusField = .find,
     widget_width: usize = 0,
+    preferred_width: usize = 76,
+    last_cols: usize = 0,
+    resizing: bool = false,
+    resize_start_x: usize = 0,
+    resize_start_width: usize = 0,
+    bar_left: usize = 0,
     add_extra_space_on_top: bool = true,
     focus_node_value: ?*ui.Node = null,
     /// The control under the pointer last frame, for the hover style.
@@ -115,6 +122,8 @@ pub const FindWidget = struct {
 
     close_context: ?*anyopaque = null,
     on_close: ?*const fn (context: ?*anyopaque) void = null,
+    layout_context: ?*anyopaque = null,
+    on_layout: ?*const fn (context: ?*anyopaque) void = null,
 
     pub fn init(allocator: Allocator, state: *FindReplaceState, model: *FindModel) !*FindWidget {
         const self = try allocator.create(FindWidget);
@@ -315,6 +324,19 @@ pub const FindWidget = struct {
         self.replace_history_enabled = replace_enabled;
     }
 
+    fn updateResize(self: *FindWidget, event: *const ui.MouseEvent) void {
+        if (!self.resizing) return;
+        const delta = if (event.x >= self.resize_start_x)
+            self.resize_start_width -| (event.x - self.resize_start_x)
+        else
+            self.resize_start_width + (self.resize_start_x - event.x);
+        const new_width = @max(@min(delta, self.last_cols), 20);
+        if (new_width != self.preferred_width) {
+            self.preferred_width = new_width;
+            if (self.on_layout) |callback| callback(self.layout_context orelse return);
+        }
+    }
+
     fn finishNavigation(self: *FindWidget) void {
         if (self.close_on_result and self.state.current_match != null) self.close();
     }
@@ -355,7 +377,8 @@ pub const FindWidget = struct {
     fn width(context: *anyopaque, cols: usize) usize {
         const self: *FindWidget = @ptrCast(@alignCast(context));
         if (!self.state.is_revealed) return 0;
-        self.widget_width = @min(cols, 76);
+        self.last_cols = cols;
+        self.widget_width = @min(cols, @max(self.preferred_width, 20));
         return self.widget_width;
     }
 
@@ -382,6 +405,7 @@ pub const FindWidget = struct {
 
     fn buildBar(self: *FindWidget, doc: *ui.Document) !*ui.Node {
         const width_cells = self.widget_width;
+        self.bar_left = self.last_cols -| width_cells;
         self.bar_root = null;
         self.control_nodes = @splat(null);
         const root = try doc.createElement(.div);
@@ -397,7 +421,12 @@ pub const FindWidget = struct {
             .background = self.theme.background,
             .color = self.theme.foreground,
         });
-        try root.addEventListener(.{ .context = self, .capture = true, .key_down = onKeyCapture });
+        try root.addEventListener(.{
+            .context = self,
+            .capture = true,
+            .key_down = onKeyCapture,
+            .mouse_down = onBarDown,
+        });
         try root.addEventListener(.{ .context = self, .mouse_move = onBarMove });
         self.bar_root = root;
         // Motion outside the bar never reaches a bar listener; the document
@@ -407,6 +436,7 @@ pub const FindWidget = struct {
                 .context = self,
                 .capture = true,
                 .mouse_move = onDocumentMove,
+                .mouse_up = onDocumentUp,
             });
         }
 
@@ -810,12 +840,43 @@ fn isWithin(target: ?*ui.Node, ancestor: ?*ui.Node) bool {
 
 fn onBarMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
     const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    if (self.resizing) {
+        self.updateResize(event);
+        return;
+    }
     self.hover_control = self.controlFor(event.target);
 }
 
 fn onDocumentMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
     const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    if (self.resizing) {
+        self.updateResize(event);
+        return;
+    }
     if (!isWithin(event.target, self.bar_root)) self.hover_control = null;
+}
+
+fn onDocumentUp(context: ?*anyopaque, _: *ui.MouseEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    self.resizing = false;
+}
+
+fn onBarDown(context: ?*anyopaque, event: *ui.MouseEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    if (event.button != .left or event.x != self.bar_left) return;
+    self.resizing = true;
+    self.resize_start_x = event.x;
+    self.resize_start_width = self.widget_width;
+    event.preventDefault();
+}
+
+fn onSashDown(context: ?*anyopaque, event: *ui.MouseEvent) void {
+    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
+    if (event.button != .left) return;
+    self.resizing = true;
+    self.resize_start_x = event.x;
+    self.resize_start_width = self.widget_width;
+    event.preventDefault();
 }
 
 fn onControlDown(context: ?*anyopaque, event: *ui.MouseEvent) void {
