@@ -2300,6 +2300,54 @@ test "TextModel.init" {
     defer textModel.deinit();
 }
 
+test "TextModel.init: mixed EOLs are normalized so line lengths match line content" {
+    const allocator = std.testing.allocator;
+    // The first and last lines end in CRLF, the middle line in LF. Upstream
+    // normalizes such a buffer to its predominant EOL on load; `getLineLength`
+    // and `getLineContent` must agree afterwards, otherwise the token store
+    // reports "Token length and text length do not match!".
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "abc\r\ndef\nghi\r\n", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    try std.testing.expectEqual(EOL.CRLF, textModel.getEOL());
+    try std.testing.expectEqual(@as(usize, 4), textModel.getLineCount());
+
+    const expected = [_][]const u8{ "abc", "def", "ghi", "" };
+    for (expected, 1..) |want, lineNumber| {
+        const content = try textModel.getLineContent(lineNumber);
+        defer content.deinit();
+        try std.testing.expectEqualStrings(want, content.items);
+        try std.testing.expectEqual(want.len, textModel.getLineLength(lineNumber));
+    }
+
+    // The buffer, not just the line lengths, is normalized to the predominant
+    // EOL (CRLF here: two CRLF lines against one LF line).
+    const value = try textModel.getValue(.TextDefined, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("abc\r\ndef\r\nghi\r\n", value.items);
+}
+
+test "TextModel.init: mixed EOLs with an LF majority normalize to LF" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "abc\ndef\r\nghi\n", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    try std.testing.expectEqual(EOL.LF, textModel.getEOL());
+    const expected = [_][]const u8{ "abc", "def", "ghi", "" };
+    for (expected, 1..) |want, lineNumber| {
+        const content = try textModel.getLineContent(lineNumber);
+        defer content.deinit();
+        try std.testing.expectEqualStrings(want, content.items);
+        try std.testing.expectEqual(want.len, textModel.getLineLength(lineNumber));
+    }
+}
+
 test "TextModel._isValidPosition" {
     const allocator = std.testing.allocator;
     const text = "你好, world!";
@@ -2895,7 +2943,13 @@ fn createTextBufferFactory(allocator: Allocator, reader: *Io.Reader) !PieceTreeT
         }
         try builder.acceptChunk(readerBuffer[0..len]);
     }
-    return try builder.finish(false);
+    // Upstream `PieceTreeTextBufferBuilder.finish` defaults `normalizeEOL` to
+    // true, and `createTextBufferFactory` in `textModel.ts` calls it without
+    // arguments. Normalization is what keeps `getLineLength` (one buffer-wide
+    // EOL length) consistent with `getLineContent` (each line's own EOL) for
+    // files that mix CRLF and LF: without it the two disagree and tokenization
+    // reports "Token length and text length do not match!".
+    return try builder.finish(true);
 }
 
 const LineHeightChangingDecoration = struct {
