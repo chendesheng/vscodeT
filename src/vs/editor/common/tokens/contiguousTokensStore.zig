@@ -55,6 +55,7 @@ pub const ContiguousTokensStore = struct {
 
     /// Takes ownership of `lineText`.
     pub fn getTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineText: ArrayList(u8)) !LineTokens {
+        errdefer lineText.deinit();
         var tokens = ArrayList(TokenPacked).init(self._lineTokens.allocator);
         errdefer tokens.deinit();
 

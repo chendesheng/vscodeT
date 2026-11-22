@@ -44,10 +44,10 @@ pub const ContiguousMultilineTokensBuilder = struct {
                 return;
             }
         }
-        var first = ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator);
-        errdefer first.deinit();
-        try first.append(ArrayList(TokenPacked).fromOwnedSlice(self._tokens.allocator, try self._tokens.allocator.dupe(TokenPacked, lineTokens)));
-        try self._tokens.append(ContiguousMultilineTokens.init(lineNumber, first));
+        var block = ContiguousMultilineTokens.init(lineNumber, ArrayList(?ArrayList(TokenPacked)).init(self._tokens.allocator));
+        errdefer block.deinit();
+        try block.appendLineTokens(lineTokens);
+        try self._tokens.append(block);
     }
 
     /// Borrowed view; the builder remains the owner and must outlive use.

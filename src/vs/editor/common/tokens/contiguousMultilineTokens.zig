@@ -87,7 +87,9 @@ pub const ContiguousMultilineTokens = struct {
 
     pub fn appendLineTokens(self: *ContiguousMultilineTokens, lineTokens: []const TokenPacked) !void {
         const allocator = self._tokens.allocator;
-        try self._tokens.append(ArrayList(TokenPacked).fromOwnedSlice(allocator, try allocator.dupe(TokenPacked, lineTokens)));
+        var owned = ArrayList(TokenPacked).fromOwnedSlice(allocator, try allocator.dupe(TokenPacked, lineTokens));
+        errdefer owned.deinit();
+        try self._tokens.append(owned);
     }
 
     pub fn serializeSize(self: *const ContiguousMultilineTokens) !usize {
