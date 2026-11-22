@@ -149,20 +149,27 @@ pub const EditStackElement = union(enum) {
         }
     }
 
-    pub fn split(self: *EditStackElement) !ArrayList(EditStackElement) {
+    /// Returns independent copies of the element(s). Upstream returns the
+    /// referenced elements (GC); the port's caller owns the returned list and
+    /// must `deinit()` every element and the list.
+    pub fn split(self: *const EditStackElement) !ArrayList(EditStackElement) {
+        const allocator = self.getAllocator();
+        var result = ArrayList(EditStackElement).init(allocator);
+        errdefer {
+            for (result.items) |*element| element.deinit();
+            result.deinit();
+        }
         switch (self.*) {
-            .singleModel => {
-                const result = ArrayList(EditStackElement).init(self.getAllocator());
-                return result;
+            .singleModel => |*singleModel| {
+                try result.append(.{ .singleModel = try singleModel.clone() });
             },
             .multiModel => |*multiModel| {
-                var result = ArrayList(EditStackElement).init(self.getAllocator());
-                for (multiModel.split()) |element| {
-                    try result.append(EditStackElement{ .singleModel = element });
+                for (multiModel.split()) |*element| {
+                    try result.append(.{ .singleModel = try element.clone() });
                 }
-                return result;
             },
         }
+        return result;
     }
 
     pub fn resource(self: *const EditStackElement) Uri {
@@ -253,6 +260,24 @@ pub const SingleModelEditStackDataUnserialized = struct {
         freeSelections(allocator, self.afterCursorState);
         self.beforeCursorState = null;
         self.afterCursorState = null;
+    }
+
+    pub fn clone(self: *const SingleModelEditStackDataUnserialized, allocator: Allocator) !SingleModelEditStackDataUnserialized {
+        var changes = ArrayList(TextChange).init(allocator);
+        errdefer {
+            for (changes.items) |*change| change.deinit();
+            changes.deinit();
+        }
+        for (self.changes.items) |*change| try changes.append(try cloneTextChange(allocator, change.*));
+        return .{
+            .beforeVersionId = self.beforeVersionId,
+            .afterVersionId = self.afterVersionId,
+            .beforeEOL = self.beforeEOL,
+            .afterEOL = self.afterEOL,
+            .beforeCursorState = try dupeSelections(allocator, self.beforeCursorState),
+            .afterCursorState = try dupeSelections(allocator, self.afterCursorState),
+            .changes = changes,
+        };
     }
 
     pub fn append(self: *SingleModelEditStackDataUnserialized, textChanges: []const TextChange, afterEOL: EOL, afterVersionId: u32, afterCursorState: ?[]Selection) !void {
@@ -454,6 +479,26 @@ pub const SingleModelEditStackElement = struct {
 
     pub fn deinit(self: *SingleModelEditStackElement) void {
         self._data.deinit();
+    }
+
+    pub fn clone(self: *const SingleModelEditStackElement) !SingleModelEditStackElement {
+        const data: SingleModelEditStackData = switch (self._data) {
+            .unserialized => |*data| .{ .unserialized = try data.clone(self.allocator) },
+            .serialized => |serialized| blk: {
+                var copy = ArrayList(u8).init(self.allocator);
+                errdefer copy.deinit();
+                try copy.appendSlice(serialized.items);
+                break :blk .{ .serialized = copy };
+            },
+        };
+        return .{
+            .allocator = self.allocator,
+            .model = self.model,
+            ._data = data,
+            .label = self.label,
+            .code = self.code,
+            .confirmBeforeUndo = self.confirmBeforeUndo,
+        };
     }
 
     pub fn toString(self: *const SingleModelEditStackElement) !ArrayList(u8) {
@@ -760,14 +805,14 @@ pub const MultiModelEditStackElement = struct {
         return 0;
     }
 
-    pub fn split(self: *MultiModelEditStackElement) []SingleModelEditStackElement {
+    pub fn split(self: *const MultiModelEditStackElement) []SingleModelEditStackElement {
         return self._editStackElementsArr.items;
     }
 
     pub fn toString(self: *MultiModelEditStackElement) !ArrayList(u8) {
         const allocator = self.allocator;
-        const result = ArrayList(u8).init(allocator);
-        result.append('{');
+        var result = ArrayList(u8).init(allocator);
+        try result.append('{');
         for (self._editStackElementsArr.items, 0..) |editStackElement, index| {
             const s = try editStackElement.toString();
             defer s.deinit();
@@ -783,7 +828,7 @@ pub const MultiModelEditStackElement = struct {
                 try result.appendSlice(", ");
             }
         }
-        result.append('}');
+        try result.append('}');
         return result;
     }
 

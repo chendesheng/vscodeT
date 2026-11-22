@@ -68,3 +68,47 @@ test "EditStack: issue #118041: unicode character undo bug" {
     try std.testing.expectEqual(@as(usize, 10), after[0].endLineNumber);
     try std.testing.expectEqual(@as(usize, 1), after[0].endColumn);
 }
+
+test "EditStack: split returns independent elements" {
+    const allocator = std.testing.allocator;
+    const uri = try std.Uri.parse("file:///split-test");
+
+    var changes = ArrayList(TextChange).init(allocator);
+    try changes.append(TextChange.init(
+        0,
+        String.initBorrowed("a"),
+        1,
+        String.initBorrowed("b"),
+    ));
+    const data = SingleModelEditStackDataUnserialized{
+        .beforeVersionId = 1,
+        .afterVersionId = 2,
+        .beforeEOL = .LF,
+        .afterEOL = .LF,
+        .beforeCursorState = null,
+        .afterCursorState = null,
+        .changes = changes,
+    };
+    var element = editStack.EditStackElement{ .singleModel = .{
+        .allocator = allocator,
+        .model = .{ .uri = uri },
+        ._data = .{ .unserialized = data },
+        .label = "test",
+        .code = "test",
+        .confirmBeforeUndo = null,
+    } };
+    defer element.deinit();
+
+    var split = try element.split();
+    defer {
+        for (split.items) |*item| item.deinit();
+        split.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 1), split.items.len);
+
+    var serialized = try element.toString();
+    defer serialized.deinit();
+    var split_serialized = try split.items[0].toString();
+    defer split_serialized.deinit();
+    try std.testing.expectEqualStrings(serialized.items, split_serialized.items);
+}
