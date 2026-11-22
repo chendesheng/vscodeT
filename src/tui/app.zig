@@ -288,6 +288,9 @@ pub fn main(init: std.process.Init) !void {
 
     try tui.enableMouseCapture(out);
     defer tui.disableMouseCapture(out) catch {};
+    // Restore the terminal pointer shape on the way out (both the workbench
+    // and the read-only preview may have set a non-default OSC 22 shape).
+    defer ui.pointer.writeShape(out, .default) catch {};
 
     try tui.installSigWinch();
 
@@ -434,6 +437,9 @@ pub fn main(init: std.process.Init) !void {
     workbench.setCellBorders(border_probe.supported);
     workbench.setImageProtocol(image_probe.capability);
     workbench.setCellPixelSize(size.cell_width_px, size.cell_height_px);
+    // OSC 22 needs no probe: a terminal without pointer-shape support ignores
+    // the sequence and the frame is unaffected.
+    workbench.setPointerShapes(true);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
     workbench.enableAsyncTokenization();
     workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
@@ -878,6 +884,10 @@ pub fn main(init: std.process.Init) !void {
                     )) return;
                 },
                 .mouse => |*event| {
+                    // Only motion re-resolves the whole workbench: a press or
+                    // release keeps the shape the last move established, so a
+                    // click on a row does not flicker back to the arrow.
+                    if (event.kind == .move) workbench.beginMousePointer();
                     if (workbench.handleDialogMouse(event)) {
                         if (workbench.shouldQuit()) return;
                         continue;
@@ -891,6 +901,9 @@ pub fn main(init: std.process.Init) !void {
                     if (workbench.handleTabMouse(event)) continue;
                     if (workbench.handleTerminalMouse(event)) continue;
 
+                    // The editor pane resolves text/pointer/resize shapes from
+                    // the surface's style tree before the event is routed.
+                    workbench.updateMousePointer(event.*);
                     var adjusted = workbench.editorMouseEvent(event.*) orelse continue;
                     const current = workbench.activeTab() orelse continue;
                     if (current.isImage()) {
@@ -1164,6 +1177,9 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
     defer view.deinit();
     try view.setScrollbarWidth(0);
     try setPreviewStatus(editor, view);
+    // The preview owns the whole terminal surface, so it can emit OSC 22
+    // directly from `View.render`.
+    view.setPointerShapes(true);
 
     try view.render(out);
     try out.flush();
@@ -1201,6 +1217,10 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
                     } else return;
                 },
                 .mouse => |event| {
+                    if (event.kind == .move) {
+                        const shape = view.pointerAt(event.x, event.y) catch .default;
+                        if (view.setPointer(shape)) redraw = true;
+                    }
                     if (handlePreviewMouse(editor, view, event)) redraw = true;
                 },
             }

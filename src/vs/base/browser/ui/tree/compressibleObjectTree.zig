@@ -353,6 +353,10 @@ pub fn CompressibleObjectTree(comptime T: type) type {
             return self.view.stickyRowAt(x, y);
         }
 
+        pub fn hasHoveredRow(self: *const CompressibleObjectTree(T)) bool {
+            return self.view.hasHoveredRow();
+        }
+
         pub fn render(self: *CompressibleObjectTree(T), grid: *ui.CellGrid, rect: ui.Rect) void {
             self.view.render(grid, rect);
         }

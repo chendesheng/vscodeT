@@ -364,6 +364,19 @@ pub const StatusbarPart = struct {
         return .part;
     }
 
+    /// The pointer shape at a status-bar cell: entries with a command are
+    /// clickable, the rest of the bar (and command-less entries) is chrome.
+    pub fn pointerAt(self: *StatusbarPart, x: usize, y: usize) !ui.Pointer {
+        const hit = (try self.hitAt(x, y)) orelse return .default;
+        return switch (hit) {
+            .part => .default,
+            .entry => |handle| blk: {
+                const entry = self.model.findByHandle(handle) orelse break :blk .default;
+                break :blk if (entry.item.command() != null) .pointer else .default;
+            },
+        };
+    }
+
     //#endregion
 
     //#region Rendering
@@ -767,4 +780,24 @@ test "StatusbarPart: hidden entries are omitted and overrides update text" {
     const hidden = try grid.rowText(std.testing.allocator, 0);
     defer std.testing.allocator.free(hidden);
     try std.testing.expect(std.mem.indexOf(u8, hidden, "B") == null);
+}
+
+test "StatusbarPart: command entries request the pointer shape" {
+    var part = try StatusbarPart.init(std.testing.allocator);
+    defer part.deinit();
+    _ = try part.addEntry(
+        .{ .name = "cmd", .text = "C", .command = .{ .id = "test.cmd" } },
+        "cmd",
+        .left,
+        .{ .number = 1 },
+    );
+
+    var grid = try ui.CellGrid.init(std.testing.allocator, 20, 1);
+    defer grid.deinit();
+    try part.render(&grid, .{ .x = 0, .y = 0, .w = 20, .h = 1 }, .{});
+
+    const entry = part.nodes.items[0];
+    try std.testing.expect(entry.hit_width > 0);
+    try std.testing.expectEqual(ui.Pointer.pointer, try part.pointerAt(entry.hit_x, 0));
+    try std.testing.expectEqual(ui.Pointer.default, try part.pointerAt(19, 0));
 }

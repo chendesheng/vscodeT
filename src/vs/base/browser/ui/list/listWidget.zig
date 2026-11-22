@@ -76,6 +76,12 @@ pub const ListWidget = struct {
         self.view.clearHover();
     }
 
+    /// True while the pointer is over a row of the list (the view's hover
+    /// index is set). Hosts use it to show the clickable-row pointer.
+    pub fn hasHoveredRow(self: *const ListWidget) bool {
+        return self.view.hovered != null;
+    }
+
     pub fn render(self: *ListWidget, grid: *ui.CellGrid, rect: ui.Rect) void {
         self.last_rect = rect;
         self.view.focused = self.focused;

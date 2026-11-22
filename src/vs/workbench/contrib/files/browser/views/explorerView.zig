@@ -538,6 +538,12 @@ pub const Sidebar = struct {
         self.tree.clearHover();
     }
 
+    /// True while the pointer is over a file row (or a sticky pinned row);
+    /// the workbench maps it to the hand pointer.
+    pub fn hasHoveredRow(self: *const Sidebar) bool {
+        return self.tree.hasHoveredRow();
+    }
+
     pub fn handleClick(self: *Sidebar, x: usize, y: usize) !?[]const u8 {
         return self.handleClickInternal(x, y);
     }

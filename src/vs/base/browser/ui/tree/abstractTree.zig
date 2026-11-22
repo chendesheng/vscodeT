@@ -301,6 +301,12 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
             self.sticky_focused = false;
         }
 
+        /// True while the pointer is over a list row (including the sticky
+        /// widget's pinned rows). Used for the clickable-row pointer shape.
+        pub fn hasHoveredRow(self: *const AbstractTreeForModel(T, Model)) bool {
+            return self.sticky_hovered_index != null or self.widget.hasHoveredRow();
+        }
+
         /// Row of the sticky widget under viewport cell `(x, y)`, if any.
         pub fn stickyRowAt(self: *const AbstractTreeForModel(T, Model), x: usize, y: usize) ?usize {
             if (self.sticky_nodes.items.len == 0) return null;

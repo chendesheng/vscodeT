@@ -515,6 +515,12 @@ pub const Workbench = struct {
     view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
     images: ui.image.Runtime,
+    /// Desired OSC 22 mouse pointer shape for the next frame. Only the
+    /// composited renderer writes it; pane surfaces resolve shapes but never
+    /// emit them.
+    pointer: ui.Pointer = .default,
+    pointer_state: ui.pointer.State = .{},
+    pointer_shapes: bool = false,
     media_status: ?*MediaPreviewStatus = null,
     /// Set when a file watcher change was applied so the TUI repaints even if
     /// the change produced no other input.
@@ -714,6 +720,9 @@ pub const Workbench = struct {
         self.dialog = null;
         self.pending_dialog = null;
         self.images = ui.image.Runtime.init(allocator);
+        self.pointer = .default;
+        self.pointer_state = .{};
+        self.pointer_shapes = false;
         self.media_status = null;
         self.files_changed = false;
         self.pending_tab_drag = null;
@@ -865,6 +874,9 @@ pub const Workbench = struct {
         self.dialog = null;
         self.pending_dialog = null;
         self.images = ui.image.Runtime.init(allocator);
+        self.pointer = .default;
+        self.pointer_state = .{};
+        self.pointer_shapes = false;
         self.media_status = null;
         self.files_changed = false;
         self.pending_tab_drag = null;
@@ -1049,6 +1061,9 @@ pub const Workbench = struct {
         self.dialog = null;
         self.pending_dialog = null;
         self.images = ui.image.Runtime.init(allocator);
+        self.pointer = .default;
+        self.pointer_state = .{};
+        self.pointer_shapes = false;
         self.media_status = null;
         self.files_changed = false;
         self.pending_tab_drag = null;
@@ -1570,11 +1585,18 @@ pub const Workbench = struct {
     }
 
     pub fn handleQuickAccessKey(self: *Workbench, event: *ui.KeyEvent) !bool {
-        return self.quick_access.handleKey(event);
+        const was_open = self.quick_access.isOpen();
+        const handled = try self.quick_access.handleKey(event);
+        // A keyboard-opened picker covers whatever the pointer was over; reset
+        // until the next mouse move resolves the new target.
+        if (handled and !was_open and self.quick_access.isOpen()) self.pointer = .default;
+        return handled;
     }
 
     pub fn handleQuickAccessMouse(self: *Workbench, event: *ui.MouseEvent) bool {
-        return self.quick_access.handleMouse(event);
+        const handled = self.quick_access.handleMouse(event);
+        if (handled) self.pointer = self.quick_access.pointerAt(event.x, event.y);
+        return handled;
     }
 
     /// Routes one key to the modal dialog. Returns false when no dialog is
@@ -1594,6 +1616,7 @@ pub const Workbench = struct {
     /// while it is open; a click outside the buttons only changes focus.
     pub fn handleDialogMouse(self: *Workbench, event: *ui.MouseEvent) bool {
         const dialog = self.dialog orelse return false;
+        self.pointer = dialog.pointerAt(event.x, event.y);
         if (dialog.handleMouse(event)) |index| self.resolveDialogButton(index);
         return true;
     }
@@ -2877,23 +2900,30 @@ pub const Workbench = struct {
         switch (hit) {
             .none => return false,
             .tab => |index| {
+                self.pointer = .pointer;
                 if (!left_press) return true;
                 _ = service.setActive(index);
                 self.focus = .terminal;
                 return true;
             },
             .new_terminal => {
+                self.pointer = .pointer;
                 if (!left_press) return true;
                 self.newTerminal() catch {};
                 return true;
             },
             .kill_terminal => {
+                self.pointer = .pointer;
                 if (!left_press) return true;
                 self.killTerminal() catch {};
                 return true;
             },
             .content => {},
         }
+
+        // Terminal content is text: the emulator owns no pointer shapes of its
+        // own in this port.
+        self.pointer = .text;
 
         // A click focuses the terminal; hovering and wheel scrolling leave the
         // editor's focus alone, as xterm.js only focuses on a press.
@@ -5887,6 +5917,7 @@ pub const Workbench = struct {
 
         prompt.deinit();
         self.dialog = dialog;
+        self.pointer = .default;
         self.pending_dialog = .{ .close_tab = .{ .pane = pane, .tab = tab } };
     }
 
@@ -5939,6 +5970,7 @@ pub const Workbench = struct {
 
         prompt.deinit();
         self.dialog = dialog;
+        self.pointer = .default;
         self.pending_dialog = .quit;
     }
 
@@ -6890,14 +6922,22 @@ pub const Workbench = struct {
                     // bits; relying on them here would drop the drag. A lost
                     // release is healed by the next down or up event.
                     self.part.resizeSash(split, event.x, event.y);
+                    self.pointer = self.part.sashPointer(split);
                     return true;
                 },
                 .up, .click => {
                     self.part.resizeSash(split, event.x, event.y);
                     self.part.active_sash = null;
+                    self.pointer = if (self.part.dividerAt(event.x, event.y)) |still_over|
+                        self.part.sashPointer(still_over)
+                    else
+                        .default;
                     return true;
                 },
-                .down => return true,
+                .down => {
+                    self.pointer = self.part.sashPointer(split);
+                    return true;
+                },
                 .wheel => return false,
             }
         }
@@ -6906,10 +6946,24 @@ pub const Workbench = struct {
         if (event.kind != .down or event.button != .left) {
             // Keep the editor from treating a click on the sash as a caret
             // placement; hover motion over the line is also consumed.
-            return event.kind != .wheel and self.part.dividerAt(event.x, event.y) != null;
+            if (self.sidebarShown() and
+                event.x == self.activityBarWidth() + self.sidebarWidth() and
+                event.y < self.workbenchRows())
+            {
+                self.pointer = .ew_resize;
+                return true;
+            }
+            if (event.kind != .wheel) {
+                if (self.part.dividerAt(event.x, event.y)) |split| {
+                    self.pointer = self.part.sashPointer(split);
+                    return true;
+                }
+            }
+            return false;
         }
 
         const split = self.part.dividerAt(event.x, event.y) orelse return false;
+        self.pointer = self.part.sashPointer(split);
         self.part.active_sash = split;
         return true;
     }
@@ -6929,15 +6983,18 @@ pub const Workbench = struct {
         if (!self.sidebar_resize_active) {
             if (event.kind != .down or event.button != .left or event.x != divider) return false;
             self.sidebar_resize_active = true;
+            self.pointer = .ew_resize;
             return true;
         }
 
         switch (event.kind) {
             .move, .down => {
+                self.pointer = .ew_resize;
                 self.resizeSidebarTo(event.x);
                 return true;
             },
             .up, .click => {
+                self.pointer = .ew_resize;
                 self.resizeSidebarTo(event.x);
                 self.sidebar_resize_active = false;
                 return true;
@@ -6970,12 +7027,17 @@ pub const Workbench = struct {
         if (self.expanded_pane != null) return false;
         if (self.drag_tab == null) return false;
         switch (event.kind) {
-            .move => self.updateDragTarget(event),
+            .move => {
+                self.pointer = .grabbing;
+                self.updateDragTarget(event);
+            },
             .up => {
+                self.pointer = .default;
                 self.finishTabDrag();
                 return true;
             },
             .click => {
+                self.pointer = .default;
                 self.clearTabDrag();
                 return true;
             },
@@ -6983,6 +7045,7 @@ pub const Workbench = struct {
                 // A second press during a pending drag is often the second
                 // half of a double click (hand jitter starts the drag). Let
                 // the tab strip handle it so the preview can be pinned.
+                self.pointer = .default;
                 self.clearTabDrag();
                 return false;
             },
@@ -7145,6 +7208,7 @@ pub const Workbench = struct {
                 } else {
                     part.clearHover();
                 }
+                self.pointer = part.pointerAt(event.x, event.y) catch .default;
                 self.leaveEditorHover();
                 return true;
             },
@@ -7152,6 +7216,7 @@ pub const Workbench = struct {
                 self.leaveEditorHover();
                 part.clearHover();
                 self.focusStatusBar();
+                self.pointer = part.pointerAt(event.x, event.y) catch .default;
                 if (part.hitAt(event.x, event.y) catch null) |hit| {
                     switch (hit) {
                         .entry => |handle| {
@@ -7169,7 +7234,11 @@ pub const Workbench = struct {
                 }
                 return true;
             },
-            .up, .click, .wheel => return true,
+            .up, .click => {
+                self.pointer = part.pointerAt(event.x, event.y) catch .default;
+                return true;
+            },
+            .wheel => return true,
         }
     }
 
@@ -7385,10 +7454,12 @@ pub const Workbench = struct {
         // The activity bar stays clickable while the side bar is hidden; an
         // entry click reveals the side bar again, like upstream.
         if (event.x < self.activityBarWidth()) {
+            if (event.kind == .wheel) return true;
+            const activity_rect = self.activityRect();
+            const hit = activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, activity_rect);
+            self.pointer = if (hit != null) .pointer else .default;
             if (event.kind == .down) {
-                if (activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, self.activityRect())) |index| {
-                    self.showActivity(index) catch {};
-                }
+                if (hit) |index| self.showActivity(index) catch {};
             }
             return true;
         }
@@ -7422,13 +7493,13 @@ pub const Workbench = struct {
         if (in_chrome) {
             if (event.kind == .move) {
                 if (self.sidebar) |sidebar| sidebar.clearHover();
-                sidebar_part_mod.setHovered(
-                    &self.sidebar_part,
-                    sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y),
-                );
+                const hit = sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y);
+                sidebar_part_mod.setHovered(&self.sidebar_part, hit);
+                self.pointer = if (hit != null) .pointer else .default;
                 return true;
             }
             if (sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y)) |hit| {
+                self.pointer = .pointer;
                 if (event.kind == .down) switch (hit) {
                     .action => |id| self.runSidebarTitleAction(id),
                     .composite => |id| {
@@ -7439,6 +7510,7 @@ pub const Workbench = struct {
             }
             // A click on the chrome without an action only moves focus into
             // the part, like the browser title area.
+            if (event.kind != .wheel) self.pointer = .default;
             if (event.kind == .down) self.focus = .sidebar;
             return true;
         }
@@ -7477,7 +7549,12 @@ pub const Workbench = struct {
         if (!std.mem.eql(u8, active_id, "explorer")) return true;
 
         const sidebar = self.sidebar orelse return false;
-        if (event.kind == .wheel or event.kind == .move) {
+        if (event.kind == .move) {
+            _ = sidebar.handleMouse(event);
+            self.pointer = if (sidebar.hasHoveredRow()) .pointer else .default;
+            return true;
+        }
+        if (event.kind == .wheel) {
             _ = sidebar.handleMouse(event);
             return true;
         }
@@ -7515,14 +7592,11 @@ pub const Workbench = struct {
         }
 
         if (event.y == rect_y) {
-            if (event.kind == .move) {
-                self.panel_part.setHovered(panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y));
-                return true;
-            }
+            const hit = panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y);
+            if (event.kind == .move) self.panel_part.setHovered(hit);
+            if (event.kind != .wheel) self.pointer = if (hit != null) .pointer else .default;
             if (event.kind == .down and event.button == .left) {
-                if (panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y)) |id| {
-                    _ = self.openPanelContainer(id) catch {};
-                }
+                if (hit) |id| _ = self.openPanelContainer(id) catch {};
             }
             return true;
         }
@@ -7568,6 +7642,7 @@ pub const Workbench = struct {
                 self.drag_source_pane = pending.pane;
                 self.pending_tab_drag = null;
                 self.updateDragTarget(event);
+                self.pointer = .grabbing;
                 return true;
             }
             if (event.kind == .up or event.kind == .click) self.pending_tab_drag = null;
@@ -7588,14 +7663,17 @@ pub const Workbench = struct {
                     if (event.x >= hit.start and event.x < hit.end) {
                         self.hovered_title_action_pane = pane;
                         self.hovered_tab = null;
+                        self.pointer = .pointer;
                         return true;
                     }
                 }
                 self.hovered_title_action_pane = null;
                 if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                     self.hovered_tab = self.orderedTabAt(pane, index);
+                    self.pointer = .pointer;
                 } else {
                     self.hovered_tab = null;
+                    self.pointer = .default;
                 }
                 return true;
             }
@@ -7645,6 +7723,19 @@ pub const Workbench = struct {
                 self.service.activateGroup(pane.group);
             }
             return false;
+        }
+
+        // Every non-move event on the tab row resolves the shape here, before
+        // the click paths below return early.
+        {
+            const over_action = if (pane.title_action_hit) |action_hit|
+                event.x >= action_hit.start and event.x < action_hit.end
+            else
+                false;
+            self.pointer = if (over_action or tab_bar.hitAt(pane.hits.items, event.x) != null)
+                .pointer
+            else
+                .default;
         }
 
         if (event.kind == .down and pane.tabs.items.len > 0) {
@@ -7853,6 +7944,7 @@ pub const Workbench = struct {
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
+        if (self.pointer_shapes) try self.pointer_state.update(writer, self.pointer);
         self.syncSearchActivity();
         self.frame.begin();
         if (self.theme_palette) |palette| {
@@ -8493,6 +8585,55 @@ pub const Workbench = struct {
     /// the split gutters from consuming a column/row; the fallback keeps them.
     pub fn setCellBorders(self: *Workbench, enabled: bool) void {
         self.part.setCellBorders(enabled);
+    }
+
+    /// Hosts enable OSC 22 emission. Unlike borders and images the TUI does
+    /// not probe: a pointer shape is out-of-band terminal state, so terminals
+    /// without support ignore the sequence and nothing in the frame changes.
+    pub fn setPointerShapes(self: *Workbench, enabled: bool) void {
+        self.pointer_shapes = enabled;
+    }
+
+    /// The shape the next frame requests; the renderer diffs it against the
+    /// shape already written to the terminal.
+    pub fn setPointer(self: *Workbench, shape: ui.Pointer) void {
+        self.pointer = shape;
+    }
+
+    pub fn pointerShape(self: *const Workbench) ui.Pointer {
+        return self.pointer;
+    }
+
+    /// Resets the requested shape before one mouse-move is routed. Each
+    /// handler that recognizes a target sets its own shape; anything that
+    /// consumes the event without setting one leaves the terminal default.
+    /// Presses and releases keep the shape the last move established.
+    pub fn beginMousePointer(self: *Workbench) void {
+        self.pointer = .default;
+    }
+
+    /// Resolves the pointer for the editor pane under a mouse cell. The tab
+    /// strip and breadcrumb row are handled by `handleTabMouse` before this is
+    /// reached, so only the pane content remains.
+    pub fn updateMousePointer(self: *Workbench, event: ui.MouseEvent) void {
+        const pane = self.paneAt(event.x, event.y) orelse {
+            self.pointer = .default;
+            return;
+        };
+        const pane_x = ui.cell.snap(pane.rect.x);
+        const pane_y = ui.cell.snap(pane.rect.y);
+        if (event.x < pane_x or event.y < pane_y + pane.chromeHeight()) {
+            self.pointer = .default;
+            return;
+        }
+        const tab = pane.activeTab() orelse {
+            self.pointer = .default;
+            return;
+        };
+        self.pointer = tab.pointerAt(
+            event.x - pane_x,
+            event.y - (pane_y + pane.chromeHeight()),
+        ) catch .default;
     }
 
     /// Hosts call this after the kitty graphics probe (and when it changes).
@@ -10498,6 +10639,83 @@ test "Workbench: sash drag resizes the split" {
     var up = ui.MouseEvent{ .kind = .up, .x = 30, .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&up));
     try std.testing.expect(workbench.part.active_sash == null);
+}
+
+test "Workbench: tabs and editor content resolve pointer shapes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "pointer_shape.txt", "abc");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 50, 10);
+    defer workbench.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.activePane().?;
+    const tab = pane.activeTab().?;
+    const tab_x = pane.hits.items[0].start;
+    const title_y = ui.cell.snap(pane.rect.y);
+
+    workbench.beginMousePointer();
+    var over_tab = ui.MouseEvent{ .kind = .move, .x = tab_x, .y = title_y };
+    try std.testing.expect(workbench.handleTabMouse(&over_tab));
+    try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointerShape());
+
+    workbench.beginMousePointer();
+    var empty_strip = over_tab;
+    empty_strip.x = ui.cell.snap(pane.rect.right()) - 1;
+    try std.testing.expect(workbench.handleTabMouse(&empty_strip));
+    try std.testing.expectEqual(ui.Pointer.default, workbench.pointerShape());
+
+    workbench.beginMousePointer();
+    const content = ui.MouseEvent{
+        .kind = .move,
+        .x = ui.cell.snap(pane.rect.x) + tab.editor.gutterWidth() + 1,
+        .y = title_y + pane.chromeHeight(),
+    };
+    workbench.updateMousePointer(content);
+    try std.testing.expectEqual(ui.Pointer.text, workbench.pointerShape());
+}
+
+test "Workbench: render emits OSC 22 only when the pointer changes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "pointer_render.txt", "abc");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 8);
+    defer workbench.deinit();
+    workbench.setPointerShapes(true);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    // The initial default shape adds no bytes to the first frame.
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
+
+    out.clearRetainingCapacity();
+    workbench.setPointer(.pointer);
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;pointer\x1b\\") != null);
+
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
+
+    out.clearRetainingCapacity();
+    workbench.setPointer(.default);
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;default\x1b\\") != null);
 }
 
 test "Workbench: closing the last tab collapses the empty group" {
