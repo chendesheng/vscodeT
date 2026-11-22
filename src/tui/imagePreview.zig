@@ -292,6 +292,14 @@ pub const ImagePreviewPane = struct {
         try ui.CellGrid.blit(&frame.next, surface.grid(), x, y, w, h);
     }
 
+    /// The pointer shape under a pane-relative cell. The message area keeps
+    /// the terminal default; the "Open in Text Editor" button is clickable.
+    pub fn pointerAt(self: *ImagePreviewPane, x: usize, y: usize) !?ui.Pointer {
+        if (self.dirty) try self.buildNodes();
+        const surface = &(self.surface orelse return null);
+        return surface.pointerAt(x, y);
+    }
+
     fn imageVisible(self: *const ImagePreviewPane) bool {
         return self.runtime.enabled() and self.editor.hasImage() and self.terminal_image != null;
     }
@@ -399,6 +407,7 @@ pub const ImagePreviewPane = struct {
             .background = button_background,
             .border = .{ .top = 1, .right = 1, .bottom = 1, .left = 1 },
             .border_color = button_border,
+            .pointer = .pointer,
         });
         _ = try container.appendChild(button);
         const label = try doc.createText("Open in Text Editor");

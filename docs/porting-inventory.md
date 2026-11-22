@@ -954,8 +954,11 @@ snapshot tests as the regression net.
 
 **Exit criteria:** `editor.zig` is model/widget/controller/config rather than
 a monolith; `view.zig` is a terminal rendering adaptation of the view parts;
-the ported view/controller tests pass; the model/view split allows independent
-view state later (the split-pane limitation in README).
+the ported view/controller tests pass. The split editor already shares one
+`EditorDocument` (model, undo, language services, dirty state) across per-pane
+`Editor` views; completing P4 moves the remaining view parts and decoration
+ownership out of `Editor` so view-scoped find/hover decorations are independent
+too.
 
 ### P5 — Services and remaining views
 

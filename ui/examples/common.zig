@@ -283,6 +283,10 @@ const Runner = struct {
 
         try enterScreen(out, true);
         defer leaveScreen(out, true);
+        // Interactive scenes use the pointer-shape protocol; terminals without
+        // OSC 22 ignore it, and scenes that set no style keep the default.
+        self.surface.setPointerShapes(true);
+        defer ui.pointer.writeShape(out, .default) catch {};
 
         const orig_termios = enableRawMode(io);
         defer {
@@ -328,7 +332,14 @@ const Runner = struct {
                         if (isQuitKey(key.*)) return;
                         _ = doc.dispatchKey(key.key, key.mods);
                     },
-                    .mouse => |*mouse| try router.dispatch(&self.surface, mouse),
+                    .mouse => |*mouse| {
+                        if (mouse.kind == .move) {
+                            if (try self.surface.pointerAt(mouse.x, mouse.y)) |shape| {
+                                _ = self.surface.setPointer(shape);
+                            }
+                        }
+                        try router.dispatch(&self.surface, mouse);
+                    },
                 }
             }
 

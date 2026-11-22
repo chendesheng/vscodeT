@@ -58,6 +58,10 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   `Element.tab_index`. `Surface.elementFromPoint` hit-tests the box tree against
   a viewport cell, and mouse presses focus the nearest focusable ancestor.
   Terminal bytes are decoded by `ui.input.decode`.
+- Mouse pointer shapes: `Style.pointer` is an inherited CSS-`cursor`-like
+  property, `Surface.pointerAt` resolves the computed shape from the box under
+  a cell, and `ui.pointer` writes the kitty/xterm OSC 22 sequence when the
+  top-level renderer's shape changes. See “Pointer shapes” below.
 - No hidden globals; allocators are passed explicitly.
 
 The architecture and the staged editor plan are in
@@ -100,7 +104,8 @@ software keyboard or rotating the device wakes the loop, re-queries the
 terminal size, calls `Surface.resize` and rebuilds the scene at the new
 viewport. The focus example handles Tab/Shift-Tab and Enter. The two mouse examples request SGR mouse reports (mode
 1003/1006), so they accept real terminal input or piped `CSI < b ; x ; y M/m`
-sequences; `example-mouse` shows selection, hover and wheel scrolling, while
+sequences; `example-mouse` shows selection, hover and wheel scrolling, and its
+rows request the hand pointer through the OSC 22 path, while
 `example-mouse-events` logs every mouse event with its hit-tested target and
 highlights the hovered zone. `example-todo` is a standalone TodoMVC scene with
 its own input loop: add todos through `ui.InputBox`, toggle rows, edit a
@@ -290,6 +295,52 @@ terminal focus reports.
 the cell through the visible window (wide characters choose the nearest
 boundary). Clicking a find toggle or its `All` button runs that control; the
 widget tracks the hovered control and clears it when idle motion leaves the bar.
+
+## Pointer shapes
+
+`Style.pointer` requests a mouse pointer shape, like CSS `cursor`. It is
+inherited: `null` keeps the parent's computed value, and an explicit `.default`
+overrides an inherited shape. The initial value is `.default`; there is no
+`auto` because the library has no browser user agent to choose a context shape.
+Only elements carry the property; text nodes are paint-only and drop it.
+
+```zig
+const link = try doc.createElement(.span);
+link.setStyle(.{ .display = .inline_, .pointer = .pointer });
+_ = try link.appendChild(try doc.createText("docs"));
+```
+
+`Surface.pointerAt(col, row)` solves pending layout, hit-tests exactly like
+`elementFromPoint` (paint order plus `overflow` clipping and `pointer-events`),
+and returns the computed shape or `null` when no box contains the cell. The
+computed value lives on the layout box (`LayoutBox.pointer`), so text and
+anonymous boxes inherit it without a DOM walk on every mouse move.
+
+The pointer is terminal-global state, not part of the cell grid. Enable
+emission with `Options.pointer_shapes = true` or `surface.setPointerShapes(true)`,
+record the shape with `surface.setPointer(shape)`, and let `Surface.render`
+write it before the frame:
+
+```zig
+surface.setPointerShapes(true);
+_ = surface.setPointer(.text);
+```
+
+`Surface.render` keeps a `pointer.State` and writes `OSC 22 ; <name> ST` only
+when the shape changes; the initial `.default` writes nothing. A host that
+composites several surfaces into one grid (the TUI workbench paints panes into a
+single frame) must keep its own `ui.pointer.State` beside its writer instead of
+letting sub-surfaces emit; it can still use each surface's `pointerAt`.
+
+The names are the CSS cursor keywords standardized by kitty's pointer-shapes
+protocol (`default`, `text`, `pointer`, `e-resize`, `ew-resize`, `nesw-resize`,
+`vertical-text`, `zoom-in`, …). kitty (0.31+), Ghostty (1.0+), foot (1.12+) and
+some xterm builds implement OSC 22; terminals without support ignore the
+sequence, so the library does not probe. The protocol also accepts X11
+cursor-font aliases for legacy xterm compatibility; this library only emits CSS
+names. Reset with `.default` when the app stops owning the pointer; the TUI and
+the examples do this on exit. Push/pop stacks and the protocol's support query
+are not implemented.
 
 ## Flex layout
 

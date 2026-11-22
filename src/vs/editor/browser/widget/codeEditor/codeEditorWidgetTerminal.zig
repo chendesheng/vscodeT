@@ -1,3 +1,12 @@
+// Terminal editor widget: port of the model/view/controller subset of
+// `src/vs/editor/browser/widget/codeEditor/codeEditorWidget.ts`, its
+// `ViewModelImpl` and `CursorsController`.
+//
+// Terminal adaptation: upstream separates the `TextModel` from each editor's
+// `CodeEditorWidget`/view model. This file keeps that split as
+// `EditorDocument` (shared model, undo, language services, saved/dirty state)
+// plus `Editor` (one independent view: wrapping, cursors, folding, scroll).
+// Split editor groups create a second `Editor` over the same document.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -58,6 +67,7 @@ const EditOperationResult = cursorCommon.EditOperationResult;
 const WordCharacterClassifier = @import("../../../common/core/wordCharacterClassifier.zig").WordCharacterClassifier;
 const DefaultWordSeparators = @import("../../../common/core/wordCharacterClassifier.zig").DefaultWordSeparators;
 const InternalModelContentChangeEvent = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
+const ModelDecorationsChangedEvent = @import("../../../common/textModelEvents.zig").ModelDecorationsChangedEvent;
 const String = @import("../../../../base/common/strings.zig").String;
 const strings = @import("../../../../base/common/strings.zig");
 const language = @import("../../../../workbench/services/language/common/bundledLanguages.zig");
@@ -305,18 +315,257 @@ pub const ReloadedContent = struct {
     }
 };
 
-pub const Editor = struct {
+/// The shared document behind one or more editor views.
+///
+/// Upstream splits `TextModel`, the working copy and the editor pane: a split
+/// editor opens the same `EditorInput` in two groups and each group creates
+/// its own `CodeEditorWidget`/`ViewModel`, while both share the model, undo
+/// stack and language services. This port used to fold all of those into
+/// `Editor`, so splitting could only move the single editor. `EditorDocument`
+/// is the shared half: it owns the model and everything the model references,
+/// and each `Editor` is a view over it.
+///
+/// The document is reference counted by its editors. A tab-close destroys only
+/// that tab's `Editor`; the model, undo history and dirty/saved state survive
+/// until the last view closes.
+pub const EditorDocument = struct {
     allocator: Allocator,
     io: Io,
     path: []u8,
     model: *TextModel,
-    encoding: encoding_mod.Encoding = .utf8,
     undo_redo: *UndoRedoService,
     codec: *LanguageIdCodec,
     language_service: *LanguageService,
+    language_config_service: *LanguageConfigurationService,
     /// Owns the strings of the configured `files.associations` patterns; the
     /// language service stores slices into this arena.
     associations_arena: std.heap.ArenaAllocator,
+    /// Owns language-configuration strings loaded from declarative extensions.
+    declarative_arena: std.heap.ArenaAllocator,
+    declarative: ?*const extensions_registry.Registry = null,
+    encoding: encoding_mod.Encoding = .utf8,
+    /// Alternative version id at the last successful save. Shared by every
+    /// view so both split panes flip clean together.
+    saved_version: u32,
+    /// True when the file changed on disk while it had unsaved edits.
+    conflict: bool = false,
+    refs: usize,
+    editors: std.array_list.Managed(*Editor),
+
+    fn init(
+        allocator: Allocator,
+        io: Io,
+        path: []const u8,
+        text: ?[]const u8,
+        declarative: ?*const extensions_registry.Registry,
+        loaded: ?*const LoadedText,
+    ) !*EditorDocument {
+        const path_copy = try allocator.dupe(u8, path);
+        errdefer allocator.free(path_copy);
+
+        const codec = try allocator.create(LanguageIdCodec);
+        errdefer allocator.destroy(codec);
+        codec.* = try LanguageIdCodec.init(allocator);
+        errdefer codec.deinit();
+
+        const language_service = try allocator.create(LanguageService);
+        errdefer allocator.destroy(language_service);
+        language_service.* = LanguageService.init(allocator, codec);
+        errdefer language_service.deinit();
+        for (language.bundled_languages) |bundled| {
+            try language_service.registerLanguage(.{ .id = bundled.id, .aliases = bundled.names, .extensions = bundled.extensions });
+        }
+        if (declarative) |registry| {
+            for (registry.languages) |contribution| {
+                try language_service.registerLanguage(.{
+                    .id = contribution.id,
+                    .aliases = contribution.aliases,
+                    .extensions = contribution.extensions,
+                    .filenames = contribution.filenames,
+                    .filenamePatterns = contribution.filename_patterns,
+                });
+            }
+        }
+
+        // Path matching goes through the ported language associations, which the
+        // service derives from the registered language contributions.
+        const language_id = language_service.guessLanguageIdByFilepathOrFirstLine(path, null) orelse "plaintext";
+        try codec.register(language_id);
+
+        var declarative_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer declarative_arena.deinit();
+
+        var language_config = language_configuration.empty();
+        var language_config_owned = true;
+        errdefer if (language_config_owned) language_config.deinit();
+        var has_language_config = false;
+        if (declarative) |registry| {
+            if (registry.language(language_id)) |contribution| {
+                if (contribution.configuration) |relative| {
+                    if (language_config_point.load(declarative_arena.allocator(), contribution.root, relative)) |config| {
+                        language_config = config;
+                        has_language_config = true;
+                    } else |_| {}
+                }
+                if (registry.grammarForLanguage(language_id)) |grammar| {
+                    // The grammar may come from a different extension than the
+                    // language contribution; resolve its path against its own
+                    // root, like VS Code's extension location.
+                    registerDeclarativeGrammar(io, allocator, grammar.root, grammar);
+                }
+            }
+        }
+        if (!has_language_config) {
+            if (language.bundledLanguageConfiguration(language_id)) |data| {
+                if (language_config_point.loadText(declarative_arena.allocator(), data)) |config| {
+                    language_config = config;
+                    has_language_config = true;
+                } else |_| {}
+            }
+        }
+        if (!has_language_config) {
+            if (language.commentRuleFor(language_id)) |comments| {
+                language_config.comments = comments;
+                has_language_config = true;
+            }
+            if (language.bracketsFor(language_id)) |brackets| {
+                language_config.brackets = brackets;
+                has_language_config = true;
+            }
+            if (language.foldingRulesFor(language_id)) |rules| {
+                language_config.folding = rules;
+                has_language_config = true;
+            }
+        }
+        if (has_language_config) {
+            try language_service.registerLanguageConfiguration(language_id, language_config);
+            language_config_owned = false;
+        }
+
+        const language_config_service = try allocator.create(LanguageConfigurationService);
+        errdefer allocator.destroy(language_config_service);
+        language_config_service.* = try LanguageConfigurationService.init(allocator, language_service);
+        errdefer language_config_service.deinit();
+
+        const undo_redo = try allocator.create(UndoRedoService);
+        errdefer allocator.destroy(undo_redo);
+        undo_redo.* = UndoRedoService.init(allocator);
+        errdefer undo_redo.deinit();
+
+        var encoding: encoding_mod.Encoding = .utf8;
+        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text, loaded, &encoding);
+        errdefer {
+            model.deinit();
+            allocator.destroy(model);
+        }
+        // The fallback bracket matcher resolves RichEditBrackets through the
+        // terminal language-configuration host; the AST path does not need it.
+        model.bracketPairs().setLanguageConfigurationProvider(.{
+            .context = language_config_service,
+            .get = resolvedLanguageConfigurationForBrackets,
+        });
+
+        const self = try allocator.create(EditorDocument);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .allocator = allocator,
+            .io = io,
+            .path = path_copy,
+            .model = model,
+            .undo_redo = undo_redo,
+            .codec = codec,
+            .language_service = language_service,
+            .language_config_service = language_config_service,
+            .associations_arena = std.heap.ArenaAllocator.init(allocator),
+            .declarative_arena = declarative_arena,
+            .declarative = declarative,
+            .encoding = encoding,
+            .saved_version = model.getAlternativeVersionId(),
+            .refs = 1,
+            .editors = std.array_list.Managed(*Editor).init(allocator),
+        };
+        return self;
+    }
+
+    pub fn retain(self: *EditorDocument) void {
+        self.refs += 1;
+    }
+
+    pub fn release(self: *EditorDocument) void {
+        std.debug.assert(self.refs > 0);
+        self.refs -= 1;
+        if (self.refs == 0) self.deinit();
+    }
+
+    fn deinit(self: *EditorDocument) void {
+        std.debug.assert(self.editors.items.len == 0);
+        self.editors.deinit();
+        // Mirror the old single-owner teardown order: registry/arena data
+        // before the model, then undo, then the language service and codec.
+        self.language_config_service.deinit();
+        self.allocator.destroy(self.language_config_service);
+        self.declarative_arena.deinit();
+        self.model.deinit();
+        self.allocator.destroy(self.model);
+        self.undo_redo.deinit();
+        self.allocator.destroy(self.undo_redo);
+        self.associations_arena.deinit();
+        self.language_service.deinit();
+        self.allocator.destroy(self.language_service);
+        self.codec.deinit();
+        self.allocator.destroy(self.codec);
+        self.allocator.free(self.path);
+        self.allocator.destroy(self);
+    }
+
+    pub fn isDirty(self: *const EditorDocument) bool {
+        return self.model.getAlternativeVersionId() != self.saved_version;
+    }
+
+    fn addEditor(self: *EditorDocument, editor: *Editor) !void {
+        try self.editors.append(editor);
+        // Once a document has two views, every pane must track its selections
+        // in the model so remote edits can move the other panes' cursors.
+        if (self.editors.items.len >= 2) {
+            for (self.editors.items) |view| view.startTrackingCursorSelections();
+        }
+    }
+
+    fn removeEditor(self: *EditorDocument, editor: *Editor) void {
+        for (self.editors.items, 0..) |candidate, index| {
+            if (candidate != editor) continue;
+            _ = self.editors.orderedRemove(index);
+            break;
+        }
+        if (self.editors.items.len == 1) {
+            self.editors.items[0].stopTrackingCursorSelections();
+        }
+    }
+
+    /// Notifies every view of a shared dirty/save/conflict transition. The
+    /// per-editor emitter stays view-local, matching `IWorkingCopy` listeners
+    /// that observe the same document through different editor panes.
+    fn refreshDirtyState(self: *EditorDocument) void {
+        for (self.editors.items) |editor| editor.refreshDirtyState();
+    }
+};
+
+pub const Editor = struct {
+    allocator: Allocator,
+    io: Io,
+    document: *EditorDocument,
+    /// Path of the shared document. Borrowed from `document`; it lives as long
+    /// as this view.
+    path: []const u8,
+    model: *TextModel,
+    undo_redo: *UndoRedoService,
+    codec: *LanguageIdCodec,
+    language_service: *LanguageService,
+    content_listener_id: Emitter(InternalModelContentChangeEvent).ListenerId = 0,
+    decorations_listener_id: Emitter(ModelDecorationsChangedEvent).ListenerId = 0,
+    /// True while this view keeps selection markers in the shared model so
+    /// edits in another pane can move its cursors.
+    cursor_tracking: bool = false,
     view_lines: ProjectedViewModelLines,
     /// Upstream `ViewModelImpl` owns the view-event dispatcher and emits the
     /// events for line-mapping changes, content flushes and decorations. The
@@ -353,13 +602,10 @@ pub const Editor = struct {
     character_pair: ?CharacterPairSupport,
     multicursor_session: ?multicursor.SearchSession,
     after_edit: AfterEditComputer,
-    saved_version: u32,
     /// Last observed dirty state. Content changes and saves fire
     /// `on_did_change_dirty` only when this flips, so tab labels can follow
     /// the editor without polling.
     dirty_state: bool,
-    /// True when the file changed on disk while this editor had unsaved edits.
-    conflict: bool = false,
     working_copy_dirty_listeners: std.array_list.Managed(ChangeListener),
     working_copy_content_listeners: std.array_list.Managed(ChangeListener),
     scroll_listeners: std.array_list.Managed(ChangeListener),
@@ -454,8 +700,6 @@ pub const Editor = struct {
     /// Find controller hooks, installed by the per-tab controllers.
     find_context: ?*anyopaque = null,
     find_start_fn: ?*const fn (context: *anyopaque, replace: bool) anyerror!void = null,
-    declarative: ?*const extensions_registry.Registry = null,
-    declarative_arena: std.heap.ArenaAllocator,
     json_client: ?*json_language.Client = null,
     json_uri: ?[]u8 = null,
     json_version: u32 = 0,
@@ -466,6 +710,9 @@ pub const Editor = struct {
     language_features: ?*LanguageFeaturesService = null,
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
+    /// One marker-decoration registration per editor view; repeated language
+    /// feature attachment must not inflate the shared-model refcount.
+    marker_model_registered: bool = false,
     json_completion_registration: ?IDisposable = null,
     json_document_symbol_registration: ?IDisposable = null,
 
@@ -588,114 +835,22 @@ pub const Editor = struct {
     }
 
     fn createInternal(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize, text: ?[]const u8, declarative: ?*const extensions_registry.Registry, options: CreateOptions, loaded: ?*const LoadedText) !*Editor {
+        const document = try EditorDocument.init(allocator, io, path, text, declarative, loaded);
+        errdefer document.release();
+        return createView(allocator, document, width, height, options);
+    }
+
+    /// Creates one editor view over an existing document. The view owns its
+    /// wrapping model, cursors, folding and scroll state; the model, undo
+    /// stack and language services stay on `document`.
+    fn createView(allocator: Allocator, document: *EditorDocument, width: usize, height: usize, options: CreateOptions) !*Editor {
         const editor = try allocator.create(Editor);
         errdefer allocator.destroy(editor);
 
-        const path_copy = try allocator.dupe(u8, path);
-        errdefer allocator.free(path_copy);
-
-        const codec = try allocator.create(LanguageIdCodec);
-        errdefer allocator.destroy(codec);
-        codec.* = try LanguageIdCodec.init(allocator);
-        errdefer codec.deinit();
-
-        const language_service = try allocator.create(LanguageService);
-        errdefer allocator.destroy(language_service);
-        language_service.* = LanguageService.init(allocator, codec);
-        errdefer language_service.deinit();
-        for (language.bundled_languages) |bundled| {
-            try language_service.registerLanguage(.{ .id = bundled.id, .aliases = bundled.names, .extensions = bundled.extensions });
-        }
-        if (declarative) |registry| {
-            for (registry.languages) |contribution| {
-                try language_service.registerLanguage(.{
-                    .id = contribution.id,
-                    .aliases = contribution.aliases,
-                    .extensions = contribution.extensions,
-                    .filenames = contribution.filenames,
-                    .filenamePatterns = contribution.filename_patterns,
-                });
-            }
-        }
-
-        // Path matching goes through the ported language associations, which the
-        // service derives from the registered language contributions.
-        const language_id = language_service.guessLanguageIdByFilepathOrFirstLine(path, null) orelse "plaintext";
-        try codec.register(language_id);
-
-        var declarative_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer declarative_arena.deinit();
-
-        var language_config = language_configuration.empty();
-        var language_config_owned = true;
-        errdefer if (language_config_owned) language_config.deinit();
-        var has_language_config = false;
-        if (declarative) |registry| {
-            if (registry.language(language_id)) |contribution| {
-                if (contribution.configuration) |relative| {
-                    if (language_config_point.load(declarative_arena.allocator(), contribution.root, relative)) |config| {
-                        language_config = config;
-                        has_language_config = true;
-                    } else |_| {}
-                }
-                if (registry.grammarForLanguage(language_id)) |grammar| {
-                    // The grammar may come from a different extension than the
-                    // language contribution; resolve its path against its own
-                    // root, like VS Code's extension location.
-                    registerDeclarativeGrammar(io, allocator, grammar.root, grammar);
-                }
-            }
-        }
-        if (!has_language_config) {
-            if (language.bundledLanguageConfiguration(language_id)) |data| {
-                if (language_config_point.loadText(declarative_arena.allocator(), data)) |config| {
-                    language_config = config;
-                    has_language_config = true;
-                } else |_| {}
-            }
-        }
-        if (!has_language_config) {
-            if (language.commentRuleFor(language_id)) |comments| {
-                language_config.comments = comments;
-                has_language_config = true;
-            }
-            if (language.bracketsFor(language_id)) |brackets| {
-                language_config.brackets = brackets;
-                has_language_config = true;
-            }
-            if (language.foldingRulesFor(language_id)) |rules| {
-                language_config.folding = rules;
-                has_language_config = true;
-            }
-        }
-        if (has_language_config) {
-            try language_service.registerLanguageConfiguration(language_id, language_config);
-            language_config_owned = false;
-        }
-
-        const language_config_service = try allocator.create(LanguageConfigurationService);
-        errdefer allocator.destroy(language_config_service);
-        language_config_service.* = try LanguageConfigurationService.init(allocator, language_service);
-        errdefer language_config_service.deinit();
-
-        const undo_redo = try allocator.create(UndoRedoService);
-        errdefer allocator.destroy(undo_redo);
-        undo_redo.* = UndoRedoService.init(allocator);
-        errdefer undo_redo.deinit();
-
-        var encoding: encoding_mod.Encoding = .utf8;
-        const model = try createModel(allocator, io, path, language_id, undo_redo, language_service, text, loaded, &encoding);
-        errdefer {
-            model.deinit();
-            allocator.destroy(model);
-        }
-        // The fallback bracket matcher resolves RichEditBrackets through the
-        // terminal language-configuration host; the AST path does not need it.
-        model.bracketPairs().setLanguageConfigurationProvider(.{
-            .context = language_config_service,
-            .get = resolvedLanguageConfigurationForBrackets,
-        });
-
+        const model = document.model;
+        const language_service = document.language_service;
+        const language_config_service = document.language_config_service;
+        const language_id = model.getLanguageId();
         const resolved = model.getOptions();
         const initial_number_width = @max(digitsFor(model.getLineCount()), 5);
         const initial_fold_width: usize = 1;
@@ -739,14 +894,13 @@ pub const Editor = struct {
 
         editor.* = Editor{
             .allocator = allocator,
-            .io = io,
-            .path = path_copy,
+            .io = document.io,
+            .document = document,
+            .path = document.path,
             .model = model,
-            .encoding = encoding,
-            .undo_redo = undo_redo,
-            .codec = codec,
+            .undo_redo = document.undo_redo,
+            .codec = document.codec,
             .language_service = language_service,
-            .associations_arena = std.heap.ArenaAllocator.init(allocator),
             .view_lines = view_lines,
             .view_event_dispatcher = ViewModelEventDispatcher.init(allocator),
             .converter = undefined,
@@ -769,9 +923,7 @@ pub const Editor = struct {
             .character_pair = character_pair,
             .multicursor_session = null,
             .after_edit = .{ .model = model },
-            .saved_version = model.getAlternativeVersionId(),
-            .dirty_state = false,
-            .conflict = false,
+            .dirty_state = document.isDirty(),
             .working_copy_dirty_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .working_copy_content_listeners = std.array_list.Managed(ChangeListener).init(allocator),
             .scroll_listeners = std.array_list.Managed(ChangeListener).init(allocator),
@@ -805,8 +957,6 @@ pub const Editor = struct {
             .shortcut_commands = CommandRegistry.init(allocator),
             .find_context = null,
             .find_start_fn = null,
-            .declarative = declarative,
-            .declarative_arena = declarative_arena,
             .json_client = null,
         };
         errdefer editor.view_event_dispatcher.deinit();
@@ -841,10 +991,47 @@ pub const Editor = struct {
         editor.triggerFoldingUpdate(time_compat.milliTimestamp());
         editor.triggerBracketGuidesUpdate(time_compat.milliTimestamp());
 
-        try model.onDidChangeContentWithContext(editor, contentChangedCallback);
-        try model.onDidChangeDecorationsWithContext(editor, decorationChangedCallback);
+        editor.content_listener_id = try model.onDidChangeContentWithContextId(editor, contentChangedCallback);
+        editor.decorations_listener_id = try model.onDidChangeDecorationsWithContextId(editor, decorationChangedCallback);
         editor.attached_view = try model.onBeforeAttached();
+        try document.addEditor(editor);
 
+        return editor;
+    }
+
+    /// Creates a second editor view over `source`'s document, matching
+    /// upstream `EditorInput.copy()` plus the new editor pane that a split
+    /// group opens. The text model, undo history, language services and
+    /// saved/dirty state are shared; wrapping, cursors, folding, selection and
+    /// scroll position are independent view state.
+    pub fn createViewFromEditor(source: *Editor, width: usize, height: usize) !*Editor {
+        source.document.retain();
+        errdefer source.document.release();
+
+        const editor = try createView(source.allocator, source.document, width, height, .{
+            .reserve_scrollbar = source.scrollbar_width != 0,
+        });
+        editor.read_only = source.read_only;
+        editor.status_row = source.status_row;
+        editor.gutter_line_numbers = source.gutter_line_numbers;
+        editor.gutter_line_numbers_min_chars = source.gutter_line_numbers_min_chars;
+        editor.gutter_folding = source.gutter_folding;
+        editor.line_decorations_width = source.line_decorations_width;
+        if (source.json_client) |client| editor.setJsonLanguageClient(client);
+        if (source.language_features) |features| {
+            editor.attachLanguageServices(features, source.marker_service, source.marker_decorations);
+        }
+
+        // `fillActiveEditorViewState`: carry the visible range and selections
+        // into the copied pane so a split looks like a duplicate, not a reset.
+        const selections = source.getSelections() catch null;
+        if (selections) |value| {
+            defer source.allocator.free(value);
+            editor.setTextEditorSelectionSource(.PROGRAMMATIC);
+            editor.setSelections(value) catch {};
+        }
+        _ = editor.setTopViewLine(source.topViewLine());
+        editor.refreshLayout() catch {};
         return editor;
     }
 
@@ -1146,7 +1333,12 @@ pub const Editor = struct {
         self.language_features = features;
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
-        if (marker_decorations) |service| service.registerModel(self.model) catch {};
+        if (marker_decorations) |service| {
+            if (!self.marker_model_registered) {
+                service.registerModel(self.model) catch {};
+                self.marker_model_registered = true;
+            }
+        }
         // Tabs created before `enableLanguageFeatures` have already pulled
         // their JSON diagnostics; republish them now that the marker service
         // exists.
@@ -1338,9 +1530,12 @@ pub const Editor = struct {
     }
 
     /// Applies declarative language contributions to an editor created before
-    /// the extension scan completed.
+    /// the extension scan completed. The document owns the registration, so a
+    /// split copy reuses it instead of registering the same contributions
+    /// twice.
     pub fn applyDeclarativeExtensions(self: *Editor, registry: *const extensions_registry.Registry) !void {
-        self.declarative = registry;
+        if (self.document.declarative == registry) return;
+        self.document.declarative = registry;
         for (registry.languages) |contribution| {
             try self.language_service.registerLanguage(.{
                 .id = contribution.id,
@@ -1352,7 +1547,7 @@ pub const Editor = struct {
         }
         if (registry.language(self.languageId())) |contribution| {
             if (contribution.configuration) |relative| {
-                if (language_config_point.load(self.declarative_arena.allocator(), contribution.root, relative)) |config| {
+                if (language_config_point.load(self.document.declarative_arena.allocator(), contribution.root, relative)) |config| {
                     try self.language_service.registerLanguageConfiguration(self.languageId(), config);
                 } else |_| {}
             }
@@ -1366,15 +1561,28 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        // Unregister the shared-model listeners first: the model may outlive
+        // this view while a split copy stays open.
+        self.model.removeDidChangeContentListener(self.content_listener_id);
+        self.model.removeDidChangeDecorationsListener(self.decorations_listener_id);
         if (self.json_completion_registration) |registration| registration.dispose();
         if (self.json_document_symbol_registration) |registration| registration.dispose();
-        if (self.marker_decorations) |service| service.unregisterModel(self.model);
+        if (self.marker_decorations) |service| {
+            if (self.marker_model_registered) {
+                service.unregisterModel(self.model);
+                self.marker_model_registered = false;
+            }
+        }
         if (self.marker_service) |service| {
-            const resource = markers.Resource.fromUri(self.allocator, self.model.uri()) catch null;
-            if (resource) |value| {
-                var owned = value;
-                defer owned.deinit(self.allocator);
-                service.changeOne("json", owned, &.{}, null) catch {};
+            // Only the last view of a document clears its diagnostics; a split
+            // copy must keep showing the same markers.
+            if (self.document.editors.items.len <= 1) {
+                const resource = markers.Resource.fromUri(self.allocator, self.model.uri()) catch null;
+                if (resource) |value| {
+                    var owned = value;
+                    defer owned.deinit(self.allocator);
+                    service.changeOne("json", owned, &.{}, null) catch {};
+                }
             }
         }
         self.folding.deinit();
@@ -1383,9 +1591,6 @@ pub const Editor = struct {
         self.model_adapter.deinit();
         self.bracket_matching.deinit();
         self.smart_select.deinit();
-        self.language_config_service.deinit();
-        self.allocator.destroy(self.language_config_service);
-        self.declarative_arena.deinit();
         if (self.json_uri) |uri| self.allocator.free(uri);
         if (self.json_message) |json_message| self.allocator.free(json_message);
         if (self.multicursor_session) |*session| session.deinit();
@@ -1400,25 +1605,18 @@ pub const Editor = struct {
             self.allocator.destroy(view);
             self.attached_view = null;
         }
-        self.model.deinit();
-        self.allocator.destroy(self.model);
-        self.undo_redo.deinit();
-        self.allocator.destroy(self.undo_redo);
         self.working_copy_dirty_listeners.deinit();
         self.working_copy_content_listeners.deinit();
         self.scroll_listeners.deinit();
         self.working_copy_save_listeners.deinit();
-        self.associations_arena.deinit();
-        self.language_service.deinit();
-        self.allocator.destroy(self.language_service);
-        self.codec.deinit();
-        self.allocator.destroy(self.codec);
         if (self.keybindings) |service| service.deinit();
         self.shortcut_commands.deinit();
         self.on_did_change_dirty.deinit();
         for (self.last_content_changes.items) |change| self.allocator.free(change.text);
         self.last_content_changes.deinit();
-        self.allocator.free(self.path);
+
+        self.document.removeEditor(self);
+        self.document.release();
     }
 
     fn contentChangedCallback(event: InternalModelContentChangeEvent, editor: *Editor) anyerror!void {
@@ -1485,7 +1683,31 @@ pub const Editor = struct {
         self.triggerFoldingUpdate(time_compat.milliTimestamp());
         self.triggerBracketGuidesUpdate(time_compat.milliTimestamp());
         self.emitModelContentChangedEvents();
+        self.recoverCursorFromModel(event);
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
+    }
+
+    /// Port of `CursorsController.onModelContentChanged` for a view that did
+    /// not initiate the edit: move this pane's cursors with the shared model's
+    /// tracked selection markers. The editing pane receives the same event and
+    /// then overwrites its state from `pushEditOperations`' resulting
+    /// selections, so recovering here is idempotent for it.
+    fn recoverCursorFromModel(self: *Editor, event: InternalModelContentChangeEvent) void {
+        if (!self.cursor_tracking) return;
+        var flushed = false;
+        for (event.rawContentChangedEvent.changes.items) |change| {
+            if (change == .flush) {
+                flushed = true;
+                break;
+            }
+        }
+        if (flushed) {
+            self.updateSelections(&[_]Selection{Selection.init(1, 1, 1, 1)}) catch {};
+            return;
+        }
+        const tracked = self.cursorsRef().readSelectionFromMarkers(self.allocator) catch return;
+        defer self.allocator.free(tracked);
+        self.updateSelections(tracked) catch {};
     }
 
     /// Transfers ownership of the queued change batch to the caller. Each
@@ -1509,6 +1731,20 @@ pub const Editor = struct {
 
     fn cursorsRef(self: *Editor) *CursorCollection {
         return &self.cursors.?;
+    }
+
+    /// Enables model-backed selection markers for a shared document. Used when
+    /// a split creates the second view of this model.
+    pub fn startTrackingCursorSelections(self: *Editor) void {
+        if (self.cursor_tracking) return;
+        self.cursor_tracking = true;
+        if (self.cursors) |*cursors| cursors.startTrackingSelections();
+    }
+
+    pub fn stopTrackingCursorSelections(self: *Editor) void {
+        if (!self.cursor_tracking) return;
+        self.cursor_tracking = false;
+        if (self.cursors) |*cursors| cursors.stopTrackingSelections();
     }
 
     pub fn textHeight(self: *const Editor) usize {
@@ -1722,7 +1958,7 @@ pub const Editor = struct {
     }
 
     pub fn isDirty(self: *Editor) bool {
-        return self.model.getAlternativeVersionId() != self.saved_version;
+        return self.document.isDirty();
     }
 
     /// Reads the language's folding rules into the folding controller. This
@@ -1996,6 +2232,17 @@ pub const Editor = struct {
     }
 
     /// Port of the `editor.fold` command's `levels`/`direction` arguments.
+    /// Adds collapsed user-defined folding ranges; used by the diff editor's
+    /// hide-unchanged regions.
+    pub fn addFoldingRanges(
+        self: *Editor,
+        ranges: []const @import("../../../contrib/folding/browser/foldingRanges.zig").FoldRange,
+    ) !void {
+        self.refreshFoldingIfDirty();
+        try self.foldingModel().addManualRanges(ranges);
+        try self.applyFoldingVisibility();
+    }
+
     pub fn foldLines(
         self: *Editor,
         lines: []const usize,
@@ -2076,8 +2323,8 @@ pub const Editor = struct {
     /// are copied into an editor-owned arena because the language service keeps
     /// slices into them.
     pub fn applyFileAssociations(self: *Editor, associations: []const languagesAssociations.ILanguageAssociation) !void {
-        _ = self.associations_arena.reset(.retain_capacity);
-        const arena = self.associations_arena.allocator();
+        _ = self.document.associations_arena.reset(.retain_capacity);
+        const arena = self.document.associations_arena.allocator();
         self.language_service.clearConfiguredLanguageAssociations();
         for (associations) |association| {
             try self.language_service.registerConfiguredLanguageAssociation(.{
@@ -2094,8 +2341,10 @@ pub const Editor = struct {
         try self.setLanguage(language_id);
     }
 
-    /// Switches the active language and refreshes the language-dependent
-    /// services. Mirrors the model-language branch of the browser status item.
+    /// Switches the active language and refreshes every view of the shared
+    /// document. Mirrors the model-language branch of the browser status item:
+    /// the model language changes once, then each editor pane updates its
+    /// cursor/auto-closing/folding view state.
     pub fn setLanguage(self: *Editor, language_id: []const u8) !void {
         if (std.mem.eql(u8, language_id, self.model.getLanguageId())) return;
 
@@ -2105,7 +2354,7 @@ pub const Editor = struct {
         var config = language_configuration.empty();
         var has_config = false;
         if (language.bundledLanguageConfiguration(language_id)) |data| {
-            if (language_config_point.loadText(self.declarative_arena.allocator(), data)) |loaded| {
+            if (language_config_point.loadText(self.document.declarative_arena.allocator(), data)) |loaded| {
                 config = loaded;
                 has_config = true;
             } else |_| {}
@@ -2125,6 +2374,12 @@ pub const Editor = struct {
             }
         }
         if (has_config) try self.language_service.registerLanguageConfiguration(language_id, config);
+        for (self.document.editors.items) |editor| {
+            try editor.applyLanguageState(language_id);
+        }
+    }
+
+    fn applyLanguageState(self: *Editor, language_id: []const u8) !void {
         self.refreshAutoIndent();
         if (self.language_service.getLanguageConfiguration(language_id)) |resolved_config| {
             self.character_pair = try CharacterPairSupport.init(resolved_config);
@@ -2141,11 +2396,11 @@ pub const Editor = struct {
     }
 
     pub fn getEncoding(self: *const Editor) encoding_mod.Encoding {
-        return self.encoding;
+        return self.document.encoding;
     }
 
     pub fn setEncoding(self: *Editor, encoding: encoding_mod.Encoding) void {
-        self.encoding = encoding;
+        self.document.encoding = encoding;
     }
 
     pub fn statusTarget(self: *Editor) editor_status.IEditorStatusTarget {
@@ -2232,7 +2487,7 @@ pub const Editor = struct {
 
     fn statusEncoding(context: *anyopaque) encoding_mod.Encoding {
         const self: *Editor = @ptrCast(@alignCast(context));
-        return self.encoding;
+        return self.document.encoding;
     }
 
     fn statusLanguageId(context: *anyopaque) []const u8 {
@@ -4398,7 +4653,7 @@ pub const Editor = struct {
     /// manager; the caller keeps ownership of `content.text`.
     pub fn applyReloadedContent(self: *Editor, content: *const ReloadedContent) !void {
         if (self.read_only) return error.ReadOnly;
-        self.encoding = content.encoding;
+        self.document.encoding = content.encoding;
 
         var current = try self.model.getValue(.TextDefined, true);
         defer current.deinit();
@@ -4412,9 +4667,9 @@ pub const Editor = struct {
         )};
         _ = try self.model.applyEdits(&operations, false);
         self.model.clearUndoRedo();
-        self.saved_version = self.model.getAlternativeVersionId();
+        self.document.saved_version = self.model.getAlternativeVersionId();
         self.clearConflict();
-        self.refreshDirtyState();
+        self.document.refreshDirtyState();
         try self.setCursorPosition(Position.init(1, 1));
     }
 
@@ -4465,17 +4720,21 @@ pub const Editor = struct {
     }
 
     pub fn markConflict(self: *Editor) void {
-        self.conflict = true;
-        self.setMessage("Conflict: file changed on disk", .{});
+        self.document.conflict = true;
+        for (self.document.editors.items) |editor| {
+            editor.setMessage("Conflict: file changed on disk", .{});
+        }
     }
 
     pub fn hasConflict(self: *const Editor) bool {
-        return self.conflict;
+        return self.document.conflict;
     }
 
     pub fn clearConflict(self: *Editor) void {
-        self.conflict = false;
-        self.clearMessage();
+        self.document.conflict = false;
+        for (self.document.editors.items) |editor| {
+            if (std.mem.startsWith(u8, editor.message(), "Conflict:")) editor.clearMessage();
+        }
     }
 
     pub fn save(self: *Editor) !void {
@@ -4483,9 +4742,10 @@ pub const Editor = struct {
         const value = try self.model.getValue(.TextDefined, true);
         defer value.deinit();
 
+        const path = self.document.path;
         const cwd = Io.Dir.cwd();
         var exists = true;
-        const maybe_file = cwd.openFile(self.io, self.path, .{}) catch |err| switch (err) {
+        const maybe_file = cwd.openFile(self.io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => blk: {
                 exists = false;
                 break :blk null;
@@ -4494,9 +4754,9 @@ pub const Editor = struct {
         };
         if (maybe_file) |file| file.close(self.io);
 
-        var atomic = try cwd.createFileAtomic(self.io, self.path, .{ .replace = exists });
+        var atomic = try cwd.createFileAtomic(self.io, path, .{ .replace = exists });
         defer atomic.deinit(self.io);
-        const encoded = try encoding_mod.encode(self.allocator, value.items, self.encoding);
+        const encoded = try encoding_mod.encode(self.allocator, value.items, self.document.encoding);
         defer self.allocator.free(encoded);
         try atomic.file.writeStreamingAll(self.io, encoded);
         if (exists) {
@@ -4505,11 +4765,13 @@ pub const Editor = struct {
             try atomic.link(self.io);
         }
 
-        self.saved_version = self.model.getAlternativeVersionId();
+        self.document.saved_version = self.model.getAlternativeVersionId();
         self.clearConflict();
-        self.refreshDirtyState();
-        for (self.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
-        self.setMessage("Saved {s}", .{self.path});
+        self.document.refreshDirtyState();
+        for (self.document.editors.items) |editor| {
+            for (editor.working_copy_save_listeners.items) |listener| listener.callback(listener.context);
+            editor.setMessage("Saved {s}", .{path});
+        }
     }
 
     /// Escape behavior: drop secondary cursors first, otherwise cancel the
@@ -4670,6 +4932,52 @@ test "Editor: create, edit, undo, and render" {
     defer out.deinit();
     try view.renderAnsi(&out.writer);
     try std.testing.expect(out.written().len > 0);
+}
+
+test "Editor: split copy shares the model and keeps view state independent" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const source = try Editor.createFromText(
+        allocator,
+        io,
+        "0\n1\n2\n3\n4\n5\n6\n7\n8\n9",
+        "split-copy.txt",
+        30,
+        6,
+    );
+    defer {
+        source.deinit();
+        allocator.destroy(source);
+    }
+
+    const copy = try Editor.createViewFromEditor(source, 30, 6);
+    try std.testing.expect(source.model == copy.model);
+    try source.setCursorPosition(Position.init(1, 2));
+    try copy.setCursorPosition(Position.init(3, 1));
+    try std.testing.expectEqual(Position.init(1, 2), source.modelCursorPosition());
+    try std.testing.expectEqual(Position.init(3, 1), copy.modelCursorPosition());
+
+    _ = source.setTopViewLine(1);
+    _ = copy.setTopViewLine(4);
+    try std.testing.expectEqual(@as(usize, 1), source.topViewLine());
+    try std.testing.expectEqual(@as(usize, 4), copy.topViewLine());
+
+    try copy.insertText("X");
+    const changed = try source.model.getLineContent(3);
+    defer changed.deinit();
+    try std.testing.expectEqualStrings("X2", changed.items);
+    try std.testing.expectEqual(Position.init(1, 2), source.modelCursorPosition());
+    try std.testing.expect(source.isDirty());
+    try std.testing.expect(copy.isDirty());
+
+    // Closing one view leaves the shared document alive for the other.
+    copy.deinit();
+    allocator.destroy(copy);
+    try source.setCursorPosition(Position.init(1, 1));
+    try source.insertText("Y");
+    const after_close = try source.model.getLineContent(1);
+    defer after_close.deinit();
+    try std.testing.expectEqualStrings("Y0", after_close.items);
 }
 
 test "Editor: viewport reflows wrapping" {

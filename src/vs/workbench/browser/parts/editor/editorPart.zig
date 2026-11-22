@@ -204,6 +204,30 @@ pub fn EditorPart(comptime GroupView: type) type {
             for (self.group_views.items) |view| view.layout();
         }
 
+        /// Groups in `GroupsOrder.GRID_APPEARANCE` order: depth-first over the
+        /// binary split tree (first branch before second). The workbench uses
+        /// this for first/last/next/previous group commands.
+        pub fn orderedViews(self: *Self, allocator: Allocator) ![]*GroupView {
+            var views = std.array_list.Managed(*GroupView).init(allocator);
+            errdefer views.deinit();
+            try collectOrdered(GroupView, self.root, &views);
+            return views.toOwnedSlice();
+        }
+
+        /// Moves `source` beside `target` without destroying either view.
+        /// Mirrors the terminal subset of `Grid.moveView`.
+        pub fn moveGroupView(
+            self: *Self,
+            source: *GroupView,
+            target: *GroupView,
+            direction: Orientation,
+            new_first: bool,
+        ) !void {
+            self.active_sash = null;
+            try grid.moveRoot(*GroupView, self.allocator, &self.root, source, target, direction, new_first);
+            self.layout(self.viewport);
+        }
+
         pub fn viewAt(self: *const Self, x: usize, y: usize) ?*GroupView {
             for (self.group_views.items) |view| {
                 if (x >= ui.cell.snap(view.rect.x) and x < ui.cell.snap(view.rect.right()) and
@@ -220,6 +244,17 @@ pub fn EditorPart(comptime GroupView: type) type {
         /// in the hit zone.
         pub fn dividerAt(self: *const Self, x: usize, y: usize) ?*LayoutNode {
             return findDivider(self, self.root, x, y);
+        }
+
+        /// The resize pointer a split boundary asks for: horizontal splits put
+        /// panes side by side, so their boundary is an east-west resize handle;
+        /// vertical splits use the north-south shape.
+        pub fn sashPointer(self: *const Self, node: *LayoutNode) ui.Pointer {
+            _ = self;
+            return switch (node.kind) {
+                .split => |split| if (split.direction == .horizontal) .ew_resize else .ns_resize,
+                .leaf => .default,
+            };
         }
 
         /// Starts, updates and ends a sash drag. Returns true while the pointer
@@ -316,6 +351,16 @@ pub fn EditorPart(comptime GroupView: type) type {
             }
         }
     };
+}
+
+fn collectOrdered(comptime T: type, node: *grid.Node(*T), views: *std.array_list.Managed(*T)) !void {
+    switch (node.kind) {
+        .leaf => |value| try views.append(value),
+        .split => |split| {
+            try collectOrdered(T, split.first, views);
+            try collectOrdered(T, split.second, views);
+        },
+    }
 }
 
 const TestView = struct {

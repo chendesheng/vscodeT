@@ -391,6 +391,7 @@ pub const StickyScrollWidget = struct {
             .white_space = .pre,
             .overflow = .hidden,
             .background = if (is_highlighted) colors.hover_background else null,
+            .pointer = .pointer,
         });
 
         if (gutter > 0) {

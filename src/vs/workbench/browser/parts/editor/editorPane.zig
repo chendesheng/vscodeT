@@ -312,6 +312,29 @@ pub const Tab = struct {
         try self.markdown_preview.?.paint(frame, x + editor_width + 1, y, preview_width, h);
     }
 
+    /// The pointer shape under a pane-relative cell. The tab resolves the
+    /// markdown split (editor, divider, preview), the image pane and the diff
+    /// widget; every surface answers from its own style tree.
+    pub fn pointerAt(self: *Tab, x: usize, y: usize) !ui.Pointer {
+        if (self.image_preview) |pane| {
+            return (try pane.pointerAt(x, y)) orelse .default;
+        }
+        if (self.diff) |diff| return diff.widget.pointerAt(x, y);
+        if (self.preview_rect) |rect| {
+            const left = ui.cell.snap(rect.x);
+            const right = left + ui.cell.snap(rect.w);
+            if (x >= right) return .default;
+            if (x >= left) {
+                const preview = self.markdown_preview orelse return .default;
+                return (try preview.pointerAt(x -| left, y)) orelse .default;
+            }
+            // The one-cell divider between the editor and the preview is
+            // chrome, not text.
+            if (x + 1 == left) return .default;
+        }
+        return self.view.pointerAt(x, y);
+    }
+
     pub fn cursorCell(self: *Tab) ?Cell {
         if (self.image_preview != null) return null;
         if (self.diff) |diff| {
@@ -779,7 +802,6 @@ pub const Controllers = struct {
         else
             MarkdownHoverParticipant.init(allocator, editor.model, &self.hover_providers);
         errdefer self.hover_participant.deinit();
-        self.setThemeColors(view.theme_colors);
         self.marker_hover_participant = MarkerHoverParticipant.init(
             allocator,
             editor.model,
@@ -833,6 +855,10 @@ pub const Controllers = struct {
         else
             try SuggestController.init(allocator, editor, self.completion_providers[0..self.completion_count], suggest_host);
         errdefer self.suggest.deinit();
+
+        // Suggest controllers only exist after the block above; applying the
+        // theme earlier dereferenced an unset widget.
+        self.setThemeColors(view.theme_colors);
 
         try view.addConfigurationListener(.{ .context = self, .notify = onStickyConfigurationChanged });
         return self;

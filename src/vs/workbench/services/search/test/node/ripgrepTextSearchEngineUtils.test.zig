@@ -170,6 +170,20 @@ test "Parser: chunk boundaries and flush" {
     try std.testing.expectEqual(@as(usize, 1), files[0].matches.len);
 }
 
+test "Parser: Windows separators group one file" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"type":"match","data":{"path":{"text":"dir\\a.txt"},"lines":{"text":"foo\n"},"line_number":1,"absolute_offset":0,"submatches":[{"match":{"text":"foo"},"start":0,"end":3}]}}
+        \\{"type":"match","data":{"path":{"text":"dir\\a.txt"},"lines":{"text":"bar\n"},"line_number":2,"absolute_offset":4,"submatches":[{"match":{"text":"bar"},"start":0,"end":3}]}}
+        \\
+    ;
+    const files = try parseAll(allocator, data, 100);
+    defer freeParsedFiles(allocator, files);
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expectEqualStrings("dir/a.txt", files[0].path);
+    try std.testing.expectEqual(@as(usize, 2), files[0].matches.len);
+}
+
 test "Parser: context rows" {
     const allocator = std.testing.allocator;
     const data =

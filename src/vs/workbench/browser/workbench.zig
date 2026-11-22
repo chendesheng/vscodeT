@@ -23,11 +23,12 @@
 //! and adjacent outlines merge into shared dividers. The glyph fallback keeps
 //! the one-cell gutter and box-drawing divider instead.
 //!
-//! A split currently moves the active tab into the new group (the terminal
-//! equivalent of "move editor to group"); upstream `splitEditor` duplicates the
-//! active input and gives each pane independent view state. Duplicating an
-//! `Editor` would duplicate the text model, so the move preserves the one
-//! model until the editor is split into model/view state.
+//! A split duplicates the active input into the new group, matching upstream
+//! `EditorGroupView.copyEditor`: both panes show the same `EditorDocument` and
+//! share its text model, undo history and dirty state, while wrapping, cursors,
+//! scroll and folding are independent per view. `workbench.action.splitEditor`
+//! follows `workbench.editor.openSideBySideDirection`; the Left/Right/Up/Down
+//! command variants place the copy on the requested side.
 //!
 //! Async terminal adaptation: interactive read paths (`requestOpenPath`,
 //! explorer expansion, image/Markdown previews and remote Markdown images) run
@@ -245,6 +246,10 @@ const search_title_secondary_actions = [_]pane_composite_mod.TitleAction{
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
+/// Target selector shared by the move/copy editor and group commands, port of
+/// upstream `SelectedEditorsMoveCopyArguments.to`.
+pub const GroupTarget = enum { first, last, previous, next, left, right, up, down };
+pub const GroupLocation = enum { first, last, next, previous };
 pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, problems };
 
 /// Handles for the context keys the workbench maintains. User keybindings use
@@ -511,6 +516,12 @@ pub const Workbench = struct {
     view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
     images: ui.image.Runtime,
+    /// Desired OSC 22 mouse pointer shape for the next frame. Only the
+    /// composited renderer writes it; pane surfaces resolve shapes but never
+    /// emit them.
+    pointer: ui.Pointer = .default,
+    pointer_state: ui.pointer.State = .{},
+    pointer_shapes: bool = false,
     media_status: ?*MediaPreviewStatus = null,
     /// Set when a file watcher change was applied so the TUI repaints even if
     /// the change produced no other input.
@@ -717,6 +728,9 @@ pub const Workbench = struct {
         self.dialog = null;
         self.pending_dialog = null;
         self.images = ui.image.Runtime.init(allocator);
+        self.pointer = .default;
+        self.pointer_state = .{};
+        self.pointer_shapes = false;
         self.media_status = null;
         self.files_changed = false;
         self.pending_tab_drag = null;
@@ -872,6 +886,9 @@ pub const Workbench = struct {
         self.dialog = null;
         self.pending_dialog = null;
         self.images = ui.image.Runtime.init(allocator);
+        self.pointer = .default;
+        self.pointer_state = .{};
+        self.pointer_shapes = false;
         self.media_status = null;
         self.files_changed = false;
         self.pending_tab_drag = null;
@@ -1060,6 +1077,9 @@ pub const Workbench = struct {
         self.dialog = null;
         self.pending_dialog = null;
         self.images = ui.image.Runtime.init(allocator);
+        self.pointer = .default;
+        self.pointer_state = .{};
+        self.pointer_shapes = false;
         self.media_status = null;
         self.files_changed = false;
         self.pending_tab_drag = null;
@@ -1430,6 +1450,49 @@ pub const Workbench = struct {
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
             .{ .id = "workbench.action.splitEditorOrthogonal", .label = "Split Editor Orthogonal", .category = "View", .context = self, .run = commandSplitEditorOrthogonal },
+            .{ .id = "workbench.action.splitEditorLeft", .label = "Split Editor Left", .category = "View", .context = self, .run = commandSplitEditorLeft },
+            .{ .id = "workbench.action.splitEditorRight", .label = "Split Editor Right", .category = "View", .context = self, .run = commandSplitEditorRight },
+            .{ .id = "workbench.action.splitEditorUp", .label = "Split Editor Up", .category = "View", .context = self, .run = commandSplitEditorUp },
+            .{ .id = "workbench.action.splitEditorDown", .label = "Split Editor Down", .category = "View", .context = self, .run = commandSplitEditorDown },
+            .{ .id = "workbench.action.focusActiveEditorGroup", .label = "Focus Active Editor Group", .category = "View", .context = self, .run = commandFocusActiveGroup },
+            .{ .id = "workbench.action.focusFirstEditorGroup", .label = "Focus First Editor Group", .category = "View", .context = self, .run = commandFocusFirstGroup },
+            .{ .id = "workbench.action.focusLastEditorGroup", .label = "Focus Last Editor Group", .category = "View", .context = self, .run = commandFocusLastGroup },
+            .{ .id = "workbench.action.focusNextGroup", .label = "Focus Next Editor Group", .category = "View", .context = self, .run = commandFocusNextGroup },
+            .{ .id = "workbench.action.focusPreviousGroup", .label = "Focus Previous Editor Group", .category = "View", .context = self, .run = commandFocusPreviousGroup },
+            .{ .id = "workbench.action.focusLeftGroup", .label = "Focus Left Editor Group", .category = "View", .context = self, .run = commandFocusLeftGroup },
+            .{ .id = "workbench.action.focusRightGroup", .label = "Focus Right Editor Group", .category = "View", .context = self, .run = commandFocusRightGroup },
+            .{ .id = "workbench.action.focusAboveGroup", .label = "Focus Editor Group Above", .category = "View", .context = self, .run = commandFocusAboveGroup },
+            .{ .id = "workbench.action.focusBelowGroup", .label = "Focus Editor Group Below", .category = "View", .context = self, .run = commandFocusBelowGroup },
+            .{ .id = "workbench.action.newGroupLeft", .label = "New Editor Group to the Left", .category = "View", .context = self, .run = commandNewGroupLeft },
+            .{ .id = "workbench.action.newGroupRight", .label = "New Editor Group to the Right", .category = "View", .context = self, .run = commandNewGroupRight },
+            .{ .id = "workbench.action.newGroupAbove", .label = "New Editor Group Above", .category = "View", .context = self, .run = commandNewGroupAbove },
+            .{ .id = "workbench.action.newGroupBelow", .label = "New Editor Group Below", .category = "View", .context = self, .run = commandNewGroupBelow },
+            .{ .id = "workbench.action.closeGroup", .label = "Close Editor Group", .category = "View", .context = self, .run = commandCloseGroup },
+            .{ .id = "workbench.action.joinTwoGroups", .label = "Join Editor Group with Next Group", .category = "View", .context = self, .run = commandJoinTwoGroups },
+            .{ .id = "workbench.action.moveActiveEditorGroupLeft", .label = "Move Editor Group Left", .category = "View", .context = self, .run = commandMoveGroupLeft },
+            .{ .id = "workbench.action.moveActiveEditorGroupRight", .label = "Move Editor Group Right", .category = "View", .context = self, .run = commandMoveGroupRight },
+            .{ .id = "workbench.action.moveActiveEditorGroupUp", .label = "Move Editor Group Up", .category = "View", .context = self, .run = commandMoveGroupUp },
+            .{ .id = "workbench.action.moveActiveEditorGroupDown", .label = "Move Editor Group Down", .category = "View", .context = self, .run = commandMoveGroupDown },
+            .{ .id = "workbench.action.duplicateActiveEditorGroupLeft", .label = "Duplicate Editor Group Left", .category = "View", .context = self, .run = commandDuplicateGroupLeft },
+            .{ .id = "workbench.action.duplicateActiveEditorGroupRight", .label = "Duplicate Editor Group Right", .category = "View", .context = self, .run = commandDuplicateGroupRight },
+            .{ .id = "workbench.action.duplicateActiveEditorGroupUp", .label = "Duplicate Editor Group Up", .category = "View", .context = self, .run = commandDuplicateGroupUp },
+            .{ .id = "workbench.action.duplicateActiveEditorGroupDown", .label = "Duplicate Editor Group Down", .category = "View", .context = self, .run = commandDuplicateGroupDown },
+            .{ .id = "workbench.action.moveEditorToPreviousGroup", .label = "Move Editor into Previous Group", .category = "View", .context = self, .run = commandMoveEditorToPreviousGroup },
+            .{ .id = "workbench.action.moveEditorToNextGroup", .label = "Move Editor into Next Group", .category = "View", .context = self, .run = commandMoveEditorToNextGroup },
+            .{ .id = "workbench.action.moveEditorToAboveGroup", .label = "Move Editor into Group Above", .category = "View", .context = self, .run = commandMoveEditorToAboveGroup },
+            .{ .id = "workbench.action.moveEditorToBelowGroup", .label = "Move Editor into Group Below", .category = "View", .context = self, .run = commandMoveEditorToBelowGroup },
+            .{ .id = "workbench.action.moveEditorToLeftGroup", .label = "Move Editor into Left Group", .category = "View", .context = self, .run = commandMoveEditorToLeftGroup },
+            .{ .id = "workbench.action.moveEditorToRightGroup", .label = "Move Editor into Right Group", .category = "View", .context = self, .run = commandMoveEditorToRightGroup },
+            .{ .id = "workbench.action.moveEditorToFirstGroup", .label = "Move Editor into First Group", .category = "View", .context = self, .run = commandMoveEditorToFirstGroup },
+            .{ .id = "workbench.action.moveEditorToLastGroup", .label = "Move Editor into Last Group", .category = "View", .context = self, .run = commandMoveEditorToLastGroup },
+            .{ .id = "workbench.action.splitEditorToPreviousGroup", .label = "Split Editor into Previous Group", .category = "View", .context = self, .run = commandSplitEditorToPreviousGroup },
+            .{ .id = "workbench.action.splitEditorToNextGroup", .label = "Split Editor into Next Group", .category = "View", .context = self, .run = commandSplitEditorToNextGroup },
+            .{ .id = "workbench.action.splitEditorToAboveGroup", .label = "Split Editor into Group Above", .category = "View", .context = self, .run = commandSplitEditorToAboveGroup },
+            .{ .id = "workbench.action.splitEditorToBelowGroup", .label = "Split Editor into Group Below", .category = "View", .context = self, .run = commandSplitEditorToBelowGroup },
+            .{ .id = "workbench.action.splitEditorToLeftGroup", .label = "Split Editor into Left Group", .category = "View", .context = self, .run = commandSplitEditorToLeftGroup },
+            .{ .id = "workbench.action.splitEditorToRightGroup", .label = "Split Editor into Right Group", .category = "View", .context = self, .run = commandSplitEditorToRightGroup },
+            .{ .id = "workbench.action.splitEditorToFirstGroup", .label = "Split Editor into First Group", .category = "View", .context = self, .run = commandSplitEditorToFirstGroup },
+            .{ .id = "workbench.action.splitEditorToLastGroup", .label = "Split Editor into Last Group", .category = "View", .context = self, .run = commandSplitEditorToLastGroup },
             .{ .id = "workbench.action.navigateLeft", .label = "Focus Group Left", .category = "View", .context = self, .run = commandNavigateLeft },
             .{ .id = "workbench.action.navigateRight", .label = "Focus Group Right", .category = "View", .context = self, .run = commandNavigateRight },
             .{ .id = "workbench.action.navigateUp", .label = "Focus Group Up", .category = "View", .context = self, .run = commandNavigateUp },
@@ -1444,7 +1507,7 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.closePanel", .label = "Close Panel", .category = "View", .context = self, .run = commandClosePanel },
             .{ .id = "workbench.action.closeAllEditors", .label = "Close All Editors", .category = "View", .context = self, .run = commandCloseAllEditors },
             .{ .id = "workbench.action.closeOtherEditors", .label = "Close Other Editors", .category = "View", .context = self, .run = commandCloseOtherEditors },
-            .{ .id = "workbench.action.joinAllGroups", .label = "Join All Groups", .category = "View", .context = self, .run = commandJoinAllGroups },
+            .{ .id = "workbench.action.joinAllGroups", .label = "Join All Editor Groups", .category = "View", .context = self, .run = commandJoinAllGroups },
             .{ .id = "workbench.action.lastEditorInGroup", .label = "Last Editor in Group", .category = "View", .context = self, .run = commandLastEditorInGroup },
             .{ .id = "workbench.action.previousEditor", .label = "Previous Editor", .category = "View", .context = self, .run = commandPreviousEditor },
             .{ .id = "workbench.action.openEditorAtIndex1", .label = "Open Editor 1", .category = "View", .context = self, .run = commandOpenEditorAtIndex1 },
@@ -1592,11 +1655,18 @@ pub const Workbench = struct {
     }
 
     pub fn handleQuickAccessKey(self: *Workbench, event: *ui.KeyEvent) !bool {
-        return self.quick_access.handleKey(event);
+        const was_open = self.quick_access.isOpen();
+        const handled = try self.quick_access.handleKey(event);
+        // A keyboard-opened picker covers whatever the pointer was over; reset
+        // until the next mouse move resolves the new target.
+        if (handled and !was_open and self.quick_access.isOpen()) self.pointer = .default;
+        return handled;
     }
 
     pub fn handleQuickAccessMouse(self: *Workbench, event: *ui.MouseEvent) bool {
-        return self.quick_access.handleMouse(event);
+        const handled = self.quick_access.handleMouse(event);
+        if (handled) self.pointer = self.quick_access.pointerAt(event.x, event.y);
+        return handled;
     }
 
     /// Routes one key to the modal dialog. Returns false when no dialog is
@@ -1616,6 +1686,7 @@ pub const Workbench = struct {
     /// while it is open; a click outside the buttons only changes focus.
     pub fn handleDialogMouse(self: *Workbench, event: *ui.MouseEvent) bool {
         const dialog = self.dialog orelse return false;
+        self.pointer = dialog.pointerAt(event.x, event.y);
         if (dialog.handleMouse(event)) |index| self.resolveDialogButton(index);
         return true;
     }
@@ -2940,23 +3011,30 @@ pub const Workbench = struct {
         switch (hit) {
             .none => return false,
             .tab => |index| {
+                self.pointer = .pointer;
                 if (!left_press) return true;
                 _ = service.setActive(index);
                 self.focus = .terminal;
                 return true;
             },
             .new_terminal => {
+                self.pointer = .pointer;
                 if (!left_press) return true;
                 self.newTerminal() catch {};
                 return true;
             },
             .kill_terminal => {
+                self.pointer = .pointer;
                 if (!left_press) return true;
                 self.killTerminal() catch {};
                 return true;
             },
             .content => {},
         }
+
+        // Terminal content is text: the emulator owns no pointer shapes of its
+        // own in this port.
+        self.pointer = .text;
 
         // A click focuses the terminal; hovering and wheel scrolling leave the
         // editor's focus alone, as xterm.js only focuses on a press.
@@ -3686,6 +3764,23 @@ pub const Workbench = struct {
             options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
             options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
             options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
+            options.hide_unchanged_regions = configuration.getBool("diffEditor.hideUnchangedRegions.enabled", false);
+            if (configuration.getValue("diffEditor.hideUnchangedRegions.contextLineCount", .{})) |value| {
+                switch (value.*) {
+                    .integer => |number| if (number >= 0) {
+                        options.hide_unchanged_regions_context_line_count = @intCast(number);
+                    },
+                    else => {},
+                }
+            }
+            if (configuration.getValue("diffEditor.hideUnchangedRegions.minimumLineCount", .{})) |value| {
+                switch (value.*) {
+                    .integer => |number| if (number >= 0) {
+                        options.hide_unchanged_regions_minimum_line_count = @intCast(number);
+                    },
+                    else => {},
+                }
+            }
             if (configuration.getValue("diffEditor.maxComputationTime", .{})) |value| {
                 switch (value.*) {
                     .integer => |number| options.max_computation_time_ms = number,
@@ -5953,9 +6048,9 @@ pub const Workbench = struct {
     /// `<C-w>h/j/k/l`: focus the nearest pane in a direction using the laid-out
     /// grid rectangles. This mirrors VS Code's directional group navigation
     /// without needing the browser grid's DOM geometry.
-    pub fn navigateGroup(self: *Workbench, direction: GroupDirection) !void {
+    fn findAdjacentPane(self: *Workbench, direction: editor_groups.GroupDirection, wrap: bool) ?*GroupPane {
         self.layoutAll();
-        const current = self.activePane() orelse return;
+        const current = self.activePane() orelse return null;
         const source = current.rect;
         const source_left = ui.cell.snap(source.x);
         const source_top = ui.cell.snap(source.y);
@@ -5965,7 +6060,7 @@ pub const Workbench = struct {
         var best: ?*GroupPane = null;
         var best_distance: usize = std.math.maxInt(usize);
         for (self.part.group_views.items) |pane| {
-            if (pane == current or pane.tabs.items.len == 0) continue;
+            if (pane == current) continue;
             const rect = pane.rect;
             const left = ui.cell.snap(rect.x);
             const top = ui.cell.snap(rect.y);
@@ -5974,10 +6069,10 @@ pub const Workbench = struct {
             const overlaps_x = left < source_right and right > source_left;
             const overlaps_y = top < source_bottom and bottom > source_top;
             const distance: ?usize = switch (direction) {
-                .left => if (right <= source_left and overlaps_y) source_left - right else null,
-                .right => if (left >= source_right and overlaps_y) left - source_right else null,
-                .up => if (bottom <= source_top and overlaps_x) source_top - bottom else null,
-                .down => if (top >= source_bottom and overlaps_x) top - source_bottom else null,
+                .LEFT => if (right <= source_left and overlaps_y) source_left - right else null,
+                .RIGHT => if (left >= source_right and overlaps_y) left - source_right else null,
+                .UP => if (bottom <= source_top and overlaps_x) source_top - bottom else null,
+                .DOWN => if (top >= source_bottom and overlaps_x) top - source_bottom else null,
             };
             if (distance) |value| {
                 if (value < best_distance) {
@@ -5986,7 +6081,57 @@ pub const Workbench = struct {
                 }
             }
         }
-        const target = best orelse return;
+        if (best != null or !wrap) return best;
+
+        // Grid `getNeighborViews(..., wrap=true)`: connect the opposite edges.
+        var extreme: ?*GroupPane = null;
+        var extreme_value: usize = switch (direction) {
+            .LEFT, .UP => 0,
+            .RIGHT, .DOWN => std.math.maxInt(usize),
+        };
+        for (self.part.group_views.items) |pane| {
+            if (pane == current) continue;
+            const rect = pane.rect;
+            const value: usize = switch (direction) {
+                .LEFT => ui.cell.snap(rect.right()),
+                .RIGHT => ui.cell.snap(rect.x),
+                .UP => ui.cell.snap(rect.bottom()),
+                .DOWN => ui.cell.snap(rect.y),
+            };
+            const better = switch (direction) {
+                .LEFT, .UP => value > extreme_value,
+                .RIGHT, .DOWN => value < extreme_value,
+            };
+            if (better) {
+                extreme_value = value;
+                extreme = pane;
+            }
+        }
+        return extreme;
+    }
+
+    fn focusPane(self: *Workbench, pane: *GroupPane) !void {
+        self.service.activateGroup(pane.group);
+        pane.syncActivePane();
+        self.layoutAll();
+        if (self.activeTab()) |tab| {
+            try tab.ensureControllers();
+            tab.focusEditor();
+        }
+        self.focusEditor();
+        self.revealActiveEditor();
+    }
+
+    /// `<C-w>h/j/k/l`: focus the nearest pane in a direction using the laid-out
+    /// grid rectangles. This mirrors VS Code's directional group navigation
+    /// without needing the browser grid's DOM geometry.
+    pub fn navigateGroup(self: *Workbench, direction: GroupDirection) !void {
+        const target = self.findAdjacentPane(switch (direction) {
+            .left => .LEFT,
+            .right => .RIGHT,
+            .up => .UP,
+            .down => .DOWN,
+        }, false) orelse return;
         self.service.activateGroup(target.group);
         if (target.activeTab() == null and target.tabs.items.len > 0) {
             try target.activateTab(target.tabs.items[0]);
@@ -5996,8 +6141,252 @@ pub const Workbench = struct {
         self.revealActiveEditor();
     }
 
+    /// Port of the `workbench.action.focus*Group` family. `wrap` matches
+    /// upstream's focus actions, which wrap at the grid edge.
+    pub fn focusGroupDirection(self: *Workbench, direction: editor_groups.GroupDirection) !void {
+        const target = self.findAdjacentPane(direction, true) orelse return;
+        try self.focusPane(target);
+    }
+
+    pub fn focusGroupLocation(self: *Workbench, location: GroupLocation) !void {
+        self.layoutAll();
+        const views = try self.part.orderedViews(self.allocator);
+        defer self.allocator.free(views);
+        if (views.len == 0) return;
+        const current = self.activePane() orelse return;
+        const current_index = for (views, 0..) |view, index| {
+            if (view == current) break index;
+        } else 0;
+        const target_index = switch (location) {
+            .first => 0,
+            .last => views.len - 1,
+            .next => (current_index + 1) % views.len,
+            .previous => (current_index + views.len - 1) % views.len,
+        };
+        try self.focusPane(views[target_index]);
+    }
+
+    pub fn focusActiveGroup(self: *Workbench) !void {
+        const pane = self.activePane() orelse return;
+        try self.focusPane(pane);
+    }
+
+    /// Port of `workbench.action.newGroupLeft/Right/Above/Below`: add an empty
+    /// group and activate it.
+    pub fn newEmptyGroup(self: *Workbench, direction: editor_groups.GroupDirection) !*GroupPane {
+        self.expanded_pane = null;
+        self.part.active_sash = null;
+        const source = self.activePane() orelse return error.NoActivePane;
+        const orientation: SplitDirection = switch (direction) {
+            .LEFT, .RIGHT => .horizontal,
+            .UP, .DOWN => .vertical,
+        };
+        const new_first = direction == .LEFT or direction == .UP;
+        const view = try self.part.splitGroup(source, orientation, new_first);
+        try self.focusPane(view);
+        return view;
+    }
+
+    fn orderedPanes(self: *Workbench) ![]*GroupPane {
+        self.layoutAll();
+        return self.part.orderedViews(self.allocator);
+    }
+
+    fn paneVisualIndex(views: []const *GroupPane, pane: *GroupPane) usize {
+        for (views, 0..) |view, index| {
+            if (view == pane) return index;
+        }
+        return 0;
+    }
+
+    fn preferredOppositeDirection(self: *Workbench) editor_groups.GroupDirection {
+        return if (self.preferredSideBySideDirection() == .RIGHT) .LEFT else .UP;
+    }
+
+    /// Resolves the target group for move/copy-editor commands. Directional
+    /// commands create the missing group, matching `moveCopyEditorsToGroup`.
+    fn resolveGroupTarget(
+        self: *Workbench,
+        source: *GroupPane,
+        target: GroupTarget,
+        create: bool,
+    ) !?*GroupPane {
+        switch (target) {
+            .left, .right, .up, .down => {
+                const direction: editor_groups.GroupDirection = switch (target) {
+                    .left => .LEFT,
+                    .right => .RIGHT,
+                    .up => .UP,
+                    else => .DOWN,
+                };
+                if (self.findAdjacentPane(direction, false)) |pane| return pane;
+                if (!create) return null;
+                return try self.newEmptyGroup(direction);
+            },
+            .first, .last => {
+                const views = try self.orderedPanes();
+                defer self.allocator.free(views);
+                if (views.len == 0) return null;
+                return views[if (target == .first) 0 else views.len - 1];
+            },
+            .previous, .next => {
+                const views = try self.orderedPanes();
+                defer self.allocator.free(views);
+                if (views.len == 0) return null;
+                const index = paneVisualIndex(views, source);
+                if (target == .next) {
+                    if (index + 1 < views.len) return views[index + 1];
+                    if (!create) return null;
+                    return try self.newEmptyGroup(self.preferredSideBySideDirection());
+                }
+                if (index > 0) return views[index - 1];
+                if (!create) return null;
+                return try self.newEmptyGroup(self.preferredOppositeDirection());
+            },
+        }
+    }
+
+    /// Port of `workbench.action.closeGroup`: move the active group's editors
+    /// into the most recently active other group, then remove the group.
+    pub fn closeActiveGroup(self: *Workbench) !void {
+        self.part.active_sash = null;
+        const source = self.activePane() orelse return;
+        if (self.groupCount() <= 1) return;
+        const groups = try self.service.getGroups(self.allocator, .MOST_RECENTLY_ACTIVE);
+        defer self.allocator.free(groups);
+        var destination: ?*GroupPane = null;
+        for (groups) |group| {
+            if (group == source.group) continue;
+            if (self.paneForGroup(group)) |pane| {
+                destination = pane;
+                break;
+            }
+        }
+        const target = destination orelse return;
+        try self.mergePaneInto(source, target);
+    }
+
+    /// Port of `workbench.action.joinTwoGroups`: merge the active group into
+    /// the nearest neighbour, searching right, down, left then up.
+    pub fn joinTwoGroups(self: *Workbench) !void {
+        const source = self.activePane() orelse return;
+        const directions = [_]editor_groups.GroupDirection{ .RIGHT, .DOWN, .LEFT, .UP };
+        for (directions) |direction| {
+            if (self.findAdjacentPane(direction, false)) |target| {
+                try self.mergePaneInto(source, target);
+                return;
+            }
+        }
+    }
+
+    fn mergePaneInto(self: *Workbench, source: *GroupPane, target: *GroupPane) !void {
+        if (source == target) return;
+        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
+        defer ordered.deinit();
+        try source.orderedTabs(self.allocator, &ordered);
+        for (ordered.items) |tab| {
+            try self.moveTabToPane(source, target, tab, null);
+        }
+        self.service.activateGroup(target.group);
+        target.syncActivePane();
+        if (source.tabs.items.len == 0) self.collapseEmptyPane(source);
+        self.layoutAll();
+        try self.focusPane(target);
+    }
+
+    fn destroyPane(self: *Workbench, pane: *GroupPane) void {
+        while (pane.tabs.items.len > 0) {
+            const tab = pane.tabs.items[0];
+            _ = pane.group.model.closeEditor(tab.input, .UNKNOWN, true) catch {};
+            _ = pane.removeTab(tab);
+            self.discardTab(tab);
+        }
+        _ = self.part.removeView(pane);
+    }
+
+    /// Port of `workbench.action.moveActiveEditorGroupLeft/Right/Up/Down`.
+    pub fn moveActiveGroup(self: *Workbench, direction: editor_groups.GroupDirection) !void {
+        self.expanded_pane = null;
+        self.part.active_sash = null;
+        self.layoutAll();
+        const source = self.activePane() orelse return;
+        const target = self.findGroupMoveTarget(source, direction) orelse return;
+        if (target == source) return;
+        const orientation: SplitDirection = switch (direction) {
+            .LEFT, .RIGHT => .horizontal,
+            .UP, .DOWN => .vertical,
+        };
+        try self.part.moveGroupView(source, target, orientation, direction == .LEFT or direction == .UP);
+        self.service.activateGroup(source.group);
+        try self.focusPane(source);
+    }
+
+    fn findGroupMoveTarget(self: *Workbench, source: *GroupPane, direction: editor_groups.GroupDirection) ?*GroupPane {
+        // Upstream allows the target neighbour to be on the other axis to
+        // support more move scenarios (microsoft/vscode#50741).
+        const directions: [3]editor_groups.GroupDirection = switch (direction) {
+            .LEFT, .RIGHT => .{ direction, .UP, .DOWN },
+            .UP, .DOWN => .{ direction, .LEFT, .RIGHT },
+        };
+        for (directions) |candidate| {
+            if (self.findAdjacentPane(candidate, false)) |pane| {
+                if (pane != source) return pane;
+            }
+        }
+        return null;
+    }
+
+    /// Port of `workbench.action.duplicateActiveEditorGroupLeft/Right/Up/Down`:
+    /// create a group beside the active one and copy every editor into it.
+    pub fn duplicateActiveGroup(self: *Workbench, direction: editor_groups.GroupDirection) !void {
+        self.expanded_pane = null;
+        self.part.active_sash = null;
+        self.layoutAll();
+        const source = self.activePane() orelse return;
+        for (source.tabs.items) |tab| {
+            if (tab.diff != null) return error.SplitUnsupported;
+        }
+        const orientation: SplitDirection = switch (direction) {
+            .LEFT, .RIGHT => .horizontal,
+            .UP, .DOWN => .vertical,
+        };
+        const target = try self.part.splitGroup(source, orientation, direction == .LEFT or direction == .UP);
+        errdefer self.destroyPane(target);
+
+        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
+        defer ordered.deinit();
+        try source.orderedTabs(self.allocator, &ordered);
+        const active_index = source.activeIndex(ordered.items);
+        var copies = std.array_list.Managed(*Tab).init(self.allocator);
+        defer copies.deinit();
+        for (ordered.items) |tab| {
+            try copies.append(try self.copyTabIntoPane(target, tab));
+        }
+        if (copies.items.len > 0) {
+            try target.activateTab(copies.items[@min(active_index, copies.items.len - 1)]);
+        }
+        try self.focusPane(target);
+    }
+
+    /// Port of `moveActiveEditor`/`copyActiveEditor` with `by: 'group'`, used
+    /// by the moveEditorTo*Group and splitEditorTo*Group commands.
+    pub fn moveOrSplitActiveEditor(self: *Workbench, target: GroupTarget, copy: bool) !void {
+        self.layoutAll();
+        const source = self.activePane() orelse return;
+        const tab = source.activeTab() orelse return;
+        const destination = try self.resolveGroupTarget(source, target, true) orelse return;
+        if (destination == source) return;
+        if (copy) {
+            _ = try self.copyTabIntoPane(destination, tab);
+        } else {
+            try self.moveTabToPane(source, destination, tab, null);
+            if (source.tabs.items.len == 0) self.collapseEmptyPane(source);
+        }
+        try self.focusPane(destination);
+    }
+
     pub fn cycleGroup(self: *Workbench) !void {
-        try self.switchGroup(1);
+        try self.focusGroupLocation(.next);
     }
 
     /// Port of `workbench.action.maximizeEditor`: expand the active group.
@@ -6069,7 +6458,13 @@ pub const Workbench = struct {
                 const tab = pane.tabs.items[0];
                 _ = try pane.group.model.closeEditor(tab.input, .MOVE, false);
                 _ = pane.removeTab(tab);
-                _ = try target.group.model.openEditor(tab.input, .{ .pinned = true, .active = false });
+                const opened = try target.group.model.openEditor(tab.input, .{ .pinned = true, .active = false });
+                if (!opened.is_new) {
+                    // Target already shows this document (a split copy has a
+                    // distinct input over the shared model); drop the moved view.
+                    self.discardTab(tab);
+                    continue;
+                }
                 try target.addTab(tab);
             }
             pane.syncActivePane();
@@ -6180,39 +6575,163 @@ pub const Workbench = struct {
         if (try self.showActivityById("explorer")) self.focusSidebar();
     }
 
-    /// Splits the active group and moves the active tab into the new group.
+    /// Preferred side-by-side split direction from
+    /// `workbench.editor.openSideBySideDirection` (upstream
+    /// `preferredSideBySideGroupDirection`).
+    pub fn preferredSideBySideDirection(self: *Workbench) editor_groups.GroupDirection {
+        if (self.configuration) |configuration| {
+            if (configuration.getValue("workbench.editor.openSideBySideDirection", .{})) |value| {
+                if (value.* == .string and std.mem.eql(u8, value.string, "down")) return .DOWN;
+            }
+        }
+        return .RIGHT;
+    }
+
+    /// Port of `workbench.action.splitEditor`: duplicate the active editor
+    /// into a new group in the preferred side-by-side direction.
     pub fn splitActive(self: *Workbench, direction: SplitDirection) !void {
+        try self.splitActiveInDirection(switch (direction) {
+            .horizontal => .RIGHT,
+            .vertical => .DOWN,
+        });
+    }
+
+    /// Port of upstream `splitEditor(editorGroupsService, direction, context)`:
+    /// create a group beside the active one and copy the active editor into it.
+    /// The original tab stays open; both panes share the document/model and
+    /// keep independent view state.
+    pub fn splitActiveInDirection(self: *Workbench, direction: editor_groups.GroupDirection) !void {
         self.part.active_sash = null;
         self.expanded_pane = null;
         self.clearTabDrag();
         const source = self.activePane() orelse return;
         const tab = source.activeTab() orelse return;
 
-        const new_pane = try self.part.splitGroup(source, direction, false);
-
-        _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
-        _ = source.removeTab(tab);
-        source.syncActivePane();
-        // Moving the last active tab leaves the model without an active editor
-        // even when the group still has tabs; activate one so the group keeps
-        // its breadcrumb/editor chrome.
-        if (source.activeTab() == null and source.tabs.items.len > 0) {
-            try source.activateTab(source.tabs.items[0]);
+        const orientation: SplitDirection = switch (direction) {
+            .LEFT, .RIGHT => .horizontal,
+            .UP, .DOWN => .vertical,
+        };
+        const new_first = direction == .LEFT or direction == .UP;
+        const new_pane = try self.part.splitGroup(source, orientation, new_first);
+        var keep_view = false;
+        defer {
+            if (!keep_view) _ = self.part.removeView(new_pane);
         }
-        _ = try new_pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
-        try new_pane.addTab(tab);
+
+        const copied = try self.copyTabIntoPane(new_pane, tab);
+        keep_view = true;
 
         self.layoutAll();
         if (self.activeTab()) |active| {
             try active.ensureControllers();
             try active.refresh();
+            active.focusEditor();
         }
+        self.focusEditor();
+        _ = copied;
+    }
+
+    /// Copies `tab` into `target`, port of `EditorGroupView.copyEditor` plus
+    /// the new editor pane the target group opens. File inputs share one
+    /// `EditorDocument`; image previews get a new read-only pane.
+    fn copyTabIntoPane(self: *Workbench, target: *GroupPane, tab: *Tab) !*Tab {
+        if (tab.file_input) |file_input| {
+            const copied_input = try file_input.copyInput();
+            var input_owned = true;
+            errdefer if (input_owned) copied_input.deinit();
+            var tab_owned: ?*Tab = null;
+            errdefer if (tab_owned) |owned| owned.deinit();
+
+            const opened = try target.group.model.openEditor(
+                &copied_input.base,
+                .{ .pinned = true, .active = true },
+            );
+            if (!opened.is_new) {
+                // The target already shows this document; upstream's
+                // `copyEditor` reveals that pane instead of adding a duplicate.
+                const existing = target.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
+                copied_input.deinit();
+                input_owned = false;
+                return existing;
+            }
+            errdefer _ = target.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
+
+            const copied = try Tab.initFromInput(self.allocator, copied_input);
+            tab_owned = copied;
+            input_owned = false;
+            try self.finishCopiedTab(target, copied);
+            return copied;
+        }
+
+        if (tab.image_input) |image_input| {
+            const copied_input = try ImagePreviewEditorInput.init(self.allocator, image_input.path);
+            var input_owned = true;
+            errdefer if (input_owned) copied_input.deinit();
+            var tab_owned: ?*Tab = null;
+            errdefer if (tab_owned) |owned| owned.deinit();
+
+            const opened = try target.group.model.openEditor(
+                &copied_input.base,
+                .{ .pinned = true, .active = true },
+            );
+            if (!opened.is_new) {
+                const existing = target.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
+                copied_input.deinit();
+                input_owned = false;
+                return existing;
+            }
+            errdefer _ = target.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
+
+            const dims = editorDimensions(self, target);
+            const copied = try Tab.initImageFromInput(
+                self.allocator,
+                self.io,
+                copied_input,
+                dims.width,
+                dims.height,
+                &self.images,
+                self.async_io,
+            );
+            tab_owned = copied;
+            input_owned = false;
+            try self.finishCopiedTab(target, copied);
+            return copied;
+        }
+
+        // Diff/snapshot tabs own their models and inputs. Upstream copies the
+        // side-by-side input; the terminal diff view is not model/view split
+        // yet, so there is nothing safe to duplicate. Leave the layout
+        // unchanged rather than opening an empty group.
+        return error.SplitUnsupported;
+    }
+
+    fn finishCopiedTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
+        tab.setAsyncIo(self.async_io);
+        tab.setImageRuntime(&self.images);
+        try tab.view.setStatusBarVisible(false);
+        try pane.addTab(tab);
+        errdefer _ = pane.removeTab(tab);
+        self.applyEditorSettingsToTab(tab);
+        if (!tab.isImage()) {
+            self.registerWorkingCopy(tab);
+            if (self.quick_diff_controller) |controller| controller.attach(tab.editor, tab.editor.path) catch {};
+        }
+        if (self.language_features) |features| tab.attachLanguageRegistry(features);
+        try tab.ensureControllers();
+        try pane.activateTab(tab);
+        try tab.refresh();
     }
 
     pub fn closeActive(self: *Workbench) !bool {
         self.part.active_sash = null;
         self.clearTabDrag();
         const pane = self.activePane() orelse return false;
+        // Upstream `workbench.action.closeActiveEditor` falls through to
+        // `workbench.action.closeGroup` when the active group is empty.
+        if (pane.tabs.items.len == 0) {
+            try self.closeActiveGroup();
+            return false;
+        }
         const tab = pane.activeTab() orelse return false;
         return self.closeTab(pane, tab);
     }
@@ -6305,6 +6824,7 @@ pub const Workbench = struct {
 
         prompt.deinit();
         self.dialog = dialog;
+        self.pointer = .default;
         self.pending_dialog = .{ .close_tab = .{ .pane = pane, .tab = tab } };
     }
 
@@ -6358,6 +6878,7 @@ pub const Workbench = struct {
 
         prompt.deinit();
         self.dialog = dialog;
+        self.pointer = .default;
         self.pending_dialog = .quit;
     }
 
@@ -7157,11 +7678,11 @@ pub const Workbench = struct {
             return .handled;
         }
         if (std.mem.eql(u8, command, "workbench.action.focusLeftGroup")) {
-            try self.switchGroup(-1);
+            try self.focusGroupDirection(.LEFT);
             return .handled;
         }
         if (std.mem.eql(u8, command, "workbench.action.focusRightGroup")) {
-            try self.switchGroup(1);
+            try self.focusGroupDirection(.RIGHT);
             return .handled;
         }
         if (std.mem.startsWith(u8, command, "workbench.action.openEditorAtIndex")) {
@@ -7311,14 +7832,22 @@ pub const Workbench = struct {
                     // bits; relying on them here would drop the drag. A lost
                     // release is healed by the next down or up event.
                     self.part.resizeSash(split, event.x, event.y);
+                    self.pointer = self.part.sashPointer(split);
                     return true;
                 },
                 .up, .click => {
                     self.part.resizeSash(split, event.x, event.y);
                     self.part.active_sash = null;
+                    self.pointer = if (self.part.dividerAt(event.x, event.y)) |still_over|
+                        self.part.sashPointer(still_over)
+                    else
+                        .default;
                     return true;
                 },
-                .down => return true,
+                .down => {
+                    self.pointer = self.part.sashPointer(split);
+                    return true;
+                },
                 .wheel => return false,
             }
         }
@@ -7327,10 +7856,24 @@ pub const Workbench = struct {
         if (event.kind != .down or event.button != .left) {
             // Keep the editor from treating a click on the sash as a caret
             // placement; hover motion over the line is also consumed.
-            return event.kind != .wheel and self.part.dividerAt(event.x, event.y) != null;
+            if (self.sidebarShown() and
+                event.x == self.activityBarWidth() + self.sidebarWidth() and
+                event.y < self.workbenchRows())
+            {
+                self.pointer = .ew_resize;
+                return true;
+            }
+            if (event.kind != .wheel) {
+                if (self.part.dividerAt(event.x, event.y)) |split| {
+                    self.pointer = self.part.sashPointer(split);
+                    return true;
+                }
+            }
+            return false;
         }
 
         const split = self.part.dividerAt(event.x, event.y) orelse return false;
+        self.pointer = self.part.sashPointer(split);
         self.part.active_sash = split;
         return true;
     }
@@ -7350,15 +7893,18 @@ pub const Workbench = struct {
         if (!self.sidebar_resize_active) {
             if (event.kind != .down or event.button != .left or event.x != divider) return false;
             self.sidebar_resize_active = true;
+            self.pointer = .ew_resize;
             return true;
         }
 
         switch (event.kind) {
             .move, .down => {
+                self.pointer = .ew_resize;
                 self.resizeSidebarTo(event.x);
                 return true;
             },
             .up, .click => {
+                self.pointer = .ew_resize;
                 self.resizeSidebarTo(event.x);
                 self.sidebar_resize_active = false;
                 return true;
@@ -7391,12 +7937,17 @@ pub const Workbench = struct {
         if (self.expanded_pane != null) return false;
         if (self.drag_tab == null) return false;
         switch (event.kind) {
-            .move => self.updateDragTarget(event),
+            .move => {
+                self.pointer = .grabbing;
+                self.updateDragTarget(event);
+            },
             .up => {
+                self.pointer = .default;
                 self.finishTabDrag();
                 return true;
             },
             .click => {
+                self.pointer = .default;
                 self.clearTabDrag();
                 return true;
             },
@@ -7404,6 +7955,7 @@ pub const Workbench = struct {
                 // A second press during a pending drag is often the second
                 // half of a double click (hand jitter starts the drag). Let
                 // the tab strip handle it so the preview can be pinned.
+                self.pointer = .default;
                 self.clearTabDrag();
                 return false;
             },
@@ -7458,7 +8010,46 @@ pub const Workbench = struct {
         };
     }
 
+    /// Destroys a tab view that lost to an already-open editor, detaching the
+    /// workbench registrations that keep raw pointers into it.
+    fn discardTab(self: *Workbench, tab: *Tab) void {
+        if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
+        if (self.hovered_tab == tab) self.hovered_tab = null;
+        self.detachHistoryTab(tab);
+        self.unregisterWorkingCopy(tab);
+        if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
+        tab.deinit();
+    }
+
     fn moveTabToPane(self: *Workbench, source: *GroupPane, dest: *GroupPane, tab: *Tab, index: ?isize) !void {
+        // Open first, like upstream `doMoveOrCopyEditorAcrossGroups`: when the
+        // target already shows a matching input (split copies have distinct
+        // inputs over one model) the model reuses that editor and the moved
+        // view is disposed instead of adding a second tab for the same model.
+        const opened = try dest.group.model.openEditor(
+            tab.input,
+            .{ .pinned = true, .active = true, .index = index },
+        );
+
+        if (!opened.is_new) {
+            const existing = dest.tabForInput(opened.editor);
+            // Split copies share one document, so discarding the moved view is
+            // safe. A session-restored duplicate can own a different document;
+            // never discard unsaved edits from it.
+            if (existing) |target_tab| {
+                if (target_tab.editor.model != tab.editor.model and tab.editor.isDirty()) {
+                    try dest.activateTab(target_tab);
+                    tab.editor.setMessage(
+                        "Move blocked: {s} is already open with unsaved changes in the target group",
+                        .{tab.input.getName()},
+                    );
+                    self.service.activateGroup(dest.group);
+                    self.focus = .editor;
+                    return;
+                }
+            }
+        }
+
         _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
         _ = source.removeTab(tab);
         source.syncActivePane();
@@ -7468,7 +8059,20 @@ pub const Workbench = struct {
         if (source.activeTab() == null and source.tabs.items.len > 0) {
             try source.activateTab(source.tabs.items[0]);
         }
-        _ = try dest.group.model.openEditor(tab.input, .{ .pinned = true, .active = true, .index = index });
+
+        if (!opened.is_new) {
+            if (dest.tabForInput(opened.editor)) |existing| {
+                try dest.activateTab(existing);
+                existing.focusEditor();
+            }
+            // The moved view loses to the already-open tab; detach every
+            // workbench registration before destroying it.
+            self.discardTab(tab);
+            self.service.activateGroup(dest.group);
+            self.focus = .editor;
+            return;
+        }
+
         try dest.addTab(tab);
         self.service.activateGroup(dest.group);
         try tab.ensureControllers();
@@ -7572,6 +8176,7 @@ pub const Workbench = struct {
                 } else {
                     part.clearHover();
                 }
+                self.pointer = part.pointerAt(event.x, event.y) catch .default;
                 self.leaveEditorHover();
                 return true;
             },
@@ -7591,6 +8196,7 @@ pub const Workbench = struct {
                 }
                 part.clearHover();
                 self.focusStatusBar();
+                self.pointer = part.pointerAt(event.x, event.y) catch .default;
                 if (part.hitAt(event.x, event.y) catch null) |hit| {
                     switch (hit) {
                         .entry => |handle| {
@@ -7608,7 +8214,11 @@ pub const Workbench = struct {
                 }
                 return true;
             },
-            .up, .click, .wheel => return true,
+            .up, .click => {
+                self.pointer = part.pointerAt(event.x, event.y) catch .default;
+                return true;
+            },
+            .wheel => return true,
         }
     }
 
@@ -7859,6 +8469,18 @@ pub const Workbench = struct {
         if (self.focus != .sidebar or !self.sidebarShown()) return false;
 
         if (event.key == .escape) {
+            // A focused sticky-scroll widget is the innermost focus target;
+            // Escape leaves it before leaving the side bar (upstream leaves it
+            // with Tab, which is the same terminal focus-traversal key).
+            const active = self.activity_bar_part.active_id orelse "";
+            if (std.mem.eql(u8, active, "explorer")) {
+                if (self.sidebar) |sidebar| {
+                    if (sidebar.tree.stickyScrollFocused()) {
+                        sidebar.tree.clearStickyScrollFocus();
+                        return true;
+                    }
+                }
+            }
             self.focusEditor();
             if (self.activeTab()) |tab| tab.focusEditor();
             return true;
@@ -7922,11 +8544,15 @@ pub const Workbench = struct {
         // The activity bar stays clickable while the side bar is hidden; an
         // entry click reveals the side bar again, like upstream.
         if (event.x < self.activityBarWidth()) {
+            if (event.kind == .wheel) return true;
             if (event.kind == .move) self.clearSidebarViewHover();
+            const activity_rect = self.activityRect();
+            const hit = activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, activity_rect);
+            self.pointer = if (hit != null) .pointer else .default;
             if (event.kind == .down) {
-                if (activity_bar_mod.overflowHitAt(&self.activity_bar_part, event.x, event.y, self.activityRect())) {
+                if (activity_bar_mod.overflowHitAt(&self.activity_bar_part, event.x, event.y, activity_rect)) {
                     self.showActivityOverflowMenu() catch {};
-                } else if (activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, self.activityRect())) |index| {
+                } else if (hit) |index| {
                     self.showActivity(index) catch {};
                 }
             }
@@ -7957,13 +8583,13 @@ pub const Workbench = struct {
         if (in_chrome) {
             if (event.kind == .move) {
                 self.clearSidebarViewHover();
-                sidebar_part_mod.setHovered(
-                    &self.sidebar_part,
-                    sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y),
-                );
+                const hit = sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y);
+                sidebar_part_mod.setHovered(&self.sidebar_part, hit);
+                self.pointer = if (hit != null) .pointer else .default;
                 return true;
             }
             if (sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y)) |hit| {
+                self.pointer = .pointer;
                 if (event.kind == .down) switch (hit) {
                     .action => |id| self.runSidebarTitleAction(id),
                     .composite => |id| {
@@ -7974,6 +8600,7 @@ pub const Workbench = struct {
             }
             // A click on the chrome without an action only moves focus into
             // the part, like the browser title area.
+            if (event.kind != .wheel) self.pointer = .default;
             if (event.kind == .down) self.focus = .sidebar;
             return true;
         }
@@ -8039,7 +8666,12 @@ pub const Workbench = struct {
         if (!std.mem.eql(u8, active_id, "explorer")) return true;
 
         const sidebar = self.sidebar orelse return false;
-        if (event.kind == .wheel or event.kind == .move) {
+        if (event.kind == .move) {
+            _ = sidebar.handleMouse(event);
+            self.pointer = if (sidebar.hasHoveredRow()) .pointer else .default;
+            return true;
+        }
+        if (event.kind == .wheel) {
             _ = sidebar.handleMouse(event);
             return true;
         }
@@ -8077,14 +8709,11 @@ pub const Workbench = struct {
         }
 
         if (event.y == rect_y) {
-            if (event.kind == .move) {
-                self.panel_part.setHovered(panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y));
-                return true;
-            }
+            const hit = panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y);
+            if (event.kind == .move) self.panel_part.setHovered(hit);
+            if (event.kind != .wheel) self.pointer = if (hit != null) .pointer else .default;
             if (event.kind == .down and event.button == .left) {
-                if (panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y)) |id| {
-                    _ = self.openPanelContainer(id) catch {};
-                }
+                if (hit) |id| _ = self.openPanelContainer(id) catch {};
             }
             return true;
         }
@@ -8130,6 +8759,7 @@ pub const Workbench = struct {
                 self.drag_source_pane = pending.pane;
                 self.pending_tab_drag = null;
                 self.updateDragTarget(event);
+                self.pointer = .grabbing;
                 return true;
             }
             if (event.kind == .up or event.kind == .click) self.pending_tab_drag = null;
@@ -8150,14 +8780,17 @@ pub const Workbench = struct {
                     if (event.x >= hit.start and event.x < hit.end) {
                         self.hovered_title_action_pane = pane;
                         self.hovered_tab = null;
+                        self.pointer = .pointer;
                         return true;
                     }
                 }
                 self.hovered_title_action_pane = null;
                 if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                     self.hovered_tab = self.orderedTabAt(pane, index);
+                    self.pointer = .pointer;
                 } else {
                     self.hovered_tab = null;
+                    self.pointer = .default;
                 }
                 return true;
             }
@@ -8207,6 +8840,19 @@ pub const Workbench = struct {
                 self.service.activateGroup(pane.group);
             }
             return false;
+        }
+
+        // Every non-move event on the tab row resolves the shape here, before
+        // the click paths below return early.
+        {
+            const over_action = if (pane.title_action_hit) |action_hit|
+                event.x >= action_hit.start and event.x < action_hit.end
+            else
+                false;
+            self.pointer = if (over_action or tab_bar.hitAt(pane.hits.items, event.x) != null)
+                .pointer
+            else
+                .default;
         }
 
         if (event.kind == .down and pane.tabs.items.len > 0) {
@@ -8420,6 +9066,7 @@ pub const Workbench = struct {
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
+        if (self.pointer_shapes) try self.pointer_state.update(writer, self.pointer);
         self.syncSearchActivity();
         self.syncEditorFocus();
         self.frame.begin();
@@ -8461,7 +9108,10 @@ pub const Workbench = struct {
             if (std.mem.eql(u8, active_id, "explorer")) {
                 if (self.sidebar) |sidebar| {
                     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
-                    try sidebar.render(&self.frame.next, content, focused, .{ .show_header = false });
+                    try sidebar.render(&self.frame.next, content, focused, .{
+                        .show_header = false,
+                        .cell_borders = self.part.cell_borders,
+                    });
                 } else {
                     self.renderPlaceholder(content, focused);
                 }
@@ -9171,6 +9821,55 @@ pub const Workbench = struct {
     /// the split gutters from consuming a column/row; the fallback keeps them.
     pub fn setCellBorders(self: *Workbench, enabled: bool) void {
         self.part.setCellBorders(enabled);
+    }
+
+    /// Hosts enable OSC 22 emission. Unlike borders and images the TUI does
+    /// not probe: a pointer shape is out-of-band terminal state, so terminals
+    /// without support ignore the sequence and nothing in the frame changes.
+    pub fn setPointerShapes(self: *Workbench, enabled: bool) void {
+        self.pointer_shapes = enabled;
+    }
+
+    /// The shape the next frame requests; the renderer diffs it against the
+    /// shape already written to the terminal.
+    pub fn setPointer(self: *Workbench, shape: ui.Pointer) void {
+        self.pointer = shape;
+    }
+
+    pub fn pointerShape(self: *const Workbench) ui.Pointer {
+        return self.pointer;
+    }
+
+    /// Resets the requested shape before one mouse-move is routed. Each
+    /// handler that recognizes a target sets its own shape; anything that
+    /// consumes the event without setting one leaves the terminal default.
+    /// Presses and releases keep the shape the last move established.
+    pub fn beginMousePointer(self: *Workbench) void {
+        self.pointer = .default;
+    }
+
+    /// Resolves the pointer for the editor pane under a mouse cell. The tab
+    /// strip and breadcrumb row are handled by `handleTabMouse` before this is
+    /// reached, so only the pane content remains.
+    pub fn updateMousePointer(self: *Workbench, event: ui.MouseEvent) void {
+        const pane = self.paneAt(event.x, event.y) orelse {
+            self.pointer = .default;
+            return;
+        };
+        const pane_x = ui.cell.snap(pane.rect.x);
+        const pane_y = ui.cell.snap(pane.rect.y);
+        if (event.x < pane_x or event.y < pane_y + pane.chromeHeight()) {
+            self.pointer = .default;
+            return;
+        }
+        const tab = pane.activeTab() orelse {
+            self.pointer = .default;
+            return;
+        };
+        self.pointer = tab.pointerAt(
+            event.x - pane_x,
+            event.y - (pane_y + pane.chromeHeight()),
+        ) catch .default;
     }
 
     /// Hosts call this after the kitty graphics probe (and when it changes).
@@ -10037,14 +10736,248 @@ fn commandRefreshMarkdownPreview(context: *anyopaque) anyerror!void {
     self.refreshMarkdownPreview();
 }
 
+fn runSplitCommand(self: *Workbench, direction: editor_groups.GroupDirection) anyerror!void {
+    self.splitActiveInDirection(direction) catch |err| switch (err) {
+        // The terminal diff/snapshot pane owns its models and cannot be
+        // duplicated yet; report the terminal limitation instead of failing
+        // the command handler with no visible feedback.
+        error.SplitUnsupported => self.setStatusHint("Split Editor is unavailable for this editor type", .{}),
+        else => return err,
+    };
+}
+
 fn commandSplitEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.splitActive(.horizontal);
+    try runSplitCommand(self, self.preferredSideBySideDirection());
 }
 
 fn commandSplitEditorOrthogonal(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.splitActive(.vertical);
+    // Upstream `SplitEditorOrthogonalAction.getDirection`: the opposite axis
+    // of `workbench.editor.openSideBySideDirection`.
+    try runSplitCommand(self, if (self.preferredSideBySideDirection() == .RIGHT) .DOWN else .RIGHT);
+}
+
+fn commandSplitEditorLeft(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try runSplitCommand(self, .LEFT);
+}
+
+fn commandSplitEditorRight(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try runSplitCommand(self, .RIGHT);
+}
+
+fn commandSplitEditorUp(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try runSplitCommand(self, .UP);
+}
+
+fn commandSplitEditorDown(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try runSplitCommand(self, .DOWN);
+}
+
+fn commandFocusActiveGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusActiveGroup();
+}
+
+fn commandFocusFirstGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusGroupLocation(.first);
+}
+
+fn commandFocusLastGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusGroupLocation(.last);
+}
+
+fn commandFocusNextGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusGroupLocation(.next);
+}
+
+fn commandFocusPreviousGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusGroupLocation(.previous);
+}
+
+fn commandFocusLeftGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusGroupDirection(.LEFT);
+}
+
+fn commandFocusRightGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusGroupDirection(.RIGHT);
+}
+
+fn commandFocusAboveGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusGroupDirection(.UP);
+}
+
+fn commandFocusBelowGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.focusGroupDirection(.DOWN);
+}
+
+fn commandNewGroupLeft(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = try self.newEmptyGroup(.LEFT);
+}
+
+fn commandNewGroupRight(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = try self.newEmptyGroup(.RIGHT);
+}
+
+fn commandNewGroupAbove(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = try self.newEmptyGroup(.UP);
+}
+
+fn commandNewGroupBelow(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    _ = try self.newEmptyGroup(.DOWN);
+}
+
+fn commandCloseGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.closeActiveGroup();
+}
+
+fn commandJoinTwoGroups(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.joinTwoGroups();
+}
+
+fn commandMoveGroupLeft(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveActiveGroup(.LEFT);
+}
+
+fn commandMoveGroupRight(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveActiveGroup(.RIGHT);
+}
+
+fn commandMoveGroupUp(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveActiveGroup(.UP);
+}
+
+fn commandMoveGroupDown(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveActiveGroup(.DOWN);
+}
+
+fn commandDuplicateGroupLeft(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.duplicateActiveGroup(.LEFT) catch |err| return splitCommandError(self, err);
+}
+
+fn commandDuplicateGroupRight(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.duplicateActiveGroup(.RIGHT) catch |err| return splitCommandError(self, err);
+}
+
+fn commandDuplicateGroupUp(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.duplicateActiveGroup(.UP) catch |err| return splitCommandError(self, err);
+}
+
+fn commandDuplicateGroupDown(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.duplicateActiveGroup(.DOWN) catch |err| return splitCommandError(self, err);
+}
+
+fn commandMoveEditorToPreviousGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveOrSplitActiveEditor(.previous, false);
+}
+
+fn commandMoveEditorToNextGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveOrSplitActiveEditor(.next, false);
+}
+
+fn commandMoveEditorToAboveGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveOrSplitActiveEditor(.up, false);
+}
+
+fn commandMoveEditorToBelowGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveOrSplitActiveEditor(.down, false);
+}
+
+fn commandMoveEditorToLeftGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveOrSplitActiveEditor(.left, false);
+}
+
+fn commandMoveEditorToRightGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveOrSplitActiveEditor(.right, false);
+}
+
+fn commandMoveEditorToFirstGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveOrSplitActiveEditor(.first, false);
+}
+
+fn commandMoveEditorToLastGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.moveOrSplitActiveEditor(.last, false);
+}
+
+fn commandSplitEditorToPreviousGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.moveOrSplitActiveEditor(.previous, true) catch |err| return splitCommandError(self, err);
+}
+
+fn commandSplitEditorToNextGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.moveOrSplitActiveEditor(.next, true) catch |err| return splitCommandError(self, err);
+}
+
+fn commandSplitEditorToAboveGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.moveOrSplitActiveEditor(.up, true) catch |err| return splitCommandError(self, err);
+}
+
+fn commandSplitEditorToBelowGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.moveOrSplitActiveEditor(.down, true) catch |err| return splitCommandError(self, err);
+}
+
+fn commandSplitEditorToLeftGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.moveOrSplitActiveEditor(.left, true) catch |err| return splitCommandError(self, err);
+}
+
+fn commandSplitEditorToRightGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.moveOrSplitActiveEditor(.right, true) catch |err| return splitCommandError(self, err);
+}
+
+fn commandSplitEditorToFirstGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.moveOrSplitActiveEditor(.first, true) catch |err| return splitCommandError(self, err);
+}
+
+fn commandSplitEditorToLastGroup(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.moveOrSplitActiveEditor(.last, true) catch |err| return splitCommandError(self, err);
+}
+
+fn splitCommandError(self: *Workbench, err: anyerror) anyerror!void {
+    switch (err) {
+        error.SplitUnsupported => self.setStatusHint("Split Editor is unavailable for this editor type", .{}),
+        else => return err,
+    }
 }
 
 fn commandNavigateLeft(context: *anyopaque) anyerror!void {
@@ -11210,7 +12143,7 @@ test "Workbench: markdown preview follows editor scroll and can reveal the edito
     try std.testing.expect(tab.editor.topViewLine() != before);
 }
 
-test "Workbench: split moves the active tab into a second group" {
+test "Workbench: split duplicates the active editor and shares its buffer" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
@@ -11227,25 +12160,281 @@ test "Workbench: split moves the active tab into a second group" {
 
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
-    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqual(@as(usize, 3), workbench.tabCount());
     try std.testing.expectEqualStrings("split_b.txt", workbench.activeTab().?.input.getName());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try workbench.render(&out.writer);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "split_a.txt") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "split_b.txt") != null);
+    // Both panes paint the shared buffer; tab labels may be clipped.
+    try std.testing.expect(std.mem.count(u8, out.written(), "beta") >= 2);
 
-    // The original group still holds the other tab.
+    // The source group keeps its tabs; the new group gets a copy of the active
+    // editor, not an empty pane.
     const first_pane = workbench.part.group_views.items[0];
     const second_pane = workbench.part.group_views.items[1];
-    try std.testing.expectEqual(@as(usize, 1), first_pane.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), first_pane.tabs.items.len);
     try std.testing.expectEqual(@as(usize, 1), second_pane.tabs.items.len);
+    try std.testing.expect(first_pane.activeTab() != null);
+    try std.testing.expect(second_pane.activeTab() != null);
+    try std.testing.expectEqualStrings("split_b.txt", first_pane.activeTab().?.input.getName());
+    try std.testing.expectEqualStrings("split_b.txt", second_pane.tabs.items[0].input.getName());
+    try std.testing.expect(first_pane.tabs.items[1].editor.model == second_pane.tabs.items[0].editor.model);
 
-    // Splitting again moves the active tab to a third group.
+    // Editing either pane updates the shared model and dirty state.
+    try workbench.activeTab().?.editor.insertText("X");
+    const first_text = try first_pane.tabs.items[1].editor.model.getLineContent(1);
+    defer first_text.deinit();
+    try std.testing.expectEqualStrings("Xbeta", first_text.items);
+    try std.testing.expect(workbench.activeTab().?.editor.isDirty());
+    try std.testing.expect(first_pane.tabs.items[1].editor.isDirty());
+    try workbench.activeTab().?.editor.undo();
+
+    // Splitting again duplicates the active tab into a third group.
     try workbench.splitActive(.vertical);
     try std.testing.expectEqual(@as(usize, 3), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 4), workbench.tabCount());
+}
+
+test "Workbench: editor group focus, new group and close group commands" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "group_focus.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    const first = workbench.activePane().?;
+
+    _ = try workbench.commands.execute("workbench.action.newGroupRight");
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    const second = workbench.activePane().?;
+    try std.testing.expect(second != first);
+    try std.testing.expect(second.activeTab() == null);
+
+    _ = try workbench.commands.execute("workbench.action.focusLeftGroup");
+    try std.testing.expect(workbench.activePane().? == first);
+    _ = try workbench.commands.execute("workbench.action.focusRightGroup");
+    try std.testing.expect(workbench.activePane().? == second);
+    _ = try workbench.commands.execute("workbench.action.focusFirstEditorGroup");
+    try std.testing.expect(workbench.activePane().? == first);
+    _ = try workbench.commands.execute("workbench.action.focusLastEditorGroup");
+    try std.testing.expect(workbench.activePane().? == second);
+    _ = try workbench.commands.execute("workbench.action.focusPreviousGroup");
+    try std.testing.expect(workbench.activePane().? == first);
+    _ = try workbench.commands.execute("workbench.action.focusNextGroup");
+    try std.testing.expect(workbench.activePane().? == second);
+    _ = try workbench.commands.execute("workbench.action.focusActiveEditorGroup");
+    try std.testing.expect(workbench.activePane().? == second);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    _ = try workbench.commands.execute("workbench.action.closeGroup");
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+    try std.testing.expect(workbench.activePane().? == first);
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+
+    // Ctrl-W / closeActiveEditor on an empty group closes the group.
+    _ = try workbench.commands.execute("workbench.action.newGroupRight");
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    _ = try workbench.closeActive();
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
+}
+
+test "Workbench: new group below and above focus commands" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "group_vertical.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 14);
+    defer workbench.deinit();
+    const first = workbench.activePane().?;
+    _ = try workbench.commands.execute("workbench.action.newGroupBelow");
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    const below = workbench.activePane().?;
+    try std.testing.expect(ui.cell.snap(below.rect.y) > ui.cell.snap(first.rect.y));
+    _ = try workbench.commands.execute("workbench.action.focusAboveGroup");
+    try std.testing.expect(workbench.activePane().? == first);
+    _ = try workbench.commands.execute("workbench.action.focusBelowGroup");
+    try std.testing.expect(workbench.activePane().? == below);
+}
+
+test "Workbench: move and duplicate editor group commands" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "group_move_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "group_move_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    const source = workbench.activePane().?;
+
+    _ = try workbench.commands.execute("workbench.action.moveActiveEditorGroupLeft");
+    const moved = try workbench.part.orderedViews(allocator);
+    defer allocator.free(moved);
+    try std.testing.expectEqual(@as(usize, 2), moved.len);
+    try std.testing.expect(moved[0] == source);
+    try std.testing.expect(workbench.activePane().? == source);
+
+    _ = try workbench.commands.execute("workbench.action.duplicateActiveEditorGroupRight");
+    try std.testing.expectEqual(@as(usize, 3), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 4), workbench.tabCount());
+    const copy = workbench.activePane().?;
+    try std.testing.expect(copy != source);
+    try std.testing.expect(copy.activeTab() != null);
+    try std.testing.expectEqualStrings("group_move_b.txt", copy.activeTab().?.input.getName());
+    try std.testing.expect(copy.activeTab().?.editor.model == source.activeTab().?.editor.model);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+}
+
+test "Workbench: move editor into group and split editor into group" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "into_group_a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "into_group_b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    try workbench.splitActive(.horizontal);
+    const first = workbench.part.group_views.items[0];
+    const second = workbench.part.group_views.items[1];
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 3), workbench.tabCount());
+
+    // Split the non-active tab from the source group into the right group.
+    workbench.service.activateGroup(first.group);
+    try workbench.activateIndex(0);
+    try std.testing.expectEqualStrings("into_group_a.txt", workbench.activeTab().?.input.getName());
+    _ = try workbench.commands.execute("workbench.action.splitEditorToRightGroup");
+    try std.testing.expectEqual(@as(usize, 4), workbench.tabCount());
+    try std.testing.expect(workbench.activePane().? == second);
+    try std.testing.expectEqualStrings("into_group_a.txt", workbench.activeTab().?.input.getName());
+    try std.testing.expect(second.tabs.items.len == 2);
+
+    // Move the active editor back into the left group; the matching input
+    // already open there wins, so no duplicate tab is created.
+    _ = try workbench.commands.execute("workbench.action.moveEditorToLeftGroup");
+    try std.testing.expectEqual(@as(usize, 3), workbench.tabCount());
+    try std.testing.expect(workbench.activePane().? == first);
+    try std.testing.expectEqual(@as(usize, 2), first.tabs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), second.tabs.items.len);
+
+    // Join the two remaining groups.
+    _ = try workbench.commands.execute("workbench.action.joinTwoGroups");
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+}
+
+test "Workbench: splitEditorToRightGroup creates a group without a neighbour" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "split_into_new_group.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    const source = workbench.activePane().?;
+    _ = try workbench.commands.execute("workbench.action.splitEditorToRightGroup");
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    const target = workbench.activePane().?;
+    try std.testing.expect(target != source);
+    try std.testing.expect(target.activeTab().?.editor.model == source.activeTab().?.editor.model);
+    try std.testing.expect(ui.cell.snap(target.rect.x) > ui.cell.snap(source.rect.x));
+}
+
+test "Workbench: directional split commands place the copy on each side" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "directional.txt", "alpha");
+    defer allocator.free(path);
+
+    const DirectionCase = struct {
+        command: []const u8,
+        expected: editor_groups.GroupDirection,
+    };
+    const cases = [_]DirectionCase{
+        .{ .command = "workbench.action.splitEditorLeft", .expected = .LEFT },
+        .{ .command = "workbench.action.splitEditorRight", .expected = .RIGHT },
+        .{ .command = "workbench.action.splitEditorUp", .expected = .UP },
+        .{ .command = "workbench.action.splitEditorDown", .expected = .DOWN },
+    };
+    for (cases) |case| {
+        const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+        defer workbench.deinit();
+        const source = workbench.part.group_views.items[0];
+        _ = try workbench.commands.execute(case.command);
+        try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+        try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+        const copy = workbench.part.group_views.items[1];
+        switch (case.expected) {
+            .LEFT => try std.testing.expect(ui.cell.snap(copy.rect.x) < ui.cell.snap(source.rect.x)),
+            .RIGHT => try std.testing.expect(ui.cell.snap(copy.rect.x) > ui.cell.snap(source.rect.x)),
+            .UP => try std.testing.expect(ui.cell.snap(copy.rect.y) < ui.cell.snap(source.rect.y)),
+            .DOWN => try std.testing.expect(ui.cell.snap(copy.rect.y) > ui.cell.snap(source.rect.y)),
+        }
+        try std.testing.expect(copy.activeTab() != null);
+        try std.testing.expect(copy.activeTab().?.editor.model == source.activeTab().?.editor.model);
+    }
+}
+
+test "Workbench: splitEditor follows openSideBySideDirection" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "direction_setting.txt", "alpha");
+    defer allocator.free(path);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    workbench.ensureConfigurationReady();
+    try workbench.setUserConfigurationValue("workbench.editor.openSideBySideDirection", .{ .string = "down" });
+    try std.testing.expectEqual(editor_groups.GroupDirection.DOWN, workbench.preferredSideBySideDirection());
+
+    const source = workbench.part.group_views.items[0];
+    _ = try workbench.commands.execute("workbench.action.splitEditor");
+    const copy = workbench.part.group_views.items[1];
+    try std.testing.expect(ui.cell.snap(copy.rect.y) > ui.cell.snap(source.rect.y));
 }
 
 test "Workbench: directional group navigation and join all groups" {
@@ -11266,10 +12455,16 @@ test "Workbench: directional group navigation and join all groups" {
     try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
 
     try workbench.navigateGroup(.left);
+    try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
+    // Switch the source group to its other tab, then navigate across groups.
+    try workbench.activateIndex(0);
     try std.testing.expectEqualStrings("nav_a.txt", workbench.activeTab().?.input.getName());
     try workbench.navigateGroup(.right);
     try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
+    try workbench.navigateGroup(.left);
+    try std.testing.expectEqualStrings("nav_a.txt", workbench.activeTab().?.input.getName());
 
+    // Joining drops the split copy whose model is already open in the target.
     try workbench.joinAllGroups();
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
@@ -11378,6 +12573,83 @@ test "Workbench: sash drag resizes the split" {
     try std.testing.expect(workbench.part.active_sash == null);
 }
 
+test "Workbench: tabs and editor content resolve pointer shapes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "pointer_shape.txt", "abc");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 50, 10);
+    defer workbench.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.activePane().?;
+    const tab = pane.activeTab().?;
+    const tab_x = pane.hits.items[0].start;
+    const title_y = ui.cell.snap(pane.rect.y);
+
+    workbench.beginMousePointer();
+    var over_tab = ui.MouseEvent{ .kind = .move, .x = tab_x, .y = title_y };
+    try std.testing.expect(workbench.handleTabMouse(&over_tab));
+    try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointerShape());
+
+    workbench.beginMousePointer();
+    var empty_strip = over_tab;
+    empty_strip.x = ui.cell.snap(pane.rect.right()) - 1;
+    try std.testing.expect(workbench.handleTabMouse(&empty_strip));
+    try std.testing.expectEqual(ui.Pointer.default, workbench.pointerShape());
+
+    workbench.beginMousePointer();
+    const content = ui.MouseEvent{
+        .kind = .move,
+        .x = ui.cell.snap(pane.rect.x) + tab.editor.gutterWidth() + 1,
+        .y = title_y + pane.chromeHeight(),
+    };
+    workbench.updateMousePointer(content);
+    try std.testing.expectEqual(ui.Pointer.text, workbench.pointerShape());
+}
+
+test "Workbench: render emits OSC 22 only when the pointer changes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "pointer_render.txt", "abc");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 8);
+    defer workbench.deinit();
+    workbench.setPointerShapes(true);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    // The initial default shape adds no bytes to the first frame.
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
+
+    out.clearRetainingCapacity();
+    workbench.setPointer(.pointer);
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;pointer\x1b\\") != null);
+
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
+
+    out.clearRetainingCapacity();
+    workbench.setPointer(.default);
+    try workbench.render(&out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;default\x1b\\") != null);
+}
+
 test "Workbench: closing the last tab collapses the empty group" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -11386,12 +12658,9 @@ test "Workbench: closing the last tab collapses the empty group" {
 
     const path_a = try seedFile(allocator, io, &tmp, "collapse_a.txt", "alpha");
     defer allocator.free(path_a);
-    const path_b = try seedFile(allocator, io, &tmp, "collapse_b.txt", "beta");
-    defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = try Workbench.init(allocator, io, &.{path_a}, 50, 10);
     defer workbench.deinit();
-    try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.part.group_views.items.len);
@@ -11573,12 +12842,18 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
 
+    // The source group starts with A and B; close B so moving A empties it.
+    const source = workbench.part.group_views.items[0];
+    const target = workbench.part.group_views.items[1];
+    workbench.service.activateGroup(source.group);
+    try source.activateTab(source.tabs.items[1]);
+    _ = try workbench.closeActive();
+    workbench.service.activateGroup(target.group);
+
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try workbench.render(&out.writer);
 
-    const source = workbench.part.group_views.items[0];
-    const target = workbench.part.group_views.items[1];
     const source_y = ui.cell.snap(source.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = source.hits.items[0].start, .y = source_y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&down));
@@ -11633,7 +12908,8 @@ test "Workbench: openPath reveals an already-open file in another group" {
     try std.testing.expectEqualStrings("reveal_b.txt", workbench.activeTab().?.input.getName());
 
     try workbench.openPath(path_a);
-    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    // A + B in the source group and the split copy of B.
+    try std.testing.expectEqual(@as(usize, 3), workbench.tabCount());
     try std.testing.expectEqualStrings("reveal_a.txt", workbench.activeTab().?.input.getName());
 }
 
@@ -11702,7 +12978,8 @@ test "Workbench: serialize and restore multiple groups" {
     defer restored.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), restored.groupCount());
-    try std.testing.expectEqual(@as(usize, 2), restored.tabCount());
+    // Group one restores A + B and group two restores the split copy of B.
+    try std.testing.expectEqual(@as(usize, 3), restored.tabCount());
     try std.testing.expectEqualStrings("part_b.txt", restored.activeTab().?.input.getName());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -11887,6 +13164,8 @@ test "Workbench: opening a search result from another file does not restart the 
     defer allocator.free(second);
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
+    const second_resource = try std.fs.path.join(allocator, &.{ root, "second.txt" });
+    defer allocator.free(second_resource);
 
     const workbench = try Workbench.init(allocator, io, &.{first}, 80, 20);
     defer workbench.deinit();
@@ -11906,7 +13185,7 @@ test "Workbench: opening a search result from another file does not restart the 
     for (view.rows.items, 0..) |row, index| {
         switch (row) {
             .match => |match| {
-                if (std.mem.eql(u8, match.parent_file.path, second)) {
+                if (std.mem.eql(u8, match.parent_file.path, second_resource)) {
                     second_row = index;
                     break;
                 }
@@ -12621,6 +13900,55 @@ test "Workbench: color theme settings load a registered theme palette" {
     try std.testing.expectEqual(@as(u8, 0xee), status.r);
 }
 
+test "Workbench: opening a themed file initializes the editor controllers" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "themed.txt", "themed");
+    defer allocator.free(path);
+
+    var theme_file = try tmp.dir.createFile(io, "theme.json", .{});
+    try theme_file.writeStreamingAll(io,
+        \\{ "colors": { "editor.background": "#101010", "editor.foreground": "#e0e0e0" } }
+    );
+    theme_file.close(io);
+    var settings_file = try tmp.dir.createFile(io, "settings.json", .{});
+    try settings_file.writeStreamingAll(io,
+        \\{ "workbench.colorTheme": "Test Theme" }
+    );
+    settings_file.close(io);
+
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const root = try allocator.dupe(u8, buffer[0..root_len]);
+    defer allocator.free(root);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 60, 12);
+    defer workbench.deinit();
+    try workbench.registerThemeSources(&.{
+        .{
+            .root = root,
+            .id = "Test Theme",
+            .settings_id = "Test Theme",
+            .label = "Test Theme",
+            .ui_theme = "vs",
+            .path = "theme.json",
+        },
+    });
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    workbench.applyThemeSettings();
+    try std.testing.expect(workbench.theme_palette != null);
+
+    // `openPath` applies the palette to the new view and then initializes its
+    // controllers; the suggest/hover widgets must already exist by that point.
+    try workbench.openPath(path);
+    try std.testing.expect(workbench.activeTab().?.controllers != null);
+}
+
 test "Workbench: Preferences JSON commands create and open the TUI layer" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -13278,6 +14606,8 @@ const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
 };
 
 const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
+    .{ .id = "workbench.action.splitEditor", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash) } },
+    .{ .id = "workbench.action.splitEditorOrthogonal", .weight = 200, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash)) } },
     .{ .id = "workbench.action.quickOpen", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyP) } },
     .{ .id = "workbench.action.showCommands", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyP) } },
     .{ .id = "workbench.action.findInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyF), .secondary = &.{key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF)} } },
@@ -15519,6 +16849,76 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
     var content = try tab.editor.model.getLineContent(1);
     defer content.deinit();
     try std.testing.expectEqualStrings("inside link", content.items);
+}
+
+test "Workbench: explorer sticky headers pin the folder ancestors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "aaa/bbb/ccc");
+    var file_a = try tmp.dir.createFile(io, "aaa/a.txt", .{});
+    try file_a.writeStreamingAll(io, "a");
+    file_a.close(io);
+    var file_b = try tmp.dir.createFile(io, "aaa/bbb/b.txt", .{});
+    try file_b.writeStreamingAll(io, "b");
+    file_b.close(io);
+    for (0..12) |i| {
+        var name_buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "aaa/bbb/ccc/f{d:0>2}.txt", .{i});
+        var file = try tmp.dir.createFile(io, name, .{});
+        try file.writeStreamingAll(io, "x");
+        file.close(io);
+    }
+
+    const seed = try seedFile(allocator, io, &tmp, "sticky_seed.txt", "seed");
+    defer allocator.free(seed);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{seed}, 60, 14);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    workbench.focusSidebar();
+
+    var first_frame: std.Io.Writer.Allocating = .init(allocator);
+    defer first_frame.deinit();
+    try workbench.render(&first_frame.writer);
+
+    const sidebar = workbench.sidebar.?;
+    const deep = try std.fmt.allocPrint(allocator, "{s}/aaa/bbb/ccc/f11.txt", .{root});
+    defer allocator.free(deep);
+    try sidebar.revealPath(deep);
+
+    var frame: std.Io.Writer.Allocating = .init(allocator);
+    defer frame.deinit();
+    try workbench.render(&frame.writer);
+
+    try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
+    const sticky_a = try workbench.frame.present().rowText(allocator, 1);
+    defer allocator.free(sticky_a);
+    const sticky_b = try workbench.frame.present().rowText(allocator, 2);
+    defer allocator.free(sticky_b);
+    const sticky_c = try workbench.frame.present().rowText(allocator, 3);
+    defer allocator.free(sticky_c);
+    try std.testing.expect(std.mem.indexOf(u8, sticky_a, "aaa") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sticky_b, "bbb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sticky_c, "ccc") != null);
+
+    // Tab moves the focus into the sticky widget; Escape leaves the widget
+    // before the side bar returns focus to the editor.
+    var tab = ui.KeyEvent{ .key = .tab };
+    try std.testing.expect(try workbench.handleSidebarKey(&tab));
+    try std.testing.expect(sidebar.tree.stickyScrollFocused());
+    var escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(try workbench.handleSidebarKey(&escape));
+    try std.testing.expect(!sidebar.tree.stickyScrollFocused());
+    try std.testing.expectEqual(Focus.sidebar, workbench.focus);
+
+    // A second Escape leaves the side bar for the editor, as before.
+    try std.testing.expect(try workbench.handleSidebarKey(&escape));
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
 }
 
 test "Workbench: right click on a tab neither closes nor activates it" {

@@ -255,10 +255,19 @@ pub fn anchorGlob(allocator: Allocator, value: []const u8) ![]u8 {
 }
 
 /// Port of `getAbsoluteGlob`: absolute globs are kept, relative globs are
-/// joined to the workspace folder.
+/// joined to the workspace folder. Node's `path.join` normalizes every
+/// separator to `\` on Windows; Zig's `std.fs.path.join` only inserts the
+/// separator between the parts, so rewrite the existing ones to match the
+/// ripgrep arguments upstream builds.
 pub fn getAbsoluteGlob(allocator: Allocator, folder: []const u8, key: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(key)) return allocator.dupe(u8, key);
-    return std.fs.path.join(allocator, &.{ folder, key });
+    const joined = try std.fs.path.join(allocator, &.{ folder, key });
+    if (builtin.os.tag == .windows) {
+        for (joined) |*ch| {
+            if (ch.* == '/') ch.* = '\\';
+        }
+    }
+    return joined;
 }
 
 /// Port of `fixDriveC`. On POSIX this is an identity function.

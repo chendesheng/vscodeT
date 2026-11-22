@@ -1,8 +1,8 @@
 // Port of `src/vs/base/browser/ui/tree/objectTree.ts`.
 //
 // Terminal adaptation: wraps the ported `ObjectTreeModel` and `AbstractTree`.
-// Sorter/identity-provider options and sticky scroll are not part of this
-// terminal subset yet.
+// Sorter/identity-provider options are not part of this terminal subset yet;
+// tree options (indent, indent guides and sticky scroll) are passed through.
 
 const std = @import("std");
 const ui = @import("ui");
@@ -24,6 +24,7 @@ pub fn ObjectTree(comptime T: type) type {
             user: []const u8,
             renderer: View.Renderer,
             collapse_by_default: bool,
+            options: abstract_tree.Options,
         ) !*ObjectTree(T) {
             const self = try allocator.create(ObjectTree(T));
             errdefer allocator.destroy(self);
@@ -35,7 +36,7 @@ pub fn ObjectTree(comptime T: type) type {
             self.* = .{
                 .allocator = allocator,
                 .model = model,
-                .view = try View.init(allocator, model, renderer, .{}),
+                .view = try View.init(allocator, model, renderer, options),
             };
             return self;
         }

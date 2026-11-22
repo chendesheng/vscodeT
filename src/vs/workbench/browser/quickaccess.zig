@@ -275,6 +275,14 @@ pub const QuickAccessService = struct {
         return self.handlePickMouse(event, self.controller.pickerRef());
     }
 
+    /// The pointer shape over the visible picker: text over the input row,
+    /// a hand over item rows, default elsewhere.
+    pub fn pointerAt(self: *const QuickAccessService, x: usize, y: usize) ui.Pointer {
+        if (self.input.isVisible()) return self.widget.pointerAt(self.input.pickerRef(), x, y);
+        if (!self.controller.isVisible()) return .default;
+        return self.widget.pointerAt(self.controller.pickerRef(), x, y);
+    }
+
     fn handlePickMouse(
         self: *QuickAccessService,
         event: *ui.MouseEvent,

@@ -52,6 +52,44 @@ pub const Edges = struct {
 
 pub const BorderStyle = enum { none, single };
 
+/// The mouse pointer shape requested by an element, matching the CSS `cursor`
+/// names that kitty's OSC 22 protocol standardizes. `Style.pointer` is
+/// inherited: `null` keeps the parent's computed shape, `.default` overrides
+/// an inherited shape back to the terminal default. The terminal protocol and
+/// encoding live in `pointer.zig`.
+pub const Pointer = enum {
+    default,
+    alias,
+    cell,
+    copy,
+    crosshair,
+    e_resize,
+    ew_resize,
+    grab,
+    grabbing,
+    help,
+    move,
+    n_resize,
+    ne_resize,
+    nesw_resize,
+    no_drop,
+    not_allowed,
+    ns_resize,
+    nw_resize,
+    nwse_resize,
+    pointer,
+    progress,
+    s_resize,
+    se_resize,
+    sw_resize,
+    text,
+    vertical_text,
+    w_resize,
+    wait,
+    zoom_in,
+    zoom_out,
+};
+
 pub const Position = enum { static, relative, absolute, fixed };
 pub const Display = enum { block, inline_, inline_block, flex, inline_flex, contents, none };
 pub const Overflow = enum { visible, hidden, clip };
@@ -275,6 +313,11 @@ pub const Style = struct {
     strikethrough: bool = false,
     dim: bool = false,
     reverse: bool = false,
+
+    /// Inherited mouse pointer shape, like CSS `cursor`. `null` inherits the
+    /// parent's computed shape; the viewport root resolves it to `.default`.
+    /// Only elements carry it: text nodes are paint-only and drop it.
+    pointer: ?Pointer = null,
 
     z_index: i32 = 0,
     translate_x: f64 = 0,

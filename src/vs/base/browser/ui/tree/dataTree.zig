@@ -8,6 +8,7 @@
 const std = @import("std");
 const ui = @import("ui");
 const object_tree = @import("./objectTree.zig");
+const abstract_tree = @import("./abstractTree.zig");
 
 pub fn DataTree(comptime T: type) type {
     const Tree = object_tree.ObjectTree(T);
@@ -34,12 +35,13 @@ pub fn DataTree(comptime T: type) type {
             renderer: Tree.View.Renderer,
             data_source: DataSource,
             collapse_by_default: bool,
+            options: abstract_tree.Options,
         ) !*DataTree(T) {
             const self = try allocator.create(DataTree(T));
             errdefer allocator.destroy(self);
             self.* = .{
                 .allocator = allocator,
-                .tree = try Tree.init(allocator, user, renderer, collapse_by_default),
+                .tree = try Tree.init(allocator, user, renderer, collapse_by_default, options),
                 .data_source = data_source,
             };
             return self;

@@ -149,6 +149,68 @@ pub fn removeRoot(comptime T: type, allocator: Allocator, root: **Node(T), targe
     return removeFrom(T, allocator, root.*, target);
 }
 
+/// Moves an existing leaf next to another leaf without destroying either.
+/// `direction` is the split orientation; `new_first` places the moved leaf
+/// before the target. Mirrors the part of `Grid.moveView` the terminal's
+/// binary tree needs.
+pub fn moveRoot(
+    comptime T: type,
+    allocator: Allocator,
+    root: **Node(T),
+    source: T,
+    target: T,
+    direction: Orientation,
+    new_first: bool,
+) !void {
+    if (source == target) return error.ViewNotFound;
+    const source_leaf = findLeafIn(T, root.*, source) orelse return error.ViewNotFound;
+    const target_leaf = findLeafIn(T, root.*, target) orelse return error.ViewNotFound;
+    if (source_leaf == target_leaf) return error.ViewNotFound;
+    if (root.* == source_leaf) return error.LastView;
+
+    if (!detachFrom(T, allocator, root.*, source)) return error.ViewNotFound;
+
+    // Detaching can promote the target's parent into another node, so re-find
+    // its live leaf before building the new split.
+    const current_target = findLeafIn(T, root.*, target) orelse return error.ViewNotFound;
+    const split_node = try allocator.create(Node(T));
+    errdefer allocator.destroy(split_node);
+    split_node.* = .{
+        .kind = .{ .split = .{
+            .direction = direction,
+            .ratio = 0.5,
+            .first = if (new_first) source_leaf else current_target,
+            .second = if (new_first) current_target else source_leaf,
+        } },
+        .rect = current_target.rect,
+    };
+
+    if (root.* == current_target) {
+        root.* = split_node;
+    } else if (!replaceChild(T, root.*, current_target, split_node)) {
+        return error.ViewNotFound;
+    }
+}
+
+/// Like `removeFrom`, but keeps the removed leaf alive for re-insertion.
+fn detachFrom(comptime T: type, allocator: Allocator, node: *Node(T), target: T) bool {
+    switch (node.kind) {
+        .leaf => return false,
+        .split => |*split| {
+            const first_matches = split.first.kind == .leaf and split.first.kind.leaf == target;
+            const second_matches = split.second.kind == .leaf and split.second.kind.leaf == target;
+            if (first_matches or second_matches) {
+                const keep = if (first_matches) split.second else split.first;
+                node.* = keep.*;
+                allocator.destroy(keep);
+                return true;
+            }
+            return detachFrom(T, allocator, split.first, target) or
+                detachFrom(T, allocator, split.second, target);
+        },
+    }
+}
+
 pub fn layoutRoot(
     comptime T: type,
     root: *Node(T),

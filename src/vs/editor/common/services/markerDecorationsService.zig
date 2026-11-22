@@ -118,6 +118,10 @@ const ModelEntry = struct {
     model: *TextModel,
     key: []u8,
     decorations: *MarkerDecorations,
+    /// Number of editor views attached to this model. Split editors share the
+    /// model, so the second registration must not replace the first and the
+    /// first close must not remove the decorations for the other pane.
+    refs: usize,
 };
 
 pub const MarkerDecorationsService = struct {
@@ -170,7 +174,10 @@ pub const MarkerDecorationsService = struct {
     }
 
     pub fn registerModel(self: *MarkerDecorationsService, model: *TextModel) !void {
-        if (self.entryFor(model) != null) return;
+        if (self.entryFor(model)) |entry| {
+            entry.refs += 1;
+            return;
+        }
         const key = try std_uri.resourceKey(self.allocator, model.uri());
         errdefer self.allocator.free(key);
         const entry = try self.allocator.create(ModelEntry);
@@ -182,7 +189,7 @@ pub const MarkerDecorationsService = struct {
         }
         const decorations = try self.allocator.create(MarkerDecorations);
         decorations.* = MarkerDecorations.init(self.allocator, model, key, resource);
-        entry.* = .{ .model = model, .key = key, .decorations = decorations };
+        entry.* = .{ .model = model, .key = key, .decorations = decorations, .refs = 1 };
         try self.models.append(entry);
         try self.updateEntry(entry);
     }
@@ -192,6 +199,10 @@ pub const MarkerDecorationsService = struct {
         while (index < self.models.items.len) : (index += 1) {
             const entry = self.models.items[index];
             if (entry.model != model) continue;
+            if (entry.refs > 1) {
+                entry.refs -= 1;
+                return;
+            }
             entry.decorations.deinit();
             var resource = entry.decorations.resource_value;
             resource.deinit(self.allocator);

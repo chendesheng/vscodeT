@@ -256,7 +256,7 @@ pub const Parser = struct {
     fn ensureCurrent(self: *Parser, path: []const u8) !void {
         const normalized = stripDotSlash(path);
         if (self.current) |*current| {
-            if (std.mem.eql(u8, current.path, normalized)) return;
+            if (sameParsedPath(current.path, normalized)) return;
             try self.flushCurrent();
         }
         const copy = try self.allocator.dupe(u8, normalized);
@@ -305,6 +305,18 @@ fn trimContextNewline(text: []const u8) []const u8 {
     if (std.mem.endsWith(u8, text, "\r\n")) return text[0 .. text.len - 2];
     if (std.mem.endsWith(u8, text, "\n")) return text[0 .. text.len - 1];
     return text;
+}
+
+/// rg reports platform separators, but the parser stores every path with `/`.
+/// Compare against the stored form so matches for one file group into a single
+/// result on Windows instead of one single-match result per line.
+fn sameParsedPath(stored: []const u8, raw: []const u8) bool {
+    if (stored.len != raw.len) return false;
+    for (stored, raw) |left, right| {
+        const normalized = if (right == '\\') @as(u8, '/') else right;
+        if (left != normalized) return false;
+    }
+    return true;
 }
 
 fn stripDotSlash(path: []const u8) []const u8 {

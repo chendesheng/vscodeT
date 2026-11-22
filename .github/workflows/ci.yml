@@ -78,16 +78,3 @@ jobs:
       - name: Test
         shell: pwsh
         run: zig build test --summary all "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"
-
-  cross-compile:
-    name: Cross-compile watcher for Windows and macOS
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.1
-      - name: Windows backend
-        run: zig build check-watcher -Dwatcher-only=true -Dtarget=x86_64-windows
-      - name: macOS backend
-        run: zig build check-watcher -Dwatcher-only=true -Dtarget=aarch64-macos

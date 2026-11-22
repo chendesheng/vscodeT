@@ -8,6 +8,7 @@
 // limited and published through the existing incremental `ISearchJob`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -297,7 +298,9 @@ const TextSearchJob = struct {
         const resource = try std.fs.path.join(self.allocator, &.{ root, relative });
         defer self.allocator.free(resource);
 
-        if (self.open_paths.contains(resource)) return false;
+        const resource_key = try openPathKey(self.allocator, resource);
+        defer self.allocator.free(resource_key);
+        if (self.open_paths.contains(resource_key)) return false;
         if (item.exception_run) {
             if (self.seen_paths.contains(resource)) return false;
             var excepted = self.excludeListExcepted(relative);
@@ -525,11 +528,13 @@ const TextSearchJob = struct {
                 self.limit_hit = true;
                 break;
             }
-            if (self.open_paths.contains(path)) continue;
+            const open_key = try openPathKey(self.allocator, path);
+            defer self.allocator.free(open_key);
+            if (self.open_paths.contains(open_key)) continue;
             const read = self.provider.read orelse continue;
             const content = (read(self.provider.context, self.allocator, path) catch null) orelse continue;
             defer self.allocator.free(content);
-            const key = try self.allocator.dupe(u8, path);
+            const key = try openPathKey(self.allocator, path);
             errdefer self.allocator.free(key);
             try self.open_paths.put(key, {});
             const root = self.workspaceFolderFor(path) orelse std.fs.path.dirname(path) orelse path;
@@ -799,6 +804,21 @@ fn pathIsEqualOrParent(path: []const u8, parent: []const u8) bool {
     if (path.len <= parent.len) return false;
     if (!std.mem.startsWith(u8, path, parent)) return false;
     return path[parent.len] == '/' or path[parent.len] == '\\';
+}
+
+/// Canonical map key for the open-buffer set. Ripgrep reports `\` separators
+/// on Windows while editors keep the path spelling the caller supplied, so the
+/// same file would be searched twice, and its open-buffer result plus the
+/// workspace match would both surface. POSIX keeps `\` as a filename byte, so
+/// only Windows rewrites separators.
+fn openPathKey(allocator: Allocator, path: []const u8) ![]u8 {
+    const key = try allocator.dupe(u8, path);
+    if (builtin.os.tag == .windows) {
+        for (key) |*ch| {
+            if (ch.* == '\\') ch.* = '/';
+        }
+    }
+    return key;
 }
 
 fn freeMapKeys(allocator: Allocator, map: *std.StringHashMap(void)) void {

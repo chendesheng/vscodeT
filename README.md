@@ -458,9 +458,8 @@ status and the remaining work.
 ## Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the full `zig build test`
-suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`),
-and cross-compiles the watcher-only test root for `x86_64-windows` and
-`aarch64-macos` on Linux. The Linux, macOS and Windows jobs initialize the
+suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`).
+The Linux, macOS and Windows jobs initialize the
 shallow `vscode/` submodule at the pinned commit, so the tokenizer, theme and
 extension-asset tests run against the real upstream tree instead of the
 fallbacks. The Windows job installs oniguruma with vcpkg and passes
@@ -488,9 +487,6 @@ console API for raw mode, sizing and input polling.
 - [TUI review](docs/tui-review.md) — current file-by-file verdict on `src/tui/`:
   what still has a VS Code port, what moves into `ui/`, what is dead or
   duplicated, and the dependency-ordered path to a thin host.
-- [Model audit](model-audit.md) — file-by-file audit of
-  `src/vs/editor/common/model` against VS Code 1.147.0, with the fixed defects
-  and the remaining divergences.
 - [Git integration and diff view plan](docs/git-diff-plan.md) — proposed
   read-only Git/SCM integration, quick-diff decorations and a terminal
   side-by-side diff viewer, with the view-parts wiring and test plan.
@@ -630,11 +626,31 @@ console API for raw mode, sizing and input polling.
   terminal). Tree indent guides follow `workbench.tree.renderIndentGuides`
   (`none`, `onHover` or `always`; default `onHover`) and
   `workbench.tree.indent` is measured in cells (default 2, unlike upstream's
-  pixel unit). The one-cell divider between the activity bar/side bar and the
-  editor area is draggable: press and move to resize the side bar, clamped to
-  half the window. `Ctrl-B` toggles the side panel
-  and
-  `Escape` returns focus to the editor. The generic VS Code list/tree view is
+  pixel unit). Sticky scroll is ported from the generic tree (not an Explorer
+  special case): as the file tree scrolls, the folder ancestors of the first
+  visible row pin above it, and overflow chains collapse into one compressed
+  row through `CompressibleStickyScrollDelegate`. Pinned rows use a distinct
+  header tint (`sideBarStickyScroll.background`, then
+  `sideBarSectionHeader.background`, then a derived shade) and, on terminals
+  that speak the cell-border protocol, a bottom border drawn as a cell
+  attribute on the last pinned row, so the separator costs no extra row.
+  Terminals without cell borders underline the bottom pinned row instead (also
+  with no extra row), so the separator stays visible; the probe result is
+  logged in `main.log` as `cell borders: supported=...`.
+  `workbench.tree.enableStickyScroll` (default on) and
+  `workbench.tree.stickyScrollMaxItemCount` (default 7) are read when the
+  Explorer is created. `Tab` focuses the sticky widget (the TUI key for
+  upstream's DOM tab order), Up/Down move between pinned folders,
+  Enter/Space reveal the folder in the tree, Left collapses it, and
+  `Escape`/`Tab` return to the list. Clicking a pinned row reveals and selects
+  that folder in the tree (and focuses the list), matching upstream's
+  `handleStickyScrollMouseEvent`; clicking its twistie also toggles it.
+  Selecting a row that is already visible keeps the scroll position, and the
+  auto-reveal that follows opening a file only scrolls when the row is outside
+  the visible, non-sticky area. The one-cell
+  divider between the activity bar/side bar and the editor area is draggable:
+  press and move to resize the side bar, clamped to half the window. `Ctrl-B`
+  toggles the side panel and `Escape` returns focus to the editor. The generic VS Code list/tree view is
   being replaced in layers under `src/vs/base/browser/ui/list` and
   `src/vs/base/browser/ui/tree`: `rangeMap`, the virtualized `ListView`,
   `ListWidget`, the index/object tree models and a terminal `AbstractTree`.
@@ -642,9 +658,9 @@ console API for raw mode, sizing and input polling.
   `CompressibleObjectTree`/`CompressedObjectTreeModel`/`AbstractTree` path.
   `ObjectTree`, `IndexTree`, a synchronous `DataTree` and the
   `CompressibleObjectTree` view adapter are also ported. Remaining work is the
-  async data tree, file drag/drop inside the tree, sticky scroll, the
-  compressed-label navigation controller (per-segment focus/hover) and
-  identity-provider diffing through the object models. The side-bar divider is
+  async data tree, file drag/drop inside the tree, the compressed-label
+  navigation controller (per-segment focus/hover) and identity-provider
+  diffing through the object models. The side-bar divider is
   draggable; that is part-size resizing, not Explorer file drag/drop.
 - The configuration service (`src/vs/workbench/services/configuration/browser/configurationService.zig`)
   resolves defaults, the VS Code profile's user settings, the terminal's own
@@ -919,9 +935,11 @@ console API for raw mode, sizing and input polling.
   non-repository leaves the editor untouched. Diff tabs are read-only: save,
   revert, reload and external-change handling are inert, they are not working
   copies, history entries or session-serialized, and closing them returns to
-  the untouched file tab. Terminal limitations: no inline diff mode, hidden
-  unchanged regions, moved-block lines, quick-diff peek, multi-diff editor,
-  accessible diff viewer, or editing either side; the original pane is not
+  the untouched file tab. Terminal limitations: no quick-diff peek, multi-diff editor,
+  accessible diff viewer, or editing either side; moved blocks are surfaced as
+  block decorations, hide-unchanged regions collapse as folding ranges, and
+  `renderSideBySide: false` uses an interleaved inline view with inner-character
+  and moved-block decorations and inline hide-unchanged folding; the original pane is not
   keyboard-focusable; the combined two-lane overview ruler is per-side; the
   gutter width/pattern/minimap settings are reduced to one marker cell and a
   dimmed pattern; panes narrower than 50 cells fall back to a modified-only
@@ -1092,9 +1110,17 @@ console API for raw mode, sizing and input polling.
   Idle motion drives hover in the find bar: the option toggles and `All`
   highlight, clicking them runs the action without stealing input focus, and
   clicking an input places its byte caret. Clicking the editor blurs the find
-  bar so the keyboard returns to the editor. Double-click and context menus
-  are not wired. Horizontal wheel/Shift+wheel scroll the line content when
-  wrapping is off; the editor still has no horizontal scrollbar.
+  bar so the keyboard returns to the editor. Mouse pointer shapes use the
+  kitty/xterm OSC 22 protocol: editor text and Markdown content show the I-beam,
+  Markdown links, widget buttons/rows, tabs, status/activity/panel entries,
+  quick-pick rows and dialog buttons show the hand, pane/sidebar sashes show
+  `ew-resize`/`ns-resize`, and a tab drag shows `grabbing`; leaving the app
+  restores `default`. The shape is resolved from the inherited
+  `ui.Style.pointer` field by hit testing, with direct-painted chrome mapped at
+  its existing hit tests. Terminals without OSC 22 ignore the sequence.
+  Double-click and context menus are not wired. Horizontal wheel/Shift+wheel
+  scroll the line content when wrapping is off; the editor still has no
+  horizontal scrollbar.
 - Keyboard events and focus are library features: nodes take listeners, the
   active element receives keys, and Tab/Shift-Tab move through focusable nodes
   (`Element.focusable` / `Element.tab_index`). See `ui/README.md` and
@@ -1681,8 +1707,36 @@ Editor contributions:
   a draggable sash, and a tab can be dragged into another pane or onto an edge
   to tile a new group. `Alt-\` splits horizontally, `Alt-Shift-\` vertically,
   `Ctrl-Alt-Left` / `Ctrl-Alt-Right` switch groups, and clicking a group
-  activates it. A split moves the active tab into the new group (independent
-  view state for one shared model still needs the model/view split).
+  activates it. Splitting duplicates the active editor into the new group:
+  both panes share the same text model, undo history and dirty/saved state,
+  while wrapping, cursor/selection, scroll and folding are independent view
+  state (`EditorDocument` plus one `Editor` per pane). The ported
+  `workbench.action.splitEditor` follows
+  `workbench.editor.openSideBySideDirection` (right by default, down when set),
+  `workbench.action.splitEditorOrthogonal` uses the other axis, and
+  `workbench.action.splitEditorLeft`/`Right`/`Up`/`Down` place the copy on the
+  requested side. `Ctrl-\` and the `Ctrl-K Ctrl-\` chord are registered
+  through the terminal's `CtrlCmd` mapping like upstream; the terminal-only
+  `Alt-\` shortcuts remain. A diff/snapshot tab has no safe duplicate yet, so
+  splitting one leaves the layout unchanged. Find/hover/word highlights are owned by the shared model,
+  so the last command run in either pane is painted in both until P4's
+  view-scoped decoration ownership lands. Session restore reopens each
+  serialized group from disk, so restored split panes are not re-linked to one
+  document until the session format stores the shared input.
+- The editor-group command families below are ported with their upstream IDs:
+  focus the active/first/last/next/previous/left/right/above/below group, create a new
+  empty group left/right/above/below, close the active group (its editors move
+  to the most recently active other group), join the active group with its next
+  neighbour or all groups, move the active group left/right/up/down, duplicate
+  the active group left/right/up/down, move the active editor into the
+  previous/next/above/below/left/right/first/last group, and split the active
+  editor into those groups. Directional move/copy commands create the target
+  group when it does not exist yet, matching `moveCopyEditorsToGroup`. Group
+  moves reorder the binary split tree without recreating editors; group copies
+  create independent group views whose tabs share the source documents.
+  Window-based group commands and `Split Editor in Group` (side-by-side
+  `SideBySideEditorInput` in one group) remain unported because the terminal has
+  no second window and no side-by-side input model.
 - Serialization/restore is ported at the model and TUI boundaries:
   `src/vs/workbench/common/editor/editorFactory.zig` holds the editor
   serializer registry, `EditorGroupModel.serialize`/`deserialize` rebuilds the
@@ -1914,6 +1968,7 @@ Editor contributions:
   neighboring token color; themes without that id get a dimmed default
   foreground. Control characters render as Unicode control pictures when
   `renderControlCharacters` is on.
+
 - `WorkingCopyService` is ported
   (`workbench/services/workingCopy/common/workingCopyService.zig`): working-copy
   registration/unregistration by resource/type, dirty/modified tracking,

@@ -155,6 +155,7 @@ pub const EditorHoverStatusBar = struct {
                 .white_space = .pre,
                 .flex_shrink = 0,
                 .color = if (action.enabled) action_color else foreground,
+                .pointer = .pointer,
             });
             const text = try doc.createText(label);
             _ = try action_node.appendChild(text);

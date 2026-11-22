@@ -1998,7 +1998,9 @@ test "scmView: list rows, labels, badges and file decorations" {
     const enter = ui.KeyEvent{ .key = .enter };
     try testing.expect(try view.handleKey(@constCast(&enter)));
     try testing.expectEqual(@as(usize, 1), fixture.host.opened);
-    try testing.expectEqualStrings("/repo/src/a.zig", fixture.host.last_opened.?);
+    const expected_a = try std.fs.path.join(allocator, &.{ test_root, "src/a.zig" });
+    defer allocator.free(expected_a);
+    try testing.expectEqualStrings(expected_a, fixture.host.last_opened.?);
 
     // Left on a resource selects its parent group; Left again collapses it;
     // Right expands it, matching the tree widget.
@@ -2019,7 +2021,7 @@ test "scmView: list rows, labels, badges and file decorations" {
     try testing.expectEqual(@as(usize, 4), view.resourceCount());
     try testing.expect(try clickAt(view, rect, 4, 4));
     try testing.expectEqual(@as(usize, 2), fixture.host.opened);
-    try testing.expectEqualStrings("/repo/src/a.zig", fixture.host.last_opened.?);
+    try testing.expectEqualStrings(expected_a, fixture.host.last_opened.?);
 }
 
 test "scmView: list sort keys follow scm.defaultViewSortKey" {

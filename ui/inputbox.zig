@@ -279,6 +279,8 @@ pub const InputBox = struct {
             .color = self.color,
             .white_space = .pre,
             .dim = !self.enabled,
+            // The browser's text input keeps the I-beam cursor over its text.
+            .pointer = .text,
         });
         try root.addEventListener(.{ .context = self, .key_down = onKey });
         // A click places the caret; dragging with the button held selects.
@@ -1162,6 +1164,9 @@ test "InputBox: build paints the value and a block caret" {
     const grid = surface.grid();
     try std.testing.expect(grid.attrs[grid.index(2, 0)] & cell.Attr.inverse != 0);
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 0)] & cell.Attr.inverse);
+
+    // The input text keeps the browser's I-beam cursor.
+    try std.testing.expectEqual(style_mod.Pointer.text, (try surface.pointerAt(0, 0)).?);
 }
 
 test "InputBox: placeholder can show while focused" {

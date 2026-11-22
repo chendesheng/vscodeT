@@ -399,11 +399,29 @@ pub const QuickPickWidget = struct {
         return true;
     }
 
-    fn layoutIndex(self: *QuickPickWidget, picker: *QuickPick, row: usize) ?usize {
+    fn layoutIndex(self: *const QuickPickWidget, picker: *const QuickPick, row: usize) ?usize {
         _ = self;
         const index = picker.scroll_top + row;
         if (index >= picker.items.items.len) return null;
         return index;
+    }
+
+    /// The pointer shape at a screen cell: the input row is text, item rows are
+    /// clickable, separators and the area outside the picker are not.
+    pub fn pointerAt(self: *const QuickPickWidget, picker: *const QuickPick, x: usize, y: usize) ui.Pointer {
+        const layout = self.layout;
+        if (x < layout.x or x >= layout.x + layout.width or
+            y < layout.y or y >= layout.y + layout.height)
+        {
+            return .default;
+        }
+        if (y == layout.y) return .text;
+        const row = y - layout.y - 1;
+        const index = self.layoutIndex(picker, row) orelse return .default;
+        return switch (picker.items.items[index]) {
+            .item => .pointer,
+            .separator => .default,
+        };
     }
 
     pub fn setHover(self: *QuickPickWidget, index: ?usize) void {
@@ -508,4 +526,10 @@ test "QuickPickWidget: renders input, items, separators and active row" {
     const active_row = try frame.next.rowText(allocator, 2);
     defer allocator.free(active_row);
     try std.testing.expect(std.mem.indexOf(u8, active_row, "alpha.txt") != null);
+
+    // The input row is text, separators are not clickable, item rows are.
+    try std.testing.expectEqual(ui.Pointer.text, widget.pointerAt(&picker, layout.x + 1, layout.y));
+    try std.testing.expectEqual(ui.Pointer.default, widget.pointerAt(&picker, layout.x + 1, layout.y + 1));
+    try std.testing.expectEqual(ui.Pointer.pointer, widget.pointerAt(&picker, layout.x + 1, layout.y + 2));
+    try std.testing.expectEqual(ui.Pointer.default, widget.pointerAt(&picker, 0, 0));
 }

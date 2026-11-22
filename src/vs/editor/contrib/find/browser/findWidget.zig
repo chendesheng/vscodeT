@@ -595,6 +595,7 @@ pub const FindWidget = struct {
             .height = .{ .cells = 1 },
             .white_space = .pre,
             .flex_shrink = 0,
+            .pointer = .pointer,
             .display = .flex,
             .justify_content = .center,
         });

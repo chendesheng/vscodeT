@@ -21,7 +21,7 @@ const LastContentChange = @import("../../../editor/browser/widget/codeEditor/cod
 const ChangeListener = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").ChangeListener;
 const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const Workbench = @import("../../browser/workbench.zig").Workbench;
-const SplitDirection = @import("../../browser/workbench.zig").SplitDirection;
+const GroupDirection = @import("../../services/editor/common/editorGroupsService.zig").GroupDirection;
 const statusbar = @import("../../services/statusbar/browser/statusbar.zig");
 const statusbar_part = @import("../../browser/parts/statusbar/statusbarPart.zig");
 const configuration = @import("../../../platform/configuration/common/configuration.zig");
@@ -1421,9 +1421,26 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         self.needs_render = true;
         return null;
     }
-    if (std.mem.eql(u8, command, "workbench.action.splitEditorRight") or std.mem.eql(u8, command, "workbench.action.splitEditorDown")) {
-        const direction: SplitDirection = if (std.mem.eql(u8, command, "workbench.action.splitEditorRight")) .horizontal else .vertical;
-        self.workbench.splitActive(direction) catch {};
+    if (std.mem.eql(u8, command, "workbench.action.splitEditor") or
+        std.mem.eql(u8, command, "workbench.action.splitEditorOrthogonal") or
+        std.mem.eql(u8, command, "workbench.action.splitEditorLeft") or
+        std.mem.eql(u8, command, "workbench.action.splitEditorRight") or
+        std.mem.eql(u8, command, "workbench.action.splitEditorUp") or
+        std.mem.eql(u8, command, "workbench.action.splitEditorDown"))
+    {
+        const direction: GroupDirection = if (std.mem.eql(u8, command, "workbench.action.splitEditorLeft"))
+            .LEFT
+        else if (std.mem.eql(u8, command, "workbench.action.splitEditorUp"))
+            .UP
+        else if (std.mem.eql(u8, command, "workbench.action.splitEditorDown"))
+            .DOWN
+        else if (std.mem.eql(u8, command, "workbench.action.splitEditor"))
+            self.workbench.preferredSideBySideDirection()
+        else if (std.mem.eql(u8, command, "workbench.action.splitEditorOrthogonal"))
+            if (self.workbench.preferredSideBySideDirection() == .RIGHT) .DOWN else .RIGHT
+        else
+            .RIGHT;
+        self.workbench.splitActiveInDirection(direction) catch {};
         self.needs_render = true;
         return null;
     }

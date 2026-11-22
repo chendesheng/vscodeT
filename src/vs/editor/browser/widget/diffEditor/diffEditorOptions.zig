@@ -33,6 +33,9 @@ pub const Options = struct {
     split_view_default_ratio: f64 = 0.5,
     /// Below this cell width the modified-only fallback is used.
     minimum_side_by_side_width: usize = 50,
+    hide_unchanged_regions: bool = false,
+    hide_unchanged_regions_context_line_count: usize = 3,
+    hide_unchanged_regions_minimum_line_count: usize = 3,
 
     pub fn fromBase(base: ValidDiffEditorBaseOptions) Options {
         return .{
@@ -54,6 +57,12 @@ pub const Options = struct {
         if (result.max_computation_time_ms < 0) result.max_computation_time_ms = 0;
         if (result.diff_algorithm.isPackage()) result.diff_algorithm = .advanced;
         if (result.minimum_side_by_side_width < 2) result.minimum_side_by_side_width = 2;
+        if (result.hide_unchanged_regions_context_line_count > 1000) {
+            result.hide_unchanged_regions_context_line_count = 1000;
+        }
+        if (result.hide_unchanged_regions_minimum_line_count > 1000) {
+            result.hide_unchanged_regions_minimum_line_count = 1000;
+        }
         return result;
     }
 };

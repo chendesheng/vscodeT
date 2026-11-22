@@ -56,12 +56,30 @@ pub const ListWidget = struct {
     }
 
     pub fn setSelection(self: *ListWidget, index: ?usize) void {
-        self.view.setSelection(index);
+        self.setSelectionWithPadding(index, 0);
+    }
+
+    /// Selection reveal with the sticky-scroll widget height reserved at the
+    /// top of the viewport, like upstream `reveal(index, top, paddingTop)`.
+    pub fn setSelectionWithPadding(self: *ListWidget, index: ?usize, padding_top: f64) void {
+        self.view.setSelectionWithPadding(index, padding_top);
         if (self.on_selection) |callback| callback(self.selection_context, index);
+    }
+
+    /// Restores a selection without scrolling the viewport, like the
+    /// selection rewrite a list splice performs upstream.
+    pub fn selectOnly(self: *ListWidget, index: ?usize) void {
+        self.view.selectOnly(index);
     }
 
     pub fn clearHover(self: *ListWidget) void {
         self.view.clearHover();
+    }
+
+    /// True while the pointer is over a row of the list (the view's hover
+    /// index is set). Hosts use it to show the clickable-row pointer.
+    pub fn hasHoveredRow(self: *const ListWidget) bool {
+        return self.view.hovered != null;
     }
 
     pub fn render(self: *ListWidget, grid: *ui.CellGrid, rect: ui.Rect) void {
@@ -72,6 +90,13 @@ pub const ListWidget = struct {
 
     /// Keyboard navigation follows the list widget's focus/selection model.
     pub fn handleKey(self: *ListWidget, event: *const ui.KeyEvent) bool {
+        return self.handleKeyWithPadding(event, 0);
+    }
+
+    /// `padding_top` is the sticky widget height. Upstream passes it to the
+    /// previous-page navigation so the new selection stays below the pinned
+    /// rows (`focusPreviousPage(..., () => stickyScrollController?.height)`).
+    pub fn handleKeyWithPadding(self: *ListWidget, event: *const ui.KeyEvent, padding_top: f64) bool {
         if (!self.focused or self.view.count() == 0) return false;
         const item_count = self.view.count();
         const page = @max(1, @as(usize, @intFromFloat(@floor(self.view.viewport_height))));
@@ -94,7 +119,7 @@ pub const ListWidget = struct {
                 return true;
             },
             .page_up => {
-                self.setSelection(current -| page);
+                self.setSelectionWithPadding(current -| page, padding_top);
                 return true;
             },
             .page_down => {

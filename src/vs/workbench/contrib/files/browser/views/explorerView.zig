@@ -7,6 +7,11 @@
 //! Explorer model, ignore filtering and lazy directory resolution are shared
 //! with the upstream-shaped `FilesFilter` in
 //! `vs/workbench/contrib/files/browser/views/explorerViewer.zig`.
+//!
+//! Sticky scroll comes from the tree view: ancestor folders pin above the list
+//! and `workbench.tree.enableStickyScroll` / `stickyScrollMaxItemCount` are
+//! read at construction. The sticky rows reuse the Explorer row renderer, so
+//! they keep twisties, Nerd Font icons, compressed labels and indentation.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -75,6 +80,42 @@ fn sidebarBackground(palette: ?*const theme_colors_mod.ThemeColors) PaintStyle {
         .{};
 }
 
+/// Background for pinned sticky rows. Upstream's `sideBarStickyScroll
+/// .background` defaults to the side bar background, so fall back to the
+/// section-header tint (and finally a derived shade) when the theme does not
+/// separate the two. This keeps the pinned rows visible on terminals without
+/// cell-border support, where the bottom border cannot be drawn.
+fn stickyRowBackground(palette: ?*const theme_colors_mod.ThemeColors) ui.Color {
+    const theme = palette orelse return .{ .r = 42, .g = 45, .b = 46 };
+    const side_bar = theme.color("sideBar.background", .{ 30, 30, 33 });
+    const sticky = theme.colorOr("sideBarStickyScroll.background", side_bar);
+    if (!colorsEqual(sticky, side_bar)) return sticky;
+    const section_header = theme.colorOr("sideBarSectionHeader.background", .{ .r = 38, .g = 38, .b = 42 });
+    if (!colorsEqual(section_header, side_bar)) return section_header;
+    return shiftColor(side_bar, 12);
+}
+
+fn stickyScrollBorderColor(palette: ?*const theme_colors_mod.ThemeColors) ui.Color {
+    const theme = palette orelse return .{ .r = 70, .g = 70, .b = 70 };
+    return theme.color("sideBarStickyScroll.border", .{ 70, 70, 70 });
+}
+
+fn colorsEqual(a: ui.Color, b: ui.Color) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b;
+}
+
+/// Lightens dark colors and darkens light colors so the derived sticky
+/// background always differs from the side bar background.
+fn shiftColor(color: ui.Color, amount: i16) ui.Color {
+    const luminance = @divTrunc(@as(i32, color.r) * 299 + @as(i32, color.g) * 587 + @as(i32, color.b) * 114, 1000);
+    const delta: i32 = if (luminance < 128) amount else -amount;
+    return .{
+        .r = @intCast(std.math.clamp(@as(i32, color.r) + delta, 0, 255)),
+        .g = @intCast(std.math.clamp(@as(i32, color.g) + delta, 0, 255)),
+        .b = @intCast(std.math.clamp(@as(i32, color.b) + delta, 0, 255)),
+    };
+}
+
 pub const Action = union(enum) {
     none,
     handled,
@@ -85,6 +126,10 @@ pub const Action = union(enum) {
 /// workbench renders the content without the view's own section header.
 pub const RenderOptions = struct {
     show_header: bool = true,
+    /// The terminal accepted the cell-border protocol. Sticky rows then get a
+    /// bottom border as a cell attribute (no extra row); otherwise the row
+    /// background alone distinguishes them.
+    cell_borders: bool = false,
 };
 
 /// One async directory listing. It owns only the raw entry data; the tree item
@@ -181,6 +226,9 @@ pub const Sidebar = struct {
     /// pixels setting.
     indent_cells: usize = 2,
     render_indent_guides: abstract_tree.RenderIndentGuides = .on_hover,
+    /// Set from `RenderOptions` for the current frame; controls whether sticky
+    /// rows use terminal cell borders or the underline fallback.
+    cell_borders: bool = false,
 
     pub fn init(
         allocator: Allocator,
@@ -217,6 +265,8 @@ pub const Sidebar = struct {
         }, .{
             .indent = self.indent_cells,
             .render_indent_guides = self.render_indent_guides,
+            .enable_sticky_scroll = readEnableStickyScroll(configuration),
+            .sticky_scroll_max_item_count = readStickyScrollMaxItemCount(configuration),
         });
         errdefer self.tree.deinit();
         try self.tree.setFilter(.{
@@ -365,7 +415,9 @@ pub const Sidebar = struct {
         const elements = try self.buildElements(arena.allocator(), items);
         self.force_expanded.clearRetainingCapacity();
         try self.tree.setChildren(parent, elements);
-        if (selected) |item| self.selectElement(item);
+        // Child updates must not scroll the viewport; upstream splices keep
+        // the scroll position and restore the selected element in place.
+        if (selected) |item| self.tree.setSelectionElementNoReveal(item);
     }
 
     /// Builds the loaded subtree as compressed tree elements. Children are only
@@ -436,6 +488,20 @@ pub const Sidebar = struct {
     }
 
     pub fn handleKey(self: *Sidebar, event: *const ui.KeyEvent) !Action {
+        // While the sticky widget owns the focus, upstream's
+        // `list.stickyScroll*` commands take priority over the Explorer's own
+        // Enter/Space handling. Tab enters the widget (the terminal analogue of
+        // DOM tab order) and Escape leaves it.
+        if (self.tree.stickyScrollFocused()) {
+            if (event.key == .escape or event.key == .backtab) {
+                self.tree.clearStickyScrollFocus();
+                return .handled;
+            }
+            if (self.tree.handleKey(event)) return .handled;
+            return .none;
+        }
+        if (event.key == .tab and self.tree.focusStickyScroll()) return .handled;
+
         switch (event.key) {
             .right => {
                 try self.expandSelected();
@@ -472,6 +538,12 @@ pub const Sidebar = struct {
         self.tree.clearHover();
     }
 
+    /// True while the pointer is over a file row (or a sticky pinned row);
+    /// the workbench maps it to the hand pointer.
+    pub fn hasHoveredRow(self: *const Sidebar) bool {
+        return self.tree.hasHoveredRow();
+    }
+
     pub fn handleClick(self: *Sidebar, x: usize, y: usize) !?[]const u8 {
         return self.handleClickInternal(x, y);
     }
@@ -490,6 +562,7 @@ pub const Sidebar = struct {
         const height = ui.cell.snap(rect.h);
         if (x < left or x >= left + width or y < top + self.header_rows or y >= top + height) return null;
 
+        const sticky_hit = self.tree.stickyRowAt(x, y) != null;
         const event = ui.MouseEvent{
             .kind = .down,
             .x = x,
@@ -497,6 +570,17 @@ pub const Sidebar = struct {
             .button = .left,
         };
         if (!self.tree.handleMouse(&event)) return null;
+        if (sticky_hit) {
+            // Upstream's sticky click selects/reveals the node; a click on its
+            // twistie additionally toggles the folder.
+            const node = self.tree.selectionNode() orelse return null;
+            const item = CompressibleTree.elementOfNode(node) orelse return null;
+            if (item.is_directory) {
+                const twistie_x = left + 2 + (node.depth -| 1) * self.indent_cells;
+                if (x == twistie_x) return self.toggle(item);
+            }
+            return null;
+        }
 
         // Ignore clicks below the last rendered row.
         const list_y = y - top - self.header_rows;
@@ -542,7 +626,8 @@ pub const Sidebar = struct {
         var parts = std.mem.tokenizeAny(u8, relative, "/\\");
         while (parts.next()) |name| {
             if (!current.is_directory) return;
-            if (!current.is_directory_resolved) try self.loadChildren(current);
+            const was_resolved = current.is_directory_resolved;
+            if (!was_resolved) try self.loadChildren(current);
 
             var next: ?*ExplorerItem = null;
             for (current.children.items) |child| {
@@ -554,9 +639,13 @@ pub const Sidebar = struct {
             const item = next orelse return;
 
             // The single-folder root is the tree input and has no visible row;
-            // its children were already installed by init().
+            // its children were already installed by init(). Resolved folders
+            // are already installed too, so re-splicing them would rebuild the
+            // tree (and move the selection/scroll) for no change.
             if (!(current == root_item and !self.show_roots)) {
-                try self.setChildren(current, current.children.items);
+                if (!was_resolved or !self.tree.has(current)) {
+                    try self.setChildren(current, current.children.items);
+                }
                 _ = try self.tree.setCollapsed(current, false, false);
             }
             current = item;
@@ -600,6 +689,7 @@ pub const Sidebar = struct {
         // side bar title area shows `EXPLORER` and its actions. The header
         // remains for standalone preview/test rendering.
         self.header_rows = if (options.show_header) 1 else 0;
+        self.cell_borders = options.cell_borders;
         if (options.show_header) {
             const header_style_local = if (self.theme) |palette| ui.cell.PaintStyle{
                 .fg = ui.cell.packColor(palette.color("sideBarSectionHeader.foreground", .{ 200, 200, 200 })),
@@ -622,6 +712,9 @@ pub const Sidebar = struct {
             .w = @floatFromInt(list_width),
             .h = @floatFromInt(rows),
         });
+        if (options.cell_borders) {
+            renderStickyScrollBorder(self, grid, x, y + self.header_rows, list_width, rows);
+        }
 
         if (show_scrollbar) {
             const scrollbar_x = x + width - 1;
@@ -653,6 +746,41 @@ pub const Sidebar = struct {
         }
     }
 };
+
+/// Port of upstream's `treeStickyScrollBorder` list style: the sticky
+/// container's bottom border. The terminal draws it as a cell-border attribute
+/// on the last pinned row, so it costs no row. Terminals without the protocol
+/// fall back to the sticky row background.
+fn renderStickyScrollBorder(
+    self: *Sidebar,
+    grid: *CellGrid,
+    list_x: usize,
+    list_y: usize,
+    list_width: usize,
+    rows: usize,
+) void {
+    const sticky_nodes = self.tree.stickyScrollNodes();
+    if (sticky_nodes.len == 0 or list_width == 0 or rows == 0) return;
+
+    var visible_bottom: f64 = 0;
+    for (sticky_nodes) |sticky| {
+        if (sticky.position >= @as(f64, @floatFromInt(rows))) continue;
+        visible_bottom = @max(visible_bottom, @floor(sticky.position + sticky.height));
+    }
+    if (visible_bottom <= 0) return;
+
+    const row_offset: usize = @min(@as(usize, @intFromFloat(visible_bottom)) - 1, rows - 1);
+    const stroke = ui.cell_border.Stroke{
+        .width = 16,
+        .color = .{ .rgb = stickyScrollBorderColor(self.theme) },
+        .placement = .centered,
+        .layer = .below_text,
+    };
+    var col = list_x;
+    while (col < list_x + list_width) : (col += 1) {
+        grid.addBorder(col, list_y + row_offset, ui.cell_border.Segment.bottom, stroke);
+    }
+}
 
 fn filterItem(context: *anyopaque, item: ?*ExplorerItem, parent_visibility: tree.TreeVisibility) tree.TreeVisibility {
     if (parent_visibility == .hidden) return .hidden;
@@ -698,6 +826,33 @@ fn readSortOrder(configuration: *ConfigurationService, model: *ExplorerModel) ex
     return .FilesFirst;
 }
 
+/// `workbench.tree.enableStickyScroll` defaults to true, like upstream's
+/// workbench tree service. The Explorer reads it at construction time, the
+/// same lifecycle as `workbench.tree.indent`.
+fn readEnableStickyScroll(configuration: *ConfigurationService) bool {
+    const value = configuration.getValue("workbench.tree.enableStickyScroll", .{}) orelse return true;
+    return switch (value.*) {
+        .bool => |inner| inner,
+        else => true,
+    };
+}
+
+/// `workbench.tree.stickyScrollMaxItemCount`, clamped to at least one, like
+/// `validateStickySettings` in upstream's sticky controller.
+fn readStickyScrollMaxItemCount(configuration: *ConfigurationService) usize {
+    const value = configuration.getValue("workbench.tree.stickyScrollMaxItemCount", .{}) orelse return 7;
+    const count: i64 = switch (value.*) {
+        .integer => |inner| inner,
+        .float => |inner| if (std.math.isFinite(inner) and inner >= 1 and inner <= 1_000_000)
+            @intFromFloat(inner)
+        else
+            return 7,
+        else => return 7,
+    };
+    if (count < 1) return 1;
+    return @intCast(count);
+}
+
 fn readIndentCells(configuration: *ConfigurationService) usize {
     const value = configuration.getValue("workbench.tree.indent", .{}) orelse return 2;
     const cells: usize = switch (value.*) {
@@ -721,6 +876,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
     if (compressed.elements.len == 0) return;
     const item = compressed.elements[compressed.elements.len - 1];
     const selected = row.selected;
+    const sticky_highlight = row.sticky and (row.sticky_hovered or row.sticky_focused);
     var paint = if (selected)
         (if (item.is_directory)
             (if (row.focused) selected_dir_style else unfocused_dir_selection_style)
@@ -752,7 +908,35 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
         };
     }
 
-    if (selected) {
+    if (row.sticky and !sticky_highlight) {
+        paint.bg = ui.cell.packColor(stickyRowBackground(sidebar.theme));
+    }
+    if (row.sticky_last and !sidebar.cell_borders) {
+        // Fallback for terminals without the cell-border protocol: underline
+        // the whole bottom pinned row, which draws the separator on the
+        // existing row instead of reserving one.
+        paint.attrs |= ui.cell.Attr.underline;
+    }
+
+    if (sticky_highlight) {
+        // Upstream sticky rows use `list.hoverBackground` on `:hover` and a
+        // focus outline when the sticky widget has focus. The terminal paints
+        // the hover background for both and bolds the focused row, the same
+        // adaptation the editor sticky-scroll widget uses.
+        const color = if (sidebar.theme) |palette|
+            palette.color("list.hoverBackground", .{ 42, 45, 46 })
+        else
+            ui.Color{ .r = 42, .g = 45, .b = 46 };
+        paint = .{
+            .fg = paint.fg,
+            .bg = ui.cell.packColor(color),
+            .attrs = (if (row.sticky_focused) ui.cell.Attr.bold else 0) | (paint.attrs & ui.cell.Attr.underline),
+        };
+    }
+
+    // Sticky rows overlay list rows, so they must cover the whole row; a
+    // partial paint would leave the row underneath visible past the label.
+    if (selected or sticky_highlight or row.sticky) {
         row.grid.fillRect(
             @floatFromInt(row.x),
             @floatFromInt(row.y),
@@ -774,7 +958,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
                 palette.color("tree.indentGuidesStroke", .{ 80, 80, 80 })
             else
                 ui.Color{ .r = 80, .g = 80, .b = 80 };
-            const guide_paint = PaintStyle{ .fg = ui.cell.packColor(guide_color), .bg = paint.bg };
+            const guide_paint = PaintStyle{ .fg = ui.cell.packColor(guide_color), .bg = paint.bg, .attrs = paint.attrs };
             row.grid.putCodepoint(col, row.y, '│', 1, guide_paint);
         } else {
             row.grid.putSpace(col, row.y, paint);
@@ -807,7 +991,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
                 .fg = ui.cell.packColor(icon.color),
                 .bg = paint.bg,
             };
-            if (selected) icon_paint.attrs = paint.attrs;
+            icon_paint.attrs = paint.attrs;
             row.grid.putCodepoint(col, row.y, icon.glyph, 1, icon_paint);
             col += 1;
         }
@@ -1473,4 +1657,270 @@ test "explorer tree sidebar: symbolic link directories render and expand" {
         },
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "explorer tree sidebar: sticky headers pin folder ancestors" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Three folder levels with a sibling in each folder so `compactFolders`
+    // keeps them as separate rows instead of compressing the chain.
+    try tmp.dir.createDirPath(io, "aaa/bbb/ccc");
+    var file_a = try tmp.dir.createFile(io, "aaa/a.txt", .{});
+    try file_a.writeStreamingAll(io, "a");
+    file_a.close(io);
+    var file_b = try tmp.dir.createFile(io, "aaa/bbb/b.txt", .{});
+    try file_b.writeStreamingAll(io, "b");
+    file_b.close(io);
+    for (0..12) |i| {
+        var name_buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "aaa/bbb/ccc/f{d:0>2}.txt", .{i});
+        var file = try tmp.dir.createFile(io, name, .{});
+        try file.writeStreamingAll(io, "x");
+        file.close(io);
+    }
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    var grid = try ui.CellGrid.init(allocator, 32, 8);
+    defer grid.deinit();
+    // Lay the tree out once so the selection reveal knows the viewport height,
+    // like the workbench's render-before-reveal ordering.
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+
+    const deep = try std.fs.path.join(allocator, &.{ root, "aaa", "bbb", "ccc", "f11.txt" });
+    defer allocator.free(deep);
+    try sidebar.revealPath(deep);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+
+    try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
+    const row0 = try grid.rowText(allocator, 0);
+    defer allocator.free(row0);
+    const row1 = try grid.rowText(allocator, 1);
+    defer allocator.free(row1);
+    const row2 = try grid.rowText(allocator, 2);
+    defer allocator.free(row2);
+    const row3 = try grid.rowText(allocator, 3);
+    defer allocator.free(row3);
+    try std.testing.expect(std.mem.indexOf(u8, row0, "aaa") != null);
+    try std.testing.expect(std.mem.indexOf(u8, row1, "bbb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, row2, "ccc") != null);
+    // Row 0-2 are sticky copies of the ancestors; the list starts at f04.
+    try std.testing.expect(std.mem.indexOf(u8, row3, "f07.txt") != null);
+
+    // Focus enters the sticky widget with Tab and Enter reveals the sticky
+    // folder in the tree instead of opening a file (`list.stickyScrollselect`).
+    var tab = ui.KeyEvent{ .key = .tab };
+    switch (try sidebar.handleKey(&tab)) {
+        .handled => {},
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(sidebar.tree.stickyScrollFocused());
+    var enter = ui.KeyEvent{ .key = .enter };
+    switch (try sidebar.handleKey(&enter)) {
+        .handled => {},
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(!sidebar.tree.stickyScrollFocused());
+    try std.testing.expectEqualStrings("aaa", sidebar.selectedNode().?.name);
+
+    // Selecting a row that is already visible must not move the viewport, and
+    // the auto-reveal that follows opening it must not move it either.
+    try sidebar.revealPath(deep);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+    const scroll_before_file_click = sidebar.tree.view.widget.view.scroll_top;
+    const clicked = try sidebar.handleClick(10, 3);
+    try std.testing.expect(clicked != null);
+    try std.testing.expectEqual(scroll_before_file_click, sidebar.tree.view.widget.view.scroll_top);
+    try sidebar.revealPath(clicked.?);
+    try std.testing.expectEqual(scroll_before_file_click, sidebar.tree.view.widget.view.scroll_top);
+
+    // Clicking a sticky row jumps to the node and selects it in the list,
+    // matching upstream `handleStickyScrollMouseEvent`.
+    try sidebar.revealPath(deep);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+    const down = ui.MouseEvent{ .kind = .down, .x = 10, .y = 1, .button = .left };
+    try std.testing.expect(sidebar.handleMouse(&down));
+    try std.testing.expect(!sidebar.tree.stickyScrollFocused());
+    try std.testing.expectEqualStrings("bbb", sidebar.selectedNode().?.name);
+    try std.testing.expect(sidebar.isExpanded(sidebar.selectedNode().?));
+    const click = try sidebar.handleClick(10, 1);
+    try std.testing.expect(click == null);
+
+    // Clicking the sticky row's twistie also toggles the folder.
+    try sidebar.revealPath(deep);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+    const ccc = sidebar.selectedNode().?.parent.?;
+    try std.testing.expectEqualStrings("ccc", ccc.name);
+    try std.testing.expect(sidebar.isExpanded(ccc));
+    _ = try sidebar.handleClick(6, 2);
+    try std.testing.expect(!sidebar.isExpanded(ccc));
+}
+
+test "explorer tree sidebar: sticky headers honor the tree settings" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var settings = try tmp.dir.createFile(io, "settings.json", .{});
+    try settings.writeStreamingAll(io, "{\"workbench.tree.stickyScrollMaxItemCount\": 1}");
+    settings.close(io);
+    try tmp.dir.createDirPath(io, "aaa/bbb/ccc");
+    var file_a = try tmp.dir.createFile(io, "aaa/a.txt", .{});
+    try file_a.writeStreamingAll(io, "a");
+    file_a.close(io);
+    var file_b = try tmp.dir.createFile(io, "aaa/bbb/b.txt", .{});
+    try file_b.writeStreamingAll(io, "b");
+    file_b.close(io);
+    for (0..12) |i| {
+        var name_buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "aaa/bbb/ccc/f{d:0>2}.txt", .{i});
+        var file = try tmp.dir.createFile(io, name, .{});
+        try file.writeStreamingAll(io, "x");
+        file.close(io);
+    }
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const settings_path = try std.fs.path.join(allocator, &.{ root, "settings.json" });
+    defer allocator.free(settings_path);
+    const configuration = try ConfigurationService.init(allocator, io, context, .{
+        .user_settings_paths = &.{settings_path},
+    });
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    var grid = try ui.CellGrid.init(allocator, 32, 8);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+
+    const deep = try std.fs.path.join(allocator, &.{ root, "aaa", "bbb", "ccc", "f11.txt" });
+    defer allocator.free(deep);
+    try sidebar.revealPath(deep);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+    try std.testing.expectEqual(@as(usize, 1), sidebar.tree.stickyScrollNodes().len);
+    const row0 = try grid.rowText(allocator, 0);
+    defer allocator.free(row0);
+    // The overflow chain renders as one compressed sticky row.
+    try std.testing.expect(std.mem.indexOf(u8, row0, "aaa/bbb/ccc") != null);
+
+    // `workbench.tree.enableStickyScroll: false` removes the widget entirely.
+    var disabled_settings = try tmp.dir.createFile(io, "settings_off.json", .{});
+    try disabled_settings.writeStreamingAll(io, "{\"workbench.tree.enableStickyScroll\": false}");
+    disabled_settings.close(io);
+    const disabled_path = try std.fs.path.join(allocator, &.{ root, "settings_off.json" });
+    defer allocator.free(disabled_path);
+    const disabled_configuration = try ConfigurationService.init(allocator, io, context, .{
+        .user_settings_paths = &.{disabled_path},
+    });
+    defer disabled_configuration.deinit();
+    const disabled_sidebar = try Sidebar.init(allocator, io, context, disabled_configuration);
+    defer disabled_sidebar.deinit();
+    var disabled_grid = try ui.CellGrid.init(allocator, 32, 8);
+    defer disabled_grid.deinit();
+    try disabled_sidebar.render(&disabled_grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+    try disabled_sidebar.revealPath(deep);
+    try disabled_sidebar.render(&disabled_grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+    try std.testing.expectEqual(@as(usize, 0), disabled_sidebar.tree.stickyScrollNodes().len);
+}
+
+test "explorer tree sidebar: sticky rows use a header tint and bottom cell border" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const color_theme = @import("../../../../services/themes/common/colorThemeData.zig");
+    const color_utils = @import("../../../../../platform/theme/common/colorUtils.zig");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "aaa/bbb/ccc");
+    var file_a = try tmp.dir.createFile(io, "aaa/a.txt", .{});
+    try file_a.writeStreamingAll(io, "a");
+    file_a.close(io);
+    var file_b = try tmp.dir.createFile(io, "aaa/bbb/b.txt", .{});
+    try file_b.writeStreamingAll(io, "b");
+    file_b.close(io);
+    for (0..12) |i| {
+        var name_buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "aaa/bbb/ccc/f{d:0>2}.txt", .{i});
+        var file = try tmp.dir.createFile(io, name, .{});
+        try file.writeStreamingAll(io, "x");
+        file.close(io);
+    }
+
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const context = try WorkspaceContextService.initWithFolders(allocator, "test", &.{root});
+    defer context.deinit();
+    const configuration = try ConfigurationService.init(allocator, io, context, .{});
+    defer configuration.deinit();
+    const sidebar = try Sidebar.init(allocator, io, context, configuration);
+    defer sidebar.deinit();
+
+    var registry = color_utils.ColorRegistry.init(allocator);
+    defer registry.deinit();
+    const theme = try color_theme.ColorThemeData.createUnloadedTheme(allocator, &registry, "test", &.{
+        .{ "sideBar.background", "#101010" },
+        .{ "sideBarSectionHeader.background", "#202020" },
+        .{ "sideBarStickyScroll.border", "#abcdef" },
+    });
+    defer theme.deinit();
+    const palette = theme_colors_mod.ThemeColors.init(theme);
+    sidebar.setThemeColors(&palette);
+
+    var grid = try ui.CellGrid.init(allocator, 32, 8);
+    defer grid.deinit();
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+
+    const deep = try std.fs.path.join(allocator, &.{ root, "aaa", "bbb", "ccc", "f11.txt" });
+    defer allocator.free(deep);
+    try sidebar.revealPath(deep);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{ .show_header = false });
+    try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
+
+    // Pinned rows use the section-header tint, while a normal row keeps the
+    // side bar background.
+    const sticky_bg = ui.cell.packColor(palette.color("sideBarSectionHeader.background", .{ 0, 0, 0 }));
+    const side_bar_bg = ui.cell.packColor(palette.color("sideBar.background", .{ 0, 0, 0 }));
+    try std.testing.expectEqual(sticky_bg, grid.bg[grid.index(0, 0)]);
+    try std.testing.expectEqual(sticky_bg, grid.bg[grid.index(0, 2)]);
+    try std.testing.expectEqual(side_bar_bg, grid.bg[grid.index(0, 3)]);
+
+    // Without the cell-border protocol there is no border attribute; the
+    // fallback underlines the bottom pinned row so the separator still draws
+    // on an existing row. Rows above it and the list rows below are untouched.
+    try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 2));
+    try std.testing.expect(grid.attrs[grid.index(0, 2)] & ui.cell.Attr.underline != 0);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 1)] & ui.cell.Attr.underline);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 3)] & ui.cell.Attr.underline);
+    try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{
+        .show_header = false,
+        .cell_borders = true,
+    });
+    const border = grid.borderSetAt(0, 2);
+    try std.testing.expect(border.count > 0);
+    var has_bottom = false;
+    for (border.groups[0..border.count]) |group| {
+        if (group.mask & ui.cell_border.Segment.bottom != 0) has_bottom = true;
+    }
+    try std.testing.expect(has_bottom);
+    try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 3));
+    // The cell-border path replaces the underline fallback.
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 2)] & ui.cell.Attr.underline);
 }

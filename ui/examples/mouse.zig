@@ -132,6 +132,7 @@ fn build(
             .top = .{ .cells = @floatFromInt(index) },
             .width = .{ .cells = list_width - 2 },
             .height = .{ .cells = 1 },
+            .pointer = .pointer,
         });
         const text = try common.addText(doc, row, "", .{
             .color = foreground,
