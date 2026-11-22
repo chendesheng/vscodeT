@@ -12,6 +12,8 @@ const ui = @import("ui");
 const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const View = @import("../../../../../../tui/editorView.zig").View;
 const editorBrowser = @import("../../../../browser/editorBrowser.zig");
+const Position = @import("../../../../common/core/position.zig").Position;
+const Range = @import("../../../../common/core/range.zig").Range;
 const FindController = @import("../../browser/findController.zig").FindController;
 const FindWidgetTheme = @import("../../browser/findWidget.zig").Theme;
 
@@ -44,6 +46,7 @@ test "FindController: opens, searches incrementally and closes" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -113,6 +116,7 @@ test "FindController: replace row replaces the current match" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -171,6 +175,7 @@ test "FindController: decorations paint the match cells" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -214,6 +219,7 @@ test "FindController: Alt-L limits the search to the selection" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -260,6 +266,7 @@ test "FindController: reopening keeps the current match" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -300,6 +307,7 @@ test "FindController: clicking the input focuses it and clicking the editor blur
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -358,6 +366,7 @@ test "FindController: find toggles hover and click from the mouse" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -425,6 +434,7 @@ test "FindController: clicking All runs replace-all" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -470,6 +480,7 @@ test "FindController: the host theme reaches the find bar" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -508,6 +519,7 @@ test "FindController: visible controls toggle replace and close the bar" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -555,6 +567,7 @@ test "FindController: replace-row controls preserve case and replace one" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -603,6 +616,7 @@ test "FindController: addExtraSpaceOnTop controls the view-zone rows" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
 
     const widget = controller.widget();
@@ -630,6 +644,7 @@ test "FindController: Up/Down navigate find input history" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
     try controller.open(false);
@@ -671,6 +686,7 @@ test "FindController: replace input history survives close/reopen" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
 
@@ -704,6 +720,7 @@ test "FindController: findOnType and closeOnResult options" {
         .context = view,
         .set = setDecorations,
     });
+    controller.setSeedSearchStringFromSelection(.never);
     defer controller.deinit();
     try view.addOverlayWidget(controller.widget().interface());
     try controller.open(false);
@@ -721,4 +738,45 @@ test "FindController: findOnType and closeOnResult options" {
     widget.setCloseOnResult(true);
     try std.testing.expect(view.dispatchKey(&enter));
     try std.testing.expect(!widget.state.is_revealed);
+}
+
+test "FindController: seedSearchStringFromSelection modes" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+
+    try editor.setCursorPosition(Position.init(1, 2));
+    try controller.open(false);
+    try std.testing.expectEqualStrings("alpha", controller.widget().find_input.getValue());
+    controller.close();
+    try controller.widget().find_input.clear();
+
+    controller.setSeedSearchStringFromSelection(.selection);
+    try editor.setCursorPosition(Position.init(1, 2));
+    try controller.open(false);
+    try std.testing.expectEqualStrings("", controller.widget().find_input.getValue());
+    controller.close();
+    try controller.widget().find_input.clear();
+
+    controller.setSeedSearchStringFromSelection(.never);
+    try editor.setSelection(Range.init(1, 1, 1, 6));
+    try controller.open(false);
+    try std.testing.expectEqualStrings("", controller.widget().find_input.getValue());
+    controller.close();
+    try controller.widget().find_input.clear();
+
+    controller.setSeedSearchStringFromSelection(.always);
+    try editor.setSelection(Range.init(1, 1, 1, 6));
+    try controller.open(false);
+    try std.testing.expectEqualStrings("alpha", controller.widget().find_input.getValue());
 }
