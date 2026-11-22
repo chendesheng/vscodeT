@@ -3173,3 +3173,27 @@ test "TextModel.setEOL keeps decorations with shifted deltas" {
     defer content.deinit();
     try std.testing.expectEqualStrings("3456789 abcdefghij ABCDEFGHIJ", content.items);
 }
+
+test "TextModel.setEOL resets the change cursor before the next insert" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "a\nb", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var append_ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(2, 2, 2, 2), String.initBorrowed("y")),
+    };
+    _ = try textModel.applyEdits(&append_ops, false);
+    try textModel.setEOL(.CRLF);
+
+    var insert_ops = [_]IdentifiedSingleEditOperation{
+        .init(Range.init(1, 1, 1, 1), String.initBorrowed("x")),
+    };
+    _ = try textModel.applyEdits(&insert_ops, false);
+
+    const content = try textModel.getValue(.CRLF, false);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("xa\r\nby", content.items);
+}

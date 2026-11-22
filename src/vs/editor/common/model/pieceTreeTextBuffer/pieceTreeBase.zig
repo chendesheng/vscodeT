@@ -463,7 +463,7 @@ pub const PieceTreeBase = struct {
                 try tempChunk.appendSlice(str);
             } else {
                 // flush anyways
-                try replaceEOL(&tempChunk, self._EOL);
+                try replaceEOL(&tempChunk, eol);
                 try chunks.append(try StringBuffer.init(self.allocator, tempChunk.items));
                 try tempChunk.replaceRange(0, tempChunk.items.len, str);
             }
@@ -482,6 +482,9 @@ pub const PieceTreeBase = struct {
         self._EOLLength = if (eol == .CRLF) 2 else 1;
         try self._searchCache.reset();
         try self._lastVisitedLine.reset();
+        // Upstream `create()` starts from a fresh tree state; without this the
+        // next insert uses a cursor from the previous document.
+        self._lastChangeBufferPos = .{ .line = 0, .column = 0 };
         try self.resetBuffers(chunks.items);
     }
 
@@ -744,9 +747,7 @@ pub const PieceTreeBase = struct {
                 danglingCR = true;
                 if (piece.end.column == 0) {
                     // The last line ended with a \r, let's undo the push, it will be pushed by next iteration
-                    if (lines.pop()) |last| {
-                        last.deinit();
-                    }
+                    _ = lines.pop();
                 } else {
                     currentLine = ArrayList(u8).init(self.allocator);
                     try currentLine.appendSlice(buffer.substr(lineStarts[pieceEndLine], piece.end.column - 1));
@@ -1466,14 +1467,14 @@ pub const PieceTreeBase = struct {
             var newPieces = ArrayList(Piece).init(self.allocator);
             var txt = text;
             while (txt.len > AverageBufferSize) {
-                const lastChar = txt[txt.len - 1];
-                var splitText: []const u8 = undefined;
-
-                if (lastChar == '\r') {
-                    splitText = txt[0 .. AverageBufferSize - 1];
-                } else {
-                    splitText = safeUtf8Prefix(txt, AverageBufferSize);
+                // Upstream inspects the character at the split boundary, not
+                // the last character of the whole remaining text: a CRLF (or
+                // a multibyte character) must not be split across buffers.
+                var splitLength = safeUtf8Prefix(txt, AverageBufferSize).len;
+                if (splitLength == AverageBufferSize and txt[AverageBufferSize - 1] == '\r') {
+                    splitLength = safeUtf8Prefix(txt, AverageBufferSize - 1).len;
                 }
+                const splitText = txt[0..splitLength];
                 txt = txt[splitText.len..];
 
                 const buf = try StringBuffer.init(self.allocator, splitText);
@@ -2000,7 +2001,7 @@ pub const PieceTreeBase = struct {
             .start = prevPiece.start,
             .end = if (prevPieceEnd.column == 0)
                 // it means, last line ends with \r, not \r\n
-                .{ .line = prevPieceEnd.line - 1, .column = lineStarts[prevPieceEnd.line] - lineStarts[prevPieceEnd.line - 1] }
+                .{ .line = prevPieceEnd.line - 1, .column = lineStarts[prevPieceEnd.line] - lineStarts[prevPieceEnd.line - 1] - 1 }
             else
                 .{ .line = prevPieceEnd.line, .column = prevPieceEnd.column - 1 },
             .lineFeedCnt = prevPiece.lineFeedCnt - 1,
@@ -2769,4 +2770,42 @@ test "getLineCodepointRange at the end of an empty line" {
     try std.testing.expectEqual([2]usize{ 0, 0 }, empty);
     const end = tree.getLineCodepointRange(1, 1);
     try std.testing.expectEqual([2]usize{ 1, 1 }, end);
+}
+
+test "getLinesContent: dangling CR at the end of a piece does not double free" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "")};
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    try tree.insert(0, "a\r\nb", false);
+    try tree.insert(2, "X", false);
+
+    const lines = try tree.getLinesContent();
+    defer {
+        for (lines.items) |line| line.deinit();
+        lines.deinit();
+    }
+    try std.testing.expect(lines.items.len > 0);
+}
+
+test "insert: a large insert keeps CRLF at buffer boundaries intact" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "")};
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    var text = try allocator.alloc(u8, 65537);
+    defer allocator.free(text);
+    @memset(text[0..65534], 'a');
+    text[65534] = '\r';
+    text[65535] = '\n';
+    text[65536] = 'b';
+
+    try tree.insert(0, text, false);
+
+    try std.testing.expectEqual(@as(usize, 2), tree.getLineCount());
+    var second = try tree.getLineContent(2);
+    defer second.deinit();
+    try std.testing.expectEqualStrings("b", second.items);
 }

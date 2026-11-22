@@ -203,8 +203,10 @@ pub const PieceTreeBufferBuilder = struct {
         }
 
         if (self._getPreviousChar()) |previousChar| {
-            // recreate last chunk
-            var lastChunk = self.chunks.items[self.chunks.items.len - 1];
+            // Recreate the last chunk in place: copying the StringBuffer would
+            // append to (and free) the copy instead of the stored chunk.
+            self._previousCharLen = 0;
+            const lastChunk = &self.chunks.items[self.chunks.items.len - 1];
             try lastChunk.buffer.appendSlice(previousChar);
 
             const newLineStarts = try createLineStartsFast(self.chunks.allocator, lastChunk.buffer.items);
@@ -253,4 +255,24 @@ test "PieceTreeBufferBuilder unicode" {
     defer lineContent.deinit();
 
     try std.testing.expectEqualStrings("你好世界", lineContent.items);
+}
+
+test "PieceTreeBufferBuilder: a trailing CR held back is re-added to the last chunk" {
+    const allocator = std.testing.allocator;
+    var builder = PieceTreeBufferBuilder.init(allocator);
+    try builder.acceptChunk("a\r");
+
+    var factory = try builder.finish(false);
+    defer factory.deinit();
+    var buffer = try factory.create(.LF);
+    defer buffer.deinit();
+
+    const lines = try buffer.getLinesContent();
+    defer {
+        for (lines.items) |line| line.deinit();
+        lines.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 2), lines.items.len);
+    try std.testing.expectEqualStrings("a", lines.items[0].items);
+    try std.testing.expectEqualStrings("", lines.items[1].items);
 }
