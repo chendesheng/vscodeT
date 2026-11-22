@@ -232,16 +232,10 @@ const TerminalService = terminal_service_mod.TerminalService;
 
 const search_command_ids = @import("../contrib/search/common/constants.zig").SearchCommandIds;
 
-const scm_changes_title_action = views_mod.TitleAction{
-    .id = "git.refresh",
-    .label = "Refresh",
-    .glyph = '\u{27F3}',
-};
-
 /// Side bar title toolbar actions of the Search view container, matching the
 /// `MenuId.ViewTitle` actions upstream. The terminal workbench supplies only
-/// the actions it can run; the Explorer's file actions and the SCM refresh
-/// provider action are not ported as commands.
+/// the actions it can run; the Explorer's file actions are not ported as
+/// commands, while the SCM view supplies refresh and list/tree itself.
 const search_title_actions = [_]pane_composite_mod.TitleAction{
     .{ .id = search_command_ids.clear_search_results, .label = "Clear Search Results", .glyph = 'x' },
 };
@@ -533,6 +527,8 @@ pub const Workbench = struct {
     /// Stable storage for the transient "Opening ..." status hint; the
     /// status-bar entry keeps the slice.
     status_hint_buf: [256]u8 = undefined,
+    /// Branch-aware placeholder for the Source Control commit input.
+    scm_placeholder_buf: [160]u8 = undefined,
     scm_hover_surface: ?ui.Surface = null,
     markers_status: ?*MarkersStatusBar = null,
     problems_view: ?*ProblemsView = null,
@@ -636,12 +632,11 @@ pub const Workbench = struct {
     quick_diff_storage: ?*storage_mod.InMemoryStorageService = null,
     quick_diff_service: ?*quick_diff_service_mod.QuickDiffService = null,
     quick_diff_controller: ?*quick_diff_controller_mod.Controller = null,
-    scm_view: ?*scm_view_mod.ScmView = null,
+    scm_view: ?*scm_view_mod.SCMViewPane = null,
     scm_history_view: ?*scm_history_view_mod.SCMHistoryViewPane = null,
     scm_view_model: ?*view_container_model_mod.ViewContainerModel = null,
     scm_container: ?*view_pane_container_mod.ViewPaneContainer = null,
     scm_panes: ?[]view_pane_container_mod.Pane = null,
-    changes_title_actions: [1]views_mod.TitleAction = .{scm_changes_title_action},
     repository: ?*repository_mod.Repository = null,
     git_root: ?[]u8 = null,
     scm_interface: ?*scm_common.ISCMService = null,
@@ -717,7 +712,6 @@ pub const Workbench = struct {
         self.scm_view_model = null;
         self.scm_container = null;
         self.scm_panes = null;
-        self.changes_title_actions = .{scm_changes_title_action};
         self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
@@ -876,7 +870,6 @@ pub const Workbench = struct {
         self.scm_view_model = null;
         self.scm_container = null;
         self.scm_panes = null;
-        self.changes_title_actions = .{scm_changes_title_action};
         self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
@@ -1068,7 +1061,6 @@ pub const Workbench = struct {
         self.scm_view_model = null;
         self.scm_container = null;
         self.scm_panes = null;
-        self.changes_title_actions = .{scm_changes_title_action};
         self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
@@ -1482,11 +1474,17 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.previousPanelView", .label = "View: Previous Panel View", .category = "View", .context = self, .run = commandPreviousPanelView },
             .{ .id = "workbench.action.nextPanelView", .label = "View: Next Panel View", .category = "View", .context = self, .run = commandNextPanelView },
             .{ .id = "git.refresh", .label = "Refresh", .category = "Source Control", .context = self, .run = commandGitRefresh },
+            .{ .id = "git.commit", .label = "Commit", .category = "Source Control", .context = self, .run = commandGitCommit },
             .{ .id = "workbench.scm.action.graph.refresh", .label = "Source Control Graph: Refresh", .category = "Source Control", .context = self, .run = commandScmHistoryRefresh },
             .{ .id = "workbench.scm.action.graph.pickHistoryItemRefs", .label = "Source Control Graph: Select History Item References", .category = "Source Control", .context = self, .run = commandScmHistoryPickRefs },
             .{ .id = "workbench.scm.action.graph.revealCurrentHistoryItem", .label = "Source Control Graph: Go to Current History Item", .category = "Source Control", .context = self, .run = commandScmHistoryReveal },
             .{ .id = "workbench.scm.action.graph.setListViewMode", .label = "Source Control Graph: View as List", .category = "Source Control", .context = self, .run = commandScmHistoryListMode },
             .{ .id = "workbench.scm.action.graph.setTreeViewMode", .label = "Source Control Graph: View as Tree", .category = "Source Control", .context = self, .run = commandScmHistoryTreeMode },
+            .{ .id = scm_view_mod.SET_LIST_VIEW_MODE_ACTION_ID, .label = "View as List", .category = "Source Control", .context = self, .run = commandScmListMode },
+            .{ .id = scm_view_mod.SET_TREE_VIEW_MODE_ACTION_ID, .label = "View as Tree", .category = "Source Control", .context = self, .run = commandScmTreeMode },
+            .{ .id = scm_view_mod.SET_SORT_BY_NAME_ACTION_ID, .label = "Sort Changes by Name", .category = "Source Control", .context = self, .run = commandScmSortByName },
+            .{ .id = scm_view_mod.SET_SORT_BY_PATH_ACTION_ID, .label = "Sort Changes by Path", .category = "Source Control", .context = self, .run = commandScmSortByPath },
+            .{ .id = scm_view_mod.SET_SORT_BY_STATUS_ACTION_ID, .label = "Sort Changes by Status", .category = "Source Control", .context = self, .run = commandScmSortByStatus },
             .{ .id = "git.openChange", .label = "Open Change", .category = "Source Control", .context = self, .run = commandGitOpenChange },
             .{ .id = "git.openFile", .label = "Open File", .category = "Source Control", .context = self, .run = commandGitOpenFile },
             .{ .id = "workbench.action.compareEditor.nextChange", .label = "Go to Next Change", .category = "Diff", .context = self, .run = commandDiffNext },
@@ -2365,7 +2363,7 @@ pub const Workbench = struct {
             changed = watcher.poll(now_ms) catch false;
             if (changed) {
                 if (self.search_view) |view| view.onConfigurationChanged();
-                self.applyScmHistoryConfig();
+                self.applyScmConfig();
             }
         }
         if (self.file_watcher_service) |service| {
@@ -2564,6 +2562,7 @@ pub const Workbench = struct {
 
     pub fn focusEditor(self: *Workbench) void {
         self.focus = .editor;
+        if (self.scm_view) |view| view.blurInput();
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
         self.statusbar.main_part.clearFocus();
@@ -3579,21 +3578,23 @@ pub const Workbench = struct {
             }
         }
 
-        const scm_view = try self.allocator.create(scm_view_mod.ScmView);
+        const scm_view = try self.allocator.create(scm_view_mod.SCMViewPane);
         const scm_interface = scm_service.interface();
         // The view only reads the service through the interface; keep a stable
         // copy because `interface()` returns by value.
         const service_copy = try self.allocator.create(scm_common.ISCMService);
         service_copy.* = scm_interface;
         self.scm_interface = service_copy;
-        scm_view.* = scm_view_mod.ScmView.init(self.allocator, service_copy, .{
+        scm_view.* = scm_view_mod.SCMViewPane.init(self.allocator, service_copy, .{
             .context = self,
             .open_change = scmViewOpen,
             .refresh = scmRefresh,
             .focus_editor = scmFocusEditor,
+            .commit = scmViewCommit,
+            .status = scmViewStatus,
         });
         self.scm_view = scm_view;
-        scm_view.refresh();
+        scm_view.setConfig(self.scmChangesConfig());
 
         // Graph view and the collapsible SCM view container. The existing
         // terminal ViewContainerModel only holds the portable visible/collapsed
@@ -3666,6 +3667,8 @@ pub const Workbench = struct {
         self.next_git_refresh = time_compat.milliTimestamp();
         self.syncGitStatus();
         self.syncGitActivity();
+        self.syncScmInput();
+        if (self.scm_view) |view| view.refresh();
         self.refreshStatus();
     }
 
@@ -3770,6 +3773,7 @@ pub const Workbench = struct {
     pub fn refreshGitStatus(self: *Workbench) void {
         const provider = self.repository orelse return;
         provider.refresh() catch {};
+        self.syncScmInput();
         if (self.scm_view) |view| view.refresh();
         if (provider.refreshHistoryRefs(true)) {
             if (self.scm_history_view) |view| view.onHistoryItemRefsChanged(true);
@@ -4177,6 +4181,101 @@ pub const Workbench = struct {
         self.focusEditor();
     }
 
+    fn scmViewCommit(context: *anyopaque, message: []const u8) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return self.commitScmMessage(message);
+    }
+
+    fn scmViewStatus(context: *anyopaque, message: []const u8) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.setStatusHint("{s}", .{message});
+    }
+
+    /// Commits `message`. With staged changes the index is committed as-is;
+    /// when the index is empty the terminal substitutes upstream's smart
+    /// commit prompt by staging the changed files (honoring
+    /// `git.smartCommitChanges`), then commits.
+    fn commitScmMessage(self: *Workbench, message: []const u8) !void {
+        const provider = self.repository orelse return error.NoRepository;
+        const state = provider.repository.stateRef();
+        if (message.len == 0) {
+            self.setStatusHint("Commit message is required", .{});
+            return error.EmptyCommitMessage;
+        }
+        if (state.merge_changes.len > 0) {
+            self.setStatusHint("Resolve the merge conflicts before committing", .{});
+            return error.UnresolvedConflicts;
+        }
+        const total = state.index_changes.len +
+            state.working_tree_changes.len +
+            state.untracked_changes.len;
+        if (total == 0) {
+            self.setStatusHint("No changes to commit", .{});
+            return error.NoChanges;
+        }
+
+        const git = provider.git orelse {
+            self.setStatusHint("Commit failed: Git is not available", .{});
+            return error.NoGit;
+        };
+
+        if (state.index_changes.len > 0) {
+            git.commitFiles(provider.root, &.{}, message, .{}) catch |err| {
+                self.setStatusHint("Commit failed: {s}", .{@errorName(err)});
+                return err;
+            };
+            self.setStatusHint("Committed", .{});
+            return;
+        }
+
+        var tracked_only = false;
+        if (self.configuration) |configuration| {
+            if (configuration.getValue("git.smartCommitChanges", .{})) |value| {
+                switch (value.*) {
+                    .string => |text| tracked_only = std.mem.eql(u8, text, "tracked"),
+                    else => {},
+                }
+            }
+        }
+        var files = std.array_list.Managed([]const u8).init(self.allocator);
+        defer files.deinit();
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        const working_paths = try uniqueChangePaths(&seen, state.working_tree_changes, files.allocator);
+        defer files.allocator.free(working_paths);
+        try files.appendSlice(working_paths);
+        if (!tracked_only) {
+            const untracked_paths = try uniqueChangePaths(&seen, state.untracked_changes, files.allocator);
+            defer files.allocator.free(untracked_paths);
+            try files.appendSlice(untracked_paths);
+        }
+        if (files.items.len == 0) {
+            self.setStatusHint("No tracked changes to commit", .{});
+            return error.NothingStaged;
+        }
+        git.commitFiles(provider.root, files.items, message, .{}) catch |err| {
+            self.setStatusHint("Commit failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        self.setStatusHint("Committed", .{});
+    }
+
+    fn uniqueChangePaths(
+        seen: *std.StringHashMap(void),
+        changes: []const repository_mod.GitChange,
+        allocator: Allocator,
+    ) ![]const []const u8 {
+        var paths = std.array_list.Managed([]const u8).init(allocator);
+        errdefer paths.deinit();
+        for (changes) |change| {
+            if (change.path.len == 0) continue;
+            if (seen.contains(change.path)) continue;
+            try seen.put(change.path, {});
+            try paths.append(change.path);
+        }
+        return paths.toOwnedSlice();
+    }
+
     /// Builds the Graph configuration from the user settings.
     pub fn scmHistoryConfig(self: *Workbench) scm_history_view_mod.Config {
         var config = scm_history_view_mod.Config{};
@@ -4232,10 +4331,83 @@ pub const Workbench = struct {
         return config;
     }
 
-    fn applyScmHistoryConfig(self: *Workbench) void {
+    /// Re-applies the SCM settings the terminal views understand. A view keeps
+    /// an explicit list/tree or sort choice made through its title action or
+    /// command, like upstream's workspace storage override.
+    fn applyScmConfig(self: *Workbench) void {
         const config = self.scmHistoryConfig();
         if (self.scm_history_view) |view| view.setConfig(config);
+        self.syncScmInput();
+        if (self.scm_view) |view| view.setConfig(self.scmChangesConfig());
         if (self.repository) |provider| provider.setCommitShortHashLength(config.short_hash_length);
+    }
+
+    /// Updates the Source Control input model from Git settings and the
+    /// current branch: `git.showCommitInput` controls visibility and the
+    /// placeholder mirrors the extension's
+    /// `Message ({0} to commit on "{1}")` template. The terminal uses Enter
+    /// as the accept key because a terminal cannot reliably distinguish
+    /// Ctrl+Enter from Enter.
+    fn syncScmInput(self: *Workbench) void {
+        const interface = self.scm_interface orelse return;
+        const repositories = interface.repositories();
+        if (repositories.len == 0) return;
+        const input = repositories[0].input;
+        const visible = if (self.configuration) |configuration|
+            configuration.getBool("git.showCommitInput", true)
+        else
+            true;
+        input.setVisible(visible);
+        var branch: ?[]const u8 = null;
+        if (self.repository) |provider| branch = provider.interface().detail;
+        const placeholder = if (branch) |name|
+            std.fmt.bufPrint(&self.scm_placeholder_buf, "Message (Enter to commit on \"{s}\")", .{name}) catch "Message (Enter to commit)"
+        else
+            "Message (Enter to commit)";
+        input.setPlaceholder(placeholder);
+    }
+
+    fn scmChangesConfig(self: *Workbench) scm_view_mod.Config {
+        var config = scm_view_mod.Config{};
+        const configuration = self.configuration orelse return config;
+        if (configuration.getValue("scm.defaultViewMode", .{})) |value| {
+            switch (value.*) {
+                .string => |text| config.default_view_mode = if (std.mem.eql(u8, text, "tree")) .tree else .list,
+                else => {},
+            }
+        }
+        if (configuration.getValue("scm.defaultViewSortKey", .{})) |value| {
+            switch (value.*) {
+                .string => |text| {
+                    if (std.mem.eql(u8, text, "name")) {
+                        config.default_view_sort_key = .name;
+                    } else if (std.mem.eql(u8, text, "status")) {
+                        config.default_view_sort_key = .status;
+                    } else {
+                        config.default_view_sort_key = .path;
+                    }
+                },
+                else => {},
+            }
+        }
+        config.always_show_repositories = configuration.getBool("scm.alwaysShowRepositories", false);
+        config.compact_folders = configuration.getBool("scm.compactFolders", true);
+        config.show_input_action_button = configuration.getBool("scm.showInputActionButton", true);
+        if (configuration.getValue("scm.providerCountBadge", .{})) |value| {
+            switch (value.*) {
+                .string => |text| {
+                    if (std.mem.eql(u8, text, "visible")) {
+                        config.provider_count_badge = .visible;
+                    } else if (std.mem.eql(u8, text, "auto")) {
+                        config.provider_count_badge = .auto;
+                    } else {
+                        config.provider_count_badge = .hidden;
+                    }
+                },
+                else => {},
+            }
+        }
+        return config;
     }
 
     fn scmChangesRenderBody(
@@ -4264,7 +4436,8 @@ pub const Workbench = struct {
 
     fn scmChangesTitleActions(context: *anyopaque) []const views_mod.TitleAction {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        return &self.changes_title_actions;
+        const view = self.scm_view orelse return &.{};
+        return view.titleActions();
     }
 
     fn scmHistoryRenderBody(
@@ -7852,21 +8025,39 @@ pub const Workbench = struct {
         if (std.mem.eql(u8, active_id, "scm")) {
             if (self.scm_container) |container| {
                 if (container.hitTest(content, event.x, event.y)) |hit| {
+                    // Mode-1003 terminals report idle motion. Only a press or
+                    // click may run a title action or toggle a section; a move
+                    // over a header just clears the list hover.
+                    const activating = event.kind == .down or event.kind == .click;
                     switch (hit) {
                         .action => |action| {
-                            container.setActive(action.id);
-                            self.runSidebarTitleAction(action.action);
+                            if (activating) {
+                                container.setActive(action.id);
+                                self.runSidebarTitleAction(action.action);
+                            }
                         },
                         .toggle => |id| {
-                            container.model.setCollapsed(id, !container.model.isCollapsed(id));
-                            container.setActive(id);
+                            if (activating) {
+                                container.model.setCollapsed(id, !container.model.isCollapsed(id));
+                                container.setActive(id);
+                            }
                         },
                         .body => {
                             _ = container.handleMouse(@constCast(event), content) catch false;
                         },
                     }
+                    if (event.kind == .move) {
+                        switch (hit) {
+                            .body => {},
+                            else => {
+                                if (self.scm_history_view) |view| view.clearHover();
+                                if (self.scm_view) |view| view.clearHover();
+                            },
+                        }
+                    }
                 } else if (event.kind == .move) {
                     if (self.scm_history_view) |view| view.clearHover();
+                    if (self.scm_view) |view| view.clearHover();
                 }
             } else if (self.scm_view) |view| {
                 _ = view.handleMouse(@constCast(event), content) catch false;
@@ -9672,6 +9863,37 @@ fn commandScmHistoryListMode(context: *anyopaque) anyerror!void {
 fn commandScmHistoryTreeMode(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (self.scm_history_view) |view| view.setViewMode(.tree);
+}
+
+fn commandScmListMode(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_view) |view| view.setViewMode(.list);
+}
+
+fn commandScmTreeMode(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_view) |view| view.setViewMode(.tree);
+}
+
+fn commandScmSortByName(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_view) |view| view.setViewSortKey(.name);
+}
+
+fn commandScmSortByPath(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_view) |view| view.setViewSortKey(.path);
+}
+
+fn commandScmSortByStatus(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.scm_view) |view| view.setViewSortKey(.status);
+}
+
+fn commandGitCommit(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const view = self.scm_view orelse return;
+    _ = view.commitInput();
 }
 
 fn commandGitOpenChange(context: *anyopaque) anyerror!void {
@@ -14339,6 +14561,22 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(provider.count() >= 3);
     try std.testing.expect(workbench.scm_view.?.resourceCount() >= 3);
 
+    // The Changes view honors the upstream view-mode and sort commands.
+    {
+        const view = workbench.scm_view.?;
+        try std.testing.expectEqual(scm_common.ViewMode.list, view.viewMode());
+        try std.testing.expectEqual(scm_view_mod.ViewSortKey.path, view.viewSortKey());
+        _ = try workbench.commands.execute(scm_view_mod.SET_SORT_BY_NAME_ACTION_ID);
+        try std.testing.expectEqual(scm_view_mod.ViewSortKey.name, view.viewSortKey());
+        _ = try workbench.commands.execute(scm_view_mod.SET_SORT_BY_PATH_ACTION_ID);
+        try std.testing.expectEqual(scm_view_mod.ViewSortKey.path, view.viewSortKey());
+        _ = try workbench.commands.execute(scm_view_mod.SET_TREE_VIEW_MODE_ACTION_ID);
+        try std.testing.expectEqual(scm_common.ViewMode.tree, view.viewMode());
+        try std.testing.expect(view.resourceCount() >= 3);
+        _ = try workbench.commands.execute(scm_view_mod.SET_LIST_VIEW_MODE_ACTION_ID);
+        try std.testing.expectEqual(scm_common.ViewMode.list, view.viewMode());
+    }
+
     // The SCM container stacks the Changes and Graph sections and the Graph
     // lists the repository commits.
     try std.testing.expect(workbench.scm_container != null);
@@ -14367,7 +14605,42 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try workbench.render(&scm_frame.writer);
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "SOURCE CONTROL") != null);
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Graph") != null);
+    // Changes renders the staged and working groups and their file names.
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Staged Changes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "staged.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "untracked.txt") != null);
+    // The commit-message input is pinned above the list with the branch in
+    // its placeholder and the check button at the right.
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Message (Enter to commit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "\u{2713} Commit") != null);
+    try std.testing.expectEqualStrings(
+        "Message (Enter to commit on \"main\")",
+        workbench.scm_interface.?.repositories()[0].input.placeholder(),
+    );
     workbench.scm_view_model.?.setCollapsed("graph", false);
+
+    // A mode-1003 idle motion over a section header must not toggle it or run
+    // its title actions; only a press does.
+    {
+        const container = workbench.scm_container.?;
+        var changes_header: ?ui.Rect = null;
+        for (container.sections.items) |section| {
+            if (std.mem.eql(u8, section.id, "changes")) changes_header = section.header_rect;
+        }
+        const header = changes_header orelse return error.TestExpectedChangesHeader;
+        var hover = ui.MouseEvent{
+            .kind = .move,
+            .x = ui.cell.snap(header.x) + 2,
+            .y = ui.cell.snap(header.y),
+        };
+        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
+        hover.kind = .down;
+        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(workbench.scm_view_model.?.isCollapsed("changes"));
+        try std.testing.expect(workbench.handleSidebarMouse(&hover));
+        try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
+    }
 
     // The history hover is a bordered overlay: every edge of its surface must
     // carry a border glyph. The DOM root is four cells smaller than the
@@ -14492,6 +14765,38 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expectEqual(@as(usize, 0), file_tab.editor.lineDecorationsWidth());
     workbench.quick_diff_controller.?.setConfig(.{ .decorations = .all });
     try std.testing.expectEqual(@as(usize, 1), file_tab.editor.lineDecorationsWidth());
+
+    // The commit input commits the index. The `git.commit` command reads the
+    // SCM input model, like upstream's command.
+    {
+        var input = workbench.scm_interface.?.repositories()[0].input;
+        input.setValue("scm commit message", false);
+        workbench.scm_view.?.refresh();
+        try std.testing.expect(provider.repository.stateRef().index_changes.len > 0);
+        _ = try workbench.commands.execute("git.commit");
+        const after_commit = provider.repository.stateRef();
+        try std.testing.expectEqual(@as(usize, 0), after_commit.index_changes.len);
+        try std.testing.expect(after_commit.working_tree_changes.len > 0);
+        try std.testing.expectEqualStrings("", input.value());
+        const subject = try captureGitTest(allocator, root, &.{ "log", "-1", "--pretty=%s" });
+        defer if (subject) |text| allocator.free(text);
+        try std.testing.expect(subject != null);
+        try std.testing.expect(std.mem.indexOf(u8, subject.?, "scm commit message") != null);
+
+        // With an empty index the terminal's smart-commit path stages the
+        // changed files before committing.
+        input.setValue("smart commit", false);
+        workbench.scm_view.?.refresh();
+        _ = try workbench.commands.execute("git.commit");
+        const after_smart = provider.repository.stateRef();
+        try std.testing.expectEqual(@as(usize, 0), after_smart.index_changes.len);
+        try std.testing.expectEqual(@as(usize, 0), after_smart.working_tree_changes.len);
+        try std.testing.expectEqual(@as(usize, 0), after_smart.untracked_changes.len);
+        const smart_subject = try captureGitTest(allocator, root, &.{ "log", "-1", "--pretty=%s" });
+        defer if (smart_subject) |text| allocator.free(text);
+        try std.testing.expect(smart_subject != null);
+        try std.testing.expect(std.mem.indexOf(u8, smart_subject.?, "smart commit") != null);
+    }
 }
 
 test "Workbench: clicking Load More pages the SCM history" {
@@ -14545,6 +14850,27 @@ test "Workbench: clicking Load More pages the SCM history" {
     var click = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleSidebarMouse(&click));
     try std.testing.expectEqual(@as(usize, 4), view.rows.items.len);
+}
+
+fn captureGitTest(allocator: Allocator, root: []const u8, args: []const []const u8) !?[]u8 {
+    var argv = std.array_list.Managed([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.append("git");
+    try argv.append("-C");
+    try argv.append(root);
+    try argv.appendSlice(args);
+    const result = std.process.run(allocator, std.testing.io, .{
+        .argv = argv.items,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(20_000), .clock = .awake } },
+    }) catch return null;
+    defer allocator.free(result.stderr);
+    if (!(result.term == .exited and result.term.exited == 0)) {
+        allocator.free(result.stdout);
+        return null;
+    }
+    return result.stdout;
 }
 
 fn runGitTest(allocator: Allocator, root: []const u8, args: []const []const u8) !bool {

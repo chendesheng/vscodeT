@@ -8,8 +8,8 @@
 //   `IObservable` provider properties (count, context value, ...) become plain
 //   fields refreshed by the provider. The observable system is not ported.
 // - Menus, artifacts, input validation/history and the multi-repository view
-//   service are outside the read-only terminal scope and are not ported. The
-//   history provider is exposed here so the Graph view can reach it.
+//   service are not ported. The history provider is exposed here so the Graph
+//   view can reach it.
 const std = @import("std");
 
 const languages = @import("../../../../editor/common/languages.zig");
@@ -116,15 +116,19 @@ pub const ISCMProvider = struct {
     }
 };
 
-/// Minimal terminal port of `ISCMInput`. The read-only scope has no commit
-/// input widget or history; the value and enablement fields remain so a later
-/// staging/commit milestone can grow it without changing the repository shape.
+/// Terminal port of `ISCMInput`. The input text, placeholder, enablement and
+/// visibility are plain fields refreshed through accessors; the history,
+/// validation and focus events of the browser input are not ported.
 pub const ISCMInput = struct {
     context: *anyopaque,
     value_fn: *const fn (context: *anyopaque) []const u8,
     set_value_fn: *const fn (context: *anyopaque, value: []const u8, from_keyboard: bool) void,
+    placeholder_fn: *const fn (context: *anyopaque) []const u8,
+    set_placeholder_fn: *const fn (context: *anyopaque, placeholder: []const u8) void,
     enabled_fn: *const fn (context: *anyopaque) bool,
+    set_enabled_fn: *const fn (context: *anyopaque, enabled: bool) void,
     visible_fn: *const fn (context: *anyopaque) bool,
+    set_visible_fn: *const fn (context: *anyopaque, visible: bool) void,
     on_did_change: *Emitter(void),
 
     pub fn value(self: ISCMInput) []const u8 {
@@ -135,12 +139,28 @@ pub const ISCMInput = struct {
         self.set_value_fn(self.context, new_value, from_keyboard);
     }
 
+    pub fn placeholder(self: ISCMInput) []const u8 {
+        return self.placeholder_fn(self.context);
+    }
+
+    pub fn setPlaceholder(self: ISCMInput, new_placeholder: []const u8) void {
+        self.set_placeholder_fn(self.context, new_placeholder);
+    }
+
     pub fn enabled(self: ISCMInput) bool {
         return self.enabled_fn(self.context);
     }
 
+    pub fn setEnabled(self: ISCMInput, is_enabled: bool) void {
+        self.set_enabled_fn(self.context, is_enabled);
+    }
+
     pub fn visible(self: ISCMInput) bool {
         return self.visible_fn(self.context);
+    }
+
+    pub fn setVisible(self: ISCMInput, is_visible: bool) void {
+        self.set_visible_fn(self.context, is_visible);
     }
 };
 

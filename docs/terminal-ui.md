@@ -1422,9 +1422,9 @@ Library constraints:
   own section headers. Title colors come from `sideBarTitle.*`; the
   top/bottom composite bar uses `activityBarTop.*`. The Search toolbar runs
   `search.action.clearSearchResults` and
-  `workbench.action.search.toggleQueryDetails`; the other view title actions
-  (Explorer file actions, the SCM provider refresh action) are not ported as
-  commands. `Ctrl-0` focuses the side bar,
+  `workbench.action.search.toggleQueryDetails`; the SCM title toolbar refreshes
+  the provider and toggles list/tree mode. The Explorer title/file actions are
+  not ported as commands. `Ctrl-0` focuses the side bar,
   `workbench.action.closeSidebar` hides it and
   `workbench.action.previousSideBarView`/`nextSideBarView` cycle the visible
   containers. Not ported: the 35 px title metrics and its 1 px theme borders
@@ -1625,8 +1625,23 @@ service/repository contract (one delegate, state getter plus change event
 instead of observables), `src/vs/workbench/contrib/scm/common/` ports the SCM
 service/provider/resource subset and the quick-diff service, and
 `src/extensions/git/src/repository.zig` maps the repository state to the upstream
-`Merge Changes`/`Staged Changes`/`Changes` groups and to the primary/secondary
-quick-diff providers.
+`Merge Changes`/`Staged Changes`/`Changes` groups, maps porcelain `XY` statuses
+to the upstream file decoration letters, status texts and theme colors, and
+provides the primary/secondary quick-diff providers.
+
+The Source Control Changes view (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`)
+keeps the upstream `SCMTreeDataSource`/`SCMTreeSorter`/`SCMTreeFilter` behavior
+for the read-only subset. With a single repository the groups are the tree-root
+children (the repository header only appears with `scm.alwaysShowRepositories`
+or multiple repositories). Groups and tree-mode folders are collapsible rows
+with twisties and count badges; change rows carry a file label, the Git
+decoration badge and the upstream strike-through/faded decoration flags. List
+sorting follows `scm.defaultViewSortKey`, tree mode folders sort before files
+and a deeper single-child folder chain is compressed when `scm.compactFolders`
+is on (top-level folders stay uncompressed, matching
+`SCMTreeCompressionDelegate`).
+Selection is preserved by element identity across refreshes, collapse changes
+and view-mode switches.
 
 Terminal substitutions and their reasons:
 
@@ -1636,6 +1651,31 @@ Terminal substitutions and their reasons:
   (`quickDiff.zig`, `diffEditorDecorations.zig`, `src/tui/editorView.zig`).
   `scm.diffDecorationsGutterPattern` is represented by dimming; the pattern,
   minimap and gutter-width settings cannot be represented as cells.
+- **Changes rows as cells.** Upstream rows are 22px flex DOM rows with icons
+  and a 0.9em description. A terminal row is one cell: indentation is two cells
+  per tree level plus a twistie gutter, the file/status icon theme is replaced
+  by the Git decoration letter badge (`M`/`U`/`!`, ...), folder rows append
+  `/` to stand in for the folder icon, the relative directory
+  is painted in `descriptionForeground` instead of a smaller font,
+  strikethrough uses the cell attribute, and the `.faded` opacity is a 0.7
+  color blend over the row background. Hover and selection use
+  `list.hoverBackground`/`list.activeSelectionBackground`/
+  `list.inactiveSelectionBackground`. There is no double click (single click
+  toggles a collapsible row and opens a change row), no multi-selection, no
+  tree filter/find, no hover tooltip, no drag/drop and no auto-reveal. The
+  commit-message row is pinned above the list rather than scrolling with the
+  tree; a terminal row cannot show the browser's multi-line editor, so the
+  message is single-line, its placeholder substitutes Enter for the
+  `Ctrl-Enter` binding label, and Enter (or the labelled Commit button below
+  the input, or Ctrl-Enter from the list) commits. Staged changes commit
+  as-is; with an empty index
+  the terminal replaces upstream's smart-commit prompt by staging changed
+  files (`git.smartCommitChanges` all/tracked) and committing. The commit
+  dropdown (amend/signed/push), staging/discard commands, multi-line
+  messages, validation/history, the Git action button and the inline
+  staging/discard actions remain unported; the list/tree and sort-key
+  commands are reachable from the pane title action and the command palette
+  because the view-title dropdown menu is not ported.
 - **Gutter marker cell.** `Margin` paints `line numbers | fold | quick diff`;
   the editor reserves `line_decorations_width` (0 or 1) after the fold cell and
   exposes `foldCellColumn()`/`quickDiffCellColumn()` so hit testing and the fold

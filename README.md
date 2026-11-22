@@ -805,9 +805,9 @@ console API for raw mode, sizing and input polling.
   through a `Surface`) exactly like the panel title, and the view pane
   containers render below it without their own section headers. The Search
   title toolbar runs `Clear Search Results` (`x`) and `Toggle Search Details`
-  (`…`); the Explorer's New File/New Folder/Refresh/Collapse All actions and
-  the SCM provider refresh action are not ported as commands (SCM keeps its
-  `r` key). `Ctrl-0` focuses the side bar,
+  (`…`); the SCM title toolbar refreshes the provider and toggles list/tree
+  mode, while the Explorer's New File/New Folder/Refresh/Collapse All actions
+  are not ported as commands. `Ctrl-0` focuses the side bar,
   `workbench.action.closeSidebar` closes it,
   `workbench.action.toggleSidebarVisibility` toggles it and
   `workbench.action.previousSideBarView`/`nextSideBarView` cycle the visible
@@ -837,16 +837,40 @@ console API for raw mode, sizing and input polling.
   (`src/extensions/git/src/repository.zig`) exposes the upstream `Merge Changes`,
   `Staged Changes` and `Changes` groups (untracked files mixed into `Changes`,
   matching `git.untrackedChanges=mixed`), v2 status letters, rename/delete and
-  unmerged entries, and registers primary (`working ↔ index`) and secondary
-  (`index ↔ HEAD`) quick-diff providers. The SCM sidebar
-  (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`) shows `SOURCE CONTROL`, a repository/branch row,
-  group counts and relative-path resource rows. `Up`/`Down` select, `Enter` or
-  a click opens the change, `r` refreshes and `Escape` returns to the editor.
-  Resource groups collapse/expand with the header click, `Left`/`Right` or
-  `Space`. The branch/count status entry (`⎇ branch ↑n ↓m (count)`) opens the
-  SCM view, and the activity badge follows `scm.countBadge`
-  (`all`/`focused`/`off`). There is no extension-host SCM actor, so `vscode.git`
-  is replaced by the CLI delegate and the mirrored
+  unmerged entries, maps porcelain statuses to the upstream letters, tooltips
+  and theme colors (`M`/`U`/`!`, `Modified`/`Untracked`/`Conflict: ...`), and
+  registers primary (`working ↔ index`) and secondary (`index ↔ HEAD`)
+  quick-diff providers. The SCM sidebar
+  (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`) ports the Changes
+  view: with one repository the resource groups sit at the top level, while
+  `scm.alwaysShowRepositories` adds the repository header (whose count follows
+  `scm.providerCountBadge`). Each group has a twistie, its label and a count
+  badge; each change row shows the file name, the dimmed repository-relative
+  directory in list mode, the Git status badge in its theme color,
+  strike-through for deleted files and the faded row state. `scm.defaultViewMode`
+  (list/tree), `scm.defaultViewSortKey` (path/name/status) and
+  `scm.compactFolders` (tree mode) are honored, and the title action plus the
+  `Source Control: View as List/Tree` and `Source Control: Sort Changes by ...`
+  commands switch modes and sort keys. A pinned commit-message row above the
+  list shows the branch-aware placeholder
+  (`Message (Enter to commit on "branch")`), with a labelled Commit button
+  below it; `Enter`, the button or `Ctrl-Enter` from the list commits. Staged
+  changes are committed
+  as-is, while an empty index uses the terminal's smart-commit substitution:
+  the working/untracked changes are staged (`git.smartCommitChanges`
+  `all`/`tracked`) and committed, replacing the browser's smart-commit prompt.
+  `git.showCommitInput` and `scm.showInputActionButton` are honored.
+  `Up`/`Down`/`Home`/`End`/`PageUp`/`PageDown` move the selection,
+  `Left`/`Right`/`Space` collapse and expand groups and folders, `Enter` or a
+  click opens the change, `r` refreshes and `Escape` returns to the editor;
+  the mouse wheel scrolls and rows paint hover/selection backgrounds. Not
+  ported: the commit dropdown (amend/signed/push), staging/discard commands,
+  multi-line commit messages, input validation/history, the Git action button,
+  file/status icons, hover tooltips, multi-selection, the tree filter/find,
+  drag/drop and auto-reveal. The branch/count status entry
+  (`⎇ branch ↑n ↓m (count)`) opens the SCM view, and the activity badge follows
+  `scm.countBadge` (`all`/`focused`/`off`). There is no extension-host SCM
+  actor, so `vscode.git` is replaced by the CLI delegate and the mirrored
   `src/extensions/git/src/historyProvider.zig`.
 - The Source Control Graph (`workbench.scm.history`) is a second section of the
   SCM container. `src/vs/workbench/contrib/scm/browser/scmHistory.zig` ports the
@@ -870,8 +894,8 @@ console API for raw mode, sizing and input polling.
   single-select instead of upstream's multi-select; one repository per
   workspace so the repository picker is hidden; hover is plain text without
   avatars/markdown/command links; page fetches are capped at 20 per call.
-  Staging, committing, discarding, the SCM input box, multi-repository
-  selection and artifacts remain unported.
+  Staging, discarding, the commit dropdown actions (amend/sign/push),
+  multi-repository selection and artifacts remain unported.
 - Quick diff is applied as `TextModel` decorations with the upstream
   `dirty-diff-*` classes: whole-line added/modified/deleted ranges, the
   one-cell gutter marker (`+`/`~`/`-`, primary/secondary/pattern variants
