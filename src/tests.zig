@@ -242,6 +242,7 @@ comptime {
     _ = @import("./vs/editor/test/common/model/tokens/tokenPrimitivesTests.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/bracketPairsTests.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/combineTextEditInfos.test.zig");
+    _ = @import("./vs/editor/test/common/model/bracketPairColorizer/concat23Trees.test.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/length.test.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/smallImmutableSet.test.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/getBracketPairsInRange.test.zig");

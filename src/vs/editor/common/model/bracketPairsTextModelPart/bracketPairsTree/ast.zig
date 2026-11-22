@@ -105,6 +105,92 @@ pub const AstNode = struct {
         return node;
     }
 
+    fn recomputeList(self: *AstNode) void {
+        const list = &self.data.list;
+        var length: Length = 0;
+        var missing = SmallImmutableSet.empty();
+        for (list.children.items) |c| {
+            length = lengthAdd(length, c.length);
+            missing = missing.merge(c.missing);
+        }
+        self.length = length;
+        self.missing = missing;
+        list.cached_min_indentation = -1;
+    }
+
+    pub fn toMutable(self: *AstNode) *AstNode {
+        return self;
+    }
+
+    pub fn makeLastElementMutable(self: *AstNode) ?*AstNode {
+        return switch (self.data) {
+            .list => |list| if (list.children.items.len > 0) list.children.items[list.children.items.len - 1] else null,
+            else => null,
+        };
+    }
+
+    pub fn makeFirstElementMutable(self: *AstNode) ?*AstNode {
+        return switch (self.data) {
+            .list => |list| if (list.children.items.len > 0) list.children.items[0] else null,
+            else => null,
+        };
+    }
+
+    pub fn appendChildOfSameHeight(self: *AstNode, node: *AstNode) void {
+        const list = &self.data.list;
+        list.children.append(node) catch return;
+        self.length = lengthAdd(self.length, node.length);
+        self.missing = self.missing.merge(node.missing);
+        list.cached_min_indentation = -1;
+    }
+
+    pub fn unappendChild(self: *AstNode) ?*AstNode {
+        const list = &self.data.list;
+        if (list.children.items.len == 0) return null;
+        const removed = list.children.pop().?;
+        self.recomputeList();
+        return removed;
+    }
+
+    pub fn prependChildOfSameHeight(self: *AstNode, node: *AstNode) void {
+        const list = &self.data.list;
+        list.children.insert(0, node) catch return;
+        self.length = lengthAdd(node.length, self.length);
+        self.missing = node.missing.merge(self.missing);
+        list.cached_min_indentation = -1;
+    }
+
+    pub fn unprependChild(self: *AstNode) ?*AstNode {
+        const list = &self.data.list;
+        if (list.children.items.len == 0) return null;
+        const removed = list.children.orderedRemove(0);
+        self.recomputeList();
+        return removed;
+    }
+
+    pub fn handleChildrenChanged(self: *AstNode) void {
+        self.recomputeList();
+    }
+
+    pub fn flattenLists(self: *AstNode, allocator: Allocator) !*AstNode {
+        switch (self.data) {
+            .list => |list| {
+                var items = ArrayList(*AstNode).init(allocator);
+                defer items.deinit();
+                for (list.children.items) |c| {
+                    const normalized = try c.flattenLists(allocator);
+                    if (normalized.data == .list) {
+                        try items.appendSlice(normalized.data.list.children.items);
+                    } else {
+                        try items.append(normalized);
+                    }
+                }
+                return try makeList(allocator, items.items, if (items.items.len > 0) items.items[0].list_height else 0);
+            },
+            else => return self,
+        }
+    }
+
     pub fn canBeReused(self: *const AstNode, opened: SmallImmutableSet) bool {
         return switch (self.data) {
             .text => true,
@@ -228,7 +314,7 @@ pub fn makePair(allocator: Allocator, opening: *AstNode, child: *AstNode, closin
     return node;
 }
 
-pub fn makeList(allocator: Allocator, items: []*AstNode, height: u32) !*AstNode {
+pub fn makeList(allocator: Allocator, items: []const *AstNode, height: u32) !*AstNode {
     var children = ArrayList(*AstNode).init(allocator);
     try children.appendSlice(items);
     var length: Length = 0;
@@ -250,4 +336,21 @@ pub fn makeList(allocator: Allocator, items: []*AstNode, height: u32) !*AstNode 
 
 pub fn makeEmptyList(allocator: Allocator) !*AstNode {
     return try makeList(allocator, &[_]*AstNode{}, 0);
+}
+
+/// Upstream `ListAstNode.create23`.
+pub fn create23(allocator: Allocator, item1: *AstNode, item2: *AstNode, item3: ?*AstNode) !*AstNode {
+    if (item1.list_height != item2.list_height) return error.InvalidListHeights;
+    if (item3) |third| {
+        if (item1.list_height != third.list_height) return error.InvalidListHeights;
+    }
+    var items: [3]*AstNode = undefined;
+    items[0] = item1;
+    items[1] = item2;
+    var count: usize = 2;
+    if (item3) |third| {
+        items[2] = third;
+        count = 3;
+    }
+    return try makeList(allocator, items[0..count], item1.list_height + 1);
 }

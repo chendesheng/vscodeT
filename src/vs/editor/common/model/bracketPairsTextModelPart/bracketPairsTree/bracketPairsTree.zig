@@ -3,8 +3,7 @@
 // The port keeps the bracket-pair tree, document parsing and query logic in
 // this file; the upstream modules `ast.ts`, `brackets.ts`, `length.ts`,
 // `parser.ts`, `smallImmutableSet.ts` and `tokenizer.ts` live in their own
-// files. `concat23Trees.ts` is replaced by the parser's `buildList`. Colors
-// are UTF-8 byte lengths, not UTF-16 code units.
+// files. Colors are UTF-8 byte lengths, not UTF-16 code units.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;

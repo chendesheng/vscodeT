@@ -1,7 +1,6 @@
 // Port of `src/vs/editor/common/model/bracketPairsTextModelPart/bracketPairsTree/parser.ts`.
 //
-// The port replaces `concat23Trees.ts` with `buildList`, which constructs the
-// same (2,3)-list shape for the parser's inputs.
+// Uses the ported `concat23Trees.ts` helpers for list construction.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -23,6 +22,9 @@ const tokenizer_mod = @import("./tokenizer.zig");
 const Token = tokenizer_mod.Token;
 const Tokenizer = tokenizer_mod.Tokenizer;
 const NodeReader = @import("./nodeReader.zig").NodeReader;
+const concat_mod = @import("./concat23Trees.zig");
+const concat23Trees = concat_mod.concat23Trees;
+const concat23TreesOfSameHeight = concat_mod.concat23TreesOfSameHeight;
 const BeforeEditPositionMapper = @import("./beforeEditPositionMapper.zig").BeforeEditPositionMapper;
 
 pub const Parser = struct {
@@ -49,8 +51,11 @@ pub const Parser = struct {
             if (child.kind == .list and child.data.list.children.items.len == 0) continue;
             try items.append(child);
         }
-        if (items.items.len == 0) return try makeEmptyList(self.allocator);
-        return try buildList(self.allocator, items.items);
+        const result = if (self.oldReader != null)
+            try concat23Trees(self.allocator, items.items)
+        else
+            try concat23TreesOfSameHeight(self.allocator, items.items);
+        return result orelse try makeEmptyList(self.allocator);
     }
 
     fn tryReadChildFromCache(self: *Parser, opened: SmallImmutableSet) !?*AstNode {
@@ -84,23 +89,3 @@ pub const Parser = struct {
         }
     }
 };
-
-fn buildList(allocator: Allocator, items: []*AstNode) !*AstNode {
-    if (items.len == 0) return try makeEmptyList(allocator);
-    if (items.len == 1) return items[0];
-    if (items.len <= 3) return try makeList(allocator, items, items[0].list_height + 1);
-    var groups = ArrayList(*AstNode).init(allocator);
-    defer groups.deinit();
-    var i: usize = 0;
-    while (i < items.len) {
-        const remaining = items.len - i;
-        if (remaining <= 3) {
-            try groups.append(try makeList(allocator, items[i..], items[i].list_height + 1));
-            break;
-        }
-        const take: usize = if (remaining - 3 == 1) 2 else 3;
-        try groups.append(try makeList(allocator, items[i .. i + take], items[i].list_height + 1));
-        i += take;
-    }
-    return buildList(allocator, groups.items);
-}
