@@ -525,3 +525,46 @@ test "bracket pairs: text before the closing bracket keeps the closing guide lin
     try std.testing.expectEqual(@as(isize, 5), closing_guide.visibleColumn);
     try std.testing.expectEqual(@as(isize, 7), closing_guide.forWrappedLinesBeforeOrAtColumn);
 }
+
+test "bracket pairs: guide view merges indentation and bracket guides" {
+    const allocator = std.testing.allocator;
+    const indent_guides = @import("../../../../browser/viewParts/indentGuides/indentGuides.zig");
+    var brackets = [_]CharacterPair{.{ "{", "}" }};
+    var fixture = try Fixture.init(allocator, "root\n    if (x) {\n        y\n    }", makeConfig(&brackets, &brackets));
+    defer fixture.deinit();
+    fixture.ctx.model.forceTokenization(fixture.ctx.model.getLineCount());
+    try fixture.ctx.model.bracketPairs().updateNow();
+
+    var guides_part = @import("../../../../common/model/guidesTextModelPart.zig").GuidesTextModelPart.init(
+        fixture.ctx.model,
+        fixture.ctx.languageService,
+    );
+    defer guides_part.dispose();
+
+    const lines = try indent_guides.getGuidesByLine(
+        allocator,
+        fixture.ctx.model,
+        &guides_part,
+        1,
+        fixture.ctx.model.getLineCount(),
+        Position.init(2, 1),
+        .{
+            .include_inactive_bracket_pairs = true,
+            .horizontal_guides = .Disabled,
+            .highlight_active_bracket_pair = true,
+            .highlight_active_indentation = .enabled,
+        },
+    );
+    defer {
+        for (lines) |*line| line.deinit();
+        allocator.free(lines);
+    }
+
+    // Line 2 has a level-1 indent guide and the bracket guide for `{ }`.
+    try std.testing.expectEqual(@as(usize, 2), lines[1].items.len);
+    try std.testing.expectEqualStrings("core-guide-indent lvl-0", lines[1].items[0].className);
+    try std.testing.expectEqual(@as(isize, 5), lines[1].items[1].visibleColumn);
+    try std.testing.expect(std.mem.startsWith(u8, lines[1].items[1].className, "bracket-indent-guide"));
+    // Bracket guides on the line disable the default active indent highlight.
+    try std.testing.expect(std.mem.indexOf(u8, lines[1].items[0].className, "indent-active") == null);
+}

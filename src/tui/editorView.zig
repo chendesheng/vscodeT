@@ -61,6 +61,7 @@ const ui = @import("ui");
 const cellMetrics = @import("./cellMetrics.zig");
 
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const indent_guides = @import("../vs/editor/browser/viewParts/indentGuides/indentGuides.zig");
 const TerminalViewHost = @import("../vs/editor/browser/widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
 const tokenization = @import("../vs/editor/common/tokenizationRegistry.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
@@ -83,7 +84,6 @@ const markers_mod = @import("../vs/platform/markers/common/markers.zig");
 const scrollbar_state = @import("../vs/base/browser/ui/scrollbar/scrollbarState.zig");
 const GuidesTextModelPart = @import("../vs/editor/common/model/guidesTextModelPart.zig").GuidesTextModelPart;
 const computeIndentLevel = @import("../vs/editor/common/model/utils.zig").computeIndentLevel;
-const indent_guides = @import("../vs/editor/browser/viewParts/indentGuides/indentGuides.zig");
 const rulers_mod = @import("../vs/editor/browser/viewParts/rulers/rulers.zig");
 const scroll_decoration = @import("../vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig");
 const overlay_widgets_mod = @import("../vs/editor/browser/viewParts/overlayWidgets/overlayWidgets.zig");
@@ -1269,6 +1269,18 @@ pub const View = struct {
         return fadeOver(value, alpha, background);
     }
 
+    /// Extracts the `lvl-N` suffix from an upstream guide class name.
+    fn guideLevel(class_name: []const u8) usize {
+        const marker = "lvl-";
+        const index = std.mem.lastIndexOf(u8, class_name, marker) orelse return 0;
+        var value: usize = 0;
+        var i = index + marker.len;
+        while (i < class_name.len and class_name[i] >= '0' and class_name[i] <= '9') : (i += 1) {
+            value = value * 10 + (class_name[i] - '0');
+        }
+        return value;
+    }
+
     fn bracketGuideColors(self: *const View, level: usize, active: bool) ?ui.Color {
         if (self.bracket_guide_color_count == 0) return null;
         const colors = self.bracket_guide_colors[level % self.bracket_guide_color_count];
@@ -1782,106 +1794,72 @@ pub const View = struct {
         const total = editor.viewLineCount();
         const top = editor.topViewLine();
         const tab_size = editor.tabSize();
-        const indent_size = @max(editor.indentSize(), 1);
 
         if (top <= total) {
             try self.terminal_view_host.renderViewport();
         }
 
-        var guide_counts: []usize = &.{};
+        var guide_lines: []indent_guides.LineGuides = &.{};
         var guide_start_model_line: usize = 0;
         var guide_end_model_line: usize = 0;
         if (top <= total) {
             const end_view_line = @min(total, top + text_height -| 1);
             guide_start_model_line = editor.modelLineNumber(top);
             guide_end_model_line = editor.modelLineNumber(end_view_line);
-            guide_counts = try self.guides.getLinesIndentGuides(
+            const defer_bracket_guides = editor.shouldDeferBracketGuides();
+            if (defer_bracket_guides) editor.scheduleBracketGuides(time_compat.milliTimestamp());
+            guide_lines = try indent_guides.getGuidesByLine(
                 self.allocator,
+                editor.model,
+                &self.guides,
                 guide_start_model_line,
                 guide_end_model_line,
+                editor.modelCursorPosition(),
+                .{
+                    .include_inactive_bracket_pairs = true,
+                    .horizontal_guides = .Disabled,
+                    .highlight_active_bracket_pair = true,
+                    .highlight_active_indentation = .enabled,
+                    .include_bracket_guides = !defer_bracket_guides,
+                },
             );
         }
-        defer if (guide_counts.len > 0) self.allocator.free(guide_counts);
+        defer {
+            for (guide_lines) |*line| line.deinit();
+            if (guide_lines.len > 0) self.allocator.free(guide_lines);
+        }
 
         var guide_specs = std.array_list.Managed(GuideSpec).init(self.allocator);
         defer guide_specs.deinit();
 
-        if (guide_counts.len > 0) {
-            // Passive indentation guides first; bracket pairs and the active
-            // scope paint over them when they share a cell.
-            for (guide_counts, 0..) |guide_count, index| {
+        if (guide_lines.len > 0) {
+            // The view part has already merged indent guides, the active
+            // indentation scope and bracket-pair guides in upstream order.
+            for (guide_lines, 0..) |line, index| {
                 const model_line = guide_start_model_line + index;
                 const row = viewRowForModelLine(editor, top, model_line) orelse continue;
                 var content = try editor.model.getLineContent(model_line);
                 defer content.deinit();
                 const indent_width = computeIndentLevel(content.items, tab_size);
-                var level: usize = 0;
-                while (level < guide_count) : (level += 1) {
-                    const guide_col = level * indent_size;
-                    if (guide_col >= text_width) break;
-                    if (indent_width >= 0 and guide_col >= @as(usize, @intCast(indent_width))) break;
-                    try guide_specs.append(.{ .row = row, .col = guide_col, .color = rgbOf(self.indentGuideColors(level).inactive) });
-                }
-            }
-
-            // Active indentation scope comes from the model part, exactly like
-            // upstream `getActiveIndentGuide`.
-            const cursor_model_line = editor.modelCursorPosition().lineNumber;
-            if (self.guides.getActiveIndentGuide(
-                cursor_model_line,
-                guide_start_model_line,
-                guide_end_model_line,
-            ) catch null) |active_info| {
-                if (active_info.indent > 0) {
-                    var model_line = @max(active_info.startLineNumber, guide_start_model_line);
-                    const last_model_line = @min(active_info.endLineNumber, guide_end_model_line);
-                    while (model_line <= last_model_line) : (model_line += 1) {
-                        const row = viewRowForModelLine(editor, top, model_line) orelse continue;
-                        try guide_specs.append(.{
-                            .row = row,
-                            .col = (active_info.indent - 1) * indent_size,
-                            .color = rgbOf(self.indentGuideColors(active_info.indent - 1).active),
-                        });
-                    }
-                }
-            }
-
-            // Vertical bracket-pair guides. They are only painted where the
-            // underlying cell is leading whitespace; a terminal cell cannot
-            // show both the guide and a text glyph.
-            if (guide_end_model_line >= guide_start_model_line) {
-                if (editor.shouldDeferBracketGuides()) {
-                    editor.scheduleBracketGuides(time_compat.milliTimestamp());
-                } else {
-                    const bracket_guides = try indent_guides.getBracketGuides(
-                        self.allocator,
-                        editor.model,
-                        guide_start_model_line,
-                        guide_end_model_line,
-                        editor.modelCursorPosition(),
-                    );
-                    defer {
-                        for (bracket_guides) |*line_guides| line_guides.deinit();
-                        self.allocator.free(bracket_guides);
-                    }
-
-                    for (bracket_guides, 0..) |line_guides, index| {
-                        const model_line = guide_start_model_line + index;
-                        const row = viewRowForModelLine(editor, top, model_line) orelse continue;
-                        var content = try editor.model.getLineContent(model_line);
-                        defer content.deinit();
-                        const indent_width = computeIndentLevel(content.items, tab_size);
-                        for (line_guides.items) |guide| {
-                            if (guide.column >= text_width) continue;
-                            if (indent_width >= 0 and guide.column >= @as(usize, @intCast(indent_width))) continue;
-                            const guide_color = self.bracketGuideColors(guide.level, guide.active) orelse continue;
-                            try guide_specs.append(.{
-                                .row = row,
-                                .col = guide.column,
-                                .color = rgbOf(guide_color),
-                            });
-                        }
-                    }
+                for (line.items) |guide| {
+                    // Horizontal guide segments need a multi-cell horizontal
+                    // line; the terminal guide layer only paints verticals.
+                    if (guide.horizontalLine != null) continue;
+                    if (guide.visibleColumn < 0) continue;
+                    const column: usize = @intCast(guide.visibleColumn - 1);
+                    if (column >= text_width) continue;
+                    if (indent_width >= 0 and column >= @as(usize, @intCast(indent_width))) continue;
+                    const level = guideLevel(guide.className);
+                    const active = std.mem.indexOf(u8, guide.className, "indent-active") != null;
+                    const guide_color = if (std.mem.startsWith(u8, guide.className, "core-guide-indent"))
+                        rgbOf(if (active) self.indentGuideColors(level).active else self.indentGuideColors(level).inactive)
+                    else
+                        rgbOf(self.bracketGuideColors(level, active) orelse continue);
+                    try guide_specs.append(.{
+                        .row = row,
+                        .col = column,
+                        .color = guide_color,
+                    });
                 }
             }
         }
