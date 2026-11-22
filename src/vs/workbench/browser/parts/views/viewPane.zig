@@ -229,3 +229,28 @@ fn hashText(hasher: *std.hash.Wyhash, text: []const u8) void {
     hasher.update(text);
     hasher.update(&[_]u8{0});
 }
+
+test "view pane header paints title/actions and hit-tests them" {
+    const allocator = std.testing.allocator;
+    var grid = try ui.CellGrid.init(allocator, 30, 1);
+    defer grid.deinit();
+
+    var header = Header.init(allocator, "Explorer");
+    defer header.deinit();
+    const actions = [_]views.TitleAction{
+        .{ .id = "settings", .label = "Settings", .glyph = 0x2699, .enabled = true },
+    };
+    header.setActions(&actions);
+    header.outdated = true;
+    const rect = ui.Rect{ .x = 0, .y = 0, .w = 30, .h = 1 };
+    try header.render(&grid, rect, null, false);
+
+    const text = try grid.rowText(allocator, 0);
+    defer allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Explorer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Outdated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\u{2699}") != null);
+    try std.testing.expect(header.hitTest(rect, 1, 0) != null);
+    try std.testing.expect(header.hitTest(rect, 29, 0) != null);
+    try std.testing.expect(header.hitTest(rect, 1, 1) == null);
+}
