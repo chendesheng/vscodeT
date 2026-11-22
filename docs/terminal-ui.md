@@ -728,6 +728,57 @@ image through placeholder cells. Browser-only behavior (clipboard image copy,
 context menus, pinch zoom, CSS scrollbars, pixelated rendering) is omitted as
 documented in `README.md`.
 
+### 6.10 Mouse pointer shapes (OSC 22)
+
+The pointer is the terminal counterpart of CSS `cursor`. kitty's
+[pointer-shapes protocol](https://sw.kovidgoyal.net/kitty/pointer-shapes/)
+defines `OSC 22 ; <name> ST`, where `<name>` is a CSS cursor keyword
+(`text`, `pointer`, `ew-resize`, `default`, …); Ghostty, foot and recent xterm
+builds implement it too. `ui/pointer.zig` owns the names, the encoder and the
+deduplicating `State`; it is separate from `ansi.zig` because the pointer is
+terminal-global state, not a cell attribute.
+
+Style model: `Style.pointer: ?Pointer` is inherited like CSS `cursor`. The
+derived box tree resolves the computed value while building boxes
+(`LayoutBox.pointer`), the same way `TextStyle` resolves inherited text
+properties. The viewport root starts at `.default`; `null` inherits and an
+explicit `.default` overrides an inherited shape. Text and anonymous boxes carry
+the container's computed value, so a text hit reports the right shape without a
+DOM walk. There is no `auto`: without a browser user agent there is no distinct
+automatic shape, and the terminal default is the fallback.
+
+Hit testing: `BoxTree.pointerAt`/`Surface.pointerAt(col, row)` use the same
+reverse-paint-order walk, `overflow` clipping and `pointer-events` rules as
+`elementFromPoint`. The result is `null` when no box contains the cell.
+
+Emission: the pointer is written only at the top-level writer. `Surface.render`
+keeps a `pointer.State` and writes OSC 22 before the frame when
+`Options.pointer_shapes`/`setPointerShapes(true)` is enabled and the shape from
+`setPointer` differs from the last emitted shape. Sub-surfaces only answer
+`pointerAt`; in the workbench, pane surfaces are composited into one frame, so
+`Workbench` owns the `pointer.State` and writes it at the start of `render`.
+`default` is the initial emitted state, so startup writes nothing, and a host
+resets to `default` on exit (the TUI does this before leaving the alternate
+screen).
+
+TUI resolution: nodes built on the `ui` tree express their shape in `Style`
+(editor content `.text`, input boxes `.text`, links/buttons/list rows/status
+entries `.pointer`, sashes `.ew_resize`/`.ns_resize`, tab drags `.grabbing`).
+Direct-painted chrome (activity bar, tab strip, panel tabs, status bar, sidebar
+title, sashes, dialog buttons, quick-pick rows, terminal tabs) has no style
+tree; the workbench maps its existing hit-test results to the same shapes in
+its mouse handlers. `app.zig` resets the shape to `default` before routing each
+non-wheel mouse event and calls `Workbench.updateMousePointer` for the pane
+under the pointer (`Tab.pointerAt` covers the editor, Markdown preview split,
+image pane and diff widget).
+
+No capability probe is added: OSC 22 is out-of-band, has no layout or cell
+payload, and terminals that do not implement it ignore the sequence. The
+protocol's push/pop stack, support query and X11 cursor-font aliases are not
+implemented; only CSS names are emitted. A child application's OSC 22 inside the
+integrated terminal panel is parsed by the emulator but not forwarded to the
+host terminal.
+
 ## 7. Library API (POC slice)
 
 ```zig
@@ -785,7 +836,8 @@ Public surface for the POC:
   (visible/hidden/clip), `text_align`, `white_space`
   (normal/nowrap/pre/pre_wrap/pre_line/break_spaces), `word_break`,
   `overflow_wrap`, `visibility`, `color`, `background`,
-  `bold`, `italic`, `underline`, `strikethrough`, `dim`, `reverse`, `z_index`,
+  `bold`, `italic`, `underline`, `strikethrough`, `dim`, `reverse`,
+  `pointer` (inherited CSS `cursor` shape, see §6.10), `z_index`,
   `translate_x/y`, plus `margin` (`Margin` with per-side auto), `padding`,
   `border`, `border_style` and `border_color`. Flex adds `flex_direction`,
   `flex_wrap`, `justify_content`, `align_items`, `align_self`, `align_content`,
@@ -821,8 +873,10 @@ Public surface for the POC:
   document-allocated; `remove()` detaches and queues recycle; `Document.deinit`
   frees everything. The allocator is always explicit, no globals.
 - Events: `ui/event.zig` (keys, mouse, focus, listener dispatch),
-  `ui/box.zig`/`ui/surface.zig` (`elementFromPoint`) and `ui/input.zig` (the
-  terminal byte decoder, including SGR mouse reports). The preview also handles
+  `ui/box.zig`/`ui/surface.zig` (`elementFromPoint`, `pointerAt`) and
+  `ui/input.zig` (the terminal byte decoder, including SGR mouse reports).
+  `ui/pointer.zig` encodes OSC 22 pointer shapes; `Surface.Options.pointer_shapes`
+  / `setPointerShapes` and `setPointer` drive emission. The preview also handles
   Up/Down, PageUp/PageDown, Home/End and mouse-wheel scrolling, and Ctrl-Q to
   quit.
 
@@ -1697,6 +1751,14 @@ map, is tracked in the [TUI porting inventory](porting-inventory.md).
   box tree is rebuilt from the DOM when mutations invalidate it, then solved whole.
 - No JS interop, WebIDL, shadow DOM, custom elements, HTML parsing, or the full
   DOM API; only the node/tree/attribute subset above.
+- Mouse pointer shapes cover editor text, Markdown links, input boxes, widget
+  rows/buttons, editor tabs, activity-bar entries, status-bar command entries,
+  panel tabs, quick-pick rows, dialog buttons, sashes and terminal chrome.
+  Direct-painted surfaces without a style node map their shape in the workbench
+  explicitly; search/SCM result rows, Problems rows, breadcrumb segments, hover
+  Markdown links and overview-ruler drags still show the terminal default. The
+  OSC 22 push/pop stack and support query are not implemented, only CSS names
+  are emitted, and an integrated-terminal child's OSC 22 is not forwarded.
 - The `ui/` name, module name and exact style field set are provisional;
   renaming before the first commit is cheap.
 

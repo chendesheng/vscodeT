@@ -1007,8 +1007,15 @@ console API for raw mode, sizing and input polling.
   Idle motion drives hover in the find bar: the option toggles and `All`
   highlight, clicking them runs the action without stealing input focus, and
   clicking an input places its byte caret. Clicking the editor blurs the find
-  bar so the keyboard returns to the editor. Double-click, context menus and
-  horizontal scrolling are not wired.
+  bar so the keyboard returns to the editor. Mouse pointer shapes use the
+  kitty/xterm OSC 22 protocol: editor text and Markdown content show the I-beam,
+  Markdown links, widget buttons/rows, tabs, status/activity/panel entries,
+  quick-pick rows and dialog buttons show the hand, pane/sidebar sashes show
+  `ew-resize`/`ns-resize`, and a tab drag shows `grabbing`; leaving the app
+  restores `default`. The shape is resolved from the inherited
+  `ui.Style.pointer` field by hit testing, with direct-painted chrome mapped at
+  its existing hit tests. Terminals without OSC 22 ignore the sequence.
+  Double-click, context menus and horizontal scrolling are not wired.
 - Keyboard events and focus are library features: nodes take listeners, the
   active element receives keys, and Tab/Shift-Tab move through focusable nodes
   (`Element.focusable` / `Element.tab_index`). See `ui/README.md` and
