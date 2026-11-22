@@ -225,9 +225,9 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3019+ tests, 19 skipped; the only observed
-failure was the unrelated pre-existing quick-access `rg` test, which passes on
-re-run).
+The full suite currently passes (3034 tests, 19 skipped; the only observed
+failure was the unrelated pre-existing quick-access file-search worker hang,
+which passes on re-run).
 
 ## 5. Next steps
 
