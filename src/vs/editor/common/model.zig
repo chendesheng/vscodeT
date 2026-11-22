@@ -634,6 +634,14 @@ pub const ModelDecorationOptions = struct {
     glyphMargin: ?ModelDecorationGlyphMarginOptions,
     // If set, the decoration will override the line height of the lines it spans. Maximum value is 300px.
     lineHeight: ?usize,
+    // Optionally override the font family of the decorated text.
+    fontFamily: ?[]const u8,
+    // Optionally override the font size of the decorated text.
+    fontSize: ?[]const u8,
+    // Optionally override the font weight of the decorated text.
+    fontWeight: ?[]const u8,
+    // Optionally override the font style of the decorated text.
+    fontStyle: ?[]const u8,
     // If set, the decoration will be rendered in the lines decorations with this CSS class name.
     linesDecorationsClassName: ?[]const u8,
     // Controls the tooltip text of the line decoration.
@@ -684,6 +692,10 @@ pub const ModelDecorationOptions = struct {
             .lineNumberHoverMessage = null,
             .isWholeLine = null,
             .lineHeight = null,
+            .fontFamily = null,
+            .fontSize = null,
+            .fontWeight = null,
+            .fontStyle = null,
             .showIfCollapsed = null,
             .collapseOnReplaceEdit = null,
             .overviewRuler = null,

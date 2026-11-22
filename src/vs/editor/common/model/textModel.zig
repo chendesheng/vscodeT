@@ -1888,6 +1888,29 @@ pub const TextModel = struct {
         return decorations.toOwnedSlice();
     }
 
+    /// Upstream `getFontDecorationsInRange`: only decorations that opt into
+    /// font overriding, from the model tree (token font decorations have no
+    /// provider in this port).
+    pub fn getFontDecorationsInRange(self: *TextModel, range: Range, ownerId: usize) ![]ModelDecoration {
+        const validated = self.validateRange(range);
+        var decorations = try self._decorationsTree.getAllInInterval(
+            self,
+            self.getOffsetAt(validated.getStartPosition()),
+            self.getOffsetAt(validated.getEndPosition()),
+            ownerId,
+            false,
+            false,
+        );
+        defer decorations.deinit();
+
+        var result = ArrayList(ModelDecoration).init(self.getAllocator());
+        errdefer result.deinit();
+        for (decorations.items) |decoration| {
+            if (decoration.options.affectsFont orelse false) try result.append(decoration);
+        }
+        return result.toOwnedSlice();
+    }
+
     pub fn getInjectedTextDecorations(self: *TextModel, ownerId: usize) ![]ModelDecoration {
         var decorations = try self._decorationsTree.getAllInjectedText(self, ownerId);
         return decorations.toOwnedSlice();
@@ -3302,4 +3325,28 @@ test "TextModel normalizes decoration options" {
     try std.testing.expectEqual(TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges, normalized.stickiness.?);
     try std.testing.expectEqual(@as(usize, 0), normalized.zIndex.?);
     try std.testing.expectEqual(@as(?usize, 300), normalized.lineHeight);
+}
+
+test "TextModel: getFontDecorationsInRange filters affectsFont" {
+    const allocator = std.testing.allocator;
+    var undoRedoService = UndoRedoService.init(allocator);
+    defer undoRedoService.deinit();
+    var textModel = try createTestTextModel(allocator, "abcdef", &undoRedoService);
+    defer allocator.destroy(textModel);
+    defer textModel.deinit();
+
+    var font_options = ModelDecorationOptions.init("font", .NeverGrowsWhenTypingAtEdges);
+    font_options.affectsFont = true;
+    var plain_options = ModelDecorationOptions.init("plain", .NeverGrowsWhenTypingAtEdges);
+    var decorations = [_]ModelDeltaDecoration{
+        .{ .range = Range.init(1, 1, 1, 3), .options = &font_options },
+        .{ .range = Range.init(1, 3, 1, 5), .options = &plain_options },
+    };
+    const ids = try textModel.deltaDecorations(&.{}, &decorations, 1);
+    defer allocator.free(ids);
+
+    const found = try textModel.getFontDecorationsInRange(Range.init(1, 1, 1, 6), 0);
+    defer allocator.free(found);
+    try std.testing.expectEqual(@as(usize, 1), found.len);
+    try std.testing.expectEqual(ids[0], found[0].id);
 }
