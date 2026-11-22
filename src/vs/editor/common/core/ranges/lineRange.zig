@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/ranges/lineRange.ts`.
 const std = @import("std");
 const Io = std.Io;
 const BoundedArray = @import("../../../../../support/boundedArray.zig").BoundedArray;
@@ -50,16 +51,20 @@ pub const LineRange = struct {
         return result;
     }
 
+    pub fn compareByStart(a: LineRange, b: LineRange) isize {
+        return @as(isize, @intCast(a.startLineNumber)) - @as(isize, @intCast(b.startLineNumber));
+    }
+
     // @param lineRanges An array of arrays of of sorted line ranges.
-    pub fn joinMany(lineRanges: [][]LineRange) []LineRange {
-        if (lineRanges.len == 0) {
-            return [_]LineRange{};
+    pub fn joinMany(allocator: Allocator, lineRanges: []const []const LineRange) ![]LineRange {
+        var result = LineRangeSet.empty(allocator);
+        defer result.deinit();
+        for (lineRanges) |line_range| {
+            for (line_range) |range| {
+                try result.addRange(range);
+            }
         }
-        var result = LineRangeSet.init(lineRanges[0]);
-        for (lineRanges[1..]) |lineRange| {
-            result = result.getUnion(LineRangeSet.init(lineRange));
-        }
-        return result.ranges;
+        return allocator.dupe(LineRange, result.ranges());
     }
 
     pub fn joinAll(lineRanges: []LineRange) !LineRange {
@@ -82,8 +87,7 @@ pub const LineRange = struct {
 
     pub fn init(startLineNumber: usize, endLineNumberExclusive: usize) LineRange {
         if (startLineNumber > endLineNumberExclusive) {
-            // return error.StartLineNumberCannotBeAfterEndLineNumberExclusive;
-            unreachable;
+            @panic("startLineNumber cannot be after endLineNumberExclusive");
         }
         return LineRange{
             .startLineNumber = startLineNumber,
@@ -160,16 +164,16 @@ pub const LineRange = struct {
         return self.startLineNumber == other.startLineNumber and self.endLineNumberExclusive == other.endLineNumberExclusive;
     }
 
-    pub fn toInclusiveRange(self: *const LineRange) ?LineRange {
+    pub fn toInclusiveRange(self: *const LineRange) ?Range {
         if (self.isEmpty()) {
             return null;
         }
-        return LineRange.init(self.startLineNumber, self.endLineNumberExclusive - 1);
+        return Range.init(self.startLineNumber, 1, self.endLineNumberExclusive - 1, std.math.maxInt(usize));
     }
 
     // @deprecated Using this function is discouraged because it might lead to bugs: The end position is not guaranteed to be a valid position!
-    pub fn toExclusiveRange(self: *const LineRange) LineRange {
-        return LineRange.init(self.startLineNumber, self.endLineNumberExclusive);
+    pub fn toExclusiveRange(self: *const LineRange) Range {
+        return Range.init(self.startLineNumber, 1, self.endLineNumberExclusive, 1);
     }
 
     pub fn mapToLineArray(self: *const LineRange, comptime T: type, context: anytype, f: fn (lineNumber: usize, ctx: @TypeOf(context)) T) !ArrayList(T) {
@@ -221,6 +225,21 @@ pub const LineRange = struct {
         return LineRange.init(self.startLineNumber - marginTop, self.endLineNumberExclusive + marginBottom);
     }
 };
+
+test "LineRange: Range conversions and joinMany" {
+    const line_range = LineRange.init(2, 5);
+    const inclusive = line_range.toInclusiveRange().?;
+    try std.testing.expectEqual(Range.init(2, 1, 4, std.math.maxInt(usize)), inclusive);
+    try std.testing.expectEqual(Range.init(2, 1, 5, 1), line_range.toExclusiveRange());
+    try std.testing.expect(LineRange.init(2, 2).toInclusiveRange() == null);
+
+    const a = [_]LineRange{ .init(1, 3), .init(5, 7) };
+    const b = [_]LineRange{.init(2, 6)};
+    const input = [_][]const LineRange{ &a, &b };
+    const joined = try LineRange.joinMany(std.testing.allocator, &input);
+    defer std.testing.allocator.free(joined);
+    try std.testing.expectEqualSlices(LineRange, &[_]LineRange{.init(1, 7)}, joined);
+}
 
 test "LineRange/inits" {
     var rg = LineRange.ofLength(1, 10);
@@ -332,14 +351,10 @@ pub const LineRangeSet = struct {
     }
 
     pub fn getUnion(self: *const LineRangeSet, other: LineRangeSet) !LineRangeSet {
-        if (self._normalizedRanges.items.len == 0) {
-            return other;
-        }
-        if (other._normalizedRanges.items.len == 0) {
-            return self.*;
-        }
+        const allocator = self._normalizedRanges.allocator;
+        var result = ArrayList(LineRange).init(allocator);
+        errdefer result.deinit();
 
-        var result = ArrayList(LineRange).init(self._normalizedRanges.allocator);
         var i_1: usize = 0;
         var i_2: usize = 0;
         var current: ?LineRange = null;

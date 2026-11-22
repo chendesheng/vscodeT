@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/edits/stringEdit.ts`.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -101,9 +102,13 @@ pub const StringReplacement = struct {
     pub fn replaceString(self: Self, allocator: Allocator, str: []const u8) ![]u8 {
         var result = ArrayList(u8).init(allocator);
         errdefer result.deinit();
-        try result.appendSlice(str[0..self.replaceRange.start]);
+        const start = @min(self.replaceRange.start, str.len);
+        const end = @min(self.replaceRange.endExclusive, str.len);
+        try result.appendSlice(str[0..start]);
         try result.appendSlice(self.newText);
-        try result.appendSlice(str[self.replaceRange.endExclusive..]);
+        if (end < str.len) {
+            try result.appendSlice(str[end..]);
+        }
         return result.toOwnedSlice();
     }
 
@@ -201,9 +206,31 @@ pub const StringReplacement = struct {
 
     pub fn toString(self: Self, writer: *Io.Writer) !void {
         try self.replaceRange.toString(writer);
-        try writer.print(" -> \"{s}\"", .{self.newText});
+        try writer.writeAll(" -> ");
+        try writeQuotedString(writer, self.newText);
     }
 };
+
+fn writeQuotedString(writer: *Io.Writer, text: []const u8) !void {
+    try writer.writeByte('"');
+    for (text) |ch| {
+        switch (ch) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => {
+                if (ch < 0x20) {
+                    try writer.print("\\u{x:0>4}", .{ch});
+                } else {
+                    try writer.writeByte(ch);
+                }
+            },
+        }
+    }
+    try writer.writeByte('"');
+}
 
 /// Represents a set of replacements to a string. All these replacements are
 /// applied at once.
@@ -245,8 +272,11 @@ pub fn fromJson(allocator: Allocator, data: SerializedStringEdit) !StringEdit {
 /// Parses an edit from its string representation, e.g.
 /// `[[2, 12) -> "fgh", [14, 20) -> "qrst", [22, 22) -> "de\n"]`.
 pub fn parse(allocator: Allocator, value: []const u8) !StringEdit {
-    var result = StringEdit.empty(allocator);
-    errdefer result.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var replacements = ArrayList(StringReplacement).init(arena_allocator);
 
     var i: usize = 0;
     while (i < value.len) {
@@ -262,6 +292,7 @@ pub fn parse(allocator: Allocator, value: []const u8) !StringEdit {
         pos += 1;
         try skipWhitespace(value, &pos);
         const end_ex = try parseNumber(value, &pos);
+        if (start > end_ex) return error.InvalidFormat;
 
         try skipWhitespace(value, &pos);
         if (pos >= value.len or value[pos] != ')') return error.InvalidFormat;
@@ -275,8 +306,7 @@ pub fn parse(allocator: Allocator, value: []const u8) !StringEdit {
         if (pos >= value.len or value[pos] != '"') return error.InvalidFormat;
         pos += 1;
 
-        var text = ArrayList(u8).init(allocator);
-        defer text.deinit();
+        var text = ArrayList(u8).init(arena_allocator);
         while (pos < value.len and value[pos] != '"') {
             if (value[pos] == '\\' and pos + 1 < value.len) {
                 switch (value[pos + 1]) {
@@ -296,14 +326,11 @@ pub fn parse(allocator: Allocator, value: []const u8) !StringEdit {
         if (pos >= value.len) return error.InvalidFormat;
         pos += 1;
 
-        var temp = try StringEdit.single(allocator, StringReplacement.init(OffsetRange.init(start, end_ex), text.items));
-        defer temp.deinit();
-        const next = try result.compose(&temp);
-        result.deinit();
-        result = next;
+        // The parsed replacements are applied simultaneously; do not compose them.
+        try replacements.append(StringReplacement.init(OffsetRange.init(start, end_ex), text.items));
         i = pos;
     }
-    return result;
+    return StringEdit.create(allocator, replacements.items);
 }
 
 fn skipWhitespace(value: []const u8, pos: *usize) !void {
@@ -378,11 +405,17 @@ pub fn apply(string_edit: *const StringEdit, allocator: Allocator, base: []const
 
     var pos: usize = 0;
     for (string_edit.replacements) |replacement| {
-        try result.appendSlice(base[pos..replacement.replaceRange.start]);
+        const start = @min(replacement.replaceRange.start, base.len);
+        const end = @min(replacement.replaceRange.endExclusive, base.len);
+        if (start > pos) {
+            try result.appendSlice(base[pos..start]);
+        }
         try result.appendSlice(replacement.newText);
-        pos = replacement.replaceRange.endExclusive;
+        pos = @max(pos, end);
     }
-    try result.appendSlice(base[pos..]);
+    if (pos < base.len) {
+        try result.appendSlice(base[pos..]);
+    }
     return result.toOwnedSlice();
 }
 
@@ -628,6 +661,94 @@ pub fn applyEditsToRanges(allocator: Allocator, sorted_ranges: []const OffsetRan
     return result.toOwnedSlice();
 }
 
+/// Data associated with a replacement that can survive normalized edits.
+/// A data type must provide `join(self: T, other: T) ?T`.
+pub const VoidEditData = struct {
+    pub fn join(self: VoidEditData, _: VoidEditData) ?VoidEditData {
+        return self;
+    }
+};
+
+/// A replacement that carries arbitrary data. Mirrors upstream's
+/// `AnnotatedStringReplacement<T>`; `T` supplies `join`.
+pub fn AnnotatedStringReplacement(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        replaceRange: OffsetRange,
+        newText: []const u8,
+        data: T,
+
+        pub fn init(range: OffsetRange, text: []const u8, data: T) Self {
+            return .{ .replaceRange = range, .newText = text, .data = data };
+        }
+
+        pub fn getNewLength(self: Self) usize {
+            return self.newText.len;
+        }
+
+        pub fn equals(self: Self, other: Self) bool {
+            return self.replaceRange.equals(other.replaceRange) and
+                std.mem.eql(u8, self.newText, other.newText) and
+                std.meta.eql(self.data, other.data);
+        }
+
+        pub fn tryJoinTouching(self: Self, allocator: Allocator, other: Self) !?Self {
+            const joined_data = self.data.join(other.data) orelse return null;
+            return Self.init(
+                try self.replaceRange.joinRightTouching(other.replaceRange),
+                try std.fmt.allocPrint(allocator, "{s}{s}", .{ self.newText, other.newText }),
+                joined_data,
+            );
+        }
+
+        pub fn slice(self: Self, allocator: Allocator, range: OffsetRange, range_in_replacement: ?OffsetRange) !Self {
+            const text = if (range_in_replacement) |r| r.substring(self.newText) else self.newText;
+            return Self.init(range, try allocator.dupe(u8, text), self.data);
+        }
+
+        pub fn clone(self: Self, allocator: Allocator) !Self {
+            return Self.init(self.replaceRange, try allocator.dupe(u8, self.newText), self.data);
+        }
+
+        pub fn delta(self: Self, allocator: Allocator, offset: isize) !Self {
+            return edit.replacementDelta(Self, self, allocator, offset);
+        }
+
+        pub fn getLengthDelta(self: Self) isize {
+            return edit.replacementLengthDelta(Self, self);
+        }
+
+        pub fn getRangeAfterReplace(self: Self) OffsetRange {
+            return edit.replacementGetRangeAfterReplace(Self, self);
+        }
+
+        pub fn isEmpty(self: Self) bool {
+            return edit.replacementIsEmpty(Self, self);
+        }
+
+        pub fn toString(self: Self, writer: *Io.Writer) !void {
+            try self.replaceRange.toString(writer);
+            try writer.print(" -> \"{s}\"", .{self.newText});
+        }
+    };
+}
+
+pub fn AnnotatedStringEdit(comptime T: type) type {
+    return edit.BaseEdit(AnnotatedStringReplacement(T));
+}
+
+/// Converts an annotated edit to a plain string edit.
+pub fn toPlainStringEdit(comptime T: type, allocator: Allocator, annotated: *const AnnotatedStringEdit(T)) !StringEdit {
+    var replacements = std.array_list.Managed(StringReplacement).init(allocator);
+    defer replacements.deinit();
+    try replacements.ensureTotalCapacity(annotated.replacements.len);
+    for (annotated.replacements) |replacement| {
+        replacements.appendAssumeCapacity(StringReplacement.init(replacement.replaceRange, replacement.newText));
+    }
+    return StringEdit.create(allocator, replacements.items);
+}
+
 /// Swaps two edits if possible such that
 /// `e1.compose(e2).equals(result.e1.compose(result.e2))`.
 pub fn trySwap(allocator: Allocator, e1: *const StringEdit, e2: *const StringEdit) !?struct { e1: StringEdit, e2: StringEdit } {
@@ -668,6 +789,35 @@ pub fn trySwap(allocator: Allocator, e1: *const StringEdit, e2: *const StringEdi
     };
 }
 
+test "AnnotatedStringEdit: joins data and converts" {
+    const allocator = std.testing.allocator;
+    const Data = struct {
+        count: usize,
+
+        pub fn join(self: @This(), other: @This()) ?@This() {
+            return .{ .count = self.count + other.count };
+        }
+    };
+    const Annotated = AnnotatedStringEdit(Data);
+    const Replacement = AnnotatedStringReplacement(Data);
+
+    var annotated = try Annotated.create(allocator, &.{
+        Replacement.init(OffsetRange.init(0, 1), "a", .{ .count = 1 }),
+        Replacement.init(OffsetRange.init(1, 2), "b", .{ .count = 2 }),
+    });
+    defer annotated.deinit();
+
+    var normalized = try annotated.normalize();
+    defer normalized.deinit();
+    try std.testing.expectEqual(@as(usize, 1), normalized.replacements.len);
+    try std.testing.expectEqual(@as(usize, 3), normalized.replacements[0].data.count);
+    try std.testing.expectEqualStrings("ab", normalized.replacements[0].newText);
+
+    var plain = try toPlainStringEdit(Data, allocator, &annotated);
+    defer plain.deinit();
+    try std.testing.expectEqual(@as(usize, 2), plain.replacements.len);
+}
+
 test "StringEdit: apply and inverse" {
     const allocator = std.testing.allocator;
 
@@ -686,6 +836,23 @@ test "StringEdit: apply and inverse" {
     const reverted = try apply(&inversed, allocator, applied);
     defer allocator.free(reverted);
     try std.testing.expectEqualStrings("abcdef", reverted);
+}
+
+test "StringEdit: apply clamps out-of-range replacements" {
+    const allocator = std.testing.allocator;
+
+    var string_edit = try StringEdit.create(allocator, &.{
+        StringReplacement.replace(OffsetRange.init(0, 100), "X"),
+    });
+    defer string_edit.deinit();
+
+    const applied = try apply(&string_edit, allocator, "abc");
+    defer allocator.free(applied);
+    try std.testing.expectEqualStrings("X", applied);
+
+    const replaced = try string_edit.replacements[0].replaceString(allocator, "abc");
+    defer allocator.free(replaced);
+    try std.testing.expectEqualStrings("X", replaced);
 }
 
 test "StringEdit: normalize joins touching replacements" {
@@ -713,6 +880,9 @@ test "StringEdit: parse and serialize" {
     try std.testing.expectEqual(3, parsed.replacements.len);
     try std.testing.expectEqual(OffsetRange.init(2, 12), parsed.replacements[0].replaceRange);
     try std.testing.expectEqualStrings("fgh", parsed.replacements[0].newText);
+    try std.testing.expectEqual(OffsetRange.init(14, 20), parsed.replacements[1].replaceRange);
+    try std.testing.expectEqualStrings("qrst", parsed.replacements[1].newText);
+    try std.testing.expectEqual(OffsetRange.init(22, 22), parsed.replacements[2].replaceRange);
     try std.testing.expectEqualStrings("de\n", parsed.replacements[2].newText);
 
     const serialized = try toJson(&parsed, allocator);

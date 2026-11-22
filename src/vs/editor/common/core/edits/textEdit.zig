@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/edits/textEdit.ts`.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -330,6 +331,15 @@ pub const TextEdit = struct {
         return Self.create(self.allocator, replacements.items);
     }
 
+    fn rangeFromPositions(start: Position, end: Position) Range {
+        // Upstream treats a start column of MAX_SAFE_INTEGER as a marker for an
+        // empty range at `end`.
+        if (start.lineNumber == end.lineNumber and start.column == std.math.maxInt(usize)) {
+            return Range.init(end.lineNumber, end.column, end.lineNumber, end.column);
+        }
+        return Range.init(start.lineNumber, start.column, end.lineNumber, end.column);
+    }
+
     pub fn mapPosition(self: *const Self, position: Position) PositionOrRange {
         var line_delta: isize = 0;
         var current_line: usize = 0;
@@ -352,7 +362,7 @@ pub const TextEdit = struct {
                         if (current_line_signed == @as(isize, @intCast(current_line))) column_delta_in_current_line else 0),
                 );
                 const end_pos = len.addToPosition(start_pos);
-                return .{ .range = range.fromPositions(start_pos, end_pos) };
+                return .{ .range = Self.rangeFromPositions(start_pos, end_pos) };
             }
 
             if (@as(isize, @intCast(start.lineNumber)) + line_delta != @as(isize, @intCast(current_line))) {
@@ -390,7 +400,7 @@ pub const TextEdit = struct {
             .position => |p| p,
             .range => |r| r.getEndPosition(),
         };
-        return range.fromPositions(start, end);
+        return Self.rangeFromPositions(start, end);
     }
 
     pub fn inverseMapPosition(self: *const Self, allocator: Allocator, position_after_edit: Position, doc: *AbstractText) !PositionOrRange {
@@ -415,7 +425,7 @@ pub const TextEdit = struct {
             const edit_start = edit_range.getStartPosition();
             const edit_end = edit_range.getEndPosition();
 
-            const r = range.fromPositions(last_edit_end, edit_start);
+            const r = Self.rangeFromPositions(last_edit_end, edit_start);
             if (!r.isEmpty()) {
                 const value = try text.getValueOfRange(r);
                 defer allocator.free(value);
@@ -424,7 +434,7 @@ pub const TextEdit = struct {
             try result.appendSlice(replacement.text);
             last_edit_end = edit_end;
         }
-        const r = range.fromPositions(last_edit_end, text.endPositionExclusive());
+        const r = Self.rangeFromPositions(last_edit_end, text.endPositionExclusive());
         if (!r.isEmpty()) {
             const value = try text.getValueOfRange(r);
             defer allocator.free(value);
@@ -579,11 +589,12 @@ pub const TextEdit = struct {
                 Position.init(if (replacement.range.startLineNumber > 1) replacement.range.startLineNumber - 1 else 1, 1),
                 replacement.range.getStartPosition(),
             );
-            var before_text = try doc.getValueOfRange(before_range);
-            defer allocator.free(before_text);
+            const before_raw = try doc.getValueOfRange(before_range);
+            defer allocator.free(before_raw);
+            var before_text = before_raw;
             if (before_text.len > max_length) {
                 try writer.writeAll("...");
-                before_text = before_text[before_text.len - max_length ..];
+                before_text = before_text[ceilUtf8Boundary(before_text, before_text.len - max_length)..];
             }
             try writer.writeAll(before_text);
 
@@ -591,42 +602,68 @@ pub const TextEdit = struct {
                 replacement.range.getEndPosition(),
                 Position.init(replacement.range.endLineNumber + 1, 1),
             );
-            var after_text = try doc.getValueOfRange(after_range);
-            defer allocator.free(after_text);
+            const after_raw = try doc.getValueOfRange(after_range);
+            defer allocator.free(after_raw);
+
+            var after_owned: ?[]u8 = null;
+            defer if (after_owned) |value| allocator.free(value);
+            var after_text = after_raw;
             if (after_text.len > max_length) {
-                after_text = after_text[0..max_length];
+                after_owned = try std.fmt.allocPrint(allocator, "{s}...", .{after_text[0..floorUtf8Boundary(after_text, max_length)]});
+                after_text = after_owned.?;
             }
 
             try writer.writeAll("\u{2770}");
             if (original_text.len == 0) {
-                try writer.writeAll(replacement.text);
+                try writeTruncatedText(writer, replacement.text, max_length);
                 try writer.writeAll("\u{2771}");
                 try writer.writeAll(after_text);
                 continue;
             }
 
-            if (original_text.len > max_length) {
-                const half_max = max_length / 2;
-                try writer.writeAll(original_text[0..half_max]);
-                try writer.writeAll("...");
-                try writer.writeAll(original_text[original_text.len - half_max ..]);
-            } else {
-                try writer.writeAll(original_text);
-            }
+            try writeTruncatedText(writer, original_text, max_length);
             try writer.writeAll("\u{21a6}");
-            if (replacement.text.len > max_length) {
-                const half_max = max_length / 2;
-                try writer.writeAll(replacement.text[0..half_max]);
-                try writer.writeAll("...");
-                try writer.writeAll(replacement.text[replacement.text.len - half_max ..]);
-            } else {
-                try writer.writeAll(replacement.text);
-            }
+            try writeTruncatedText(writer, replacement.text, max_length);
             try writer.writeAll("\u{2771}");
             try writer.writeAll(after_text);
         }
     }
 };
+
+fn isContinuationByte(byte: u8) bool {
+    return (byte & 0xC0) == 0x80;
+}
+
+/// Largest boundary <= `end` that does not split a UTF-8 sequence.
+fn floorUtf8Boundary(text: []const u8, end_in: usize) usize {
+    var end = @min(end_in, text.len);
+    while (end > 0 and end < text.len and isContinuationByte(text[end])) {
+        end -= 1;
+    }
+    return end;
+}
+
+/// Smallest boundary >= `start` that does not split a UTF-8 sequence.
+fn ceilUtf8Boundary(text: []const u8, start_in: usize) usize {
+    var start = @min(start_in, text.len);
+    while (start < text.len and isContinuationByte(text[start])) {
+        start += 1;
+    }
+    return start;
+}
+
+fn writeTruncatedText(writer: *Io.Writer, text: []const u8, max_length: usize) !void {
+    if (text.len > max_length) {
+        const half_max = max_length / 2;
+        const head_end = floorUtf8Boundary(text, half_max);
+        const tail_start = ceilUtf8Boundary(text, text.len - half_max);
+        try writer.writeAll(text[0..head_end]);
+        try writer.writeAll("...");
+        try writer.writeAll(text[tail_start..]);
+    } else {
+        try writer.writeAll(text);
+    }
+}
 
 const Composer = struct {
     edits1: *const TextEdit,
@@ -1030,6 +1067,41 @@ test "TextEdit: fromStringEdit" {
     defer text_edit.deinit();
     try std.testing.expectEqual(Range.init(1, 2, 1, 4), text_edit.replacements[0].range);
     try std.testing.expectEqualStrings("XY", text_edit.replacements[0].text);
+}
+
+test "TextEdit: format truncates and ellipsizes" {
+    const allocator = std.testing.allocator;
+
+    var text = AbstractText.initString(allocator, "0123456789ABC");
+    defer text.deinit();
+
+    var insertion = try TextEdit.insert(allocator, Position.init(1, 1), "123456789012345");
+    defer insertion.deinit();
+
+    var buffer: [256]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try insertion.format(allocator, &writer, &text);
+    try std.testing.expectEqualStrings("❰12345...12345❱0123456789...", writer.buffered());
+
+    var text2 = AbstractText.initString(allocator, "abcdefghijkl");
+    defer text2.deinit();
+    var replacement = try TextEdit.replace(allocator, Range.init(1, 1, 1, 13), "XYZ");
+    defer replacement.deinit();
+    var buffer2: [256]u8 = undefined;
+    var writer2 = Io.Writer.fixed(&buffer2);
+    try replacement.format(allocator, &writer2, &text2);
+    try std.testing.expectEqualStrings("❰abcde...hijkl↦XYZ❱", writer2.buffered());
+
+    // Truncation must not split a multi-byte UTF-8 sequence.
+    var text3 = AbstractText.initString(allocator, "😀😀😀😀");
+    defer text3.deinit();
+    var replacement3 = try TextEdit.replace(allocator, Range.init(1, 1, 1, 17), "");
+    defer replacement3.deinit();
+    var buffer3: [256]u8 = undefined;
+    var writer3 = Io.Writer.fixed(&buffer3);
+    try replacement3.format(allocator, &writer3, &text3);
+    const out = writer3.buffered();
+    try std.testing.expect(std.unicode.utf8ValidateSlice(out));
 }
 
 test "TextEdit: compose" {

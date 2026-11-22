@@ -1,3 +1,11 @@
+// Port of `src/vs/editor/common/core/wordCharacterClassifier.ts`.
+//
+// Divergences:
+//  * `Intl.Segmenter` is a browser API; the `findPrevIntlWord*` /
+//    `findNextIntlWord*` methods and `intlSegmenterLocales` are not ported
+//    (nothing in this port consumes them).
+//  * The process-wide cache is a bounded FIFO of 10 entries rather than an
+//    LRU; eviction never changes classification results.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const CharacterClassifier = @import("./characterClassifier.zig").CharacterClassifier;
@@ -18,8 +26,10 @@ pub const WordCharacterClassifier = struct {
             ._classifier = CharacterClassifier(WordCharacterClass).init(allocator, WordCharacterClass.Regular),
         };
 
-        for (wordSeparators) |char| {
-            try self._classifier.set(@intCast(char), WordCharacterClass.WordSeparator);
+        var view = std.unicode.Utf8View.init(wordSeparators) catch return error.InvalidUtf8;
+        var iterator = view.iterator();
+        while (iterator.nextCodepoint()) |code_point| {
+            try self._classifier.set(code_point, WordCharacterClass.WordSeparator);
         }
 
         try self._classifier.set(' ', WordCharacterClass.Whitespace);
@@ -36,8 +46,8 @@ pub const WordCharacterClassifier = struct {
         return self._classifier.get(charCode);
     }
 
-    pub fn set(self: *WordCharacterClassifier, charCode: u21, value: WordCharacterClass) void {
-        self._classifier.set(charCode, value);
+    pub fn set(self: *WordCharacterClassifier, charCode: u21, value: WordCharacterClass) !void {
+        try self._classifier.set(charCode, value);
     }
 
     pub fn clear(self: *WordCharacterClassifier) void {
@@ -51,6 +61,11 @@ test "WordCharacterClassifier" {
     defer classifier.deinit();
     try std.testing.expect(classifier.get(' ') == WordCharacterClass.Whitespace);
     try std.testing.expect(classifier.get(',') == WordCharacterClass.WordSeparator);
+
+    // Non-ASCII separators are classified by code point, not by UTF-8 byte.
+    var unicode_classifier = try WordCharacterClassifier.init(allocator, "。");
+    defer unicode_classifier.deinit();
+    try std.testing.expect(unicode_classifier.get(0x3002) == WordCharacterClass.WordSeparator);
 }
 
 var wordClassifierCache: ?std.StringHashMap(WordCharacterClassifier) = null;
@@ -87,6 +102,24 @@ pub fn getMapForWordSeparators(allocator: Allocator, wordSeparators: []const u8)
     if (wordClassifierCache) |*cache| {
         if (cache.getPtr(wordSeparators)) |value| return value;
 
+        // Bound the process-wide cache like upstream's LRUCache(10). The
+        // eviction order is insertion order, which is sufficient here because
+        // a miss only costs re-classification.
+        if (cache.count() >= 10) {
+            var victim_key: ?[]const u8 = null;
+            var victim: ?WordCharacterClassifier = null;
+            var iterator = cache.iterator();
+            if (iterator.next()) |entry| {
+                victim_key = entry.key_ptr.*;
+                victim = entry.value_ptr.*;
+            }
+            if (victim_key) |key| {
+                _ = cache.remove(key);
+                if (victim) |*value| value.deinit();
+                cache_allocator.free(key);
+            }
+        }
+
         // Callers pass transient editor-owned slices, so the cache must own its
         // keys; a borrowed key would dangle after the editor is destroyed.
         const key = try cache_allocator.dupe(u8, wordSeparators);
@@ -109,4 +142,15 @@ test "getMapForWordSeparators" {
     const classifier1 = try getMapForWordSeparators(allocator, ".,;");
     const classifier2 = try getMapForWordSeparators(allocator, ".,;");
     try std.testing.expect(classifier1 == classifier2);
+}
+
+test "getMapForWordSeparators: cache is bounded" {
+    const allocator = std.testing.allocator;
+    defer freeWordClassifierCache();
+
+    for (0..25) |i| {
+        var separators: [3]u8 = .{ '.', ',', @intCast('a' + i) };
+        _ = try getMapForWordSeparators(allocator, &separators);
+    }
+    try std.testing.expect(wordClassifierCache.?.count() <= 10);
 }

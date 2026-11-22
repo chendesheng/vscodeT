@@ -1,7 +1,8 @@
+// Port of `src/vs/editor/common/core/range.ts`.
 const std = @import("std");
+const Io = std.Io;
 const usizeSub = @import("../../../base/common/utils.zig").usizeSub;
 const Position = @import("./position.zig").Position;
-const fmt = std.fmt;
 
 pub const Range = struct {
     //  Line number on which the range starts (starts at 1).
@@ -145,6 +146,7 @@ pub const Range = struct {
     // Test if range `a` equals `b`. Upstream models this as a free function so
     // that either side may be missing.
     pub fn equalsRange(a: ?Range, b: ?Range) bool {
+        if (a == null and b == null) return true;
         if (a == null or b == null) return false;
         const left = a.?;
         const right = b.?;
@@ -171,9 +173,8 @@ pub const Range = struct {
     }
 
     // Transform to a user presentable string representation.
-    pub fn toString(self: *const Range) ![]const u8 {
-        var buf: [1024]u8 = undefined;
-        return try fmt.bufPrint(&buf, "[{d},{d} -> {d},{d}]", .{ self.startLineNumber, self.startColumn, self.endLineNumber, self.endColumn });
+    pub fn toString(self: *const Range, writer: *Io.Writer) !void {
+        try writer.print("[{d},{d} -> {d},{d}]", .{ self.startLineNumber, self.startColumn, self.endLineNumber, self.endColumn });
     }
 
     // Create a new range using this range's start position, and using endLineNumber and endColumn as the end position.
@@ -193,6 +194,16 @@ pub const Range = struct {
             .startColumn = startColumn,
             .endLineNumber = self.endLineNumber,
             .endColumn = self.endColumn,
+        };
+    }
+
+    // Create a new empty range using this range's start position.
+    pub fn collapseToStart(self: *const Range) Range {
+        return Range{
+            .startLineNumber = self.startLineNumber,
+            .startColumn = self.startColumn,
+            .endLineNumber = self.startLineNumber,
+            .endColumn = self.startColumn,
         };
     }
 
@@ -234,6 +245,13 @@ pub const Range = struct {
         return true;
     }
 
+    // Test if `position` is strictly inside this range (not on either edge).
+    pub fn strictContainsPosition(self: *const Range, position: *const Position) bool {
+        if (!self.containsPosition(position)) return false;
+        return !(position.lineNumber == self.startLineNumber and position.column == self.startColumn) and
+            !(position.lineNumber == self.endLineNumber and position.column == self.endColumn);
+    }
+
     // Test if `otherRange` is in `range`. If the ranges are equal, will return true.
     pub fn containsRange(self: *const Range, otherRange: *const Range) bool {
         if (otherRange.startLineNumber < self.startLineNumber or otherRange.endLineNumber < self.startLineNumber) {
@@ -252,26 +270,38 @@ pub const Range = struct {
     }
 
     pub fn lessThan(self: *const Range, other: *const Range) bool {
-        return self.startLineNumber < other.startLineNumber or self.startColumn < other.startColumn;
+        return self.startLineNumber < other.startLineNumber or
+            (self.startLineNumber == other.startLineNumber and self.startColumn < other.startColumn);
+    }
+
+    // Create a copy of this range.
+    pub fn lift(range: Range) Range {
+        return range;
+    }
+
+    pub fn isEmptyRange(range: Range) bool {
+        return range.startLineNumber == range.endLineNumber and range.startColumn == range.endColumn;
+    }
+
+    // Moves the range by a signed amount of lines, clamping to line 1.
+    pub fn deltaSigned(self: *const Range, lineCount: isize) Range {
+        const line_delta: isize = @intCast(self.startLineNumber);
+        const end_delta: isize = @intCast(self.endLineNumber);
+        return Range{
+            .startLineNumber = @intCast(@max(1, line_delta + lineCount)),
+            .startColumn = self.startColumn,
+            .endLineNumber = @intCast(@max(1, end_delta + lineCount)),
+            .endColumn = self.endColumn,
+        };
     }
 };
 
 // Create a new range from two positions.
 pub fn fromPositions(start: Position, end: ?Position) Range {
     if (end) |end_position| {
-        return Range{
-            .startLineNumber = start.lineNumber,
-            .startColumn = start.column,
-            .endLineNumber = end_position.lineNumber,
-            .endColumn = end_position.column,
-        };
+        return Range.init(start.lineNumber, start.column, end_position.lineNumber, end_position.column);
     }
-    return Range{
-        .startLineNumber = start.lineNumber,
-        .startColumn = start.column,
-        .endLineNumber = start.lineNumber,
-        .endColumn = start.column,
-    };
+    return Range.init(start.lineNumber, start.column, start.lineNumber, start.column);
 }
 
 // Test if the two ranges are touching in any way.
@@ -350,6 +380,34 @@ pub fn compareRangesUsingEnds(a: *const Range, b: *const Range) isize {
 // Test if the range spans multiple lines.
 pub fn spansMultipleLines(range: *const Range) bool {
     return range.endLineNumber > range.startLineNumber;
+}
+
+test "Range: helpers and normalization" {
+    try std.testing.expect(Range.equalsRange(null, null));
+    try std.testing.expect(!Range.equalsRange(null, Range.init(1, 1, 1, 2)));
+
+    const a = Range.init(1, 2, 1, 3);
+    const b = Range.init(1, 4, 1, 5);
+    try std.testing.expect(a.lessThan(&b));
+    try std.testing.expect(!b.lessThan(&a));
+    try std.testing.expect(Range.init(2, 1, 2, 2).lessThan(&Range.init(3, 9, 3, 10)));
+
+    const normalized = fromPositions(Position.init(3, 4), Position.init(1, 2));
+    try std.testing.expectEqual(Range.init(1, 2, 3, 4), normalized);
+
+    const collapsed = Range.init(1, 2, 3, 4).collapseToStart();
+    try std.testing.expectEqual(Range.init(1, 2, 1, 2), collapsed);
+    try std.testing.expect(Range.isEmptyRange(Range.init(1, 2, 1, 2)));
+    try std.testing.expect(!Range.isEmptyRange(Range.init(1, 2, 1, 3)));
+    try std.testing.expect(Range.init(1, 1, 1, 5).strictContainsPosition(&Position.init(1, 3)));
+    try std.testing.expect(!Range.init(1, 1, 1, 5).strictContainsPosition(&Position.init(1, 1)));
+
+    var buffer: [64]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try Range.init(1, 2, 3, 4).toString(&writer);
+    try std.testing.expectEqualStrings("[1,2 -> 3,4]", writer.buffered());
+
+    try std.testing.expectEqual(Range.init(1, 2, 3, 4), Range.init(2, 2, 4, 4).deltaSigned(-1));
 }
 
 test "empty range" {

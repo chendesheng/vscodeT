@@ -1,4 +1,6 @@
+// Port of `src/vs/editor/common/core/2d/point.ts`.
 const std = @import("std");
+const Io = std.Io;
 pub const Point = struct {
     x: f64,
     y: f64,
@@ -27,6 +29,14 @@ pub const Point = struct {
     pub fn isZero(self: Point) bool {
         return self.x == 0 and self.y == 0;
     }
+    pub fn mapComponents(self: Point, context: anytype, map: fn (value: f64, ctx: @TypeOf(context)) f64) Point {
+        return .{ .x = map(self.x, context), .y = map(self.y, context) };
+    }
+
+    pub fn toString(self: Point, writer: *Io.Writer) !void {
+        try writer.print("({d},{d})", .{ self.x, self.y });
+    }
+
     pub fn withThreshold(self: Point, threshold: f64) Point {
         return .{
             .x = applyThreshold(self.x, threshold),
@@ -47,4 +57,19 @@ test "point: arithmetic" {
     try std.testing.expect(Point.equals(Point.init(1, 1), p.subtract(.{ .x = 1, .y = 2 })));
     try std.testing.expect(Point.equals(Point.init(4, 6), p.scale(2)));
     try std.testing.expect(Point.equals(Point.init(0, 0), Point.init(1, -1).withThreshold(2)));
+}
+
+test "point: mapComponents and toString" {
+    const Context = struct {
+        fn double(value: f64, _: void) f64 {
+            return value * 2;
+        }
+    };
+    const p = Point.init(1.5, -2).mapComponents({}, Context.double);
+    try std.testing.expectEqual(Point.init(3, -4), p);
+
+    var buffer: [32]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try Point.init(1, 2).toString(&writer);
+    try std.testing.expectEqualStrings("(1,2)", writer.buffered());
 }

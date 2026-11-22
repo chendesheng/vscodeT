@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/ranges/offsetRange.ts`.
 const std = @import("std");
 const Io = std.Io;
 const ArrayList = std.array_list.Managed;
@@ -10,7 +11,14 @@ pub const OffsetRange = struct {
     start: usize,
     endExclusive: usize,
 
+    pub fn fromTo(start: usize, endExclusive: usize) OffsetRange {
+        return OffsetRange.init(start, endExclusive);
+    }
+
     pub fn init(start: usize, endExclusive: usize) OffsetRange {
+        if (start > endExclusive) {
+            @panic("Invalid OffsetRange: start must not be after endExclusive");
+        }
         return OffsetRange{ .start = start, .endExclusive = endExclusive };
     }
 
@@ -188,6 +196,16 @@ pub const OffsetRange = struct {
         }
         return OffsetRange.init(self.start, range.endExclusive);
     }
+
+    // Expands the range by the same margin on both sides.
+    pub fn withMargin(self: *const OffsetRange, margin: usize) OffsetRange {
+        return OffsetRange.init(self.start -| margin, self.endExclusive + margin);
+    }
+
+    // Expands the range by the given start/end margins.
+    pub fn withMargins(self: *const OffsetRange, margin_start: usize, margin_end: usize) OffsetRange {
+        return OffsetRange.init(self.start -| margin_start, self.endExclusive + margin_end);
+    }
 };
 
 test "OffsetRange" {
@@ -217,11 +235,21 @@ test "OffsetRange.clipCyclic" {
     try std.testing.expectEqual(9, try range.clipCyclic(4));
 }
 
+test "OffsetRange: withMargin" {
+    const range = OffsetRange.init(5, 10);
+    try std.testing.expectEqual(OffsetRange.init(3, 12), range.withMargin(2));
+    try std.testing.expectEqual(OffsetRange.init(4, 13), range.withMargins(1, 3));
+}
+
 pub const OffsetRangeSet = struct {
     sortedRanges: ArrayList(OffsetRange),
 
     pub fn init(allocator: Allocator) OffsetRangeSet {
         return OffsetRangeSet{ .sortedRanges = ArrayList(OffsetRange).init(allocator) };
+    }
+
+    pub fn deinit(self: *OffsetRangeSet) void {
+        self.sortedRanges.deinit();
     }
 
     pub fn getRanges(self: OffsetRangeSet) []OffsetRange {
@@ -230,11 +258,11 @@ pub const OffsetRangeSet = struct {
 
     pub fn addRange(self: *OffsetRangeSet, range: OffsetRange) !void {
         var i: usize = 0;
-        while (i < self.sortedRanges.len and self.sortedRanges.items[i].endExclusive < range.start) {
+        while (i < self.sortedRanges.items.len and self.sortedRanges.items[i].endExclusive < range.start) {
             i += 1;
         }
         var j: usize = i;
-        while (j < self.sortedRanges.len and self.sortedRanges.items[j].start <= range.endExclusive) {
+        while (j < self.sortedRanges.items.len and self.sortedRanges.items[j].start <= range.endExclusive) {
             j += 1;
         }
         if (i == j) {
@@ -242,33 +270,27 @@ pub const OffsetRangeSet = struct {
         } else {
             const start = @min(range.start, self.sortedRanges.items[i].start);
             const end = @max(range.endExclusive, self.sortedRanges.items[j - 1].endExclusive);
-            try self.sortedRanges.insert(i, OffsetRange.init(start, end));
-            self.sortedRanges.orderedRemove(i + 1, j - i);
+            try self.sortedRanges.replaceRange(i, j - i, &[_]OffsetRange{OffsetRange.init(start, end)});
         }
     }
 
-    pub fn toString(self: OffsetRangeSet) !ArrayList(u8) {
-        const allocator = self.sortedRanges.allocator;
-        var result = std.array_list.Managed(u8).init(allocator);
+    pub fn toString(self: *const OffsetRangeSet, writer: *Io.Writer) !void {
         for (self.sortedRanges.items, 0..) |range, i| {
-            const part = try range.toString(allocator);
-            defer allocator.free(part);
-            try result.append(part);
-            if (i < self.sortedRanges.len - 1) {
-                try result.append(", ");
+            try OffsetRange.toString(&range, writer);
+            if (i < self.sortedRanges.items.len - 1) {
+                try writer.writeAll(", ");
             }
         }
-        return result;
     }
 
     // Returns of there is a value that is contained in this instance and the given range.
     pub fn intersectsStrict(self: *OffsetRangeSet, other: OffsetRange) bool {
         // TODO use binary search
         var i: usize = 0;
-        while (i < self.sortedRanges.len and self.sortedRanges.items[i].endExclusive <= other.start) {
+        while (i < self.sortedRanges.items.len and self.sortedRanges.items[i].endExclusive <= other.start) {
             i += 1;
         }
-        return i < self.sortedRanges.len and self.sortedRanges.items[i].start < other.endExclusive;
+        return i < self.sortedRanges.items.len and self.sortedRanges.items[i].start < other.endExclusive;
     }
 
     pub fn intersectWithRange(self: *OffsetRangeSet, other: OffsetRange) !OffsetRangeSet {
@@ -282,8 +304,10 @@ pub const OffsetRangeSet = struct {
         return result;
     }
 
-    pub fn intersectWithRangeLength(self: *OffsetRangeSet, other: OffsetRange) usize {
-        return (try self.intersectWithRange(other)).length();
+    pub fn intersectWithRangeLength(self: *OffsetRangeSet, other: OffsetRange) !usize {
+        var intersection = try self.intersectWithRange(other);
+        defer intersection.deinit();
+        return intersection.length();
     }
 
     pub fn length(self: OffsetRangeSet) usize {
@@ -294,3 +318,27 @@ pub const OffsetRangeSet = struct {
         return result;
     }
 };
+
+test "OffsetRangeSet: merge, query, intersect and toString" {
+    const allocator = std.testing.allocator;
+    var set = OffsetRangeSet.init(allocator);
+    defer set.deinit();
+
+    try set.addRange(OffsetRange.init(5, 10));
+    try set.addRange(OffsetRange.init(8, 12));
+    try set.addRange(OffsetRange.init(20, 21));
+    try std.testing.expectEqualSlices(OffsetRange, &[_]OffsetRange{ .init(5, 12), .init(20, 21) }, set.getRanges());
+    try std.testing.expectEqual(@as(usize, 8), set.length());
+    try std.testing.expect(set.intersectsStrict(OffsetRange.init(11, 13)));
+    try std.testing.expect(!set.intersectsStrict(OffsetRange.init(12, 20)));
+
+    var intersection = try set.intersectWithRange(OffsetRange.init(9, 21));
+    defer intersection.deinit();
+    try std.testing.expectEqualSlices(OffsetRange, &[_]OffsetRange{ .init(9, 12), .init(20, 21) }, intersection.getRanges());
+    try std.testing.expectEqual(@as(usize, 4), try set.intersectWithRangeLength(OffsetRange.init(9, 21)));
+
+    var buffer: [64]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try set.toString(&writer);
+    try std.testing.expectEqualStrings("[5, 12), [20, 21)", writer.buffered());
+}

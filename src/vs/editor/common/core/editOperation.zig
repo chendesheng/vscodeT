@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/editOperation.ts`.
 const std = @import("std");
 const Position = @import("position.zig").Position;
 const Range = @import("range.zig").Range;

@@ -1,4 +1,9 @@
+// Port of `src/vs/editor/common/core/2d/rect.ts`.
+//
+// `toStyles` is not ported because the terminal has no CSS; the upstream
+// `union` method is named `unionRect` because `union` is a Zig keyword.
 const std = @import("std");
+const Io = std.Io;
 const OffsetRange = @import("../ranges/offsetRange.zig").OffsetRange;
 const Point = @import("point.zig").Point;
 const Size2D = @import("size.zig").Size2D;
@@ -35,8 +40,148 @@ pub const Rect = struct {
     pub fn fromLeftTopWidthHeight(left: f64, top: f64, width_: f64, height_: f64) !Rect {
         return init(left, top, left + width_, top + height_);
     }
+    pub fn hull(rects: []const Rect) !Rect {
+        if (rects.len == 0) return error.InvalidRect;
+        const max = @as(f64, 9007199254740991);
+        var left = max;
+        var top = max;
+        var right = -max;
+        var bottom = -max;
+        for (rects) |rect| {
+            left = @min(left, rect.left);
+            top = @min(top, rect.top);
+            right = @max(right, rect.right);
+            bottom = @max(bottom, rect.bottom);
+        }
+        return init(left, top, right, bottom);
+    }
+
     pub fn fromRanges(leftRight: OffsetRange, topBottom: OffsetRange) !Rect {
         return init(@floatFromInt(leftRight.start), @floatFromInt(topBottom.start), @floatFromInt(leftRight.endExclusive), @floatFromInt(topBottom.endExclusive));
+    }
+
+    pub fn withMargin(self: Rect, margin: f64) !Rect {
+        return init(self.left - margin, self.top - margin, self.right + margin, self.bottom + margin);
+    }
+
+    pub fn withMargins(self: Rect, marginVertical: f64, marginHorizontal: f64) !Rect {
+        return init(
+            self.left - marginHorizontal,
+            self.top - marginVertical,
+            self.right + marginHorizontal,
+            self.bottom + marginVertical,
+        );
+    }
+
+    pub fn withMargins4(self: Rect, marginTop: f64, marginRight: f64, marginBottom: f64, marginLeft: f64) !Rect {
+        return init(
+            self.left - marginLeft,
+            self.top - marginTop,
+            self.right + marginRight,
+            self.bottom + marginBottom,
+        );
+    }
+
+    pub fn intersectVertical(self: Rect, range: OffsetRange) !Rect {
+        const new_top = @max(self.top, @as(f64, @floatFromInt(range.start)));
+        const new_bottom = @min(self.bottom, @as(f64, @floatFromInt(range.endExclusive)));
+        return init(self.left, new_top, self.right, @max(new_top, new_bottom));
+    }
+
+    pub fn intersectHorizontal(self: Rect, range: OffsetRange) !Rect {
+        const new_left = @max(self.left, @as(f64, @floatFromInt(range.start)));
+        const new_right = @min(self.right, @as(f64, @floatFromInt(range.endExclusive)));
+        return init(new_left, self.top, @max(new_left, new_right), self.bottom);
+    }
+
+    pub fn toString(self: Rect, writer: *Io.Writer) !void {
+        try writer.print("Rect{{({d},{d}), ({d},{d})}}", .{ self.left, self.top, self.right, self.bottom });
+    }
+
+    pub fn moveToBeContainedIn(self: Rect, parent: Rect) !Rect {
+        const rect_width = self.width();
+        const rect_height = self.height();
+
+        var left = self.left;
+        var top = self.top;
+
+        if (left < parent.left) {
+            left = parent.left;
+        } else if (left + rect_width > parent.right) {
+            left = parent.right - rect_width;
+        }
+
+        if (top < parent.top) {
+            top = parent.top;
+        } else if (top + rect_height > parent.bottom) {
+            top = parent.bottom - rect_height;
+        }
+
+        return init(left, top, left + rect_width, top + rect_height);
+    }
+
+    pub fn withWidth(self: Rect, new_width: f64) !Rect {
+        return init(self.left, self.top, self.left + new_width, self.bottom);
+    }
+
+    pub fn withHeight(self: Rect, new_height: f64) !Rect {
+        return init(self.left, self.top, self.right, self.top + new_height);
+    }
+
+    pub fn withTop(self: Rect, top: f64) !Rect {
+        return init(self.left, top, self.right, self.bottom);
+    }
+
+    pub fn withLeft(self: Rect, left: f64) !Rect {
+        return init(left, self.top, self.right, self.bottom);
+    }
+
+    pub fn translateX(self: Rect, delta: f64) !Rect {
+        return init(self.left + delta, self.top, self.right + delta, self.bottom);
+    }
+
+    pub fn translateY(self: Rect, delta: f64) !Rect {
+        return init(self.left, self.top + delta, self.right, self.bottom + delta);
+    }
+
+    pub fn deltaRight(self: Rect, delta: f64) !Rect {
+        return init(self.left, self.top, self.right + delta, self.bottom);
+    }
+
+    pub fn deltaTop(self: Rect, delta: f64) !Rect {
+        return init(self.left, self.top + delta, self.right, self.bottom);
+    }
+
+    pub fn deltaLeft(self: Rect, delta: f64) !Rect {
+        return init(self.left + delta, self.top, self.right, self.bottom);
+    }
+
+    pub fn deltaBottom(self: Rect, delta: f64) !Rect {
+        return init(self.left, self.top, self.right, self.bottom + delta);
+    }
+
+    pub fn getLeftBottom(self: Rect) Point {
+        return Point.init(self.left, self.bottom);
+    }
+
+    pub fn getRightBottom(self: Rect) Point {
+        return Point.init(self.right, self.bottom);
+    }
+
+    pub fn getLeftTop(self: Rect) Point {
+        return Point.init(self.left, self.top);
+    }
+
+    pub fn getRightTop(self: Rect) Point {
+        return Point.init(self.right, self.top);
+    }
+
+    pub fn withHorizontalRange(self: Rect, range: OffsetRange) !Rect {
+        return init(@floatFromInt(range.start), self.top, @floatFromInt(range.endExclusive), self.bottom);
+    }
+
+    pub fn withVerticalRange(self: Rect, range: OffsetRange) !Rect {
+        return init(self.left, @floatFromInt(range.start), self.right, @floatFromInt(range.endExclusive));
     }
 
     pub fn intersect(self: Rect, parent: Rect) ?Rect {
@@ -84,4 +229,29 @@ test "rect: intersections and containment" {
     try std.testing.expect(rect.containsPoint(Point.init(3, 4)));
     try std.testing.expect(rect.containsRect(other) == false);
     try std.testing.expectError(error.InvalidRect, Rect.init(2, 0, 1, 1));
+}
+
+test "rect: hull, margins, translation and corners" {
+    const a = try Rect.init(0, 0, 10, 10);
+    const b = try Rect.init(5, -5, 15, 5);
+    const hull = try Rect.hull(&.{ a, b });
+    try std.testing.expectEqual(Rect{ .left = 0, .top = -5, .right = 15, .bottom = 10 }, hull);
+    try std.testing.expectError(error.InvalidRect, Rect.hull(&.{}));
+
+    try std.testing.expectEqual(Rect{ .left = -2, .top = -2, .right = 12, .bottom = 12 }, try a.withMargin(2));
+    try std.testing.expectEqual(Rect{ .left = 0, .top = 0, .right = 16, .bottom = 10 }, try a.deltaRight(6));
+    try std.testing.expectEqual(Rect{ .left = 2, .top = 0, .right = 10, .bottom = 10 }, try a.withLeft(2));
+    try std.testing.expectEqual(Rect{ .left = 0, .top = 0, .right = 10, .bottom = 4 }, try a.withHeight(4));
+
+    try std.testing.expectEqual(Point.init(0, 10), a.getLeftBottom());
+    try std.testing.expectEqual(Point.init(10, 0), a.getRightTop());
+
+    // The rect is moved back into the parent, preserving its size.
+    const moved = try (try Rect.init(20, 20, 30, 30)).moveToBeContainedIn(a);
+    try std.testing.expectEqual(Rect{ .left = 0, .top = 0, .right = 10, .bottom = 10 }, moved);
+
+    var buffer: [64]u8 = undefined;
+    var writer = Io.Writer.fixed(&buffer);
+    try a.toString(&writer);
+    try std.testing.expectEqualStrings("Rect{(0,0), (10,10)}", writer.buffered());
 }

@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/ranges/columnRange.ts`.
 const std = @import("std");
 const OffsetRange = @import("offsetRange.zig").OffsetRange;
 const Range = @import("../range.zig").Range;

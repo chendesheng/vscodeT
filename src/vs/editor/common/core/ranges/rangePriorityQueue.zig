@@ -1,3 +1,5 @@
+// Port of `RangePriorityQueue`/`RangePriorityQueueImpl` from
+// `src/vs/editor/common/model/textModelTokens.ts` (upstream keeps it there).
 const std = @import("std");
 const Io = std.Io;
 const ArrayList = std.array_list.Managed;

@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/characterClassifier.ts`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const HashMap = std.AutoHashMap;

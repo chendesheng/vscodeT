@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/misc/textModelDefaults.ts`.
 const std = @import("std");
 const model = @import("../../model.zig");
 

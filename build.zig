@@ -567,6 +567,16 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
 
+    // Focused runner for the editor core (`src/vs/editor/common/core`).
+    const core_tests = b.addTest(.{
+        .name = "core_tests",
+        .root_module = tests.root_module,
+        .filters = &.{"common.core."},
+    });
+    const run_core_tests = b.addRunArtifact(core_tests);
+    const core_test_step = b.step("test-core", "Run editor core tests");
+    core_test_step.dependOn(&run_core_tests.step);
+
     // Focused runner for the editor view-part suites. The full suite can block
     // in unrelated long-running search tests on some hosts.
     const view_tests = b.addTest(.{

@@ -142,6 +142,7 @@ comptime {
     _ = @import("./vs/base/common/numbers.zig");
     _ = @import("./vs/editor/common/standalone/standaloneEnums.zig");
     _ = @import("./vs/editor/common/core/ranges/offsetRange.zig");
+    _ = @import("./vs/editor/common/core/editorColorRegistry.zig");
     _ = @import("./vs/editor/common/core/ranges/rangePriorityQueue.zig");
     _ = @import("./vs/base/common/utils.zig");
     _ = @import("./vs/base/common/collections.zig");

@@ -1,3 +1,4 @@
+// Port of `src/vs/editor/common/core/misc/indentation.ts`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -28,7 +29,7 @@ fn normalizeIndentationFromWhitespace(allocator: Allocator, text: []const u8, in
 pub fn normalizeIndentation(allocator: Allocator, text: []const u8, indent_size: usize, insert_spaces: bool) ![]const u8 {
     var first_non_whitespace: usize = text.len;
     for (text, 0..) |ch, i| {
-        if (ch != ' ' and ch != '\t' and ch != '\r' and ch != '\n') {
+        if (ch != ' ' and ch != '\t') {
             first_non_whitespace = i;
             break;
         }
@@ -53,4 +54,10 @@ test "indentation: normalize tabs and spaces" {
     const tabs = try normalizeIndentation(allocator, "      foo", 4, false);
     defer allocator.free(tabs);
     try std.testing.expectEqualStrings("\t  foo", tabs);
+
+    // Upstream's firstNonWhitespaceIndex ignores only spaces and tabs, so a
+    // leading CR/LF is preserved verbatim.
+    const crlf = try normalizeIndentation(allocator, "\r\n  foo", 4, true);
+    defer allocator.free(crlf);
+    try std.testing.expectEqualStrings("\r\n  foo", crlf);
 }
