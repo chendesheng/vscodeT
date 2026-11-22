@@ -5,6 +5,11 @@
 //! Text boxes own the text runs; element boxes own backgrounds and clipping.
 //! Borders paint as single-line box-drawing glyphs, or as cell-border protocol
 //! attributes on the box edge when the terminal supports them.
+//!
+//! Hover is the one live-DOM style input: an element's `hover_style` is
+//! overlaid when the element is in the document's hover chain
+//! (`Node.isHovered`). It is paint-only by construction, so no box rebuild is
+//! needed when the pointer moves.
 
 const std = @import("std");
 const box = @import("box.zig");
@@ -73,8 +78,23 @@ fn paintBox(
             const rect = current.rect;
             if (rect.isEmpty()) return;
 
-            const own = mergeStyle(inherited, style);
+            // Anonymous boxes copy their container's style, and `inherited`
+            // already carries that merged paint. Re-merging the copy would
+            // re-apply the container's base color/attributes over an
+            // ancestor's hover override (bare text runs live in anonymous
+            // boxes, so this would mask hover colors and bold-off changes).
+            const anonymous = current.kind == .anonymous_inline or
+                current.kind == .anonymous_flex_item;
+            const base = if (anonymous) inherited else mergeStyle(inherited, style);
+            const hover = if (current.kind == .element) hoverStyleOf(current.owner) else null;
+            const own = if (hover) |value| mergeHoverStyle(base, value) else base;
+            const paints_background = style.background != null or style.reverse or
+                (hover != null and (hover.?.background != null or (hover.?.reverse orelse false)));
             const border = style_mod.borderWidths(style);
+            const border_color = if (hover) |value|
+                value.border_color orelse style.border_color
+            else
+                style.border_color;
             if (current.inline_fragments.len > 0) {
                 for (current.inline_fragments) |fragment| {
                     const fragment_rect = Rect{
@@ -83,18 +103,18 @@ fn paintBox(
                         .w = fragment.w,
                         .h = fragment.h,
                     };
-                    if (style.background != null or style.reverse) {
+                    if (paints_background) {
                         const fill = Rect.intersect(fragment_rect, clip);
                         grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
                     }
                     if (cell_borders) {
-                        drawCellBorder(grid, fragment_rect, current.cell_border, style.border_style, style.border_color, own, clip);
+                        drawCellBorder(grid, fragment_rect, current.cell_border, style.border_style, border_color, own, clip);
                     } else {
-                        drawBorder(grid, fragment_rect, border, style.border_color, own, clip);
+                        drawBorder(grid, fragment_rect, border, border_color, own, clip);
                     }
                 }
             } else {
-                if (style.background != null or style.reverse) {
+                if (paints_background) {
                     // An ancestor's overflow clip cuts everything this box paints, so
                     // a child background must not paint into the gutter outside the
                     // padding edge the way its text already is cut.
@@ -102,9 +122,9 @@ fn paintBox(
                     grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
                 }
                 if (cell_borders) {
-                    drawCellBorder(grid, rect, current.cell_border, style.border_style, style.border_color, own, clip);
+                    drawCellBorder(grid, rect, current.cell_border, style.border_style, border_color, own, clip);
                 } else {
-                    drawBorder(grid, rect, border, style.border_color, own, clip);
+                    drawBorder(grid, rect, border, border_color, own, clip);
                 }
             }
 
@@ -144,6 +164,42 @@ fn mergeStyle(base: PaintStyle, style: Style) PaintStyle {
     if (style.dim) result.attrs |= cell.Attr.dim;
     if (style.reverse) result.attrs |= cell.Attr.inverse;
     return result;
+}
+
+/// The hover declaration that applies to `owner`, or null when the element
+/// does not opt in or is outside the current hover chain.
+fn hoverStyleOf(owner: ?*dom.Node) ?style_mod.HoverStyle {
+    const node = owner orelse return null;
+    if (!node.isElement()) return null;
+    const hover = node.asElement().hover_style orelse return null;
+    if (!node.isHovered()) return null;
+    return hover;
+}
+
+/// Overlays a hover declaration on the element's merged paint. Colors replace;
+/// boolean attributes are set or cleared according to the optional field, so a
+/// hover rule can remove a base attribute.
+fn mergeHoverStyle(base: PaintStyle, hover: style_mod.HoverStyle) PaintStyle {
+    var result = base;
+    if (hover.color) |color| result.fg = cell.packColor(color);
+    if (hover.background) |color| result.bg = cell.packColor(color);
+    if (hover.bold) |on| result.attrs = setAttr(result.attrs, cell.Attr.bold, on);
+    if (hover.italic) |on| result.attrs = setAttr(result.attrs, cell.Attr.italic, on);
+    if (hover.underline) |on| {
+        if (on) {
+            applyUnderline(&result, true, hover.underline_style);
+        } else {
+            result.attrs &= ~(cell.Attr.underline | cell.Attr.underline_style_mask);
+        }
+    }
+    if (hover.strikethrough) |on| result.attrs = setAttr(result.attrs, cell.Attr.strikethrough, on);
+    if (hover.dim) |on| result.attrs = setAttr(result.attrs, cell.Attr.dim, on);
+    if (hover.reverse) |on| result.attrs = setAttr(result.attrs, cell.Attr.inverse, on);
+    return result;
+}
+
+fn setAttr(attrs: u16, bit: u16, on: bool) u16 {
+    return if (on) attrs | bit else attrs & ~bit;
 }
 
 fn applyUnderline(result: *PaintStyle, underline: bool, underline_style: style_mod.UnderlineStyle) void {

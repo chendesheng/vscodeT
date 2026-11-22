@@ -8,6 +8,12 @@
 // whole area, matching upstream `mergeViewWithContainerWhenSingleView`.
 // View moving, hiding, drag/drop, context menus and resize sashes are not
 // ported.
+//
+// Section expansion follows upstream's pane header contract: a click on the
+// header (or the chevron/title cells) toggles the section, and clicking a
+// title action runs that action without toggling. Pointer motion is forwarded
+// to the header surface, where the `ui` library tracks the hovered element and
+// paints its `HoverStyle`; motion never changes the expansion state.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
@@ -291,13 +297,22 @@ pub const ViewPaneContainer = struct {
 
     pub fn handleMouse(self: *ViewPaneContainer, event: *const ui.MouseEvent, content: ui.Rect) !bool {
         const hit = self.hitTest(content, event.x, event.y) orelse return false;
+        const primary_click = (event.kind == .down or event.kind == .click) and event.button == .left;
         switch (hit) {
             .toggle => |id| {
+                // Upstream expands/collapses a pane from the header's click
+                // listener; moving the pointer over the header must not
+                // change the section.
+                if (!primary_click) return true;
                 self.model.setCollapsed(id, !self.model.isCollapsed(id));
                 self.setActive(id);
                 return true;
             },
             .action => |action| {
+                // Upstream registers a `preventDefault()` click listener on
+                // the actions container so a title action click does not also
+                // toggle the pane; only the activating press matters here.
+                if (!primary_click) return true;
                 self.setActive(action.id);
                 return true;
             },
@@ -309,6 +324,36 @@ pub const ViewPaneContainer = struct {
                 return pane.handle_mouse(pane.context, event, rect);
             },
         }
+    }
+
+    /// Moves the pointer into the container: only the header that contains the
+    /// cell receives it, every other header is cleared. The surface resolves
+    /// the hovered element and paints its `HoverStyle`.
+    pub fn setHoveredAt(self: *ViewPaneContainer, x: usize, y: usize) void {
+        if (self.sections.items.len == 0) {
+            self.clearHover();
+            return;
+        }
+        for (self.sections.items) |section| {
+            const index = self.paneIndex(section.id) orelse continue;
+            const header = &self.headers.items[index];
+            if (section.header_rect.h == 0) {
+                header.clearHover();
+                continue;
+            }
+            const header_x = ui.cell.snap(section.header_rect.x);
+            const header_y = ui.cell.snap(section.header_rect.y);
+            const header_w = ui.cell.snap(section.header_rect.w);
+            if (x >= header_x and x < header_x + header_w and y == header_y) {
+                header.setHoveredAt(x - header_x, y - header_y);
+            } else {
+                header.clearHover();
+            }
+        }
+    }
+
+    pub fn clearHover(self: *ViewPaneContainer) void {
+        for (self.headers.items) |*header| header.clearHover();
     }
 
     /// Title actions for the side-bar title toolbar when a single view is

@@ -254,10 +254,36 @@ Listeners can handle `mouse_down`, `mouse_move`, `mouse_up`, `click` and
 `wheel`; all run capture → target → bubble and honor `stopPropagation` /
 `preventDefault`. A non-canceled press focuses the nearest focusable ancestor,
 or blurs. Wheel deltas are in lines (±3 per notch, as in TermDOM) and cancelable;
-the host decides what to scroll. There is no library click synthesis, drag state
-or `:hover` selector: those belong to the host. The editor view does the press/
-drag/click synthesis and wheel scrolling; widgets derive hover from
-`mouse_move` with `button == .none`, reported under terminal mode 1003.
+the host decides what to scroll.
+
+### Hover
+
+An element declares a paint-only hover style; the library tracks the pointer
+target from motion and paints the declaration on the target and its ancestors:
+
+```zig
+const action = try doc.createElement(.div);
+action.setHoverStyle(.{ .background = highlight, .color = white, .bold = true });
+
+// In the host's mouse loop: dispatch the motion...
+var move = mouse;
+doc.dispatchMouse(target, &move);
+// ...or, when the host hit-tests itself, report the pointer cell:
+_ = try surface.updateHoverAt(mouse.x, mouse.y);
+```
+
+`Node.isHovered()` reports the inclusive ancestor chain (CSS `:hover`), while
+`Document.hoverTarget()`/`setHoverTarget()`/`clearHover()` expose the underlying
+state. `Surface` remembers the last `updateHoverAt` cell, so a document rebuilt
+under a stationary pointer keeps its highlight. `HoverStyle` has no layout
+properties: hover never dirties or re-runs layout. There are no `mouseenter`/
+`mouseleave` events or transitions; a retained surface repaints when
+`updateHoverAt` reports a change (the one-row header simply repaints each frame).
+
+There is no library click synthesis or drag state: those belong to the host.
+The editor view does the press/drag/click synthesis and wheel scrolling. Widgets
+that need hover behavior beyond painting still observe `mouse_move` with
+`button == .none`, reported under terminal mode 1003.
 
 `ui.input.decode` decodes both idle and button-held motion because mode 1003 is
 requested. It does not decode legacy X10 mouse reports, double-click counts, or

@@ -46,6 +46,10 @@ pub const Surface = struct {
     pointer: Pointer = .default,
     pointer_state: pointer_mod.State = .{},
     first_frame: bool = true,
+    /// The last pointer cell reported through `updateHoverAt`. Kept so a
+    /// cleared or rebuilt tree can re-resolve its hover target on the next
+    /// paint without the host re-sending the pointer position.
+    hover_cell: ?[2]usize = null,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Surface {
         var doc = try dom.Document.init(allocator, .{
@@ -148,6 +152,12 @@ pub const Surface = struct {
         self.box_tree.needs_rebuild = true;
         self.box_tree.needs_layout = true;
         self.first_frame = true;
+        if (self.hover_cell) |point| {
+            if (point[0] >= new_cols or point[1] >= new_rows) {
+                self.hover_cell = null;
+                _ = self.doc.clearHover();
+            }
+        }
     }
 
     /// Lays out the current tree and paints it into the next frame without
@@ -155,6 +165,7 @@ pub const Surface = struct {
     /// `grid()` afterwards; `render` is the one-surface convenience.
     pub fn paintFrame(self: *Surface) !void {
         try self.ensureLayout();
+        self.resolveHover();
         self.frame.begin();
         paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
         self.frame.swap();
@@ -171,6 +182,7 @@ pub const Surface = struct {
         if (self.pointer_shapes) try self.pointer_state.update(writer, self.pointer);
 
         try self.ensureLayout();
+        self.resolveHover();
         self.frame.begin();
         paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
 
@@ -208,6 +220,44 @@ pub const Surface = struct {
         const x = @as(f64, @floatFromInt(col)) + 0.5;
         const y = @as(f64, @floatFromInt(row)) + 0.5;
         return self.box_tree.pointerAt(x, y);
+    }
+
+    /// Moves the pointer to a viewport cell and remembers it, so the hover
+    /// target can be re-resolved after the tree is rebuilt. Returns whether the
+    /// hover target changed. Hover is paint state only and never dirties
+    /// layout. A point outside the viewport clears the hover.
+    pub fn updateHoverAt(self: *Surface, col: usize, row: usize) !bool {
+        try self.ensureLayout();
+        if (col >= self.doc.cols or row >= self.doc.rows) {
+            self.hover_cell = null;
+            return self.doc.clearHover();
+        }
+        self.hover_cell = .{ col, row };
+        const x = @as(f64, @floatFromInt(col)) + 0.5;
+        const y = @as(f64, @floatFromInt(row)) + 0.5;
+        return self.doc.setHoverTarget(self.box_tree.elementFromPoint(x, y));
+    }
+
+    /// Clears the stored pointer and the hover target, for a pointer that left
+    /// the surface. Returns whether the target changed.
+    pub fn clearHover(self: *Surface) bool {
+        self.hover_cell = null;
+        return self.doc.clearHover();
+    }
+
+    /// Re-resolves the stored pointer cell after the document was cleared or
+    /// rebuilt under a stationary pointer. No-op without a stored cell or when
+    /// the current target is still valid.
+    fn resolveHover(self: *Surface) void {
+        const point = self.hover_cell orelse return;
+        if (self.doc.hover_target != null) return;
+        if (point[0] >= self.doc.cols or point[1] >= self.doc.rows) {
+            _ = self.doc.clearHover();
+            return;
+        }
+        const x = @as(f64, @floatFromInt(point[0])) + 0.5;
+        const y = @as(f64, @floatFromInt(point[1])) + 0.5;
+        _ = self.doc.setHoverTarget(self.box_tree.elementFromPoint(x, y));
     }
 
     fn ensureLayout(self: *Surface) !void {
@@ -647,4 +697,305 @@ test "Surface: render emits OSC 22 only when the pointer shape changes" {
     try std.testing.expect(surface.setPointer(.default));
     try surface.render(&out.writer, .{ .synchronized = false });
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
+}
+
+test "Surface: hover paints the pointer element and reverts on leave" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer surface.deinit();
+    const doc = surface.document();
+
+    const base_bg = style.Color{ .r = 10, .g = 10, .b = 10 };
+    const hover_bg = style.Color{ .r = 40, .g = 50, .b = 60 };
+    const base_fg = style.Color{ .r = 200, .g = 200, .b = 200 };
+    const hover_fg = style.Color{ .r = 255, .g = 255, .b = 255 };
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+        .background = base_bg,
+        .color = base_fg,
+    });
+    doc.setRoot(root);
+
+    const row = try doc.createElement(.div);
+    row.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 4 },
+        .height = .{ .cells = 1 },
+        .color = base_fg,
+    });
+    row.setHoverStyle(.{ .background = hover_bg, .color = hover_fg, .bold = true });
+    _ = try row.appendChild(try doc.createText("ab"));
+    _ = try root.appendChild(row);
+
+    const other = try doc.createElement(.div);
+    other.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 5 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 2 },
+        .height = .{ .cells = 1 },
+        .color = base_fg,
+    });
+    other.setHoverStyle(.{ .background = hover_bg });
+    _ = try other.appendChild(try doc.createText("cd"));
+    _ = try root.appendChild(other);
+
+    try surface.paintFrame();
+    var grid = surface.grid();
+    try std.testing.expectEqual(cell.packColor(base_bg), grid.bg[grid.index(0, 0)]);
+    try std.testing.expectEqual(cell.packColor(base_fg), grid.fg[grid.index(0, 0)]);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 0)] & cell.Attr.bold);
+
+    // A text cell retargets to its row element.
+    try std.testing.expect(try surface.updateHoverAt(1, 0));
+    try std.testing.expectEqual(row, doc.hoverTarget().?);
+    try std.testing.expect(!try surface.updateHoverAt(1, 0));
+    try surface.paintFrame();
+    grid = surface.grid();
+    try std.testing.expectEqual(cell.packColor(hover_bg), grid.bg[grid.index(0, 0)]);
+    try std.testing.expectEqual(cell.packColor(hover_bg), grid.bg[grid.index(3, 0)]);
+    try std.testing.expectEqual(cell.packColor(hover_fg), grid.fg[grid.index(0, 0)]);
+    try std.testing.expect((grid.attrs[grid.index(0, 0)] & cell.Attr.bold) != 0);
+    // The sibling keeps its base paint.
+    try std.testing.expectEqual(cell.packColor(base_bg), grid.bg[grid.index(5, 0)]);
+    try std.testing.expectEqual(cell.packColor(base_fg), grid.fg[grid.index(5, 0)]);
+
+    // Moving to the sibling moves the highlight.
+    try std.testing.expect(try surface.updateHoverAt(5, 0));
+    try surface.paintFrame();
+    grid = surface.grid();
+    try std.testing.expectEqual(cell.packColor(base_bg), grid.bg[grid.index(0, 0)]);
+    try std.testing.expectEqual(cell.packColor(base_fg), grid.fg[grid.index(0, 0)]);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 0)] & cell.Attr.bold);
+    try std.testing.expectEqual(cell.packColor(hover_bg), grid.bg[grid.index(5, 0)]);
+
+    // Leaving the surface clears it.
+    try std.testing.expect(surface.clearHover());
+    try surface.paintFrame();
+    grid = surface.grid();
+    try std.testing.expectEqual(cell.packColor(base_bg), grid.bg[grid.index(5, 0)]);
+    try std.testing.expect(doc.hoverTarget() == null);
+    try std.testing.expect(!row.isHovered());
+}
+
+test "Surface: hover applies to the pointer's ancestor chain" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 12, .rows = 2 });
+    defer surface.deinit();
+    const doc = surface.document();
+
+    const base_bg = style.Color{ .r = 5, .g = 5, .b = 5 };
+    const hover_bg = style.Color{ .r = 30, .g = 40, .b = 50 };
+    const base_fg = style.Color{ .r = 180, .g = 180, .b = 180 };
+    const hover_fg = style.Color{ .r = 250, .g = 250, .b = 250 };
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+        .background = base_bg,
+    });
+    doc.setRoot(root);
+
+    const parent = try doc.createElement(.div);
+    parent.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 1 },
+        .color = base_fg,
+    });
+    parent.setHoverStyle(.{ .background = hover_bg, .color = hover_fg });
+    const child = try doc.createElement(.div);
+    child.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 1 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 3 },
+        .height = .{ .cells = 1 },
+    });
+    _ = try child.appendChild(try doc.createText("ab"));
+    _ = try parent.appendChild(child);
+    _ = try root.appendChild(parent);
+
+    try std.testing.expect(try surface.updateHoverAt(2, 0));
+    try std.testing.expectEqual(child, doc.hoverTarget().?);
+    try std.testing.expect(child.isHovered());
+    try std.testing.expect(parent.isHovered());
+    try surface.paintFrame();
+
+    const grid = surface.grid();
+    // The parent's hover background fills behind the child, and its hover
+    // color is inherited by the child's text.
+    try std.testing.expectEqual(cell.packColor(hover_bg), grid.bg[grid.index(2, 0)]);
+    try std.testing.expectEqual(cell.packColor(hover_fg), grid.fg[grid.index(2, 0)]);
+    try std.testing.expectEqual(cell.packColor(base_bg), grid.bg[grid.index(8, 0)]);
+}
+
+test "Surface: hover can clear base attributes and repaint the border" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 8, .rows = 3 });
+    defer surface.deinit();
+    const doc = surface.document();
+
+    const base_fg = style.Color{ .r = 180, .g = 180, .b = 180 };
+    const hover_fg = style.Color{ .r = 255, .g = 255, .b = 255 };
+    const base_border = style.Color{ .r = 60, .g = 60, .b = 60 };
+    const hover_border = style.Color{ .r = 200, .g = 120, .b = 20 };
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    doc.setRoot(root);
+
+    const bordered = try doc.createElement(.div);
+    bordered.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 4 },
+        .height = .{ .cells = 3 },
+        .border = .all(1),
+        .border_color = base_border,
+        .color = base_fg,
+        .bold = true,
+    });
+    bordered.setHoverStyle(.{
+        .border_color = hover_border,
+        .color = hover_fg,
+        .bold = false,
+        .dim = true,
+    });
+    _ = try bordered.appendChild(try doc.createText("x"));
+    _ = try root.appendChild(bordered);
+
+    try surface.paintFrame();
+    var grid = surface.grid();
+    try std.testing.expectEqual(cell.packColor(base_border), grid.fg[grid.index(0, 0)]);
+    try std.testing.expect((grid.attrs[grid.index(1, 1)] & cell.Attr.bold) != 0);
+
+    try std.testing.expect(try surface.updateHoverAt(1, 1));
+    try surface.paintFrame();
+    grid = surface.grid();
+    try std.testing.expectEqual(cell.packColor(hover_border), grid.fg[grid.index(0, 0)]);
+    try std.testing.expectEqual(cell.packColor(hover_fg), grid.fg[grid.index(1, 1)]);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(1, 1)] & cell.Attr.bold);
+    try std.testing.expect((grid.attrs[grid.index(1, 1)] & cell.Attr.dim) != 0);
+}
+
+test "Surface: hover re-resolves from the stored pointer after a rebuild" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 6, .rows = 2 });
+    defer surface.deinit();
+    const doc = surface.document();
+
+    const base_bg = style.Color{ .r = 10, .g = 10, .b = 10 };
+    const hover_bg = style.Color{ .r = 70, .g = 80, .b = 90 };
+
+    const build = struct {
+        fn run(d: *dom.Document, background: style.Color, hover: style.Color) !*dom.Node {
+            const root = try d.createElement(.div);
+            root.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .width = .{ .percent = 100 },
+                .height = .{ .percent = 100 },
+                .background = background,
+            });
+            const row = try d.createElement(.div);
+            row.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .width = .{ .cells = 4 },
+                .height = .{ .cells = 1 },
+            });
+            row.setHoverStyle(.{ .background = hover });
+            _ = try row.appendChild(try d.createText("ab"));
+            _ = try root.appendChild(row);
+            d.setRoot(root);
+            return row;
+        }
+    }.run;
+
+    const first_row = try build(doc, base_bg, hover_bg);
+    try std.testing.expect(try surface.updateHoverAt(1, 0));
+    try std.testing.expectEqual(first_row, doc.hoverTarget().?);
+    try surface.paintFrame();
+    try std.testing.expectEqual(cell.packColor(hover_bg), surface.grid().bg[surface.grid().index(0, 0)]);
+
+    // Rebuilding the tree drops the old target; the next paint re-resolves the
+    // stored pointer against the new nodes.
+    doc.clear();
+    const second_row = try build(doc, base_bg, hover_bg);
+    try surface.paintFrame();
+    try std.testing.expectEqual(second_row, doc.hoverTarget().?);
+    try std.testing.expect(second_row.isHovered());
+    try std.testing.expectEqual(cell.packColor(hover_bg), surface.grid().bg[surface.grid().index(0, 0)]);
+
+    // Once the pointer leaves, a rebuild does not resurrect hover.
+    try std.testing.expect(surface.clearHover());
+    doc.clear();
+    _ = try build(doc, base_bg, hover_bg);
+    try surface.paintFrame();
+    try std.testing.expect(doc.hoverTarget() == null);
+    try std.testing.expectEqual(cell.packColor(base_bg), surface.grid().bg[surface.grid().index(0, 0)]);
+}
+
+test "Surface: hover updates are paint-only" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 6, .rows = 2 });
+    defer surface.deinit();
+    const doc = surface.document();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    const row = try doc.createElement(.div);
+    row.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 4 },
+        .height = .{ .cells = 1 },
+    });
+    row.setHoverStyle(.{ .background = .{ .r = 1, .g = 2, .b = 3 } });
+    _ = try row.appendChild(try doc.createText("ab"));
+    _ = try root.appendChild(row);
+    doc.setRoot(root);
+
+    try surface.paintFrame();
+    try std.testing.expect(!surface.box_tree.needs_rebuild);
+    try std.testing.expect(!surface.box_tree.needs_layout);
+
+    _ = try surface.updateHoverAt(1, 0);
+    try std.testing.expect(!surface.box_tree.needs_rebuild);
+    try std.testing.expect(!surface.box_tree.needs_layout);
+
+    _ = surface.clearHover();
+    try std.testing.expect(!surface.box_tree.needs_rebuild);
+    try std.testing.expect(!surface.box_tree.needs_layout);
 }

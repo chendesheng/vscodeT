@@ -500,7 +500,10 @@ console API for raw mode, sizing and input polling.
   that paint as cell-edge attributes under the draft cell-border protocol (with
   box-drawing fallback), block/inline/flex formatting contexts, CSS white-space
   and UAX #14 text wrapping, and a double-buffered cell renderer that emits only
-  an ANSI frame diff. Flex supports direction, wrap, grow/shrink/basis,
+  an ANSI frame diff. Elements declare paint-only hover styles; the library
+  tracks the pointer target from mouse motion and paints the declaration on the
+  target and its ancestors without touching layout. Flex supports direction,
+  wrap, grow/shrink/basis,
   content-box `min_width`/`max_width`, justify/align, gap, order, auto margins
   and content-derived auto sizes. Text
   fragments and inline-element fragments paint per line. On startup the TUI
@@ -887,7 +890,13 @@ console API for raw mode, sizing and input polling.
   All/Auto/one history-item reference, reveal the current commit, refresh and
   toggle list/tree; background ref changes while scrolled show "Outdated".
   View sections are 1-row headers split into weighted bodies (Changes/Graph
-  40/40); with one visible view the header merges into the container title.
+  40/40). A left click on the header (or its chevron) toggles the section and
+  clicking a title action runs it without toggling, matching upstream's pane
+  header click listener. Pointer motion over a header never changes the
+  expansion state; the `ui` library's paint-only `HoverStyle` tracks the
+  pointer and highlights the title action, like the browser's `:hover`
+  background. With one visible view the header merges into the
+  container title.
   Not ported: multi-diff "Open Changes" for a whole commit (only per-file
   diffs), context menus, drag/drop, chat, clipboard copy actions and Git write
   operations (checkout/cherry-pick/push/publish); the ref picker is
