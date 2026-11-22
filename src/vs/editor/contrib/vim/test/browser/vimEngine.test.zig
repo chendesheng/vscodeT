@@ -236,6 +236,71 @@ test "Vim: j and k keep the editor's visible column" {
     try std.testing.expectEqual(Position.init(1, 6), h.editor.modelCursorPosition());
 }
 
+test "Vim: k on the first line keeps the desired column" {
+    // Mirrors `.vscode/tasks.json`: a short first line, then long comments.
+    const h = try Harness.init(std.testing.allocator, "{\n  // See https://go.microsoft.com/fwlink/?LinkId=733558\n  // for the documentation about the tasks.json format\n  \"version\": \"2.0.0\",");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(2, 10));
+
+    // `k` enters the short first line; normal mode clamps the caret to `{`.
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 1), h.editor.modelCursorPosition());
+
+    // A second `k` cannot move any further. Upstream returns the position
+    // unchanged, so the desired column is still there for the next `j`.
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 1), h.editor.modelCursorPosition());
+
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(2, 10), h.editor.modelCursorPosition());
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.editor.modelCursorPosition());
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(2, 10), h.editor.modelCursorPosition());
+}
+
+test "Vim: k on the first line does not move the caret" {
+    const h = try Harness.init(std.testing.allocator, "0123456789abcdef\nab");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 10));
+
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 10), h.editor.modelCursorPosition());
+    try h.send(.up);
+    try std.testing.expectEqual(Position.init(1, 10), h.editor.modelCursorPosition());
+
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(2, 2), h.editor.modelCursorPosition());
+}
+
+test "Vim: j on the last line is a no-op and counts stop at the edge" {
+    const h = try Harness.init(std.testing.allocator, "0123456789abcdef\nab\n0123456789abcdef");
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 10));
+
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(2, 2), h.editor.modelCursorPosition());
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.editor.modelCursorPosition());
+
+    // The last line must not pull the caret to its end.
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.editor.modelCursorPosition());
+    try h.send(.down);
+    try std.testing.expectEqual(Position.init(3, 10), h.editor.modelCursorPosition());
+
+    // A count clamps at the last line at the remembered column.
+    try h.sendChar('k');
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 10), h.editor.modelCursorPosition());
+    try h.sendChar('9');
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.editor.modelCursorPosition());
+
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(2, 2), h.editor.modelCursorPosition());
+}
+
 test "Vim: dw and dd edit through the command engine" {
     const h = try Harness.init(std.testing.allocator, "hello world");
     defer h.deinit();

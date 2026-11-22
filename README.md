@@ -354,7 +354,8 @@ Vim uses the editor's own state instead of a parallel history:
 - `u`/`Ctrl-R` call `Editor.undo()`/`Editor.redo()`. One insert session or
   operator change is one editor undo group; no diff tracker is kept.
 - `j`/`k` use the editor's `leftoverVisibleColumns`, so the visible column is
-  preserved across tabs, wide characters and short lines.
+  preserved across tabs, wide characters and short lines; at the first and last
+  line the motion is a no-op that keeps the remembered column.
 - Visual selections and cursor positions live in the editor's selection state.
   Vim keeps only command state (pending count/operator, registers, search).
 

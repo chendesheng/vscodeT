@@ -41,7 +41,8 @@ editor:
   brackets it with `Editor.beginUndoGroup()` / `endUndoGroup()`.
 - `j` / `k` call `Editor.moveLogicalLine`, which uses the cursor's
   `leftoverVisibleColumns`. The remembered column survives short lines, tabs and
-  wide characters.
+  wide characters. At the first/last line the motion is a no-op (as in
+  VSCodeVim), so a repeated `k`/`j` does not clear the remembered column.
 - Visual selections are the editor's `Selection` values.
 - Insert-mode text goes through `Editor.typeCharacter`/`newline`, so
   auto-closing and auto-indent continue to work.

@@ -430,12 +430,12 @@ pub const VimEngine = struct {
                 return true;
             },
             .up => {
-                try self.editor.moveLogicalLine(false, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                try self.moveLogicalLine(false, self.mode == .visual or self.mode == .visual_line, self.takeCount());
                 if (self.mode == .normal) try self.clampNormal();
                 return true;
             },
             .down => {
-                try self.editor.moveLogicalLine(true, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                try self.moveLogicalLine(true, self.mode == .visual or self.mode == .visual_line, self.takeCount());
                 if (self.mode == .normal) try self.clampNormal();
                 return true;
             },
@@ -670,11 +670,11 @@ pub const VimEngine = struct {
             'h' => try self.moveLeftOnLine(self.takeCount(), self.mode == .visual or self.mode == .visual_line),
             'l' => try self.moveRightOnLine(self.takeCount(), self.mode == .visual or self.mode == .visual_line),
             'j' => {
-                try self.editor.moveLogicalLine(true, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                try self.moveLogicalLine(true, self.mode == .visual or self.mode == .visual_line, self.takeCount());
                 if (self.mode == .normal) try self.clampNormal();
             },
             'k' => {
-                try self.editor.moveLogicalLine(false, self.mode == .visual or self.mode == .visual_line, self.takeCount());
+                try self.moveLogicalLine(false, self.mode == .visual or self.mode == .visual_line, self.takeCount());
                 if (self.mode == .normal) try self.clampNormal();
             },
             'w', 'W' => try self.moveWord(char, self.takeCount(), self.mode == .visual or self.mode == .visual_line),
@@ -1445,8 +1445,8 @@ pub const VimEngine = struct {
                 self.did_change = true;
                 try self.editor.deleteRight();
             },
-            .up => try self.editor.moveLogicalLine(false, false, 1),
-            .down => try self.editor.moveLogicalLine(true, false, 1),
+            .up => try self.moveLogicalLine(false, false, 1),
+            .down => try self.moveLogicalLine(true, false, 1),
             .left => try self.moveLeft(1, false),
             .right => try self.moveRight(1, false),
             .home => try self.editor.setCursor(Position.init(self.editor.cursorPosition().lineNumber, 1)),
@@ -1915,14 +1915,14 @@ pub const VimEngine = struct {
             },
             .up => {
                 try self.editor.setCursor(block.cursor);
-                try self.editor.moveLogicalLine(false, false, 1);
+                try self.moveLogicalLine(false, false, 1);
                 block.cursor = self.editor.cursorPosition();
                 try self.applyBlockSelections();
                 return true;
             },
             .down => {
                 try self.editor.setCursor(block.cursor);
-                try self.editor.moveLogicalLine(true, false, 1);
+                try self.moveLogicalLine(true, false, 1);
                 block.cursor = self.editor.cursorPosition();
                 try self.applyBlockSelections();
                 return true;
@@ -1936,12 +1936,12 @@ pub const VimEngine = struct {
                     '$' => block.cursor = self.lineEndPosition(block.cursor.lineNumber, true),
                     'j' => {
                         try self.editor.setCursor(block.cursor);
-                        try self.editor.moveLogicalLine(true, false, 1);
+                        try self.moveLogicalLine(true, false, 1);
                         block.cursor = self.editor.cursorPosition();
                     },
                     'k' => {
                         try self.editor.setCursor(block.cursor);
-                        try self.editor.moveLogicalLine(false, false, 1);
+                        try self.moveLogicalLine(false, false, 1);
                         block.cursor = self.editor.cursorPosition();
                     },
                     'o' => {
@@ -2560,6 +2560,26 @@ pub const VimEngine = struct {
 
     fn firstNonBlank(self: *VimEngine, line_number: usize) Position {
         return Position.init(line_number, self.editor.model.getLineFirstNonWhitespaceColumn(line_number) catch 1);
+    }
+
+    /// Vim `j`/`k` and the `<Down>`/`<Up>` keys move one logical line.
+    /// VSCodeVim's `MoveUp`/`MoveDown` return the current position when the
+    /// line cannot change and clamp a count to the lines that are left, which
+    /// keeps `vimState.desiredColumn` untouched. The editor's
+    /// `moveLogicalLine` instead clamps to the first/last column and resets
+    /// `leftoverVisibleColumns` there, losing the remembered column after `k`
+    /// on the first line and pulling the caret to the line end after `j` on
+    /// the last one.
+    fn moveLogicalLine(self: *VimEngine, down: bool, select: bool, count: usize) !void {
+        const line_number = self.editor.cursorPosition().lineNumber;
+        const line_count = self.editor.model.getLineCount();
+        if (down) {
+            if (line_number >= line_count) return;
+            try self.editor.moveLogicalLine(true, select, @min(count, line_count - line_number));
+        } else {
+            if (line_number <= 1) return;
+            try self.editor.moveLogicalLine(false, select, @min(count, line_number - 1));
+        }
     }
 
     fn clampNormal(self: *VimEngine) !void {
