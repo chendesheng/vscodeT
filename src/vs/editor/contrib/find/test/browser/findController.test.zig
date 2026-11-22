@@ -780,3 +780,33 @@ test "FindController: seedSearchStringFromSelection modes" {
     try controller.open(false);
     try std.testing.expectEqualStrings("alpha", controller.widget().find_input.getValue());
 }
+
+test "FindController: autoFindInSelection scopes the search" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    controller.setSeedSearchStringFromSelection(.never);
+    try controller.widget().find_input.setValue("alpha");
+
+    try editor.setSelection(Range.init(2, 1, 2, 11));
+    controller.setAutoFindInSelection(.never);
+    try controller.open(false);
+    try std.testing.expect(controller.state.search_scope == null);
+    controller.close();
+
+    controller.setAutoFindInSelection(.always);
+    try editor.setSelection(Range.init(2, 1, 2, 11));
+    try controller.open(false);
+    try std.testing.expect(controller.state.search_scope != null);
+    try std.testing.expectEqual(@as(usize, 1), controller.state.matches_count);
+}

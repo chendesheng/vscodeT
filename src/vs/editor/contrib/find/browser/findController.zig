@@ -15,6 +15,7 @@ const FindModel = @import("./findModel.zig").FindModel;
 const FindWidget = @import("./findWidget.zig").FindWidget;
 const FindWidgetTheme = @import("./findWidget.zig").Theme;
 const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const Range = @import("../../../common/core/range.zig").Range;
 
 /// The decoration sink. The controller does not depend on the TUI view type;
 /// the app can point it at a model-decoration sink.
@@ -24,12 +25,14 @@ pub const DecorationSink = struct {
 };
 
 pub const SeedSearchString = enum { never, always, selection };
+pub const AutoFindInSelection = enum { never, always, multiline };
 
 pub const FindController = struct {
     allocator: Allocator,
     editor: *Editor,
     state: *FindReplaceState,
     seed_search_string_from_selection: SeedSearchString = .always,
+    auto_find_in_selection: AutoFindInSelection = .never,
     model: *FindModel,
     find_widget: *FindWidget,
     sink: DecorationSink,
@@ -113,6 +116,10 @@ pub const FindController = struct {
         self.seed_search_string_from_selection = mode;
     }
 
+    pub fn setAutoFindInSelection(self: *FindController, mode: AutoFindInSelection) void {
+        self.auto_find_in_selection = mode;
+    }
+
     pub fn open(self: *FindController, replace: bool) !void {
         if (self.state.is_revealed) {
             if (replace) {
@@ -156,6 +163,22 @@ pub const FindController = struct {
                     }
                 }
             }
+        }
+
+        const multi_line = selection.startLineNumber != selection.endLineNumber;
+        const use_scope = !selection.isEmpty() and
+            (self.auto_find_in_selection == .always or
+                (self.auto_find_in_selection == .multiline and multi_line));
+        if (use_scope) {
+            const ranges = [_]Range{Range.init(
+                selection.startLineNumber,
+                selection.startColumn,
+                selection.endLineNumber,
+                selection.endColumn,
+            )};
+            self.state.change(.{ .search_scope = .{ .ranges = &ranges } }, true, true);
+        } else if (self.auto_find_in_selection == .never) {
+            self.state.change(.{ .search_scope = .none }, true, true);
         }
 
         if (replace) {
