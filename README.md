@@ -519,7 +519,8 @@ console API for raw mode, sizing and input polling.
   activating a tab, duplicate labels append a dimmed parent-directory
   description (`workbench.editor.labelFormat` short/medium/long/default is
   read), clicking the leading ellipsis lists the clipped tabs in a quick pick,
-  the close cell and middle click close it, and `Ctrl-W` closes the active tab. A dirty tab first opens VS Code's save confirmation
+  `workbench.editor.tabCloseButton: off` hides the close cell, the close cell
+  and middle click close it, and `Ctrl-W` closes the active tab. A dirty tab first opens VS Code's save confirmation
   (Save / Don't Save / Cancel): Save writes and then closes only if the buffer
   is clean, Don't Save discards the changes, and Cancel or Escape leaves the
   tab open. The dialog is
