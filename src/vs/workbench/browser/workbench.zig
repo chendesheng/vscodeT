@@ -2490,6 +2490,34 @@ pub const Workbench = struct {
         self.search_service = null;
     }
 
+    /// The activity-bar ellipsis lists the entries that do not fit the rail.
+    fn showActivityOverflowMenu(self: *Workbench) !void {
+        const rect = self.activityRect();
+        const capacity = activity_bar_mod.visibleCapacity(rect);
+        if (!activity_bar_mod.overflowVisible(&self.activity_bar_part, rect)) return;
+        const shown = capacity -| 1;
+        _ = self.breadcrumbs_arena.reset(.retain_capacity);
+        const arena = self.breadcrumbs_arena.allocator();
+        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        var visible_index: usize = 0;
+        for (self.activity_bar_part.activities.items) |activity| {
+            if (!activity.visible) continue;
+            defer visible_index += 1;
+            if (visible_index < shown) continue;
+            try items.append(.{ .item = .{
+                .id = try std.fmt.allocPrint(arena, "activity:{s}", .{activity.id}),
+                .label = activity.name,
+            } });
+        }
+        if (items.items.len == 0) return;
+        try self.quick_access.inputService().showPick(
+            items.items,
+            .{ .placeholder = "Activity Bar" },
+            onActivityOverflowPick,
+            self,
+        );
+    }
+
     pub fn showActivity(self: *Workbench, index: usize) !void {
         const activity = self.activity_bar_part.activityAtVisibleIndex(index) orelse return;
         if (self.sidebar == null or self.search_view == null) try self.initSidebarFromWorkspace();
@@ -7690,7 +7718,11 @@ pub const Workbench = struct {
             const hit = activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, activity_rect);
             self.pointer = if (hit != null) .pointer else .default;
             if (event.kind == .down) {
-                if (hit) |index| self.showActivity(index) catch {};
+                if (activity_bar_mod.overflowHitAt(&self.activity_bar_part, event.x, event.y, activity_rect)) {
+                    self.showActivityOverflowMenu() catch {};
+                } else if (hit) |index| {
+                    self.showActivity(index) catch {};
+                }
             }
             return true;
         }
@@ -9165,6 +9197,13 @@ fn breadcrumbFocusEditor(context: *anyopaque) void {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     self.workbench.focusEditor();
     if (self.workbench.activeTab()) |tab| tab.focusEditor();
+}
+
+fn onActivityOverflowPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.activeItem() orelse return;
+    if (!std.mem.startsWith(u8, item.id, "activity:")) return;
+    _ = try self.showActivityById(item.id[9..]);
 }
 
 fn onTabOverflowPick(context: *anyopaque, picker: *QuickPick) anyerror!void {

@@ -233,11 +233,29 @@ pub const default_activities = [_]Activity{
 
 /// The visible activity at a terminal row. Rows start under the top padding
 /// row, matching the painted layout.
+pub fn visibleCapacity(rect: ui.Rect) usize {
+    const height = ui.cell.snap(rect.h);
+    return height -| 1;
+}
+
+pub fn overflowVisible(part: *const ActivityBarPart, rect: ui.Rect) bool {
+    return part.visibleCount() > visibleCapacity(rect);
+}
+
+pub fn overflowHitAt(part: *const ActivityBarPart, x: usize, y: usize, rect: ui.Rect) bool {
+    _ = x;
+    if (!overflowVisible(part, rect)) return false;
+    const row = ui.cell.snap(rect.y) + ui.cell.snap(rect.h) - 1;
+    return y == row;
+}
+
 pub fn hitAt(part: *const ActivityBarPart, x: usize, y: usize, rect: ui.Rect) ?usize {
     _ = x;
     if (y <= ui.cell.snap(rect.y)) return null;
     const index = y - ui.cell.snap(rect.y) - 1;
-    if (index >= part.count()) return null;
+    const capacity = visibleCapacity(rect);
+    const entries = if (overflowVisible(part, rect)) capacity -| 1 else capacity;
+    if (index >= entries) return null;
     _ = part.activityAtVisibleIndex(index) orelse return null;
     return index;
 }
@@ -280,10 +298,13 @@ pub fn render(
     }
     grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), base);
 
+    const capacity = visibleCapacity(rect);
+    const overflow = overflowVisible(part, rect);
+    const entry_capacity = if (overflow) capacity -| 1 else capacity;
     var visible_index: usize = 0;
     for (part.activities.items) |activity| {
         if (!activity.visible) continue;
-        if (visible_index + 1 >= height) break;
+        if (visible_index >= entry_capacity) break;
         const row = y + 1 + visible_index;
         const paint = if (visible_index == active) active_style else base;
         if (visible_index == active) {
@@ -307,6 +328,12 @@ pub fn render(
         visible_index += 1;
     }
 
+    if (overflow and capacity > 0) {
+        const row = y + height - 1;
+        grid.fillRect(@floatFromInt(x), @floatFromInt(row), @floatFromInt(width), 1, base);
+        const col = x + (width -| 1) / 2;
+        grid.putCodepoint(col, row, 0x2026, 1, base);
+    }
     if (focused and visible_index > 0 and active < visible_index) {
         grid.putCodepoint(x, y + 1 + active, '▎', 1, active_style);
     }
@@ -362,4 +389,26 @@ test "activityBar: draws the active entry from the model" {
     const badge_row = try grid.rowText(allocator, 2);
     defer allocator.free(badge_row);
     try std.testing.expect(std.mem.indexOf(u8, badge_row, "•") != null);
+}
+
+test "activityBar: overflow row lists hidden entries" {
+    var part = ActivityBarPart.init(std.testing.allocator);
+    defer part.deinit();
+    var index: usize = 0;
+    const ids = [_][]const u8{ "a", "b", "c", "d", "e", "f" };
+    while (index < 6) : (index += 1) {
+        try part.addActivity(.{ .id = ids[index], .name = "Activity", .glyph = 'A', .order = index });
+    }
+    try part.setVisible(true);
+    const rect = ui.Rect{ .x = 0, .y = 0, .w = 3, .h = 4 };
+    try std.testing.expect(overflowVisible(&part, rect));
+    try std.testing.expectEqual(@as(usize, 3), visibleCapacity(rect));
+
+    var grid = try CellGrid.init(std.testing.allocator, 3, 4);
+    defer grid.deinit();
+    render(&part, null, &grid, rect, 0, false, null);
+    try std.testing.expectEqual(@as(u32, 0x2026), grid.cluster[grid.index(1, 3)]);
+    try std.testing.expect(overflowHitAt(&part, 1, 3, rect));
+    try std.testing.expectEqual(@as(?usize, null), hitAt(&part, 1, 3, rect));
+    try std.testing.expectEqual(@as(?usize, 1), hitAt(&part, 1, 2, rect));
 }
