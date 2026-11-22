@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/tokens/contiguousTokensEditing.ts`.
+//
+// Zig adaptation: the flat `Uint32Array` token pairs are represented as
+// `TokenPacked` values, and edits mutate the optional list in place instead of
+// returning a replacement buffer.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;

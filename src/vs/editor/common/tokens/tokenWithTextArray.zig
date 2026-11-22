@@ -1,3 +1,7 @@
+// Port of `src/vs/editor/common/tokens/tokenWithTextArray.ts`.
+//
+// Zig adaptation: token texts are borrowed slices instead of owned strings,
+// and `toLineTokens` takes the allocator explicitly.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
@@ -58,6 +62,7 @@ pub const TokenWithTextArray = struct {
 
     pub fn slice(self: *const TokenWithTextArray, range: OffsetRange) !TokenWithTextArray {
         var result = ArrayList(TokenWithTextInfo).init(self._tokenInfo.allocator);
+        errdefer result.deinit();
         var lengthSum: usize = 0;
         for (self._tokenInfo.items) |tokenInfo| {
             const tokenStart = lengthSum;
