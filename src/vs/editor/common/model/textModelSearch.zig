@@ -261,6 +261,15 @@ pub const TextModelSearch = struct {
         return Range.init(startPosition.lineNumber, startPosition.column, endPosition.lineNumber, endPosition.column);
     }
 
+    /// JS `substring` clamps and swaps; callers can pass reversed or oversized
+    /// ranges.
+    fn sliceClamped(text: []const u8, start_: usize, end_: usize) []const u8 {
+        var start = @min(start_, text.len);
+        var end = @min(end_, text.len);
+        if (start > end) std.mem.swap(usize, &start, &end);
+        return text[start..end];
+    }
+
     fn _doFindMatchesMultiline(model: *TextModel, searchRange: Range, searcher: Searcher, captureMatches: bool, limitResultCount: usize) !ArrayList(FindMatch) {
         const allocator = model.getAllocator();
         const deltaOffset = model.getOffsetAt(searchRange.getStartPosition());
@@ -297,7 +306,7 @@ pub const TextModelSearch = struct {
         if (searchRange.startLineNumber == searchRange.endLineNumber) {
             const lineContent = try model.getLineContent(searchRange.startLineNumber);
             defer lineContent.deinit();
-            const text = lineContent.items[searchRange.startColumn - 1 .. searchRange.endColumn - 1];
+            const text = sliceClamped(lineContent.items, searchRange.startColumn - 1, searchRange.endColumn - 1);
             try _findMatchesInLine(searchData, text, searchRange.startLineNumber, searchRange.startColumn - 1, &result, captureMatches, limitResultCount);
             return result;
         }
@@ -305,7 +314,7 @@ pub const TextModelSearch = struct {
         // Collect results from first line
         const lineContent = try model.getLineContent(searchRange.startLineNumber);
         defer lineContent.deinit();
-        const text = lineContent.items[searchRange.startColumn - 1 ..];
+        const text = sliceClamped(lineContent.items, searchRange.startColumn - 1, lineContent.items.len);
         try _findMatchesInLine(searchData, text, searchRange.startLineNumber, searchRange.startColumn - 1, &result, captureMatches, limitResultCount);
 
         // Collect results from middle lines
@@ -706,4 +715,25 @@ test "findMatches: case-insensitive non-ASCII uses the regex path" {
     }
     try std.testing.expectEqual(@as(usize, 1), matches.items.len);
     try std.testing.expectEqualDeep(Range.init(1, 1, 1, 3), matches.items[0].range);
+}
+
+test "findMatchesLineByLine: reversed and oversized ranges do not panic" {
+    const allocator = std.testing.allocator;
+    const TestModel = @import("../../test/common/port/testSupport.zig").TestModel;
+    var test_model = try TestModel.init(allocator, "abcdef", "plaintext");
+    defer test_model.deinit();
+
+    var params = SearchParams.init("cd", false, true, null);
+    const data = (try params.parseSearchRequest(allocator)).?;
+    defer data.regex.deinit();
+
+    // TextModelSearch's line-by-line path clamps reversed/oversized ranges like
+    // JS substring.
+    var reversed = try TextModelSearch.findMatches(test_model.model, SearchParams.init("cd", false, true, null), Range.init(1, 4, 1, 2), false, 10);
+    defer reversed.deinit();
+
+    var oversized = try TextModelSearch.findMatches(test_model.model, SearchParams.init("cd", false, true, null), Range.init(1, 2, 1, 99), false, 10);
+    defer oversized.deinit();
+    try std.testing.expectEqual(@as(usize, 1), oversized.items.len);
+    try std.testing.expectEqualDeep(Range.init(1, 3, 1, 5), oversized.items[0].range);
 }
