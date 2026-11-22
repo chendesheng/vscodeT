@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/tokens/sparseTokensStore.ts`.
+//
+// Zig adaptation: the store takes ownership of the pieces it receives and
+// frees them in `flush`/`deinit`; `addSparseTokens` also takes ownership of
+// the syntactic line tokens it merges into.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
@@ -100,12 +105,30 @@ pub const SparseTokensStore = struct {
                 continue;
             }
 
-            const split = try piece.split(range);
+            var split = try piece.split(range);
+            const firstIsEmpty = split[0].isEmpty();
+            const secondIsEmpty = split[1].isEmpty();
+            if (firstIsEmpty or secondIsEmpty) {
+                // Upstream keeps the mutated piece in place when one side of
+                // the split is empty; only a real two-sided split replaces it.
+                split[0].deinit();
+                split[1].deinit();
+                if (firstIsEmpty) {
+                    insertPosition = insertPosition orelse i;
+                }
+                i += 1;
+                continue;
+            }
+
+            // Reserve before dropping the original so a failing allocation
+            // cannot leave the store without the piece.
+            try self._pieces.ensureUnusedCapacity(2);
             piece.deinit();
             _ = self._pieces.orderedRemove(i);
             try self._pieces.insertSlice(i, split[0..]);
             i += 2;
-            insertPosition = insertPosition orelse i;
+            // Insert the new pieces between the two split halves.
+            insertPosition = insertPosition orelse (i - 1);
         }
 
         const index = insertPosition orelse self._pieces.items.len;
@@ -153,7 +176,9 @@ pub const SparseTokensStore = struct {
             bMask.fontStyle.underline = semanticMask.useUnderline;
             bMask.fontStyle.strikethrough = semanticMask.useStrikethrough;
             bMask.foreground = if (semanticMask.useForeground) ColorId.Mask else ColorId.None;
-            bMask.background = @intCast(if (semanticMask.useBackground) ColorId.Mask else ColorId.None);
+            // Upstream's BACKGROUND_MASK covers the 8-bit background field,
+            // while ColorId.Mask is the 9-bit foreground mask.
+            bMask.background = if (semanticMask.useBackground) 0xFF else 0;
             const aMask: u32 = ~@as(u32, @bitCast(bMask));
             const bMaskBits: u32 = @bitCast(bMask);
 
