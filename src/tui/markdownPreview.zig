@@ -1276,7 +1276,9 @@ test "markdownPreview: resolves local image URLs and skips remote ones" {
     {
         const path = (try preview.resolveImagePath(allocator, "images/a.png")).?;
         defer allocator.free(path);
-        try std.testing.expectEqualStrings("/tmp/docs/images/a.png", path);
+        const expected = try std.fs.path.join(allocator, &.{ "/tmp/docs", "images/a.png" });
+        defer allocator.free(expected);
+        try std.testing.expectEqualStrings(expected, path);
     }
     {
         const path = (try preview.resolveImagePath(allocator, "/tmp/abs.png#fragment")).?;
