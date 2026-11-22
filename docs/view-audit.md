@@ -60,7 +60,7 @@ For each row:
 | Scrollbar | `vs/editor/browser/viewParts/editorScrollbar/editorScrollbar.zig` | `editor/browser/viewParts/editorScrollbar/editorScrollbar.ts` | **T** | The accepted 3-lane cell geometry replaces the pixel scrollbar; wheel/drag/hit and `scrollbarSlider.*` theme resolution are ported and tested. Arrow buttons/rounded slider CSS are omitted as browser-only. |
 | Overview ruler | `vs/editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.zig` | `editor/browser/viewParts/overviewRuler/decorationsOverviewRuler.ts` | **T** | The upstream line-to-row projection, lane choice and z-index/group paint order are kept; the canvas collapses to one terminal column and one-cell minimum heights. Lane, multi-line, z-order, cursor and collapse tests pass. |
 | Content widgets | `vs/editor/browser/viewParts/contentWidgets/` | same | **P** | Registry, anchor-to-cell mapping, above/below placement, clamping, hit rectangles and focus restore are ported; a placement/clamping test now covers below/above anchors. Multi-widget ordering and focus-restore tests are still missing. |
-| Overlay widgets | `vs/editor/browser/viewParts/overlayWidgets/` | same | **P** | Corner preferences, size, paint order, hit rectangles and focus handling are ported with two tests; broader widget-lifecycle/corner coverage is still missing. |
+| Overlay widgets | `vs/editor/browser/viewParts/overlayWidgets/` | same | **F** | Corner preferences, size, insertion paint order, hit rectangles and focus restoration are ported; origin, top-right, bottom-right and top-center placement plus focus are covered by tests. |
 | Block decorations | `vs/editor/browser/viewParts/blockDecorations/blockDecorations.zig` | `editor/browser/viewParts/blockDecorations/blockDecorations.ts` | **F** | Ported in `113764e`; block ranges, padding, `blockIsAfterEnd`/`blockDoesNotCollapse`; terminal maps moved classes to one-cell borders. Covered by `block decorations:` tests and `View: block decorations paint a bordered range under the text`. |
 | Suggest widget | `vs/editor/contrib/suggest/browser/*` | `editor/contrib/suggest/browser/*` | **P** | Trigger/session model, windowed list, one-cell scrollbar, selection, mouse listeners and plain-text documentation are ported (20 tests). The full details/status bar, icon/theme matrix and browser accessibility panes are not. |
 | Hover widget | `vs/editor/contrib/hover/browser/*` | `editor/contrib/hover/browser/*` | **P** | Content-hover controller, scheduling, markdown rendering and the marker participant are ported; browser-only sticky/pin, status-bar actions and code-action links are omitted. |
@@ -207,6 +207,7 @@ For each row:
   substitution). No `M` rows remain in the ledger.
 - Added a content-widget placement test (below/above anchor, clamping and
   width/height), tightening the **P** evidence for that row.
+- Added overlay-widget corner/focus tests; that row is now **F**.
 
 ## Next slice
 
