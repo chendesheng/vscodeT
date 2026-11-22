@@ -598,7 +598,9 @@ console API for raw mode, sizing and input polling.
   `sideBarSectionHeader.background`, then a derived shade) and, on terminals
   that speak the cell-border protocol, a bottom border drawn as a cell
   attribute on the last pinned row, so the separator costs no extra row.
-  Terminals without cell borders fall back to the background difference.
+  Terminals without cell borders underline the bottom pinned row instead (also
+  with no extra row), so the separator stays visible; the probe result is
+  logged in `main.log` as `cell borders: supported=...`.
   `workbench.tree.enableStickyScroll` (default on) and
   `workbench.tree.stickyScrollMaxItemCount` (default 7) are read when the
   Explorer is created. `Tab` focuses the sticky widget (the TUI key for

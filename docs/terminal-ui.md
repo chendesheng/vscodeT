@@ -1235,8 +1235,10 @@ Library constraints:
   falling back to `sideBarSectionHeader.background` and then a derived shade)
   so they are visible on every terminal; when the host reports cell-border
   support, the last pinned row also gets a `sideBarStickyScroll.border` bottom
-  border as a cell attribute, which costs no row (the background is the
-  fallback on terminals without the protocol). There is no retained overlay or scroll event in the terminal view,
+  border as a cell attribute, which costs no row. Without the protocol the
+  bottom pinned row is underlined across its cells instead, so the separator
+  still costs no row. The probe result (`supported`, protocol version and
+  feature mask) is written to the log as `cell borders: ...`. There is no retained overlay or scroll event in the terminal view,
   so the pinned state is recomputed before every paint. Clicking a pinned row
   reproduces upstream's `handleStickyScrollMouseEvent`: the tree scrolls the
   node below the remaining sticky rows and selects it; a click on the row's

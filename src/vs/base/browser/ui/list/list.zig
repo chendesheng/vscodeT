@@ -36,6 +36,9 @@ pub const Row = struct {
     sticky: bool = false,
     sticky_focused: bool = false,
     sticky_hovered: bool = false,
+    /// The bottom-most painted sticky row. Renderers that cannot use terminal
+    /// cell borders underline this row as a zero-row separator.
+    sticky_last: bool = false,
 };
 
 /// Port of `IListVirtualDelegate`.

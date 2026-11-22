@@ -226,6 +226,9 @@ pub const Sidebar = struct {
     /// pixels setting.
     indent_cells: usize = 2,
     render_indent_guides: abstract_tree.RenderIndentGuides = .on_hover,
+    /// Set from `RenderOptions` for the current frame; controls whether sticky
+    /// rows use terminal cell borders or the underline fallback.
+    cell_borders: bool = false,
 
     pub fn init(
         allocator: Allocator,
@@ -680,6 +683,7 @@ pub const Sidebar = struct {
         // side bar title area shows `EXPLORER` and its actions. The header
         // remains for standalone preview/test rendering.
         self.header_rows = if (options.show_header) 1 else 0;
+        self.cell_borders = options.cell_borders;
         if (options.show_header) {
             const header_style_local = if (self.theme) |palette| ui.cell.PaintStyle{
                 .fg = ui.cell.packColor(palette.color("sideBarSectionHeader.foreground", .{ 200, 200, 200 })),
@@ -901,6 +905,12 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
     if (row.sticky and !sticky_highlight) {
         paint.bg = ui.cell.packColor(stickyRowBackground(sidebar.theme));
     }
+    if (row.sticky_last and !sidebar.cell_borders) {
+        // Fallback for terminals without the cell-border protocol: underline
+        // the whole bottom pinned row, which draws the separator on the
+        // existing row instead of reserving one.
+        paint.attrs |= ui.cell.Attr.underline;
+    }
 
     if (sticky_highlight) {
         // Upstream sticky rows use `list.hoverBackground` on `:hover` and a
@@ -914,7 +924,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
         paint = .{
             .fg = paint.fg,
             .bg = ui.cell.packColor(color),
-            .attrs = if (row.sticky_focused) ui.cell.Attr.bold else 0,
+            .attrs = (if (row.sticky_focused) ui.cell.Attr.bold else 0) | (paint.attrs & ui.cell.Attr.underline),
         };
     }
 
@@ -942,7 +952,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
                 palette.color("tree.indentGuidesStroke", .{ 80, 80, 80 })
             else
                 ui.Color{ .r = 80, .g = 80, .b = 80 };
-            const guide_paint = PaintStyle{ .fg = ui.cell.packColor(guide_color), .bg = paint.bg };
+            const guide_paint = PaintStyle{ .fg = ui.cell.packColor(guide_color), .bg = paint.bg, .attrs = paint.attrs };
             row.grid.putCodepoint(col, row.y, '│', 1, guide_paint);
         } else {
             row.grid.putSpace(col, row.y, paint);
@@ -975,7 +985,7 @@ fn renderRow(context: *anyopaque, row: *const list.Row, node: *const Compressibl
                 .fg = ui.cell.packColor(icon.color),
                 .bg = paint.bg,
             };
-            if (selected) icon_paint.attrs = paint.attrs;
+            icon_paint.attrs = paint.attrs;
             row.grid.putCodepoint(col, row.y, icon.glyph, 1, icon_paint);
             col += 1;
         }
@@ -1886,10 +1896,13 @@ test "explorer tree sidebar: sticky rows use a header tint and bottom cell borde
     try std.testing.expectEqual(sticky_bg, grid.bg[grid.index(0, 2)]);
     try std.testing.expectEqual(side_bar_bg, grid.bg[grid.index(0, 3)]);
 
-    // Without the cell-border protocol there is no border (the background is
-    // the fallback). With it, the last pinned row carries a bottom border on
-    // its existing cells, so no extra row is used.
+    // Without the cell-border protocol there is no border attribute; the
+    // fallback underlines the bottom pinned row so the separator still draws
+    // on an existing row. Rows above it and the list rows below are untouched.
     try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 2));
+    try std.testing.expect(grid.attrs[grid.index(0, 2)] & ui.cell.Attr.underline != 0);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 1)] & ui.cell.Attr.underline);
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 3)] & ui.cell.Attr.underline);
     try sidebar.render(&grid, .{ .x = 0, .y = 0, .w = 32, .h = 8 }, true, .{
         .show_header = false,
         .cell_borders = true,
@@ -1902,4 +1915,6 @@ test "explorer tree sidebar: sticky rows use a header tint and bottom cell borde
     }
     try std.testing.expect(has_bottom);
     try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 3));
+    // The cell-border path replaces the underline fallback.
+    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 2)] & ui.cell.Attr.underline);
 }

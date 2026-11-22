@@ -873,6 +873,14 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
             if (width == 0 or height == 0) return;
             self.sticky_rect = rect;
 
+            var last_painted: ?usize = null;
+            for (self.sticky_nodes.items, 0..) |sticky, index| {
+                const visible_top = @ceil(sticky.position);
+                const visible_bottom = @floor(sticky.position + sticky.height);
+                if (visible_bottom <= 0 or visible_top >= @as(f64, @floatFromInt(height))) continue;
+                last_painted = index;
+            }
+
             for (self.sticky_nodes.items, 0..) |sticky, index| {
                 const visible_top = @ceil(sticky.position);
                 const visible_bottom = @floor(sticky.position + sticky.height);
@@ -898,6 +906,7 @@ pub fn AbstractTreeForModel(comptime T: type, comptime Model: type) type {
                     .sticky = true,
                     .sticky_focused = self.sticky_focused and self.sticky_focused_index == @as(isize, @intCast(index)),
                     .sticky_hovered = self.sticky_hovered_index != null and self.sticky_hovered_index.? == index,
+                    .sticky_last = last_painted != null and last_painted.? == index,
                 };
                 self.renderNodeRow(&row, sticky.node);
             }
