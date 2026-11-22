@@ -608,7 +608,14 @@ active editor instead of moving it, like `EditorGroupView.copyEditor`: a shared
 saved/dirty state, while each pane has its own `Editor` view (wrapping,
 cursors, scroll and folding). `workbench.action.splitEditor` uses
 `workbench.editor.openSideBySideDirection`, and the Left/Right/Up/Down command
-variants choose the side explicitly. While dragging over editor content,
+variants choose the side explicitly. The editor-group command family uses the
+same split tree: focus first/last/next/previous and directional neighbours, add
+an empty group on any side, close a group by merging its editors into the most
+recently active group, join two or all groups, move a group by detaching and
+reinserting its live leaf, duplicate a group by copying every tab into a new
+group, move the active editor into an adjacent/target group, and split the
+active editor into it. Directional targets are created on demand, like
+`moveCopyEditorsToGroup`. While dragging over editor content,
 the target pane gets a bright outline (with cell borders; the glyph fallback has
 no drag indicator). Over a tab strip, the insertion boundary gets upstream's
 `drop-target-left`/`drop-target-right` feedback in `tab.dragAndDropBorder`: a

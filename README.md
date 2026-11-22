@@ -1715,6 +1715,20 @@ Editor contributions:
   view-scoped decoration ownership lands. Session restore reopens each
   serialized group from disk, so restored split panes are not re-linked to one
   document until the session format stores the shared input.
+- The editor-group command families below are ported with their upstream IDs:
+  focus the active/first/last/next/previous/left/right/above/below group, create a new
+  empty group left/right/above/below, close the active group (its editors move
+  to the most recently active other group), join the active group with its next
+  neighbour or all groups, move the active group left/right/up/down, duplicate
+  the active group left/right/up/down, move the active editor into the
+  previous/next/above/below/left/right/first/last group, and split the active
+  editor into those groups. Directional move/copy commands create the target
+  group when it does not exist yet, matching `moveCopyEditorsToGroup`. Group
+  moves reorder the binary split tree without recreating editors; group copies
+  create independent group views whose tabs share the source documents.
+  Window-based group commands and `Split Editor in Group` (side-by-side
+  `SideBySideEditorInput` in one group) remain unported because the terminal has
+  no second window and no side-by-side input model.
 - Serialization/restore is ported at the model and TUI boundaries:
   `src/vs/workbench/common/editor/editorFactory.zig` holds the editor
   serializer registry, `EditorGroupModel.serialize`/`deserialize` rebuilds the
