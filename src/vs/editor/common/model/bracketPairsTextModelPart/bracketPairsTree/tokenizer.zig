@@ -285,52 +285,81 @@ pub const Tokenizer = struct {
     pub fn emitBracket(self: *Tokenizer, lineNumber: usize, pos: usize, bracketText: []const u8, isOpening: bool, language: []const u8) !void {
         const start = Position.init(lineNumber, pos + 1);
         try self.emitText(start);
-        const info = BracketInfo{
-            .bracket_text = bracketText,
-            .language_id = language,
-            .is_opening = isOpening,
-            .colorized = self.colorized(language, bracketText, isOpening),
-        };
-        var bracket_id: usize = 0;
-        var bracket_ids = SmallImmutableSet.empty();
-        var colorized_bracket_ids = SmallImmutableSet.empty();
-        if (isOpening) {
-            const key = try std.fmt.allocPrint(self.allocator, "{s}:::{s}", .{ language, bracketText });
-            defer self.allocator.free(key);
-            bracket_id = try self.ids.get(key);
-            bracket_ids = try bracket_ids.add(bracket_id);
-        } else {
-            const defs = try self.getBrackets(language);
-            for (defs.defs.items) |def| {
-                if (!std.mem.eql(u8, def.close, bracketText)) continue;
-                const key = try std.fmt.allocPrint(self.allocator, "{s}:::{s}", .{ language, def.open });
-                defer self.allocator.free(key);
-                const id = try self.ids.get(key);
-                if (bracket_id == 0) bracket_id = id;
-                bracket_ids = try bracket_ids.add(id);
-                if (def.colorized) colorized_bracket_ids = try colorized_bracket_ids.add(id);
-            }
-        }
-        try self.tokens.append(.{
-            .kind = if (isOpening) .opening_bracket else .closing_bracket,
-            .length = toLength(0, bracketText.len),
-            .bracket_id = bracket_id,
-            .bracket_ids = bracket_ids,
-            .colorized_bracket_ids = colorized_bracket_ids,
-            .bracket = info,
-        });
+        const defs = try self.getBrackets(language);
+        const token = (try tokenForText(self.allocator, self.ids, language, defs, bracketText, isOpening)) orelse return error.Unexpected;
+        try self.tokens.append(token);
         self.cursor = Position.init(lineNumber, pos + 1 + bracketText.len);
     }
-
-    pub fn colorized(self: *Tokenizer, language: []const u8, bracketText: []const u8, isOpening: bool) bool {
-        const defs = self.brackets.getPtr(language) orelse return false;
-        for (defs.defs.items) |def| {
-            if (isOpening and std.mem.eql(u8, def.open, bracketText)) return def.colorized;
-            if (!isOpening and std.mem.eql(u8, def.close, bracketText)) return def.colorized;
-        }
-        return false;
-    }
 };
+
+/// Upstream `BracketTokens.getToken`: builds an opening or closing token for
+/// canonical bracket text. `prefer_opening` disambiguates text configured both
+/// ways; without it closing wins (upstream's map overwrites openings).
+pub fn tokenForText(
+    allocator: Allocator,
+    ids: *StringIdProvider,
+    language: []const u8,
+    brackets: *LanguageBrackets,
+    text: []const u8,
+    prefer_opening: ?bool,
+) !?Token {
+    if (prefer_opening == null or prefer_opening.? == false) {
+        var bracket_id: usize = 0;
+        var bracket_ids = SmallImmutableSet.empty();
+        var colorized_ids = SmallImmutableSet.empty();
+        var colorized = false;
+        var found = false;
+        for (brackets.defs.items) |def| {
+            if (!std.mem.eql(u8, def.close, text)) continue;
+            const key = try std.fmt.allocPrint(allocator, "{s}:::{s}", .{ language, def.open });
+            defer allocator.free(key);
+            const id = try ids.get(key);
+            if (!found) bracket_id = id;
+            found = true;
+            bracket_ids = try bracket_ids.add(id);
+            colorized = colorized or def.colorized;
+            if (def.colorized) colorized_ids = try colorized_ids.add(id);
+        }
+        if (found) {
+            return Token{
+                .kind = .closing_bracket,
+                .length = toLength(0, text.len),
+                .bracket_id = bracket_id,
+                .bracket_ids = bracket_ids,
+                .colorized_bracket_ids = colorized_ids,
+                .bracket = .{
+                    .bracket_text = text,
+                    .language_id = language,
+                    .is_opening = false,
+                    .colorized = colorized,
+                },
+            };
+        }
+    }
+
+    if (prefer_opening == null or prefer_opening.? == true) {
+        for (brackets.defs.items) |def| {
+            if (!std.mem.eql(u8, def.open, text)) continue;
+            const key = try std.fmt.allocPrint(allocator, "{s}:::{s}", .{ language, text });
+            defer allocator.free(key);
+            const id = try ids.get(key);
+            return Token{
+                .kind = .opening_bracket,
+                .length = toLength(0, text.len),
+                .bracket_id = id,
+                .bracket_ids = try SmallImmutableSet.empty().add(id),
+                .colorized_bracket_ids = if (def.colorized) try SmallImmutableSet.empty().add(id) else SmallImmutableSet.empty(),
+                .bracket = .{
+                    .bracket_text = text,
+                    .language_id = language,
+                    .is_opening = true,
+                    .colorized = def.colorized,
+                },
+            };
+        }
+    }
+    return null;
+}
 
 fn utf8Len(text: []const u8) usize {
     if (text.len == 0) return 1;
