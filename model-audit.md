@@ -151,6 +151,14 @@ Small commits, each with a regression test:
     the allocation to the caller.
 29. `e06d22f` bracket-id set overflow is a typed error instead of a silent
     dropped bit.
+30. `cb97bde` piece-tree `nodeAt` returns null past the document; char/chunk
+    accessors and insert/delete are safe at invalid offsets.
+31. `3f417c6` removed the non-upstream inside-edit mapper branch and ported
+    the upstream mapper Single-Line/Multi-Line-Replace cases; added
+    `lengthToObj`.
+32. `820b8ab` search line-by-line scopes clamp/swap like JS substring.
+33. `f40eece` attached-view handlers own their visible-line ranges and are
+    deinitialized on view removal/backend teardown.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -168,9 +176,8 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   for concrete differences and the staged split plan.
 - **Piece-tree public APIs still have byte/UTF-16 and safety gaps.**
   `getLineCharCode`/`getCharCode` are byte accessors next to the codepoint
-  helpers; `nodeAt` returns `undefined` past the document; `getNearestChunk`
-  returns a borrowed slice into mutable buffers; some error paths still leak
-  partially built results.
+  helpers; `getNearestChunk` returns a borrowed slice into mutable buffers;
+  some error paths still leak partially built results.
 - **TextMate metadata loses embedded languages and engine theme semantics.**
   `textMateTokenizer.zig` hard-codes `languageId = 0` and matches theme rules
   per scope instead of through the engine's full scope path; embedded
@@ -186,10 +193,10 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 
 ### Medium
 
-- `pieceTreeTextBufferBuilder`: `getFirstLineText` slices without clamping and
-  keeps `
-`; RTL/unusual-terminator checks inspect only the new chunk;
-  factory/create ownership allows a second `create` to alias the same chunks.
+- `pieceTreeTextBufferBuilder`: the factory is deliberately single-use; a
+  second `create` after the first would alias the same chunks, matching the
+  documented terminal host contract. First-line clamping and combined RTL/
+  unusual-terminator checks are fixed.
 - `textModel`: there is no disposed guard on public members;
   `MultiModelEditStackElement` and `split()` are unreachable and would
   double-free if wired; class-name cleaning/tooltip encoding in decoration
@@ -206,19 +213,19 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   JS-specific overhead constant; the multi-model/delegate path is unreachable.
 - `annotations`: serialization (`ISerializedAnnotation`, `serialize`,
   `deserialize`) is absent; the port uses its own worker protocol.
-- `textModelSearch`: `findNextMatch` has a fallback full search after the
-  line-by-line scans; `_doFindMatchesLineByLine` can exceed the limit by the
-  remaining lines; reversed ranges can panic on slicing.
+- `textModelSearch`: line-by-line ranges now clamp like JS substring; the
+  remaining difference is the buffer-level path returning empty for invalid
+  node positions (same as upstream) while the line path clamps.
 - `guidesTextModelPart`: horizontal guide segments are produced but the
   terminal view intentionally skips them; wrapping columns are unused.
 
 ### Low / process
 
 - Missing upstream tests remain the main safety net:
-  `bracketPairColorizer/{beforeEditPositionMapper, brackets,
-  combineTextEditInfos, concat23Trees, getBracketPairsInRange, length,
-  smallImmutableSet, tokenizer}.test.ts`; `pieceTreeTextBuffer.test.ts`
-  (CRLF/random/snapshot suites); `annotations.test.ts`,
+  full `beforeEditPositionMapper.test.ts` (three cases ported),
+  `brackets`, `concat23Trees`, full `getBracketPairsInRange`,
+  `tokenizer`; most of `pieceTreeTextBuffer.test.ts` (CRLF/random and
+  snapshot suites partly ported); `annotations.test.ts`,
   `textModelTokens.test.ts`, `editableTextModel*.test.ts`, `model*.test.ts`,
   `textModelSearch.test.ts`.
 - Dead/malformed declarations that only compile because they are never
@@ -238,7 +245,7 @@ zig fmt --check <changed files>
 git diff --check
 ```
 
-The full suite currently passes (3047 tests, 19 skipped; the only observed
+The full suite currently passes (3052 tests, 19 skipped; the only observed
 failure was the unrelated pre-existing quick-access file-search worker hang,
 which passes on re-run).
 
