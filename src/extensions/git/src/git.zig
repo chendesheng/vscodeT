@@ -1793,14 +1793,14 @@ pub fn parseStatus(allocator: Allocator, bytes: []const u8) !GitRepositoryState 
                 if (parsed.path.len == 0 or std.mem.endsWith(u8, parsed.path, "/")) continue;
                 if (entry_count >= max_status_entries) continue;
                 entry_count += 1;
-                try appendChange(&merge_changes, allocator, parsed.path, null, 'U');
+                try appendChange(&merge_changes, allocator, parsed.path, null, 'U', .{ parsed.x, parsed.y });
             },
             '?' => {
                 const path = parseSimplePath(record) orelse continue;
                 if (path.len == 0 or std.mem.endsWith(u8, path, "/")) continue;
                 if (entry_count >= max_status_entries) continue;
                 entry_count += 1;
-                try appendChange(&untracked_changes, allocator, path, null, '?');
+                try appendChange(&untracked_changes, allocator, path, null, '?', null);
             },
             '!' => {
                 // Ignored entries have no state group in the read-only model.
@@ -1875,12 +1875,18 @@ fn appendChange(
     path: []const u8,
     original: ?[]const u8,
     status: u8,
+    conflict: ?[2]u8,
 ) !void {
     const owned_path = try allocator.dupe(u8, path);
     errdefer allocator.free(owned_path);
     const owned_original = if (original) |value| try allocator.dupe(u8, value) else null;
     errdefer if (owned_original) |value| allocator.free(value);
-    try list.append(.{ .path = owned_path, .original_path = owned_original, .status = status });
+    try list.append(.{
+        .path = owned_path,
+        .original_path = owned_original,
+        .status = status,
+        .conflict = conflict,
+    });
 }
 
 fn addXYChange(
@@ -1891,10 +1897,10 @@ fn addXYChange(
     original: ?[]const u8,
 ) !void {
     if (record.x != '.' and record.x != ' ') {
-        try appendChange(index_changes, allocator, record.path, original, record.x);
+        try appendChange(index_changes, allocator, record.path, original, record.x, null);
     }
     if (record.y != '.' and record.y != ' ') {
-        try appendChange(working_tree_changes, allocator, record.path, original, record.y);
+        try appendChange(working_tree_changes, allocator, record.path, original, record.y, null);
     }
 }
 
@@ -2206,6 +2212,12 @@ test "parseStatus: unmerged and untracked records" {
     defer state.deinit(allocator);
 
     try expectChangePaths(state.merge_changes, &.{ "conflict.zig", "added.zig" });
+    // The conflict XY pair is preserved for the upstream conflict status map.
+    try std.testing.expectEqual(@as(u8, 'U'), state.merge_changes[0].conflict.?[0]);
+    try std.testing.expectEqual(@as(u8, 'U'), state.merge_changes[0].conflict.?[1]);
+    try std.testing.expectEqual(@as(u8, 'A'), state.merge_changes[1].conflict.?[0]);
+    try std.testing.expectEqual(@as(u8, 'A'), state.merge_changes[1].conflict.?[1]);
+    try std.testing.expect(state.untracked_changes[0].conflict == null);
     try std.testing.expectEqual(@as(usize, 0), state.index_changes.len);
     try std.testing.expectEqual(@as(usize, 0), state.working_tree_changes.len);
     try expectChangePaths(state.untracked_changes, &.{"untracked.zig"});

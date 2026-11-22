@@ -71,6 +71,10 @@ pub const GitChange = struct {
     /// `?`, ...). Upstream's SCM extension derives this from its status map;
     /// the CLI parser records it so the terminal SCM view can paint it.
     status: u8 = 0,
+    /// Porcelain v2 `XY` pair for an unmerged entry (`u` record). Upstream
+    /// maps the seven conflict pairs to distinct statuses; the port keeps the
+    /// pair so the Git provider can produce the same letters/tooltips.
+    conflict: ?[2]u8 = null,
 };
 
 pub const GitDiffChange = struct {
@@ -334,8 +338,14 @@ fn changesEql(a: []const GitChange, b: []const GitChange) bool {
         if (!optionalStringEql(left.original_path, right.original_path)) return false;
         if (!optionalStringEql(left.modified_path, right.modified_path)) return false;
         if (left.status != right.status) return false;
+        if (!optionalConflictEql(left.conflict, right.conflict)) return false;
     }
     return true;
+}
+
+fn optionalConflictEql(a: ?[2]u8, b: ?[2]u8) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return a.?[0] == b.?[0] and a.?[1] == b.?[1];
 }
 
 fn cloneBranch(branch: GitBranch, allocator: Allocator) !GitBranch {
@@ -369,6 +379,7 @@ fn cloneChanges(changes: []const GitChange, allocator: Allocator) ![]GitChange {
             .original_path = if (change.original_path) |path| try allocator.dupe(u8, path) else null,
             .modified_path = if (change.modified_path) |path| try allocator.dupe(u8, path) else null,
             .status = change.status,
+            .conflict = change.conflict,
         };
     }
     return result;
