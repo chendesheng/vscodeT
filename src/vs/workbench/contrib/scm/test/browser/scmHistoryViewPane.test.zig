@@ -51,6 +51,9 @@ const TestHistoryProvider = struct {
     fetch_count: usize = 0,
     last_skip: ?usize = null,
     last_limit: usize = 0,
+    /// When set, every history item also has a second parent that is not part
+    /// of the loaded page, the shape that used to rasterize as a diagonal.
+    merge_parents: bool = false,
 
     fn init(self: *TestHistoryProvider, allocator: Allocator, total: usize) !void {
         self.allocator = allocator;
@@ -58,6 +61,7 @@ const TestHistoryProvider = struct {
         self.fetch_count = 0;
         self.last_skip = null;
         self.last_limit = 0;
+        self.merge_parents = false;
         self.refs_changed = Emitter(history.ISCMHistoryItemRefsChangeEvent).init(allocator);
         self.current = .{ .id = "main", .name = "main", .revision = "commit-0" };
         self.base = .{
@@ -117,9 +121,16 @@ const TestHistoryProvider = struct {
         for (items, skip..) |*item, index| {
             const id = try std.fmt.allocPrint(allocator, "commit-{d}", .{index});
             const subject = try std.fmt.allocPrint(allocator, "subject {d}", .{index});
-            const parent_ids = try allocator.alloc([]const u8, if (index + 1 < self.total) 1 else 0);
-            if (parent_ids.len == 1) {
+            const parent_count: usize = if (index + 1 < self.total)
+                (if (self.merge_parents) 2 else 1)
+            else
+                0;
+            const parent_ids = try allocator.alloc([]const u8, parent_count);
+            if (parent_count > 0) {
                 parent_ids[0] = try std.fmt.allocPrint(allocator, "commit-{d}", .{index + 1});
+            }
+            if (parent_count > 1) {
+                parent_ids[1] = try std.fmt.allocPrint(allocator, "side-{d}", .{index});
             }
             item.* = .{
                 .id = id,
@@ -210,4 +221,41 @@ test "SCM history view pane: one click on Load More loads the next page" {
     try testing.expect(try view.handleMouse(&click, rect));
     try testing.expectEqual(@as(usize, 5), view.rows.items.len);
     try testing.expectEqual(@as(usize, 4), provider.last_limit);
+}
+
+test "SCM history view pane: merge graph uses orthogonal connectors" {
+    const allocator = testing.allocator;
+    var host = TestHost{};
+    var provider: TestHistoryProvider = undefined;
+    try provider.init(allocator, 6);
+    defer provider.deinit();
+    // Every commit merges a side branch that is not in the loaded page, so the
+    // graph opens one lane per row. Before the cell-connection rewrite these
+    // rows were `╲` diagonals that read as a single slope.
+    provider.merge_parents = true;
+
+    const view = try createView(allocator, &host, &provider);
+    defer {
+        view.deinit();
+        allocator.destroy(view);
+    }
+
+    var grid = try ui.CellGrid.init(allocator, 80, 12);
+    defer grid.deinit();
+    try view.render(&grid, .{ .x = 0, .y = 0, .w = 80, .h = 12 }, true);
+
+    const first_row = try grid.rowText(allocator, 0);
+    defer allocator.free(first_row);
+    const second_row = try grid.rowText(allocator, 1);
+    defer allocator.free(second_row);
+
+    for ([_][]const u8{ first_row, second_row }) |row| {
+        try testing.expect(std.mem.indexOf(u8, row, "\u{2571}") == null); // ╱
+        try testing.expect(std.mem.indexOf(u8, row, "\u{2572}") == null); // ╲
+        try testing.expect(std.mem.indexOf(u8, row, "subject") != null);
+    }
+    // Row 0 opens the first side lane with a corner; row 1 crosses that lane
+    // and opens the next one.
+    try testing.expect(std.mem.indexOf(u8, first_row, "\u{256E}") != null); // ╮
+    try testing.expect(std.mem.indexOf(u8, second_row, "\u{253C}") != null); // ┼
 }
