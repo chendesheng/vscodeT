@@ -1048,8 +1048,9 @@ console API for raw mode, sizing and input polling.
   `input.*` and `inputOption.*` theme ids (the terminal fallback keeps the dark
   defaults). While find is open, `editor.find.addExtraSpaceOnTop` reserves the
   bar's 1-2 rows above line 1 as a terminal find view zone, so the bar does not
-  cover the first lines; the inset is fixed rather than adding scrollable space
-  above line 1. Find/replace history is kept per widget. The browser sash and accessibility tree are not
+  cover the first lines. The inset is applied while line 1 is at the top and
+  released when the editor scrolls; it does not add scrollable space above
+  line 1. Find/replace history is kept per widget. The browser sash and accessibility tree are not
   ported. The
   find, search and quick-open inputs share the completed `InputBox` editing
   behavior: Shift selection, Ctrl-A, word-wise movement/deletion, undo/redo,

@@ -439,7 +439,7 @@ pub const Tab = struct {
 
     fn findViewZoneRows(self: *Tab) usize {
         const controllers = self.controllers orelse return 0;
-        return controllers.find.widget().viewZoneRows();
+        return controllers.find.viewZoneRows();
     }
 
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {

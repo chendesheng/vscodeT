@@ -16055,7 +16055,7 @@ test "Workbench: the find bar reserves a view-zone row" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path = try seedFile(allocator, io, &tmp, "find_zone.txt", "alpha\nbeta");
+    const path = try seedFile(allocator, io, &tmp, "find_zone.txt", "alpha\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19");
     defer allocator.free(path);
 
     const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
@@ -16074,4 +16074,9 @@ test "Workbench: the find bar reserves a view-zone row" {
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "alpha") != null);
     try std.testing.expectEqual(@as(usize, 1), tab.top_view_zone_rows);
+
+    _ = tab.editor.scrollViewLines(3);
+    tab.view.invalidate();
+    try workbench.render(&out.writer);
+    try std.testing.expectEqual(@as(usize, 0), tab.top_view_zone_rows);
 }
