@@ -4587,6 +4587,20 @@ pub const Workbench = struct {
         return self.findBoolSetting("editor.find.addExtraSpaceOnTop", true);
     }
 
+    fn findAutoFindInSelection(self: *Workbench) @import("../../editor/contrib/find/browser/findController.zig").AutoFindInSelection {
+        const configuration = self.configuration orelse return .never;
+        const value = configuration.getValue("editor.find.autoFindInSelection", .{}) orelse return .never;
+        return switch (value.*) {
+            .string => |text| if (std.mem.eql(u8, text, "always"))
+                .always
+            else if (std.mem.eql(u8, text, "multiline"))
+                .multiline
+            else
+                .never,
+            else => .never,
+        };
+    }
+
     fn findSeedSearchStringFromSelection(self: *Workbench) @import("../../editor/contrib/find/browser/findController.zig").SeedSearchString {
         const configuration = self.configuration orelse return .always;
         const value = configuration.getValue("editor.find.seedSearchStringFromSelection", .{}) orelse return .always;
@@ -8769,6 +8783,7 @@ pub const Workbench = struct {
                 widget.setFindOnType(self.findOnType());
                 widget.setCloseOnResult(self.findCloseOnResult());
                 controllers.find.setSeedSearchStringFromSelection(self.findSeedSearchStringFromSelection());
+                controllers.find.setAutoFindInSelection(self.findAutoFindInSelection());
                 controllers.find.state.loop = self.findLoop();
             }
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
