@@ -133,6 +133,7 @@ pub const SparseTokensStore = struct {
 
         const index = insertPosition orelse self._pieces.items.len;
         if (pieces.len > 0) {
+            try self._pieces.ensureUnusedCapacity(pieces.len);
             try self._pieces.insertSlice(index, pieces);
         }
         return range;
