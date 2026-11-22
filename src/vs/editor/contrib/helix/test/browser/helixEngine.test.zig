@@ -1332,6 +1332,67 @@ test "Helix: select-mode j keeps the desired column" {
     try std.testing.expectEqual(Position.init(3, 10), selection.getPosition());
 }
 
+test "Helix: k on the first line keeps the desired column" {
+    // Mirrors `.vscode/tasks.json`: a short first line, then long comments.
+    // A wide view keeps those comments on physical lines of their own.
+    const h = try Harness.initWithWidth(std.testing.allocator, "{\n  // See https://go.microsoft.com/fwlink/?LinkId=733558\n  // for the documentation about the tasks.json format\n  \"version\": \"2.0.0\",", 120);
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(2, 10));
+
+    // Entering the short first line clamps the caret but remembers the column.
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 2), h.cursor());
+
+    // A second `k` cannot move any further: it must not clear the column.
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 2), h.cursor());
+
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(2, 10), h.cursor());
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.cursor());
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(2, 10), h.cursor());
+}
+
+test "Helix: k on the first line does not move the caret" {
+    const h = try Harness.initWithWidth(std.testing.allocator, "0123456789abcdef\nab", 120);
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 10));
+
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 10), h.cursor());
+    try h.send(.up);
+    try std.testing.expectEqual(Position.init(1, 10), h.cursor());
+
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(2, 3), h.cursor());
+}
+
+test "Helix: j on the last line is a no-op and counts stop at the edge" {
+    const h = try Harness.initWithWidth(std.testing.allocator, "0123456789abcdef\nab\n0123456789abcdef", 120);
+    defer h.deinit();
+    try h.editor.setCursorPosition(Position.init(1, 10));
+
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(2, 3), h.cursor());
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.cursor());
+
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.cursor());
+    try h.send(.down);
+    try std.testing.expectEqual(Position.init(3, 10), h.cursor());
+
+    // A count clamps at the last line at the remembered column.
+    try h.sendChar('k');
+    try h.sendChar('k');
+    try std.testing.expectEqual(Position.init(1, 10), h.cursor());
+    try h.sendChar('9');
+    try h.sendChar('j');
+    try std.testing.expectEqual(Position.init(3, 10), h.cursor());
+}
+
 test "Helix: j collapses the selection before moving" {
     const h = try Harness.init(std.testing.allocator, "one two\nthree");
     defer h.deinit();

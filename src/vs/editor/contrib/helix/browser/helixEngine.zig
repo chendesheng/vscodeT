@@ -1120,16 +1120,33 @@ pub const HelixEngine = struct {
     /// selection again from the model selections here would rebuild each
     /// cursor state with a zero desired column, so crossing a short line would
     /// lose the column and pin the following `j`/`k` to that short line.
+    /// Upstream recomputes the new position from `old_visual_position` when a
+    /// vertical motion cannot change the line, so it is a no-op there; calling
+    /// the editor's wrapped-line move instead clamps to the first/last column
+    /// and clears the remembered column.
     fn visualLine(self: *HelixEngine, down: bool, extend: bool, count: usize) !void {
-        try self.editor.moveWrappedLine(down, extend, count);
+        const view_line = self.editor.cursorViewLine();
+        const view_line_count = self.editor.viewLineCount();
+        if (down) {
+            if (view_line >= view_line_count) return;
+            try self.editor.moveWrappedLine(true, extend, @min(count, view_line_count - view_line));
+        } else {
+            if (view_line <= 1) return;
+            try self.editor.moveWrappedLine(false, extend, @min(count, view_line - 1));
+        }
     }
 
     fn lineUp(self: *HelixEngine, extend: bool, count: usize) !void {
-        try self.editor.moveLogicalLine(false, extend, count);
+        const line_number = self.editor.cursorPosition().lineNumber;
+        if (line_number <= 1) return;
+        try self.editor.moveLogicalLine(false, extend, @min(count, line_number - 1));
     }
 
     fn lineDown(self: *HelixEngine, extend: bool, count: usize) !void {
-        try self.editor.moveLogicalLine(true, extend, count);
+        const line_number = self.editor.cursorPosition().lineNumber;
+        const line_count = self.editor.model.getLineCount();
+        if (line_number >= line_count) return;
+        try self.editor.moveLogicalLine(true, extend, @min(count, line_count - line_number));
     }
 
     const WordMotion = enum { next_start, prev_start, next_end };

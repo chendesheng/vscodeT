@@ -45,7 +45,8 @@ Everything else belongs to the editor:
 - `j`/`k` use the editor's visual-line movement and `gj`/`gk` its logical-line
   movement, so wrapped lines and tabs keep their visible column. Repeated
   vertical movement remembers the desired column, so crossing a shorter line
-  and moving on restores the original column instead of staying clamped.
+  and moving on restores the original column instead of staying clamped. At the
+  first and last line the motion is a no-op and keeps the remembered column.
 - Insert-mode text goes through `Editor.insertText`/`newline`, so auto-closing
   and auto-indent continue to work.
 - Search uses the model's regular-expression matcher. `/` and `?` preview
