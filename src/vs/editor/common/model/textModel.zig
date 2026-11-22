@@ -1575,13 +1575,18 @@ pub const TextModel = struct {
                             }
                         }.predicate);
 
-                        try rawContentChanges.append(.{
-                            .lineChanged = ModelRawLineChanged.init(
-                                editLineNumber,
-                                try self.getLineContent(currentEditLineNumber),
-                                decorationsInCurrentLine,
-                            ),
-                        });
+                        const copied_injected: ?[]const LineInjectedText = if (decorationsInCurrentLine) |slice|
+                            try allocator.dupe(LineInjectedText, slice)
+                        else
+                            null;
+                        var line_changed = ModelRawLineChanged.init(
+                            editLineNumber,
+                            try self.getLineContent(currentEditLineNumber),
+                            copied_injected,
+                        );
+                        line_changed.owns_injected_text = true;
+                        errdefer line_changed.deinit();
+                        try rawContentChanges.append(.{ .lineChanged = line_changed });
 
                         if (j == 0) break;
                         j -= 1;
@@ -1612,14 +1617,21 @@ pub const TextModel = struct {
                                 return r.lineNumber < ctx;
                             }
                         }.predicate);
-                        try injectedTexts.append(injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
+                        const line_injected = injectedTextInEditedRangeQueue.takeWhile(usize, lineNumber, struct {
                             fn predicate(ctx: usize, r: LineInjectedText) bool {
                                 return r.lineNumber == ctx;
                             }
-                        }.predicate));
+                        }.predicate);
+                        const copied_injected: ?[]const LineInjectedText = if (line_injected) |slice|
+                            try allocator.dupe(LineInjectedText, slice)
+                        else
+                            null;
+                        try injectedTexts.append(copied_injected);
                     }
 
-                    try rawContentChanges.append(.{ .linesInserted = ModelRawLinesInserted.init(spliceLineNumber + 1, startLineNumber + insertingLinesCnt, newLines, injectedTexts) });
+                    var inserted_event = ModelRawLinesInserted.init(spliceLineNumber + 1, startLineNumber + insertingLinesCnt, newLines, injectedTexts);
+                    errdefer inserted_event.deinit();
+                    try rawContentChanges.append(.{ .linesInserted = inserted_event });
                 }
 
                 lineCount += changeLineCountDelta;
@@ -1686,10 +1698,15 @@ pub const TextModel = struct {
                 const affectedLines = lines.list;
 
                 var lineChangeEvents = ArrayList(ModelRawLineChanged).init(self.getAllocator());
-                defer lineChangeEvents.deinit();
+                defer {
+                    for (lineChangeEvents.items) |*event| event.deinit();
+                    lineChangeEvents.deinit();
+                }
 
                 for (affectedLines.items) |lineNumber| {
-                    try lineChangeEvents.append(ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self._getInjectedTextInLine(lineNumber)));
+                    var event = ModelRawLineChanged.init(lineNumber, try self.getLineContent(lineNumber), try self._getInjectedTextInLine(lineNumber));
+                    event.owns_injected_text = true;
+                    try lineChangeEvents.append(event);
                 }
                 try self._onDidChangeInjectedText.fire(ModelInjectedTextChangedEvent.init(lineChangeEvents.items));
             }
