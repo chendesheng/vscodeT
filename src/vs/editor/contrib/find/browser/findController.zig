@@ -120,6 +120,15 @@ pub const FindController = struct {
         self.auto_find_in_selection = mode;
     }
 
+    /// Terminal view-zone rows. The browser zone scrolls with the content; the
+    /// terminal reserves the rows only while line 1 is at the top and releases
+    /// them when the editor scrolls, approximating the zone without adding
+    /// scrollable space above line 1.
+    pub fn viewZoneRows(self: *FindController) usize {
+        if (self.editor.topViewLine() != 1) return 0;
+        return self.find_widget.viewZoneRows();
+    }
+
     pub fn open(self: *FindController, replace: bool) !void {
         if (self.state.is_revealed) {
             if (replace) {
