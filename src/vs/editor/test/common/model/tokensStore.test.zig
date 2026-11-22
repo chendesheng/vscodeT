@@ -6,6 +6,13 @@ const SparseMultilineTokens = @import("../../../common/tokens/sparseMultilineTok
 const Range = @import("../../../common/core/range.zig").Range;
 const IdentifiedSingleEditOperation = @import("../../../common/model.zig").IdentifiedSingleEditOperation;
 const String = @import("../../../../base/common/strings.zig").String;
+const LineTokens = @import("../../../common/tokens/lineTokens.zig").LineTokens;
+const TokenPacked = @import("../../../common/tokens/lineTokens.zig").TokenPacked;
+const SparseTokensStore = @import("../../../common/tokens/sparseTokensStore.zig").SparseTokensStore;
+const TokenMetadata = @import("../../../common/encodedTokenAttributes.zig").TokenMetadata;
+const FontStyle = @import("../../../common/encodedTokenAttributes.zig").FontStyle;
+const Position = @import("../../../common/core/position.zig").Position;
+const LanguageIdCodec = @import("../../../common/languages.zig").LanguageIdCodec;
 
 const SEMANTIC_COLOR: u32 = 5;
 const SEMANTIC_USE_FOREGROUND: u32 = 1 << 4;
@@ -347,4 +354,227 @@ test "tokensStore: issue #147944 null language word lookup" {
     try ctx.model.tokenization().setSemanticTokens(&pieces, true);
 
     try std.testing.expect(ctx.model.getWordAtPosition(@import("../../../common/core/position.zig").Position.init(2, 1)) == null);
+}
+
+test "tokensStore: issue #179268 complex edit" {
+    const allocator = std.testing.allocator;
+    try testTokensAdjustment(allocator, &.{
+        "|export| |'interior_material_selector.dart'|;",
+        "|export| |'mileage_selector.dart'|;",
+        "|export| |'owners_selector.dart'|;",
+        "|export| |'price_selector.dart'|;",
+        "|export| |'seat_count_selector.dart'|;",
+        "|export| |'year_selector.dart'|;",
+        "|export| |'winter_options_selector.dart'|;|export| |'camera_selector.dart'|;",
+    }, &.{
+        .{ .range = Range.init(1, 9, 1, 9), .text = "camera_selector.dart';\nexport '" },
+        .{ .range = Range.init(6, 9, 7, 9), .text = "" },
+        .{ .range = Range.init(7, 39, 7, 39), .text = "\n" },
+        .{ .range = Range.init(7, 47, 7, 48), .text = "ye" },
+        .{ .range = Range.init(7, 49, 7, 51), .text = "" },
+        .{ .range = Range.init(7, 52, 7, 53), .text = "" },
+    }, &.{
+        "|export| |'|camera_selector.dart';",
+        "export 'interior_material_selector.dart';",
+        "|export| |'mileage_selector.dart'|;",
+        "|export| |'owners_selector.dart'|;",
+        "|export| |'price_selector.dart'|;",
+        "|export| |'seat_count_selector.dart'|;",
+        "|export| |'||winter_options_selector.dart'|;",
+        "|export| |'year_selector.dart'|;",
+    });
+}
+
+test "tokensStore: issue #91936 semantic colors on a selected line" {
+    const allocator = std.testing.allocator;
+    var ctx = try TestModel.init(allocator, "                    else if ($s = 08) then '\\b'", "plaintext");
+    defer ctx.deinit();
+
+    const piece = try createSparseTokens(allocator, 1, &[_]u32{
+        0, 20, 24, 0b01111000000000010000,
+        0, 25, 27, 0b01111000000000010000,
+        0, 28, 29, 0b00001000000000010000,
+        0, 29, 31, 0b10000000000000010000,
+        0, 32, 33, 0b00001000000000010000,
+        0, 34, 36, 0b00110000000000010000,
+        0, 36, 37, 0b00001000000000010000,
+        0, 38, 42, 0b01111000000000010000,
+        0, 43, 47, 0b01011000000000010000,
+    });
+    var pieces = [_]SparseMultilineTokens{piece};
+    try ctx.model.tokenization().setSemanticTokens(&pieces, true);
+
+    var lineTokens = try ctx.model.tokenization().getLineTokens(1);
+    defer lineTokens.deinit();
+    const expected = [_]struct { end: usize, metadata: u32 }{
+        .{ .end = 20, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 24, .metadata = 0b10000001111000010000000001 },
+        .{ .end = 25, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 27, .metadata = 0b10000001111000010000000001 },
+        .{ .end = 28, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 29, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 31, .metadata = 0b10000010000000010000000001 },
+        .{ .end = 32, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 33, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 34, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 36, .metadata = 0b10000000110000010000000001 },
+        .{ .end = 37, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 38, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 42, .metadata = 0b10000001111000010000000001 },
+        .{ .end = 43, .metadata = 0b10000000001000010000000001 },
+        .{ .end = 47, .metadata = 0b10000001011000010000000001 },
+    };
+    try std.testing.expectEqual(expected.len, lineTokens.getCount());
+    for (expected, 0..) |want, i| {
+        try std.testing.expectEqual(want.end, lineTokens.getEndOffset(i));
+        try std.testing.expectEqual(want.metadata, @as(u32, @bitCast(lineTokens.getMetadata(i))));
+    }
+}
+
+test "tokensStore: partial tokens 3" {
+    const allocator = std.testing.allocator;
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var store = SparseTokensStore.init(allocator, &codec);
+    defer store.deinit();
+
+    var p1 = try createSparseTokens(allocator, 5, &[_]u32{
+        0,  5, 10, 1,
+        5,  5, 10, 2,
+        10, 5, 10, 3,
+        15, 5, 10, 4,
+        20, 5, 10, 5,
+        25, 5, 10, 6,
+    });
+    var pieces = [_]SparseMultilineTokens{p1};
+    _ = try store.setPartial(Range.init(1, 1, 31, 2), &pieces);
+
+    p1 = try createSparseTokens(allocator, 10, &[_]u32{
+        0, 5, 10, 3,
+        5, 5, 10, 4,
+    });
+    var pieces2 = [_]SparseMultilineTokens{p1};
+    _ = try store.setPartial(Range.init(11, 1, 16, 2), &pieces2);
+
+    var text = ArrayList(u8).init(allocator);
+    try text.appendSlice("enum Enum1 {");
+    var tokens = ArrayList(TokenPacked).init(allocator);
+    try tokens.append(.{ .endOffset = 12, .metadata = .default });
+    const aTokens = LineTokens.init(tokens, text, &codec);
+    var lineTokens = try store.addSparseTokens(5, aTokens);
+    defer lineTokens.deinit();
+    try std.testing.expectEqual(3, lineTokens.getCount());
+}
+
+test "tokensStore: issue #95949 identifiers stay non-bold" {
+    const allocator = std.testing.allocator;
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var store = SparseTokensStore.init(allocator, &codec);
+    defer store.deinit();
+
+    const piece = try createSparseTokens(allocator, 1, &[_]u32{
+        0, 6, 11, (1 << FOREGROUND_OFFSET) | SEMANTIC_USE_FOREGROUND,
+    });
+    var pieces = [_]SparseMultilineTokens{piece};
+    try store.set(&pieces, true, null);
+
+    const tmMetadata = struct {
+        fn create(foreground: u9, fontStyle: FontStyle, languageId: u8) TokenMetadata {
+            var m = TokenMetadata.default;
+            m.foreground = foreground;
+            m.fontStyle = fontStyle;
+            m.languageId = languageId;
+            return m;
+        }
+    }.create;
+
+    var text = ArrayList(u8).init(allocator);
+    try text.appendSlice("const hello = 123;");
+    var tokens = ArrayList(TokenPacked).init(allocator);
+    try tokens.append(.{ .endOffset = 5, .metadata = tmMetadata(5, FontStyle.Bold, 53) });
+    try tokens.append(.{ .endOffset = 14, .metadata = tmMetadata(1, FontStyle.None, 53) });
+    try tokens.append(.{ .endOffset = 17, .metadata = tmMetadata(6, FontStyle.None, 53) });
+    try tokens.append(.{ .endOffset = 18, .metadata = tmMetadata(1, FontStyle.None, 53) });
+    const aTokens = LineTokens.init(tokens, text, &codec);
+
+    var lineTokens = try store.addSparseTokens(1, aTokens);
+    defer lineTokens.deinit();
+
+    const expected = [_]struct { end: usize, metadata: TokenMetadata }{
+        .{ .end = 5, .metadata = tmMetadata(5, FontStyle.Bold, 53) },
+        .{ .end = 6, .metadata = tmMetadata(1, FontStyle.None, 53) },
+        .{ .end = 11, .metadata = tmMetadata(1, FontStyle.None, 53) },
+        .{ .end = 14, .metadata = tmMetadata(1, FontStyle.None, 53) },
+        .{ .end = 17, .metadata = tmMetadata(6, FontStyle.None, 53) },
+        .{ .end = 18, .metadata = tmMetadata(1, FontStyle.None, 53) },
+    };
+    try std.testing.expectEqual(expected.len, lineTokens.getCount());
+    for (expected, 0..) |want, i| {
+        try std.testing.expectEqual(want.end, lineTokens.getEndOffset(i));
+        try std.testing.expectEqual(want.metadata, lineTokens.getMetadata(i));
+    }
+}
+
+test "tokensStore: setPartial removes all tokens from a later line" {
+    const allocator = std.testing.allocator;
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var store = SparseTokensStore.init(allocator, &codec);
+    defer store.deinit();
+
+    const piece = try createSparseTokens(allocator, 5, &[_]u32{ 0, 5, 10, 1 });
+    var pieces = [_]SparseMultilineTokens{piece};
+    try store.set(&pieces, false, null);
+    try std.testing.expect(!store.isEmpty());
+
+    var empty = [_]SparseMultilineTokens{};
+    _ = try store.setPartial(Range.init(5, 1, 5, 20), &empty);
+    try std.testing.expect(store.isEmpty());
+}
+
+test "tokensStore: setPartial keeps a piece when the first split half is empty" {
+    const allocator = std.testing.allocator;
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var store = SparseTokensStore.init(allocator, &codec);
+    defer store.deinit();
+
+    const piece = try createSparseTokens(allocator, 1, &[_]u32{ 10, 5, 10, 1 });
+    var pieces = [_]SparseMultilineTokens{piece};
+    try store.set(&pieces, false, null);
+
+    var empty = [_]SparseMultilineTokens{};
+    _ = try store.setPartial(Range.init(1, 1, 5, 1), &empty);
+    try std.testing.expect(!store.isEmpty());
+
+    var text = ArrayList(u8).init(allocator);
+    try text.appendSlice("    test line text    ");
+    var tokens = ArrayList(TokenPacked).init(allocator);
+    try tokens.append(.{ .endOffset = 22, .metadata = .default });
+    const aTokens = LineTokens.init(tokens, text, &codec);
+    var lineTokens = try store.addSparseTokens(11, aTokens);
+    defer lineTokens.deinit();
+    try std.testing.expectEqual(3, lineTokens.getCount());
+    try std.testing.expectEqual(5, lineTokens.getStartOffset(1));
+    try std.testing.expectEqual(10, lineTokens.getEndOffset(1));
+}
+
+test "tokensStore: encompassing deletion drops a piece starting at line 5" {
+    const allocator = std.testing.allocator;
+    var codec = try LanguageIdCodec.init(allocator);
+    defer codec.deinit();
+    var store = SparseTokensStore.init(allocator, &codec);
+    defer store.deinit();
+
+    const piece = try createSparseTokens(allocator, 5, &[_]u32{
+        0, 0, 5, 1,
+        5, 0, 5, 2,
+    });
+    var pieces = [_]SparseMultilineTokens{piece};
+    try store.set(&pieces, false, null);
+    try std.testing.expect(!store.isEmpty());
+
+    store.acceptEdit(Range.init(1, 1, 20, 1), 0, 0, 0, 0);
+    try std.testing.expect(store.isEmpty());
 }
