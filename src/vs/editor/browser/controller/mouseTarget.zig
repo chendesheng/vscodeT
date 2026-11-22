@@ -22,6 +22,7 @@ pub const Geometry = struct {
     text_height: usize,
     gutter_width: usize,
     glyph_width: usize,
+    top_inset: usize,
     top_view_line: usize,
     view_line_count: usize,
     scrollbar_width: usize,
@@ -54,12 +55,16 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
         return .{ .element = element, .type = .overlay_widget, .mouse_column = mouse_column };
     }
 
-    if (y >= geometry.text_height) {
+    if (y < geometry.top_inset) {
+        return .{ .element = element, .type = .content_empty, .mouse_column = mouse_column };
+    }
+    const content_y = y - geometry.top_inset;
+    if (content_y >= geometry.text_height) {
         return .{ .element = element, .type = .status, .mouse_column = mouse_column };
     }
 
     if (geometry.scrollbar_width > 0 and x >= geometry.cols -| geometry.scrollbar_width) {
-        const view_line = @min(geometry.top_view_line + y, geometry.view_line_count);
+        const view_line = @min(geometry.top_view_line + content_y, geometry.view_line_count);
         return .{
             .element = element,
             .type = .scrollbar,
@@ -68,7 +73,7 @@ pub fn createMouseTarget(host: TerminalMouseHost, x: usize, y: usize) !MouseTarg
         };
     }
 
-    const view_line = geometry.top_view_line + y;
+    const view_line = geometry.top_view_line + content_y;
     if (x < geometry.glyph_width) {
         return .{
             .element = element,

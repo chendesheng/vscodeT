@@ -983,6 +983,8 @@ Library constraints:
   invisible, just as an upstream class with no CSS rule does.
 - `workbench.editor.showTabs` none/single can hide the tab row; the reclaimed
   row becomes editor content.
+- The find widget reserves 1-2 top rows as a terminal view zone when
+  `editor.find.addExtraSpaceOnTop` is enabled; text/hit testing start below it.
 - The scroll decoration is a one-row `scrollbar.shadow` tint on the first text
   row after scrolling (no alpha/blur in a cell grid).
 - Configured `editor.rulers` paint one-cell vertical guides in empty cells;

@@ -365,6 +365,7 @@ pub const Editor = struct {
     on_did_change_dirty: Emitter(void),
     screen_width: usize,
     screen_height: usize,
+    top_inset_rows: usize = 0,
     /// The screen height includes a one-row status line when true. The
     /// multi-group workbench uses a workbench-level status bar and disables
     /// this fallback row for its editor panes.
@@ -1503,7 +1504,16 @@ pub const Editor = struct {
 
     pub fn textHeight(self: *const Editor) usize {
         const reserved: usize = if (self.status_row) 1 else 0;
-        return @max(@as(usize, 1), self.screen_height -| reserved);
+        return @max(@as(usize, 1), self.screen_height -| reserved -| self.top_inset_rows);
+    }
+
+    /// Terminal find view zone: blank rows reserved at the top of the editor.
+    pub fn setTopInset(self: *Editor, rows: usize) void {
+        const clamped = @min(rows, self.screen_height -| 1);
+        if (clamped == self.top_inset_rows) return;
+        self.top_inset_rows = clamped;
+        self.refreshLayout() catch {};
+        self.ensureCursorVisible();
     }
 
     /// Enables or disables the editor's own fallback status row. Workbench

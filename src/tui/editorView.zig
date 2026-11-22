@@ -511,6 +511,9 @@ pub const View = struct {
     /// Width of the rightmost cells reserved for the combined overview ruler
     /// and scrollbar. The editor wraps around the same width.
     scrollbar_width: usize = 0,
+    /// Terminal find view zone: blank rows reserved above line 1. The find
+    /// widget paints over these rows; text and hit testing start below them.
+    top_inset_rows: usize = 0,
     mouse_handler: TerminalMouseHandler = .{},
     /// Workbench status-bar text supplied through the ported
     /// `StatusbarModel`. Empty slices fall back to the editor's own status
@@ -648,6 +651,42 @@ pub const View = struct {
     /// Marks the current document stale. The next paint/render flushes it.
     pub fn invalidate(self: *View) void {
         self.needs_render = true;
+    }
+
+    pub fn setTopInset(self: *View, rows: usize) void {
+        const max_rows = self.surface.document().rows -| 1;
+        const clamped = @min(rows, max_rows);
+        if (clamped == self.top_inset_rows) return;
+        self.top_inset_rows = clamped;
+        self.applyTopInset();
+        self.needs_full_box_rebuild = true;
+        self.invalidate();
+    }
+
+    fn applyTopInset(self: *View) void {
+        const doc = self.surface.document();
+        const rows = doc.rows;
+        const inset = self.top_inset_rows;
+        const height = @max(rows -| inset, 1);
+        const inset_f: f64 = @floatFromInt(inset);
+        const height_f: f64 = @floatFromInt(height);
+        const roots = [_]?*ui.Node{
+            self.block_root,
+            self.content_root,
+            self.gutter_root,
+            self.scrollbar_root,
+            self.content_widgets_root,
+        };
+        for (roots) |maybe_node| {
+            const node = maybe_node orelse continue;
+            node.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = inset_f },
+                .width = .{ .percent = 100 },
+                .height = .{ .cells = height_f },
+            });
+        }
     }
 
     pub fn needsRender(self: *const View) bool {
@@ -966,7 +1005,7 @@ pub const View = struct {
 
     fn pointInWidget(self: *const View, x: usize, y: usize) bool {
         for (self.terminal_view_host.viewRef().contentWidgets().entries.items) |entry| {
-            if (entry.contains(x, y)) return true;
+            if (y >= self.top_inset_rows and entry.contains(x, y - self.top_inset_rows)) return true;
         }
         for (self.terminal_view_host.viewRef().overlayWidgets().entries.items) |entry| {
             if (entry.contains(x, y)) return true;
@@ -1010,7 +1049,7 @@ pub const View = struct {
     fn mouseContentWidgetContains(context: *anyopaque, x: usize, y: usize) bool {
         const self: *View = @ptrCast(@alignCast(context));
         for (self.terminal_view_host.viewRef().contentWidgets().entries.items) |entry| {
-            if (entry.contains(x, y)) return true;
+            if (y >= self.top_inset_rows and entry.contains(x, y - self.top_inset_rows)) return true;
         }
         return false;
     }
@@ -1033,6 +1072,7 @@ pub const View = struct {
             .top_view_line = self.editor.topViewLine(),
             .view_line_count = self.editor.viewLineCount(),
             .scrollbar_width = self.scrollbar_width,
+            .top_inset = self.top_inset_rows,
         };
     }
 
@@ -1086,6 +1126,7 @@ pub const View = struct {
 
         self.terminal_view_host.viewRef().scrollbarPart().endDrag();
         try self.surface.resize(width, height);
+        self.applyTopInset();
         self.terminal_view_host.viewRef().getViewLines().clearWindow();
         doc.tab_size = self.editor.tabSize();
         self.needs_full_box_rebuild = true;
@@ -1511,14 +1552,16 @@ pub const View = struct {
         const rows = self.surface.document().rows;
         const cols = self.surface.document().cols;
         if (row >= rows) return null;
+        const visible_row = row + self.top_inset_rows;
+        if (visible_row >= rows) return null;
         const right = @min(cols, self.editor.textAreaRight());
         const col = @min(self.cursor_col, right -| 1);
         // Overlay widgets (sticky scroll, find) cover the cells beneath them.
         // Hide the hardware cursor when it would be painted under a widget.
         for (self.terminal_view_host.viewRef().overlayWidgets().entries.items) |entry| {
-            if (entry.contains(col, row)) return null;
+            if (entry.contains(col, visible_row)) return null;
         }
-        return .{ .row = row, .col = col };
+        return .{ .row = visible_row, .col = col };
     }
 
     /// Terminal cell style adapter for a rendered view-line part. Sticky
@@ -1708,6 +1751,7 @@ pub const View = struct {
             self.overlay_widgets_root = try appendChromePartRoot(doc, chrome_root);
             self.content_widgets_root = try appendChromePartRoot(doc, chrome_root);
             self.status_root = try appendChromePartRoot(doc, chrome_root);
+            self.applyTopInset();
             self.document_ready = true;
             self.needs_full_box_rebuild = true;
             self.terminal_view_host.viewRef().getViewLines().setDomHost(
@@ -5501,4 +5545,29 @@ test "View: glyph hover message becomes a content tooltip" {
     try view.renderAnsi(&out.writer);
     try std.testing.expect(view.surface.grid().bg[view.surface.grid().index(editor.gutterWidth(), 1)] !=
         ui.cell.packColor(.{ .r = 50, .g = 50, .b = 55 }));
+}
+
+test "View: top inset reserves rows above the text" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "one\ntwo", "test.txt", 30, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    view.setTopInset(1);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(editor.gutterWidth() + 1, 0)]);
+    try std.testing.expectEqual(@as(u32, 'o'), grid.cluster[grid.index(editor.gutterWidth(), 1)]);
+    const zone_target = try view.mouseTargetAt(editor.gutterWidth() + 1, 0);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.content_empty, zone_target.type);
+    const text_target = try view.mouseTargetAt(editor.gutterWidth() + 1, 1);
+    try std.testing.expectEqual(editorBrowser.MouseTargetType.content_text, text_target.type);
 }

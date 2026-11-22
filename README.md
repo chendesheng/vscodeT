@@ -997,8 +997,10 @@ console API for raw mode, sizing and input polling.
   replace-all controls (clicks do not take focus; the keyboard keeps its key
   map), and its bar/input/toggle colors resolve the `editorWidget.*`,
   `input.*` and `inputOption.*` theme ids (the terminal fallback keeps the dark
-  defaults). The browser sash, find widget view zone, input history and
-  accessibility tree are not ported. The
+  defaults). While find is open, `editor.find.addExtraSpaceOnTop` reserves the
+  bar's 1-2 rows above line 1 as a terminal find view zone, so the bar does not
+  cover the first lines. The browser sash, input history and accessibility tree
+  are not ported. The
   find, search and quick-open inputs share the completed `InputBox` editing
   behavior: Shift selection, Ctrl-A, word-wise movement/deletion, undo/redo,
   mouse drag selection and caret-follow horizontal scrolling.
