@@ -68,7 +68,7 @@ For each row:
 | Diff editor | `vs/editor/browser/widget/diffEditor/**`, `vs/workbench/browser/parts/editor/textDiffEditor.zig` | `editor/browser/widget/diffEditor/**`, `workbench/.../textDiffEditor.ts` | Pending audit | Aligned rows, center gutter, overview ruler, theme, hit, documented omissions. |
 | Snippet tab stops | decorations in `src/tui/editorView.zig` | `editor/contrib/snippet/browser/*` | Pending audit | Decoration classes, selection behavior, theme. |
 | Rulers | `vs/editor/browser/viewParts/rulers/rulers.zig` | `editor/browser/viewParts/rulers/rulers.ts` | **T** | Configured `editor.rulers` columns are mapped to visible cell columns and painted as one-cell vertical guides through the view-line guide layer; the guide is skipped where a text glyph occupies the cell because a cell cannot show both. Per-ruler CSS color overrides are not parsed; `editorRuler.foreground` is used. |
-| Scroll decoration | absent | `editor/browser/viewParts/scrollDecoration/` | **M** | Confirmed absent. A one-cell top shadow/edge is feasible; next action is the view part or a documented omission. |
+| Scroll decoration | `vs/editor/browser/viewParts/scrollDecoration/scrollDecoration.zig` + `src/tui/editorView.zig` | `editor/browser/viewParts/scrollDecoration/` | **T** | The shadow appears after the first view line scrolls away and tints the first text row with `scrollbar.shadow`; the terminal has no alpha/blur, so it is a solid one-row background instead of a CSS box shadow. Covered by a View test. |
 | View zones | absent | `editor/browser/viewParts/viewZones/` | **M** | Confirmed absent; sticky scroll paints as an overlay and find uses the inline bar. Decide whether diff/peek view zones need cell rows or remain documented omissions. |
 | Minimap | absent | `editor/browser/viewParts/minimap/` | **T** | Confirmed absent and documented as a terminal limitation (`README.md`: no minimap/pixel lanes); a cell-grid thumbnail is not the upstream minimap and is intentionally omitted. |
 
@@ -196,6 +196,8 @@ For each row:
   Tooltip pinning remains a browser hover behavior.
 - Implemented the missing rulers view: mapped `editor.rulers` to one-cell
   vertical guides, skipping text-occupied cells; added a View test.
+- Implemented the scroll decoration: a one-row `scrollbar.shadow` tint after
+  scrolling, with a View test. View zones remain the only M decision.
 
 ## Next slice
 
