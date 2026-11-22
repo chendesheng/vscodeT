@@ -7358,6 +7358,7 @@ pub const Workbench = struct {
         var items = std.array_list.Managed(QuickPickItem).init(arena);
         try items.append(.{ .item = .{ .id = "tab:close", .label = "Close" } });
         try items.append(.{ .item = .{ .id = "tab:close_others", .label = "Close Others" } });
+        try items.append(.{ .item = .{ .id = "tab:close_right", .label = "Close to the Right" } });
         try items.append(.{ .item = .{ .id = "tab:close_all", .label = "Close All" } });
         const pinned = pane.group.model.isPinned(.{ .editor = tab.input });
         try items.append(.{ .item = .{
@@ -9036,6 +9037,14 @@ fn onTabMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
         const tabs = try self.breadcrumbs_arena.allocator().dupe(*Tab, pane.tabs.items);
         for (tabs) |candidate| {
             if (candidate == tab) continue;
+            _ = try self.closeTab(pane, candidate);
+            if (self.dialog != null) break;
+        }
+    } else if (std.mem.eql(u8, item.id, "tab:close_right")) {
+        const index = pane.indexOfTab(tab) orelse return;
+        const tabs = try self.breadcrumbs_arena.allocator().dupe(*Tab, pane.tabs.items);
+        for (tabs, 0..) |candidate, candidate_index| {
+            if (candidate_index <= index) continue;
             _ = try self.closeTab(pane, candidate);
             if (self.dialog != null) break;
         }
@@ -15062,4 +15071,38 @@ test "Workbench: tab overflow lists clipped tabs" {
     var enter = ui.KeyEvent{ .key = .enter };
     _ = try workbench.handleQuickAccessKey(&enter);
     try std.testing.expectEqualStrings(hidden_name, workbench.activeTab().?.input.getName());
+}
+
+test "Workbench: tab context menu closes to the right" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "right_a.txt", "a");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "right_b.txt", "b");
+    defer allocator.free(path_b);
+    const path_c = try seedFile(allocator, io, &tmp, "right_c.txt", "c");
+    defer allocator.free(path_c);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b, path_c }, 60, 12);
+    defer workbench.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    var down = ui.MouseEvent{
+        .kind = .down,
+        .x = pane.hits.items[0].start + 1,
+        .y = ui.cell.snap(pane.rect.y),
+        .button = .right,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+    const picker = workbench.quick_access.inputService().pickerRef();
+    picker.setActiveIndex(2);
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try workbench.handleQuickAccessKey(&enter);
+    try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
 }
