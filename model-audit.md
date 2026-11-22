@@ -125,6 +125,18 @@ Small commits, each with a regression test:
     start; TextMate tokenization has the 500 ms limit and keeps the input
     state on `stoppedEarly`; callback registration is idempotent.
 16. `ed781d6` provenance headers for every model file.
+17. `619c81c` piece-tree substring/substr clamp and swap like JS.
+18. `9c3f193` builder first-line clamping/CR stripping, combined RTL checks,
+    single-use factory, unconsumed-chunk cleanup.
+19. `a4f3e48` AST-based findPrev/findNext/findEnclosing bracket navigation
+    (invalid closers skipped, strict containment) and onDidChange on
+    token-aware trees.
+20. `45d3461` dead malformed declarations removed, `onWillDispose` fired,
+    decoration change accessor made public.
+21. `14959e3` raw content events own injected-text copies; injected-text
+    event releases per-line arrays.
+22. `746dd42` find-next returns null after the two line-by-line scans; the
+    middle-line loop stops at the result limit.
 
 ## 3. Remaining known divergences (not yet fixed)
 
@@ -143,9 +155,8 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 - **Piece-tree public APIs still have byte/UTF-16 and safety gaps.**
   `getLineCharCode`/`getCharCode` are byte accessors next to the codepoint
   helpers; `nodeAt` returns `undefined` past the document; `getNearestChunk`
-  returns a borrowed slice into mutable buffers; several JS-`substring` call
-  sites slice without clamping/swapping; `getLinesContent`/factory ownership
-  still leak on some error paths.
+  returns a borrowed slice into mutable buffers; some error paths still leak
+  partially built results.
 - **TextMate metadata loses embedded languages and engine theme semantics.**
   `textMateTokenizer.zig` hard-codes `languageId = 0` and matches theme rules
   per scope instead of through the engine's full scope path; embedded
@@ -162,7 +173,8 @@ Ordered by risk. Line numbers are approximate after the fixes above.
 ### Medium
 
 - `pieceTreeTextBufferBuilder`: `getFirstLineText` slices without clamping and
-  keeps ``; RTL/unusual-terminator checks inspect only the new chunk;
+  keeps `
+`; RTL/unusual-terminator checks inspect only the new chunk;
   factory/create ownership allows a second `create` to alias the same chunks.
 - `textModel`: `changeDecorations` accessor methods are private and unused;
   raw-content injected-text slices reference short-lived buffers;
@@ -174,10 +186,9 @@ Ordered by risk. Line numbers are approximate after the fixes above.
   consumer own them; `tokenizeHeuristically`/`forceTokenizeRange` callers still
   have scheduler-specific differences; `onDidChangeFontTokens` is absent.
 - `bracketPairsTree`: `SmallImmutableSet` silently drops ids ≥ 256;
-  `findPrevBracket`/`findNextBracket`/`findEnclosingBrackets` still scan the
-  flat lists (upstream traverses the AST and skips unexpected closers);
   `colorizedBracketPairsDecorationProvider` still returns no decorations
-  while dirty (documented terminal adaptation) and uses hashed ids.
+  while dirty (documented terminal adaptation) and uses hashed ids unless
+  cached.
 - `editStack`: `split()` copies heap-owning elements; `heapSize` contains a
   JS-specific overhead constant; the multi-model/delegate path is unreachable.
 - `annotations`: serialization (`ISerializedAnnotation`, `serialize`,
