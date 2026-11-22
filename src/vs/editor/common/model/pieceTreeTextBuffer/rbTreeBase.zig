@@ -43,19 +43,6 @@ pub const TreeNode = struct {
         return h;
     }
 
-    fn iterate(self: *TreeNode, callback: fn (ctx: anytype, node: *TreeNode) bool, ctx: anytype) bool {
-        if (self == SENTINEL) {
-            return callback(ctx, SENTINEL);
-        }
-
-        const leftRet = self.left.iterate(callback);
-        if (!leftRet) {
-            return leftRet;
-        }
-
-        return callback(ctx, self) and self.right.iterate(callback, ctx);
-    }
-
     pub fn iterator(self: *TreeNode) Iterator {
         return Iterator.create(self);
     }

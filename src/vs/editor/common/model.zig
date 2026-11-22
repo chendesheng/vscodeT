@@ -701,15 +701,6 @@ pub const ModelDecorationOptions = struct {
             .hideInStringTokens = null,
         };
     }
-
-    fn initModelDecorationOptionsDefaults(options: *ModelDecorationOptions) void {
-        options.stickiness = options.stickiness orelse TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges;
-        options.zIndex = options.zIndex orelse 0;
-        options.overviewRuler = if (options.overviewRuler) |overviewRuler| ModelDecorationOverviewRulerOptions.init(overviewRuler) else null;
-        options.minimap = if (options.minimap) |minimap| ModelDecorationMinimapOptions.init(minimap) else null;
-        options.glyphMargin = if (options.glyphMargin) |glyphMargin| ModelDecorationGlyphMarginOptions.init(glyphMargin) else null;
-        options.linesDecorationsTooltip = if (options.linesDecorationsTooltip) |tooltip| strings.htmlAttributeEncodeValue(tooltip) else null;
-    }
 };
 
 // A decoration in the model.
