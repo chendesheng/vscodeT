@@ -522,8 +522,9 @@ console API for raw mode, sizing and input polling.
   description (`workbench.editor.labelFormat` short/medium/long/default is
   read), clicking the leading ellipsis lists the clipped tabs in a quick pick,
   `workbench.editor.tabCloseButton` off/left/right controls the close cell,
-  `workbench.editor.tabSizing` fit/shrink/fixed sizes the strip, the close cell
-  and middle click close it, and `Ctrl-W` closes the active tab. A dirty tab first opens VS Code's save confirmation
+  `workbench.editor.tabSizing` fit/shrink/fixed sizes the strip,
+  `workbench.editor.showTabs` none/single hides the row and reclaims it for
+  content, the close cell and middle click close it, and `Ctrl-W` closes the active tab. A dirty tab first opens VS Code's save confirmation
   (Save / Don't Save / Cancel): Save writes and then closes only if the buffer
   is clean, Don't Save discards the changes, and Cancel or Escape leaves the
   tab open. The dialog is

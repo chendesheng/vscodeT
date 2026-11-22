@@ -981,6 +981,8 @@ Library constraints:
   `currentMove` uses `diffEditor.moveActive.border`, drawn as a one-cell
   border instead of the browser's 2 px border. Unknown block classes stay
   invisible, just as an upstream class with no CSS rule does.
+- `workbench.editor.showTabs` none/single can hide the tab row; the reclaimed
+  row becomes editor content.
 - The scroll decoration is a one-row `scrollbar.shadow` tint on the first text
   row after scrolling (no alpha/blur in a cell grid).
 - Configured `editor.rulers` paint one-cell vertical guides in empty cells;

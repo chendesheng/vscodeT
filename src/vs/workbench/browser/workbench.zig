@@ -1905,13 +1905,13 @@ pub const Workbench = struct {
 
     /// Editor content height: the rows above the workbench status bar minus the
     /// group chrome (tab strip plus the optional breadcrumb row).
-    fn editorContentHeight(self: *const Workbench) usize {
+    fn editorContentHeight(self: *Workbench) usize {
         return @max(self.editorRows() -| self.chromeHeight(), 1);
     }
 
-    fn chromeHeight(self: *const Workbench) usize {
-        return editor_group_view.title_height +
-            (if (self.breadcrumbs_settings.enabled) editor_group_view.breadcrumbs_height else 0);
+    fn chromeHeight(self: *Workbench) usize {
+        const tabs: usize = if (self.editorShowTabs() == .none) 0 else editor_group_view.title_height;
+        return tabs + (if (self.breadcrumbs_settings.enabled) editor_group_view.breadcrumbs_height else 0);
     }
 
     fn breadcrumbsEnabled(self: *const Workbench) bool {
@@ -3042,6 +3042,7 @@ pub const Workbench = struct {
         const rect = self.editorAreaRect();
         for (self.part.group_views.items) |pane| {
             pane.setBreadcrumbsVisible(self.breadcrumbsEnabled());
+            pane.setTabsVisible(self.tabsVisibleFor(pane.tabs.items.len));
         }
         self.part.layout(rect);
         if (self.expanded_pane) |expanded| {
@@ -4375,6 +4376,30 @@ pub const Workbench = struct {
 
     fn diffAlgorithmFromName(name: []const u8) diff_widget_mod.DiffAlgorithmName {
         return diff_widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced;
+    }
+
+    const ShowTabs = enum { none, single, multiple };
+
+    fn editorShowTabs(self: *Workbench) ShowTabs {
+        const configuration = self.configuration orelse return .multiple;
+        const value = configuration.getValue("workbench.editor.showTabs", .{}) orelse return .multiple;
+        return switch (value.*) {
+            .string => |text| if (std.mem.eql(u8, text, "none"))
+                .none
+            else if (std.mem.eql(u8, text, "single"))
+                .single
+            else
+                .multiple,
+            else => .multiple,
+        };
+    }
+
+    fn tabsVisibleFor(self: *Workbench, tab_count: usize) bool {
+        return switch (self.editorShowTabs()) {
+            .none => false,
+            .single => tab_count > 1,
+            .multiple => true,
+        };
     }
 
     fn editorTabSizing(self: *Workbench) tab_bar.TabSizing {
@@ -7845,11 +7870,11 @@ pub const Workbench = struct {
             return false;
         };
         const pane_y = ui.cell.snap(pane.rect.y);
-        const breadcrumb_y = pane_y + editor_group_view.title_height;
+        const breadcrumb_y = pane_y + pane.titleHeight();
 
         // Hover tracking on the tab row and the breadcrumb row.
         if (event.kind == .move) {
-            if (event.y == pane_y) {
+            if (pane.tabs_visible and event.y == pane_y) {
                 self.hovered_pane = pane;
                 if (pane.title_action_hit) |hit| {
                     if (event.x >= hit.start and event.x < hit.end) {
@@ -7878,7 +7903,7 @@ pub const Workbench = struct {
 
         if (event.kind == .down) {
             self.pending_tab_drag = null;
-            if (event.y == pane_y) {
+            if (pane.tabs_visible and event.y == pane_y) {
                 self.focusEditor();
             }
         }
@@ -7907,8 +7932,8 @@ pub const Workbench = struct {
             return true;
         }
 
-        if (event.y != pane_y) {
-            if (pane.tabs.items.len > 0 and event.kind == .down) {
+        if (!pane.tabs_visible or event.y != pane_y) {
+            if (pane.tabs.items.len > 0 and event.kind == .down and pane.tabs_visible) {
                 self.service.activateGroup(pane.group);
             }
             return false;
@@ -8368,30 +8393,35 @@ pub const Workbench = struct {
         if (self.drag_tab_drop) |drop| {
             if (drop.pane == pane) drop_index = drop.index;
         }
-        pane.title_action_hit = try tab_bar.draw(
-            &self.frame.next,
-            infos,
-            pane.activeIndex(ordered.items),
-            x,
-            y,
-            width,
-            &pane.hits,
-            .{
-                .group_active = active_group,
-                .hovered = hovered_index,
-                .close_button_left = std.mem.eql(u8, self.editorTabCloseButton(), "left"),
-                .tab_sizing = self.editorTabSizing(),
-                .title_action = title_action,
-                .drop_index = drop_index,
-                .cell_borders = self.part.cell_borders,
-            },
-            self.theme_palette,
-        );
+        if (pane.titleHeight() > 0) {
+            pane.title_action_hit = try tab_bar.draw(
+                &self.frame.next,
+                infos,
+                pane.activeIndex(ordered.items),
+                x,
+                y,
+                width,
+                &pane.hits,
+                .{
+                    .group_active = active_group,
+                    .hovered = hovered_index,
+                    .close_button_left = std.mem.eql(u8, self.editorTabCloseButton(), "left"),
+                    .tab_sizing = self.editorTabSizing(),
+                    .title_action = title_action,
+                    .drop_index = drop_index,
+                    .cell_borders = self.part.cell_borders,
+                },
+                self.theme_palette,
+            );
+        } else {
+            pane.title_action_hit = null;
+            pane.hits.clearRetainingCapacity();
+        }
 
         const chrome = pane.chromeHeight();
         if (chrome > height) return;
-        if (chrome > editor_group_view.title_height) {
-            try self.renderBreadcrumbs(pane, x, y + editor_group_view.title_height, width, active_group);
+        if (chrome > pane.titleHeight()) {
+            try self.renderBreadcrumbs(pane, x, y + pane.titleHeight(), width, active_group);
         }
         if (pane.activeTab()) |active| {
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
@@ -15285,4 +15315,30 @@ test "Workbench: close saved keeps dirty tabs" {
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("dirty_saved_a.txt", workbench.activeTab().?.input.getName());
     try std.testing.expect(workbench.activeTab().?.editor.isDirty());
+}
+
+test "Workbench: hiding the tab row reclaims it for content" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "hidden_tabs.txt", "alpha");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 50, 10);
+    defer workbench.deinit();
+    const pane = workbench.part.group_views.items[0];
+    pane.setBreadcrumbsVisible(false);
+    pane.setTabsVisible(false);
+    pane.layout();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const row = try workbench.frame.prev.rowText(allocator, ui.cell.snap(pane.rect.y));
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "alpha") != null);
+    try std.testing.expect(std.mem.indexOf(u8, row, "hidden_tabs.txt") == null);
 }
