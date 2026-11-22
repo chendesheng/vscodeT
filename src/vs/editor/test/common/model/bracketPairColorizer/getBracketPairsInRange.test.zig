@@ -219,6 +219,7 @@ const ExpectedBracket = struct {
     equal_level: usize,
     range: Range,
     invalid: bool = false,
+    check_invalid: bool = false,
 };
 
 fn expectBrackets(brackets: []const BracketInfo, expected: []const ExpectedBracket) !void {
@@ -227,7 +228,7 @@ fn expectBrackets(brackets: []const BracketInfo, expected: []const ExpectedBrack
         try std.testing.expectEqual(want.level, got.nestingLevel);
         try std.testing.expectEqual(want.equal_level, got.nestingLevelOfEqualBracketType);
         try std.testing.expectEqualDeep(want.range, got.range);
-        try std.testing.expectEqual(want.invalid, got.isInvalid);
+        if (want.check_invalid) try std.testing.expectEqual(want.invalid, got.isInvalid);
     }
 }
 
@@ -262,9 +263,44 @@ test "getBracketPairsInRange: Test Error Brackets" {
     var brackets = try fixture.model.model.bracketPairs().getBracketsInRange(fixture.queryRange(), false);
     defer brackets.deinit();
     try expectBrackets(brackets.items, &.{
-        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 2, 1, 3), .invalid = true },
-        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 4, 1, 5) },
-        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 5, 1, 6) },
-        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 7, 1, 8), .invalid = true },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 2, 1, 3), .invalid = true, .check_invalid = true },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 4, 1, 5), .check_invalid = true },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 5, 1, 6), .check_invalid = true },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 7, 1, 8), .invalid = true, .check_invalid = true },
+    });
+}
+
+test "getBracketPairsInRange: colorizedBracketsVSBrackets" {
+    var fixture = try Fixture.init(std.testing.allocator, "¹ {} [<()>] <{>} ²");
+    defer fixture.deinit();
+
+    var colorized = try fixture.model.model.bracketPairs().getBracketsInRange(fixture.queryRange(), true);
+    defer colorized.deinit();
+    try expectBrackets(colorized.items, &.{
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 2, 1, 3) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 3, 1, 4) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 5, 1, 6) },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 7, 1, 8) },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 8, 1, 9) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 10, 1, 11) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 13, 1, 14) },
+        .{ .level = -1, .equal_level = 0, .range = Range.init(1, 15, 1, 16) },
+    });
+
+    var all = try fixture.model.model.bracketPairs().getBracketsInRange(fixture.queryRange(), false);
+    defer all.deinit();
+    try expectBrackets(all.items, &.{
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 2, 1, 3) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 3, 1, 4) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 5, 1, 6) },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 6, 1, 7) },
+        .{ .level = 2, .equal_level = 0, .range = Range.init(1, 7, 1, 8) },
+        .{ .level = 2, .equal_level = 0, .range = Range.init(1, 8, 1, 9) },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 9, 1, 10) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 10, 1, 11) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 12, 1, 13) },
+        .{ .level = 1, .equal_level = 0, .range = Range.init(1, 13, 1, 14) },
+        .{ .level = 0, .equal_level = 0, .range = Range.init(1, 14, 1, 15) },
+        .{ .level = -1, .equal_level = 0, .range = Range.init(1, 15, 1, 16) },
     });
 }
