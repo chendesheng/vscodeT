@@ -515,7 +515,8 @@ console API for raw mode, sizing and input polling.
   and a dirty dot; tab hover, borders, the last-pinned separator and the
   active-tab top border use their theme ids (the top border only when the
   terminal supports cell borders), right-click opens the terminal tab context
-  menu (Close, Close Others, Close to the Right, Close All, Pin/Unpin)
+  menu (Close, Close Others, Close to the Right, Close All, Pin/Unpin,
+  Split Right, Split Down)
   instead of closing or
   activating a tab, duplicate labels append a dimmed parent-directory
   description (`workbench.editor.labelFormat` short/medium/long/default is

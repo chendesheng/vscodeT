@@ -7434,6 +7434,8 @@ pub const Workbench = struct {
             .id = if (pinned) "tab:unpin" else "tab:pin",
             .label = if (pinned) "Unpin" else "Pin",
         } });
+        try items.append(.{ .item = .{ .id = "tab:split_right", .label = "Split Right" } });
+        try items.append(.{ .item = .{ .id = "tab:split_down", .label = "Split Down" } });
         self.tab_menu_pane = pane;
         self.tab_menu_tab = tab;
         try self.quick_access.inputService().showPick(
@@ -9216,6 +9218,15 @@ fn onTabMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     } else if (std.mem.eql(u8, item.id, "tab:unpin")) {
         _ = pane.group.model.unpin(tab.input) catch {};
         self.layoutAll();
+    } else if (std.mem.eql(u8, item.id, "tab:split_right") or
+        std.mem.eql(u8, item.id, "tab:split_down"))
+    {
+        try pane.activateTab(tab);
+        self.focusEditor();
+        try self.splitActive(if (std.mem.eql(u8, item.id, "tab:split_right"))
+            .horizontal
+        else
+            .vertical);
     }
     self.breadcrumbs_dirty = true;
 }
@@ -15408,4 +15419,39 @@ test "Workbench: tab context menu closes to the right" {
     var enter = ui.KeyEvent{ .key = .enter };
     _ = try workbench.handleQuickAccessKey(&enter);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
+}
+
+test "Workbench: tab context menu splits the captured tab" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "split_a.txt", "a");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "split_b.txt", "b");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    defer workbench.deinit();
+    try workbench.activateIndex(1);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const pane = workbench.part.group_views.items[0];
+    var down = ui.MouseEvent{
+        .kind = .down,
+        .x = pane.hits.items[0].start + 1,
+        .y = ui.cell.snap(pane.rect.y),
+        .button = .right,
+    };
+    try std.testing.expect(workbench.handleTabMouse(&down));
+    const picker = workbench.quick_access.inputService().pickerRef();
+    picker.setActiveIndex(5);
+    var enter = ui.KeyEvent{ .key = .enter };
+    _ = try workbench.handleQuickAccessKey(&enter);
+
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqualStrings("split_a.txt", workbench.activeTab().?.input.getName());
 }
