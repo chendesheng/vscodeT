@@ -1149,12 +1149,14 @@ Library constraints:
   a dotted underline, unused code is dimmed with a dashed underline, and
   deprecated ranges are struck through. The underline shape is emitted as SGR
   `4:2`/`4:3`/`4:4`/`4:5` after a plain `4`, so terminals without ECMA-48
-  underline subparameters fall back to a single underline. Cells cannot carry an
-  underline without a glyph: a collapsed marker past the last rendered glyph
-  paints no cell, though the Problems view and overview ruler still report it.
+  underline subparameters fall back to a single underline. A collapsed marker
+  at or past the last rendered glyph paints a styled trailing space cell so the
+  underline remains visible; trailing cells are clipped to the text-area width.
   The translucent `editorError.background`-style range backgrounds are not
   painted (the default themes leave them unset). The existing overview-ruler
-  lane carries the marker color. The workbench
+  lane carries the marker color. Hovering a marker range, or pressing `gh`
+  with the caret inside one, shows the diagnostic message in the content hover
+  through the marker hover participant. The workbench
   `status.problems` entry shows workspace-wide error/warning/info counts from
   `MarkerService.getStatistics()`, and the Problems panel view groups
   markers by file with selection, preview/open and scrolling. Selecting a
@@ -1200,6 +1202,13 @@ Library constraints:
   model language, and unknown languages render plain. Their background comes
   from the theme's `textCodeBlock.background`; without that entry the code
   spans are transparent so the hover/preview surface shows through.
+  The marker participant (`markerHoverParticipant.zig`) resolves each marker
+  decoration through `MarkerDecorationsService.getMarker` and renders the
+  severity glyph, the diagnostic message (including embedded newlines) and a
+  dim `source(code)` line. Marker quick fixes, related-information links and
+  the "View Problem" status-bar action are not ported: the marker model has no
+  related information and the TUI has no code-action controller. Hovering a
+  squiggle and the keyboard `gh` command both show the marker message.
 - `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
   `(anchor, cursor)` selection with keyboard/mouse extension and selection
   paint, shell-like word movement/deletion, Ctrl+A, clipboard hooks
@@ -1718,9 +1727,9 @@ pane is not keyboard-focusable.
    generic scroll and selector machinery is not.
 6. Replace the adapter with a port of `viewModelImpl.ts` +
    `CursorsController`; port edit context/controllers; then the remaining
-   widgets and contributions (marker/glyph hover, and the quick-pick list's
-   icons/buttons/virtualization). The workbench quick-open overlay, file and
-   command providers, and their terminal view are in.
+   widgets and contributions (glyph/color-picker/inlay-hint hover, and the
+   quick-pick list's icons/buttons/virtualization). The workbench quick-open
+   overlay, file and command providers, and their terminal view are in.
 
 Since this list was written, the editor view model (`ViewModelLines`,
 `ViewModelDecorations`, `CoordinatesConverter`) has landed. The remaining

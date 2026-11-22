@@ -4735,6 +4735,43 @@ test "View: glyph margin compacts multiple lanes" {
     try std.testing.expect(grid.cluster[grid.index(1, 2)] != 0x25CF);
 }
 
+test "View: collapsed end-of-line markers paint an underline cell" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(allocator, io, "abc\n", "broken.js", 20, 4);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    var options = ModelDecorationOptions.init("squiggly-error", .AlwaysGrowsWhenTypingAtEdges);
+    options.className = "squiggly-error";
+    options.showIfCollapsed = true;
+    const deltas = [_]ModelDeltaDecoration{
+        // Just past the last character of a non-empty line.
+        .{ .range = Range.init(1, 4, 1, 4), .options = &options },
+        // An empty last line, the shape a missing-closing-brace diagnostic has.
+        .{ .range = Range.init(2, 1, 2, 1), .options = &options },
+    };
+    const ids = try editor.model.deltaDecorations(&.{}, &deltas, 0);
+    defer allocator.free(ids);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const grid = view.surface.grid();
+    const gutter = editor.gutterWidth();
+    const past_text = grid.attrs[grid.index(gutter + 3, 0)];
+    try std.testing.expect((past_text & ui.cell.Attr.underline) != 0);
+    try std.testing.expectEqual(ui.UnderlineStyle.curly, ui.cell.underlineStyleOf(past_text));
+    const empty_line = grid.attrs[grid.index(gutter, 1)];
+    try std.testing.expect((empty_line & ui.cell.Attr.underline) != 0);
+    try std.testing.expectEqual(ui.UnderlineStyle.curly, ui.cell.underlineStyleOf(empty_line));
+}
+
 test "View: init, paint and invalidate batch renders" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
