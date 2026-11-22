@@ -1389,6 +1389,7 @@ pub const Editor = struct {
         self.view_lines.deinit();
         if (self.attached_view) |view| {
             self.model.onBeforeDetached(view) catch {};
+            self.allocator.destroy(view);
             self.attached_view = null;
         }
         self.model.deinit();

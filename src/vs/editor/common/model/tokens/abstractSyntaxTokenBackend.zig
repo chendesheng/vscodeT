@@ -42,6 +42,9 @@ pub const AttachedViews = struct {
     }
 
     pub fn deinit(self: *AttachedViews) void {
+        // Upstream consumers own their IAttachedView. The port keeps the model
+        // as owner for views that were never detached (e.g. model teardown),
+        // while `detachView` hands the allocation back to the caller.
         for (self._views.items) |view| {
             view.deinit();
             self.allocator.destroy(view);
@@ -96,8 +99,9 @@ pub const AttachedViews = struct {
             if (candidate == view) {
                 _ = self._views.orderedRemove(i);
                 try self._onDidChangeVisibleRanges.fire(.{ .first = view, .second = null });
+                // Upstream `detachView` only removes the view from the set; the
+                // caller owns the object and destroys it after this call.
                 view.deinit();
-                self.allocator.destroy(view);
                 try self.triggerViewChanged();
                 return;
             }

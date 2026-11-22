@@ -110,6 +110,7 @@ test "integration: attach and detach a view" {
     };
     try view.setVisibleLines(allocator, &lines, true);
     try ctx.model.onBeforeDetached(view);
+    ctx.allocator.destroy(view);
     try std.testing.expect(!ctx.model.isAttachedToEditor());
 }
 
