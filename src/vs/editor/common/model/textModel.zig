@@ -2795,7 +2795,7 @@ pub const DecorationsTrees = struct {
     }
 };
 pub fn createTextBuffer(allocator: Allocator, source: *Io.Reader, defaultEOL: EOL) !PieceTreeTextBuffer {
-    const factory = try createTextBufferFactory(allocator, source);
+    var factory = try createTextBufferFactory(allocator, source);
     defer factory.deinit();
     return try factory.create(defaultEOL);
 }

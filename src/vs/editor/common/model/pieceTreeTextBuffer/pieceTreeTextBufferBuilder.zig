@@ -23,6 +23,9 @@ pub const PieceTreeTextBufferFactory = struct {
     _containsUnusualLineTerminators: bool,
     _isBasicASCII: bool,
     _normalizeEOL: bool,
+    /// The terminal host always creates one buffer per factory; a second
+    /// create would alias the same chunk allocations, so reject it.
+    _consumed: bool = false,
 
     fn _getEOL(self: *const PieceTreeTextBufferFactory, defaultEOL: EOL) EOL {
         const totalEOLCount = self._cr + self._lf + self._crlf;
@@ -39,7 +42,9 @@ pub const PieceTreeTextBufferFactory = struct {
         return .LF;
     }
 
-    pub fn create(self: *const PieceTreeTextBufferFactory, defaultEOL: EOL) !PieceTreeTextBuffer {
+    pub fn create(self: *PieceTreeTextBufferFactory, defaultEOL: EOL) !PieceTreeTextBuffer {
+        if (self._consumed) return error.FactoryAlreadyConsumed;
+        self._consumed = true;
         const eol = self._getEOL(defaultEOL);
         const chunks = self._chunks;
 
@@ -47,7 +52,9 @@ pub const PieceTreeTextBufferFactory = struct {
             // Normalize Pieces
             for (chunks.items) |*chunk| {
                 try replaceEOL(&chunk.buffer, eol);
-                chunk.lineStarts = try createLineStartsFast(self._allocator, chunk.buffer.items);
+                const new_line_starts = try createLineStartsFast(self._allocator, chunk.buffer.items);
+                chunk.lineStarts.deinit();
+                chunk.lineStarts = new_line_starts;
             }
         }
 
@@ -55,12 +62,21 @@ pub const PieceTreeTextBufferFactory = struct {
             .init(self._allocator, chunks.items, self._BOM, eol, self._containsRTL, self._containsUnusualLineTerminators, self._isBasicASCII, self._normalizeEOL);
     }
 
-    pub fn getFirstLineText(self: *const PieceTreeTextBufferFactory, lengthLimit: usize) ![]const u8 {
-        // TODO: handle \r\n
-        return std.mem.sliceTo(self._chunks.items[0].buffer.items[0..lengthLimit], '\n');
+    pub fn getFirstLineText(self: *const PieceTreeTextBufferFactory, lengthLimit: usize) []const u8 {
+        if (self._chunks.items.len == 0) return "";
+        const buffer = self._chunks.items[0].buffer.items;
+        const limited = buffer[0..@min(lengthLimit, buffer.len)];
+        for (limited, 0..) |ch, index| {
+            if (ch == '\r' or ch == '\n') return limited[0..index];
+        }
+        return limited;
     }
 
-    pub fn deinit(self: *const PieceTreeTextBufferFactory) void {
+    pub fn deinit(self: *PieceTreeTextBufferFactory) void {
+        if (!self._consumed) {
+            // No buffer took ownership yet: release the chunk buffers.
+            for (self._chunks.items) |*chunk| chunk.deinit();
+        }
         self._chunks.deinit();
     }
 };
@@ -166,11 +182,13 @@ pub const PieceTreeBufferBuilder = struct {
 
         if (!lineStarts.isBasicASCII) {
             self.isBasicASCII = false;
+            // Check the combined buffer: a multibyte RTL character or line
+            // terminator can span the held-back previous-chunk bytes.
             if (!self.containsRTL) {
-                self.containsRTL = strings.containsRTL(chunk);
+                self.containsRTL = strings.containsRTL(buffer.items);
             }
             if (!self.containsUnusualLineTerminators) {
-                self.containsUnusualLineTerminators = strings.containsUnusualLineTerminators(chunk);
+                self.containsUnusualLineTerminators = strings.containsUnusualLineTerminators(buffer.items);
             }
         }
     }
@@ -276,4 +294,19 @@ test "PieceTreeBufferBuilder: a trailing CR held back is re-added to the last ch
     try std.testing.expectEqual(@as(usize, 2), lines.items.len);
     try std.testing.expectEqualStrings("a", lines.items[0].items);
     try std.testing.expectEqualStrings("", lines.items[1].items);
+}
+
+test "PieceTreeTextBufferFactory: first line text clamps, strips CR and is single-use" {
+    const allocator = std.testing.allocator;
+    var builder = PieceTreeBufferBuilder.init(allocator);
+    try builder.acceptChunk("ab\r\ncd");
+
+    var factory = try builder.finish(false);
+    defer factory.deinit();
+    try std.testing.expectEqualStrings("ab", factory.getFirstLineText(1_000_000));
+    try std.testing.expectEqualStrings("a", factory.getFirstLineText(1));
+
+    var buffer = try factory.create(.LF);
+    defer buffer.deinit();
+    try std.testing.expectError(error.FactoryAlreadyConsumed, factory.create(.LF));
 }
