@@ -810,3 +810,33 @@ test "FindController: autoFindInSelection scopes the search" {
     try std.testing.expect(controller.state.search_scope != null);
     try std.testing.expectEqual(@as(usize, 1), controller.state.matches_count);
 }
+
+test "FindController: find history can be disabled" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    controller.setSeedSearchStringFromSelection(.never);
+    try view.addOverlayWidget(controller.widget().interface());
+    controller.widget().setHistorySettings(false, false);
+    try controller.open(false);
+
+    var alpha = ui.KeyEvent{ .key = .{ .text = "alpha" } };
+    try std.testing.expect(view.dispatchKey(&alpha));
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(view.dispatchKey(&enter));
+    try controller.widget().find_input.clear();
+
+    var up = ui.KeyEvent{ .key = .up };
+    try std.testing.expect(view.dispatchKey(&up));
+    try std.testing.expectEqualStrings("", controller.widget().find_input.getValue());
+}
