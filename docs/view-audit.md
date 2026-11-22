@@ -76,7 +76,7 @@ For each row:
 
 | View | Local | Upstream | Verdict | Evidence / next action |
 |------|-------|----------|---------|------------------------|
-| Activity bar | `vs/workbench/browser/parts/activitybar/activitybarPart.zig` | `workbench/browser/parts/activitybar/activitybarPart.ts` | **P** | Glyphs, order/visibility, bottom entries, hit testing and layout are ported (2 tests); overflow and the context menu remain browser-only/terminal quick-pick gaps. |
+| Activity bar | `vs/workbench/browser/parts/activitybar/activitybarPart.zig` | `workbench/browser/parts/activitybar/activitybarPart.ts` | **P** | Glyphs, order/visibility, bottom entries, hit testing and layout are ported (3 tests); an overflowing rail now shows an ellipsis row that opens a quick pick of the hidden activities. The browser context menu remains a terminal omission. |
 | Composite bar | `vs/workbench/browser/parts/compositeBar.zig` | `workbench/browser/parts/compositeBar.ts` | **P** | Portable model, pinned/unpinned behavior, badges and order are ported (2 tests); the browser composite-bar view, overflow menu and drag/drop are not. |
 | Side bar | `vs/workbench/browser/parts/sidebar/sidebarPart.zig` | `workbench/browser/parts/sidebar/sidebarPart.ts` | **P** | Size/position, one-cell title, focus and persistence are ported (6 tests); title actions/overflow and browser sash behavior are reduced to the terminal layout. |
 | Panel | `vs/workbench/browser/parts/panel/panelPart.zig` | `workbench/browser/parts/panel/panelPart.ts` | **P** | Composite tabs, `showLabels`, position and active border are ported (2 tests); overflow and preferred-size behavior are simplified for cells. |
@@ -227,6 +227,8 @@ For each row:
   splitting, with a context-menu test.
 - Added the Close Saved tab action with a context-menu test, including keeping
   dirty tabs open.
+- Added an activity-bar overflow ellipsis and quick pick for hidden entries,
+  with a render/hit test.
 
 ## Next slice
 
