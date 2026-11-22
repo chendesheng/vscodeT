@@ -86,6 +86,10 @@ pub const SuggestController = struct {
         return self.widget.interface();
     }
 
+    pub fn setTheme(self: *SuggestController, theme: suggestWidget.Theme) void {
+        self.widget.setTheme(theme);
+    }
+
     pub fn isOpen(self: *const SuggestController) bool {
         return self.model.isOpen();
     }
