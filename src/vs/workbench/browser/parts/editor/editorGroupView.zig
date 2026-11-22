@@ -65,6 +65,8 @@ pub fn EditorGroupView(comptime View: type) type {
         rect: ui.Rect = .{},
         /// The workbench reserves a breadcrumb row when `breadcrumbs.enabled`.
         breadcrumbs_visible: bool = false,
+        /// `workbench.editor.showTabs`: none/single can hide the title row.
+        tabs_visible: bool = true,
         panes: editorPanes.EditorPanes(View) = .{},
 
         pub fn init(allocator: Allocator, group: *editor_groups.EditorGroup) Self {
@@ -192,8 +194,16 @@ pub fn EditorGroupView(comptime View: type) type {
         }
 
         /// Rows owned by the title control above the editor content.
+        pub fn titleHeight(self: *const Self) usize {
+            return if (self.tabs_visible) title_height else 0;
+        }
+
         pub fn chromeHeight(self: *const Self) usize {
-            return title_height + if (self.breadcrumbs_visible) breadcrumbs_height else 0;
+            return self.titleHeight() + if (self.breadcrumbs_visible) breadcrumbs_height else 0;
+        }
+
+        pub fn setTabsVisible(self: *Self, visible: bool) void {
+            self.tabs_visible = visible;
         }
 
         pub fn setBreadcrumbsVisible(self: *Self, visible: bool) void {
