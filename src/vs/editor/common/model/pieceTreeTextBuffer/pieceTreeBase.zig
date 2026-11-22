@@ -136,6 +136,15 @@ pub const Piece = struct {
     lineFeedCnt: usize,
 };
 
+/// JS `String.prototype.substring` semantics: clamp to the string and swap
+/// reversed offsets instead of panicking the Zig slice.
+fn jsSubstring(str: []const u8, start_: usize, end_: usize) []const u8 {
+    var start = @min(start_, str.len);
+    var end = @min(end_, str.len);
+    if (start > end) std.mem.swap(usize, &start, &end);
+    return str[start..end];
+}
+
 pub const StringBuffer = struct {
     buffer: ArrayList(u8),
     lineStarts: ArrayList(usize),
@@ -180,11 +189,11 @@ pub const StringBuffer = struct {
     }
 
     fn substring(self: *const StringBuffer, start: usize, end: usize) []const u8 {
-        return self.buffer.items[start..end];
+        return jsSubstring(self.buffer.items, start, end);
     }
 
     fn substr(self: *const StringBuffer, start: usize, len: usize) []const u8 {
-        return self.buffer.items[start .. start + len];
+        return jsSubstring(self.buffer.items, start, start +| len);
     }
 
     fn append(self: *StringBuffer, value: []const u8) !void {
@@ -1043,14 +1052,14 @@ pub const PieceTreeBase = struct {
             if (startLineNumber == searchRange.endLineNumber) {
                 const lineContent = try self.getLineContent(startLineNumber);
                 defer lineContent.deinit();
-                const text = lineContent.items[startColumn .. searchRange.endColumn - 1];
+                const text = jsSubstring(lineContent.items, startColumn, searchRange.endColumn -| 1);
                 try _findMatchesInLine(searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
                 return result;
             }
 
             const lineContent = try self.getLineContent(startLineNumber);
             defer lineContent.deinit();
-            const text = lineContent.items[startColumn..];
+            const text = jsSubstring(lineContent.items, startColumn, lineContent.items.len);
             try _findMatchesInLine(searchData, text, startLineNumber, startColumn, &result, captureMatches, limitResultCount);
 
             if (result.items.len >= limitResultCount) {
@@ -1067,7 +1076,7 @@ pub const PieceTreeBase = struct {
             const startColumn = if (startLineNumber == searchRange.startLineNumber) searchRange.startColumn - 1 else 0;
             const lineContent = try self.getLineContent(startLineNumber);
             defer lineContent.deinit();
-            const text = lineContent.items[startColumn .. searchRange.endColumn - 1];
+            const text = jsSubstring(lineContent.items, startColumn, searchRange.endColumn -| 1);
             try _findMatchesInLine(searchData, text, searchRange.endLineNumber, startColumn, &result, captureMatches, limitResultCount);
             return result;
         }
@@ -2836,4 +2845,15 @@ test "insert: a large insert keeps CRLF at buffer boundaries intact" {
     var second = try tree.getLineContent(2);
     defer second.deinit();
     try std.testing.expectEqualStrings("b", second.items);
+}
+
+test "StringBuffer.substring clamps and swaps like JS" {
+    const allocator = std.testing.allocator;
+    var buffer = try StringBuffer.init(allocator, "abc");
+    defer buffer.deinit();
+
+    try std.testing.expectEqualStrings("bc", buffer.substring(1, 99));
+    try std.testing.expectEqualStrings("abc", buffer.substring(3, 0));
+    try std.testing.expectEqualStrings("", buffer.substr(10, 5));
+    try std.testing.expectEqualStrings("bc", buffer.substr(1, 2));
 }
