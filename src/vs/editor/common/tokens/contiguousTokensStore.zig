@@ -1,3 +1,8 @@
+// Port of `src/vs/editor/common/tokens/contiguousTokensStore.ts`.
+//
+// Zig adaptation: lines own optional `ArrayList(TokenPacked)` buffers instead
+// of `Uint32Array`/`ArrayBuffer` values, so cached entries are freed on
+// replacement and the store needs an allocator.
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
@@ -55,9 +60,7 @@ pub const ContiguousTokensStore = struct {
 
         if (lineIndex < self._len) {
             if (self._lineTokens.items[lineIndex]) |cached| {
-                // A cached entry can be stale if a model edit did not reach the
-                // token store. Do not hand mismatched offsets to LineTokens.
-                if (cached.items.len > 0 and cached.items[cached.items.len - 1].endOffset == lineText.items.len) {
+                if (cached.items.len > 0) {
                     try tokens.appendSlice(cached.items);
                     return LineTokens.init(tokens, lineText, self._languageIdCodec);
                 }
@@ -72,23 +75,40 @@ pub const ContiguousTokensStore = struct {
         return LineTokens.init(tokens, lineText, self._languageIdCodec);
     }
 
-    fn _massageTokens(allocator: Allocator, topLevelLanguageId: LanguageId, lineTextLength: usize, maybeTokens: ?[]TokenPacked) !?ArrayList(TokenPacked) {
-        const source = maybeTokens orelse return null;
-
+    fn _massageTokens(allocator: Allocator, topLevelLanguageId: LanguageId, lineTextLength: usize, maybeTokens: ?[]const TokenPacked) !ArrayList(TokenPacked) {
         if (lineTextLength == 0) {
             var hasDifferentLanguageId = false;
-            if (source.len > 0) {
-                hasDifferentLanguageId = source[0].metadata.languageId != @backingInt(topLevelLanguageId);
+            if (maybeTokens) |tokens| {
+                // Upstream checks the flat `Uint32Array` length, so any token
+                // pair (even a single one) carries a language id.
+                if (tokens.len > 0) {
+                    hasDifferentLanguageId = tokens[0].metadata.languageId != @backingInt(topLevelLanguageId);
+                }
             }
-            if (!hasDifferentLanguageId) return null;
+
+            if (!hasDifferentLanguageId) {
+                // Upstream returns the shared EMPTY_LINE_TOKENS buffer.
+                return ArrayList(TokenPacked).init(allocator);
+            }
         }
 
+        if (maybeTokens == null or maybeTokens.?.len == 0) {
+            var tokens = ArrayList(TokenPacked).init(allocator);
+            errdefer tokens.deinit();
+            try tokens.append(.{
+                .endOffset = @intCast(lineTextLength),
+                .metadata = getDefaultMetadata(@backingInt(topLevelLanguageId)),
+            });
+            return tokens;
+        }
+
+        const source = maybeTokens.?;
         var tokens = ArrayList(TokenPacked).init(allocator);
         errdefer tokens.deinit();
         try tokens.appendSlice(source);
-        if (tokens.items.len > 0) {
-            tokens.items[tokens.items.len - 1].endOffset = @intCast(lineTextLength);
-        }
+
+        // Ensure the last token covers the end of the text.
+        tokens.items[tokens.items.len - 1].endOffset = @intCast(lineTextLength);
         return tokens;
     }
 
@@ -122,12 +142,13 @@ pub const ContiguousTokensStore = struct {
 
     pub fn setTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineTextLength: usize, maybeTokens: ?[]TokenPacked, checkEquality: bool) !bool {
         const encodedLanguageId: LanguageId = @fromBackingInt(try self._languageIdCodec.encodeLanguageId(topLevelLanguageId));
-        const tokens = try ContiguousTokensStore._massageTokens(self._lineTokens.allocator, encodedLanguageId, lineTextLength, maybeTokens);
+        var tokens = try ContiguousTokensStore._massageTokens(self._lineTokens.allocator, encodedLanguageId, lineTextLength, maybeTokens);
+        errdefer tokens.deinit();
         try self._ensureLine(lineIndex);
 
         const oldTokens = self._lineTokens.items[lineIndex];
         const changed = if (checkEquality)
-            !ContiguousTokensStore._equals(if (oldTokens) |old| old.items else null, if (tokens) |new| new.items else null)
+            !ContiguousTokensStore._equals(if (oldTokens) |old| old.items else null, tokens.items)
         else
             false;
 
@@ -229,5 +250,8 @@ pub const ContiguousTokensStore = struct {
 fn getDefaultMetadata(topLevelLanguageId: u8) TokenMetadata {
     var metadata = TokenMetadata.default;
     metadata.languageId = topLevelLanguageId;
+    // If there is no grammar, guess that brackets are balanced so bracket
+    // matching still works (upstream sets BALANCED_BRACKETS_MASK).
+    metadata.balancedBrackets = true;
     return metadata;
 }
