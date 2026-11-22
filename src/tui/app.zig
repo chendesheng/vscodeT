@@ -1612,6 +1612,9 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
         .set = setViewDecorations,
     });
     defer find.deinit();
+    // Keep the search string empty regardless of the seeding default; this
+    // test covers the Ctrl-F byte decoder and the widget's open/close state.
+    find.setSeedSearchStringFromSelection(.never);
     editor.setFindController(find, FindController.startFromContext);
     try view.addOverlayWidget(find.widget().interface());
 
