@@ -569,8 +569,8 @@ pub const PieceTreeBase = struct {
             }
 
             const str = self.getNodeContent(node);
-            const startPosition = other.nodeAt(offset);
-            const endPosition = other.nodeAt(offset + str.len);
+            const startPosition = other.nodeAt(offset) orelse return false;
+            const endPosition = other.nodeAt(offset + str.len) orelse return false;
             const val = try other.getValueInRange2(startPosition, endPosition);
             defer val.deinit();
 
@@ -925,12 +925,12 @@ pub const PieceTreeBase = struct {
     }
 
     pub fn getCharCode(self: *const PieceTreeBase, offset: usize) u8 {
-        const nodePos = self.nodeAt(offset);
+        const nodePos = self.nodeAt(offset) orelse return 0;
         return self._getCharCode(nodePos);
     }
 
     pub fn getNearestChunk(self: *const PieceTreeBase, offset: usize) []const u8 {
-        const nodePos = self.nodeAt(offset);
+        const nodePos = self.nodeAt(offset) orelse return "";
         if (nodePos.remainder == nodePos.node.piece.?.length) {
             // the offset is at the head of next node.
             const matchingNode = nodePos.node.next();
@@ -1142,7 +1142,7 @@ pub const PieceTreeBase = struct {
         defer self._searchCache.reset() catch {};
 
         if (self.root != SENTINEL) {
-            const n = self.nodeAt(offset);
+            const n = self.nodeAt(offset) orelse return error.InvalidOffset;
             const node = n.node;
             const remainder = n.remainder;
             const nodeStartOffset = n.nodeStartOffset;
@@ -1277,8 +1277,8 @@ pub const PieceTreeBase = struct {
             return;
         }
 
-        const startPosition = self.nodeAt(offset);
-        const endPosition = self.nodeAt(offset + cnt);
+        const startPosition = self.nodeAt(offset) orelse return error.InvalidOffset;
+        const endPosition = self.nodeAt(offset + cnt) orelse return error.InvalidOffset;
         const startNode = startPosition.node;
         const endNode = endPosition.node;
 
@@ -1845,7 +1845,7 @@ pub const PieceTreeBase = struct {
         self.updateTreeMetadata(node, @intCast(val.len), lf_delta);
     }
 
-    fn nodeAt(self: *const PieceTreeBase, offset: usize) NodePosition {
+    fn nodeAt(self: *const PieceTreeBase, offset: usize) ?NodePosition {
         var offs = offset;
         var x = self.root;
         if (self._searchCache.get(offs)) |cache| {
@@ -1877,7 +1877,7 @@ pub const PieceTreeBase = struct {
             }
         }
 
-        return undefined;
+        return null;
     }
 
     fn nodeAtPosition(self: *const PieceTreeBase, lineNumber: usize, column: usize) ?NodePosition {
@@ -2856,4 +2856,19 @@ test "StringBuffer.substring clamps and swaps like JS" {
     try std.testing.expectEqualStrings("abc", buffer.substring(3, 0));
     try std.testing.expectEqualStrings("", buffer.substr(10, 5));
     try std.testing.expectEqualStrings("bc", buffer.substr(1, 2));
+}
+
+test "piece tree: out-of-range offsets are safe" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "abc")};
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), tree.getCharCode(10));
+    try std.testing.expectEqualStrings("", tree.getNearestChunk(10));
+    try std.testing.expectError(error.InvalidOffset, tree.insert(10, "x", false));
+    try std.testing.expectError(error.InvalidOffset, tree.delete(10, 1));
+    var content = try tree.getLineContent(1);
+    defer content.deinit();
+    try std.testing.expectEqualStrings("abc", content.items);
 }
