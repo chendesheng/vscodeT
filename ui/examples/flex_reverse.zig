@@ -81,7 +81,7 @@ fn build(
         .flex_direction = .column,
         .gap = .{ .row = 1 },
         .flex_grow = 1,
-        .padding = .all(1),
+        .padding = ui.EdgeDecl.all(1),
         .background = panel,
     });
     _ = try common.addLabel(doc, column_demo, "column-reverse", .{
@@ -92,7 +92,7 @@ fn build(
         .flex_direction = .column_reverse,
         .gap = .{ .row = 1 },
         .flex_grow = 1,
-        .padding = .all(1),
+        .padding = ui.EdgeDecl.all(1),
         .background = raised,
     });
     for ([_][]const u8{ "1 first", "2", "3" }) |label| {
@@ -108,7 +108,7 @@ fn build(
         .flex_direction = .column,
         .gap = .{ .row = 1 },
         .flex_grow = 1,
-        .padding = .all(1),
+        .padding = ui.EdgeDecl.all(1),
         .background = panel,
     });
     _ = try common.addLabel(doc, wrap_demo, "wrap-reverse", .{
@@ -118,7 +118,7 @@ fn build(
         .display = .flex,
         .flex_wrap = .wrap_reverse,
         .align_content = .flex_start,
-        .gap = .all(1),
+        .gap = ui.GapDecl.all(1),
         .flex_grow = 1,
         .overflow = .hidden,
         .background = raised,

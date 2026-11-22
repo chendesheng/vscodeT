@@ -515,7 +515,7 @@ test "Surface: cell borders paint edges and fall back to glyphs" {
         .top = .{ .cells = 0 },
         .width = .{ .cells = 3 },
         .height = .{ .cells = 1 },
-        .border = .all(1),
+        .border = style.EdgeDecl.all(1),
         .border_color = .{ .r = 9, .g = 8, .b = 7 },
     });
     doc.setRoot(root);
@@ -555,7 +555,7 @@ test "Surface: cell-border render uses the pen and drops box glyphs" {
         .top = .{ .cells = 0 },
         .width = .{ .cells = 3 },
         .height = .{ .cells = 1 },
-        .border = .all(1),
+        .border = style.EdgeDecl.all(1),
         .border_color = .{ .r = 0x7a, .g = 0xa2, .b = 0xf7 },
     });
     doc.setRoot(root);
@@ -582,7 +582,7 @@ test "Surface: cell-border render uses the pen and drops box glyphs" {
         .top = .{ .cells = 0 },
         .width = .{ .cells = 3 },
         .height = .{ .cells = 1 },
-        .border = .all(1),
+        .border = style.EdgeDecl.all(1),
     });
     fallback_doc.setRoot(fallback_root);
     _ = try fallback_root.appendChild(try fallback_doc.createText("abc"));
@@ -872,7 +872,7 @@ test "Surface: hover can clear base attributes and repaint the border" {
         .top = .{ .cells = 0 },
         .width = .{ .cells = 4 },
         .height = .{ .cells = 3 },
-        .border = .all(1),
+        .border = style.EdgeDecl.all(1),
         .border_color = base_border,
         .color = base_fg,
         .bold = true,

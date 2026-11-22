@@ -69,7 +69,7 @@ fn build(
     const grid = try common.addBox(doc, root, .{
         .display = .flex,
         .flex_wrap = .wrap,
-        .gap = .all(1),
+        .gap = ui.GapDecl.all(1),
         .align_content = .flex_start,
         .align_items = .flex_start,
         .flex_grow = 1,

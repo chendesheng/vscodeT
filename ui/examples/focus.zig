@@ -83,7 +83,7 @@ fn build(
         const node = try common.addBox(doc, list, .{
             .height = .{ .cells = 1 },
             .flex_shrink = 0,
-            .border = ui.Edges.all(1),
+            .border = ui.EdgeDecl.all(1),
             .border_color = common.rgb(70, 70, 90),
             .background = common.rgb(28, 28, 38),
             .padding = .{ .left = 2 },

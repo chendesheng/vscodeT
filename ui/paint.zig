@@ -1,15 +1,13 @@
 //! Paints the derived box tree into a cell grid.
 //!
-//! There is no cascade and no CSS: each box carries the `Style` it was built
-//! with, and anonymous boxes carry the inherited style of their container.
-//! Text boxes own the text runs; element boxes own backgrounds and clipping.
+//! Each box carries its resolved `ComputedStyle`; classes are resolved from the
+//! document stylesheet during box derivation. Paint properties remain
+//! declarations and are inherited here, down the live box chain, so hover
+//! overlays compose without re-running layout. Style-only `display: contents`
+//! ancestors contribute a paint delta carried by the box.
+//!
 //! Borders paint as single-line box-drawing glyphs, or as cell-border protocol
 //! attributes on the box edge when the terminal supports them.
-//!
-//! Hover is the one live-DOM style input: an element's `hover_style` is
-//! overlaid when the element is in the document's hover chain
-//! (`Node.isHovered`). It is paint-only by construction, so no box rebuild is
-//! needed when the pointer moves.
 
 const std = @import("std");
 const box = @import("box.zig");
@@ -23,7 +21,7 @@ const CellGrid = cell.CellGrid;
 const LayoutBox = box.LayoutBox;
 const PaintStyle = cell.PaintStyle;
 const Rect = style_mod.Rect;
-const Style = style_mod.Style;
+const Style = style_mod.ComputedStyle;
 
 /// One-shot convenience for tests: build the box tree, lay it out and paint.
 pub fn paintDocument(doc: *dom.Document, grid: *CellGrid) !void {
@@ -57,7 +55,8 @@ fn paintBox(
     switch (current.kind) {
         .text => {
             const paint = current.paint_ref orelse &current.paint;
-            const own = mergeTextStyle(inherited, paint.*);
+            var own = mergeTextStyle(inherited, current.paint_delta);
+            own = mergeTextStyle(own, paint.*);
             // Backgrounds are not inherited in CSS. A text run with no
             // background of its own sits on whatever the cell already shows;
             // this is what lets a transparent label over a filled panel keep
@@ -85,10 +84,11 @@ fn paintBox(
             // boxes, so this would mask hover colors and bold-off changes).
             const anonymous = current.kind == .anonymous_inline or
                 current.kind == .anonymous_flex_item;
-            const base = if (anonymous) inherited else mergeStyle(inherited, style);
+            var base = mergeTextStyle(inherited, current.paint_delta);
+            if (!anonymous) base = mergeStyle(base, style);
             const hover = if (current.kind == .element) hoverStyleOf(current.owner) else null;
             const own = if (hover) |value| mergeHoverStyle(base, value) else base;
-            const paints_background = style.background != null or style.reverse or
+            const paints_background = style.background != null or (style.reverse orelse false) or
                 (hover != null and (hover.?.background != null or (hover.?.reverse orelse false)));
             const border = style_mod.borderWidths(style);
             const border_color = if (hover) |value|
@@ -144,12 +144,18 @@ fn mergeTextStyle(base: PaintStyle, paint: style_mod.PaintStyle) PaintStyle {
     var result = base;
     if (paint.color) |color| result.fg = cell.packColor(color);
     if (paint.background) |color| result.bg = cell.packColor(color);
-    if (paint.bold) result.attrs |= cell.Attr.bold;
-    if (paint.italic) result.attrs |= cell.Attr.italic;
-    applyUnderline(&result, paint.underline, paint.underline_style);
-    if (paint.strikethrough) result.attrs |= cell.Attr.strikethrough;
-    if (paint.dim) result.attrs |= cell.Attr.dim;
-    if (paint.reverse) result.attrs |= cell.Attr.inverse;
+    if (paint.bold) |on| result.attrs = setAttr(result.attrs, cell.Attr.bold, on);
+    if (paint.italic) |on| result.attrs = setAttr(result.attrs, cell.Attr.italic, on);
+    if (paint.underline) |on| {
+        if (on) {
+            applyUnderline(&result, paint.underline_style);
+        } else {
+            result.attrs &= ~(cell.Attr.underline | cell.Attr.underline_style_mask);
+        }
+    }
+    if (paint.strikethrough) |on| result.attrs = setAttr(result.attrs, cell.Attr.strikethrough, on);
+    if (paint.dim) |on| result.attrs = setAttr(result.attrs, cell.Attr.dim, on);
+    if (paint.reverse) |on| result.attrs = setAttr(result.attrs, cell.Attr.inverse, on);
     return result;
 }
 
@@ -157,12 +163,20 @@ fn mergeStyle(base: PaintStyle, style: Style) PaintStyle {
     var result = base;
     if (style.color) |color| result.fg = cell.packColor(color);
     if (style.background) |color| result.bg = cell.packColor(color);
-    if (style.bold) result.attrs |= cell.Attr.bold;
-    if (style.italic) result.attrs |= cell.Attr.italic;
-    applyUnderline(&result, style.underline, style.underline_style);
-    if (style.strikethrough) result.attrs |= cell.Attr.strikethrough;
-    if (style.dim) result.attrs |= cell.Attr.dim;
-    if (style.reverse) result.attrs |= cell.Attr.inverse;
+    if (style.bold) |on| result.attrs = setAttr(result.attrs, cell.Attr.bold, on);
+    if (style.italic) |on| result.attrs = setAttr(result.attrs, cell.Attr.italic, on);
+    if (style.underline) |on| {
+        if (on) {
+            applyUnderline(&result, style.underline_style orelse .single);
+        } else {
+            result.attrs &= ~(cell.Attr.underline | cell.Attr.underline_style_mask);
+        }
+    } else if (style.underline_style) |underline_style| {
+        if ((result.attrs & cell.Attr.underline) != 0) applyUnderline(&result, underline_style);
+    }
+    if (style.strikethrough) |on| result.attrs = setAttr(result.attrs, cell.Attr.strikethrough, on);
+    if (style.dim) |on| result.attrs = setAttr(result.attrs, cell.Attr.dim, on);
+    if (style.reverse) |on| result.attrs = setAttr(result.attrs, cell.Attr.inverse, on);
     return result;
 }
 
@@ -187,7 +201,7 @@ fn mergeHoverStyle(base: PaintStyle, hover: style_mod.HoverStyle) PaintStyle {
     if (hover.italic) |on| result.attrs = setAttr(result.attrs, cell.Attr.italic, on);
     if (hover.underline) |on| {
         if (on) {
-            applyUnderline(&result, true, hover.underline_style);
+            applyUnderline(&result, hover.underline_style);
         } else {
             result.attrs &= ~(cell.Attr.underline | cell.Attr.underline_style_mask);
         }
@@ -202,8 +216,7 @@ fn setAttr(attrs: u16, bit: u16, on: bool) u16 {
     return if (on) attrs | bit else attrs & ~bit;
 }
 
-fn applyUnderline(result: *PaintStyle, underline: bool, underline_style: style_mod.UnderlineStyle) void {
-    if (!underline) return;
+fn applyUnderline(result: *PaintStyle, underline_style: style_mod.UnderlineStyle) void {
     result.attrs &= ~cell.Attr.underline_style_mask;
     result.attrs |= cell.underlineAttr(underline_style);
 }
@@ -571,8 +584,8 @@ test "paint: border box and box-drawing glyphs" {
         .top = .{ .cells = 0 },
         .width = .{ .cells = 3 },
         .height = .{ .cells = 1 },
-        .padding = .all(1),
-        .border = .all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
         .border_color = .{ .r = 200, .g = 200, .b = 200 },
     });
     doc.setRoot(root);
@@ -603,7 +616,7 @@ test "paint: cell borders are attributes on the box edge, not glyphs" {
         .top = .{ .cells = 0 },
         .width = .{ .cells = 3 },
         .height = .{ .cells = 1 },
-        .border = .all(1),
+        .border = style_mod.EdgeDecl.all(1),
         .border_color = .{ .r = 200, .g = 100, .b = 50 },
     });
     doc.setRoot(root);
@@ -695,7 +708,7 @@ test "paint: transparent text keeps the background underneath it" {
     try std.testing.expectEqual(@as(u32, 'x'), grid.cluster[grid.index(0, 1)]);
 }
 
-fn commonBox(doc: *dom.Document, parent: *dom.Node, style: Style) !*dom.Node {
+fn commonBox(doc: *dom.Document, parent: *dom.Node, style: style_mod.Style) !*dom.Node {
     const node = try doc.createElement(.div);
     node.setStyle(style);
     _ = try parent.appendChild(node);
@@ -724,8 +737,8 @@ test "paint: overflow hidden clips text and absolute children to the padding box
         .top = .{ .cells = 0 },
         .width = .{ .cells = 6 },
         .height = .{ .cells = 1 },
-        .padding = style_mod.Edges.all(1),
-        .border = style_mod.Edges.all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
         .overflow = .hidden,
     });
     _ = try root.appendChild(container);
@@ -770,8 +783,8 @@ test "paint: overflow hidden clips text and absolute children to the padding box
         .top = .{ .cells = 0 },
         .width = .{ .cells = 6 },
         .height = .{ .cells = 1 },
-        .padding = style_mod.Edges.all(1),
-        .border = style_mod.Edges.all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
         .overflow = .clip,
     });
     var clipped = try CellGrid.init(allocator, 14, 5);
@@ -788,8 +801,8 @@ test "paint: overflow hidden clips text and absolute children to the padding box
         .top = .{ .cells = 0 },
         .width = .{ .cells = 6 },
         .height = .{ .cells = 1 },
-        .padding = style_mod.Edges.all(1),
-        .border = style_mod.Edges.all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
         .overflow = .visible,
     });
     var visible = try CellGrid.init(allocator, 14, 5);
@@ -985,4 +998,36 @@ test "paint: underline styles reach the cell attributes" {
         try std.testing.expect((attrs & cell.Attr.underline) != 0);
         try std.testing.expectEqual(@import("style.zig").UnderlineStyle.dotted, cell.underlineStyleOf(attrs));
     }
+}
+
+test "paint: class cascade inherits color and an explicit false clears bold" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const Class = enum(u16) { panel, selected };
+    _ = try doc.registerSheet(.{ .styles = &.{
+        .{ .color = .{ .r = 200, .g = 20, .b = 20 }, .bold = true },
+        .{ .background = .{ .r = 0, .g = 0, .b = 100 }, .bold = false },
+    } });
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 10 },
+        .height = .{ .cells = 1 },
+    });
+    try root.setClasses(&.{ Class.panel, Class.selected });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("hi"));
+
+    var grid = try CellGrid.init(allocator, 10, 2);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    try std.testing.expectEqual(cell.packColor(.{ .r = 200, .g = 20, .b = 20 }), grid.fg[grid.index(0, 0)]);
+    try std.testing.expectEqual(cell.packColor(.{ .r = 0, .g = 0, .b = 100 }), grid.bg[grid.index(0, 0)]);
+    try std.testing.expect((grid.attrs[grid.index(0, 0)] & cell.Attr.bold) == 0);
 }

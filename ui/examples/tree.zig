@@ -63,8 +63,8 @@ fn build(
         .top = .{ .cells = 2 },
         .width = .{ .cells = 34 },
         .height = .{ .cells = 10 },
-        .padding = ui.Edges.all(1),
-        .border = ui.Edges.all(1),
+        .padding = ui.EdgeDecl.all(1),
+        .border = ui.EdgeDecl.all(1),
         .border_color = common.rgb(70, 70, 100),
         .background = common.rgb(26, 28, 38),
     });
@@ -89,8 +89,8 @@ fn build(
         .top = .{ .cells = 2 },
         .width = .{ .cells = 16 },
         .height = .{ .cells = 10 },
-        .padding = ui.Edges.all(1),
-        .border = ui.Edges.all(1),
+        .padding = ui.EdgeDecl.all(1),
+        .border = ui.EdgeDecl.all(1),
         .border_color = common.rgb(70, 70, 100),
         .background = common.rgb(26, 28, 38),
     });

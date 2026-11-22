@@ -59,6 +59,6 @@ test "StatusbarItem: kind colors and progress/beak substitution" {
     });
     const nodes = try item.build(&doc, .{}, .{ .hovered = true, .focused = true });
     try std.testing.expect(nodes.container.style().background != null);
-    try std.testing.expect(nodes.label.style().underline);
+    try std.testing.expect(nodes.label.style().underline == true);
     try std.testing.expectEqualStrings("\u{21BB} ", item.leadingGlyph().?);
 }

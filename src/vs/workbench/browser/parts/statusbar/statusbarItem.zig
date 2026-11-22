@@ -224,7 +224,7 @@ pub const StatusbarItem = struct {
             .height = .{ .percent = 100 },
             .white_space = .pre,
             .overflow = .hidden,
-            .padding = padding,
+            .padding = .{ .left = padding.left, .right = padding.right },
             .underline = state.focused,
         });
 
@@ -314,7 +314,7 @@ test "StatusbarItem: builds a label, truncates and renders progress" {
     try std.testing.expect(nodes.text.asText().data.len > 0);
     try std.testing.expect(std.mem.endsWith(u8, nodes.text.asText().data, "\u{2026}"));
     try std.testing.expect(nodes.label.style().display == .flex);
-    const max_width = switch (nodes.container.style().max_width) {
+    const max_width = switch (nodes.container.style().max_width.?) {
         .cells => |value| value,
         else => 0,
     };

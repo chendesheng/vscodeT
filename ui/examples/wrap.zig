@@ -37,7 +37,7 @@ fn panel(
         .top = .{ .cells = y },
         .width = .{ .cells = width },
         .height = .{ .cells = height },
-        .padding = ui.Edges.all(1),
+        .padding = ui.EdgeDecl.all(1),
         .background = fill,
         .overflow = .hidden,
     });

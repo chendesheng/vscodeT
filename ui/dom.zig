@@ -10,6 +10,7 @@
 //! fresh tree per surface; a later retained tree will add a freelist.
 
 const std = @import("std");
+const css = @import("css.zig");
 const event = @import("event.zig");
 const style_mod = @import("style.zig");
 
@@ -42,7 +43,10 @@ pub const Text = struct {
 pub const Element = struct {
     tag: Tag,
     attributes: std.StringHashMapUnmanaged([]const u8) = .empty,
-    classes: std.ArrayList([]const u8) = .empty,
+    /// Class IDs indexing `Document.class_styles`; order is cascade order.
+    classes: std.ArrayListUnmanaged(u16) = .empty,
+    /// Authored inline declaration. Class declarations resolve first, then
+    /// this declaration wins.
     style: Style = .{},
     /// Paint-only overrides applied while this element is in the hover chain
     /// (the pointer target or one of its ancestors). `null` opts the element
@@ -91,6 +95,9 @@ pub const Document = struct {
     tab_size: usize,
     measure_width: *const fn (u21) u2,
     observer: ?MutationObserver = null,
+    /// Array-backed class stylesheet. Class IDs are indices into this table;
+    /// `clear()` keeps it (like a webpage's stylesheets), `deinit` frees it.
+    class_styles: css.StyleTable = .{},
     /// Retired nodes available for reuse. The document arena has no per-node
     /// free; the retained editor view recycles nodes explicitly so long
     /// sessions do not grow without bound between document resets.
@@ -111,6 +118,53 @@ pub const Document = struct {
         if (self.observer) |observer| observer.notify(node, kind);
     }
 
+    /// Appends a class style and returns its class ID.
+    pub fn addStyle(self: *Document, style: Style) !u16 {
+        const id = try self.class_styles.addStyle(self.allocator, style);
+        self.invalidateClassStyles();
+        return id;
+    }
+
+    /// Copies a class sheet into the document and returns its base class ID.
+    /// Re-registering the same range updates it in place, which is how a
+    /// themed sheet is refreshed.
+    pub fn registerSheet(self: *Document, sheet: css.Sheet) !u16 {
+        const base = try self.class_styles.register(self.allocator, sheet);
+        self.invalidateClassStyles();
+        return base;
+    }
+
+    /// The declaration registered for a class ID, or null when unregistered.
+    pub fn classStyle(self: *const Document, id: u16) ?*const Style {
+        return self.class_styles.get(id);
+    }
+
+    /// Merges class declarations in list order into one declaration.
+    pub fn mergedClassStyle(self: *const Document, classes: anytype) Style {
+        return css.mergeClasses(&self.class_styles, classes);
+    }
+
+    /// The computed style of a node, resolving declarations from the root
+    /// down. This walks ancestors and is intended for DOM-side checks and
+    /// tests, not for box derivation (which threads the parent computed style).
+    pub fn computedStyle(self: *const Document, node: *const Node) style_mod.ComputedStyle {
+        const parent_style = if (node.parent) |parent| self.computedStyle(parent) else style_mod.ComputedStyle{};
+        return switch (node.kind) {
+            .element => |*element| css.resolveElementStyle(
+                parent_style,
+                &self.class_styles,
+                element.classes.items,
+                element.style,
+                defaultDisplay(element.tag),
+            ),
+            .text => parent_style,
+        };
+    }
+
+    fn invalidateClassStyles(self: *Document) void {
+        if (self.root) |root| self.notifyMutation(root, .style);
+    }
+
     pub fn init(allocator: std.mem.Allocator, options: Options) !Document {
         return .{
             .allocator = allocator,
@@ -123,6 +177,7 @@ pub const Document = struct {
     }
 
     pub fn deinit(self: *Document) void {
+        self.class_styles.deinit(self.allocator);
         self.free_nodes.deinit(self.allocator);
         self.arena.deinit();
     }
@@ -433,6 +488,27 @@ pub const Node = struct {
         return false;
     }
 
+    /// The computed style for this node and its ancestor declarations. Walks
+    /// to the root, so prefer box styles inside layout/paint hot paths.
+    pub fn computedStyle(self: *const Node) style_mod.ComputedStyle {
+        return self.document.computedStyle(self);
+    }
+
+    /// The element's computed `display`, including class declarations and its
+    /// tag's initial value. `display` is not inherited; an ancestor
+    /// `display: none` is checked by walking the chain.
+    pub fn declaredDisplay(self: *const Node) style_mod.Display {
+        return switch (self.kind) {
+            .element => self.computedStyle().display,
+            .text => .inline_,
+        };
+    }
+
+    /// The inherited `visibility`, including class declarations.
+    pub fn computedVisibility(self: *const Node) style_mod.Visibility {
+        return self.computedStyle().visibility;
+    }
+
     /// Re-points a text node without allocating. Used for retained gutter and
     /// status rows whose text is formatted into stable per-row buffers.
     pub fn setTextBorrowed(self: *Node, data: []const u8) void {
@@ -667,51 +743,105 @@ pub const Node = struct {
         self.asElement().pointer_events = enabled;
     }
 
-    pub fn addClass(self: *Node, class: []const u8) !void {
-        if (self.hasClass(class)) return;
-        const allocator = self.document.arena.allocator();
-        const element = self.asElement();
-        try element.classes.append(allocator, try allocator.dupe(u8, class));
+    /// Replaces the element's class list. Class names are enum values (or
+    /// plain integers) indexing the document's stylesheet.
+    pub fn setClasses(self: *Node, classes: anytype) !void {
+        switch (self.kind) {
+            .element => |*element| {
+                const allocator = self.document.arena.allocator();
+                element.classes.clearRetainingCapacity();
+                if (comptime isTuplePointer(@TypeOf(classes))) {
+                    inline for (classes.*) |class| try appendClassId(element, allocator, class);
+                } else {
+                    for (classes) |class| try appendClassId(element, allocator, class);
+                }
+            },
+            .text => return,
+        }
         self.document.notifyMutation(self, .style);
     }
 
-    pub fn hasClass(self: *const Node, class: []const u8) bool {
-        return switch (self.kind) {
-            .element => |element| blk: {
-                for (element.classes.items) |item| {
-                    if (std.mem.eql(u8, item, class)) break :blk true;
-                }
-                break :blk false;
+    pub fn addClass(self: *Node, class: anytype) !void {
+        const id = css.classId(class);
+        switch (self.kind) {
+            .element => |*element| {
+                if (hasClassId(element, id)) return;
+                try element.classes.append(self.document.arena.allocator(), id);
             },
+            .text => return,
+        }
+        self.document.notifyMutation(self, .style);
+    }
+
+    pub fn hasClass(self: *const Node, class: anytype) bool {
+        const id = css.classId(class);
+        return switch (self.kind) {
+            .element => |element| hasClassId(&element, id),
             .text => false,
         };
     }
 
-    pub fn removeClass(self: *Node, class: []const u8) void {
+    pub fn removeClass(self: *Node, class: anytype) void {
+        const id = css.classId(class);
         switch (self.kind) {
             .element => |*element| {
                 var i: usize = 0;
                 while (i < element.classes.items.len) {
-                    if (std.mem.eql(u8, element.classes.items[i], class)) {
+                    if (element.classes.items[i] == id) {
                         _ = element.classes.orderedRemove(i);
                     } else {
                         i += 1;
                     }
                 }
             },
-            .text => {},
+            .text => return,
         }
         self.document.notifyMutation(self, .style);
     }
 
-    pub fn toggleClass(self: *Node, class: []const u8) !void {
-        if (self.hasClass(class)) {
-            self.removeClass(class);
+    pub fn toggleClass(self: *Node, class: anytype) !void {
+        const id = css.classId(class);
+        if (self.hasClass(id)) {
+            self.removeClass(id);
         } else {
-            try self.addClass(class);
+            try self.addClass(id);
         }
     }
 };
+
+fn appendClassId(element: *Element, allocator: std.mem.Allocator, class: anytype) !void {
+    const id = css.classId(class);
+    if (hasClassId(element, id)) return;
+    try element.classes.append(allocator, id);
+}
+
+fn isTuplePointer(comptime T: type) bool {
+    switch (@typeInfo(T)) {
+        .pointer => |pointer| {
+            if (pointer.size != .one) return false;
+            switch (@typeInfo(pointer.child)) {
+                .@"struct" => |inner| return inner.is_tuple,
+                else => return false,
+            }
+        },
+        else => return false,
+    }
+}
+
+fn hasClassId(element: *const Element, id: u16) bool {
+    for (element.classes.items) |item| {
+        if (item == id) return true;
+    }
+    return false;
+}
+
+/// HTML-ish initial display for the small tag set.
+pub fn defaultDisplay(tag: Tag) style_mod.Display {
+    return switch (tag) {
+        .div, .generic => .block,
+        .span => .inline_,
+    };
+}
 
 pub const ChildIterator = struct {
     next_node: ?*Node,
@@ -845,10 +975,11 @@ test "Node: text content and attributes" {
 
     try root.setAttribute("id", "root");
     try std.testing.expectEqualStrings("root", root.getAttribute("id").?);
-    try root.addClass("a");
-    try std.testing.expect(root.hasClass("a"));
-    try root.toggleClass("a");
-    try std.testing.expect(!root.hasClass("a"));
+    const TestClass = enum(u16) { a };
+    try root.addClass(TestClass.a);
+    try std.testing.expect(root.hasClass(TestClass.a));
+    try root.toggleClass(TestClass.a);
+    try std.testing.expect(!root.hasClass(TestClass.a));
 
     try root.setTextContent("plain");
     const plain = try root.textContentAlloc(allocator);
@@ -966,4 +1097,37 @@ test "Document: a recycled node does not keep its hover style" {
 
     const second = try doc.createElement(.div);
     try std.testing.expect(second.asElement().hover_style == null);
+}
+
+test "Document: class styles survive clear and nodes hold integer IDs" {
+    const allocator = std.testing.allocator;
+    var doc = try Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const Class = enum(u16) { panel, selected };
+    const base = try doc.registerSheet(.{ .styles = &.{
+        .{ .color = .{ .r = 1, .g = 2, .b = 3 } },
+        .{ .bold = true },
+    } });
+    try std.testing.expectEqual(@as(u16, 0), base);
+
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    const child = try doc.createElement(.div);
+    try child.setClasses(&.{ Class.panel, Class.selected });
+    _ = try root.appendChild(child);
+    try std.testing.expect(child.hasClass(Class.panel));
+    try std.testing.expectEqual(@as(usize, 2), child.asElement().classes.items.len);
+
+    doc.clear();
+    // The stylesheet is document state, like a webpage's stylesheet.
+    try std.testing.expect(doc.classStyle(@backingInt(Class.selected)) != null);
+    try std.testing.expectEqual(@as(?bool, true), doc.classStyle(@backingInt(Class.selected)).?.bold);
+
+    const next = try doc.createElement(.div);
+    doc.setRoot(next);
+    try next.addClass(Class.selected);
+    try std.testing.expect(next.hasClass(Class.selected));
+    next.removeClass(Class.selected);
+    try std.testing.expect(!next.hasClass(Class.selected));
 }

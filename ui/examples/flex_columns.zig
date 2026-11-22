@@ -78,7 +78,7 @@ fn build(
         .display = .flex,
         .flex_direction = .column,
         .gap = .{ .row = 1 },
-        .padding = .all(1),
+        .padding = ui.EdgeDecl.all(1),
         .background = panel,
     });
     _ = try common.addLabel(doc, sidebar, "sidebar", .{
@@ -101,7 +101,7 @@ fn build(
         .flex_direction = .column,
         .flex_grow = 1,
         .gap = .{ .row = 1 },
-        .padding = .all(1),
+        .padding = ui.EdgeDecl.all(1),
         .background = panel,
     });
     _ = try common.addLabel(doc, main_panel, "main content", .{

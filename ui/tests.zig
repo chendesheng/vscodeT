@@ -3,6 +3,7 @@ comptime {
     _ = @import("box.zig");
     _ = @import("cell.zig");
     _ = @import("cell_border.zig");
+    _ = @import("css.zig");
     _ = @import("dialog.zig");
     _ = @import("dom.zig");
     _ = @import("event.zig");

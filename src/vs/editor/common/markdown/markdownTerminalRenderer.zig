@@ -1386,8 +1386,8 @@ test "markdown: headings, nested lists and code blocks" {
     defer content.deinit();
 
     const heading = findLine(&content, "Title").?;
-    try testing.expect(heading.spans[0].style.bold);
-    try testing.expect(heading.spans[0].style.underline);
+    try testing.expect(heading.spans[0].style.bold == true);
+    try testing.expect(heading.spans[0].style.underline == true);
 
     try testing.expect(findTextLine(testing.allocator, &content, "• nested") != null);
     try testing.expect(findTextLine(testing.allocator, &content, "• one") != null);
@@ -1419,7 +1419,7 @@ test "markdown: GFM table renders a clipped box grid" {
     try testing.expect(header.no_wrap);
     var saw_bold = false;
     for (header.spans) |span| {
-        if (std.mem.indexOf(u8, span.text, "name") != null) saw_bold = span.style.bold;
+        if (std.mem.indexOf(u8, span.text, "name") != null) saw_bold = span.style.bold orelse false;
     }
     try testing.expect(saw_bold);
     try testing.expect(findLine(&content, "alpha").?.no_wrap);
@@ -1457,8 +1457,8 @@ test "markdown: setext headings and indented code" {
     defer content.deinit();
 
     const heading = findLine(&content, "Heading").?;
-    try testing.expect(heading.spans[0].style.bold);
-    try testing.expect(heading.spans[0].style.underline);
+    try testing.expect(heading.spans[0].style.bold == true);
+    try testing.expect(heading.spans[0].style.underline == true);
 
     const code = findLine(&content, "indented code").?;
     try testing.expectEqual(@as(?ui.Color, null), code.spans[0].style.background);
@@ -1478,7 +1478,7 @@ test "markdown: links, autolinks and reference links" {
     const link_line = findTextLine(testing.allocator, &content, "docs").?;
     var saw_url = false;
     for (link_line.spans) |span| {
-        if (std.mem.indexOf(u8, span.text, "(https://example.com)") != null) saw_url = span.style.dim;
+        if (std.mem.indexOf(u8, span.text, "(https://example.com)") != null) saw_url = span.style.dim orelse false;
     }
     try testing.expect(saw_url);
 

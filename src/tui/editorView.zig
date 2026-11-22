@@ -1556,7 +1556,7 @@ pub const View = struct {
             // `ui` sizes the content box, so subtract the border widths from
             // the requested block size. A one-cell block has no room for a
             // full outline; collapse it to a single edge so it stays visible.
-            var border = ui.Edges{};
+            var border = ui.EdgeDecl{};
             if (style.border_color != null) {
                 if (width >= 2 and height >= 2) {
                     border = .{ .top = 1, .right = 1, .bottom = 1, .left = 1 };
@@ -5259,7 +5259,7 @@ test "view: diagnostic decoration classes map to cell flags" {
 test "view: diagnostic flags select terminal underline styles" {
     var error_style = ui.style.PaintStyle{};
     applyFlagPaint(&error_style, CellFlag.diagnostic_error, null);
-    try std.testing.expect(error_style.underline);
+    try std.testing.expect(error_style.underline == true);
     try std.testing.expectEqual(ui.UnderlineStyle.curly, error_style.underline_style);
     try std.testing.expectEqual(@as(u8, 241), error_style.color.?.r);
     try std.testing.expectEqual(@as(u8, 76), error_style.color.?.g);
@@ -5279,19 +5279,19 @@ test "view: diagnostic flags select terminal underline styles" {
 
     var unnecessary_style = ui.style.PaintStyle{};
     applyFlagPaint(&unnecessary_style, CellFlag.diagnostic_unnecessary, null);
-    try std.testing.expect(unnecessary_style.dim);
-    try std.testing.expect(unnecessary_style.underline);
+    try std.testing.expect(unnecessary_style.dim == true);
+    try std.testing.expect(unnecessary_style.underline == true);
     try std.testing.expectEqual(ui.UnderlineStyle.dashed, unnecessary_style.underline_style);
 
     var inline_unnecessary_style = ui.style.PaintStyle{};
     applyFlagPaint(&inline_unnecessary_style, CellFlag.diagnostic_inline_unnecessary, null);
-    try std.testing.expect(inline_unnecessary_style.dim);
-    try std.testing.expect(!inline_unnecessary_style.underline);
+    try std.testing.expect(inline_unnecessary_style.dim == true);
+    try std.testing.expect(inline_unnecessary_style.underline != true);
 
     var deprecated_style = ui.style.PaintStyle{};
     applyFlagPaint(&deprecated_style, CellFlag.diagnostic_deprecated, null);
-    try std.testing.expect(deprecated_style.strikethrough);
-    try std.testing.expect(!deprecated_style.underline);
+    try std.testing.expect(deprecated_style.strikethrough == true);
+    try std.testing.expect(deprecated_style.underline != true);
 }
 
 test "view: selection fallbacks match the upstream registry defaults" {
@@ -5315,7 +5315,7 @@ test "view: selection fallbacks match the upstream registry defaults" {
 test "view: selection paint replaces reverse video and stays below decorations" {
     var style = ui.style.PaintStyle{};
     applyFlagPaint(&style, CellFlag.selected, null);
-    try std.testing.expect(!style.reverse);
+    try std.testing.expect(style.reverse != true);
     try std.testing.expectEqual(
         ui.cell.packColor(color(selection_background_dark)),
         ui.cell.packColor(style.background.?),
@@ -5408,10 +5408,10 @@ test "View: block decorations paint a bordered range under the text" {
     const node = view.block_nodes.items[0];
     const style = node.style();
     try std.testing.expect(style.border_color != null);
-    try std.testing.expectEqual(@as(f64, 1), style.border.top);
-    try std.testing.expectEqual(@as(f64, 1), style.border.left);
-    try std.testing.expectEqual(@as(f64, 1), style.border.right);
-    try std.testing.expectEqual(@as(f64, 1), style.border.bottom);
+    try std.testing.expectEqual(@as(f64, 1), style.border.?.top.?);
+    try std.testing.expectEqual(@as(f64, 1), style.border.?.left.?);
+    try std.testing.expectEqual(@as(f64, 1), style.border.?.right.?);
+    try std.testing.expectEqual(@as(f64, 1), style.border.?.bottom.?);
 
     const box = view.surface.box_tree.find(node) orelse return error.MissingBox;
     try std.testing.expectEqual(@as(f64, @floatFromInt(editor.gutterWidth())), box.rect.x);

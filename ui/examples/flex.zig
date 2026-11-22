@@ -92,7 +92,7 @@ fn build(
         .display = .flex,
         .flex_direction = .column,
         .gap = .{ .row = 1 },
-        .padding = .all(1),
+        .padding = ui.EdgeDecl.all(1),
         .overflow = .hidden,
         .background = panel,
     });
@@ -110,7 +110,7 @@ fn build(
         .flex_direction = .column,
         .flex_grow = 1,
         .gap = .{ .row = 1 },
-        .padding = .all(1),
+        .padding = ui.EdgeDecl.all(1),
         .overflow = .hidden,
         .background = panel,
     });
@@ -122,7 +122,7 @@ fn build(
     const tags = try common.addBox(doc, content, .{
         .display = .flex,
         .flex_wrap = .wrap,
-        .gap = .all(1),
+        .gap = ui.GapDecl.all(1),
         .align_items = .flex_start,
     });
     for ([_][]const u8{
@@ -140,7 +140,7 @@ fn build(
         .display = .flex,
         .flex_direction = .column,
         .gap = .{ .row = 1 },
-        .padding = .all(1),
+        .padding = ui.EdgeDecl.all(1),
         .background = raised,
         .flex_grow = 1,
         .overflow = .hidden,

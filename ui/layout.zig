@@ -29,7 +29,7 @@ const style_mod = @import("style.zig");
 const text_layout = @import("text_layout.zig");
 
 pub const Rect = style_mod.Rect;
-pub const Style = style_mod.Style;
+pub const Style = style_mod.ComputedStyle;
 pub const Dimension = style_mod.Dimension;
 pub const Edges = style_mod.Edges;
 pub const LayoutBox = box.LayoutBox;
@@ -328,7 +328,7 @@ fn measureAtomic(
     };
 }
 
-fn edgeWidth(style: style_mod.Style, side: text_layout.EdgeSide) f64 {
+fn edgeWidth(style: style_mod.ComputedStyle, side: text_layout.EdgeSide) f64 {
     const margin = resolveMargins(style.margin);
     const padding = style.padding.nonNegative();
     const border = style_mod.borderWidths(style);
@@ -775,7 +775,7 @@ fn layoutBlockChildren(
                     block_y,
                     content.w,
                     owner_height,
-                    parent.style.text_align,
+                    child.text_style.text_align,
                 );
             },
             .element, .anonymous_flex_item => {
@@ -1708,9 +1708,9 @@ test "layout: margin, border and padding produce content and border boxes" {
         .top = .{ .cells = 1 },
         .width = .{ .cells = 5 },
         .height = .{ .cells = 2 },
-        .margin = .all(1),
-        .padding = .all(1),
-        .border = .all(1),
+        .margin = style_mod.MarginDecl.all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
     });
     _ = try root.appendChild(child);
 
@@ -1749,8 +1749,8 @@ test "layout: percent width uses the parent content box" {
         .top = .{ .cells = 0 },
         .width = .{ .cells = 10 },
         .height = .{ .cells = 4 },
-        .padding = .all(1),
-        .border = .all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
     });
     doc.setRoot(root);
 
@@ -1802,8 +1802,8 @@ test "layout: min-width and max-width clamp block content boxes" {
         .width = .{ .cells = 8 },
         .height = .{ .cells = 1 },
         .max_width = .{ .cells = 3 },
-        .padding = .all(1),
-        .border = .all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
     });
 
     var tree = try BoxTree.init(allocator);
@@ -1916,8 +1916,8 @@ test "layout: inline text starts at the content box" {
         .top = .{ .cells = 1 },
         .width = .{ .cells = 6 },
         .height = .{ .cells = 1 },
-        .padding = .all(1),
-        .border = .all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
     });
     doc.setRoot(line);
 
@@ -1996,14 +1996,14 @@ test "layout: normal text wraps and grows auto height" {
     try std.testing.expectEqual(@as(f64, 3), line.asElement().rect.h);
 }
 
-fn testBox(doc: *dom.Document, parent: *dom.Node, style: Style) !*dom.Node {
+fn testBox(doc: *dom.Document, parent: *dom.Node, style: style_mod.Style) !*dom.Node {
     const node = try doc.createElement(.div);
     node.setStyle(style);
     _ = try parent.appendChild(node);
     return node;
 }
 
-fn testText(doc: *dom.Document, parent: *dom.Node, data: []const u8, style: Style) !*dom.Node {
+fn testText(doc: *dom.Document, parent: *dom.Node, data: []const u8, style: style_mod.Style) !*dom.Node {
     const node = try doc.createText(data);
     node.setStyle(style);
     _ = try parent.appendChild(node);
@@ -2858,8 +2858,8 @@ test "layout: flex item padding and border join the flex base size" {
 
     const a = try testBox(&doc, root, .{
         .height = .{ .cells = 1 },
-        .padding = .all(1),
-        .border = .all(1),
+        .padding = style_mod.EdgeDecl.all(1),
+        .border = style_mod.EdgeDecl.all(1),
         .flex_grow = 1,
     });
     const b = try testBox(&doc, root, .{
@@ -3432,7 +3432,7 @@ test "taffy flex: border on the container insets content" {
         .position = .absolute,
         .width = .{ .cells = 80 },
         .height = .{ .cells = 80 },
-        .border = .all(10),
+        .border = style_mod.EdgeDecl.all(10),
         .display = .flex,
     });
     doc.setRoot(root);
@@ -3644,4 +3644,34 @@ test "layout: inline element padding joins the line and fragment box" {
     try std.testing.expectEqual(@as(usize, 1), span_box.inline_fragments.len);
     try std.testing.expectEqual(@as(f64, 6), span_box.inline_fragments[0].w);
     try std.testing.expectEqual(@as(f64, 1), span_box.inline_fragments[0].y);
+}
+
+test "layout: text-align inherits into a nested block" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 10 },
+        .text_align = .center,
+    });
+    doc.setRoot(root);
+
+    const child = try doc.createElement(.div);
+    child.setStyle(.{ .width = .{ .cells = 10 } });
+    _ = try root.appendChild(child);
+    const text = try doc.createText("abc");
+    _ = try child.appendChild(text);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+
+    // 10-cell line, 3-cell text, centred by the inherited text-align.
+    try std.testing.expectEqual(@as(f64, 3.5), text.asText().rect.x);
 }

@@ -20,9 +20,10 @@
 //! bytes, not key releases, and cannot report key repeat. Mouse motion is the
 //! all-motion report a terminal sends in mode 1003: button-held motion drives
 //! drags, and idle motion updates the document's hover target. The painter
-//! applies `Element.hover_style` to that element and its ancestors. There is no
-//! CSS cascade, no transition and no implicit enter/leave synthesis; the host
-//! decides what motion means beyond the hover chain.
+//! applies `Element.hover_style` to that element and its ancestors. Style
+//! declarations do cascade, but there is no selector engine, no transition and
+//! no implicit enter/leave synthesis; the host decides what motion means
+//! beyond the hover chain.
 
 const std = @import("std");
 const dom = @import("dom.zig");
@@ -424,9 +425,9 @@ pub fn canFocus(document: *const dom.Document, node: *dom.Node) bool {
 
     var current: ?*dom.Node = node;
     while (current) |candidate| : (current = candidate.parent) {
-        if (candidate.style().display == .none) return false;
+        if (candidate.declaredDisplay() == .none) return false;
     }
-    return node.style().visibility == .visible;
+    return node.computedVisibility() == .visible;
 }
 
 /// Moves focus to the next/previous tab stop, in sequential focus navigation
@@ -479,7 +480,7 @@ fn findFocusStopWalk(
             }
         }
     }
-    if (node.isElement() and node.style().display == .none) return null;
+    if (node.isElement() and node.declaredDisplay() == .none) return null;
 
     var child = node.first_child;
     while (child) |current| : (child = current.next) {
@@ -520,7 +521,7 @@ const FocusSearch = struct {
                 }
             }
         }
-        if (node.isElement() and node.style().display == .none) return;
+        if (node.isElement() and node.declaredDisplay() == .none) return;
 
         var child = node.first_child;
         while (child) |current| : (child = current.next) self.walk(current);
@@ -1174,4 +1175,23 @@ test "event: motion updates the hover target, other mouse events do not" {
     try std.testing.expectEqual(root, doc.hoverTarget().?);
     try std.testing.expect(root.isHovered());
     try std.testing.expect(!child.isHovered());
+}
+
+test "event: class display none makes an element unfocusable" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const Class = enum(u16) { hidden };
+    _ = try doc.registerSheet(.{ .styles = &.{.{ .display = .none }} });
+
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    const child = try doc.createElement(.div);
+    child.asElement().focusable = true;
+    try child.addClass(Class.hidden);
+    _ = try root.appendChild(child);
+
+    try std.testing.expect(!doc.focus(child));
+    try std.testing.expect(!canFocus(&doc, child));
 }

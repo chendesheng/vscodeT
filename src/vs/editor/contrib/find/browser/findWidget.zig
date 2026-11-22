@@ -769,9 +769,9 @@ fn appendRow(doc: *ui.Document, parent: *ui.Node, right_padding: bool) !*ui.Node
         .align_items = .center,
         .gap = .{ .column = 1 },
         .padding = if (right_padding)
-            ui.Edges{ .left = 1, .right = 1 }
+            ui.EdgeDecl{ .left = 1, .right = 1 }
         else
-            ui.Edges{ .left = 1 },
+            ui.EdgeDecl{ .left = 1 },
         .overflow = .hidden,
     });
     _ = try parent.appendChild(row);

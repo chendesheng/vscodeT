@@ -1,7 +1,9 @@
 //! The derived layout box tree.
 //!
 //! Layout never walks the DOM. It walks this tree, which is built from the DOM
-//! and the direct `Style` values. The shape follows WebKit's
+//! and its authored `Style` declarations. Class declarations come from the
+//! document's array-backed stylesheet and are resolved against the parent's
+//! computed style during derivation. The shape follows WebKit's
 //! LayoutFormattingContext box tree (`Layout::InitialContainingBlock`,
 //! `Layout::ElementBox`, `Layout::InlineTextBox`) and TermDOM's box derivation:
 //!
@@ -12,14 +14,16 @@
 //! - one text box per text node.
 //!
 //! `display: none` generates nothing; `display: contents` generates no box of
-//! its own and its children join the parent's formatting context.
+//! its own and its children join the parent's formatting context while still
+//! inheriting its computed style and paint declarations.
 //!
-//! The tree owns layout invalidation. Because boxes copy the DOM's direct
-//! `Style` and text data, structural, style and text changes set
-//! `needs_rebuild`; `needs_layout` triggers a solve after the rebuild. Per-box
-//! `needs_layout` is kept for the future incremental pass.
+//! The tree owns layout invalidation. Because boxes copy the resolved style
+//! and text data, structural, style and text changes set `needs_rebuild`;
+//! `needs_layout` triggers a solve after the rebuild. Per-box `needs_layout`
+//! is kept for the future incremental pass.
 
 const std = @import("std");
+const css = @import("css.zig");
 const dom = @import("dom.zig");
 const style_mod = @import("style.zig");
 
@@ -55,8 +59,11 @@ pub const LayoutBox = struct {
     /// The DOM element/text node this box was generated from. Null for the
     /// viewport and anonymous boxes.
     owner: ?*dom.Node = null,
-    style: style_mod.Style = .{},
-    /// Inherited text properties, resolved from the direct styles on the way
+    style: style_mod.ComputedStyle = .{},
+    /// Inherited paint declarations from style-only `display: contents`
+    /// ancestors. The painter applies this before the box's own declaration.
+    paint_delta: style_mod.PaintStyle = .{},
+    /// Inherited text properties, resolved from the computed styles on the way
     /// down the box tree.
     text_style: style_mod.TextStyle = .{},
     /// Inherited mouse pointer shape, resolved from the direct styles on the
@@ -221,17 +228,19 @@ pub const BoxTree = struct {
         const parent_node = node.parent orelse return null;
         const parent_box = self.node_boxes.get(parent_node) orelse return null;
         const allocator = self.arena.allocator();
+        const inherited = parent_box.style;
         const box = switch (node.kind) {
-            .text => |*text| try createTextBox(self, parent_box, node, text),
+            .text => |*text| try createTextBox(self, parent_box, node, text, inherited, parent_box.paint_delta),
             .element => |*element| blk: {
-                switch (element.style.display) {
+                const computed = elementStyle(inherited, node, element);
+                switch (computed.display) {
                     .none => return null,
                     .contents => return null,
                     else => {},
                 }
-                const created = try createElementBox(self, parent_box, node, element);
+                const created = try createElementBox(self, parent_box, node, element, computed, parent_box.paint_delta);
                 var run: std.ArrayList(*LayoutBox) = .empty;
-                try collectChildren(self, created, node, &run);
+                try collectChildren(self, created, node, &run, computed, parent_box.paint_delta, true);
                 break :blk created;
             },
         };
@@ -267,8 +276,17 @@ pub const BoxTree = struct {
         for (box.children.items) |child| removeBoxMappings(self, child);
         box.children.clearRetainingCapacity();
         if (node.kind == .element) {
+            const inherited = if (box.parent) |parent| parent.style else style_mod.ComputedStyle{};
+            const computed = elementStyle(inherited, node, node.asElement());
+            box.style = computed;
+            box.text_style = style_mod.TextStyle.fromComputed(computed);
+            box.pointer = computed.pointer;
+            if (self.cell_borders) {
+                box.cell_border = style_mod.borderWidths(computed);
+                box.style.border = .{};
+            }
             var run: std.ArrayList(*LayoutBox) = .empty;
-            try collectChildren(self, box, node, &run);
+            try collectChildren(self, box, node, &run, computed, box.paint_delta, true);
         }
         box.needs_layout = true;
         return box;
@@ -279,13 +297,15 @@ pub const BoxTree = struct {
     pub fn translateSubtree(self: *BoxTree, node: *dom.Node, dx: f64, dy: f64) bool {
         const box = self.node_boxes.get(node) orelse return false;
         if (node.kind == .element) {
-            box.style = node.asElement().style;
-            box.text_style = style_mod.TextStyle.resolve(
-                if (box.parent) |parent| parent.text_style else .{},
-                box.style,
-            );
-            const pointer = box.style.pointer orelse if (box.parent) |parent| parent.pointer else .default;
-            if (pointer != box.pointer) resolvePointers(box, pointer);
+            const inherited = if (box.parent) |parent| parent.style else style_mod.ComputedStyle{};
+            const computed = elementStyle(inherited, node, node.asElement());
+            box.style = computed;
+            box.text_style = style_mod.TextStyle.fromComputed(computed);
+            if (self.cell_borders) {
+                box.cell_border = style_mod.borderWidths(computed);
+                box.style.border = .{};
+            }
+            if (computed.pointer != box.pointer) resolvePointers(box, computed.pointer);
         }
         shiftBox(box, dx, dy);
         copyBoxRects(box);
@@ -321,17 +341,19 @@ pub const BoxTree = struct {
 
         if (doc.root) |dom_root| {
             const element = dom_root.asElement();
-            switch (element.style.display) {
+            const computed = elementStyle(root.style, dom_root, element);
+            switch (computed.display) {
                 .none => {},
                 .contents => {
                     var run: std.ArrayList(*LayoutBox) = .empty;
-                    try collectChildren(&next, root, dom_root, &run);
+                    const child_delta = style_mod.paintInherit(.{}, computed);
+                    try collectChildren(&next, root, dom_root, &run, computed, child_delta, true);
                 },
                 else => {
-                    const element_box = try createElementBox(&next, root, dom_root, element);
+                    const element_box = try createElementBox(&next, root, dom_root, element, computed, .{});
                     try root.children.append(allocator, element_box);
                     var run: std.ArrayList(*LayoutBox) = .empty;
-                    try collectChildren(&next, element_box, dom_root, &run);
+                    try collectChildren(&next, element_box, dom_root, &run, computed, .{}, true);
                 },
             }
         }
@@ -421,7 +443,7 @@ fn elementForNode(node: *dom.Node) ?*dom.Node {
     return null;
 }
 
-fn rootStyle() style_mod.Style {
+fn rootStyle() style_mod.ComputedStyle {
     return .{
         .position = .absolute,
         .left = .{ .cells = 0 },
@@ -429,6 +451,21 @@ fn rootStyle() style_mod.Style {
         .width = .{ .percent = 100 },
         .height = .{ .percent = 100 },
     };
+}
+
+/// Resolves one element's declaration against the inherited computed style.
+fn elementStyle(
+    inherited: style_mod.ComputedStyle,
+    node: *dom.Node,
+    element: *dom.Element,
+) style_mod.ComputedStyle {
+    return css.resolveElementStyle(
+        inherited,
+        &node.document.class_styles,
+        element.classes.items,
+        element.style,
+        dom.defaultDisplay(element.tag),
+    );
 }
 
 fn removeBoxMappings(tree: *BoxTree, box: *LayoutBox) void {
@@ -474,12 +511,9 @@ fn shiftBox(box: *LayoutBox, dx: f64, dy: f64) void {
 
 /// Re-resolves the inherited pointer after an in-place style update. Anonymous
 /// and text boxes have no declaration of their own; only a principal element
-/// box keeps its direct `style.pointer`.
+/// box keeps its computed `style.pointer`.
 fn resolvePointers(box: *LayoutBox, inherited: style_mod.Pointer) void {
-    box.pointer = if (box.kind == .element)
-        (box.style.pointer orelse inherited)
-    else
-        inherited;
+    box.pointer = if (box.kind == .element) box.style.pointer else inherited;
     for (box.children.items) |child| resolvePointers(child, box.pointer);
 }
 
@@ -488,28 +522,39 @@ fn createElementBox(
     parent: *LayoutBox,
     node: *dom.Node,
     element: *dom.Element,
+    computed: style_mod.ComputedStyle,
+    paint_delta: style_mod.PaintStyle,
 ) !*LayoutBox {
+    _ = element;
     const allocator = tree.arena.allocator();
     const box = try allocator.create(LayoutBox);
     box.* = .{
         .kind = .element,
         .owner = node,
-        .style = element.style,
-        .text_style = style_mod.TextStyle.resolve(parent.text_style, element.style),
-        .pointer = element.style.pointer orelse parent.pointer,
+        .style = computed,
+        .paint_delta = paint_delta,
+        .text_style = style_mod.TextStyle.fromComputed(computed),
+        .pointer = computed.pointer,
         .parent = parent,
     };
     if (tree.cell_borders) {
         // Keep the requested border for paint, but take it out of the box model
         // so the border line sits on the box edge without reserving a cell.
-        box.cell_border = style_mod.borderWidths(element.style);
+        box.cell_border = style_mod.borderWidths(computed);
         box.style.border = .{};
     }
     try tree.node_boxes.put(allocator, node, box);
     return box;
 }
 
-fn createTextBox(tree: *BoxTree, parent: *LayoutBox, node: *dom.Node, text: *dom.Text) !*LayoutBox {
+fn createTextBox(
+    tree: *BoxTree,
+    parent: *LayoutBox,
+    node: *dom.Node,
+    text: *dom.Text,
+    inherited: style_mod.ComputedStyle,
+    paint_delta: style_mod.PaintStyle,
+) !*LayoutBox {
     const allocator = tree.arena.allocator();
     const box = try allocator.create(LayoutBox);
     box.* = .{
@@ -517,8 +562,12 @@ fn createTextBox(tree: *BoxTree, parent: *LayoutBox, node: *dom.Node, text: *dom
         .owner = node,
         .paint = text.paint,
         .paint_ref = text.paint_ref,
-        .text_style = style_mod.TextStyle.resolveFlow(parent.text_style, text.flow),
-        .pointer = parent.pointer,
+        .paint_delta = paint_delta,
+        .text_style = style_mod.TextStyle.resolveFlow(
+            style_mod.TextStyle.fromComputed(inherited),
+            text.flow,
+        ),
+        .pointer = inherited.pointer,
         .text = text.data,
         .parent = parent,
     };
@@ -535,6 +584,9 @@ fn collectChildren(
     parent: *LayoutBox,
     dom_parent: *dom.Node,
     run: *std.ArrayList(*LayoutBox),
+    inherited: style_mod.ComputedStyle,
+    paint_delta: style_mod.PaintStyle,
+    flush_at_end: bool,
 ) !void {
     const allocator = tree.arena.allocator();
     const flex = parentIsFlex(parent);
@@ -543,44 +595,46 @@ fn collectChildren(
     while (child) |node| : (child = node.next) {
         switch (node.kind) {
             .text => |*text| {
-                const box = try createTextBox(tree, parent, node, text);
+                const box = try createTextBox(tree, parent, node, text, inherited, paint_delta);
                 try run.append(allocator, box);
             },
             .element => |*element| {
-                switch (element.style.display) {
+                const computed = elementStyle(inherited, node, element);
+                switch (computed.display) {
                     .none => continue,
                     .contents => {
-                        try collectChildren(tree, parent, node, run);
+                        const child_delta = style_mod.paintInherit(paint_delta, computed);
+                        try collectChildren(tree, parent, node, run, computed, child_delta, false);
                     },
                     .inline_, .inline_block, .inline_flex => {
                         if (flex) {
                             // Every in-flow element child of a flex container
                             // is its own flex item.
-                            try flushRun(tree, parent, run);
-                            const box = try createElementBox(tree, parent, node, element);
+                            try flushRun(tree, parent, run, inherited);
+                            const box = try createElementBox(tree, parent, node, element, computed, paint_delta);
                             try parent.children.append(allocator, box);
                             var sub_run: std.ArrayList(*LayoutBox) = .empty;
-                            try collectChildren(tree, box, node, &sub_run);
+                            try collectChildren(tree, box, node, &sub_run, computed, paint_delta, true);
                         } else {
-                            const box = try createElementBox(tree, parent, node, element);
+                            const box = try createElementBox(tree, parent, node, element, computed, paint_delta);
                             try run.append(allocator, box);
                             var sub_run: std.ArrayList(*LayoutBox) = .empty;
-                            try collectChildren(tree, box, node, &sub_run);
+                            try collectChildren(tree, box, node, &sub_run, computed, paint_delta, true);
                         }
                     },
                     .block, .flex => {
-                        try flushRun(tree, parent, run);
-                        const box = try createElementBox(tree, parent, node, element);
+                        try flushRun(tree, parent, run, inherited);
+                        const box = try createElementBox(tree, parent, node, element, computed, paint_delta);
                         try parent.children.append(allocator, box);
                         var sub_run: std.ArrayList(*LayoutBox) = .empty;
-                        try collectChildren(tree, box, node, &sub_run);
+                        try collectChildren(tree, box, node, &sub_run, computed, paint_delta, true);
                     },
                 }
             },
         }
     }
 
-    try flushRun(tree, parent, run);
+    if (flush_at_end) try flushRun(tree, parent, run, inherited);
 
     // CSS `order` reorders flex items for layout, painting and hit testing.
     // The sort is stable, so equal orders keep document order.
@@ -595,12 +649,13 @@ fn flushRun(
     tree: *BoxTree,
     parent: *LayoutBox,
     run: *std.ArrayList(*LayoutBox),
+    style_base: style_mod.ComputedStyle,
 ) !void {
     if (run.items.len == 0) return;
     const allocator = tree.arena.allocator();
     const flex = parentIsFlex(parent);
 
-    var style = parent.style;
+    var style = style_base;
     style.position = .static;
     style.top = .auto;
     style.right = .auto;
@@ -975,4 +1030,96 @@ test "BoxTree: rebuilding a line keeps boxes of recycled DOM nodes" {
     tree.removeSubtree(row);
     try std.testing.expect(tree.find(row) == null);
     try std.testing.expect(tree.find(label) == null);
+}
+
+test "BoxTree: class declarations cascade and inherit computed values" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 4 });
+    defer doc.deinit();
+
+    const Class = enum(u16) { panel, selected };
+    _ = try doc.registerSheet(.{ .styles = &.{
+        .{
+            .text_align = .center,
+            .width = .{ .cells = 10 },
+            .padding = .{ .left = 1 },
+            .color = .{ .r = 200, .g = 20, .b = 20 },
+            .bold = true,
+        },
+        .{
+            .background = .{ .r = 0, .g = 0, .b = 100 },
+            .bold = false,
+        },
+    } });
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .height = .{ .cells = 2 },
+    });
+    try root.setClasses(&.{ Class.panel, Class.selected });
+    doc.setRoot(root);
+
+    const child = try doc.createElement(.div);
+    _ = try child.appendChild(try doc.createText("x"));
+    _ = try root.appendChild(child);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+
+    const root_box = tree.find(root).?;
+    try std.testing.expectEqual(style_mod.TextAlign.center, root_box.style.text_align);
+    try std.testing.expectEqual(@as(f64, 10), root_box.style.width.cells);
+    try std.testing.expectEqual(@as(f64, 1), root_box.style.padding.left);
+    try std.testing.expectEqual(@as(u8, 0), root_box.style.background.?.r);
+    try std.testing.expectEqual(@as(?bool, false), root_box.style.bold);
+    try std.testing.expectEqual(@as(u8, 200), root_box.style.color.?.r);
+
+    const child_box = tree.find(child).?;
+    // Inherited: text alignment. Not inherited: width/background.
+    try std.testing.expectEqual(style_mod.TextAlign.center, child_box.style.text_align);
+    try std.testing.expectEqual(style_mod.Dimension.auto, child_box.style.width);
+    try std.testing.expectEqual(@as(?style_mod.Color, null), child_box.style.background);
+}
+
+test "BoxTree: display none and contents resolve from class declarations" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 4 });
+    defer doc.deinit();
+
+    const Class = enum(u16) { hidden, contents, red };
+    _ = try doc.registerSheet(.{ .styles = &.{
+        .{ .display = .none },
+        .{ .display = .contents, .white_space = .pre, .pointer = .pointer },
+        .{ .color = .{ .r = 9, .g = 8, .b = 7 } },
+    } });
+
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+
+    const hidden = try doc.createElement(.div);
+    try hidden.setClasses(&.{Class.hidden});
+    _ = try root.appendChild(hidden);
+    _ = try hidden.appendChild(try doc.createText("hidden"));
+
+    const contents = try doc.createElement(.div);
+    try contents.setClasses(&.{ Class.contents, Class.red });
+    _ = try contents.appendChild(try doc.createText("shown"));
+    _ = try root.appendChild(contents);
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+
+    try std.testing.expect(tree.find(hidden) == null);
+    try std.testing.expect(tree.find(contents) == null);
+    // The contents element has no box, but its text child inherits its
+    // computed alignment, color declaration and paint delta.
+    const text_box = tree.find(contents.firstChild().?).?;
+    try std.testing.expectEqual(style_mod.WhiteSpace.pre, text_box.text_style.white_space);
+    try std.testing.expectEqual(style_mod.Pointer.pointer, text_box.pointer);
+    try std.testing.expectEqual(@as(u8, 9), text_box.paint_delta.color.?.r);
 }

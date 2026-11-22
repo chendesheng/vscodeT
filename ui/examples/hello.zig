@@ -42,7 +42,7 @@ fn build(
         .top = .{ .cells = 1 },
         .width = .{ .cells = 46 },
         .height = .{ .cells = 6 },
-        .border = ui.Edges.all(1),
+        .border = ui.EdgeDecl.all(1),
         .border_color = common.rgb(70, 70, 100),
         .background = common.rgb(30, 30, 42),
         .overflow = .hidden,

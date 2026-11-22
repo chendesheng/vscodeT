@@ -481,7 +481,7 @@ test "scroll view clamps, translates and tracks a thumb" {
     try testing.expectEqual(@as(usize, 22), view.scrollTop());
     try testing.expectEqual(@as(f64, -22), view.content.style().translate_y);
 
-    const thumb_top = switch (view.thumb.?.style().top) {
+    const thumb_top = switch (view.thumb.?.style().top.?) {
         .cells => |value| value,
         else => -1,
     };
@@ -541,7 +541,7 @@ test "scroll view honours wide scrollbars and initial scroll" {
 
     try testing.expectEqual(@as(usize, 18), view.contentWidth());
     try testing.expectEqual(@as(usize, 22), view.scrollTop());
-    const thumb_width = switch (view.thumb.?.style().width) {
+    const thumb_width = switch (view.thumb.?.style().width.?) {
         .cells => |value| value,
         else => -1,
     };
