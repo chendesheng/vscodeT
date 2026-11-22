@@ -15,8 +15,8 @@
 // TUI-specific: the key map (documented in the README), the cell layout, and
 // the absence of the browser sash and accessibility tree. Find and replace
 // input histories are kept host-side and navigated with Up/Down.
-// `findOnType`, `closeOnResult`, `loop` and `seedSearchStringFromSelection`
-// are host-resolved options. The browser
+// `findOnType`, `closeOnResult`, `loop`, `seedSearchStringFromSelection` and
+// history enablement are host-resolved options. The browser
 // `FindWidgetViewZone` becomes a terminal top inset: while the bar is visible
 // and `editor.find.addExtraSpaceOnTop` is enabled, the editor reserves the
 // bar's 1-2 rows above line 1 and shifts text/hit testing below it.
@@ -97,6 +97,8 @@ pub const FindWidget = struct {
     replace_history_index: ?usize = null,
     find_on_type: bool = true,
     close_on_result: bool = false,
+    history_enabled: bool = true,
+    replace_history_enabled: bool = true,
     theme: Theme = Theme.dark(),
 
     focused: bool = false,
@@ -171,6 +173,7 @@ pub const FindWidget = struct {
     }
 
     fn recordHistory(self: *FindWidget) void {
+        if (!self.history_enabled) return;
         const value = self.find_input.getValue();
         if (value.len == 0) return;
         if (self.history.items.len > 0 and
@@ -191,6 +194,7 @@ pub const FindWidget = struct {
     }
 
     fn navigateHistory(self: *FindWidget, backwards: bool) bool {
+        if (!self.history_enabled) return false;
         if (self.history.items.len == 0) return false;
         var index = self.history_index orelse self.history.items.len;
         if (backwards) {
@@ -244,6 +248,7 @@ pub const FindWidget = struct {
     }
 
     fn recordReplaceHistory(self: *FindWidget) void {
+        if (!self.replace_history_enabled) return;
         const value = self.replace_input.getValue();
         if (value.len == 0) return;
         if (self.replace_history.items.len > 0 and
@@ -264,6 +269,7 @@ pub const FindWidget = struct {
     }
 
     fn navigateReplaceHistory(self: *FindWidget, backwards: bool) bool {
+        if (!self.replace_history_enabled) return false;
         if (self.replace_history.items.len == 0) return false;
         var index = self.replace_history_index orelse self.replace_history.items.len;
         if (backwards) {
@@ -302,6 +308,11 @@ pub const FindWidget = struct {
 
     pub fn setCloseOnResult(self: *FindWidget, enabled: bool) void {
         self.close_on_result = enabled;
+    }
+
+    pub fn setHistorySettings(self: *FindWidget, find_enabled: bool, replace_enabled: bool) void {
+        self.history_enabled = find_enabled;
+        self.replace_history_enabled = replace_enabled;
     }
 
     fn finishNavigation(self: *FindWidget) void {

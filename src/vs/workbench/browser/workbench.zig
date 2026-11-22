@@ -4585,6 +4585,15 @@ pub const Workbench = struct {
         };
     }
 
+    fn findHistoryEnabled(self: *Workbench, key: []const u8) bool {
+        const configuration = self.configuration orelse return true;
+        const value = configuration.getValue(key, .{}) orelse return true;
+        return switch (value.*) {
+            .string => |text| !std.mem.eql(u8, text, "never"),
+            else => true,
+        };
+    }
+
     fn findOnType(self: *Workbench) bool {
         return self.findBoolSetting("editor.find.findOnType", true);
     }
@@ -8675,6 +8684,10 @@ pub const Workbench = struct {
                 widget.setCloseOnResult(self.findCloseOnResult());
                 controllers.find.setSeedSearchStringFromSelection(self.findSeedSearchStringFromSelection());
                 controllers.find.setAutoFindInSelection(self.findAutoFindInSelection());
+                widget.setHistorySettings(
+                    self.findHistoryEnabled("editor.find.history"),
+                    self.findHistoryEnabled("editor.find.replaceHistory"),
+                );
                 controllers.find.state.loop = self.findLoop();
             }
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
