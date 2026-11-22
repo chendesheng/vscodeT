@@ -564,7 +564,8 @@ console API for raw mode, sizing and input polling.
   browser chevron/codicon is `>`, the file icon theme is the Explorer's Nerd Font
   file icon, the tree picker is the existing quick pick, and overflow clips
   leading segments behind an ellipsis instead of a horizontal scrollbar. The
-  editor-type dropdown, breadcrumb drag-and-drop, tab context menus/actions
+  editor-type dropdown, breadcrumb drag-and-drop and outline sibling picker,
+  tab context menus/actions
   toolbar and the symbol-kind filters are not ported.
 - A terminal Explorer sidebar (`src/vs/workbench/contrib/files/browser/views/explorerView.zig`) sits left of the editor
   area over the ported `ExplorerModel`
