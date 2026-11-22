@@ -879,8 +879,12 @@ console API for raw mode, sizing and input polling.
   SCM container. `src/vs/workbench/contrib/scm/browser/scmHistory.zig` ports the
   swimlane/color/reference/view-model generation, and `scmHistoryViewPane.zig`
   renders it on the `ui` DOM: one cell per swimlane, commit subjects/authors,
-  ref badges, `●`/`◉`/`◎`/`◌` circles and `│`/`╱`/`╲`/`─` lanes. Commits start
-  collapsed; expanding shows changed files in list or compressed tree mode;
+  ref badges, `●`/`◉`/`◎`/`◌` circles and orthogonal
+  `│`/`─`/`╮`/`╭`/`╯`/`╰`/`┼` lanes (no diagonals; the terminal adaptation
+  follows lazygit's cell-connection model). Lane/edge colors are keyed to the
+  swimlane column (`scmGraph.foreground1..5`), including the commit circles, so
+  a lane and its nodes match and a column keeps one color even when swimlanes
+  shift. Commits start collapsed; expanding shows changed files in list or compressed tree mode;
   `Enter` opens a parent↔commit diff and clicking the `Load More…` row pages
   older commits in. `scm.graph.pageSize` (50),
   `scm.graph.pageOnScroll` (true), `scm.graph.badges` (`filter`),
