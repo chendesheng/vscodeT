@@ -50,6 +50,12 @@ pub const SmallImmutableSet = struct {
         return true;
     }
 
+    pub fn count(self: SmallImmutableSet) usize {
+        var result: usize = 0;
+        for (self.words) |word| result += @popCount(word);
+        return result;
+    }
+
     pub fn eql(self: SmallImmutableSet, other: SmallImmutableSet) bool {
         return std.mem.eql(u64, &self.words, &other.words);
     }

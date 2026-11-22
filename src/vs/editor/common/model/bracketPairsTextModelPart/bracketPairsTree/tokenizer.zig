@@ -230,6 +230,14 @@ pub const Tokenizer = struct {
                 const hasTokens = lineTokens.getCount() > 0;
                 if (hasTokens) {
                     while (tokenIndex + 1 < lineTokens.getCount() and lineTokens.getEndOffset(tokenIndex) <= pos) tokenIndex += 1;
+                    // Upstream merges adjacent runs with identical metadata:
+                    // identifiers are often split into several tokens, and a
+                    // word bracket such as `begin` must match across them.
+                    while (tokenIndex + 1 < lineTokens.getCount() and
+                        lineTokens.getMetadata(tokenIndex) == lineTokens.getMetadata(tokenIndex + 1))
+                    {
+                        tokenIndex += 1;
+                    }
                 }
                 const tokenLanguage = if (hasTokens) lineTokens.getLanguageId(tokenIndex) else self.fallbackLanguage;
                 const language = if (self.languageService.getLanguageConfiguration(tokenLanguage) != null) tokenLanguage else self.fallbackLanguage;
