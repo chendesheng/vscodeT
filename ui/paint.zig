@@ -399,7 +399,10 @@ pub fn drawText(
     const clip_right = @min(grid.cols, cell.snap(clip.right()));
     if (clip_left >= clip_right) return;
 
-    var column = cell.snap(x);
+    // Scrolled content can sit at negative x (the scroll viewport clips it).
+    // Keep column signed until the clip test so the skipped glyphs keep their
+    // measured width instead of collapsing to column zero.
+    var column: i64 = @intFromFloat(@round(x));
     var offset: usize = 0;
     while (offset < text.len) {
         // Fast path for printable ASCII, which is the overwhelming case for
@@ -409,8 +412,8 @@ pub fn drawText(
             offset += 1;
             if (column >= clip_right) break;
             if (column >= clip_left) {
-                const cell_paint = if (keep_background) keepBackground(grid, column, row, paint) else paint;
-                grid.putCodepoint(column, row, byte, 1, cell_paint);
+                const cell_paint = if (keep_background) keepBackground(grid, @intCast(column), row, paint) else paint;
+                grid.putCodepoint(@intCast(column), row, byte, 1, cell_paint);
             }
             column += 1;
             continue;
@@ -420,24 +423,28 @@ pub fn drawText(
         offset += decoded.len;
 
         if (decoded.cp == '\t') {
-            const next = dom.nextTabStop(column, doc.tab_size);
-            while (column < next and column < clip_right) : (column += 1) {
-                if (column >= clip_left) {
-                    const cell_paint = if (keep_background) keepBackground(grid, column, row, paint) else paint;
-                    grid.putSpace(column, row, cell_paint);
+            const tab_size: i64 = @intCast(@max(doc.tab_size, 1));
+            const next: i64 = if (column < 0)
+                @divFloor(column, tab_size) * tab_size + tab_size
+            else
+                @intCast(dom.nextTabStop(@intCast(column), doc.tab_size));
+            while (column < next) : (column += 1) {
+                if (column >= clip_left and column < clip_right) {
+                    const cell_paint = if (keep_background) keepBackground(grid, @intCast(column), row, paint) else paint;
+                    grid.putSpace(@intCast(column), row, cell_paint);
                 }
             }
             continue;
         }
         if (decoded.cp < 0x20 or decoded.cp == 0x7f) continue;
 
-        const width = doc.measure_width(decoded.cp);
+        const width: i64 = doc.measure_width(decoded.cp);
         if (width == 0) continue;
         if (column >= clip_right) break;
         if (column + width > clip_right) break;
         if (column >= clip_left) {
-            const cell_paint = if (keep_background) keepBackground(grid, column, row, paint) else paint;
-            grid.putCodepoint(column, row, decoded.cp, width, cell_paint);
+            const cell_paint = if (keep_background) keepBackground(grid, @intCast(column), row, paint) else paint;
+            grid.putCodepoint(@intCast(column), row, decoded.cp, @intCast(width), cell_paint);
         }
         column += width;
     }

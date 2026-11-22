@@ -1331,8 +1331,10 @@ fn handlePreviewKey(editor: *Editor, view: *View, event: input.KeyEvent) ?bool {
 fn handlePreviewMouse(editor: *Editor, view: *View, event: ui.MouseEvent) bool {
     if (event.kind != .wheel or event.default_prevented) return false;
     if (event.y >= editor.textHeight()) return false;
-    if (event.delta_y == 0) return false;
-    if (!editor.scrollViewLines(event.delta_y)) return false;
+    var changed = false;
+    if (event.delta_x != 0) changed = editor.scrollColumns(event.delta_x) or changed;
+    if (event.delta_y != 0) changed = editor.scrollViewLines(event.delta_y) or changed;
+    if (!changed) return false;
     view.refresh() catch return false;
     return true;
 }

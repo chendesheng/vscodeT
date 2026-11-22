@@ -75,6 +75,7 @@ pub const ViewContentWidgets = struct {
         text_height: usize,
         gutter: usize,
         tab_size: usize,
+        scroll_left: usize,
     ) !void {
         self.entries.clearRetainingCapacity();
         if (text_right == 0) return;
@@ -105,7 +106,15 @@ pub const ViewContentWidgets = struct {
                 data.minColumn - 1,
             );
 
-            const left = @min(gutter + anchor_cell, text_right -| width);
+            const anchor_x = @as(isize, @intCast(gutter + anchor_cell)) -
+                @as(isize, @intCast(scroll_left));
+            const max_left = text_right -| width;
+            const left: usize = if (anchor_x <= @as(isize, @intCast(gutter)))
+                gutter
+            else if (anchor_x >= @as(isize, @intCast(max_left)))
+                @max(gutter, max_left)
+            else
+                @intCast(anchor_x);
             var widget_top: usize = switch (widget_position.preference) {
                 .below => row + 1,
                 .above => row -| height,
@@ -226,7 +235,7 @@ test "content widgets place below the anchor and clamp to the text area" {
     var part = ViewContentWidgets.init(allocator);
     defer part.deinit();
     try part.add(widget.interface());
-    try part.render(&doc, root, editor, 30, editor.textAreaRight(), editor.textHeight(), editor.gutterWidth(), 4);
+    try part.render(&doc, root, editor, 30, editor.textAreaRight(), editor.textHeight(), editor.gutterWidth(), 4, 0);
     try testing.expectEqual(@as(usize, 1), part.entries.items.len);
     try testing.expectEqual(@as(usize, editor.gutterWidth()), part.entries.items[0].left);
     try testing.expectEqual(@as(usize, 2), part.entries.items[0].top);
@@ -234,7 +243,7 @@ test "content widgets place below the anchor and clamp to the text area" {
     try testing.expectEqual(@as(usize, 2), part.entries.items[0].height);
 
     widget.preference = .above;
-    try part.render(&doc, root, editor, 30, editor.textAreaRight(), editor.textHeight(), editor.gutterWidth(), 4);
+    try part.render(&doc, root, editor, 30, editor.textAreaRight(), editor.textHeight(), editor.gutterWidth(), 4, 0);
     try testing.expectEqual(@as(usize, 0), part.entries.items[0].top);
 }
 
@@ -308,7 +317,7 @@ test "content widgets preserve insertion order and restore focus" {
     defer part.deinit();
     try part.add(first.interface());
     try part.add(second.interface());
-    try part.render(&doc, root, editor, 30, editor.textAreaRight(), editor.textHeight(), editor.gutterWidth(), 4);
+    try part.render(&doc, root, editor, 30, editor.textAreaRight(), editor.textHeight(), editor.gutterWidth(), 4, 0);
 
     try testing.expectEqual(@as(usize, 2), part.entries.items.len);
     try testing.expectEqual(@as(usize, 1), part.entries.items[0].top);

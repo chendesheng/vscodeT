@@ -26,11 +26,13 @@
 const std = @import("std");
 const cell = @import("cell.zig");
 const dom = @import("dom.zig");
+const scroll = @import("scroll.zig");
 const style_mod = @import("style.zig");
 
 const Allocator = std.mem.Allocator;
 const Color = style_mod.Color;
 const Document = dom.Document;
+const ScrollWindow = scroll.ScrollWindow;
 const event_mod = @import("event.zig");
 const Key = event_mod.Key;
 const KeyEvent = event_mod.KeyEvent;
@@ -53,8 +55,11 @@ pub const InputBox = struct {
     /// The fixed end of a selection while the caret moves. Equal to `cursor`
     /// when the selection is collapsed.
     anchor: usize = 0,
-    /// First visible byte, advanced when the caret would leave the box.
+    /// First visible byte, derived from `scroll_x` for the current build.
     view_start: usize = 0,
+    /// Horizontal window in whole terminal cells. The byte offset above maps
+    /// the cell offset onto a codepoint boundary for rendering and hit tests.
+    scroll_x: ScrollWindow = .{},
     focused: bool = false,
     /// A disabled box rejects keys, is not focusable and paints dim text.
     enabled: bool = true,
@@ -133,6 +138,7 @@ pub const InputBox = struct {
         self.cursor = self.value.items.len;
         self.anchor = self.cursor;
         self.view_start = 0;
+        self.scroll_x.offset = 0;
         self.follow_caret = true;
         self.last_edit_group = .none;
         self.notifyChange();
@@ -314,6 +320,7 @@ pub const InputBox = struct {
                 });
             }
             self.view_start = 0;
+            self.scroll_x.offset = 0;
             self.last_cursor = self.cursor;
             self.last_width = width;
             return root;
@@ -321,6 +328,7 @@ pub const InputBox = struct {
 
         if (!self.focused or !self.enabled) {
             self.view_start = 0;
+            self.scroll_x.offset = 0;
             self.follow_caret = true;
             self.last_cursor = self.cursor;
             self.last_width = width;
@@ -331,6 +339,10 @@ pub const InputBox = struct {
         self.clampState();
         const len = self.value.items.len;
 
+        // Hosts and tests can write `view_start` directly; derive the cell
+        // window before caret-follow so the current scroll position is honored.
+        self.syncScrollToViewStart(doc);
+
         const caret_changed = self.cursor != self.last_cursor;
         const width_changed = width != self.last_width;
         if (width > 0 and (self.follow_caret or caret_changed or width_changed)) {
@@ -340,6 +352,7 @@ pub const InputBox = struct {
         self.last_cursor = self.cursor;
         self.last_width = width;
 
+        self.syncScrollToViewStart(doc);
         const start = self.view_start;
         if (self.hasSelection()) {
             const visible_start = @max(start, self.selectionStart());
@@ -448,35 +461,34 @@ pub const InputBox = struct {
     /// values move the window right. Returns whether the window moved.
     pub fn scrollBy(self: *InputBox, doc: *Document, delta_cells: isize) bool {
         if (delta_cells == 0 or self.value.items.len == 0) return false;
-        const len = self.value.items.len;
         const before = self.view_start;
-        var start = self.clampBoundary(@min(self.view_start, len));
-
-        if (delta_cells > 0) {
-            const target: usize = @intCast(delta_cells);
-            var cells: usize = 0;
-            while (start < len and cells < target) {
-                const next = self.nextBoundaryAt(start);
-                cells += doc.measureText(self.value.items[start..next]);
-                start = next;
-            }
-        } else {
-            const magnitude: usize = if (delta_cells == std.math.minInt(isize))
-                std.math.maxInt(usize)
-            else
-                @intCast(-delta_cells);
-            var cells: usize = 0;
-            while (start > 0 and cells < magnitude) {
-                const previous = self.previousBoundary(start);
-                cells += doc.measureText(self.value.items[previous..start]);
-                start = previous;
-            }
-        }
-
-        if (start == before) return false;
-        self.view_start = start;
+        self.scroll_x.setExtents(0, doc.measureText(self.value.items));
+        const delta: i32 = @intCast(std.math.clamp(
+            delta_cells,
+            @as(isize, std.math.minInt(i32)),
+            @as(isize, std.math.maxInt(i32)),
+        ));
+        _ = self.scroll_x.scrollBy(delta);
+        self.syncViewStartToScroll(doc);
         self.follow_caret = false;
-        return true;
+        self.last_edit_group = .none;
+        return before != self.view_start;
+    }
+
+    /// First visible cell of the horizontal window.
+    pub fn scrollLeft(self: *const InputBox) usize {
+        return self.scroll_x.offset;
+    }
+
+    /// Sets the horizontal window in cells, clamped to the value width.
+    pub fn scrollTo(self: *InputBox, doc: *Document, cell_offset: usize) bool {
+        const before = self.view_start;
+        self.scroll_x.setExtents(0, doc.measureText(self.value.items));
+        _ = self.scroll_x.scrollTo(cell_offset);
+        self.syncViewStartToScroll(doc);
+        self.follow_caret = false;
+        self.last_edit_group = .none;
+        return before != self.view_start;
     }
 
     fn baseStyle(self: *const InputBox) style_mod.Style {
@@ -728,37 +740,66 @@ pub const InputBox = struct {
 
     fn ensureCaretVisible(self: *InputBox, doc: *Document, width: usize) void {
         if (width == 0) return;
-        const len = self.value.items.len;
-        var start = self.clampBoundary(@min(self.view_start, len));
-        if (self.cursor < start) start = self.cursor;
-        while (start < self.cursor and
-            doc.measureText(self.value.items[start..self.cursor]) >= width)
-        {
-            start = self.nextBoundaryAt(start);
-        }
-        self.view_start = start;
+        const total = doc.measureText(self.value.items);
+        const caret = doc.measureText(self.value.items[0..self.cursor]);
+        // `scroll_x` deliberately has no viewport when the host has not built
+        // the box yet; use the current width for the ensure-only window.
+        var window = ScrollWindow.init(width, total + 1, self.scroll_x.offset);
+        _ = window.ensureVisible(caret, caret + 1, 0);
+        self.scroll_x.setExtents(0, total);
+        self.scroll_x.offset = @min(window.offset, total);
+        self.syncViewStartToScroll(doc);
     }
 
     /// Byte caret for a visible cell offset. Tabs never reach the value (control
     /// bytes are filtered), but wide characters still need the nearest edge.
     fn caretAtCell(self: *const InputBox, doc: *Document, target: usize) usize {
-        const start = if (self.focused)
-            self.clampBoundary(@min(self.view_start, self.value.items.len))
-        else
-            0;
-        if (target == 0) return @min(start, self.value.items.len);
+        const absolute = if (self.focused) self.scroll_x.offset +| target else target;
+        if (absolute == 0) return 0;
         var column: usize = 0;
-        var offset = @min(start, self.value.items.len);
-        while (offset < self.value.items.len and column < target) {
+        var offset: usize = 0;
+        while (offset < self.value.items.len and column < absolute) {
             const next = self.nextBoundaryAt(offset);
             const width = doc.measureText(self.value.items[offset..next]);
-            if (target < column + width) {
-                return if (width > 1 and target > column) next else offset;
+            if (absolute < column + width) {
+                return if (width > 1 and absolute > column) next else offset;
             }
             column += width;
             offset = next;
         }
         return offset;
+    }
+
+    /// Byte offset at the start of the cell containing `target` (floor).
+    fn boundaryAtCell(self: *const InputBox, doc: *Document, target: usize) usize {
+        var column: usize = 0;
+        var offset: usize = 0;
+        while (offset < self.value.items.len) {
+            const next = self.nextBoundaryAt(offset);
+            const width = doc.measureText(self.value.items[offset..next]);
+            if (column + width > target) return offset;
+            column += width;
+            offset = next;
+        }
+        return self.value.items.len;
+    }
+
+    /// Trusts a directly assigned `view_start` (hosts and tests use it) and
+    /// re-derives the cell window from that codepoint boundary.
+    fn syncScrollToViewStart(self: *InputBox, doc: *Document) void {
+        const start = self.clampBoundary(@min(self.view_start, self.value.items.len));
+        self.view_start = start;
+        self.scroll_x.setExtents(0, doc.measureText(self.value.items));
+        self.scroll_x.offset = doc.measureText(self.value.items[0..start]);
+    }
+
+    fn syncViewStartToScroll(self: *InputBox, doc: *Document) void {
+        const total = doc.measureText(self.value.items);
+        self.scroll_x.setExtents(0, total);
+        self.view_start = self.boundaryAtCell(doc, self.scroll_x.offset);
+        // A wide cell can make the cell offset fall inside a codepoint. Snap
+        // the public offset back to the rendered boundary.
+        self.scroll_x.offset = doc.measureText(self.value.items[0..self.view_start]);
     }
 
     /// Shell-like word boundary: skip spaces, then non-spaces.

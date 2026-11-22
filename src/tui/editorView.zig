@@ -545,6 +545,15 @@ pub const View = struct {
     document_ready: bool = false,
     root_node: ?*ui.Node = null,
     content_root: ?*ui.Node = null,
+    /// Horizontal viewport for the rendered line content. The UI library owns
+    /// the clip/translate nodes; the editor mirrors ViewLayout's scroll offset
+    /// into it each frame. Vertical scrolling stays the view-model line window.
+    line_scroll: ui.ScrollView = undefined,
+    line_scroll_ready: bool = false,
+    line_scroll_applied: usize = 0,
+    line_scroll_width: usize = 0,
+    line_scroll_text_width: usize = 0,
+    line_scroll_text_height: usize = 0,
     /// Content layer for ported block decorations. It sits before the line
     /// nodes in `content_root`, so block backgrounds/borders paint under text.
     block_root: ?*ui.Node = null,
@@ -1082,6 +1091,7 @@ pub const View = struct {
             .view_line_count = self.editor.viewLineCount(),
             .scrollbar_width = self.scrollbar_width,
             .top_inset = self.top_inset_rows,
+            .scroll_left = self.editor.scrollLeft(),
         };
     }
 
@@ -1115,13 +1125,43 @@ pub const View = struct {
 
     fn positionAtCell(self: *const View, view_line: usize, x: usize) !Position {
         const gutter = self.editor.gutterWidth();
-        return self.editor.positionAtViewPoint(view_line, x -| gutter);
+        const signed: isize = @as(isize, @intCast(x)) - @as(isize, @intCast(gutter)) +
+            @as(isize, @intCast(self.editor.scrollLeft()));
+        const offset: usize = if (signed <= 0) 0 else @intCast(signed);
+        return self.editor.positionAtViewPoint(view_line, offset);
     }
 
     fn selectFrom(self: *View, anchor: Position, position: Position) !void {
         try self.editor.setSelections(&[_]Selection{
             Selection.init(anchor.lineNumber, anchor.column, position.lineNumber, position.column),
         });
+    }
+
+    /// Mirrors the editor's horizontal scroll range into the UI scroll view.
+    /// Returns the whole-cell offset actually applied by the view.
+    fn syncLineScroll(self: *View, gutter: usize, text_width: usize, text_height: usize) !usize {
+        if (!self.line_scroll_ready) return 0;
+        const scroll_width = @max(
+            text_width,
+            @as(usize, @intFromFloat(self.editor.viewLayout().getScrollWidth())),
+        );
+        const geometry_changed = text_width != self.line_scroll_text_width or
+            text_height != self.line_scroll_text_height or
+            scroll_width != self.line_scroll_width;
+        self.line_scroll.setViewportRect(@floatFromInt(gutter), 0, text_width, text_height);
+        self.line_scroll.setContentSize(scroll_width, text_height);
+        const wanted: usize = @intFromFloat(self.editor.viewLayout().getCurrentScrollLeft());
+        _ = self.line_scroll.scrollToX(wanted);
+        self.line_scroll_width = scroll_width;
+        self.line_scroll_text_width = text_width;
+        self.line_scroll_text_height = text_height;
+        const target = self.line_scroll.scrollLeft();
+        if ((geometry_changed or target != self.line_scroll_applied) and !self.needs_full_box_rebuild) {
+            self.surface.box_tree.markFullRebuild();
+            self.needs_full_box_rebuild = true;
+        }
+        self.line_scroll_applied = target;
+        return target;
     }
 
     /// Brings the ui surface and document in step with the editor viewport.
@@ -1738,6 +1778,7 @@ pub const View = struct {
 
         const doc = self.surface.document();
         if (!self.document_ready) {
+            self.line_scroll_ready = false;
             // Drop the rendered window without touching the old nodes: the
             // whole document is about to be cleared.
             self.terminal_view_host.viewRef().getViewLines().flushWindow();
@@ -1779,6 +1820,22 @@ pub const View = struct {
             });
             content_root.setPointerEvents(false);
             _ = try root.appendChild(content_root);
+
+            self.line_scroll_applied = 0;
+            self.line_scroll_width = 0;
+            self.line_scroll_text_width = 0;
+            self.line_scroll_text_height = 0;
+            try self.line_scroll.init(doc, content_root, .{
+                .width = 1,
+                .height = 1,
+                .content_width = 1,
+                .content_height = 1,
+                .scrollbar = false,
+                .horizontal_scrollbar = false,
+                .on_scroll = .{ .context = self, .callback = lineScrollCallback },
+            });
+            self.line_scroll_ready = true;
+
             const chrome_root = try doc.createElement(.div);
             chrome_root.setStyle(.{
                 .position = .absolute,
@@ -1808,7 +1865,7 @@ pub const View = struct {
             self.needs_full_box_rebuild = true;
             self.terminal_view_host.viewRef().getViewLines().setDomHost(
                 doc,
-                content_root,
+                self.line_scroll.contentNode(),
                 self,
                 viewLineDisposed,
             );
@@ -1838,6 +1895,11 @@ pub const View = struct {
         if (top <= total) {
             try self.terminal_view_host.renderViewport();
         }
+        const scroll_left = try self.syncLineScroll(gutter, text_width, text_height);
+        const content_scroll_width = @max(
+            text_width,
+            @as(usize, @intFromFloat(editor.viewLayout().getScrollWidth())),
+        );
 
         var guide_counts: []usize = &.{};
         var guide_start_model_line: usize = 0;
@@ -1869,7 +1931,6 @@ pub const View = struct {
                 var level: usize = 0;
                 while (level < guide_count) : (level += 1) {
                     const guide_col = level * indent_size;
-                    if (guide_col >= text_width) break;
                     if (indent_width >= 0 and guide_col >= @as(usize, @intCast(indent_width))) break;
                     try guide_specs.append(.{ .row = row, .col = guide_col, .color = rgbOf(self.indentGuideColors(level).inactive) });
                 }
@@ -1933,7 +1994,6 @@ pub const View = struct {
                         defer content.deinit();
                         const indent_width = computeIndentLevel(content.items, tab_size);
                         for (line_guides.items) |guide| {
-                            if (guide.column >= text_width) continue;
                             if (indent_width >= 0 and guide.column >= @as(usize, @intCast(indent_width))) continue;
                             const guide_color = self.bracketGuideColors(guide.level, guide.active) orelse continue;
                             try guide_specs.append(.{
@@ -1953,7 +2013,7 @@ pub const View = struct {
         const ruler_columns = try rulers_mod.columns(
             self.allocator,
             self.terminal_view_host.options.get(.rulers),
-            text_width,
+            content_scroll_width,
         );
         defer self.allocator.free(ruler_columns);
         if (ruler_columns.len > 0) {
@@ -1978,7 +2038,7 @@ pub const View = struct {
             }
         }
 
-        const content_root = self.content_root orelse return error.DocumentRootMissing;
+        _ = self.content_root orelse return error.DocumentRootMissing;
         const block_root = self.block_root orelse return error.DocumentRootMissing;
         const gutter_root = self.gutter_root orelse return error.DocumentRootMissing;
         const scrollbar_root = self.scrollbar_root orelse return error.DocumentRootMissing;
@@ -2011,14 +2071,17 @@ pub const View = struct {
                 var content = editor.model.getLineContent(cursor_model_line) catch null;
                 if (content) |*owned| {
                     defer owned.deinit();
-                    self.cursor_row = cursor.lineNumber - top;
-                    self.cursor_col = gutter + visibleOffset(
+                    const visible = visibleOffset(
                         owned.items,
                         cursor.column,
                         tab_size,
                         data.startVisibleColumn,
                         data.minColumn - 1,
                     );
+                    if (visible >= scroll_left and visible < scroll_left + text_width) {
+                        self.cursor_row = cursor.lineNumber - top;
+                        self.cursor_col = gutter + (visible - scroll_left);
+                    }
                 }
             }
         }
@@ -2053,9 +2116,9 @@ pub const View = struct {
         try self.paintBlocks(doc, block_root, chrome_host_ptr, gutter, text_width, text_height);
         try self.terminal_view_host.paintViewport(.{
             .doc = doc,
-            .root = content_root,
-            .left_cells = gutter,
-            .width_cells = text_width,
+            .root = self.line_scroll.contentNode(),
+            .left_cells = 0,
+            .width_cells = content_scroll_width,
             .top_row = 0,
             .guides = paint_guides.items,
             .top = top,
@@ -2086,6 +2149,7 @@ pub const View = struct {
             .text_right = text_right,
             .gutter = gutter,
             .tab_size = tab_size,
+            .scroll_left = scroll_left,
             .scrollbar_width = self.scrollbar_width,
             .line_numbers = &self.terminal_view_host.line_numbers,
             .line_decorations = &self.terminal_view_host.line_decorations,
@@ -2197,6 +2261,13 @@ pub const View = struct {
 /// text instead.
 fn overviewRulerWidth(editor: *const Editor) usize {
     return Editor.overviewRulerWidthFor(editor.screen_width, editor.gutterWidth());
+}
+
+fn lineScrollCallback(context: ?*anyopaque, left: usize, top: usize) void {
+    _ = top;
+    const self: *View = @ptrCast(@alignCast(context orelse return));
+    _ = self.editor.setScrollLeft(left);
+    self.invalidate();
 }
 
 fn viewLineDisposed(context: *anyopaque, line: *ViewLine) void {
@@ -2777,6 +2848,80 @@ test "View: CJK and tab runs keep the caret on the right cell" {
     // The caret is at column 1, on the first cell after the gutter.
     const cursor = view.cursorCell().?;
     try std.testing.expectEqual(editor.gutterWidth(), cursor.col);
+}
+
+test "View: wordWrap off scrolls long lines through the UI scroll view" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "0123456789abcdefghijklmnopqrstuvwxyz",
+        "test.txt",
+        20,
+        3,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.setWordWrapOptions(.off, 80, .Same, false);
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    try std.testing.expectEqual(@as(usize, 1), editor.viewLineCount());
+    const gutter = editor.gutterWidth();
+    const grid = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '0'), grid.cluster[grid.index(gutter, 0)]);
+
+    try std.testing.expect(editor.setScrollLeft(5));
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    const scrolled = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '5'), scrolled.cluster[scrolled.index(gutter, 0)]);
+    // The gutter stays fixed while the text scrolls.
+    const row = try rowText(view, allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "1") != null);
+
+    try std.testing.expect(editor.setScrollLeft(0));
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    const reset = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '0'), reset.cluster[reset.index(gutter, 0)]);
+
+    // The UI scroll view consumes the horizontal wheel and mirrors its offset
+    // back into the editor's ViewLayout through the callback.
+    var wheel = ui.MouseEvent{ .kind = .wheel, .x = gutter + 1, .y = 0, .delta_x = 4 };
+    _ = try view.dispatchMouse(&wheel);
+    try std.testing.expectEqual(@as(usize, 4), editor.scrollLeft());
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    const wheeled = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '4'), wheeled.cluster[wheeled.index(gutter, 0)]);
+
+    // Clicking a scrolled cell maps through the same offset.
+    var down = ui.MouseEvent{ .kind = .down, .x = gutter, .y = 0, .button = .left };
+    _ = try view.dispatchMouse(&down);
+    try std.testing.expectEqual(@as(usize, 5), editor.modelCursorPosition().column);
+
+    // Moving the caret to the end reveals the far side of the long line.
+    try editor.setCursorPosition(Position.init(1, 36));
+    try std.testing.expect(editor.scrollLeft() > 0);
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    const tail = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, 'o'), tail.cluster[tail.index(gutter, 0)]);
+
+    try editor.setCursorPosition(Position.init(1, 1));
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    const head = view.surface.grid();
+    try std.testing.expectEqual(@as(u32, '0'), head.cluster[head.index(gutter, 0)]);
 }
 
 test "View: wrapped continuation gets a gutter arrow" {
@@ -3804,10 +3949,10 @@ test "View: scrolling reuses the visible line DOM nodes" {
         perf.line_translated,
     );
 
-    // The content root holds exactly the windowed line nodes: the leaving line
-    // was unlinked and the entering line got a node, so the DOM count stays at
-    // the viewport size instead of growing with the document.
-    const content_root = view.content_root orelse return error.TestUnexpectedResult;
+    // The UI scroll view's content node holds exactly the windowed line nodes:
+    // the leaving line was unlinked and the entering line got a node, so the
+    // DOM count stays at the viewport size instead of growing with the document.
+    const content_root = view.line_scroll.contentNode();
     var child_count: usize = 0;
     var child = content_root.first_child;
     while (child) |current| : (child = current.next) child_count += 1;

@@ -59,6 +59,7 @@ pub const StickyScrollHost = struct {
             .view_line_for_model_line = viewLineForModelLine,
             .is_model_line_visible = isModelLineVisible,
             .available_width = availableWidth,
+            .scroll_left = scrollLeft,
             .request_frame = requestFrame,
             .reveal_position = revealPosition,
             .reveal_line_centered = revealLineCentered,
@@ -128,6 +129,10 @@ pub const StickyScrollHost = struct {
 
     fn gutterWidth(context: *anyopaque) usize {
         return selfFrom(context).view.editor.gutterWidth();
+    }
+
+    fn scrollLeft(context: *anyopaque) usize {
+        return selfFrom(context).view.editor.scrollLeft();
     }
 
     fn foldCellColumn(context: *anyopaque) usize {

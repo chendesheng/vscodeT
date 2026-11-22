@@ -112,6 +112,8 @@ pub const Host = struct {
     view_line_for_model_line: *const fn (context: *anyopaque, model_line: usize) usize,
     is_model_line_visible: *const fn (context: *anyopaque, model_line: usize) bool,
     available_width: *const fn (context: *anyopaque, cols: usize) usize,
+    /// Current horizontal scroll offset of the editor, in cells.
+    scroll_left: *const fn (context: *anyopaque) usize,
 
     request_frame: *const fn (context: *anyopaque) void,
     reveal_position: *const fn (context: *anyopaque, position: Position) void,
@@ -432,8 +434,39 @@ pub const StickyScrollWidget = struct {
         }
 
         if (content_width > 0) {
-            const content = try self.paintContent(doc, model_line, gutter, content_width, background);
-            if (content) |node| _ = try row.appendChild(node);
+            const host = self.host;
+            const scroll_left = if (host.options(host.context).scroll_with_editor)
+                host.scroll_left(host.context)
+            else
+                0;
+            if (scroll_left == 0) {
+                const content = try self.paintContent(doc, model_line, gutter, content_width, background);
+                if (content) |node| _ = try row.appendChild(node);
+            } else {
+                // Upstream shifts the sticky lines layer by `-scrollLeft`
+                // (`updateScrollLeftPosition`); the gutter stays fixed.
+                const clip = try doc.createElement(.div);
+                clip.setStyle(.{
+                    .position = .absolute,
+                    .left = .{ .cells = @floatFromInt(gutter) },
+                    .top = .{ .cells = 0 },
+                    .width = .{ .cells = @floatFromInt(content_width) },
+                    .height = .{ .cells = 1 },
+                    .overflow = .hidden,
+                });
+                const layer = try doc.createElement(.div);
+                layer.setStyle(.{
+                    .position = .absolute,
+                    .left = .{ .cells = -@as(f64, @floatFromInt(scroll_left)) },
+                    .top = .{ .cells = 0 },
+                    .width = .{ .cells = @floatFromInt(content_width + scroll_left) },
+                    .height = .{ .cells = 1 },
+                });
+                const content = try self.paintContent(doc, model_line, 0, content_width + scroll_left, background);
+                if (content) |node| _ = try layer.appendChild(node);
+                _ = try clip.appendChild(layer);
+                _ = try row.appendChild(clip);
+            }
         }
 
         _ = try row.addEventListener(.{
