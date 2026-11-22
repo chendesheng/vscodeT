@@ -1009,7 +1009,8 @@ console API for raw mode, sizing and input polling.
   (`ui/inputbox.zig`) are in place, and the find bar is wired: Ctrl-F opens
   find (a single-line selection seeds the query), Ctrl-R opens the replace row,
   Enter/Shift-Enter go to the next/previous match, Escape closes, Tab switches
-  between the find and replace inputs, Alt-C/Alt-W/Alt-R toggle match case,
+  between the find and replace inputs, Up/Down recall previous find strings,
+  Alt-C/Alt-W/Alt-R toggle match case,
   whole word and regex, Alt-P toggles preserve case, Alt-L limits the search to
   the current selection(s), Alt-Enter selects all matches, and Ctrl-Alt-Enter
   replaces all. The bar shows clickable replace-toggle, previous, next, close,
@@ -1020,8 +1021,8 @@ console API for raw mode, sizing and input polling.
   defaults). While find is open, `editor.find.addExtraSpaceOnTop` reserves the
   bar's 1-2 rows above line 1 as a terminal find view zone, so the bar does not
   cover the first lines; the inset is fixed rather than adding scrollable space
-  above line 1. The browser sash, input history and accessibility tree
-  are not ported. The
+  above line 1. Find-input history is kept per widget. The browser sash and accessibility tree are not
+  ported. The
   find, search and quick-open inputs share the completed `InputBox` editing
   behavior: Shift selection, Ctrl-A, word-wise movement/deletion, undo/redo,
   mouse drag selection and caret-follow horizontal scrolling.

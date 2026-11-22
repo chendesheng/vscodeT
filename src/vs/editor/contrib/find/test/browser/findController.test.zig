@@ -616,3 +616,44 @@ test "FindController: addExtraSpaceOnTop controls the view-zone rows" {
     widget.setAddExtraSpaceOnTop(true);
     try std.testing.expectEqual(@as(usize, 2), widget.viewZoneRows());
 }
+
+test "FindController: Up/Down navigate find input history" {
+    const allocator = std.testing.allocator;
+    const editor = try createEditor(allocator);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    const controller = try FindController.init(allocator, editor, .{
+        .context = view,
+        .set = setDecorations,
+    });
+    defer controller.deinit();
+    try view.addOverlayWidget(controller.widget().interface());
+    try controller.open(false);
+
+    var alpha = ui.KeyEvent{ .key = .{ .text = "alpha" } };
+    try std.testing.expect(view.dispatchKey(&alpha));
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(view.dispatchKey(&enter));
+    try controller.widget().find_input.clear();
+
+    var beta = ui.KeyEvent{ .key = .{ .text = "beta" } };
+    try std.testing.expect(view.dispatchKey(&beta));
+    try std.testing.expect(view.dispatchKey(&enter));
+
+    try controller.widget().find_input.clear();
+    var up = ui.KeyEvent{ .key = .up };
+    try std.testing.expect(view.dispatchKey(&up));
+    try std.testing.expectEqualStrings("beta", controller.widget().find_input.getValue());
+    try std.testing.expect(view.dispatchKey(&up));
+    try std.testing.expectEqualStrings("alpha", controller.widget().find_input.getValue());
+
+    var down = ui.KeyEvent{ .key = .down };
+    try std.testing.expect(view.dispatchKey(&down));
+    try std.testing.expectEqualStrings("beta", controller.widget().find_input.getValue());
+    try std.testing.expect(view.dispatchKey(&down));
+    try std.testing.expectEqualStrings("", controller.widget().find_input.getValue());
+}
