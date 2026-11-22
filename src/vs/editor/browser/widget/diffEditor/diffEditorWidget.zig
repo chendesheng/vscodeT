@@ -10,8 +10,10 @@
 // keyboard-focusable (documented terminal simplification).
 //
 // Inline mode (`renderSideBySide: false`) interleaves unchanged, deleted and
-// inserted lines in one modified snapshot editor with whole-line decorations
-// and an inline line-number map. Not ported in this milestone: the accessible
+// inserted lines in one modified snapshot editor with whole-line, inner
+// character and moved-block decorations plus an inline line-number map. It
+// also supports hide-unchanged folding over the interleaved rows. Not ported
+// in this milestone: the accessible
 // diff viewer, editing either side, and the combined two-lane overview ruler
 // (each pane keeps its own scrollbar markers). Moved-block detection is wired through
 // `state.moved_texts` into `movedOriginal`/`movedModified` block decorations.
@@ -53,12 +55,16 @@ const InlineDisplay = struct {
     kinds: []InlineKind = &.{},
     line_numbers: []?usize = &.{},
     change_starts: []usize = &.{},
+    original_rows: []?usize = &.{},
+    modified_rows: []?usize = &.{},
 
     fn deinit(self: *InlineDisplay, allocator: Allocator) void {
         if (self.text.len > 0) allocator.free(self.text);
         if (self.kinds.len > 0) allocator.free(self.kinds);
         if (self.line_numbers.len > 0) allocator.free(self.line_numbers);
         if (self.change_starts.len > 0) allocator.free(self.change_starts);
+        if (self.original_rows.len > 0) allocator.free(self.original_rows);
+        if (self.modified_rows.len > 0) allocator.free(self.modified_rows);
         self.* = .{};
     }
 };
@@ -77,6 +83,12 @@ fn buildInlineDisplay(
     defer numbers.deinit();
     var starts = try allocator.alloc(usize, mappings.len);
     errdefer allocator.free(starts);
+    const original_rows = try allocator.alloc(?usize, original.len);
+    errdefer allocator.free(original_rows);
+    @memset(original_rows, null);
+    const modified_rows = try allocator.alloc(?usize, modified.len);
+    errdefer allocator.free(modified_rows);
+    @memset(modified_rows, null);
 
     var original_cursor: usize = 1;
     var modified_cursor: usize = 1;
@@ -91,6 +103,8 @@ fn buildInlineDisplay(
             try lines.append(modified[line]);
             try kinds.append(.unchanged);
             try numbers.append(modified_cursor + index);
+            original_rows[original_cursor + index - 1] = lines.items.len;
+            modified_rows[modified_cursor + index - 1] = lines.items.len;
         }
         original_cursor += unchanged;
         modified_cursor += unchanged;
@@ -101,12 +115,14 @@ fn buildInlineDisplay(
             try lines.append(original[original_cursor + index - 1]);
             try kinds.append(.delete);
             try numbers.append(original_cursor + index);
+            original_rows[original_cursor + index - 1] = lines.items.len;
         }
         index = 0;
         while (index < change.modified.length()) : (index += 1) {
             try lines.append(modified[modified_cursor + index - 1]);
             try kinds.append(.insert);
             try numbers.append(modified_cursor + index);
+            modified_rows[modified_cursor + index - 1] = lines.items.len;
         }
         original_cursor = change.original.endLineNumberExclusive;
         modified_cursor = change.modified.endLineNumberExclusive;
@@ -118,6 +134,8 @@ fn buildInlineDisplay(
         try lines.append(modified[modified_cursor + index - 1]);
         try kinds.append(.unchanged);
         try numbers.append(modified_cursor + index);
+        original_rows[modified_cursor + index - 1] = lines.items.len;
+        modified_rows[modified_cursor + index - 1] = lines.items.len;
     }
 
     var text_len: usize = 0;
@@ -139,7 +157,23 @@ fn buildInlineDisplay(
         .kinds = try kinds.toOwnedSlice(),
         .line_numbers = try numbers.toOwnedSlice(),
         .change_starts = starts,
+        .original_rows = original_rows,
+        .modified_rows = modified_rows,
     };
+}
+
+fn inlineMovedOptions(class_name: []const u8) ModelDecorationOptions {
+    var options = ModelDecorationOptions.init("moved", .AlwaysGrowsWhenTypingAtEdges);
+    options.blockClassName = class_name;
+    options.blockPadding = .{ 1, 0, 1, 1 };
+    return options;
+}
+
+fn inlineCharOptions(class_name: []const u8) ModelDecorationOptions {
+    var options = ModelDecorationOptions.init(class_name, .AlwaysGrowsWhenTypingAtEdges);
+    options.className = class_name;
+    options.inlineClassName = class_name;
+    return options;
 }
 
 fn inlineDecorationOptions(class_name: []const u8) ModelDecorationOptions {
@@ -161,9 +195,15 @@ pub const DiffEditorWidget = struct {
     inline_kinds: []InlineKind = &.{},
     inline_line_numbers: []?usize = &.{},
     inline_change_starts: []usize = &.{},
+    inline_original_rows: []?usize = &.{},
+    inline_modified_rows: []?usize = &.{},
     inline_ids: []u64 = &.{},
     inline_delete_options: ModelDecorationOptions = undefined,
     inline_insert_options: ModelDecorationOptions = undefined,
+    inline_moved_original_options: ModelDecorationOptions = undefined,
+    inline_moved_modified_options: ModelDecorationOptions = undefined,
+    inline_char_delete_options: ModelDecorationOptions = undefined,
+    inline_char_insert_options: ModelDecorationOptions = undefined,
 
     original_lines: [][]u8,
     modified_lines: [][]u8,
@@ -356,8 +396,14 @@ pub const DiffEditorWidget = struct {
             .inline_kinds = inline_display.kinds,
             .inline_line_numbers = inline_display.line_numbers,
             .inline_change_starts = inline_display.change_starts,
+            .inline_original_rows = inline_display.original_rows,
+            .inline_modified_rows = inline_display.modified_rows,
             .inline_delete_options = inlineDecorationOptions("line-delete"),
             .inline_insert_options = inlineDecorationOptions("line-insert"),
+            .inline_moved_original_options = inlineMovedOptions("movedOriginal"),
+            .inline_moved_modified_options = inlineMovedOptions("movedModified"),
+            .inline_char_delete_options = inlineCharOptions("char-delete"),
+            .inline_char_insert_options = inlineCharOptions("char-insert"),
             .original_lines = original_lines,
             .modified_lines = modified_lines,
             .view_model = diff_model,
@@ -374,7 +420,10 @@ pub const DiffEditorWidget = struct {
         allocator.free(original_views);
         allocator.free(modified_views);
 
-        if (is_inline) try self.applyInlineDecorations();
+        if (is_inline) {
+            try self.applyInlineDecorations();
+            if (self.options.hide_unchanged_regions) try self.applyInlineHideUnchanged();
+        }
 
         // The borrowed line views are no longer needed by the view model, but
         // the aligned row indices remain valid.
@@ -401,6 +450,8 @@ pub const DiffEditorWidget = struct {
         if (self.inline_kinds.len > 0) allocator.free(self.inline_kinds);
         if (self.inline_line_numbers.len > 0) allocator.free(self.inline_line_numbers);
         if (self.inline_change_starts.len > 0) allocator.free(self.inline_change_starts);
+        if (self.inline_original_rows.len > 0) allocator.free(self.inline_original_rows);
+        if (self.inline_modified_rows.len > 0) allocator.free(self.inline_modified_rows);
         allocator.free(self.original_text);
         allocator.free(self.modified_text);
         freeLines(allocator, self.original_lines);
@@ -702,6 +753,91 @@ pub const DiffEditorWidget = struct {
         return self.modified_editor.model;
     }
 
+    fn applyInlineHideUnchanged(self: *DiffEditorWidget) !void {
+        if (self.options.hide_unchanged_regions_context_line_count > 1000 or
+            self.options.hide_unchanged_regions_minimum_line_count > 1000) return;
+        var ranges = std.array_list.Managed(LineRange).init(self.allocator);
+        defer ranges.deinit();
+
+        var run_start: ?usize = null;
+        var index: usize = 0;
+        while (index <= self.inline_kinds.len) : (index += 1) {
+            const unchanged = index < self.inline_kinds.len and self.inline_kinds[index] == .unchanged;
+            if (unchanged) {
+                if (run_start == null) run_start = index;
+                continue;
+            }
+            if (run_start) |start| {
+                try appendInlineHiddenRange(
+                    &ranges,
+                    start,
+                    index - 1,
+                    start > 0,
+                    index < self.inline_kinds.len,
+                    self.options.hide_unchanged_regions_context_line_count,
+                    self.options.hide_unchanged_regions_minimum_line_count,
+                );
+                run_start = null;
+            }
+        }
+        if (ranges.items.len == 0) return;
+
+        const fold_ranges = try self.allocator.alloc(
+            @import("../../../contrib/folding/browser/foldingRanges.zig").FoldRange,
+            ranges.items.len,
+        );
+        defer self.allocator.free(fold_ranges);
+        for (ranges.items, 0..) |range, fold_index| {
+            fold_ranges[fold_index] = .{
+                .startLineNumber = range.startLineNumber,
+                .endLineNumber = range.endLineNumberExclusive - 1,
+                .isCollapsed = true,
+                .source = .user_defined,
+            };
+        }
+        try self.modified_editor.addFoldingRanges(fold_ranges);
+    }
+
+    fn appendInlineChar(
+        self: *DiffEditorWidget,
+        decorations: *std.array_list.Managed(ModelDeltaDecoration),
+        rows: []const ?usize,
+        range: Range,
+        options: *ModelDecorationOptions,
+    ) !void {
+        _ = self;
+        if (range.startLineNumber != range.endLineNumber) return;
+        if (range.startLineNumber == 0 or range.startLineNumber > rows.len) return;
+        const row = rows[range.startLineNumber - 1] orelse return;
+        if (range.startColumn >= range.endColumn) return;
+        try decorations.append(.{
+            .range = Range.init(row, range.startColumn, row, range.endColumn),
+            .options = options,
+        });
+    }
+
+    fn appendInlineMoved(
+        self: *DiffEditorWidget,
+        decorations: *std.array_list.Managed(ModelDeltaDecoration),
+        rows: []const ?usize,
+        start_line: usize,
+        end_line_exclusive: usize,
+        options: *ModelDecorationOptions,
+    ) !void {
+        _ = self;
+        if (start_line >= end_line_exclusive or start_line == 0) return;
+        const first = rows[start_line - 1] orelse return;
+        var last = first;
+        var line = start_line;
+        while (line < end_line_exclusive and line <= rows.len) : (line += 1) {
+            if (rows[line - 1]) |row| last = row;
+        }
+        try decorations.append(.{
+            .range = Range.init(first, 1, last + 1, 1),
+            .options = options,
+        });
+    }
+
     fn applyInlineDecorations(self: *DiffEditorWidget) !void {
         if (self.inline_kinds.len == 0) return;
         var decorations = std.array_list.Managed(ModelDeltaDecoration).init(self.allocator);
@@ -716,6 +852,42 @@ pub const DiffEditorWidget = struct {
                 .range = Range.init(index + 1, 1, index + 2, 1),
                 .options = @constCast(options.?),
             });
+        }
+        if (self.state()) |diff_state| {
+            for (diff_state.mappings) |mapping| {
+                if (mapping.line_range_mapping.inner_changes) |inner_changes| {
+                    for (inner_changes) |inner| {
+                        try self.appendInlineChar(
+                            &decorations,
+                            self.inline_original_rows,
+                            inner.originalRange,
+                            &self.inline_char_delete_options,
+                        );
+                        try self.appendInlineChar(
+                            &decorations,
+                            self.inline_modified_rows,
+                            inner.modifiedRange,
+                            &self.inline_char_insert_options,
+                        );
+                    }
+                }
+            }
+            for (diff_state.moved_texts) |moved| {
+                try self.appendInlineMoved(
+                    &decorations,
+                    self.inline_original_rows,
+                    moved.lineRangeMapping.original.startLineNumber,
+                    moved.lineRangeMapping.original.endLineNumberExclusive,
+                    &self.inline_moved_original_options,
+                );
+                try self.appendInlineMoved(
+                    &decorations,
+                    self.inline_modified_rows,
+                    moved.lineRangeMapping.modified.startLineNumber,
+                    moved.lineRangeMapping.modified.endLineNumberExclusive,
+                    &self.inline_moved_modified_options,
+                );
+            }
         }
         self.inline_ids = try self.modified_editor.model.deltaDecorations(&.{}, decorations.items, 2002);
     }
@@ -761,6 +933,29 @@ pub fn applyHideUnchangedRegions(
     }
     try original_editor.addFoldingRanges(fold_ranges);
     try modified_editor.addFoldingRanges(fold_ranges);
+}
+
+fn appendInlineHiddenRange(
+    ranges: *std.array_list.Managed(LineRange),
+    start_index: usize,
+    end_index: usize,
+    has_previous: bool,
+    has_next: bool,
+    context_line_count: usize,
+    minimum_line_count: usize,
+) !void {
+    if (start_index > end_index) return;
+    const left_keep = if (has_previous) context_line_count else 0;
+    const right_keep = if (has_next) context_line_count else 0;
+    const start = start_index + 1;
+    const end = end_index + 1;
+    const collapse_start = start +| left_keep;
+    if (collapse_start > end) return;
+    const collapse_end = end -| right_keep;
+    if (collapse_end < collapse_start) return;
+    const hidden_count = collapse_end - collapse_start + 1;
+    if (hidden_count < minimum_line_count or hidden_count == 0) return;
+    try ranges.append(LineRange.init(collapse_start, collapse_end + 1));
 }
 
 fn appendHiddenRange(
@@ -1064,4 +1259,99 @@ test "diffEditorWidget: inline mode interleaves deleted and inserted lines" {
     const inserted_row = try grid.rowText(allocator, 2);
     defer allocator.free(inserted_row);
     try std.testing.expect(std.mem.indexOf(u8, inserted_row, "B") != null);
+}
+
+test "diffEditorWidget: inline mode hides unchanged regions" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
+    const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
+    const widget = try DiffEditorWidget.create(
+        allocator,
+        io,
+        "a.txt",
+        "b.txt",
+        original,
+        modified,
+        "Original",
+        "Modified",
+        80,
+        8,
+        .{ .render_side_by_side = false, .hide_unchanged_regions = true },
+    );
+    defer widget.destroy();
+
+    const model = widget.modified_editor.foldingModel();
+    var collapsed: usize = 0;
+    var index: usize = 0;
+    while (index < model.length()) : (index += 1) {
+        if (model.getRegion(index)) |region| {
+            if (region.isCollapsed) collapsed += 1;
+        }
+    }
+    try std.testing.expect(collapsed > 0);
+}
+
+test "diffEditorWidget: inline mode surfaces moved blocks" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const widget = try DiffEditorWidget.create(
+        allocator,
+        io,
+        "a.txt",
+        "b.txt",
+        "aaaaaa\nbbbbbb\ncccccc\nxxxxxx\nyyyyyy\nzzzzzz",
+        "xxxxxx\nyyyyyy\nzzzzzz\naaaaaa\nbbbbbb\ncccccc",
+        "Original",
+        "Modified",
+        80,
+        8,
+        .{ .render_side_by_side = false, .show_moves = true },
+    );
+    defer widget.destroy();
+
+    const decorations = try widget.modified_editor.model.getAllDecorations(0, false);
+    defer widget.modified_editor.model.getAllocator().free(decorations);
+    var original_move = false;
+    var modified_move = false;
+    for (decorations) |decoration| {
+        if (decoration.options.blockClassName) |class_name| {
+            if (std.mem.startsWith(u8, class_name, "movedOriginal")) original_move = true;
+            if (std.mem.startsWith(u8, class_name, "movedModified")) modified_move = true;
+        }
+    }
+    try std.testing.expect(original_move);
+    try std.testing.expect(modified_move);
+}
+
+test "diffEditorWidget: inline mode adds character decorations" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const widget = try DiffEditorWidget.create(
+        allocator,
+        io,
+        "a.txt",
+        "b.txt",
+        "foo bar",
+        "foo baz",
+        "Original",
+        "Modified",
+        80,
+        8,
+        .{ .render_side_by_side = false },
+    );
+    defer widget.destroy();
+
+    const decorations = try widget.modified_editor.model.getAllDecorations(0, false);
+    defer widget.modified_editor.model.getAllocator().free(decorations);
+    var delete_chars: usize = 0;
+    var insert_chars: usize = 0;
+    for (decorations) |decoration| {
+        if (decoration.options.className) |class_name| {
+            if (std.mem.eql(u8, class_name, "char-delete")) delete_chars += 1;
+            if (std.mem.eql(u8, class_name, "char-insert")) insert_chars += 1;
+        }
+    }
+    try std.testing.expect(delete_chars > 0);
+    try std.testing.expect(insert_chars > 0);
 }
