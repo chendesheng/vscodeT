@@ -117,22 +117,44 @@ pub const ListView = struct {
     }
 
     pub fn setSelection(self: *ListView, index: ?usize) void {
+        self.setSelectionWithPadding(index, 0);
+    }
+
+    /// Port of `ListWidget.reveal(index, undefined, paddingTop)`: selection
+    /// revealing honors the sticky-scroll widget height so the selected row is
+    /// not pinned underneath it.
+    pub fn setSelectionWithPadding(self: *ListView, index: ?usize, padding_top: f64) void {
         self.selected = index;
-        if (index) |value| self.reveal(value);
+        if (index) |value| self.revealAt(value, padding_top);
     }
 
     pub fn selection(self: *const ListView) ?usize {
         return self.selected;
     }
 
-    fn reveal(self: *ListView, index: usize) void {
+    /// Sets the selected row without revealing it. Model splices preserve the
+    /// viewport in upstream; only explicit selection/reveal calls scroll.
+    pub fn selectOnly(self: *ListView, index: ?usize) void {
+        self.selected = index;
+    }
+
+    /// Port of the `relativeTop === undefined` branch of
+    /// `ListWidget.reveal`.
+    pub fn revealAt(self: *ListView, index: usize, padding_top: f64) void {
         if (index >= self.items.items.len) return;
-        const top = self.range_map.positionAt(@intCast(index));
-        const height = self.delegate.height(self.items.items[index]);
-        if (top < self.scroll_top) {
-            self.setScrollTop(top);
-        } else if (top + height > self.scroll_top + self.viewport_height) {
-            self.setScrollTop(top + height - self.viewport_height);
+        const element_top = self.range_map.positionAt(@intCast(index));
+        const element_height = self.delegate.height(self.items.items[index]);
+        const view_item_bottom = element_top + element_height;
+        const scroll_bottom = self.scroll_top + self.viewport_height;
+
+        if (element_top < self.scroll_top + padding_top and view_item_bottom >= scroll_bottom) {
+            // The element already overflows the padded viewport; no-op.
+        } else if (element_top < self.scroll_top + padding_top or
+            (view_item_bottom >= scroll_bottom and element_height >= self.viewport_height))
+        {
+            self.setScrollTop(element_top - padding_top);
+        } else if (view_item_bottom >= scroll_bottom) {
+            self.setScrollTop(view_item_bottom - self.viewport_height);
         }
     }
 

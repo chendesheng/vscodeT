@@ -46,7 +46,7 @@ test "DataTree: setInput resolves children" {
         .context = &context,
         .get_children = getChildren,
         .has_children = hasChildren,
-    }, false);
+    }, false, .{});
     defer tree.deinit();
 
     try tree.setInput(&root);

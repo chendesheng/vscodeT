@@ -30,6 +30,12 @@ pub const Row = struct {
     indent: usize = 0,
     /// Whether this row should paint tree indent guides. Set by AbstractTree.
     render_indent_guides: bool = false,
+    /// This row is an overlay row of the tree's sticky-scroll widget, not a
+    /// list row. Renderers use it to distinguish sticky hover/focus paint and
+    /// must cover the whole row so the list row below does not show through.
+    sticky: bool = false,
+    sticky_focused: bool = false,
+    sticky_hovered: bool = false,
 };
 
 /// Port of `IListVirtualDelegate`.
