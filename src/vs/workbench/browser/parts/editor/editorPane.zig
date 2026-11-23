@@ -793,6 +793,7 @@ pub const Controllers = struct {
                 .foreground = colors.color("editorWidget.foreground", .{ 230, 230, 230 }),
                 .dim_foreground = colors.color("input.placeholderForeground", .{ 140, 140, 150 }),
                 .hover_background = colors.color("toolbar.hoverBackground", .{ 72, 72, 92 }),
+                .sash_hover_border = colors.sashHoverBorder(),
                 .input_background = colors.color("input.background", .{ 30, 30, 35 }),
                 .input_foreground = colors.color("input.foreground", .{ 230, 230, 230 }),
                 .placeholder = colors.color("input.placeholderForeground", .{ 140, 140, 150 }),

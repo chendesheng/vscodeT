@@ -44,6 +44,16 @@ pub const ThemeColors = struct {
         return self.composite(raw);
     }
 
+    pub fn sashHoverBorder(self: ThemeColors) ui.Color {
+        const fallback: [3]u8 = switch (self.theme.theme_type) {
+            .DARK => .{ 0x00, 0x7f, 0xd4 },
+            .LIGHT => .{ 0x00, 0x90, 0xf1 },
+            .HIGH_CONTRAST_DARK => .{ 0xf3, 0x85, 0x18 },
+            .HIGH_CONTRAST_LIGHT => .{ 0x00, 0x6b, 0xbd },
+        };
+        return self.colorOr("sash.hoverBorder", self.color("focusBorder", fallback));
+    }
+
     /// Raw theme color, including its alpha. Surfaces that need to know
     /// whether a color was defined at all (for example the bracket-highlight
     /// pool, which skips transparent entries like upstream's `ColorProvider`)

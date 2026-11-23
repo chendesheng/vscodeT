@@ -886,8 +886,11 @@ pub const View = struct {
     pub fn dispatchMouse(self: *View, event: *ui.MouseEvent) !bool {
         try self.ensureRendered();
         const doc = self.surface.document();
-        const target = (try self.surface.elementFromPoint(event.x, event.y)) orelse
-            (doc.root orelse return false);
+        const hit = if (event.kind == .move) hit: {
+            _ = try self.surface.updateHoverAt(event.x, event.y);
+            break :hit doc.hoverTarget();
+        } else try self.surface.elementFromPoint(event.x, event.y);
+        const target = hit orelse (doc.root orelse return false);
         ui.event.dispatchMouse(doc, target, event);
         // Upstream the scrollable element, not the pointer handler, owns the
         // wheel. Route it through the ported scrollbar part so sensitivity,

@@ -869,6 +869,22 @@ test "FindController: dragging the sash resizes the find widget" {
     const initial_preferred = widget.preferred_width;
     const left = 60 - width_cells;
 
+    try std.testing.expectEqual(ui.Pointer.ew_resize, try view.pointerAt(left, 0));
+    const grid = view.surface.grid();
+    const index = grid.index(left, 0);
+    const idle_background = grid.bg[index];
+    var hover = ui.MouseEvent{ .kind = .move, .x = left, .y = 0 };
+    _ = try view.dispatchMouse(&hover);
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    try std.testing.expect(grid.bg[index] != idle_background);
+
+    hover.x = left + 1;
+    _ = try view.dispatchMouse(&hover);
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
+    try std.testing.expectEqual(idle_background, grid.bg[index]);
+
     var down = ui.MouseEvent{ .kind = .down, .x = left, .y = 0, .button = .left };
     _ = try view.dispatchMouse(&down);
     try std.testing.expect(widget.resizing);

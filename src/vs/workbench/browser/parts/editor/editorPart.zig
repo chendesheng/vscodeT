@@ -23,6 +23,7 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
 const grid = @import("../../../../base/browser/ui/grid/grid.zig");
+const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
 const editor_mod = @import("../../../common/editor.zig");
 
@@ -254,7 +255,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         pub fn sashPointer(self: *const Self, node: *LayoutNode) ui.Pointer {
             _ = self;
             return switch (node.kind) {
-                .split => |split| if (split.direction == .horizontal) .ew_resize else .ns_resize,
+                .split => |split| sash_css.pointer(if (split.direction == .horizontal) .vertical else .horizontal),
                 .leaf => .default,
             };
         }

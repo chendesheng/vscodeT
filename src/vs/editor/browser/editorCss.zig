@@ -11,6 +11,7 @@ const ui = @import("ui");
 const block_decorations_css = @import("viewParts/blockDecorations/blockDecorations_css.zig");
 const view_lines_css = @import("viewParts/viewLines/viewLines_css.zig");
 const overlay_widgets_css = @import("viewParts/overlayWidgets/overlayWidgets_css.zig");
+const sash_css = @import("../../base/browser/ui/sash/sash_css.zig");
 
 pub const block_decorations = block_decorations_css;
 pub const view_lines = view_lines_css;
@@ -23,6 +24,7 @@ pub fn register(doc: *ui.Document) !void {
     _ = try doc.registerSheet(block_decorations_css.sheet);
     _ = try doc.registerSheet(view_lines_css.sheet);
     _ = try doc.registerSheet(overlay_widgets_css.sheet);
+    _ = try doc.registerSheet(sash_css.sheet);
 }
 
 test "editor css: sheets register into disjoint class ranges" {
@@ -47,7 +49,13 @@ test "editor css: sheets register into disjoint class ranges" {
     const overlays = doc.classStyle(@backingInt(overlay_widgets_css.Class.overlay_widgets)).?;
     try std.testing.expectEqual(ui.Position.absolute, overlays.position.?);
 
+    const vertical_sash = doc.classStyle(@backingInt(sash_css.Class.vertical)).?;
+    try std.testing.expectEqual(ui.Pointer.ew_resize, vertical_sash.pointer.?);
+    const horizontal_sash = doc.classStyle(@backingInt(sash_css.Class.horizontal)).?;
+    try std.testing.expectEqual(ui.Pointer.ns_resize, horizontal_sash.pointer.?);
+
     // Ranges are disjoint.
     try std.testing.expect(block_decorations_css.base < view_lines_css.base);
     try std.testing.expect(view_lines_css.base < overlay_widgets_css.base);
+    try std.testing.expect(overlay_widgets_css.base < sash_css.base);
 }

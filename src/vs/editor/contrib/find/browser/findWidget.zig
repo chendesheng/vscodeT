@@ -26,6 +26,7 @@
 
 const std = @import("std");
 const ui = @import("ui");
+const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 
 const editorBrowser = @import("../../../browser/editorBrowser.zig");
 const find_state = @import("./findState.zig");
@@ -48,6 +49,7 @@ pub const Theme = struct {
     foreground: ui.Color = foreground,
     dim_foreground: ui.Color = dim_foreground,
     hover_background: ui.Color = hover_background,
+    sash_hover_border: ?ui.Color = null,
     input_background: ui.Color = .{ .r = 30, .g = 30, .b = 35 },
     input_foreground: ui.Color = foreground,
     placeholder: ui.Color = dim_foreground,
@@ -110,7 +112,6 @@ pub const FindWidget = struct {
     resizing: bool = false,
     resize_start_x: usize = 0,
     resize_start_width: usize = 0,
-    bar_left: usize = 0,
     add_extra_space_on_top: bool = true,
     focus_node_value: ?*ui.Node = null,
     /// The control under the pointer last frame, for the hover style.
@@ -405,7 +406,6 @@ pub const FindWidget = struct {
 
     fn buildBar(self: *FindWidget, doc: *ui.Document) !*ui.Node {
         const width_cells = self.widget_width;
-        self.bar_left = self.last_cols -| width_cells;
         self.bar_root = null;
         self.control_nodes = @splat(null);
         const root = try doc.createElement(.div);
@@ -425,7 +425,6 @@ pub const FindWidget = struct {
             .context = self,
             .capture = true,
             .key_down = onKeyCapture,
-            .mouse_down = onBarDown,
         });
         try root.addEventListener(.{ .context = self, .mouse_move = onBarMove });
         self.bar_root = root;
@@ -512,6 +511,17 @@ pub const FindWidget = struct {
             self.appendControl(doc, replace_row, "\u{21C4}", 1, .replace_one, false);
             self.appendControl(doc, replace_row, "All", 3, .replace_all, false);
         }
+
+        const sash = try doc.createElement(.div);
+        try sash.setClasses(&.{ sash_css.Class.sash, sash_css.Class.vertical });
+        const sash_highlight = sash_css.hoverStyle(self.theme.sash_hover_border);
+        sash.setStyle(.{
+            .left = .{ .cells = 0 },
+            .background = if (self.resizing) sash_highlight.background else null,
+        });
+        sash.setHoverStyle(sash_highlight);
+        try sash.addEventListener(.{ .context = self, .mouse_down = onSashDown });
+        _ = try root.appendChild(sash);
 
         self.focus_node_value = if (self.focus_field == .replace)
             (replace_node orelse find_node)
@@ -859,15 +869,6 @@ fn onDocumentMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
 fn onDocumentUp(context: ?*anyopaque, _: *ui.MouseEvent) void {
     const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
     self.resizing = false;
-}
-
-fn onBarDown(context: ?*anyopaque, event: *ui.MouseEvent) void {
-    const self: *FindWidget = @ptrCast(@alignCast(context orelse return));
-    if (event.button != .left or event.x != self.bar_left) return;
-    self.resizing = true;
-    self.resize_start_x = event.x;
-    self.resize_start_width = self.widget_width;
-    event.preventDefault();
 }
 
 fn onSashDown(context: ?*anyopaque, event: *ui.MouseEvent) void {

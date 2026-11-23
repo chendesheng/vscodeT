@@ -23,6 +23,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const ui = @import("ui");
+const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 
 const Editor = @import("../codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const View = @import("../../../../../tui/editorView.zig").View;
@@ -633,7 +634,7 @@ pub const DiffEditorWidget = struct {
         const widths = self.paneWidths();
         if (self.sideBySide()) {
             if (x < widths.original) return self.original_view.pointerAt(x, y);
-            if (x < widths.original + widths.gutter) return .ew_resize;
+            if (x < widths.original + widths.gutter) return sash_css.pointer(.vertical);
             return self.modified_view.pointerAt(x -| (widths.original + widths.gutter), y);
         }
         return self.modified_view.pointerAt(x, y);
