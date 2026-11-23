@@ -198,19 +198,19 @@ function installTouchAdapter(term, terminalElement, write) {
   };
   const markTouch = () => { lastTouchAt = performance.now(); };
 
-  const onStart = (event) => {
-    if (active || event.touches.length !== 1) return;
-    const touch = event.changedTouches[0];
-    if (!inside(touch)) return;
+  const onDown = (event) => {
+    if (event.pointerType === "mouse") return;
+    if (active || !event.isPrimary) return;
+    if (!inside(event)) return;
     event.preventDefault();
     event.stopPropagation();
     markTouch();
-    const cell = cellAt(touch);
+    const cell = cellAt(event);
     active = {
-      id: touch.identifier,
-      startX: touch.clientX,
-      startY: touch.clientY,
-      lastY: touch.clientY,
+      id: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastY: event.clientY,
       startCol: cell.col,
       startRow: cell.row,
       lastCol: cell.col,
@@ -218,34 +218,30 @@ function installTouchAdapter(term, terminalElement, write) {
       mode: "pending",
       accum: 0,
     };
+    try { terminalElement.setPointerCapture(event.pointerId); } catch { /* ignore */ }
   };
 
   const onMove = (event) => {
-    if (!active) return;
-    let touch = null;
-    for (const candidate of event.touches) {
-      if (candidate.identifier === active.id) { touch = candidate; break; }
-    }
-    if (!touch) return;
+    if (!active || event.pointerId !== active.id) return;
     event.preventDefault();
     event.stopPropagation();
     markTouch();
 
-    const dy = touch.clientY - active.startY;
-    const dx = touch.clientX - active.startX;
+    const dy = event.clientY - active.startY;
+    const dx = event.clientX - active.startX;
     if (active.mode === "pending" && Math.hypot(dx, dy) >= 8) {
       active.mode = Math.abs(dy) > Math.abs(dx) ? "scroll" : "drag";
       if (active.mode === "drag") {
         send(0, active.startCol, active.startRow, false);
       }
-      active.lastY = touch.clientY;
+      active.lastY = event.clientY;
     }
 
-    const cell = cellAt(touch);
+    const cell = cellAt(event);
     if (active.mode === "scroll") {
       const step = Math.max(6, Math.round((term.renderer?.charHeight || 16) * 0.75));
-      active.accum += touch.clientY - active.lastY;
-      active.lastY = touch.clientY;
+      active.accum += event.clientY - active.lastY;
+      active.lastY = event.clientY;
       while (active.accum >= step) {
         send(64, cell.col, cell.row, false);
         active.accum -= step;
@@ -263,27 +259,24 @@ function installTouchAdapter(term, terminalElement, write) {
     }
   };
 
-  const onEnd = (event) => {
-    if (!active) return;
+  const onUp = (event) => {
+    if (!active || event.pointerId !== active.id) return;
     event.preventDefault();
     event.stopPropagation();
     markTouch();
-    let touch = null;
-    for (const candidate of event.changedTouches) {
-      if (candidate.identifier === active.id) { touch = candidate; break; }
-    }
+    try { terminalElement.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
     if (active.mode === "pending") {
       send(0, active.startCol, active.startRow, false);
       send(0, active.startCol, active.startRow, true);
     } else if (active.mode === "drag") {
-      const cell = touch ? cellAt(touch) : { col: active.lastCol, row: active.lastRow };
+      const cell = cellAt(event);
       send(0, cell.col, cell.row, true);
     }
     active = null;
   };
 
   const onCancel = (event) => {
-    if (!active) return;
+    if (!active || event.pointerId !== active.id) return;
     event.preventDefault();
     event.stopPropagation();
     markTouch();
@@ -293,10 +286,10 @@ function installTouchAdapter(term, terminalElement, write) {
     active = null;
   };
 
-  terminalElement.addEventListener("touchstart", onStart, { capture: true, passive: false });
-  terminalElement.addEventListener("touchmove", onMove, { capture: true, passive: false });
-  terminalElement.addEventListener("touchend", onEnd, { capture: true, passive: false });
-  terminalElement.addEventListener("touchcancel", onCancel, { capture: true, passive: false });
+  terminalElement.addEventListener("pointerdown", onDown, { capture: true, passive: false });
+  terminalElement.addEventListener("pointermove", onMove, { capture: true, passive: false });
+  terminalElement.addEventListener("pointerup", onUp, { capture: true, passive: false });
+  terminalElement.addEventListener("pointercancel", onCancel, { capture: true, passive: false });
 }
 
 function installResizeHandler(terminalElement, refit) {
