@@ -14,7 +14,7 @@
 * { box-sizing: border-box; }
 html, body {
   width: 100%;
-  height: 100%;
+  height: 100dvh;
   margin: 0;
   overflow: hidden;
   background: var(--background);
@@ -22,9 +22,8 @@ html, body {
   font-family: "IosevkaTerm Nerd Font", "JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 #terminal {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  padding: 6px 8px;
 }
 #terminal .xterm { height: 100%; }
 #status {

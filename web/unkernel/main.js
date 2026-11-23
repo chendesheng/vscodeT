@@ -182,7 +182,7 @@ async function start() {
     scrollback: 2000,
     convertEol: false,
     cursorBlink: true,
-    cursorStyle: "bar",
+    cursorStyle: "block",
     fontSize: 14,
     fontFamily: FONT_FAMILY,
     theme: THEME,
