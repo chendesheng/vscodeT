@@ -332,6 +332,7 @@ const Runner = struct {
             const doc = self.surface.document();
             for (items.items) |*item| {
                 switch (item.*) {
+                    .focus => {},
                     .key => |*key| {
                         if (isQuitKey(key.*)) return;
                         _ = doc.dispatchKey(key.key, key.mods);

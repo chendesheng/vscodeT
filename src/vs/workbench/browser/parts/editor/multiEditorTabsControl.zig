@@ -46,6 +46,7 @@ pub const TabInfo = struct {
     /// Upstream `!isPinned`: preview tabs are italic.
     pinned: bool = true,
     sticky: bool = false,
+    selected: bool = false,
     closeable: bool = true,
 };
 
@@ -342,6 +343,14 @@ pub fn draw(
             (if (options.group_active) active_style else inactive_group_active_style)
         else if (hovered)
             (if (options.group_active) hover_style else unfocused_hover_style)
+        else if (tab.selected)
+            (if (palette) |colors| PaintStyle{
+                .fg = ui.cell.packColor(colors.color("tab.selectedForeground", .{ 245, 245, 245 })),
+                .bg = ui.cell.packColor(colors.color("tab.selectedBackground", .{ 55, 55, 61 })),
+            } else PaintStyle{
+                .fg = ui.cell.packColor(.{ .r = 245, .g = 245, .b = 245 }),
+                .bg = ui.cell.packColor(.{ .r = 55, .g = 55, .b = 61 }),
+            })
         else
             inactive_style;
         const screen_col = x + col;

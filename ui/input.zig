@@ -26,6 +26,7 @@ pub const Modifiers = event.Modifiers;
 pub const Item = union(enum) {
     key: KeyEvent,
     mouse: MouseEvent,
+    focus: bool,
 };
 
 pub const DecodeResult = struct {
@@ -57,7 +58,7 @@ pub fn decodeWithRemainder(allocator: std.mem.Allocator, input: []const u8) !Dec
     return .{ .items = result, .consumed = tokenized.consumed };
 }
 
-/// Decodes the keyboard events in `input`, dropping mouse reports. Keyboard-only
+/// Decodes the keyboard events in `input`, dropping mouse and focus reports. Keyboard-only
 /// hosts and tests use this; the app uses `decode` for the full stream.
 pub fn decodeKeys(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(KeyEvent) {
     var items = try decode(allocator, input);
@@ -68,7 +69,7 @@ pub fn decodeKeys(allocator: std.mem.Allocator, input: []const u8) !std.ArrayLis
     for (items.items) |item| {
         switch (item) {
             .key => |key_event| try result.append(allocator, key_event),
-            .mouse => {},
+            .mouse, .focus => {},
         }
     }
     return result;
@@ -380,6 +381,10 @@ fn decodeCsi(
         return;
     }
 
+    if ((csi.final == 'I' or csi.final == 'O') and csi.parameters.len == 0 and csi.intermediate.len == 0) {
+        try result.append(allocator, .{ .focus = csi.final == 'I' });
+        return;
+    }
     const mods = parseModifiers(csi.parameters);
     switch (csi.final) {
         'A' => try result.append(allocator, .{ .key = .{ .key = .up, .mods = mods } }),
@@ -643,7 +648,7 @@ fn mouseAt(items: []const Item, index: usize) !MouseEvent {
     if (index >= items.len) return error.TestUnexpectedResult;
     return switch (items[index]) {
         .mouse => |mouse| mouse,
-        .key => error.TestUnexpectedResult,
+        .key, .focus => error.TestUnexpectedResult,
     };
 }
 
@@ -759,7 +764,7 @@ test "input: malformed mouse reports are ignored and never type text" {
     try std.testing.expectEqual(@as(usize, 3), mixed.items.len);
     const first_key = switch (mixed.items[0]) {
         .key => |key| key,
-        .mouse => return error.TestUnexpectedResult,
+        .mouse, .focus => return error.TestUnexpectedResult,
     };
     try std.testing.expectEqualStrings("a", first_key.key.text);
     const mouse = try mouseAt(mixed.items, 1);
@@ -767,7 +772,15 @@ test "input: malformed mouse reports are ignored and never type text" {
     try std.testing.expectEqual(@as(usize, 2), mouse.y);
     const second_key = switch (mixed.items[2]) {
         .key => |key| key,
-        .mouse => return error.TestUnexpectedResult,
+        .mouse, .focus => return error.TestUnexpectedResult,
     };
     try std.testing.expectEqualStrings("b", second_key.key.text);
+}
+
+test "input decodes terminal focus reports as focus events" {
+    var items = try decode(std.testing.allocator, "\x1b[I\x1b[O");
+    defer items.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), items.items.len);
+    try std.testing.expect(items.items[0].focus);
+    try std.testing.expect(!items.items[1].focus);
 }

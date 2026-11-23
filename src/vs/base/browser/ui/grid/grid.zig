@@ -168,13 +168,13 @@ pub fn moveRoot(
     if (source_leaf == target_leaf) return error.ViewNotFound;
     if (root.* == source_leaf) return error.LastView;
 
+    const split_node = try allocator.create(Node(T));
+    errdefer allocator.destroy(split_node);
     if (!detachFrom(T, allocator, root.*, source)) return error.ViewNotFound;
 
     // Detaching can promote the target's parent into another node, so re-find
     // its live leaf before building the new split.
     const current_target = findLeafIn(T, root.*, target) orelse return error.ViewNotFound;
-    const split_node = try allocator.create(Node(T));
-    errdefer allocator.destroy(split_node);
     split_node.* = .{
         .kind = .{ .split = .{
             .direction = direction,
@@ -288,6 +288,27 @@ fn removeFrom(comptime T: type, allocator: Allocator, node: *Node(T), target: T)
     }
 }
 
+pub fn splitRects(rect: ui.Rect, direction: Orientation, ratio: f64, gutter: f64) struct { first: ui.Rect, second: ui.Rect } {
+    switch (direction) {
+        .horizontal => {
+            const available = @max(rect.w - gutter, 0);
+            const first_width = @floor(available * ratio);
+            return .{
+                .first = .{ .x = rect.x, .y = rect.y, .w = first_width, .h = rect.h },
+                .second = .{ .x = rect.x + first_width + gutter, .y = rect.y, .w = available - first_width, .h = rect.h },
+            };
+        },
+        .vertical => {
+            const available = @max(rect.h - gutter, 0);
+            const first_height = @floor(available * ratio);
+            return .{
+                .first = .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = first_height },
+                .second = .{ .x = rect.x, .y = rect.y + first_height + gutter, .w = rect.w, .h = available - first_height },
+            };
+        },
+    }
+}
+
 fn layoutNode(
     comptime T: type,
     node: *Node(T),
@@ -300,27 +321,9 @@ fn layoutNode(
         .leaf => {},
         .split => |split| {
             const gutter = gap(gap_context, split.direction, rect);
-            if (split.direction == .horizontal) {
-                const available = @max(rect.w - gutter, 0);
-                const first_width = @floor(available * split.ratio);
-                layoutNode(T, split.first, .{ .x = rect.x, .y = rect.y, .w = first_width, .h = rect.h }, gap_context, gap);
-                layoutNode(T, split.second, .{
-                    .x = rect.x + first_width + gutter,
-                    .y = rect.y,
-                    .w = @max(rect.w - first_width - gutter, 0),
-                    .h = rect.h,
-                }, gap_context, gap);
-            } else {
-                const available = @max(rect.h - gutter, 0);
-                const first_height = @floor(available * split.ratio);
-                layoutNode(T, split.first, .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = first_height }, gap_context, gap);
-                layoutNode(T, split.second, .{
-                    .x = rect.x,
-                    .y = rect.y + first_height + gutter,
-                    .w = rect.w,
-                    .h = @max(rect.h - first_height - gutter, 0),
-                }, gap_context, gap);
-            }
+            const positions = splitRects(rect, split.direction, split.ratio, gutter);
+            layoutNode(T, split.first, positions.first, gap_context, gap);
+            layoutNode(T, split.second, positions.second, gap_context, gap);
         },
     }
 }

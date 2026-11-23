@@ -653,6 +653,7 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.pollJsonLanguage()) needs_render = true;
         if (workbench.pollGit(now_ms)) needs_render = true;
         if (workbench.markdownPreviewTick(now_ms)) needs_render = true;
+        if (workbench.tickEditorDrag(now_ms)) needs_render = true;
         if (workbench.pollAsyncReads()) needs_render = true;
         if (extension_host) |ext| {
             if (ext.pump()) needs_render = true;
@@ -683,6 +684,7 @@ pub fn main(init: std.process.Init) !void {
             }
             if (needs_render) timeout = 0;
         }
+        if (workbench.editorDragTimeout(now_ms)) |drag_timeout| timeout = @min(timeout, drag_timeout);
         if (workbench.gitWantsTick()) timeout = @min(timeout, 200);
         if (workbench.markdownPreviewTimeout(now_ms)) |preview_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(preview_timeout, 250))));
@@ -835,10 +837,20 @@ pub fn main(init: std.process.Init) !void {
                 ext.selection_source = switch (item.*) {
                     .key => .keyboard,
                     .mouse => .mouse,
+                    .focus => ext.selection_source,
                 };
             }
             switch (item.*) {
+                .focus => |focused| {
+                    if (!focused) {
+                        if (workbench.cancelEditorDrag()) needs_render = true;
+                    }
+                },
                 .key => |*event| {
+                    if (event.key == .escape and workbench.cancelEditorDrag()) {
+                        needs_render = true;
+                        continue;
+                    }
                     // The save confirmation is modal: it owns every key,
                     // including the global quit shortcut.
                     if (workbench.handleDialogKey(event)) {
@@ -1271,6 +1283,7 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
         var redraw = false;
         for (events.items) |*item| {
             switch (item.*) {
+                .focus => {},
                 .key => |event| {
                     if (handlePreviewKey(editor, view, event)) |changed| {
                         if (changed) redraw = true;
@@ -2207,7 +2220,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     defer items.deinit(allocator);
     for (items.items) |*item| {
         switch (item.*) {
-            .key => return error.TestUnexpectedResult,
+            .key, .focus => return error.TestUnexpectedResult,
             .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
         }
     }
@@ -2226,7 +2239,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     defer drag_items.deinit(allocator);
     for (drag_items.items) |*item| {
         switch (item.*) {
-            .key => return error.TestUnexpectedResult,
+            .key, .focus => return error.TestUnexpectedResult,
             .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
         }
     }
@@ -2239,7 +2252,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     defer wheel_items.deinit(allocator);
     for (wheel_items.items) |*item| {
         switch (item.*) {
-            .key => return error.TestUnexpectedResult,
+            .key, .focus => return error.TestUnexpectedResult,
             .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
         }
     }

@@ -276,6 +276,7 @@ const App = struct {
 
             for (items.items) |*item| {
                 switch (item.*) {
+                    .focus => {},
                     .key => |*key| {
                         if (isCtrlQ(key.*)) return;
                         _ = surface.document().dispatchKey(key.key, key.mods);

@@ -437,6 +437,7 @@ const Gallery = struct {
 
             for (items.items) |*item| {
                 switch (item.*) {
+                    .focus => {},
                     .key => |*key| _ = try self.handleKey(key),
                     .mouse => |*event| _ = try self.handleMouse(event),
                 }

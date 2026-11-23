@@ -154,13 +154,14 @@ pub fn disableBracketedPaste(out: anytype) !void {
 
 /// All-motion mouse tracking with SGR coordinates. Mode 1003 reports motion
 /// without a button too, which drives hover; button-held motion still drives
-/// drag selection.
+/// drag selection. Mode 1004 reports focus loss so a drag can be cancelled
+/// when the terminal loses the mouse release.
 pub fn enableMouseCapture(out: anytype) !void {
-    try writeAll(out, "\x1b[?1003h\x1b[?1006h");
+    try writeAll(out, "\x1b[?1003h\x1b[?1006h\x1b[?1004h");
 }
 
 pub fn disableMouseCapture(out: anytype) !void {
-    try writeAll(out, "\x1b[?1006l\x1b[?1003l");
+    try writeAll(out, "\x1b[?1004l\x1b[?1006l\x1b[?1003l");
 }
 
 pub fn disableRawMode(state: RawModeState) !void {
@@ -302,7 +303,7 @@ pub fn rememberOrigTermios(state: RawModeState) void {
 /// stack trace after this sequence, so it must leave the alternate screen and
 /// restore raw mode before the trace: otherwise the trace is written to the
 /// alternate screen, which the terminal discards when the process dies.
-pub const crash_restore_sequence = "\x1b[0m\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1049l\x1b[?7h\x1b[?25h\r\n";
+pub const crash_restore_sequence = "\x1b[0m\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?1049l\x1b[?7h\x1b[?25h\r\n";
 
 /// Restores the terminal before a panic or segfault report. This also runs in a
 /// signal handler, so it must not allocate or touch the IO locks; the escape

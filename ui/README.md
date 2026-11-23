@@ -304,6 +304,7 @@ for (items.items) |item| switch (item) {
         var event = mouse;
         doc.dispatchMouse(target, &event);
     },
+    .focus => {},
 };
 ```
 
