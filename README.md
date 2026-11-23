@@ -1043,6 +1043,7 @@ console API for raw mode, sizing and input polling.
   pointer and highlights the title action, like the browser's `:hover`
   background. With one visible view the header merges into the
   container title.
+  Hovering a commit opens a plain-text summary in a rounded popup.
   Not ported: multi-diff "Open Changes" for a whole commit (only per-file
   diffs), context menus, drag/drop, chat, clipboard copy actions and Git write
   operations (checkout/cherry-pick/push/publish); the ref picker is

@@ -23,6 +23,8 @@
 //! draw both on cell edges; the glyph fallback reserves a cell for each line.
 //! The sidebar and bottom panel use the same rounded frame treatment, adapting
 //! the outlines in upstream's `floatingPanels.css` to the terminal grid.
+//! The SCM history hover adapts the rounded workbench hover from
+//! `src/vs/platform/hover/browser/hover.css` to the terminal cell grid.
 //!
 //! A split duplicates the active input into the new group, matching upstream
 //! `EditorGroupView.copyEditor`: both panes show the same `EditorDocument` and
@@ -10060,6 +10062,7 @@ pub const Workbench = struct {
         const content = view.hoverContent() orelse return;
         const rect = view.hoverRect() orelse return;
         const x = self.activityBarWidth() + self.sidebarWidth() + 1;
+        const y = ui.cell.snap(rect.y);
         if (x >= self.cols) return;
         const max_width = self.cols - x - 1;
         if (max_width < 12) return;
@@ -10067,7 +10070,7 @@ pub const Workbench = struct {
         for (content) |ch| {
             if (ch == '\n') lines += 1;
         }
-        const max_height = self.workbenchRows() -| ui.cell.snap(rect.y) -| 2;
+        const max_height = self.workbenchRows() -| y -| 2;
         if (max_height < scm_history_hover_chrome + 1) return;
         const size = scmHistoryHoverSize(max_width, max_height, lines);
 
@@ -10087,8 +10090,17 @@ pub const Workbench = struct {
             foreground = palette.color("editorHoverWidget.foreground", .{ 204, 204, 204 });
             border = palette.color("editorHoverWidget.border", .{ 69, 69, 69 });
         }
-        try paintScmHistoryHover(surface, content, size, background, foreground, border);
-        try self.frame.next.blit(surface.grid(), x, ui.cell.snap(rect.y), size.width, size.height);
+        const cells = &self.frame.next;
+        const caps = self.part.cell_border_capabilities;
+        const frame = if (caps.has(.round)) ui.cell.RoundedCellFrame.capture(cells, .{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(y),
+            .w = @floatFromInt(size.width),
+            .h = @floatFromInt(size.height),
+        }) else null;
+        try paintScmHistoryHover(surface, content, size, background, foreground, if (frame == null) border else null);
+        try cells.blit(surface.grid(), x, y, size.width, size.height);
+        if (frame) |rounded| rounded.paint(cells, caps, .{ .rgb = border });
     }
 
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
@@ -11963,11 +11975,10 @@ fn commandGitOpenFile(context: *anyopaque) anyerror!void {
     try self.openPath(diff.model.modified_path);
 }
 
-/// The SCM history hover is an `editorHoverWidget`: one cell of border plus
-/// one cell of content padding on every side. `ui` `width`/`height` describe
-/// the content box, so the allocated surface is the border box and the DOM
-/// root stays four cells smaller; sizing the root to the surface clipped the
-/// right and bottom edges.
+/// The hover insets its content two cells on every side. Glyph borders use
+/// one of those cells, while native borders are painted on the overlay edges.
+/// The DOM root uses content-box sizing, so each dimension is four cells
+/// smaller than the surface.
 const scm_history_hover_chrome: usize = 4;
 const scm_history_hover_max_width: usize = 60;
 const scm_history_hover_max_height: usize = 12;
@@ -11998,8 +12009,9 @@ fn paintScmHistoryHover(
     size: ScmHistoryHoverSize,
     background: ui.Color,
     foreground: ui.Color,
-    border: ui.Color,
+    glyph_border: ?ui.Color,
 ) !void {
+    const border_width: f64 = if (glyph_border != null) 1 else 0;
     const doc = surface.document();
     doc.clear();
     const root = try doc.createElement(.div);
@@ -12011,9 +12023,10 @@ fn paintScmHistoryHover(
         .height = .{ .cells = @floatFromInt(size.content_height) },
         .background = background,
         .color = foreground,
-        .border = .all(1),
-        .border_color = border,
-        .padding = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+        .border = .all(border_width),
+        .border_style = .rounded,
+        .border_color = glyph_border,
+        .padding = .all(2 - border_width),
         .white_space = .pre,
         .overflow = .hidden,
     });
@@ -18373,22 +18386,35 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(history_view.hoverContent() != null);
     history_view.clearHover();
 
-    // The history hover is a bordered overlay: every edge of its surface must
-    // carry a border glyph. The DOM root is four cells smaller than the
-    // surface (one cell border plus one cell padding on each side); sizing the
-    // content box to the whole surface used to clip the right/bottom edges.
+    // The history hover keeps all four rounded corners and the same content
+    // inset with either kind of border.
     history_view.hovered_row = 0;
     history_view.hover_content = try allocator.dupe(u8, "7d272ae workbench: report Explorer open failures on click\nA single click opened a preview editor and discarded the change.\nthat Enter and the async open path use, and keep focus in the editor.");
     var hovered_frame: std.Io.Writer.Allocating = .init(allocator);
     defer hovered_frame.deinit();
-    try workbench.render(&hovered_frame.writer);
-    const hover_surface = &(workbench.scm_hover_surface orelse return error.TestExpectedHoverSurface);
-    const hover_grid = hover_surface.grid();
-    try std.testing.expect(hover_grid.cols >= 12 and hover_grid.rows >= 5);
-    try std.testing.expectEqual(@as(u32, '┌'), hover_grid.cluster[0]);
-    try std.testing.expectEqual(@as(u32, '┐'), hover_grid.cluster[hover_grid.cols - 1]);
-    try std.testing.expectEqual(@as(u32, '└'), hover_grid.cluster[(hover_grid.rows - 1) * hover_grid.cols]);
-    try std.testing.expectEqual(@as(u32, '┘'), hover_grid.cluster[hover_grid.rows * hover_grid.cols - 1]);
+    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
+    for ([_]bool{ false, true }) |native| {
+        workbench.setCellBorderCapabilities(if (native) caps else null);
+        try workbench.render(&hovered_frame.writer);
+        const hover_surface = &(workbench.scm_hover_surface orelse return error.TestExpectedHoverSurface);
+        const hover_grid = hover_surface.grid();
+        try std.testing.expect(hover_grid.cols >= 12 and hover_grid.rows >= 5);
+        const cells = &workbench.frame.prev;
+        const left = workbench.activityBarWidth() + workbench.sidebarWidth() + 1;
+        const top = ui.cell.snap(history_view.hoverRect().?.y);
+        const right = left + hover_grid.cols - 1;
+        const bottom = top + hover_grid.rows - 1;
+        const joint = ui.cell_border.Joint;
+        for ([_]usize{ left, right, left, right }, [_]usize{ top, top, bottom, bottom }, [_]u32{ '╭', '╮', '╰', '╯' }, [_]u8{ joint.top_left, joint.top_right, joint.bottom_left, joint.bottom_right }) |x, y, glyph, round_joint| {
+            if (native) {
+                try std.testing.expectEqual(round_joint, cells.borderSetAt(x, y).joints);
+            } else {
+                try std.testing.expectEqual(glyph, cells.cluster[cells.index(x, y)]);
+            }
+        }
+        try std.testing.expectEqual(@as(u32, '7'), cells.cluster[cells.index(left + 2, top + 2)]);
+    }
+    workbench.setCellBorderCapabilities(null);
     history_view.clearHover();
 
     // Expanding the first commit appends its changed-file rows.

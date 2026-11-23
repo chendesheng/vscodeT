@@ -634,10 +634,10 @@ the split tree and promotes its sibling, mirroring Grid branch demotion.
 On hover and during resize, the sash fills a row or column of cells with
 VS Code's `sash.hoverBorder`, which defaults to `focusBorder`. In cell-border
 terminals, the highlight uses cells on one side of the shared edge.
-Modal dialogs, the breadcrumb picker and editor hovers use rounded cell edges
-when the terminal advertises `round` and rounded glyphs otherwise. The `radius`
-and `outside` extensions control the arc radius and fill the area outside each
-corner.
+Modal dialogs, the breadcrumb picker, editor hovers, and Source Control
+commit hovers use rounded cell edges when the terminal advertises `round`
+and rounded glyphs otherwise. The `radius` and `outside` extensions control
+the arc radius and fill the area outside each corner.
 An editor tab drag transfers the selected editors. Dragging the empty
 background of a tab strip transfers its whole group. A center drop moves or
 merges into the target group, an edge drop places a split on that side, and a
