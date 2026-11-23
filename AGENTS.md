@@ -231,6 +231,35 @@ state that in the comment and keep the behavioral contract intact.
   instead of inventing per-widget style tables. Implement the closest terminal
   rendering, document the substitution in the file header, and keep the
   upstream behavior and tests intact.
+
+### Porting CSS files
+
+When a ported widget needs rules from an upstream `.css` file, port that file
+by hand instead of copying the styling decisions into the widget:
+
+1. Put the port beside the upstream CSS, with `_css.zig` appended to the
+   basename: `.../viewLines/viewLines.css` ->
+   `.../viewLines/viewLines_css.zig`. Start with
+   `// Port of .../viewLines.css.` and list the browser-only rules that are
+   omitted.
+2. Assign a disjoint `u16` class-ID block in the table in `docs/css.md`.
+   Export a `Class` enum whose variants are named after the CSS classes and
+   whose values are `base + index`, a `styles` array in the same order, and a
+   `ui.css.Sheet { .base = base, .styles = &styles }`.
+3. Register the sheet in `src/vs/editor/browser/editorCss.zig`. The document
+   owns the array; `Document.clear()` preserves it. Re-register a range for a
+   themed sheet; do not rebuild class tables in each widget.
+4. Attach rules with `Node.addClass` / `Node.setClasses` using the enum names.
+   Keep inline `Style` only for computed geometry or values that cannot be a
+   class rule. Class list order is the cascade order; inline style wins.
+5. Resolve `var(--vscode-*)` at the TUI boundary by passing resolved colors
+   into the sheet. There is no custom-property engine. Omit selectors,
+   descendant matching, `!important`, media queries, animations, transitions,
+   `box-sizing`, radii, shadows and unit conversion; state the omission in the
+   file header and `docs/css.md`.
+6. Test the registration (`editorCss.zig`), the class attachment and the
+   resulting box/cell style, and keep the existing widget behavior and tests
+   intact. Update `docs/css.md` and the ported-file table when adding a sheet.
 - When a view part is genuinely browser-only (full HTML/CSS engine, browser
   event loop, compositor, native selection), isolate the missing piece, port
   the portable state/commands, wire what the TUI can support, and document the
