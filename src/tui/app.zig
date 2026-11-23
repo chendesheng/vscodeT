@@ -263,6 +263,7 @@ const RawStdoutWriter = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
+    diag("main start");
     // CheerpX's 32-bit Linux emulation does not service the threaded/io_uring
     // backend behind std.process.Init: the first file open and stdout write
     // fail with Unexpected/WriteFailed. The WebVM build is i386, so use the
@@ -308,12 +309,14 @@ pub fn main(init: std.process.Init) !void {
     vscode_environment.cli_logs_path = args.logs_path;
     var profile = try vscode_profile.discover(allocator, vscode_environment);
     defer profile.deinit();
+    diag("after profile");
 
     var file_logger: ?*logger.FileLogger = null;
-    const log_path = profile.mainLogPath(allocator) catch null;
-    defer if (log_path) |path| allocator.free(path);
-    if (log_path) |path| {
-        file_logger = logger.FileLogger.create(allocator, io, path) catch |err| blk: {
+    if (webvm_i386) {
+        diag("file logger skipped");
+    } else if (profile.mainLogPath(allocator) catch null) |log_path| {
+        defer allocator.free(log_path);
+        file_logger = logger.FileLogger.create(allocator, io, log_path) catch |err| blk: {
             std.debug.print("log file unavailable: {s}\n", .{@errorName(err)});
             break :blk null;
         };
