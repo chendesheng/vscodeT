@@ -93,10 +93,10 @@ test "breadcrumbsPicker: file tree expands folders inline" {
     defer grid.deinit();
     try file_picker.render(&grid);
     try std.testing.expect(ui.cell.snap(file_picker.rect.w) > 3);
-    // The overlay is anchored to the breadcrumb item's left edge; the arrow
-    // follows the cursor inside that item.
+    // The overlay is anchored to the breadcrumb item's left edge and has a
+    // continuous top border under the cursor.
     try std.testing.expectEqual(@as(usize, 3), ui.cell.snap(file_picker.rect.x));
-    try std.testing.expectEqual(@as(usize, 5), file_picker.arrow_offset);
+    try std.testing.expectEqual(@as(u32, '─'), grid.cluster[grid.index(8, ui.cell.snap(file_picker.rect.y))]);
 
     // Hovering the tree paints the ancestor guide under the parent's twistie.
     _ = file_picker.handleMouse(&.{ .kind = .move, .x = 6, .y = 3 });

@@ -17544,7 +17544,8 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
         const top = ui.cell.snap(picker.rect.y);
         const bottom = ui.cell.snap(picker.rect.bottom()) - 1;
         const cells = &workbench.frame.prev;
-        try std.testing.expect(std.mem.indexOfScalar(u32, cells.cluster[cells.index(left + 1, top)..cells.index(right, top)], '▲') != null);
+        const top_edge = cells.cluster[cells.index(left + 1, top)..cells.index(right, top)];
+        try std.testing.expect(std.mem.indexOfScalar(u32, top_edge, '▲') == null);
         if (caps != null) {
             const joint = ui.cell_border.Joint;
             try std.testing.expectEqual(joint.top_left, cells.borderSetAt(left, top).joints);

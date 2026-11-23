@@ -697,9 +697,9 @@ console API for raw mode, sizing and input polling.
   directories expand and collapse inline with the Explorer's twistie behavior,
   lazy-loading their children, and a file activates on Enter. Clicking a symbol
   opens the ported `BreadcrumbsOutlinePicker` over the same outline tree,
-  revealing the clicked element. This replaces the earlier quick-pick fallback;
-  the only terminal substitution is the anchored cell overlay in place of the
-  browser context view.
+  revealing the clicked element. This replaces the earlier quick-pick fallback.
+  The terminal uses a continuous rounded frame in place of the browser context
+  view's border and CSS pointer.
   Symbol segments are supplied by the ported `IOutlineService`/`IOutline`
   plumbing. The real TypeScript extension registers a document-symbol provider
   for TS/JS files; other languages still show only the file path until an

@@ -743,8 +743,9 @@ them; a file segment starts with the Explorer's Nerd Font file icon (glyph and
 color), while folder segments have no icon, matching upstream's `hideIcon`;
 focused/selected items are underlined and white, hovered items brighten,
 and long paths drop leading items behind `…`. A directory/file click opens an
-anchored cell overlay under the clicked item (the terminal replacement for the
-browser context view). The overlay hosts the ported `BreadcrumbsFilePicker` /
+anchored cell overlay under the clicked item. The terminal overlay uses a
+continuous rounded frame in place of the browser context view's border and
+CSS pointer. The overlay hosts the ported `BreadcrumbsFilePicker` /
 `BreadcrumbsOutlinePicker` `AsyncDataTree`s, so directories and nested symbols
 expand and collapse inline with the Explorer's twistie behavior and lazy
 directory loading. `Left`/`Right` collapse/expand the selected node,

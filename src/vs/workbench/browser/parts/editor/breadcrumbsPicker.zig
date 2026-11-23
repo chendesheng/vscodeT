@@ -10,7 +10,8 @@
 //
 // Terminal adaptations: `IFileService.resolve` becomes direct `Io.Dir`
 // iteration with synchronous children; the browser context view is replaced by
-// an anchored cell overlay because the terminal has no DOM/CSS context view.
+// an anchored cell overlay with a continuous rounded frame because the
+// terminal has no DOM/CSS context view or CSS pointer.
 // The tree behavior and data flow stay upstream-shaped.
 
 const std = @import("std");
@@ -162,9 +163,8 @@ pub const FolderRef = struct {
     name: []const u8,
 };
 
-/// Port of upstream's `event.node` plus `event.payload.posx`: the picker is
-/// anchored to the breadcrumb item rectangle, not to the mouse cursor. The
-/// arrow offset still follows the cursor for mouse activation.
+/// Port of upstream's `event.node` plus `event.payload.posx` for positioning
+/// the picker relative to the breadcrumb item within the viewport.
 pub const Anchor = struct {
     start: usize,
     end: usize,
@@ -199,7 +199,6 @@ pub const FilePicker = struct {
     folders: []const FolderRef = &.{},
     anchor: Anchor = .{ .start = 0, .end = 0 },
     anchor_y: usize = 0,
-    arrow_offset: usize = 0,
     rect: ui.Rect = .{},
     visible: bool = false,
     theme: ?*const theme_colors_mod.ThemeColors = null,
@@ -290,11 +289,9 @@ pub const FilePicker = struct {
 
     fn renderWithBorderCapabilities(self: *FilePicker, grid: *ui.CellGrid, caps: ui.cell_border.Capabilities) !void {
         if (!self.visible) return;
-        const layout = overlayLayout(self.anchor, self.anchor_y, grid.cols, grid.rows);
-        self.rect = layout.rect;
-        self.arrow_offset = layout.arrow_offset;
+        self.rect = overlayLayout(self.anchor, self.anchor_y, grid.cols, grid.rows);
         if (ui.cell.snap(self.rect.w) < 3 or ui.cell.snap(self.rect.h) < 3) return;
-        renderOverlayFrame(grid, self.rect, self.theme, self.arrow_offset, caps);
+        renderOverlayFrame(grid, self.rect, self.theme, caps);
         self.tree.render(grid, innerRect(self.rect));
     }
 
@@ -339,7 +336,6 @@ pub const OutlinePicker = struct {
     outline: ?*outline_mod.IOutline = null,
     anchor: Anchor = .{ .start = 0, .end = 0 },
     anchor_y: usize = 0,
-    arrow_offset: usize = 0,
     rect: ui.Rect = .{},
     visible: bool = false,
     theme: ?*const theme_colors_mod.ThemeColors = null,
@@ -428,11 +424,9 @@ pub const OutlinePicker = struct {
 
     pub fn render(self: *OutlinePicker, grid: *ui.CellGrid, caps: ui.cell_border.Capabilities) !void {
         if (!self.visible) return;
-        const layout = overlayLayout(self.anchor, self.anchor_y, grid.cols, grid.rows);
-        self.rect = layout.rect;
-        self.arrow_offset = layout.arrow_offset;
+        self.rect = overlayLayout(self.anchor, self.anchor_y, grid.cols, grid.rows);
         if (ui.cell.snap(self.rect.w) < 3 or ui.cell.snap(self.rect.h) < 3) return;
-        renderOverlayFrame(grid, self.rect, self.theme, self.arrow_offset, caps);
+        renderOverlayFrame(grid, self.rect, self.theme, caps);
         self.tree.render(grid, innerRect(self.rect));
     }
 
@@ -775,38 +769,21 @@ fn rowPaint(theme: ?*const theme_colors_mod.ThemeColors, row: *const list_mod.Ro
     return .{ .fg = ui.cell.packColor(fg), .bg = ui.cell.packColor(bg) };
 }
 
-const OverlayLayout = struct {
-    rect: ui.Rect,
-    arrow_offset: usize,
-};
-
-/// Port of the context-view anchor math: left edge from the breadcrumb item,
-/// arrow from the mouse cursor (or 30% into the item for keyboard activation).
-fn overlayLayout(anchor: Anchor, anchor_y: usize, cols: usize, rows: usize) OverlayLayout {
+/// Port of the context-view anchor math. Keep the anchor column within the
+/// frame as the picker shifts to fit the viewport.
+fn overlayLayout(anchor: Anchor, anchor_y: usize, cols: usize, rows: usize) ui.Rect {
     const width = @min(cols, @min(@max(cols -| 4, 20), 64));
     const height = @min(rows, @min(@max(rows -| 3, 4), 14));
-    var x = anchor.start;
-    if (x + width > cols) x = cols -| width;
-    var arrow_offset = if (anchor.cursor) |cursor| cursor -| x else blk: {
-        const item_width = anchor.end -| anchor.start;
-        break :blk (anchor.start + item_width * 3 / 10) -| x;
-    };
-    const max_arrow = width -| 2;
-    if (arrow_offset > max_arrow) {
-        x = @min(cols -| width, x + arrow_offset - max_arrow);
-        arrow_offset = max_arrow;
-    }
+    const anchor_column = anchor.cursor orelse anchor.start + (anchor.end -| anchor.start) * 3 / 10;
+    const x = @min(cols -| width, @max(anchor.start, anchor_column -| (width -| 2)));
     var y = anchor_y + 1;
     if (y + height > rows) y = anchor_y -| height;
     if (y + height > rows) y = rows -| height;
     return .{
-        .rect = .{
-            .x = @floatFromInt(x),
-            .y = @floatFromInt(y),
-            .w = @floatFromInt(width),
-            .h = @floatFromInt(height),
-        },
-        .arrow_offset = arrow_offset,
+        .x = @floatFromInt(x),
+        .y = @floatFromInt(y),
+        .w = @floatFromInt(width),
+        .h = @floatFromInt(height),
     };
 }
 
@@ -819,12 +796,7 @@ fn innerRect(rect: ui.Rect) ui.Rect {
     };
 }
 
-fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_colors_mod.ThemeColors, arrow_offset: usize, caps: ui.cell_border.Capabilities) void {
-    const x = ui.cell.snap(rect.x);
-    const y = ui.cell.snap(rect.y);
-    const width = ui.cell.snap(rect.w);
-    const height = ui.cell.snap(rect.h);
-    if (width < 3 or height < 3) return;
+fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_colors_mod.ThemeColors, caps: ui.cell_border.Capabilities) void {
     const bg = if (theme) |palette| palette.color("menu.background", .{ 37, 37, 38 }) else ui.Color{ .r = 37, .g = 37, .b = 38 };
     const fg = if (theme) |palette| palette.color("menu.foreground", .{ 204, 204, 204 }) else ui.Color{ .r = 204, .g = 204, .b = 204 };
     const border = if (theme) |palette| palette.color("widget.border", .{ 69, 69, 69 }) else ui.Color{ .r = 69, .g = 69, .b = 69 };
@@ -838,8 +810,6 @@ fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_co
     } else {
         grid.paintRoundedFrame(rect, border_style);
     }
-    const arrow = x + std.math.clamp(arrow_offset, 1, width - 2);
-    grid.putCodepoint(arrow, y, '▲', 1, border_style);
 }
 
 fn findElementInTree(roots: []const outline_mod.TreeElement, element: *anyopaque) ?outline_mod.TreeElement {
