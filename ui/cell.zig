@@ -367,6 +367,88 @@ pub const CellGrid = struct {
         }
     }
 
+    /// Paints a color over the cells already on screen. Foreground and
+    /// background blend independently, leaving glyphs and attributes intact.
+    pub fn tintRect(self: *CellGrid, rect: style.Rect, color: style.Color, alpha: f32, defaults: PaintStyle) void {
+        if (alpha <= 0 or rect.w <= 0 or rect.h <= 0) return;
+        const left = @min(self.cols, snap(rect.x));
+        const right = @min(self.cols, snap(rect.right()));
+        var row = @min(self.rows, snap(rect.y));
+        const bottom = @min(self.rows, snap(rect.bottom()));
+        if (left >= right) return;
+        while (row < bottom) : (row += 1) {
+            // A terminal writes both cells of a wide glyph together.
+            const start = if (left > 0 and self.widthAt(left - 1, row) == 2) left - 1 else left;
+            const end = if (right < self.cols and self.widthAt(right - 1, row) == 2) right + 1 else right;
+            for (start..end) |col| {
+                const i = self.index(col, row);
+                self.fg[i] = blendColor(color, alpha, if (self.fg[i] == 0) defaults.fg else self.fg[i]);
+                self.bg[i] = blendColor(color, alpha, if (self.bg[i] == 0) defaults.bg else self.bg[i]);
+            }
+        }
+    }
+
+    fn blendColor(color: style.Color, alpha: f32, base: u32) u32 {
+        if (alpha >= 1) return packColor(color);
+        const background = unpackColor(base);
+        return packColor(.{
+            .r = blendChannel(color.r, alpha, background.r),
+            .g = blendChannel(color.g, alpha, background.g),
+            .b = blendChannel(color.b, alpha, background.b),
+        });
+    }
+
+    fn blendChannel(top: u8, alpha: f32, bottom: u8) u8 {
+        return @intFromFloat(@round(@as(f32, @floatFromInt(top)) * alpha + @as(f32, @floatFromInt(bottom)) * (1 - alpha)));
+    }
+
+    /// Captures the already-painted cells of a tab or another one-line view.
+    pub fn captureRow(self: *const CellGrid, allocator: std.mem.Allocator, left: usize, row: usize, width: usize) !CellGrid {
+        std.debug.assert(row < self.rows and left < self.cols and width > 0 and width <= self.cols - left);
+        var image = try CellGrid.init(allocator, width, 1);
+        errdefer image.deinit();
+        for (0..width) |col| {
+            const x = left + col;
+            const i = self.index(x, row);
+            const paint: PaintStyle = .{ .fg = self.fg[i], .bg = self.bg[i], .attrs = self.attrs[i] };
+            const cells = self.widthAt(x, row);
+            if (cells != 0 and !(cells == 2 and col + 1 == width)) {
+                const glyph = self.graphemeAt(x, row);
+                if (glyph.len > 0) {
+                    try image.putGrapheme(col, 0, glyph, cells, paint);
+                } else {
+                    image.putCodepoint(col, 0, @intCast(self.cluster[i]), cells, paint);
+                }
+            } else if (col == 0 or self.widthAt(x - 1, row) != 2) {
+                image.putSpace(col, 0, paint);
+            }
+            image.border[col] = image.borders.remap(self.borders, self.border[i]);
+        }
+        return image;
+    }
+
+    /// Composites a drag image without changing layout or hit testing.
+    pub fn paintImage(self: *CellGrid, image: *const CellGrid, x: usize, y: usize) !void {
+        if (x >= self.cols or y >= self.rows) return;
+        const width = @min(image.cols, self.cols - x);
+        const height = @min(image.rows, self.rows - y);
+        for (0..height) |row| {
+            if (x > 0 and self.widthAt(x - 1, y + row) == 2) self.blankGlyph(x - 1, y + row);
+            if (x + width < self.cols and self.widthAt(x + width - 1, y + row) == 2) self.blankGlyph(x + width, y + row);
+        }
+        try self.blit(image, x, y, width, height);
+        if (width < image.cols) {
+            for (0..height) |row| {
+                if (image.widthAt(width - 1, row) == 2) self.blankGlyph(x + width - 1, y + row);
+            }
+        }
+    }
+
+    fn blankGlyph(self: *CellGrid, x: usize, y: usize) void {
+        const i = self.index(x, y);
+        self.putSpace(x, y, .{ .fg = self.fg[i], .bg = self.bg[i], .attrs = self.attrs[i] });
+    }
+
     /// Removes cell borders from a rectangle without touching glyphs or
     /// colors. Overlays such as a quick pick must call this where they paint,
     /// because the normal text/background primitives preserve a parent's
@@ -484,6 +566,30 @@ pub const CellGrid = struct {
 pub fn snap(value: f64) usize {
     if (!(value > 0)) return 0;
     return @intFromFloat(@round(value));
+}
+
+test "CellGrid drag overlays preserve wide text and clip the image" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 6, 2);
+    defer grid.deinit();
+    const defaults: PaintStyle = .{
+        .fg = packColor(.{ .r = 200, .g = 200, .b = 200 }),
+        .bg = packColor(.{ .r = 20, .g = 20, .b = 20 }),
+    };
+    grid.putCodepoint(1, 0, '界', 2, defaults);
+    grid.tintRect(.{ .x = 2, .y = 0, .w = 2, .h = 1 }, .{ .r = 100, .g = 100, .b = 100 }, 0.5, defaults);
+    try std.testing.expectEqual(@as(u32, '界'), grid.cluster[grid.index(1, 0)]);
+    try std.testing.expectEqual(@as(usize, 2), grid.widthAt(1, 0));
+    try std.testing.expectEqual(@as(usize, 0), grid.widthAt(2, 0));
+    try std.testing.expectEqual(@as(u8, 60), unpackColor(grid.bg[grid.index(1, 0)]).r);
+    try std.testing.expectEqual(grid.bg[grid.index(1, 0)], grid.bg[grid.index(2, 0)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.bg[grid.index(0, 0)]);
+
+    var captured = try grid.captureRow(allocator, 1, 0, 2);
+    defer captured.deinit();
+    try grid.paintImage(&captured, 5, 1);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(5, 1)]);
+    try std.testing.expectEqual(@as(usize, 1), grid.widthAt(5, 1));
 }
 
 test "CellGrid stores wide glyphs and continuation cells" {

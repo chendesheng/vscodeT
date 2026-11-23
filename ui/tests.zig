@@ -6,6 +6,7 @@ comptime {
     _ = @import("css.zig");
     _ = @import("dialog.zig");
     _ = @import("dom.zig");
+    _ = @import("drag_drop.zig");
     _ = @import("event.zig");
     _ = @import("frame.zig");
     _ = @import("image.zig");

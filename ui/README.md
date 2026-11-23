@@ -307,6 +307,15 @@ for (items.items) |item| switch (item) {
 };
 ```
 
+`ui.DragSession(Source, Target, Payload)` uses these mouse events to run a local
+drag. The host arms a draggable source on press and supplies `dragTarget` and
+`dispatchDrag`. A `dragstart` handler can set a payload and transfer a painted
+cell grid through `setDragImage`. A `dragover` handler accepts a target with
+`preventDefault` and a move or copy effect. The session checks that target
+again on release. Call `cancel` when the source is removed or the terminal
+loses focus. Call `paintImage` after ordinary painting to draw the preview
+without changing hit testing.
+
 `Surface.elementFromPoint` solves pending layout, walks the box tree in reverse
 paint order and clips to `overflow: hidden`/`clip`, so the deepest, topmost
 element under a cell wins. A text box reports its parent element, matching
