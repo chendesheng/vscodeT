@@ -9,11 +9,17 @@
 //
 // Terminal adaptation: the title control is the one-cell tab strip, and each
 // tab owns a persistent editor view (the pane) instead of the browser reusing
-// one pane per editor type. `Tab` is therefore a comptime parameter with two
+// one pane per editor type. `Tab` is therefore a comptime parameter with these
 // methods:
 //
 //   editorInput(self: *Tab) *EditorInput
 //   layoutCells(self: *Tab, width: usize, height: usize) void
+//   focusEditor(self: *Tab) void
+//
+// Upstream forwards `EditorPane.onDidFocus` through `EditorPanes` into
+// `EditorGroupView.onDidFocus`; the terminal view has no DOM focus tracker, so
+// `focus()` emits the group focus event directly after focusing the active
+// pane. The part consumes that event the same way upstream does.
 //
 // Tab rendering and input handling live in `editorPane.zig`, and the
 // tab-strip layout/paint in `multiEditorTabsControl.zig`; this file only
@@ -24,6 +30,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const editorPanes = @import("editorPanes.zig");
 const tab_bar = @import("multiEditorTabsControl.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
@@ -69,6 +76,9 @@ pub fn EditorGroupView(comptime View: type) type {
         /// `workbench.editor.showTabs`: none/single can hide the title row.
         tabs_visible: bool = true,
         panes: editorPanes.EditorPanes(View) = .{},
+        /// Upstream `EditorGroupView.onDidFocus`. The part listens to this to
+        /// make a focused group the active group (`doSetGroupActive`).
+        on_did_focus: Emitter(*Self),
 
         pub fn init(allocator: Allocator, group: *editor_groups.EditorGroup) Self {
             return .{
@@ -76,6 +86,7 @@ pub fn EditorGroupView(comptime View: type) type {
                 .group = group,
                 .tabs = std.array_list.Managed(View).init(allocator),
                 .hits = std.array_list.Managed(TabHit).init(allocator),
+                .on_did_focus = Emitter(*Self).init(allocator),
             };
         }
 
@@ -84,6 +95,7 @@ pub fn EditorGroupView(comptime View: type) type {
         pub fn deinit(self: *Self) void {
             for (self.tabs.items) |tab| tab.deinit();
             self.panes.clearActive();
+            self.on_did_focus.deinit();
             self.hits.deinit();
             self.tabs.deinit();
         }
@@ -185,6 +197,15 @@ pub fn EditorGroupView(comptime View: type) type {
             self.panes.closeEditor(input);
         }
 
+        /// Upstream `EditorGroupView.focus()`: pass focus to the active editor
+        /// pane, then fire `onDidFocus`. An empty group focuses its container
+        /// upstream; the terminal group has no focusable container, so only the
+        /// event remains.
+        pub fn focus(self: *Self) void {
+            if (self.activeTab()) |tab| tab.focusEditor();
+            self.on_did_focus.fire(self) catch {};
+        }
+
         /// Upstream `layout(pagePosition)`: assign the group rectangle and lay
         /// out the title control, the breadcrumb bar and the visible editor
         /// pane. Panes activated later re-use this position.
@@ -248,6 +269,7 @@ const TestInput = struct {
 const TestTab = struct {
     input: *TestInput,
     layouts: usize = 0,
+    focuses: usize = 0,
     width: usize = 0,
     height: usize = 0,
 
@@ -259,6 +281,10 @@ const TestTab = struct {
         self.layouts += 1;
         self.width = width;
         self.height = height;
+    }
+
+    pub fn focusEditor(self: *TestTab) void {
+        self.focuses += 1;
     }
 
     pub fn deinit(self: *TestTab) void {
@@ -370,4 +396,47 @@ test "EditorGroupView: removing the active tab clears the pane and sync follows 
 
     view.syncActivePane();
     try std.testing.expectEqual(&first_tab, view.panes.activePane().?);
+}
+
+test "EditorGroupView: focus forwards to the active pane and fires onDidFocus" {
+    const allocator = std.testing.allocator;
+    const service = try testGroup(allocator);
+    const group = service.activeGroup();
+
+    const input = try TestInput.create(allocator, "focus");
+    defer input.deinit();
+    // The model unlistens from its inputs, so dispose it before the input.
+    defer service.deinit();
+    var tab = TestTab{ .input = input };
+    const View = EditorGroupView(*TestTab);
+    var view = View.init(allocator, group);
+    defer view.deinit();
+
+    _ = try group.model.openEditor(&input.base, .{ .pinned = true, .active = true });
+    try view.addTab(&tab);
+
+    var focused: usize = 0;
+    _ = try view.on_did_focus.listen(&focused, struct {
+        fn cb(_: *View, count: *usize) anyerror!void {
+            count.* += 1;
+        }
+    }.cb);
+
+    view.focus();
+    try std.testing.expectEqual(@as(usize, 1), tab.focuses);
+    try std.testing.expectEqual(@as(usize, 1), focused);
+
+    // An empty group still fires the focus event; only the pane focus is skipped.
+    const other = try testGroup(allocator);
+    defer other.deinit();
+    var empty = View.init(allocator, other.activeGroup());
+    defer empty.deinit();
+    var empty_focused: usize = 0;
+    _ = try empty.on_did_focus.listen(&empty_focused, struct {
+        fn cb(_: *View, count: *usize) anyerror!void {
+            count.* += 1;
+        }
+    }.cb);
+    empty.focus();
+    try std.testing.expectEqual(@as(usize, 1), empty_focused);
 }

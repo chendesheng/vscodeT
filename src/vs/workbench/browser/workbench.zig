@@ -9797,9 +9797,14 @@ pub const Workbench = struct {
         }
 
         if (!pane.tabs_visible or event.y != pane_y) {
-            if (pane.tabs.items.len > 0 and event.kind == .down and pane.tabs_visible) {
-                self.service.activateGroup(pane.group);
-            }
+            // Upstream: the browser focuses the editor pane on a body press,
+            // and `EditorGroupView.onDidFocus` makes the group active
+            // (`EditorPart.doSetGroupActive`). The terminal view has no DOM
+            // focus-on-mousedown, so a press that brings focus into the group
+            // calls the ported `focus()`; a press inside the already-active
+            // group stays with the UI focus handling so clicks on its widgets
+            // are not blurred first. This does not depend on the title row.
+            if (event.kind == .down and pane.group != self.service.activeGroup()) pane.focus();
             return false;
         }
 
@@ -13845,6 +13850,72 @@ test "Workbench: split duplicates the active editor and shares its buffer" {
     try workbench.splitActive(.vertical);
     try std.testing.expectEqual(@as(usize, 3), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 4), workbench.tabCount());
+}
+
+test "Workbench: clicking a pane body focuses its group" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "click_focus.txt", "alpha\nbeta");
+    defer allocator.free(path);
+
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    workbench.ensureConfigurationReady();
+    try workbench.splitActive(.horizontal);
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    const first = workbench.part.group_views.items[0];
+    const second = workbench.part.group_views.items[1];
+    try std.testing.expect(workbench.activePane().? == second);
+    try std.testing.expect(first.tabs_visible and second.tabs_visible);
+
+    // Tabs visible: a press on the group body (not its title control) focuses
+    // the group and is translated for the group's active editor.
+    var click = ui.MouseEvent{
+        .kind = .down,
+        .x = ui.cell.snap(first.rect.x) + 2,
+        .y = ui.cell.snap(first.rect.y) + first.chromeHeight() + 1,
+        .button = .left,
+    };
+    try std.testing.expect(!workbench.handleTabMouse(&click));
+    try std.testing.expect(workbench.activePane().? == first);
+    try std.testing.expect(workbench.activeTab() == first.activeTab());
+    var adjusted = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), adjusted.x);
+    try std.testing.expectEqual(@as(usize, 1), adjusted.y);
+
+    // `workbench.editor.showTabs: single` hides a one-tab strip; the body press
+    // must still focus the group (the regression this guards).
+    workbench.ensureConfigurationReady();
+    try workbench.setUserConfigurationValue("workbench.editor.showTabs", .{ .string = "single" });
+    workbench.layoutAll();
+    try std.testing.expect(!first.tabs_visible and !second.tabs_visible);
+
+    click = .{
+        .kind = .down,
+        .x = ui.cell.snap(second.rect.x) + 2,
+        .y = ui.cell.snap(second.rect.y) + second.chromeHeight() + 1,
+        .button = .left,
+    };
+    try std.testing.expect(!workbench.handleTabMouse(&click));
+    try std.testing.expect(workbench.activePane().? == second);
+    try std.testing.expect(workbench.activeTab() == second.activeTab());
+    adjusted = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), adjusted.x);
+    try std.testing.expectEqual(@as(usize, 1), adjusted.y);
 }
 
 test "Workbench: editor group focus, new group and close group commands" {

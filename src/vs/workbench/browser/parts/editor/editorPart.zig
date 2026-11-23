@@ -14,6 +14,7 @@
 //   init(allocator, group) GroupView
 //   deinit() void
 //   layout() void
+//   on_did_focus: Emitter(*GroupView)
 //
 // The part owns the group views and destroys them in `deinit`; the TUI group
 // view destroys its tab views there as well.
@@ -22,6 +23,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const grid = @import("../../../../base/browser/ui/grid/grid.zig");
 const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
@@ -322,8 +324,15 @@ pub fn EditorPart(comptime GroupView: type) type {
             errdefer self.allocator.destroy(view);
             view.* = GroupView.init(self.allocator, group);
             errdefer view.deinit();
+            // Upstream `doCreateGroupView`: a focused group becomes the active
+            // group (`doSetGroupActive`); the group view owns the focus event.
+            _ = try view.on_did_focus.listen(self, onGroupDidFocus);
             try self.group_views.append(view);
             return view;
+        }
+
+        fn onGroupDidFocus(view: *GroupView, self: *Self) anyerror!void {
+            self.service.activateGroup(view.group);
         }
 
         fn findDivider(
@@ -382,18 +391,23 @@ const TestView = struct {
     rect: ui.Rect = .{},
     layouts: usize = 0,
     deinited: bool = false,
+    on_did_focus: Emitter(*TestView),
 
     pub fn init(allocator: Allocator, group: *editor_groups.EditorGroup) TestView {
-        _ = allocator;
-        return .{ .group = group };
+        return .{ .group = group, .on_did_focus = Emitter(*TestView).init(allocator) };
     }
 
     pub fn deinit(self: *TestView) void {
         self.deinited = true;
+        self.on_did_focus.deinit();
     }
 
     pub fn layout(self: *TestView) void {
         self.layouts += 1;
+    }
+
+    pub fn focus(self: *TestView) void {
+        self.on_did_focus.fire(self) catch {};
     }
 };
 
@@ -482,4 +496,25 @@ test "EditorPart: sash drag clamps the split ratio to the pane minimums" {
     // Dragging past the minimum clamps to the minimum pane width.
     part.resizeSash(part.root, 1, 2);
     try std.testing.expectEqual(@as(usize, min_pane_width), ui.cell.snap(first.rect.w));
+}
+
+test "EditorPart: a focused group becomes the active group" {
+    const allocator = std.testing.allocator;
+    const service = try editor_groups.EditorGroupsService.init(allocator, .{});
+    defer service.deinit();
+
+    const part = try TestPart.init(allocator, service);
+    defer part.deinit();
+
+    const first = part.group_views.items[0];
+    const second = try part.splitGroup(first, .horizontal, false);
+    try std.testing.expectEqual(second, part.activeView().?);
+
+    first.focus();
+    try std.testing.expectEqual(first.group, service.activeGroup());
+    try std.testing.expectEqual(first, part.activeView().?);
+
+    second.focus();
+    try std.testing.expectEqual(second.group, service.activeGroup());
+    try std.testing.expectEqual(second, part.activeView().?);
 }
