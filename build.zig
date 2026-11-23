@@ -146,7 +146,7 @@ fn ghosttyVtModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.M
     // scalar fallback there; the other platforms keep SIMD enabled.
     const dep = b.lazyDependency("ghostty", .{
         .@"vt-features" = "-kitty-graphics",
-        .simd = target.result.os.tag != .windows and target.result.cpu.arch != .x86,
+        .simd = target.result.os.tag != .windows and target.result.cpu.arch != .x86 and target.result.cpu.arch != .aarch64,
     }) orelse @panic("libghostty-vt dependency was not resolved");
     return dep.module("ghostty-vt");
 }
