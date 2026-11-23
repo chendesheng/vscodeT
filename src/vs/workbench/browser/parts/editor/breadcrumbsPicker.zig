@@ -285,12 +285,16 @@ pub const FilePicker = struct {
     }
 
     pub fn render(self: *FilePicker, grid: *ui.CellGrid) !void {
+        return self.renderWithBorderCapabilities(grid, .{});
+    }
+
+    fn renderWithBorderCapabilities(self: *FilePicker, grid: *ui.CellGrid, caps: ui.cell_border.Capabilities) !void {
         if (!self.visible) return;
         const layout = overlayLayout(self.anchor, self.anchor_y, grid.cols, grid.rows);
         self.rect = layout.rect;
         self.arrow_offset = layout.arrow_offset;
         if (ui.cell.snap(self.rect.w) < 3 or ui.cell.snap(self.rect.h) < 3) return;
-        renderOverlayFrame(grid, self.rect, self.theme, self.arrow_offset);
+        renderOverlayFrame(grid, self.rect, self.theme, self.arrow_offset, caps);
         self.tree.render(grid, innerRect(self.rect));
     }
 
@@ -422,13 +426,13 @@ pub const OutlinePicker = struct {
         return element.label;
     }
 
-    pub fn render(self: *OutlinePicker, grid: *ui.CellGrid) !void {
+    pub fn render(self: *OutlinePicker, grid: *ui.CellGrid, caps: ui.cell_border.Capabilities) !void {
         if (!self.visible) return;
         const layout = overlayLayout(self.anchor, self.anchor_y, grid.cols, grid.rows);
         self.rect = layout.rect;
         self.arrow_offset = layout.arrow_offset;
         if (ui.cell.snap(self.rect.w) < 3 or ui.cell.snap(self.rect.h) < 3) return;
-        renderOverlayFrame(grid, self.rect, self.theme, self.arrow_offset);
+        renderOverlayFrame(grid, self.rect, self.theme, self.arrow_offset, caps);
         self.tree.render(grid, innerRect(self.rect));
     }
 
@@ -552,9 +556,9 @@ pub const Picker = struct {
         if (self.outline) |picker| picker.close();
     }
 
-    pub fn render(self: *Picker, grid: *ui.CellGrid) !void {
-        if (self.file) |picker| if (picker.isVisible()) return picker.render(grid);
-        if (self.outline) |picker| if (picker.isVisible()) return picker.render(grid);
+    pub fn render(self: *Picker, grid: *ui.CellGrid, caps: ui.cell_border.Capabilities) !void {
+        if (self.file) |picker| if (picker.isVisible()) return picker.renderWithBorderCapabilities(grid, caps);
+        if (self.outline) |picker| if (picker.isVisible()) return picker.render(grid, caps);
     }
 
     pub fn handleKey(self: *Picker, event: *const ui.KeyEvent) bool {
@@ -779,8 +783,8 @@ const OverlayLayout = struct {
 /// Port of the context-view anchor math: left edge from the breadcrumb item,
 /// arrow from the mouse cursor (or 30% into the item for keyboard activation).
 fn overlayLayout(anchor: Anchor, anchor_y: usize, cols: usize, rows: usize) OverlayLayout {
-    const width = @min(@max(cols -| 4, 20), 64);
-    const height = @min(@max(rows -| 3, 4), 14);
+    const width = @min(cols, @min(@max(cols -| 4, 20), 64));
+    const height = @min(rows, @min(@max(rows -| 3, 4), 14));
     var x = anchor.start;
     if (x + width > cols) x = cols -| width;
     var arrow_offset = if (anchor.cursor) |cursor| cursor -| x else blk: {
@@ -815,7 +819,7 @@ fn innerRect(rect: ui.Rect) ui.Rect {
     };
 }
 
-fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_colors_mod.ThemeColors, arrow_offset: usize) void {
+fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_colors_mod.ThemeColors, arrow_offset: usize, caps: ui.cell_border.Capabilities) void {
     const x = ui.cell.snap(rect.x);
     const y = ui.cell.snap(rect.y);
     const width = ui.cell.snap(rect.w);
@@ -826,24 +830,16 @@ fn renderOverlayFrame(grid: *ui.CellGrid, rect: ui.Rect, theme: ?*const theme_co
     const border = if (theme) |palette| palette.color("widget.border", .{ 69, 69, 69 }) else ui.Color{ .r = 69, .g = 69, .b = 69 };
     const background = ui.cell.PaintStyle{ .bg = ui.cell.packColor(bg), .fg = ui.cell.packColor(fg) };
     const border_style = ui.cell.PaintStyle{ .bg = ui.cell.packColor(bg), .fg = ui.cell.packColor(border) };
-    grid.fillRect(rect.x, rect.y, rect.w, rect.h, background);
+    const frame = if (caps.has(.round)) ui.cell.RoundedCellFrame.capture(grid, rect) else null;
     grid.clearBordersRect(rect.x, rect.y, rect.w, rect.h);
-    grid.putCodepoint(x, y, 0x250C, 1, border_style);
-    grid.putCodepoint(x + width - 1, y, 0x2510, 1, border_style);
-    grid.putCodepoint(x, y + height - 1, 0x2514, 1, border_style);
-    grid.putCodepoint(x + width - 1, y + height - 1, 0x2518, 1, border_style);
-    var col: usize = 1;
-    while (col + 1 < width) : (col += 1) {
-        grid.putCodepoint(x + col, y, 0x2500, 1, border_style);
-        grid.putCodepoint(x + col, y + height - 1, 0x2500, 1, border_style);
+    grid.fillRect(rect.x, rect.y, rect.w, rect.h, background);
+    if (frame) |native| {
+        native.paint(grid, caps, .{ .rgb = border });
+    } else {
+        grid.paintRoundedFrame(rect, border_style);
     }
-    var row: usize = 1;
-    while (row + 1 < height) : (row += 1) {
-        grid.putCodepoint(x, y + row, 0x2502, 1, border_style);
-        grid.putCodepoint(x + width - 1, y + row, 0x2502, 1, border_style);
-    }
-    const arrow = x + @min(arrow_offset, width -| 2);
-    grid.putCodepoint(arrow, y, 0x25B2, 1, border_style);
+    const arrow = x + std.math.clamp(arrow_offset, 1, width - 2);
+    grid.putCodepoint(arrow, y, '▲', 1, border_style);
 }
 
 fn findElementInTree(roots: []const outline_mod.TreeElement, element: *anyopaque) ?outline_mod.TreeElement {

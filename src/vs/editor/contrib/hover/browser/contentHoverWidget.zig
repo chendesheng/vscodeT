@@ -1,6 +1,6 @@
 // Port of `src/vs/editor/contrib/hover/browser/contentHoverWidget.ts`.
 //
-// Terminal adaptation: the hover is a bordered box anchored to the model
+// Terminal adaptation: the hover is a rounded box anchored to the model
 // position computed by `RenderedContentHover`. Upstream is a resizable content
 // widget with a sash, rounded border and pixel layout; terminal cells have no
 // resize handles, so the box auto-sizes to its contents and clamps to the text
@@ -364,7 +364,7 @@ pub const ContentHoverWidget = struct {
             .background = self.theme.background,
             .color = self.theme.foreground,
             .border = .all(@floatFromInt(border_width)),
-            .border_style = .single,
+            .border_style = .rounded,
             .border_color = if (self.focused) self.theme.focused_border else self.theme.border,
         });
         try root.addEventListener(.{ .context = self, .key_down = onKey });

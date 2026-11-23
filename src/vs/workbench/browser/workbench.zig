@@ -10163,7 +10163,7 @@ pub const Workbench = struct {
         }
         try self.renderScmHistoryHover();
         try self.quick_access.render(&self.frame.next);
-        if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next);
+        if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next, self.part.cell_border_capabilities);
         if (self.dialog) |dialog| dialog.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
         try self.editor_drag.paintImage(&self.frame.next, self.drag_tab_drop != null);
 
@@ -10349,6 +10349,7 @@ pub const Workbench = struct {
                 );
                 controllers.find.state.loop = self.findLoop();
             }
+            active.view.setCellBorderCapabilities(self.part.cell_border_capabilities);
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
         }
     }
@@ -17328,7 +17329,31 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     try std.testing.expect(!workbench.quick_access.inputService().isVisible());
     try std.testing.expect(workbench.breadcrumbPopupVisible());
     try std.testing.expect(workbench.breadcrumb_popup.?.file != null);
-    try std.testing.expect(workbench.breadcrumb_popup.?.file.?.selectedPath() != null);
+    const picker = workbench.breadcrumb_popup.?.file.?;
+    try std.testing.expect(picker.selectedPath() != null);
+    const rounded = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
+    for ([_]?ui.cell_border.Capabilities{ null, rounded }) |caps| {
+        workbench.setCellBorderCapabilities(caps);
+        try workbench.render(&out.writer);
+        const left = ui.cell.snap(picker.rect.x);
+        const right = ui.cell.snap(picker.rect.right()) - 1;
+        const top = ui.cell.snap(picker.rect.y);
+        const bottom = ui.cell.snap(picker.rect.bottom()) - 1;
+        const cells = &workbench.frame.prev;
+        try std.testing.expect(std.mem.indexOfScalar(u32, cells.cluster[cells.index(left + 1, top)..cells.index(right, top)], '▲') != null);
+        if (caps != null) {
+            const joint = ui.cell_border.Joint;
+            try std.testing.expectEqual(joint.top_left, cells.borderSetAt(left, top).joints);
+            try std.testing.expectEqual(joint.top_right, cells.borderSetAt(right, top).joints);
+            try std.testing.expectEqual(joint.bottom_left, cells.borderSetAt(left, bottom).joints);
+            try std.testing.expectEqual(joint.bottom_right, cells.borderSetAt(right, bottom).joints);
+        } else {
+            try std.testing.expectEqual(@as(u32, '╭'), cells.cluster[cells.index(left, top)]);
+            try std.testing.expectEqual(@as(u32, '╮'), cells.cluster[cells.index(right, top)]);
+            try std.testing.expectEqual(@as(u32, '╰'), cells.cluster[cells.index(left, bottom)]);
+            try std.testing.expectEqual(@as(u32, '╯'), cells.cluster[cells.index(right, bottom)]);
+        }
+    }
     var escape = ui.KeyEvent{ .key = .escape };
     try std.testing.expect(workbench.handleBreadcrumbPopupKey(&escape));
     try std.testing.expect(!workbench.breadcrumbPopupVisible());
@@ -19316,7 +19341,7 @@ test "Workbench: inactive breadcrumbs reuse a persistent control" {
     try std.testing.expectEqual(first, workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?);
 }
 
-test "Workbench: hover shows the marker message" {
+test "Workbench: content widgets show diagnostics in a rounded hover" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
@@ -19362,6 +19387,23 @@ test "Workbench: hover shows the marker message" {
     const rendered = try frameText(allocator, &workbench.frame);
     defer allocator.free(rendered);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "boom") != null);
+    const fallback = tab.view.grid();
+    for ([_]u32{ '╭', '╮', '╰', '╯' }) |corner| {
+        try std.testing.expect(std.mem.indexOfScalar(u32, fallback.cluster, corner) != null);
+    }
+
+    workbench.setCellBorderCapabilities(ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?);
+    try workbench.render(&out.writer);
+    const native = tab.view.grid();
+    var joints: u8 = 0;
+    for (0..native.rows) |y| {
+        for (0..native.cols) |x| joints |= native.borderSetAt(x, y).joints;
+    }
+    const corner = ui.cell_border.Joint;
+    try std.testing.expectEqual(corner.top_left | corner.top_right | corner.bottom_left | corner.bottom_right, joints);
+    const native_text = try frameText(allocator, &workbench.frame);
+    defer allocator.free(native_text);
+    try std.testing.expect(std.mem.indexOf(u8, native_text, "boom") != null);
 }
 
 test "Workbench: tab overflow lists clipped tabs" {

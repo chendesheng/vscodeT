@@ -616,9 +616,9 @@ pick does this over split dividers.
 Without support, nothing changes: border widths take part in layout, `drawBorder`
 writes single-line box-drawing glyphs into the reserved cells, and the border
 plane stays empty. This is still the default, so a terminal or multiplexer that
-discards the query keeps the old rendering. Widgets that size themselves with
-`border_width * 2` (the hover and suggest content widgets) have not opted into
-the cell-border path yet; the workbench does.
+discards the query keeps the glyph rendering. The suggest widget reserves
+layout cells for its border. The editor hover keeps its content inset and
+can paint a rounded border on the outer cell edges.
 
 The workbench draws one frame around the editor area, following VS Code's
 `editorBorder.css`. The sidebar has a separate frame. A single editor keeps
@@ -634,9 +634,10 @@ the split tree and promotes its sibling, mirroring Grid branch demotion.
 During resize the sash uses VS Code's `sash.hoverBorder`, which defaults to
 `focusBorder`. Terminals with cell borders paint the highlight on the shared
 edge.
-Modal dialogs use rounded cell edges when the terminal advertises `round`
-and rounded glyphs otherwise. The `radius` and `outside` extensions control the
-arc radius and fill the area outside each corner.
+Modal dialogs, the breadcrumb picker and editor hovers use rounded cell edges
+when the terminal advertises `round` and rounded glyphs otherwise. The `radius`
+and `outside` extensions control the arc radius and fill the area outside each
+corner.
 An editor tab drag transfers the selected editors. Dragging the empty
 background of a tab strip transfers its whole group. A center drop moves or
 merges into the target group, an edge drop places a split on that side, and a

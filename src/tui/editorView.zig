@@ -1505,6 +1505,10 @@ pub const View = struct {
         return self.surface.grid();
     }
 
+    pub fn setCellBorderCapabilities(self: *View, capabilities: ui.cell_border.Capabilities) void {
+        self.surface.border_capabilities = capabilities;
+    }
+
     /// Paints the ported `BlockDecorations` ranges into the content layer.
     ///
     /// Upstream creates one positioned DOM block per decoration and styles it
