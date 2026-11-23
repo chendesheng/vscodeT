@@ -186,27 +186,37 @@ node-pty, and libghostty-vt replaces xterm.js. No upstream files are modified.
 | Toggle terminal panel | `Alt+Shift+T` (also "Terminal: Toggle Terminal" in the command palette) |
 | New terminal | `Alt+Shift+N` |
 | Kill active terminal | `Alt+Shift+W` |
-| Previous / next terminal tab | `Ctrl+PageUp` / `Ctrl+PageDown` while the terminal has focus |
+| Previous / next panel terminal group | `Ctrl+PageUp` / `Ctrl+PageDown` while the terminal has focus |
 | Resize panel | `Alt+Shift+Up` / `Alt+Shift+Down` (mouse drag is a follow-up) |
 
 The panel handles interactive programs (alternate screen, colors, cursor
 addressing), UTF-8 and grapheme clusters, scrollback, resize (pty `TIOCSWINSZ`),
-mouse reporting, focus reporting and bracketed paste. `Ctrl+Q` remains the TUI
-quit shortcut even while the terminal is focused. Width and height come from
-the panel view's cell layout: `terminalTabbedView.layout` reserves the tab-strip
-row and hands the remaining cells to `TerminalInstance.layout` for every tab,
-mirroring upstream's `TerminalGroup.layout` → `TerminalInstance.layout` flow.
-Tab-strip actions (`+`, `x`, tab switching) only run on a left-button press;
-idle motion, wheel and non-left buttons never create, close or switch tabs.
+mouse and focus reporting, and bracketed paste. `Ctrl+Q` remains the TUI quit
+shortcut.
 
-Known phase-1 limits:
+Terminal tabs form a resizable list beside the shell. By default the list is on
+the right and hides with one terminal. The `terminal.integrated.tabs` settings
+control visibility, side, click-to-focus mode, and the active title and actions
+in the panel toolbar. The toolbar opens new terminals and the profile picker.
+Split groups share the terminal area; each pane has its own PTY size, and the
+list shows branch markers for group members.
 
-- POSIX only. Windows reports the terminal as unsupported; ConPTY is a
-  follow-up.
-- One pane per group (tabs, no split terminals) and no terminal editors.
-- No terminal selection/copy, find, link opening, shell-integration
-  decorations or runtime theme switching. The TUI has no system clipboard;
-  copy is planned as an OSC 52 bridge to the outer terminal.
+**Terminal: Create New Terminal in Editor Area** opens a shell in an editor tab.
+The side command opens one in an adjacent group. The terminal editor title's
+`+` opens a terminal in the same group. Its dropdown selects a profile, and
+Alt-click splits to the side. The
+terminal tab context menus and command palette move an existing shell between
+the panel and the editor area while keeping its PTY and scrollback.
+`terminal.integrated.defaultLocation` can make editor tabs the default for
+**Terminal: New Terminal**.
+
+- The POSIX host runs local terminals. Windows ConPTY, remote terminals, and
+  restoring terminal processes after closing the workbench are outside this port.
+- The TUI represents browser codicons and split geometry with terminal cells.
+  The side-list width is saved per profile.
+- Terminal text selection/copy, find, link opening, and shell-integration
+  decorations remain outside this slice.
+
 - The integrated terminal panel does not forward kitty images; the workbench
   editor uses them for image previews (see **Image preview**). WebGL/ligature/
   unicode addons, persistent/remote terminals and accessibility mode are not

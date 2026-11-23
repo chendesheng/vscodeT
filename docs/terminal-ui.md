@@ -1648,10 +1648,19 @@ Library constraints:
 
 ### 8.1 Integrated terminal panel
 
-The bottom panel is a second consumer of the cell renderer. It is one tab-strip
-row plus a grid; the workbench splits the rows above the status bar between the
-editor part and the panel. The panel is hidden when it has no terminals, so the
-editor keeps the full height.
+The terminal panel and terminal editors share the terminal cell renderer.
+`TerminalTabbedView` mirrors upstream's side-list `SplitView`: the enclosing
+panel supplies the title row, the tab list takes a configurable left or right
+column, and its visibility follows instance and group counts. List and split
+sashes measure widths in whole cells. `TerminalTabList` paints one row per
+instance and uses branch markers for split group members. Its glyphs stand in
+for the browser's codicons.
+
+`TerminalEditorInput` gives the same instance an editor resource and label.
+The editor group supplies the viewport, while `TerminalEditor` attaches the
+renderer and measures the PTY. Moving between hosts transfers the instance
+without restarting the process. Panel and editor instances share the TUI poll
+loop, mouse and keyboard encoding, and raw bracketed-paste path.
 
 The engine is libghostty-vt, not a port of xterm.js:
 
@@ -1679,10 +1688,11 @@ frame diffs compare ids; `putCodepoint` keeps the old single-glyph path. This is
 what lets prompt emoji, combining marks and ZWJ sequences survive the terminal
 pipeline.
 
-Phase-1 limitations are explicit: no selection/copy (no system clipboard in the
-TUI; planned OSC 52 bridge), find, links, shell-integration decorations,
-profile picker, split panes, panel sash drag, Windows ConPTY, terminal editors,
-persistent/remote sessions, ligatures, WebGL or runtime theme switching. The
+The local port uses terminal glyphs and quick picks for browser icons,
+dropdowns and context menus. It stores the side-list width in the active profile.
+Terminal text selection and copy, find, links, shell-integration decorations,
+Windows ConPTY, persistent and remote processes, cross-window drag and drop,
+ligatures, WebGL, and runtime theme switching remain outside this port. The
 integrated terminal panel does not forward kitty images; only the editor's
 Markdown/image previews use them. Cursor shape is the outer terminal's; bar/underline settings are
 approximated by the cursor position and block/inverse paint.
