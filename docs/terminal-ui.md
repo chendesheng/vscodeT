@@ -621,9 +621,9 @@ layout cells for its border. The editor hover keeps its content inset and
 can paint a rounded border on the outer cell edges.
 
 The workbench draws one frame around the editor area, following VS Code's
-`editorBorder.css`. The sidebar has a separate frame. A single editor keeps
-its frame when the sidebar is hidden. Straight dividers between groups use
-`editorGroup.border` and meet at T-junctions in nested splits. Cell-border
+`editorBorder.css`. The sidebar and bottom panel each have a separate frame.
+A single editor keeps its frame when the sidebar is hidden. Straight dividers
+between groups use `editorGroup.border` and meet at T-junctions in nested splits. Cell-border
 terminals draw the frame and dividers on cell edges. The `round` extension
 rounds the outer frame corners. The glyph fallback uses rounded box-drawing
 outlines and one-cell dividers with junction glyphs. In compact terminals it
@@ -1674,8 +1674,11 @@ Library constraints:
 
 The terminal panel and terminal editors share the terminal cell renderer.
 `TerminalTabbedView` mirrors upstream's side-list `SplitView`: the enclosing
-panel supplies the title row, the tab list takes a configurable left or right
-column, and its visibility follows instance and group counts. List and split
+panel supplies the title row inside its rounded frame. Cell-border terminals
+keep the full panel area for the title and content. With box-drawing glyphs,
+the panel reserves a one-cell frame when the title and at least one content
+row fit inside. The tab list takes a configurable left or right column, and
+its visibility follows instance and group counts. List and split
 sashes measure widths in whole cells. `TerminalTabList` paints one row per
 instance and uses branch markers for split group members. Its glyphs stand in
 for the browser's codicons.

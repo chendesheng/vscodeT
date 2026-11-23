@@ -964,7 +964,9 @@ console API for raw mode, sizing and input polling.
   configured width).
 - The bottom panel is a ported pane-composite part
   (`src/vs/workbench/browser/parts/panel/panelPart.zig`) with a one-row
-  composite bar. Problems and Terminal are registered at the upstream
+  composite bar inside a rounded outline matching the sidebar. The glyph
+  fallback reserves border cells when there is room for the title and content.
+  Problems and Terminal are registered at the upstream
   `ViewContainerLocation.Panel` (`markers.contribution.ts` order 0,
   `terminal.contribution.ts` order 3), so Problems opens as a panel tab next
   to the terminal, not as a side-bar view. `Ctrl-J` toggles the panel,

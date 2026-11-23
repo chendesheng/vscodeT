@@ -21,6 +21,8 @@
 //! Like VS Code's editorBorder.css, the rounded outline encloses the entire
 //! editor area. The split tree draws straight sashes inside it. Cell borders
 //! draw both on cell edges; the glyph fallback reserves a cell for each line.
+//! The sidebar and bottom panel use the same rounded frame treatment, adapting
+//! the outlines in upstream's `floatingPanels.css` to the terminal grid.
 //!
 //! A split duplicates the active input into the new group, matching upstream
 //! `EditorGroupView.copyEditor`: both panes show the same `EditorDocument` and
@@ -2069,7 +2071,7 @@ pub const Workbench = struct {
         return @max(self.workbenchRows() -| self.panelHeight(), 1);
     }
 
-    pub fn panelRect(self: *const Workbench) ui.Rect {
+    fn panelFrameRect(self: *const Workbench) ui.Rect {
         if (!self.panelShown()) return .{};
         const x = self.editorAreaX();
         const width = self.editorAreaWidth();
@@ -2080,6 +2082,18 @@ pub const Workbench = struct {
             .w = @floatFromInt(width),
             .h = @floatFromInt(height),
         };
+    }
+
+    /// The title bar and content share the same inset for painting and input.
+    pub fn panelRect(self: *const Workbench) ui.Rect {
+        const rect = self.panelFrameRect();
+        if (!self.glyphPanelFrame(rect)) return rect;
+        return .{ .x = rect.x + 1, .y = rect.y + 1, .w = rect.w - 2, .h = rect.h - 2 };
+    }
+
+    fn glyphPanelFrame(self: *const Workbench, rect: ui.Rect) bool {
+        // Keep space for a title and a content row inside the border.
+        return !self.part.cell_borders and rect.w >= 3 and rect.h >= panel_part_mod.title_height + 3;
     }
 
     /// Panel content below the one-row title (composite bar).
@@ -10171,6 +10185,7 @@ pub const Workbench = struct {
         }
         if (self.panelShown()) {
             try self.renderPanel();
+            self.renderPanelFrame();
         }
         if (self.statusBarVisible()) {
             if (self.theme_palette) |palette| self.statusbar.main_part.setThemeColors(palette);
@@ -10529,12 +10544,7 @@ pub const Workbench = struct {
         const sash_color = if (highlighted) self.sashHoverStyle().background.? else color;
         const sash_bg = ui.cell.packColor(sash_color);
         if (self.part.cell_borders) {
-            const rounded = self.part.cell_border_capabilities.has(.round);
-            self.paintCellFrame(rect, .{
-                .width = if (rounded) 16 else frame_border_width,
-                .color = .{ .rgb = color },
-                .placement = .inside,
-            });
+            self.paintPaneCompositeCellFrame(rect, color);
             if (highlighted) {
                 for (0..rows) |row| {
                     cells.addBorder(right, row, ui.cell_border.Segment.right, .{
@@ -10567,6 +10577,27 @@ pub const Workbench = struct {
         } else {
             for (0..rows) |row| cells.putCodepoint(right, row, '│', 1, sash_paint);
         }
+    }
+
+    fn renderPanelFrame(self: *Workbench) void {
+        const rect = self.panelFrameRect();
+        const color = self.themeColor("panel.border", .{ 70, 70, 70 });
+        if (self.part.cell_borders) {
+            if (rect.w >= 2 and rect.h >= 2) self.paintPaneCompositeCellFrame(rect, color);
+        } else if (self.glyphPanelFrame(rect)) {
+            self.frame.next.paintRoundedFrame(rect, .{
+                .fg = ui.cell.packColor(color),
+                .bg = ui.cell.packColor(self.themeColor("panel.background", .{ 30, 30, 33 })),
+            });
+        }
+    }
+
+    fn paintPaneCompositeCellFrame(self: *Workbench, rect: ui.Rect, color: ui.Color) void {
+        self.paintCellFrame(rect, .{
+            .width = if (self.part.cell_border_capabilities.has(.round)) 16 else frame_border_width,
+            .color = .{ .rgb = color },
+            .placement = .inside,
+        });
     }
 
     fn renderEditorFrame(self: *Workbench) void {
@@ -11072,7 +11103,7 @@ pub const Workbench = struct {
         if (self.outline_view) |view| view.setBorderRendering(enabled);
         if (self.part.cell_borders == enabled) return;
         self.part.setCellBorders(enabled);
-        if (self.sidebarShown() or self.expanded_pane != null) self.layoutAll();
+        if (self.sidebarShown() or self.panelShown() or self.expanded_pane != null) self.layoutAll();
     }
 
     pub fn setCellBorderCapabilities(self: *Workbench, capabilities: ?ui.cell_border.Capabilities) void {
@@ -15210,6 +15241,59 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
             try std.testing.expectEqual(editor_x + 1, ui.cell.snap(editor.rect.x));
         }
     }
+}
+
+test "Workbench: bottom panel has a rounded outline with and without cell borders" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const workbench = try Workbench.init(allocator, io, &.{}, 90, 24);
+    defer workbench.deinit();
+    try workbench.showProblems();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
+    for ([_]bool{ false, true }) |native| {
+        workbench.setCellBorderCapabilities(if (native) caps else null);
+        try workbench.render(&out.writer);
+
+        const cells = &workbench.frame.prev;
+        const left = ui.cell.snap(workbench.editorAreaRect().x);
+        const right = workbench.cols - 1;
+        const top = workbench.editorRows();
+        const bottom = ui.cell.snap(workbench.statusBarRect().y) - 1;
+        const joint = ui.cell_border.Joint;
+        const corners = [_]struct { x: usize, y: usize, glyph: u32, round_joint: u8 }{
+            .{ .x = left, .y = top, .glyph = '╭', .round_joint = joint.top_left },
+            .{ .x = right, .y = top, .glyph = '╮', .round_joint = joint.top_right },
+            .{ .x = left, .y = bottom, .glyph = '╰', .round_joint = joint.bottom_left },
+            .{ .x = right, .y = bottom, .glyph = '╯', .round_joint = joint.bottom_right },
+        };
+        for (corners) |corner| {
+            if (native) {
+                try std.testing.expectEqual(corner.round_joint, cells.borderSetAt(corner.x, corner.y).joints);
+            } else {
+                try std.testing.expectEqual(corner.glyph, cells.cluster[cells.index(corner.x, corner.y)]);
+            }
+        }
+
+        const inset: usize = if (native) 0 else 1;
+        const title = try cells.rowText(allocator, top + inset);
+        defer allocator.free(title);
+        try std.testing.expect(std.mem.indexOf(u8, title, "PROBLEMS") != null);
+        const content = workbench.panelContentRect();
+        try std.testing.expectEqual(left + inset, ui.cell.snap(content.x));
+        try std.testing.expectEqual(top + inset + 1, ui.cell.snap(content.y));
+        try std.testing.expectEqual(bottom + 1 - inset, ui.cell.snap(content.bottom()));
+    }
+
+    workbench.setCellBorderCapabilities(null);
+    try workbench.resize(90, 7);
+    try workbench.render(&out.writer);
+    const title = try workbench.frame.prev.rowText(allocator, workbench.editorRows());
+    defer allocator.free(title);
+    try std.testing.expect(std.mem.indexOf(u8, title, "PROBLEMS") != null);
+    try std.testing.expect(workbench.panelContentRect().h >= 1);
 }
 
 test "Workbench: sidebar renders and opens a file" {
