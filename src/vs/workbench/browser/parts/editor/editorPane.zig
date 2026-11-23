@@ -50,6 +50,10 @@ const StickyScrollController = @import("../../../../editor/contrib/stickyScroll/
 const ImagePreviewPane = @import("../../../../../tui/imagePreview.zig").ImagePreviewPane;
 const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 
+const TerminalEditorInput = @import("../../../contrib/terminal/browser/terminalEditorInput.zig").TerminalEditorInput;
+const TerminalInstance = @import("../../../contrib/terminal/browser/terminalInstance.zig").TerminalInstance;
+const terminal_editor = @import("../../../contrib/terminal/browser/terminalEditor.zig");
+
 pub const Tab = struct {
     allocator: Allocator,
     /// Modified/first editor. For a diff tab this is the modified pane.
@@ -67,6 +71,7 @@ pub const Tab = struct {
     /// Image preview pane; also marks this as an image tab.
     image_preview: ?*ImagePreviewPane = null,
     image_input: ?*ImagePreviewEditorInput = null,
+    terminal_input: ?*TerminalEditorInput = null,
     image_runtime: ?*ui.image.Runtime = null,
     /// Io handed over by the workbench for async preview/image loads.
     async_io: ?Io = null,
@@ -193,6 +198,35 @@ pub const Tab = struct {
         return self;
     }
 
+    /// The shell owns rendering and input. The editor shell carries a
+    /// read-only placeholder for workbench paths that still require Editor/View.
+    pub fn initTerminal(allocator: Allocator, io: Io, instance: *TerminalInstance) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+        const input = try TerminalEditorInput.init(allocator, instance);
+        errdefer input.deinit();
+        const editor = try Editor.createFromText(allocator, io, "", input.resource, 1, 1);
+        errdefer {
+            editor.deinit();
+            allocator.destroy(editor);
+        }
+        editor.setReadOnly(true);
+        const view = try View.init(allocator, editor);
+        self.* = .{
+            .allocator = allocator,
+            .editor = editor,
+            .view = view,
+            .file_input = null,
+            .terminal_input = input,
+            .input = input.interface(),
+        };
+        return self;
+    }
+
+    pub fn terminalInstance(self: *const Tab) ?*TerminalInstance {
+        return if (self.terminal_input) |input| input.instance else null;
+    }
+
     /// Builds a diff tab around an already created `DiffView`.
     pub fn initDiff(allocator: Allocator, diff: *DiffView) !*Tab {
         const self = try allocator.create(Tab);
@@ -211,7 +245,7 @@ pub const Tab = struct {
     /// Creates the editor contributions on first activation. The tab must have
     /// been attached to a view before any key/mouse event is routed to it.
     pub fn ensureControllers(self: *Tab) !void {
-        if (self.controllers != null or self.diff != null or self.image_preview != null) return;
+        if (self.controllers != null or self.diff != null or self.image_preview != null or self.terminal_input != null) return;
 
         const controllers = try Controllers.init(self.allocator, self.editor, self.view);
         errdefer controllers.deinit();
@@ -235,6 +269,7 @@ pub const Tab = struct {
     }
 
     pub fn refresh(self: *Tab) !void {
+        if (self.terminal_input != null) return;
         if (self.image_preview) |pane| {
             if (pane.dirty) return;
             pane.dirty = true;
@@ -275,6 +310,10 @@ pub const Tab = struct {
     /// Paints the tab into `frame`. A file tab paints its single view; a diff
     /// tab paints both panes plus the center gutter.
     pub fn paint(self: *Tab, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
+        if (self.terminalInstance()) |instance| {
+            try terminal_editor.paint(instance, &frame.next, .{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(w), .h = @floatFromInt(h) });
+            return;
+        }
         if (self.controllers) |controllers| {
             controllers.find.widget().setAddExtraSpaceOnTop(controllers.find_add_extra_space);
         }
@@ -316,6 +355,7 @@ pub const Tab = struct {
     /// markdown split (editor, divider, preview), the image pane and the diff
     /// widget; every surface answers from its own style tree.
     pub fn pointerAt(self: *Tab, x: usize, y: usize) !ui.Pointer {
+        if (self.terminal_input != null) return .text;
         if (self.image_preview) |pane| {
             return (try pane.pointerAt(x, y)) orelse .default;
         }
@@ -336,6 +376,10 @@ pub const Tab = struct {
     }
 
     pub fn cursorCell(self: *Tab) ?Cell {
+        if (self.terminalInstance()) |instance| {
+            const cursor = terminal_editor.cursorCell(instance, .{ .w = @floatFromInt(self.last_width), .h = @floatFromInt(self.last_height) }) orelse return null;
+            return .{ .row = cursor.row, .col = cursor.col };
+        }
         if (self.image_preview != null) return null;
         if (self.diff) |diff| {
             const cell = diff.cursorCell() orelse return null;
@@ -345,6 +389,7 @@ pub const Tab = struct {
     }
 
     pub fn focusEditor(self: *Tab) void {
+        if (self.terminal_input != null) return;
         if (self.image_preview) |pane| {
             pane.setFocused(true);
             return;
@@ -445,6 +490,10 @@ pub const Tab = struct {
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
         self.last_width = width;
         self.last_height = height;
+        if (self.terminalInstance()) |instance| {
+            terminal_editor.layout(instance, width, height);
+            return;
+        }
         if (self.image_preview) |pane| {
             pane.layout(@max(width, 1), @max(height, 1)) catch {};
             return;
@@ -656,6 +705,10 @@ pub const Tab = struct {
         }
         self.view.deinit();
         if (self.image_input) |input| {
+            self.editor.deinit();
+            self.allocator.destroy(self.editor);
+            input.deinit();
+        } else if (self.terminal_input) |input| {
             self.editor.deinit();
             self.allocator.destroy(self.editor);
             input.deinit();

@@ -17,6 +17,11 @@ pub const defaults_json =
     \\  "terminal": {
     \\    "integrated": {
     \\      "tabs": {
+    \\        "enabled": true,
+    \\        "location": "right",
+    \\        "focusMode": "doubleClick",
+    \\        "showActiveTerminal": "singleTerminalOrNarrow",
+    \\        "showActions": "singleTerminalOrNarrow",
     \\        "title": "${process}",
     \\        "description": "${task}${separator}${local}${separator}${cwdFolder}",
     \\        "separator": " - ",
@@ -51,6 +56,19 @@ pub const defaults_json =
 ;
 
 pub const Config = struct {
+    pub const HideCondition = enum { never, singleTerminal, singleGroup };
+    pub const Location = enum { left, right };
+    pub const Show = enum { always, singleTerminal, singleTerminalOrNarrow, never };
+    pub const FocusMode = enum { singleClick, doubleClick };
+    pub const SplitCwd = enum { workspaceRoot, initial, inherited };
+
+    split_cwd: SplitCwd = .inherited,
+    tabs_enabled: bool = true,
+    tabs_hide_condition: HideCondition = .singleTerminal,
+    tabs_location: Location = .right,
+    tabs_show_active_terminal: Show = .singleTerminalOrNarrow,
+    tabs_show_actions: Show = .singleTerminalOrNarrow,
+    tabs_focus_mode: FocusMode = .doubleClick,
     title: []const u8 = "${process}",
     description: []const u8 = "${task}${separator}${local}${separator}${cwdFolder}",
     separator: []const u8 = " - ",
@@ -70,6 +88,13 @@ pub const Config = struct {
     pub fn load(service: ?*ConfigurationService) Config {
         const config = service orelse return .{};
         var result: Config = .{};
+        result.split_cwd = enumValue(SplitCwd, config, "terminal.integrated.splitCwd") orelse result.split_cwd;
+        result.tabs_enabled = boolValue(config, "terminal.integrated.tabs.enabled") orelse result.tabs_enabled;
+        result.tabs_hide_condition = enumValue(HideCondition, config, "terminal.integrated.tabs.hideCondition") orelse result.tabs_hide_condition;
+        result.tabs_location = enumValue(Location, config, "terminal.integrated.tabs.location") orelse result.tabs_location;
+        result.tabs_show_active_terminal = enumValue(Show, config, "terminal.integrated.tabs.showActiveTerminal") orelse result.tabs_show_active_terminal;
+        result.tabs_show_actions = enumValue(Show, config, "terminal.integrated.tabs.showActions") orelse result.tabs_show_actions;
+        result.tabs_focus_mode = enumValue(FocusMode, config, "terminal.integrated.tabs.focusMode") orelse result.tabs_focus_mode;
         if (stringValue(config, "terminal.integrated.tabs.title")) |found| result.title = found;
         if (stringValue(config, "terminal.integrated.tabs.description")) |found| result.description = found;
         if (stringValue(config, "terminal.integrated.tabs.separator")) |found| result.separator = found;
@@ -89,6 +114,10 @@ pub const Config = struct {
         return result;
     }
 };
+
+fn enumValue(comptime T: type, service: *ConfigurationService, section: []const u8) ?T {
+    return std.meta.stringToEnum(T, stringValue(service, section) orelse return null);
+}
 
 fn value(service: *ConfigurationService, section: []const u8) ?*const configuration.Value {
     return service.getValue(section, .{});

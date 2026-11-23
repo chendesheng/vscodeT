@@ -71,6 +71,8 @@ pub const EditorInput = struct {
 
     /// Optional overrides. A concrete input only sets the hooks whose upstream
     /// subclass overrides; everything else falls back to the base behavior.
+    get_name_fn: ?*const fn (self: *const EditorInput) []const u8 = null,
+    get_description_fn: ?*const fn (self: *const EditorInput) ?[]const u8 = null,
     matches_fn: ?*const fn (self: *EditorInput, other: *EditorInput) bool = null,
     matches_untyped_fn: ?*const fn (self: *const EditorInput, other: editor.UntypedEditorInput) bool = null,
     is_dirty_fn: ?*const fn (self: *const EditorInput) bool = null,
@@ -106,11 +108,13 @@ pub const EditorInput = struct {
     }
 
     pub fn getName(self: *const EditorInput) []const u8 {
+        if (self.get_name_fn) |get| return get(self);
         return self.name orelse self.type_id;
     }
 
     pub fn getDescription(self: *const EditorInput, verbosity: Verbosity) ?[]const u8 {
         _ = verbosity;
+        if (self.get_description_fn) |get| return get(self);
         return self.description;
     }
 

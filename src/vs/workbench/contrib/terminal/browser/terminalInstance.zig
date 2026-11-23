@@ -49,6 +49,12 @@ pub const Options = struct {
 pub const TerminalInstance = struct {
     allocator: Allocator,
     id: usize,
+    /// Panel groups have contiguous entries in the terminal tab list.
+    panel_group_id: usize = 0,
+    panel_group_active: bool = false,
+    split_weight: f64 = 1,
+    tab_selected: bool = false,
+    view_focused: bool = false,
     process: pty.PtyProcess,
     emulator: TerminalEmulator,
     process_state: ProcessState = .running,
@@ -162,6 +168,7 @@ pub const TerminalInstance = struct {
         if (self.process.pollExit()) |result| {
             self.exit = result;
             self.process_state = .killed_by_process;
+            self.process.closeMaster();
         }
         return got;
     }
@@ -217,6 +224,13 @@ pub const TerminalInstance = struct {
         if (self.labels.title.len > 0) return self.labels.title;
         if (self.static_title) |title| return title;
         return self.process_name;
+    }
+
+    pub fn rename(self: *TerminalInstance, name: []const u8) !void {
+        const new_name = if (name.len > 0) try self.allocator.dupe(u8, name) else null;
+        if (self.static_title) |title| self.allocator.free(title);
+        self.static_title = new_name;
+        self.refreshLabel();
     }
 
     fn refreshLabel(self: *TerminalInstance) void {
@@ -304,7 +318,8 @@ pub const TerminalLabelComputer = struct {
         template: []const u8,
         is_title: bool,
     ) ![]u8 {
-        if (template.len == 0) {
+        const label_template = std.mem.trim(u8, template, " \n\r\t");
+        if (label_template.len == 0) {
             if (!is_title) return allocator.dupe(u8, "");
             return allocator.dupe(u8, instance.process_name);
         }
@@ -323,44 +338,49 @@ pub const TerminalLabelComputer = struct {
 
         var out: std.array_list.Managed(u8) = .init(allocator);
         defer out.deinit();
+        var pending_separator = false;
         var i: usize = 0;
-        while (i < template.len) {
-            if (template[i] == '$' and i + 1 < template.len and template[i + 1] == '{') {
-                const end = std.mem.indexOfScalarPos(u8, template, i + 2, '}') orelse {
-                    try out.append(template[i]);
-                    i += 1;
+        while (i < label_template.len) {
+            if (std.mem.startsWith(u8, label_template[i..], "${")) {
+                if (std.mem.indexOfScalarPos(u8, label_template, i + 2, '}')) |end| {
+                    const name = label_template[i + 2 .. end];
+                    if (std.mem.eql(u8, name, "separator")) {
+                        pending_separator = out.items.len > 0;
+                    } else {
+                        const value = templateVariable(instance, name, cwd, cwd_folder);
+                        if (value.len > 0) {
+                            if (pending_separator) try out.appendSlice(self.separator);
+                            pending_separator = false;
+                            try out.appendSlice(value);
+                        }
+                    }
+                    i = end + 1;
                     continue;
-                };
-                const name = template[i + 2 .. end];
-                if (std.mem.eql(u8, name, "process")) {
-                    try out.appendSlice(instance.process_name);
-                } else if (std.mem.eql(u8, name, "cwd")) {
-                    try out.appendSlice(cwd);
-                } else if (std.mem.eql(u8, name, "cwdFolder")) {
-                    try out.appendSlice(cwd_folder);
-                } else if (std.mem.eql(u8, name, "workspaceFolder")) {
-                    if (instance.workspace_folder) |folder| try out.appendSlice(std.fs.path.basename(folder));
-                } else if (std.mem.eql(u8, name, "workspaceFolderName")) {
-                    if (instance.workspace_folder) |folder| try out.appendSlice(std.fs.path.basename(folder));
-                } else if (std.mem.eql(u8, name, "local")) {
-                    if (instance.process_name.len > 0) try out.appendSlice("Local");
-                } else if (std.mem.eql(u8, name, "task")) {
-                    if (instance.process_name.len > 0) try out.appendSlice("Task");
-                } else if (std.mem.eql(u8, name, "sequence")) {
-                    if (instance.sequence) |sequence| try out.appendSlice(sequence);
-                } else if (std.mem.eql(u8, name, "separator")) {
-                    try out.appendSlice(self.separator);
                 }
-                i = end + 1;
-                continue;
             }
-            try out.append(template[i]);
+            if (pending_separator) try out.appendSlice(self.separator);
+            pending_separator = false;
+            try out.append(label_template[i]);
             i += 1;
         }
         const sanitized = try sanitize(allocator, out.items);
-        return sanitized;
+        defer allocator.free(sanitized);
+        const label = std.mem.trim(u8, sanitized, " ");
+        return allocator.dupe(u8, if (is_title and label.len == 0) instance.process_name else label);
     }
 };
+
+fn templateVariable(instance: *const TerminalInstance, name: []const u8, cwd: []const u8, cwd_folder: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "process")) return instance.process_name;
+    if (std.mem.eql(u8, name, "cwd")) return cwd;
+    if (std.mem.eql(u8, name, "cwdFolder")) return cwd_folder;
+    if (std.mem.eql(u8, name, "workspaceFolder") or std.mem.eql(u8, name, "workspaceFolderName")) {
+        const folder = instance.workspace_folder orelse return "";
+        return std.fs.path.basename(folder);
+    }
+    if (std.mem.eql(u8, name, "sequence")) return instance.sequence orelse "";
+    return "";
+}
 
 fn sanitize(allocator: Allocator, value: []const u8) ![]u8 {
     var out: std.array_list.Managed(u8) = .init(allocator);
@@ -399,4 +419,11 @@ test "TerminalLabelComputer: process/cwd/workspace templates" {
     try labels.refresh(allocator, &instance);
     try std.testing.expectEqualStrings("zsh", labels.title);
     try std.testing.expectEqualStrings("/root - root", labels.description);
+
+    labels.description_template = "${task}${separator}${local}${separator}${cwdFolder}";
+    try labels.refresh(allocator, &instance);
+    try std.testing.expectEqualStrings("", labels.description);
+    labels.description_template = "${process}${separator}${task}${separator}${workspaceFolder}${separator}";
+    try labels.refresh(allocator, &instance);
+    try std.testing.expectEqualStrings("zsh - root", labels.description);
 }

@@ -10,6 +10,17 @@ const std = @import("std");
 pub const TerminalCommandId = struct {
     pub const toggle = "workbench.action.terminal.toggleTerminal";
     pub const new = "workbench.action.terminal.new";
+    pub const editor = "workbench.action.createTerminalEditor";
+    pub const editor_side = "workbench.action.createTerminalEditorSide";
+    pub const editor_same_group = "workbench.action.createTerminalEditorSameGroup";
+    pub const move_to_editor = "workbench.action.terminal.moveToEditor";
+    pub const move_to_panel = "workbench.action.terminal.moveToTerminalPanel";
+    pub const split = "workbench.action.terminal.split";
+    pub const kill_editor = "workbench.action.terminal.killEditor";
+    pub const focus_next_pane = "workbench.action.terminal.focusNextPane";
+    pub const focus_previous_pane = "workbench.action.terminal.focusPreviousPane";
+    pub const focus_tabs = "workbench.action.terminal.focusTabs";
+    pub const rename = "workbench.action.terminal.rename";
     pub const kill = "workbench.action.terminal.kill";
     pub const focus = "workbench.action.terminal.focus";
     pub const focus_next = "workbench.action.terminal.focusNext";
@@ -26,6 +37,17 @@ pub const DEFAULT_COMMANDS_TO_SKIP_SHELL = [_][]const u8{
     "workbench.action.showCommands",
     TerminalCommandId.toggle,
     TerminalCommandId.new,
+    TerminalCommandId.editor,
+    TerminalCommandId.editor_side,
+    TerminalCommandId.editor_same_group,
+    TerminalCommandId.move_to_editor,
+    TerminalCommandId.move_to_panel,
+    TerminalCommandId.split,
+    TerminalCommandId.kill_editor,
+    TerminalCommandId.focus_next_pane,
+    TerminalCommandId.focus_previous_pane,
+    TerminalCommandId.focus_tabs,
+    TerminalCommandId.rename,
     TerminalCommandId.kill,
     TerminalCommandId.focus,
     TerminalCommandId.focus_next,

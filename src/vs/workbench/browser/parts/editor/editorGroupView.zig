@@ -65,6 +65,7 @@ pub fn EditorGroupView(comptime View: type) type {
         rect: ui.Rect = .{},
         /// The workbench reserves a breadcrumb row when `breadcrumbs.enabled`.
         breadcrumbs_visible: bool = false,
+        breadcrumbs_suppressed: bool = false,
         /// `workbench.editor.showTabs`: none/single can hide the title row.
         tabs_visible: bool = true,
         panes: editorPanes.EditorPanes(View) = .{},
@@ -199,7 +200,11 @@ pub fn EditorGroupView(comptime View: type) type {
         }
 
         pub fn chromeHeight(self: *const Self) usize {
-            return self.titleHeight() + if (self.breadcrumbs_visible) breadcrumbs_height else 0;
+            return self.titleHeight() + if (self.breadcrumbsVisible()) breadcrumbs_height else 0;
+        }
+
+        pub fn breadcrumbsVisible(self: *const Self) bool {
+            return self.breadcrumbs_visible and !self.breadcrumbs_suppressed;
         }
 
         pub fn setTabsVisible(self: *Self, visible: bool) void {

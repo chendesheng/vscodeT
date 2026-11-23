@@ -16,6 +16,8 @@ comptime {
     _ = @import("./vs/workbench/contrib/terminal/browser/terminalRenderer.zig");
     _ = @import("./vs/workbench/contrib/terminal/browser/terminalRenderer.test.zig");
     _ = @import("./vs/workbench/contrib/terminal/browser/terminalTabbedView.zig");
+    _ = @import("./vs/workbench/contrib/terminal/test/browser/terminalTabsList.test.zig");
+    _ = @import("./vs/workbench/contrib/terminal/test/browser/terminalEditorInput.test.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorDropTarget.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorPanes.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorGroupView.zig");

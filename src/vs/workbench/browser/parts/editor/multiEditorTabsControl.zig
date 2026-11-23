@@ -41,6 +41,7 @@ pub const TabInfo = struct {
     description: []const u8 = "",
     /// Base file name used for the Explorer file icon; empty shows no icon.
     file_name: []const u8 = "",
+    icon: ?file_icon.Icon = null,
     dirty: bool = false,
     /// Upstream `!isPinned`: preview tabs are italic.
     pinned: bool = true,
@@ -147,6 +148,7 @@ fn textWidth(text: []const u8) usize {
 }
 
 fn iconFor(tab: TabInfo) ?file_icon.Icon {
+    if (tab.icon) |icon| return icon;
     if (tab.file_name.len == 0) return null;
     return file_icon.file(tab.file_name);
 }

@@ -24,6 +24,8 @@ pub const CommandInfo = struct {
     description: []const u8 = "",
     /// Editor commands are omitted while the workbench has no active tab.
     requires_editor: bool = false,
+    show_in_palette: bool = true,
+    precondition: ?*const fn (context: *anyopaque) bool = null,
     context: *anyopaque,
     run: *const fn (context: *anyopaque) anyerror!void,
 };
@@ -116,6 +118,10 @@ pub const CommandRegistry = struct {
         var picks = std.array_list.Managed(CommandPick).init(allocator);
         errdefer picks.deinit();
         for (self.infos.items) |info| {
+            if (!info.show_in_palette) continue;
+            if (info.precondition) |condition| {
+                if (!condition(info.context)) continue;
+            }
             if (info.requires_editor and !self.editorAvailable()) continue;
             try picks.append(.{
                 .command_id = info.id,

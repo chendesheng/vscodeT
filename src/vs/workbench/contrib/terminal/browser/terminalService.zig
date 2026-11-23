@@ -2,9 +2,8 @@
 // `src/vs/workbench/contrib/terminal/browser/terminalService.ts` and
 // `terminalGroupService.ts`.
 //
-// There is one terminal group (the bottom panel) and no editor-location or
-// remote terminals in this phase. The service owns profile resolution, the
-// instance list, activation and pty polling entry points.
+// The service resolves profiles and owns the panel and editor instance hosts.
+// Remote terminals are outside the local PTY host.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -16,6 +15,8 @@ const pty = @import("../../../../platform/terminal/node/pty.zig");
 const emulator = @import("./terminalEmulator.zig");
 const instance_mod = @import("./terminalInstance.zig");
 const group_mod = @import("./terminalGroup.zig");
+const TerminalEditorService = @import("./terminalEditorService.zig").TerminalEditorService;
+const ui = @import("ui");
 const configuration_mod = @import("../common/terminalConfiguration.zig");
 const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
 
@@ -39,6 +40,7 @@ pub const TerminalService = struct {
     config_arena: std.heap.ArenaAllocator,
     profiles: profiles_mod.Profiles,
     group: TerminalGroup,
+    editor: TerminalEditorService,
     next_id: usize = 1,
 
     pub fn init(allocator: Allocator, io: Io, options: Options) !*TerminalService {
@@ -61,12 +63,14 @@ pub const TerminalService = struct {
             .config_arena = config_arena,
             .profiles = profiles,
             .group = TerminalGroup.init(allocator),
+            .editor = TerminalEditorService.init(allocator),
         };
         return self;
     }
 
     pub fn deinit(self: *TerminalService) void {
         self.group.deinit();
+        self.editor.deinit();
         self.profiles.deinit();
         self.config_arena.deinit();
         self.allocator.destroy(self);
@@ -85,22 +89,51 @@ pub const TerminalService = struct {
     }
 
     pub fn create(self: *TerminalService) !*TerminalInstance {
-        if (self.options.launch) |launch| {
-            const instance = try launch(self, self.allocator);
-            try self.group.add(instance);
-            return instance;
-        }
+        const instance = try self.createInstance(null);
+        errdefer instance.deinit();
+        try self.group.add(instance);
+        return instance;
+    }
+
+    pub fn split(self: *TerminalService, index: usize) !void {
+        const parent = self.at(index) orelse return;
+        const instance = try self.createInstance(parent);
+        errdefer instance.deinit();
+        try self.group.split(index, instance);
+    }
+
+    pub fn createWithProfile(self: *TerminalService, profile: terminal.ITerminalProfile) !*TerminalInstance {
+        const instance = try self.createInstanceWithProfile(profile);
+        errdefer instance.deinit();
+        try self.group.add(instance);
+        return instance;
+    }
+
+    pub fn createInstanceWithProfile(self: *TerminalService, profile: terminal.ITerminalProfile) !*TerminalInstance {
+        return self.launchInstance(null, &profile);
+    }
+
+    pub fn createInstance(self: *TerminalService, parent: ?*TerminalInstance) !*TerminalInstance {
+        return self.launchInstance(parent, self.profiles.defaultProfile());
+    }
+
+    fn launchInstance(self: *TerminalService, parent: ?*TerminalInstance, profile: ?*const terminal.ITerminalProfile) !*TerminalInstance {
+        if (self.options.launch) |launch| return launch(self, self.allocator);
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const scratch = arena.allocator();
 
-        const profile = self.profiles.defaultProfile();
         const shell = if (profile) |value| value.path else shellFromEnvironment() orelse "/bin/sh";
         const args = if (profile) |value| value.args else &.{};
         const process_name = profiles_common.shellName(shell);
         const profile_name = if (profile) |value| value.profile_name else process_name;
-        const cwd = try resolveCwd(scratch, self.options.workspace_root, self.config.cwd);
+        const split_cwd = if (parent) |instance| switch (configuration_mod.Config.load(self.options.configuration).split_cwd) {
+            .workspaceRoot => self.options.workspace_root,
+            .initial => instance.initial_cwd,
+            .inherited => instance.cwd orelse instance.initial_cwd,
+        } else null;
+        const cwd = split_cwd orelse try resolveCwd(scratch, self.options.workspace_root, self.config.cwd);
         const env = try self.buildEnvironment(scratch);
 
         const instance = try TerminalInstance.create(self.allocator, self.io, self.next_id, .{
@@ -118,9 +151,7 @@ pub const TerminalService = struct {
             .separator = self.config.separator,
             .multi_root = self.options.multi_root,
         });
-        errdefer instance.deinit();
         self.next_id += 1;
-        try self.group.add(instance);
         return instance;
     }
 
@@ -145,24 +176,39 @@ pub const TerminalService = struct {
         return self.group.setActive(index);
     }
 
-    /// Port of `TerminalGroup.layout`: every instance in the group shares the
-    /// panel's cell dimensions. Each instance treats an unchanged size as a
-    /// no-op, so the workbench can call this on every layout pass.
-    pub fn layoutAll(self: *TerminalService, cols: u16, rows: u16) void {
-        for (self.group.instances.items) |instance| {
-            instance.layout(cols, rows);
+    pub fn layout(self: *TerminalService, content: ui.Rect) void {
+        for (self.group.instances.items, 0..) |instance, index| {
+            const rect = self.group.paneRect(content, index);
+            const cols: u16 = @intCast(@min(ui.cell.snap(rect.w), std.math.maxInt(u16)));
+            const rows: u16 = @intCast(@min(ui.cell.snap(rect.h), std.math.maxInt(u16)));
+            if (cols > 0 and rows > 0) instance.layout(cols, rows);
         }
     }
 
-    /// Reaps instances whose pty closed. The last frame stays visible until
-    /// the user closes the tab.
+    pub fn instanceCount(self: *const TerminalService) usize {
+        return self.count() + self.editor.instances.items.len;
+    }
+
+    pub fn instanceAt(self: *const TerminalService, index: usize) ?*TerminalInstance {
+        if (index < self.count()) return self.at(index);
+        const editor_index = index - self.count();
+        if (editor_index >= self.editor.instances.items.len) return null;
+        return self.editor.instances.items[editor_index];
+    }
+
+    /// Reaps instances whose PTY closed, then drains their pending output
+    /// before the workbench removes them from their host.
     pub fn pollExits(self: *TerminalService) bool {
         var changed = false;
-        for (self.group.instances.items) |instance| {
+        for (0..self.instanceCount()) |index| {
+            const instance = self.instanceAt(index).?;
             if (instance.exit == null) {
                 if (instance.process.pollExit()) |result| {
-                    instance.exit = result;
-                    instance.process_state = .killed_by_process;
+                    _ = instance.feedOutput() catch {
+                        instance.exit = result;
+                        instance.process_state = .killed_by_process;
+                        instance.process.closeMaster();
+                    };
                     changed = true;
                 }
             }

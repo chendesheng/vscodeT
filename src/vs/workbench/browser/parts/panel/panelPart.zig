@@ -338,6 +338,15 @@ pub fn renderTitle(
     try grid.blit(surface.grid(), x, y, width, 1);
 }
 
+/// First column after the composite titles and their badges.
+pub fn titleContentEnd(part: *const PanelPart, rect: ui.Rect) usize {
+    const x = ui.cell.snap(rect.x);
+    const surface = &(part.title_surface orelse return x);
+    const last = part.title_nodes.getLastOrNull() orelse return x;
+    const box = surface.box_tree.find(last.node) orelse return x;
+    return x + ui.cell.snap(box.rect.right());
+}
+
 /// Returns the composite id under the mouse position. The boxes come from the
 /// DOM layout pass that produced the currently painted title.
 pub fn hitTest(part: *const PanelPart, rect: ui.Rect, x: usize, y: usize) ?[]const u8 {

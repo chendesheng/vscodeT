@@ -474,6 +474,7 @@ pub fn main(init: std.process.Init) !void {
     try workbench.setUserSettingsPaths(profile.settings_paths);
     try workbench.setKeybindingsPaths(profile.keybindings_paths);
     if (profile.user_data_dir) |user_data| {
+        workbench.setTerminalProfileStorage(user_data) catch {};
         if (std.fs.path.join(allocator, &.{ user_data, "history.json" })) |history_path| {
             defer allocator.free(history_path);
             workbench.setHistoryStatePath(history_path) catch {};
@@ -863,7 +864,7 @@ pub fn main(init: std.process.Init) !void {
                     const modal_host = helix_runtime.host orelse vim_runtime.host;
                     if (modal_host) |host| {
                         const editor_focused = workbench.focus == .editor;
-                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isImage() else false;
+                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isImage() and tab.terminal_input == null else false;
                         if (!workbench.is_pasting and editor_focused and normal_tab and
                             dispatchExtensionKey(workbench, host, event))
                         {
