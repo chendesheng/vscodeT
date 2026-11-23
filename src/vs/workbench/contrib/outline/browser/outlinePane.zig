@@ -1,23 +1,20 @@
-// Port of `src/vs/workbench/contrib/outline/browser/outlinePane.ts` to the
-// terminal list layer.
+// Port of `src/vs/workbench/contrib/outline/browser/outlinePane.ts` on the
+// ported workbench tree stack.
 //
-// Faithful pieces: the pane follows the active editor, creates an outline
-// through the ported `IOutlineService`, shows the provider's tree with
-// expand/collapse, selection, marker rollups, follow-cursor reveal, sort by
-// position/name/kind, filter-on-type and the Collapse All / Expand All /
-// Follow Cursor / Filter on Type / Sort By title actions. The pane listens to
-// the editor's view events for cursor and content changes, matching upstream's
-// `onDidChangeCursorPosition` / `onDidChangeModelContent` flow (the terminal
-// editor has no separate model events; `ViewCursorStateChanged` and
-// `ViewLinesChanged` are its event surface).
+// The pane follows the active editor, creates an outline through the ported
+// `IOutlineService`, and renders the provider tree through `AsyncDataTree`, the
+// same tree component the Explorer uses. Expansion/collapse, selection,
+// keyboard/mouse navigation, wheel scrolling and indent guides therefore come
+// from the ported tree rather than a parallel row list. The pane listens to the
+// editor's `ViewCursorStateChanged` / `ViewLinesChanged` view events for cursor
+// following and content rebuilds, matching upstream's editor event flow.
 //
-// Terminal adaptations (documented in README/docs/terminal-ui.md): the browser
-// workbench data tree and its DOM renderers are replaced by the ported
-// `ListWidget` plus the outline tree snapshot from `DocumentSymbolsOutline`.
-// Tree state is not persisted (no workspace storage), and `Loading document
-// symbols...` is not shown because outline creation is synchronous. The
-// filter input is typed directly in the pane like the browser tree's find
-// widget, but rendered without a separate input row.
+// Terminal adaptations (documented in README/docs/terminal-ui.md): there is no
+// workspace view-state storage, so tree state is not persisted; the find
+// widget's separate input row is replaced by typed filter text in the pane; and
+// `Loading document symbols...` is not shown because outline creation is
+// synchronous. Filtering and sorting are applied by the ported tree's data
+// source.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -30,9 +27,9 @@ const OutlineEditor = outline_mod.OutlineEditor;
 const IOutline = outline_mod.IOutline;
 const TreeElement = outline_mod.TreeElement;
 const theme_colors_mod = @import("../../../browser/themeColors.zig");
+const data_tree_mod = @import("../../../../base/browser/ui/tree/dataTree.zig");
+const abstract_tree_mod = @import("../../../../base/browser/ui/tree/abstractTree.zig");
 const list_mod = @import("../../../../base/browser/ui/list/list.zig");
-const list_widget_mod = @import("../../../../base/browser/ui/list/listWidget.zig");
-const ListWidget = list_widget_mod.ListWidget;
 const view_state_mod = @import("./outline.zig");
 const OutlineViewState = view_state_mod.OutlineViewState;
 const OutlineSortOrder = view_state_mod.OutlineSortOrder;
@@ -53,24 +50,12 @@ pub const Host = struct {
     is_symbol_visible: *const fn (context: *anyopaque, kind: u32) bool,
 };
 
-const Row = struct {
-    element: *anyopaque,
-    id: []const u8,
-    label: []const u8,
-    kind: ?u32,
-    depth: usize,
-    collapsible: bool,
-    collapsed: bool,
-    marker_count: usize,
-    marker_severity: ?u32,
-    deprecated: bool,
-    is_group: bool,
-};
-
 const SortContext = struct {
     pane: *OutlinePane,
     order: OutlineSortOrder,
 };
+
+const OutlineTree = data_tree_mod.DataTree(*const TreeElement);
 
 pub const OutlinePane = struct {
     allocator: Allocator,
@@ -78,14 +63,14 @@ pub const OutlinePane = struct {
     outline_service: *OutlineService,
     view_state: OutlineViewState,
     outline: ?*IOutline = null,
-    rows: std.array_list.Managed(*Row),
-    row_arena: std.heap.ArenaAllocator,
-    list: ListWidget,
-    collapsed_ids: std.StringHashMap(void),
+    tree: *OutlineTree,
+    /// Synthetic root passed to the data tree. The rendered tree starts at
+    /// `root.children`, matching upstream's outline input.
+    root: TreeElement = undefined,
+    tree_arena: std.heap.ArenaAllocator,
     editor: ?*Editor = null,
     view_handler: ViewEventHandler = .{},
     handler_attached: bool = false,
-    selected_element: ?*anyopaque = null,
     filter_text: std.array_list.Managed(u8),
     message: ?[]const u8 = null,
     theme: ?*const theme_colors_mod.ThemeColors = null,
@@ -105,17 +90,8 @@ pub const OutlinePane = struct {
             .host = host,
             .outline_service = outline_service,
             .view_state = OutlineViewState.init(allocator),
-            .rows = std.array_list.Managed(*Row).init(allocator),
-            .row_arena = std.heap.ArenaAllocator.init(allocator),
-            .list = ListWidget.init(allocator, .{
-                .context = @ptrCast(self),
-                .get_height = rowHeight,
-                .get_template_id = rowTemplate,
-            }, .{
-                .context = @ptrCast(self),
-                .render = renderRow,
-            }),
-            .collapsed_ids = std.StringHashMap(void).init(allocator),
+            .tree = undefined,
+            .tree_arena = std.heap.ArenaAllocator.init(allocator),
             .view_handler = ViewEventHandler.init(self, .{
                 .onCursorStateChanged = onCursorStateChanged,
                 .onLinesChanged = onLinesChanged,
@@ -125,23 +101,28 @@ pub const OutlinePane = struct {
             }),
             .filter_text = std.array_list.Managed(u8).init(allocator),
         };
-        self.list.on_activate = activate;
-        self.list.activation_context = self;
-        self.list.on_selection = selectionChanged;
-        self.list.selection_context = self;
+        self.root = .{ .element = @ptrCast(self), .label = "" };
+        self.tree = try OutlineTree.init(allocator, "OutlinePane", .{
+            .context = @ptrCast(self),
+            .render = renderRow,
+        }, .{
+            .context = @ptrCast(self),
+            .get_children = outlineGetChildren,
+            .has_children = outlineHasChildren,
+        }, false, .{
+            .indent = 2,
+        });
+        self.tree.tree.view.setActivateHandler(self, activate);
         return self;
     }
 
     pub fn deinit(self: *OutlinePane) void {
         self.detachEditor();
         self.disposeOutline();
+        self.tree.deinit();
         self.view_state.deinit();
-        for (self.rows.items) |row| self.allocator.destroy(row);
-        self.rows.deinit();
-        self.row_arena.deinit();
-        self.collapsed_ids.deinit();
+        self.tree_arena.deinit();
         self.filter_text.deinit();
-        self.list.deinit();
         self.allocator.destroy(self);
     }
 
@@ -203,11 +184,10 @@ pub const OutlinePane = struct {
         return self.focused;
     }
 
-    /// Updates the view's selection/focus state without changing the editor.
     pub fn setFocused(self: *OutlinePane, focused: bool) void {
         self.focused = focused;
-        self.list.setFocus(focused);
-        if (!focused) self.list.clearHover();
+        self.tree.setFocus(focused);
+        if (!focused) self.tree.tree.view.clearHover();
     }
 
     /// Rebinds the pane to the active editor. Called by the workbench when the
@@ -221,7 +201,6 @@ pub const OutlinePane = struct {
             value.addViewEventHandler(&self.view_handler);
             self.handler_attached = true;
         }
-        self.selected_element = null;
         try self.refresh();
     }
 
@@ -237,34 +216,28 @@ pub const OutlinePane = struct {
     /// `createOutline` hand-off. The terminal service is synchronous.
     pub fn refresh(self: *OutlinePane) !void {
         self.disposeOutline();
-        self.list.setSelection(null);
-        self.selected_element = null;
         self.message = null;
 
         const editor = self.host.active_editor(self.host.context);
         if (editor == null or self.editor == null) {
             self.message = "The active editor cannot provide outline information.";
-            self.rows.clearRetainingCapacity();
-            try self.replaceList();
+            try self.rebuildInput();
             return;
         }
         if (!self.outline_service.canCreateOutline(editor.?)) {
             self.message = "The active editor cannot provide outline information.";
-            self.rows.clearRetainingCapacity();
-            try self.replaceList();
+            try self.rebuildInput();
             return;
         }
 
         const outline = self.outline_service.createOutline(editor.?, .OutlinePane) catch null;
         if (outline == null) {
             self.message = "The active editor cannot provide outline information.";
-            self.rows.clearRetainingCapacity();
-            try self.replaceList();
+            try self.rebuildInput();
             return;
         }
         self.outline = outline;
-        if (outline.?.config.collapse_by_default) self.initCollapsed();
-        try self.rebuildRows();
+        try self.rebuildInput();
         if (outline.?.is_empty) {
             self.message = "No symbols found in the active document.";
         } else if (self.view_state.follow_cursor) {
@@ -274,6 +247,7 @@ pub const OutlinePane = struct {
 
     fn disposeOutline(self: *OutlinePane) void {
         if (self.outline) |outline| {
+            self.tree.setInput(null) catch {};
             outline.dispose();
             self.outline = null;
         }
@@ -311,8 +285,6 @@ pub const OutlinePane = struct {
         const self: *OutlinePane = @ptrCast(@alignCast(context));
         self.refresh() catch {
             self.message = "The outline could not be created.";
-            self.rows.clearRetainingCapacity();
-            self.replaceList() catch {};
         };
         self.host.request_render(self.host.context);
         return true;
@@ -328,228 +300,84 @@ pub const OutlinePane = struct {
         try self.view_state.setFilterOnType(value);
         if (!value) {
             self.filter_text.clearRetainingCapacity();
-            try self.rebuildRows();
+            try self.rebuildInput();
         }
         self.host.request_render(self.host.context);
     }
 
     pub fn setSortBy(self: *OutlinePane, order: OutlineSortOrder) !void {
         try self.view_state.setSortBy(order);
-        try self.rebuildRows();
+        try self.rebuildInput();
         self.host.request_render(self.host.context);
     }
 
     pub fn collapseAll(self: *OutlinePane) void {
-        self.collapsed_ids.clearRetainingCapacity();
-        if (self.outline) |outline| {
-            if (outline.config.tree_data_source) |source| {
-                for (source.get_roots(source.context)) |root| collectCollapsible(self, root);
-            }
-        }
-        self.rebuildRows() catch {};
+        _ = self.tree.tree.setCollapsed(null, true, true) catch {};
         self.host.request_render(self.host.context);
     }
 
-    fn initCollapsed(self: *OutlinePane) void {
-        self.collapsed_ids.clearRetainingCapacity();
-        if (self.outline) |outline| {
-            if (outline.config.tree_data_source) |source| {
-                for (source.get_roots(source.context)) |root| collectCollapsible(self, root);
-            }
-        }
-    }
-
     pub fn expandAll(self: *OutlinePane) void {
-        self.collapsed_ids.clearRetainingCapacity();
-        self.rebuildRows() catch {};
+        _ = self.tree.tree.setCollapsed(null, false, true) catch {};
         self.host.request_render(self.host.context);
     }
 
     pub fn isAllCollapsed(self: *const OutlinePane) bool {
+        const outline = self.outline orelse return false;
+        const source = outline.config.tree_data_source orelse return false;
         var found = false;
-        if (self.outline) |outline| {
-            if (outline.config.tree_data_source) |source| {
-                for (source.get_roots(source.context)) |root| {
-                    if (hasCollapsible(root)) {
-                        found = true;
-                        if (!self.isCollapsed(root)) return false;
-                    }
-                }
-            }
+        for (source.get_roots(source.context)) |*element| {
+            if (element.children.len == 0) continue;
+            found = true;
+            if (!self.tree.tree.isCollapsed(element)) return false;
         }
         return found;
     }
 
     pub fn hasHoveredRow(self: *const OutlinePane) bool {
-        return self.list.hasHoveredRow();
+        return self.tree.tree.view.hasHoveredRow();
     }
 
     pub fn clearHover(self: *OutlinePane) void {
-        self.list.clearHover();
+        self.tree.tree.view.clearHover();
     }
 
-    fn collectCollapsible(self: *OutlinePane, element: TreeElement) void {
-        if (element.collapsible) self.collapsed_ids.put(element.id, {}) catch {};
-        for (element.children) |child| self.collectCollapsible(child);
-    }
-
-    fn hasCollapsible(element: TreeElement) bool {
-        if (element.collapsible) return true;
-        for (element.children) |child| {
-            if (hasCollapsible(child)) return true;
-        }
-        return false;
-    }
-
-    fn isCollapsed(self: *const OutlinePane, element: TreeElement) bool {
-        return element.collapsible and self.collapsed_ids.contains(element.id);
-    }
-
-    fn rebuildRows(self: *OutlinePane) !void {
-        const selected = self.selected_element;
-        for (self.rows.items) |row| self.allocator.destroy(row);
-        self.rows.clearRetainingCapacity();
-        _ = self.row_arena.reset(.retain_capacity);
-
+    fn rebuildInput(self: *OutlinePane) !void {
+        _ = self.tree_arena.reset(.retain_capacity);
+        const selected = self.selectionElement();
         if (self.outline) |outline| {
             if (outline.config.tree_data_source) |source| {
-                const roots = source.get_roots(source.context);
-                const sorted = try self.sortedElements(roots);
-                defer self.allocator.free(sorted);
-                for (sorted) |element| try self.appendElement(element, 0);
+                self.root.children = source.get_roots(source.context);
+            } else {
+                self.root.children = &.{};
             }
-        }
-        try self.replaceList();
-        if (selected) |element| {
-            for (self.rows.items, 0..) |row, index| {
-                if (row.element == element) {
-                    self.list.selectOnly(index);
-                    break;
-                }
+            try self.tree.setInput(&self.root);
+            if (outline.config.collapse_by_default) {
+                _ = self.tree.tree.setCollapsed(null, true, true) catch {};
             }
-        }
-    }
-
-    fn appendElement(self: *OutlinePane, element: TreeElement, depth: usize) !void {
-        if (self.outline) |outline| {
-            if (outline.config.filter) |filter| {
-                if (!filter.is_visible(filter.context, element.element)) return;
-            }
-        }
-        if (self.filter_text.items.len > 0 and !self.subtreeMatches(element)) return;
-
-        const row = try self.allocator.create(Row);
-        errdefer self.allocator.destroy(row);
-        row.* = .{
-            .element = element.element,
-            .id = element.id,
-            .label = element.label,
-            .kind = element.symbol_kind,
-            .depth = depth,
-            .collapsible = element.collapsible,
-            .collapsed = self.isCollapsed(element),
-            .marker_count = element.marker_count,
-            .marker_severity = element.marker_severity,
-            .deprecated = element.deprecated,
-            .is_group = element.is_group,
-        };
-        try self.rows.append(row);
-
-        if (element.collapsible and row.collapsed and self.filter_text.items.len == 0) return;
-        const sorted = try self.sortedElements(element.children);
-        defer self.allocator.free(sorted);
-        for (sorted) |child| try self.appendElement(child, depth + 1);
-    }
-
-    fn subtreeMatches(self: *OutlinePane, element: TreeElement) bool {
-        if (matchesFilter(self.filter_text.items, element.label)) return true;
-        for (element.children) |child| {
-            if (self.subtreeMatches(child)) return true;
-        }
-        return false;
-    }
-
-    fn sortedElements(self: *OutlinePane, elements: []const TreeElement) ![]TreeElement {
-        const copy = try self.allocator.dupe(TreeElement, elements);
-        if (self.outline) |outline| {
-            if (outline.config.comparator != null) {
-                const context = SortContext{ .pane = self, .order = self.view_state.sort_by };
-                std.mem.sort(TreeElement, copy, context, struct {
-                    fn lessThan(ctx: SortContext, a: TreeElement, b: TreeElement) bool {
-                        const compare = ctx.pane.outline.?.config.comparator.?;
-                        const order = switch (ctx.order) {
-                            .ByPosition => compare.compare_by_position(compare.context, a.element, b.element),
-                            .ByName => compare.compare_by_name(compare.context, a.element, b.element),
-                            .ByKind => compare.compare_by_type(compare.context, a.element, b.element),
-                        };
-                        return order == .lt;
-                    }
-                }.lessThan);
-            }
-        }
-        return copy;
-    }
-
-    fn replaceList(self: *OutlinePane) !void {
-        var elements = std.array_list.Managed(list_mod.Element).init(self.row_arena.allocator());
-        defer elements.deinit();
-        for (self.rows.items) |row| try elements.append(@ptrCast(row));
-        try self.list.replaceAll(elements.items);
-        if (self.selected_element) |selected| {
-            for (self.rows.items, 0..) |row, index| {
-                if (row.element == selected) {
-                    self.list.selectOnly(index);
-                    return;
-                }
-            }
-            self.list.selectOnly(null);
+            if (selected) |element| self.setSelectionElement(element);
+        } else {
+            self.root.children = &.{};
+            try self.tree.setInput(null);
         }
     }
 
     fn revealActiveElement(self: *OutlinePane) bool {
         const outline = self.outline orelse return false;
-        var candidate = outline.activeElement() orelse return false;
-        while (true) {
-            for (self.rows.items, 0..) |row, index| {
-                if (row.element == candidate) {
-                    if (self.list.selection() == index) return false;
-                    self.list.setSelection(index);
-                    self.selected_element = candidate;
-                    return true;
-                }
-            }
-            candidate = outline.getParent(candidate) orelse return false;
+        const source = outline.config.tree_data_source orelse return false;
+        const roots = source.get_roots(source.context);
+        const active = outline.activeElement() orelse return false;
+        const target = findElementInTree(roots, active) orelse return false;
+        const target_element = findTreeElementById(roots, target.id) orelse return false;
+        if (self.selectionElement()) |selected| {
+            if (selected == target_element) return false;
         }
-    }
-
-    fn rowHeight(_: *anyopaque, _: list_mod.Element) f64 {
-        return 1;
-    }
-
-    fn rowTemplate(_: *anyopaque, _: list_mod.Element) usize {
-        return 0;
-    }
-
-    fn renderRow(context: *anyopaque, row: *const list_mod.Row, element: list_mod.Element) void {
-        const self: *OutlinePane = @ptrCast(@alignCast(context));
-        const item: *const Row = @ptrCast(@alignCast(element));
-        drawRow(self, row, item);
-    }
-
-    fn selectionChanged(context: ?*anyopaque, selection: ?usize) void {
-        const self: *OutlinePane = @ptrCast(@alignCast(context orelse return));
-        if (selection) |index| {
-            if (index < self.rows.items.len) self.selected_element = self.rows.items[index].element;
+        const path = outlinePath(self.allocator, roots, target.id) catch return false;
+        defer self.allocator.free(path);
+        for (path[0..path.len -| 1]) |ancestor| {
+            _ = self.tree.tree.setCollapsed(ancestor, false, false) catch {};
         }
-        self.host.request_render(self.host.context);
-    }
-
-    fn activate(context: ?*anyopaque, index: usize) void {
-        const self: *OutlinePane = @ptrCast(@alignCast(context orelse return));
-        if (index >= self.rows.items.len) return;
-        const outline = self.outline orelse return;
-        outline.reveal(self.rows.items[index].element, .{ .select = false }) catch {};
-        self.host.focus_editor(self.host.context);
+        self.setSelectionElement(target_element);
+        return true;
     }
 
     pub fn render(self: *OutlinePane, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
@@ -571,7 +399,7 @@ pub const OutlinePane = struct {
             _ = drawTextClipped(grid, x + 1, y, width -| 1, message, style);
             return;
         }
-        if (self.rows.items.len == 0) {
+        if (self.tree.count() == 0) {
             const style = ui.cell.PaintStyle{
                 .fg = ui.cell.packColor(self.foreground()),
                 .bg = ui.cell.packColor(self.background()),
@@ -580,32 +408,16 @@ pub const OutlinePane = struct {
             _ = drawTextClipped(grid, x + 1, y, width -| 1, "No symbols found in the active document.", style);
             return;
         }
-        self.list.render(grid, rect);
+        self.tree.render(grid, rect);
     }
 
     pub fn handleKey(self: *OutlinePane, event: *const ui.KeyEvent) !bool {
-        if (self.message != null) {
-            if (event.key == .escape) {
-                self.host.focus_editor(self.host.context);
-                return true;
-            }
-            return true;
-        }
-        if (self.list.handleKey(event)) return true;
-
+        if (self.tree.handleKey(event)) return true;
         switch (event.key) {
-            .left => {
-                try self.collapseOrParent();
-                return true;
-            },
-            .right => {
-                try self.expandOrChild();
-                return true;
-            },
             .escape => {
                 if (self.filter_text.items.len > 0) {
                     self.filter_text.clearRetainingCapacity();
-                    try self.rebuildRows();
+                    try self.rebuildInput();
                 } else {
                     self.host.focus_editor(self.host.context);
                 }
@@ -614,7 +426,7 @@ pub const OutlinePane = struct {
             .backspace => {
                 if (self.filter_text.items.len > 0) {
                     _ = self.filter_text.pop();
-                    try self.rebuildRows();
+                    try self.rebuildInput();
                 }
                 return true;
             },
@@ -624,7 +436,7 @@ pub const OutlinePane = struct {
                     const len = std.unicode.utf8Encode(ch, &buf) catch 0;
                     if (len > 0) {
                         try self.filter_text.appendSlice(buf[0..len]);
-                        try self.rebuildRows();
+                        try self.rebuildInput();
                     }
                     return true;
                 }
@@ -634,129 +446,99 @@ pub const OutlinePane = struct {
         }
     }
 
-    fn collapseOrParent(self: *OutlinePane) !void {
-        const index = self.list.selection() orelse return;
-        if (index >= self.rows.items.len) return;
-        const row = self.rows.items[index];
-        if (row.collapsible and !row.collapsed) {
-            try self.collapsed_ids.put(row.id, {});
-            try self.rebuildRows();
-            return;
-        }
-        if (row.depth == 0) return;
-        var parent_id: ?[]const u8 = null;
-        for (self.rows.items[0..index]) |candidate| {
-            if (candidate.depth +% 1 == row.depth) parent_id = candidate.id;
-        }
-        if (parent_id) |id| {
-            for (self.rows.items, 0..) |candidate, candidate_index| {
-                if (std.mem.eql(u8, candidate.id, id)) {
-                    self.list.setSelection(candidate_index);
-                    self.selected_element = candidate.element;
-                    return;
-                }
-            }
-        }
-    }
-
-    fn expandOrChild(self: *OutlinePane) !void {
-        const index = self.list.selection() orelse {
-            if (self.rows.items.len > 0) self.list.setSelection(0);
-            return;
-        };
-        if (index >= self.rows.items.len) return;
-        const row = self.rows.items[index];
-        if (row.collapsible and row.collapsed) {
-            _ = self.collapsed_ids.remove(row.id);
-            try self.rebuildRows();
-            return;
-        }
-        if (index + 1 < self.rows.items.len and self.rows.items[index + 1].depth > row.depth) {
-            self.list.setSelection(index + 1);
-            self.selected_element = self.rows.items[index + 1].element;
-        }
-    }
-
     pub fn handleMouse(self: *OutlinePane, event: *const ui.MouseEvent, rect: ui.Rect) bool {
         const inside = event.x >= ui.cell.snap(rect.x) and event.x < ui.cell.snap(rect.right()) and
             event.y >= ui.cell.snap(rect.y) and event.y < ui.cell.snap(rect.bottom());
         if (!inside) {
-            self.list.clearHover();
+            self.tree.tree.view.clearHover();
             return false;
         }
-        if (event.kind == .move) {
-            _ = self.list.handleMouse(event);
-            return true;
-        }
-        if (event.kind == .wheel) {
-            _ = self.list.handleMouse(event);
-            return true;
-        }
-        if (event.kind == .down or event.kind == .click) {
-            const handled = self.list.handleMouse(event);
-            if (!handled) return false;
-            const index = self.list.selection() orelse return true;
-            if (index >= self.rows.items.len) return true;
-            const row = self.rows.items[index];
-            const local_x = event.x -| ui.cell.snap(rect.x);
-            const twistie_col = row.depth * 2;
-            if (row.collapsible and local_x == twistie_col) {
-                if (row.collapsed) {
-                    _ = self.collapsed_ids.remove(row.id);
-                } else {
-                    self.collapsed_ids.put(row.id, {}) catch {};
+        const handled = self.tree.handleMouse(event);
+        if ((event.kind == .down or event.kind == .click) and handled) {
+            const element = self.selectionElement() orelse return true;
+            const node = self.selectionNode() orelse return true;
+            const twistie_x = ui.cell.snap(rect.x) + 2 + node.depth * 2;
+            if (element.children.len > 0 and event.x == twistie_x) {
+                _ = self.tree.tree.setCollapsed(element, !self.tree.tree.isCollapsed(element), false) catch {};
+            } else if (element.children.len == 0 or event.x != twistie_x) {
+                if (self.outline) |outline| {
+                    outline.reveal(element.element, .{ .select = false }) catch {};
+                    self.host.focus_editor(self.host.context);
                 }
-                self.rebuildRows() catch {};
-                return true;
             }
-            if (self.outline) |outline| {
-                outline.reveal(row.element, .{ .select = false }) catch {};
-                self.host.focus_editor(self.host.context);
-            }
-            return true;
         }
-        return self.list.handleMouse(event);
+        return true;
+    }
+
+    fn prepareElements(self: *OutlinePane, elements: []const TreeElement) ![]const *const TreeElement {
+        return prepareElementsImpl(self, elements);
+    }
+
+    fn includeElement(self: *OutlinePane, element: *const TreeElement) bool {
+        return includeElementImpl(self, element);
     }
 
     pub fn selectedIndex(self: *const OutlinePane) ?usize {
-        return self.list.selection();
+        const selected = self.selectionElement() orelse return null;
+        for (0..self.tree.count()) |index| {
+            const element = self.renderedElement(index) orelse continue;
+            if (element == selected) return index;
+        }
+        return null;
+    }
+
+    fn selectionNode(self: *const OutlinePane) ?*OutlineTree.Node {
+        return self.tree.tree.selection();
+    }
+
+    fn selectionElement(self: *const OutlinePane) ?*const TreeElement {
+        const node = self.tree.tree.selection() orelse return null;
+        return node.element;
+    }
+
+    fn renderedElement(self: *const OutlinePane, index: usize) ?*const TreeElement {
+        const node = self.renderedNode(index) orelse return null;
+        return node.element;
+    }
+
+    fn renderedNode(self: *const OutlinePane, index: usize) ?*OutlineTree.Node {
+        if (index >= self.tree.tree.view.rendered.items.len) return null;
+        return self.tree.tree.view.rendered.items[index];
+    }
+
+    fn setSelectionElement(self: *OutlinePane, element: *const TreeElement) void {
+        const node = self.tree.tree.model.getNode(element) catch return;
+        self.tree.tree.view.setSelectionNode(node);
     }
 
     pub fn rowCount(self: *const OutlinePane) usize {
-        return self.rows.items.len;
+        return self.tree.count();
     }
 
     pub fn rowLabel(self: *const OutlinePane, index: usize) ?[]const u8 {
-        if (index >= self.rows.items.len) return null;
-        return self.rows.items[index].label;
+        const element = self.renderedElement(index) orelse return null;
+        return element.label;
     }
 
     pub fn rowDepth(self: *const OutlinePane, index: usize) ?usize {
-        if (index >= self.rows.items.len) return null;
-        return self.rows.items[index].depth;
+        const node = self.renderedNode(index) orelse return null;
+        return node.depth;
     }
 
     pub fn rowCollapsed(self: *const OutlinePane, index: usize) ?bool {
-        if (index >= self.rows.items.len) return null;
-        return self.rows.items[index].collapsed;
+        const element = self.renderedElement(index) orelse return null;
+        return self.tree.tree.isCollapsed(element);
     }
 
     pub fn selectRow(self: *OutlinePane, index: usize) void {
-        if (index >= self.rows.items.len) return;
-        self.list.setSelection(index);
-        self.selected_element = self.rows.items[index].element;
+        const element = self.renderedElement(index) orelse return;
+        self.setSelectionElement(element);
     }
 
     pub fn toggleRow(self: *OutlinePane, index: usize) !void {
-        if (index >= self.rows.items.len) return;
-        const row = self.rows.items[index];
-        if (!row.collapsible) return;
-        if (row.collapsed) {
-            _ = self.collapsed_ids.remove(row.id);
-        } else {
-            try self.collapsed_ids.put(row.id, {});
-        }
-        try self.rebuildRows();
+        const element = self.renderedElement(index) orelse return;
+        const collapsed = self.tree.tree.isCollapsed(element);
+        _ = try self.tree.tree.setCollapsed(element, !collapsed, false);
     }
 
     fn background(self: *const OutlinePane) ui.Color {
@@ -766,100 +548,141 @@ pub const OutlinePane = struct {
 
     fn foreground(self: *const OutlinePane) ui.Color {
         const palette = self.theme orelse return .{ .r = 204, .g = 204, .b = 204 };
-        return palette.color("sideBar.foreground", .{ 204, 204, 204 });
+        return palette.color("sidebar.foreground", .{ 204, 204, 204 });
     }
 };
 
-fn drawRow(self: *OutlinePane, row: *const list_mod.Row, item: *const Row) void {
-    const palette = self.theme;
-    const base_bg = if (palette) |theme| theme.color("sideBar.background", .{ 30, 30, 33 }) else ui.Color{ .r = 30, .g = 30, .b = 33 };
-    const default_fg = if (palette) |theme| theme.color("sideBar.foreground", .{ 204, 204, 204 }) else ui.Color{ .r = 204, .g = 204, .b = 204 };
-    var bg = base_bg;
-    var fg = default_fg;
-    if (row.hovered and !row.selected) {
-        bg = if (palette) |theme| theme.color("list.hoverBackground", .{ 42, 45, 46 }) else ui.Color{ .r = 42, .g = 45, .b = 46 };
-        fg = if (palette) |theme| theme.color("list.hoverForeground", .{ 255, 255, 255 }) else ui.Color{ .r = 255, .g = 255, .b = 255 };
-    }
-    if (row.selected) {
-        if (row.focused_selection) {
-            bg = if (palette) |theme| theme.color("list.activeSelectionBackground", .{ 4, 57, 94 }) else ui.Color{ .r = 4, .g = 57, .b = 94 };
-            fg = if (palette) |theme| theme.color("list.activeSelectionForeground", .{ 255, 255, 255 }) else ui.Color{ .r = 255, .g = 255, .b = 255 };
-        } else {
-            bg = if (palette) |theme| theme.color("list.inactiveSelectionBackground", .{ 55, 55, 61 }) else ui.Color{ .r = 55, .g = 55, .b = 61 };
-            fg = if (palette) |theme| theme.color("list.inactiveSelectionForeground", .{ 204, 204, 204 }) else ui.Color{ .r = 204, .g = 204, .b = 204 };
+fn outlineHasChildren(_: *anyopaque, node: *const TreeElement) bool {
+    return node.children.len > 0;
+}
+
+fn outlineGetChildren(context: *anyopaque, element: *const TreeElement) []const *const TreeElement {
+    const self: *OutlinePane = @ptrCast(@alignCast(context));
+    return self.prepareElements(element.children) catch &.{};
+}
+
+fn prepareElementsImpl(self: *OutlinePane, elements: []const TreeElement) ![]const *const TreeElement {
+    const arena = self.tree_arena.allocator();
+    const pointers = try arena.alloc(*const TreeElement, elements.len);
+    for (elements, 0..) |*element, index| pointers[index] = element;
+    if (self.outline) |outline| {
+        if (outline.config.comparator) |_| {
+            const context = SortContext{ .pane = self, .order = self.view_state.sort_by };
+            std.mem.sort(*const TreeElement, pointers, context, struct {
+                fn lessThan(ctx: SortContext, a: *const TreeElement, b: *const TreeElement) bool {
+                    const comparator = ctx.pane.outline.?.config.comparator.?;
+                    const order = switch (ctx.order) {
+                        .ByPosition => comparator.compare_by_position(comparator.context, @ptrCast(a.element), @ptrCast(b.element)),
+                        .ByName => comparator.compare_by_name(comparator.context, @ptrCast(a.element), @ptrCast(b.element)),
+                        .ByKind => comparator.compare_by_type(comparator.context, @ptrCast(a.element), @ptrCast(b.element)),
+                    };
+                    return order == .lt;
+                }
+            }.lessThan);
         }
     }
-    const base = ui.cell.PaintStyle{ .fg = ui.cell.packColor(fg), .bg = ui.cell.packColor(bg) };
-    const x = row.x;
-    const y = row.y;
-    const width = row.width;
-    if (width == 0) return;
-    row.grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, base);
+    if (self.filter_text.items.len == 0) return pointers;
+    var result = std.array_list.Managed(*const TreeElement).init(arena);
+    for (pointers) |element| {
+        if (self.includeElement(element)) result.append(element) catch continue;
+    }
+    return result.toOwnedSlice();
+}
 
-    // Same layout as the ported Explorer tree renderer: two leading cells for
-    // the twistie, then one indent guide per ancestor level. Guides sit under
-    // the parent's twistie column instead of at an arbitrary offset.
-    var col = x + @min(2, width);
-    const indent_width = item.depth * 2;
+fn includeElementImpl(self: *OutlinePane, element: *const TreeElement) bool {
+    if (matchesFilter(self.filter_text.items, element.label)) return true;
+    for (element.children) |*child| {
+        if (self.includeElement(child)) return true;
+    }
+    return false;
+}
+
+fn renderRow(context: *anyopaque, row: *const list_mod.Row, node: *const OutlineTree.Node) void {
+    const self: *OutlinePane = @ptrCast(@alignCast(context));
+    const item = node.element orelse return;
+    const base = rowPaint(self.theme, row);
+    row.grid.fillRect(@floatFromInt(row.x), @floatFromInt(row.y), @floatFromInt(row.width), 1, base);
+    var col = row.x + @min(2, row.width);
+    const indent_width = (node.depth -| 1) * 2;
     var indent: usize = 0;
-    while (indent < indent_width and col < x + width) : (indent += 1) {
-        if (indent % 2 == 0) {
-            row.grid.putCodepoint(col, y, 0x2502, 1, .{
-                .fg = ui.cell.packColor(if (palette) |theme| theme.color("tree.indentGuidesStroke", .{ 88, 88, 88 }) else ui.Color{ .r = 88, .g = 88, .b = 88 }),
-                .bg = ui.cell.packColor(bg),
-                .attrs = ui.cell.Attr.dim,
+    while (indent < indent_width and col < row.x + row.width) : (indent += 1) {
+        if (row.render_indent_guides and indent % 2 == 0) {
+            const guide_color = if (self.theme) |theme|
+                theme.color("tree.indentGuidesStroke", .{ 80, 80, 80 })
+            else
+                ui.Color{ .r = 80, .g = 80, .b = 80 };
+            row.grid.putCodepoint(col, row.y, 0x2502, 1, .{
+                .fg = ui.cell.packColor(guide_color),
+                .bg = base.bg,
             });
         } else {
-            row.grid.putSpace(col, y, base);
+            row.grid.putSpace(col, row.y, base);
         }
         col += 1;
     }
-    if (item.collapsible and col < x + width) {
-        row.grid.putCodepoint(col, y, if (item.collapsed) 0x25B8 else 0x25BE, 1, base);
+    if (col < row.x + row.width) {
+        if (node.collapsible) {
+            row.grid.putCodepoint(col, row.y, if (node.collapsed) 0x25B8 else 0x25BE, 1, base);
+        } else {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
+        }
         col += 1;
-    } else if (col < x + width) {
-        col += 1;
-    }
-    if (col < x + width) col += 1;
-
-    if (col < x + width) {
-        const glyph = goto_symbol.glyph(item.kind orelse 0);
-        const glyph_width = drawTextClipped(row.grid, col, y, x + width -| col, glyph, base);
-        col += glyph_width;
-        if (col < x + width) {
-            row.grid.putCodepoint(col, y, ' ', 1, base);
+        if (col < row.x + row.width) {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
             col += 1;
         }
     }
-
-    var label_style = base;
-    if (item.deprecated) {
-        label_style.attrs |= ui.cell.Attr.strikethrough;
-        label_style.attrs |= ui.cell.Attr.dim;
+    if (col < row.x + row.width) {
+        const glyph = goto_symbol.glyph(item.symbol_kind orelse 0);
+        col += drawTextClipped(row.grid, col, row.y, row.x + row.width -| col, glyph, base);
+        if (col < row.x + row.width) {
+            row.grid.putCodepoint(col, row.y, ' ', 1, base);
+            col += 1;
+        }
     }
-    const label_width = drawTextClipped(row.grid, col, y, x + width -| col, item.label, label_style);
-    col += label_width;
-
-    // Marker rollup: the count badge when this element owns problems, or a
-    // bubble when a descendant does, exactly like `_renderMarkerInfo`.
+    col += drawTextClipped(row.grid, col, row.y, row.x + row.width -| col, item.label, base);
     if (item.marker_severity) |severity| {
-        var badge_buf: [8]u8 = undefined;
+        var buf: [8]u8 = undefined;
         const badge = if (item.marker_count > 0)
-            std.fmt.bufPrint(&badge_buf, "{d}", .{@min(item.marker_count, 9)}) catch "+"
+            std.fmt.bufPrint(&buf, "{d}", .{@min(item.marker_count, 9)}) catch "+"
         else
             "\u{25CF}";
         const badge_width = textWidth(badge);
-        if (x + width > badge_width + 1 and col + badge_width < x + width) {
-            const badge_col = x + width -| badge_width -| 1;
+        if (row.x + row.width > badge_width + 1) {
+            const badge_col = row.x + row.width -| badge_width -| 1;
             const color = if (severity == markerSeverity.Error)
-                if (palette) |theme| theme.color("list.errorForeground", .{ 244, 135, 113 }) else ui.Color{ .r = 244, .g = 135, .b = 113 }
-            else if (palette) |theme| theme.color("list.warningForeground", .{ 204, 167, 0 }) else ui.Color{ .r = 204, .g = 167, .b = 0 };
-            _ = drawTextClipped(row.grid, badge_col, y, x + width -| badge_col, badge, .{
+                if (self.theme) |theme| theme.color("list.errorForeground", .{ 244, 135, 113 }) else ui.Color{ .r = 244, .g = 135, .b = 113 }
+            else if (self.theme) |theme| theme.color("list.warningForeground", .{ 204, 167, 0 }) else ui.Color{ .r = 204, .g = 167, .b = 0 };
+            _ = drawTextClipped(row.grid, badge_col, row.y, row.width -| (badge_col - row.x), badge, .{
                 .fg = ui.cell.packColor(color),
-                .bg = ui.cell.packColor(bg),
+                .bg = base.bg,
             });
         }
     }
+}
+
+fn activate(context: ?*anyopaque, element: *const TreeElement) void {
+    const self: *OutlinePane = @ptrCast(@alignCast(context orelse return));
+    const outline = self.outline orelse return;
+    outline.reveal(element.element, .{ .select = false }) catch {};
+    self.host.focus_editor(self.host.context);
+}
+
+fn rowPaint(theme: ?*const theme_colors_mod.ThemeColors, row: *const list_mod.Row) ui.cell.PaintStyle {
+    var bg = if (theme) |palette| palette.color("sideBar.background", .{ 30, 30, 33 }) else ui.Color{ .r = 30, .g = 30, .b = 33 };
+    var fg = if (theme) |palette| palette.color("sideBar.foreground", .{ 204, 204, 204 }) else ui.Color{ .r = 204, .g = 204, .b = 204 };
+    if (row.selected) {
+        if (row.focused_selection) {
+            bg = if (theme) |palette| palette.color("list.activeSelectionBackground", .{ 4, 57, 94 }) else ui.Color{ .r = 4, .g = 57, .b = 94 };
+            fg = .{ .r = 255, .g = 255, .b = 255 };
+        } else {
+            bg = if (theme) |palette| palette.color("list.inactiveSelectionBackground", .{ 55, 55, 61 }) else ui.Color{ .r = 55, .g = 55, .b = 61 };
+        }
+    } else if (row.hovered) {
+        bg = if (theme) |palette| palette.color("list.hoverBackground", .{ 42, 45, 46 }) else ui.Color{ .r = 42, .g = 45, .b = 46 };
+        fg = if (theme) |palette| palette.color("list.hoverForeground", .{ 255, 255, 255 }) else ui.Color{ .r = 255, .g = 255, .b = 255 };
+    }
+    return .{ .fg = ui.cell.packColor(fg), .bg = ui.cell.packColor(bg) };
 }
 
 fn matchesFilter(filter: []const u8, label: []const u8) bool {
@@ -869,6 +692,41 @@ fn matchesFilter(filter: []const u8, label: []const u8) bool {
     while (index + filter.len <= label.len) : (index += 1) {
         if (std.ascii.eqlIgnoreCase(filter, label[index .. index + filter.len])) return true;
     }
+    return false;
+}
+
+fn findElementInTree(roots: []const TreeElement, element: *anyopaque) ?TreeElement {
+    for (roots) |root| {
+        if (root.element == element) return root;
+        if (findElementInTree(root.children, element)) |found| return found;
+    }
+    return null;
+}
+
+fn findTreeElementById(roots: []const TreeElement, id: []const u8) ?*const TreeElement {
+    for (roots) |*root| {
+        if (std.mem.eql(u8, root.id, id)) return root;
+        if (findTreeElementById(root.children, id)) |found| return found;
+    }
+    return null;
+}
+
+fn outlinePath(allocator: Allocator, roots: []const TreeElement, id: []const u8) ![]const *const TreeElement {
+    var path = std.array_list.Managed(*const TreeElement).init(allocator);
+    errdefer path.deinit();
+    for (roots) |*root| {
+        if (try appendPath(&path, root, id)) return path.toOwnedSlice();
+    }
+    return path.toOwnedSlice();
+}
+
+fn appendPath(path: *std.array_list.Managed(*const TreeElement), element: *const TreeElement, id: []const u8) !bool {
+    try path.append(element);
+    if (std.mem.eql(u8, element.id, id)) return true;
+    for (element.children) |*child| {
+        if (try appendPath(path, child, id)) return true;
+    }
+    _ = path.pop();
     return false;
 }
 
@@ -900,7 +758,6 @@ fn textWidth(text: []const u8) usize {
     }
     return width;
 }
-
 test "OutlinePane: tree rows, collapsing, filtering and sorting" {
     const allocator = std.testing.allocator;
     const Fixture = struct {
@@ -967,16 +824,17 @@ test "OutlinePane: tree rows, collapsing, filtering and sorting" {
         .disposeFn = Fixture.dispose,
     };
     pane.outline = &fake_outline;
-    try pane.rebuildRows();
+    try pane.rebuildInput();
     try std.testing.expectEqual(@as(usize, 3), pane.rowCount());
     try std.testing.expectEqualStrings("Root", pane.rowLabel(0).?);
-    try std.testing.expectEqual(@as(usize, 1), pane.rowDepth(1).?);
+    try std.testing.expectEqual(@as(usize, 2), pane.rowDepth(1).?);
     try std.testing.expectEqualStrings("zeta", pane.rowLabel(1).?);
 
     // Indent guides sit under the parent's twistie column: the child row has
     // a guide at the second cell, matching the Explorer renderer.
     var grid = try ui.CellGrid.init(allocator, 20, 5);
     defer grid.deinit();
+    pane.tree.tree.view.options.render_indent_guides = .always;
     try pane.render(&grid, .{ .x = 0, .y = 0, .w = 20, .h = 5 }, true);
     try std.testing.expectEqual(@as(u32, 0x2502), grid.cluster[grid.index(2, 1)]);
     try std.testing.expect(grid.cluster[grid.index(1, 1)] != 0x2502);
@@ -993,7 +851,7 @@ test "OutlinePane: tree rows, collapsing, filtering and sorting" {
     try std.testing.expectEqualStrings("zeta", pane.rowLabel(2).?);
 
     try pane.filter_text.appendSlice("zet");
-    try pane.rebuildRows();
+    try pane.rebuildInput();
     try std.testing.expectEqual(@as(usize, 2), pane.rowCount());
     try std.testing.expectEqualStrings("Root", pane.rowLabel(0).?);
     try std.testing.expectEqualStrings("zeta", pane.rowLabel(1).?);

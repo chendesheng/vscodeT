@@ -15895,7 +15895,7 @@ test "Workbench: outline side panel shows provider symbols" {
     try std.testing.expectEqual(@as(usize, 2), view.rowCount());
     try std.testing.expectEqualStrings("A", view.rowLabel(0).?);
     try std.testing.expectEqualStrings("b", view.rowLabel(1).?);
-    try std.testing.expectEqual(@as(usize, 1), view.rowDepth(1).?);
+    try std.testing.expectEqual(@as(usize, 2), view.rowDepth(1).?);
 
     view.setFocused(true);
     view.selectRow(1);

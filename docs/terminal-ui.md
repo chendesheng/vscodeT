@@ -724,8 +724,9 @@ content correct without a per-group DOM lifetime.
 The Outline side panel is the cell adaptation of
 `src/vs/workbench/contrib/outline/browser/outlinePane.ts`. It binds to the
 active text editor, creates the outline through `OutlineService`, and renders
-the `DocumentSymbolsOutline` tree snapshot with the shared `ListWidget`:
-indentation and twisties, symbol glyphs, marker counts/rollup bubbles,
+the `DocumentSymbolsOutline` tree snapshot with the ported `DataTree`, the same
+workbench tree component the Explorer uses: indentation guides and twisties,
+fold/unfold from the tree, symbol glyphs, marker counts/rollup bubbles,
 selection/hover/focus colors, wheel scrolling and Enter-to-reveal. The title
 actions are Collapse All, Expand All, Follow Cursor, Filter on Type and the
 three Sort By commands. Follow Cursor selects the symbol enclosing the cursor;
