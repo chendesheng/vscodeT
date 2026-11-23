@@ -7,6 +7,7 @@ const statusElement = document.getElementById("status");
 const terminalElement = document.getElementById("terminal");
 const decoder = new TextDecoder();
 const FONT_FAMILY = '"IosevkaTerm Nerd Font", "JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+let lastTouchAt = 0;
 
 const THEME = {
   background: "#1e1e1e",
@@ -120,6 +121,7 @@ function installMouseAdapter(term, terminalElement, write) {
     write(`\x1b[<${code};${x};${y}${release ? "m" : "M"}`);
   };
   const onDown = (event) => {
+    if (performance.now() - lastTouchAt < 800) return;
     if (!inside(event) || event.button > 2) return;
     event.preventDefault();
     event.stopPropagation();
@@ -129,6 +131,7 @@ function installMouseAdapter(term, terminalElement, write) {
     send(event.button + modifiers(event), col, row, false);
   };
   const onMove = (event) => {
+    if (performance.now() - lastTouchAt < 800) return;
     if (pressed === null) return;
     event.preventDefault();
     event.stopPropagation();
@@ -137,6 +140,7 @@ function installMouseAdapter(term, terminalElement, write) {
     send(32 + pressed + modifiers(event), col, row, false);
   };
   const onUp = (event) => {
+    if (performance.now() - lastTouchAt < 800) return;
     if (pressed === null) return;
     event.preventDefault();
     event.stopPropagation();
@@ -146,6 +150,7 @@ function installMouseAdapter(term, terminalElement, write) {
     send(button + modifiers(event), col, row, true);
   };
   const onWheel = (event) => {
+    if (performance.now() - lastTouchAt < 800) return;
     if (!inside(event) || event.deltaY === 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -164,6 +169,134 @@ function installMouseAdapter(term, terminalElement, write) {
   window.addEventListener("wheel", onWheel, { capture: true, passive: false });
   window.addEventListener("contextmenu", onContextMenu, { capture: true, passive: false });
   window.addEventListener("blur", () => { pressed = null; });
+}
+
+function installTouchAdapter(term, terminalElement, write) {
+  const canvas = term.element?.querySelector("canvas") ?? terminalElement.querySelector("canvas");
+  if (!canvas) return;
+  let active = null;
+
+  const inside = (point) => {
+    const rect = canvas.getBoundingClientRect();
+    return point.clientX >= rect.left && point.clientX < rect.right &&
+      point.clientY >= rect.top && point.clientY < rect.bottom;
+  };
+  const cellAt = (point) => {
+    const rect = canvas.getBoundingClientRect();
+    const metrics = term.renderer?.getMetrics?.();
+    const cw = term.renderer?.charWidth || metrics?.width || rect.width / Math.max(term.cols, 1);
+    const ch = term.renderer?.charHeight || metrics?.height || rect.height / Math.max(term.rows, 1);
+    const col = Math.floor((point.clientX - rect.left) / cw);
+    const row = Math.floor((point.clientY - rect.top) / ch);
+    return {
+      col: Math.min(Math.max(col, 0), Math.max(term.cols - 1, 0)) + 1,
+      row: Math.min(Math.max(row, 0), Math.max(term.rows - 1, 0)) + 1,
+    };
+  };
+  const send = (code, x, y, release) => {
+    write(`\x1b[<${code};${x};${y}${release ? "m" : "M"}`);
+  };
+  const markTouch = () => { lastTouchAt = performance.now(); };
+
+  const onStart = (event) => {
+    if (active || event.touches.length !== 1) return;
+    const touch = event.changedTouches[0];
+    if (!inside(touch)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    markTouch();
+    const cell = cellAt(touch);
+    active = {
+      id: touch.identifier,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      lastY: touch.clientY,
+      startCol: cell.col,
+      startRow: cell.row,
+      lastCol: cell.col,
+      lastRow: cell.row,
+      mode: "pending",
+      accum: 0,
+    };
+  };
+
+  const onMove = (event) => {
+    if (!active) return;
+    let touch = null;
+    for (const candidate of event.touches) {
+      if (candidate.identifier === active.id) { touch = candidate; break; }
+    }
+    if (!touch) return;
+    event.preventDefault();
+    event.stopPropagation();
+    markTouch();
+
+    const dy = touch.clientY - active.startY;
+    const dx = touch.clientX - active.startX;
+    if (active.mode === "pending" && Math.hypot(dx, dy) >= 8) {
+      active.mode = Math.abs(dy) > Math.abs(dx) ? "scroll" : "drag";
+      if (active.mode === "drag") {
+        send(0, active.startCol, active.startRow, false);
+      }
+      active.lastY = touch.clientY;
+    }
+
+    const cell = cellAt(touch);
+    if (active.mode === "scroll") {
+      const step = Math.max(6, Math.round((term.renderer?.charHeight || 16) * 0.75));
+      active.accum += touch.clientY - active.lastY;
+      active.lastY = touch.clientY;
+      while (active.accum >= step) {
+        send(64, cell.col, cell.row, false);
+        active.accum -= step;
+      }
+      while (active.accum <= -step) {
+        send(65, cell.col, cell.row, false);
+        active.accum += step;
+      }
+    } else if (active.mode === "drag") {
+      if (cell.col !== active.lastCol || cell.row !== active.lastRow) {
+        send(32, cell.col, cell.row, false);
+        active.lastCol = cell.col;
+        active.lastRow = cell.row;
+      }
+    }
+  };
+
+  const onEnd = (event) => {
+    if (!active) return;
+    event.preventDefault();
+    event.stopPropagation();
+    markTouch();
+    let touch = null;
+    for (const candidate of event.changedTouches) {
+      if (candidate.identifier === active.id) { touch = candidate; break; }
+    }
+    if (active.mode === "pending") {
+      send(0, active.startCol, active.startRow, false);
+      send(0, active.startCol, active.startRow, true);
+    } else if (active.mode === "drag") {
+      const cell = touch ? cellAt(touch) : { col: active.lastCol, row: active.lastRow };
+      send(0, cell.col, cell.row, true);
+    }
+    active = null;
+  };
+
+  const onCancel = (event) => {
+    if (!active) return;
+    event.preventDefault();
+    event.stopPropagation();
+    markTouch();
+    if (active.mode === "drag") {
+      send(0, active.lastCol, active.lastRow, true);
+    }
+    active = null;
+  };
+
+  terminalElement.addEventListener("touchstart", onStart, { capture: true, passive: false });
+  terminalElement.addEventListener("touchmove", onMove, { capture: true, passive: false });
+  terminalElement.addEventListener("touchend", onEnd, { capture: true, passive: false });
+  terminalElement.addEventListener("touchcancel", onCancel, { capture: true, passive: false });
 }
 
 function installResizeHandler(terminalElement, refit) {
@@ -249,6 +382,7 @@ async function start() {
   );
 
   installMouseAdapter(term, terminalElement, (data) => { pty.write(data).catch(() => {}); });
+  installTouchAdapter(term, terminalElement, (data) => { pty.write(data).catch(() => {}); });
 
   pty.output.pipeTo(new WritableStream({
     write(chunk) { term.write(chunk); },

@@ -24,7 +24,10 @@ html, body {
 #terminal {
   position: fixed;
   inset: 0;
+  touch-action: none;
+  overscroll-behavior: none;
 }
+#terminal canvas { touch-action: none; }
 #terminal .xterm { width: 100% !important; height: 100% !important; }
 #status {
   position: absolute;
