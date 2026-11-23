@@ -213,6 +213,40 @@ const ProbeHost = struct {
 /// allocator, which reports full traces.
 var app_debug_allocator: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .{};
 
+/// CheerpX's 32-bit console does not implement the gathered writes used by
+/// `Io.Threaded`'s file writer. This writer sends the buffered frame with a
+/// plain `write(2)` and is selected only for the i386 WebVM build.
+const RawStdoutWriter = struct {
+    interface: Io.Writer,
+
+    fn init(buffer: []u8) RawStdoutWriter {
+        return .{ .interface = .{ .vtable = &.{ .drain = drain }, .buffer = buffer } };
+    }
+
+    fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
+        try writeAll(w.buffered());
+        w.end = 0;
+        var consumed: usize = 0;
+        for (data, 0..) |slice, index| {
+            const repeat = if (index + 1 == data.len) splat else 1;
+            for (0..repeat) |_| try writeAll(slice);
+            consumed += slice.len * repeat;
+        }
+        return consumed;
+    }
+
+    fn writeAll(bytes: []const u8) Io.Writer.Error!void {
+        if (comptime builtin.os.tag == .windows) return error.WriteFailed;
+        var index: usize = 0;
+        while (index < bytes.len) {
+            const written = std.posix.write(std.posix.STDOUT_FILENO, bytes[index..]) catch
+                return error.WriteFailed;
+            if (written == 0) return error.WriteFailed;
+            index += written;
+        }
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     // CheerpX's 32-bit Linux emulation does not service the threaded/io_uring
     // backend behind std.process.Init: the first file open and stdout write
@@ -303,8 +337,13 @@ pub fn main(init: std.process.Init) !void {
 
     var out_buffer: [65536]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
-    const out = &stdout_writer.interface;
+    var raw_stdout = RawStdoutWriter.init(&out_buffer);
+    const out: *Io.Writer = if (builtin.cpu.arch == .x86 and builtin.os.tag != .windows)
+        &raw_stdout.interface
+    else
+        &stdout_writer.interface;
     defer out.flush() catch {};
+    if (builtin.cpu.arch == .x86) std.debug.print("diag: i386 raw stdout\n", .{});
 
     const orig_termios = try tui.enableRawMode();
     tui.rememberOrigTermios(orig_termios);
