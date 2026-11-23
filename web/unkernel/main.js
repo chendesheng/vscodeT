@@ -1,6 +1,6 @@
 // vscodeT on unkernel: a real wasm Linux kernel runs the native aarch64 TUI,
 // and Ghostty (ghostty-web) is the terminal frontend.
-import { Ghostty, Terminal, FitAddon } from "./vendor/ghostty-web/ghostty-web.js";
+import { Ghostty, Terminal } from "./vendor/ghostty-web/ghostty-web.js";
 import { createKernel, checkSupport } from "./vendor/unkernel/web.mjs";
 
 const statusElement = document.getElementById("status");
@@ -166,23 +166,22 @@ function installMouseAdapter(term, terminalElement, write) {
   window.addEventListener("blur", () => { pressed = null; });
 }
 
-function installResizeHandler(term, fit, terminalElement, pty) {
+function installResizeHandler(terminalElement, refit) {
   let scheduled = false;
-  const refit = () => {
+  const schedule = () => {
     if (scheduled) return;
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
-      try { fit.fit(); } catch { return; }
-      try { pty.resize(term.cols, term.rows); } catch { /* pty ended */ }
+      refit();
     });
   };
 
   if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(refit).observe(terminalElement);
+    new ResizeObserver(schedule).observe(terminalElement);
   }
-  window.addEventListener("resize", refit);
-  window.visualViewport?.addEventListener("resize", refit);
+  window.addEventListener("resize", schedule);
+  window.visualViewport?.addEventListener("resize", schedule);
 }
 
 async function start() {
@@ -207,10 +206,18 @@ async function start() {
     theme: THEME,
   });
   term.open(terminalElement);
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  fit.observeResize?.();
-  try { fit.fit(); } catch { /* keep 80x24 */ }
+
+  const fitGrid = () => {
+    const rect = terminalElement.getBoundingClientRect();
+    const metrics = term.renderer?.getMetrics?.();
+    const cw = term.renderer?.charWidth || metrics?.width || 0;
+    const ch = term.renderer?.charHeight || metrics?.height || 0;
+    if (!cw || !ch) return;
+    const cols = Math.max(20, Math.floor(rect.width / cw));
+    const rows = Math.max(5, Math.floor(rect.height / ch));
+    if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+  };
+  fitGrid();
 
   showStatus("Booting Linux…");
   const binary = await fetchBytes("./vscodet");
@@ -249,10 +256,13 @@ async function start() {
 
   term.onData((data) => { pty.write(data).catch(() => {}); });
   term.onResize(({ cols, rows }) => pty.resize(cols, rows));
-  installResizeHandler(term, fit, terminalElement, pty);
+  const resize = () => {
+    fitGrid();
+    try { pty.resize(term.cols, term.rows); } catch { /* pty ended */ }
+  };
+  installResizeHandler(terminalElement, resize);
   showStatus("");
-  try { fit.fit(); } catch { /* keep the current size */ }
-  try { pty.resize(term.cols, term.rows); } catch { /* pty ended */ }
+  resize();
 
   pty.ended.then((result) => {
     showStatus(`vscodeT ended: ${JSON.stringify(result)}`, true);
