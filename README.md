@@ -1875,9 +1875,10 @@ Editor contributions:
   the current workbench window. `Alt-\` splits horizontally, `Alt-Shift-\` vertically,
   `Ctrl-Alt-Left` / `Ctrl-Alt-Right` switch groups, and clicking a group
   activates it. Splitting duplicates the active editor into the new group:
-  both panes share the same text model, undo history and dirty/saved state,
-  while wrapping, cursor/selection, scroll and folding are independent view
-  state (`EditorDocument` plus one `Editor` per pane). The ported
+  both panes share the same text model, undo history and dirty/saved state.
+  Model edits repaint both panes, including the unfocused one. Each pane
+  keeps its own wrapping, cursor/selection, scroll and folding state
+  (`EditorDocument` plus one `Editor` per pane). The ported
   `workbench.action.splitEditor` follows
   `workbench.editor.openSideBySideDirection` (right by default, down when set),
   `workbench.action.splitEditorOrthogonal` uses the other axis, and

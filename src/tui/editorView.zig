@@ -8,10 +8,11 @@
 //! (viewLayer, viewLines, selections, cursors) are collapsed into this file
 //! until the view model is ported.
 //!
-//! The document is updated from the editor when `render`/`refresh` runs (after
-//! a key, an edit or a viewport change). The retained line window and chrome
-//! parts update in place; `Document.clear` is only used when the document is
-//! created or reset. The vertical scroll position comes from the editor's
+//! Editor view events schedule a render through the ported `View`. The
+//! terminal flushes it on paint, including for unfocused views of a shared
+//! model. The retained line window and chrome parts update in place;
+//! `Document.clear` is only used when the document is created or reset.
+//! The vertical scroll position comes from the editor's
 //! line-granular `ViewLayout` (upstream `viewLayout.ts`), and the render pass
 //! uses the ported `ViewLines` window instead of forcing a full line pass. The
 //! view also owns the terminal mouse adaptation: click/drag caret placement,
@@ -537,10 +538,6 @@ pub const View = struct {
     /// multi-group workbench disables it in favour of its status-bar part.
     status_bar_visible: bool = true,
     glyph_tooltip: GlyphTooltip = .{},
-    /// Set when a widget/status/layout change made the current document
-    /// stale. The next paint/render flushes it, so a burst of registrations
-    /// costs one render instead of one per call.
-    needs_render: bool = true,
     /// The retained document roots (viewport, windowed content, chrome). They
     /// are rebuilt only on resize/theme/capacity resets; ordinary refreshes
     /// update the existing tree in place.
@@ -670,7 +667,7 @@ pub const View = struct {
 
     /// Marks the current document stale. The next paint/render flushes it.
     pub fn invalidate(self: *View) void {
-        self.needs_render = true;
+        self.terminal_view_host.viewRef().forceRender();
     }
 
     pub fn setTopInset(self: *View, rows: usize) void {
@@ -710,7 +707,7 @@ pub const View = struct {
     }
 
     pub fn needsRender(self: *const View) bool {
-        return self.needs_render;
+        return self.terminal_view_host.viewConst().shouldRender();
     }
 
     /// Diagnostic counter for tests/benchmarks: immediate render passes.
@@ -723,7 +720,6 @@ pub const View = struct {
     }
 
     fn ensureRendered(self: *View) !void {
-        if (!self.needs_render) return;
         try self.render(true, false);
     }
 
@@ -1387,7 +1383,7 @@ pub const View = struct {
         self.editor.emitViewEvent(.{ .ViewConfigurationChanged = event });
         for (self.configuration_listeners.items) |listener| listener.notify(listener.context);
         self.document_ready = false;
-        self.needs_render = true;
+        self.invalidate();
         return true;
     }
 
@@ -1413,17 +1409,8 @@ pub const View = struct {
     /// `now=false` only records that a render is pending; the terminal host
     /// has no animation-frame scheduler, so the caller flushes on paint.
     pub fn render(self: *View, now: bool, everything: bool) !void {
-        if (everything) {
-            // Upstream forces every view part to render. The terminal parts
-            // are always visited by the flush pass, so this only needs to
-            // guarantee that a pass happens.
-            self.needs_render = true;
-        }
-        if (!now) {
-            self.needs_render = true;
-            return;
-        }
-        if (!self.needs_render) return;
+        if (everything or !now) self.invalidate();
+        if (!now or !self.needsRender()) return;
         try self.flushAccumulatedAndRenderNow();
     }
 
@@ -1432,7 +1419,7 @@ pub const View = struct {
     /// terminal equivalent of `render(now, everything)` without forcing a
     /// whole box-tree rebuild.
     pub fn refresh(self: *View) !void {
-        self.needs_render = true;
+        self.invalidate();
         try self.render(true, false);
     }
 
@@ -1456,7 +1443,7 @@ pub const View = struct {
     /// the terminal boundary for upstream `View.focus()`/`blur()`.
     pub fn setFocused(self: *View, focused: bool) bool {
         const changed = self.terminal_view_host.viewRef().setFocused(focused);
-        if (changed) self.needs_render = true;
+        if (changed) self.invalidate();
         return changed;
     }
 
@@ -2141,7 +2128,7 @@ pub const View = struct {
         if (chrome_host.ops.total() > 0) self.perf.chrome_rebuilds += 1;
         if (chrome_host.failed) self.needs_full_box_rebuild = true;
         try self.syncBoxes(doc);
-        self.needs_render = false;
+        self.terminal_view_host.viewRef().onDidRender();
     }
 
     /// Brings the box tree/layout in step with the retained DOM. The view owns

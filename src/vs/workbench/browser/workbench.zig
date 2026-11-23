@@ -13852,6 +13852,52 @@ test "Workbench: split duplicates the active editor and shares its buffer" {
     try std.testing.expectEqual(@as(usize, 4), workbench.tabCount());
 }
 
+test "Workbench: split copy shares rendered edits after changing focus" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "split_edit.txt", "alpha\nbeta");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    const left = workbench.activePane().?;
+    _ = try workbench.commands.execute("workbench.action.splitEditorRight");
+    const right = workbench.activePane().?;
+    try std.testing.expect(right != left);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    // Let sticky scroll complete its initial update before changing focus.
+    const inactive = right.activeTab().?;
+    _ = inactive.controllers.?.sticky.onTick(std.math.maxInt(i64));
+    _ = try workbench.commands.execute("workbench.action.focusLeftGroup");
+    try std.testing.expectEqual(left, workbench.activePane().?);
+    try workbench.render(&out.writer);
+
+    const active = workbench.activeTab().?;
+    try std.testing.expect(!inactive.view.needsRender());
+    try active.editor.deleteRight();
+    // The input loop refreshes the active view before painting the workbench.
+    try active.view.refresh();
+    try workbench.render(&out.writer);
+
+    const grid = &workbench.frame.prev;
+    for ([_]*GroupPane{ left, right }) |pane| {
+        const x = ui.cell.snap(pane.rect.x) + pane.activeTab().?.editor.gutterWidth();
+        const y = ui.cell.snap(pane.rect.y) + pane.chromeHeight();
+        for ("lpha", 0..) |ch, col| {
+            try std.testing.expectEqual(@as(u32, ch), grid.cluster[grid.index(x + col, y)]);
+        }
+        for ("beta", 0..) |ch, col| {
+            try std.testing.expectEqual(@as(u32, ch), grid.cluster[grid.index(x + col, y + 1)]);
+        }
+    }
+}
+
 test "Workbench: clicking a pane body focuses its group" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
