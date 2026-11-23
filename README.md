@@ -11,12 +11,19 @@ sources (currently the Git extension) into `src/extensions/...`, mirroring
 
 ## Live demo
 
-[Open vscodeT in the browser](https://chendesheng.github.io/vscodeT/) — the
-editor compiled to WebAssembly and rendered with Ghostty through
-[`ghostty-web`](https://github.com/coder/ghostty-web). The demo is a single-file
-editor view only: the workbench shell (sidebar, tabs, Ctrl+P quick open) and
-the integrated terminal are not part of it. See [`web/README.md`](web/README.md)
-for the build and the exact scope.
+**[Open the full vscodeT workbench](https://chendesheng.github.io/vscodeT/unkernel/)** —
+the native TUI running on [unkernel](https://github.com/pithings/unkernel), a
+real Linux kernel compiled to WebAssembly. The page boots a minimal Alpine
+aarch64 userland, copies the native aarch64 `vscodeT` binary into it and spawns
+it on a real pty; Ghostty (`ghostty-web`) is the terminal frontend. The sidebar,
+tabs, status bar, Ctrl+P quick open, file watcher, threads and integrated
+terminal are the same native app. The extension host and git are not included;
+the status bar reports that Source Control is disabled.
+
+The original **[editor-only wasm demo](https://chendesheng.github.io/vscodeT/)**
+is still available. It compiles only the editor to WebAssembly and is much
+lighter, but it has no workbench shell. See [`web/README.md`](web/README.md) for
+the scope of both pages.
 
 Requires Zig 0.17 or newer.
 
@@ -36,6 +43,32 @@ zig build test   # run the editor and ui library tests
 zig build test-watcher -Dwatcher-only=true   # run the file-watcher tests without the TUI
 zig build bench-open   # Debug open/edit benchmarks (skipped by zig build test)
 ```
+
+## Full workbench in the browser
+
+The `web/unkernel` page uses unkernel's JavaScript SDK. unkernel provides a
+real Linux kernel and an aarch64 user-space emulator, so the workbench runs as
+a native aarch64 binary rather than a wasm rebuild. The page:
+
+1. boots unkernel's Alpine image with `createKernel({ worker: false })`;
+2. mounts the aarch64 `vscodet` binary and a sample workspace over 9p;
+3. copies them into `/home/user`, then spawns `vscodet` on a pty with
+   `vm.spawn()`;
+4. pipes the pty to Ghostty's terminal and sends keyboard, resize and mouse
+   input back.
+
+The binary is built in CI:
+
+```sh
+scripts/build-onig-aarch64.sh aarch64-onig
+zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall \
+  -Donig-include="$PWD/third_party/oniguruma/src" \
+  -Donig-lib="$PWD/aarch64-onig"
+```
+
+The Pages workflow then downloads the pinned unkernel SDK and Alpine image,
+copies the binary into `zig-out/web/unkernel/`, and deploys both demos.
+unkernel is MIT/GPL-2.0 and has no proprietary runtime; Ghostty is MIT.
 
 ## Performance
 
