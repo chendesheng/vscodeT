@@ -621,19 +621,32 @@ discards the query keeps the old rendering. Widgets that size themselves with
 the cell-border path yet; the workbench does.
 
 The workbench uses the article's pane chrome. Each editor pane's border box
-(tab row plus editor content) gets a full outline on its own cells, so no gutter
-is reserved; adjacent panes set opposite cells of the shared boundary and the
-terminal merges them. The active pane's stroke carries `priority=1` and the
-focus colour, so a supporting terminal preserves its whole outline on shared
-edges no matter which neighbour was painted first; with priority unsupported it
-falls back to the protocol's width/position tie-break. The pane divider is also
+(tab row plus editor content) gets its own outline. The terminal draws the
+outline on cell edges, so adjacent panes need no separator gutter. Terminals
+with the `round` extension draw a thin inside stroke with rounded corners on
+each pane. Basic cell-border terminals merge square outlines at shared edges.
+The active pane uses the focus color and priority. The pane divider is also
 the sash hit zone: a left-button drag updates the split ratio (clamped to a
 10-column/3-row minimum), and closing the last tab in a pane removes the group
 from the split tree and promotes its sibling, mirroring Grid branch demotion.
-Dragging a tab moves it between groups: dropping in a pane's middle moves it
-there, dropping on an edge splits that pane in that direction and moves the tab
-into the new group, and dropping on a tab strip inserts the tab at the previewed
-position (reordering within the same group). The split commands duplicate the
+The sidebar and editor each have their own frame, including when a single
+editor fills the workbench. The glyph fallback reserves the outer cells
+for rounded box-drawing outlines, with no extra spacer between frames.
+Compact terminals use a single separator to keep room for content.
+During resize the sash uses VS Code's `sash.hoverBorder`, which defaults to
+`focusBorder`. Terminals with cell borders paint the highlight on the shared
+edge.
+Modal dialogs use rounded cell edges when the terminal advertises `round`
+and rounded glyphs otherwise. The `radius` and `outside` extensions control the
+arc radius and fill the area outside each corner.
+An editor tab drag transfers the selected editors. Dragging the empty
+background of a tab strip transfers its whole group. A center drop moves or
+merges into the target group, an edge drop places a split on that side, and a
+tab-strip drop inserts at the indicated index. The platform's copy modifier is
+Alt on macOS and Ctrl elsewhere. The split toggle is Shift on macOS and Alt
+elsewhere. SGR mouse input reports Shift, Ctrl and Alt, so Shift range
+selection works on macOS and other platforms. Cmd-click selection requires a
+mouse protocol that reports Command. The split commands duplicate the
 active editor instead of moving it, like `EditorGroupView.copyEditor`: a shared
 `EditorDocument` owns the text model, undo stack, language services and
 saved/dirty state, while each pane has its own `Editor` view (wrapping,
@@ -646,12 +659,18 @@ recently active group, join two or all groups, move a group by detaching and
 reinserting its live leaf, duplicate a group by copying every tab into a new
 group, move the active editor into an adjacent/target group, and split the
 active editor into it. Directional targets are created on demand, like
-`moveCopyEditorsToGroup`. While dragging over editor content,
-the target pane gets a bright outline (with cell borders; the glyph fallback has
-no drag indicator). Over a tab strip, the insertion boundary gets upstream's
-`drop-target-left`/`drop-target-right` feedback in `tab.dragAndDropBorder`: a
-thin cell-border stroke when the terminal supports it, otherwise a `▏` block
-glyph.
+`moveCopyEditorsToGroup`.
+
+The standalone UI library owns the drag session. It turns mouse reports into
+source and target drag events, holds the local transfer and drag image, and
+checks the target again on release. Editor drop targets follow the pinned
+VS Code layout and use `editorGroup.dropBackground` to tint the destination
+cells while preserving text. The floating tab or group label follows the
+pointer on the cell grid. Tab insertion uses `tab.dragAndDropBorder` with a
+cell-edge stroke or a `▏` block glyph. The tint and floating label work with
+both border modes. Escape and terminal focus loss cancel the session. The
+drag image, offsets and overlay transitions use whole cells. The transfer is
+local to the workbench window.
 The full N-ary `Grid` branch model is not ported; the terminal keeps a binary
 oriented split tree, which represents the same guillotine tilings.
 
@@ -676,7 +695,8 @@ toggles the group's expanded state (default
 `doubleClickTabToToggleEditorGroupSizes: 'expand'`). An expanded
 group is laid out over the whole editor area and its siblings are not painted;
 toggling it off restores the split from the existing grid rects. Sash resizing
-and tab dragging are disabled while a group is expanded. There is no 1px
+pauses while a group is expanded. An edge drop restores the grid before
+retiling. There is no 1px
 active-tab top border, horizontal scrollbar, editor actions toolbar, Add Tab
 control; the tab context menu uses the terminal quick pick; duplicate labels
 append a dimmed `workbench.editor.labelFormat` description; overflow clips
@@ -854,7 +874,8 @@ screen).
 
 TUI resolution: nodes built on the `ui` tree express their shape in `Style`
 (editor content `.text`, input boxes `.text`, links/buttons/list rows/status
-entries `.pointer`, sashes `.ew_resize`/`.ns_resize`, tab drags `.grabbing`).
+entries `.pointer`, sashes `.ew_resize`/`.ns_resize`, editor drags
+`.grabbing`, `.copy` or `.no_drop`).
 Direct-painted chrome (activity bar, tab strip, panel tabs, status bar, sidebar
 title, sashes, dialog buttons, quick-pick rows, terminal tabs) has no style
 tree; the workbench maps its existing hit-test results to the same shapes in

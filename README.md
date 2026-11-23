@@ -531,9 +531,12 @@ console API for raw mode, sizing and input polling.
   fragments and inline-element fragments paint per line. On startup the TUI
   probes the draft cell-border protocol; when the terminal supports it, every
   editor pane is outlined on its own cell edges (active pane on top by
-  priority), adjacent outlines merge, and panes are resized by dragging the
-  sash between them. Without support the glyph fallback keeps the gutter and
-  box-drawing dividers. It does not import editor code.
+  priority). With the round capability, the sidebar, each editor pane and
+  each modal dialog have their own rounded outline. Panes share a draggable
+  boundary with no spacer. A single editor keeps its outline when the
+  sidebar is hidden.
+  The glyph fallback uses rounded box-drawing outlines and a single separator
+  in compact splits. The library does not import editor code.
 - Multi-file editing uses the ported workbench editor-group model
   (`src/vs/workbench/common/editor/editorGroupModel.zig`), the editor part,
   group view and pane layers (`src/vs/workbench/browser/parts/editor/`), a
@@ -573,10 +576,9 @@ console API for raw mode, sizing and input polling.
   activates a tab by position, `Ctrl-S` saves and `Ctrl-Q` quits. With dirty
   tabs, `Ctrl-Q` opens the same save confirmation for all of them (Save All /
   Don't Save / Cancel) and exits after saving or discarding. Empty groups
-  collapse out of the split tree when their last tab closes, the divider between panes is a
-  draggable sash, and dragging a tab into another pane (or onto its edge) retiles the
-  editor part. A drag over a tab strip previews the insertion position; dropping
-  reorders the tab within its strip or inserts it at that position in another group.
+  collapse out of the split tree when their last tab closes. Pane dividers are
+  draggable sashes. Editor drags preview the destination side of a split or the
+  insertion position in a tab strip.
   `--preview` remains a single-file mode.
 - The terminal Outline side panel (`src/vs/workbench/contrib/outline/browser/outlinePane.zig`)
   lists the active document's symbols through the ported `IOutlineService` and
@@ -1168,7 +1170,8 @@ console API for raw mode, sizing and input polling.
   kitty/xterm OSC 22 protocol: editor text and Markdown content show the I-beam,
   Markdown links, widget buttons/rows, tabs, status/activity/panel entries,
   quick-pick rows and dialog buttons show the hand, pane/sidebar sashes show
-  `ew-resize`/`ns-resize`, and a tab drag shows `grabbing`; leaving the app
+  `ew-resize`/`ns-resize`, and editor drags show `grabbing`, `copy` or
+  `no-drop` according to the target. Leaving the app
   restores `default`. The shape is resolved from the inherited
   `ui.Style.pointer` field by hit testing, with direct-painted chrome mapped at
   its existing hit tests. Terminals without OSC 22 ignore the sequence.
@@ -1778,8 +1781,11 @@ Editor contributions:
   the terminal adapter that renders the split tree with a tab row per group
   and composites every pane into one frame. With cell borders each pane
   is outlined and the active pane's outline wins shared edges; the divider is
-  a draggable sash, and a tab can be dragged into another pane or onto an edge
-  to tile a new group. `Alt-\` splits horizontally, `Alt-Shift-\` vertically,
+  a draggable sash. Drag selected tabs or the empty background of a tab strip
+  to reorder tabs, move or copy editors, split panes, or move, copy or merge
+  editor groups. The destination tint and floating drag image work in ordinary
+  terminals. Cell-border support adds thin outlines. Drag transfers stay in
+  the current workbench window. `Alt-\` splits horizontally, `Alt-Shift-\` vertically,
   `Ctrl-Alt-Left` / `Ctrl-Alt-Right` switch groups, and clicking a group
   activates it. Splitting duplicates the active editor into the new group:
   both panes share the same text model, undo history and dirty/saved state,
@@ -1822,8 +1828,7 @@ Editor contributions:
   session format (the in-memory backup/history services are ported but not
   wired into session restore). Side-by-side/diff inputs exist at the workbench
   layer while the TUI tab strip remains single-editor; the Settings editor is
-  still a placeholder; tab drag-and-drop moves tabs between groups, inserts at
-  the previewed tab-strip position and reorders within one strip. Quick open
+  still a placeholder. Quick open
   searches
   workspace files and the TUI command table; extension-contributed commands and
   files outside the workspace are not reachable through it yet.
