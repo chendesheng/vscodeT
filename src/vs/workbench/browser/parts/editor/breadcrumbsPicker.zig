@@ -642,7 +642,9 @@ fn renderFileRow(context: *anyopaque, row: *const list_mod.Row, node: *const Fil
             col += 1;
         }
     }
-    const icon = self.host.file_icon(self.host.context, item.path);
+    // Match the Explorer row: an expanded folder uses the open-folder glyph,
+    // a collapsed folder the closed one. File icons keep their per-file glyph.
+    const icon = if (item.is_dir) file_icon_mod.folder(!node.collapsed) else self.host.file_icon(self.host.context, item.path);
     if (col < row.x + row.width) {
         row.grid.putCodepoint(col, row.y, icon.glyph, 1, .{
             .fg = ui.cell.packColor(icon.color),
