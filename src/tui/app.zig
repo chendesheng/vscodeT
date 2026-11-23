@@ -214,7 +214,15 @@ const ProbeHost = struct {
 var app_debug_allocator: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .{};
 
 pub fn main(init: std.process.Init) !void {
-    const io = init.io;
+    // CheerpX's 32-bit Linux emulation does not service the threaded/io_uring
+    // backend behind std.process.Init: the first file open and stdout write
+    // fail with Unexpected/WriteFailed. The WebVM build is i386, so use the
+    // blocking single-threaded Io that the port already uses for timestamps.
+    // Native x86_64 builds keep init.io.
+    const io = if (builtin.cpu.arch == .x86)
+        Io.Threaded.global_single_threaded.io()
+    else
+        init.io;
     const allocator = if (comptime builtin.mode == .debug) app_debug_allocator.allocator() else init.gpa;
     defer if (comptime builtin.mode == .debug) {
         if (app_debug_allocator.deinit() == .leak) {
