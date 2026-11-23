@@ -216,6 +216,12 @@ var app_debug_allocator: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) =
 /// CheerpX's 32-bit console does not implement the gathered writes used by
 /// `Io.Threaded`'s file writer. This writer sends the buffered frame with a
 /// plain `write(2)` and is selected only for the i386 WebVM build.
+const webvm_i386 = builtin.os.tag == .linux and builtin.cpu.arch == .x86;
+
+fn diag(comptime text: []const u8) void {
+    if (webvm_i386) std.debug.print("diag: " ++ text ++ "\n", .{});
+}
+
 const RawStdoutWriter = struct {
     interface: Io.Writer,
 
@@ -347,12 +353,12 @@ pub fn main(init: std.process.Init) !void {
     var out_buffer: [65536]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
     var raw_stdout = RawStdoutWriter.init(&out_buffer);
-    const out: *Io.Writer = if (builtin.cpu.arch == .x86 and builtin.os.tag != .windows)
+    const out: *Io.Writer = if (webvm_i386)
         &raw_stdout.interface
     else
         &stdout_writer.interface;
     defer out.flush() catch {};
-    if (builtin.cpu.arch == .x86) std.debug.print("diag: i386 raw stdout\n", .{});
+    diag("i386 raw stdout");
 
     const orig_termios = try tui.enableRawMode();
     tui.rememberOrigTermios(orig_termios);
@@ -511,7 +517,9 @@ pub fn main(init: std.process.Init) !void {
             report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
+        diag("before workbench init");
         workbench = try Workbench.init(allocator, io, files.items, size.width, size.height);
+        diag("after workbench init");
     }
     infoLog(log_service, "startup: workbench-init={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
@@ -524,8 +532,16 @@ pub fn main(init: std.process.Init) !void {
     // the sequence and the frame is unaffected.
     workbench.setPointerShapes(true);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
-    workbench.enableAsyncTokenization();
-    workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
+    if (webvm_i386) {
+        diag("async tokenization skipped");
+    } else {
+        workbench.enableAsyncTokenization();
+    }
+    if (webvm_i386) {
+        diag("language features skipped");
+    } else {
+        workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
+    }
     workbench.setJsonLanguageClient(json_client);
 
     try workbench.setUserSettingsPaths(profile.settings_paths);
@@ -625,8 +641,14 @@ pub fn main(init: std.process.Init) !void {
     if (folders.items.len > 0) {
         try workbench.setWorkspaceFolders(folders.items);
     }
+    diag("before sidebar");
     try workbench.initSidebarFromWorkspace();
-    workbench.initGit() catch {};
+    diag("after sidebar");
+    if (webvm_i386) {
+        diag("git skipped");
+    } else {
+        workbench.initGit() catch {};
+    }
     if (workbench.activeTab()) |active| {
         try active.ensureControllers();
     } else {
@@ -678,9 +700,12 @@ pub fn main(init: std.process.Init) !void {
     infoLog(log_service, "workbench ready: {d} tab(s)", .{workbench.tabCount()});
     workbench.refreshStatus();
     if (workbench.activeTab()) |active| try active.view.refresh();
+    diag("before first render");
     try workbench.render(out);
+    diag("after first render");
     try workbench.syncCursor(out);
     try out.flush();
+    diag("after first flush");
     infoLog(log_service, "startup: first-frame={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
