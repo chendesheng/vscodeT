@@ -165,6 +165,12 @@ state that in the comment and keep the behavioral contract intact.
     `ViewDecorationsChangedEvent`; the port must emit those events rather than
     detect the change later by comparing state. A terminal/browser adapter may
     replace the plumbing, but not the event flow itself.
+11. **Do not add a polling layer.** Never add `workbench.poll*`/`editor.poll*`
+    ticks, snapshot-comparison loops, revision counters or similar state
+    scans to detect transitions. If the needed event surface does not exist,
+    port the upstream emitter, handler and lifecycle first. The TUI read loop
+    may poll file descriptors and terminal input for I/O readiness, but model,
+    view, cursor or content state must be driven by the ported events.
 
 ## Fixing bugs
 
