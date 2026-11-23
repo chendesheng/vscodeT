@@ -18,7 +18,6 @@ pub fn readFileAlloc(
     limit: Io.Limit,
 ) ![]u8 {
     if (comptime builtin.os.tag == .linux and builtin.cpu.arch == .x86) {
-        _ = limit;
         return readRaw(allocator, path);
     }
     return Io.Dir.cwd().readFileAlloc(io, path, allocator, limit);
@@ -31,7 +30,7 @@ fn readRaw(allocator: Allocator, path: []const u8) ![]u8 {
         .{ .ACCMODE = .RDONLY, .CLOEXEC = true },
         0,
     );
-    defer std.posix.close(fd);
+    defer _ = std.posix.system.close(fd);
 
     var list: std.ArrayList(u8) = .empty;
     errdefer list.deinit(allocator);
