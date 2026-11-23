@@ -44,6 +44,7 @@ pub fn encode(
 
         if (!next.rowHasContent(row)) continue;
         try encodeRow(allocator, next, row, &body, options.color_depth);
+        try encodeRoundedJoints(allocator, next, row, &body);
         try body.appendSlice(allocator, "\x1b[0m");
     }
 
@@ -63,6 +64,18 @@ pub fn encode(
     try result.appendSlice(allocator, "\x1b[?2026l");
     body.deinit(allocator);
     return result.toOwnedSlice(allocator);
+}
+
+fn encodeRoundedJoints(allocator: std.mem.Allocator, grid: *const CellGrid, row: usize, out: *std.ArrayList(u8)) !void {
+    const start = row * grid.cols;
+    for (grid.border[start .. start + grid.cols], 0..) |id, col| {
+        if (id == 0) continue;
+        const set = grid.borders.get(id).*;
+        if (set.joints == 0) continue;
+        const continuation = col > 0 and grid.widthAt(col - 1, row) == 2;
+        try appendPrint(out, allocator, "\x1b[{d};{d}H", .{ row + 1, col + 1 });
+        try cell_border.appendRoundCell(out, allocator, set, continuation);
+    }
 }
 
 fn rowChanged(prev: ?*const CellGrid, next: *const CellGrid, row: usize) bool {
@@ -424,4 +437,42 @@ test "ansi: underline styles emit SGR 4 subparameters after a plain fallback" {
     defer allocator.free(encoded);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\x1b[4m\x1b[4:3ma") != null);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\x1b[4m\x1b[4:4mb") != null);
+}
+
+test "ansi: rounded cell-border joints apply after glyphs and clear on repaint" {
+    const allocator = std.testing.allocator;
+    var rounded = try CellGrid.init(allocator, 3, 1);
+    defer rounded.deinit();
+    const border = cell_border.Segment;
+    const joint = cell_border.Joint;
+    // The right corner is a continuation cell of the wide glyph; the
+    // rectangle command still addresses that physical cell after painting.
+    rounded.putCodepoint(1, 0, '界', 2, .{});
+    rounded.addBorder(1, 0, border.top, .{});
+    rounded.addBorder(2, 0, border.top | border.right, .{});
+    rounded.roundBorder(2, 0, joint.top_right, .{
+        .radius = 128,
+        .outside = .{ .rgb = .{ .r = 0x28, .g = 0x30, .b = 0x38 } },
+    });
+
+    const bytes = try encode(allocator, null, &rounded, .{ .synchronized = false });
+    defer allocator.free(bytes);
+    const glyph_at = std.mem.indexOf(u8, bytes, "界") orelse return error.MissingGlyph;
+    const arc_at = std.mem.indexOf(
+        u8,
+        bytes,
+        "\x1b[1;3H\x1bP1+bcell-border;set;15;64;fg;1;0;1;1\x1b\\" ++
+            "\x1bP1+bcell-border;round;2;1;1;radius=128;outside=283038\x1b\\",
+    ) orelse return error.MissingRoundedJoint;
+    try std.testing.expect(arc_at > glyph_at);
+
+    var square = try CellGrid.init(allocator, 3, 1);
+    defer square.deinit();
+    square.putCodepoint(1, 0, '界', 2, .{});
+    square.addBorder(1, 0, border.top, .{});
+    square.addBorder(2, 0, border.top | border.right, .{});
+    const delta = try encode(allocator, &rounded, &square, .{ .synchronized = false });
+    defer allocator.free(delta);
+    try std.testing.expect(std.mem.indexOf(u8, delta, "\x1b[K") != null);
+    try std.testing.expect(std.mem.indexOf(u8, delta, "cell-border;round;") == null);
 }

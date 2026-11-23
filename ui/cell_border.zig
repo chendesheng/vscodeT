@@ -49,6 +49,25 @@ pub const Segment = struct {
     pub const all: u12 = outline | horizontal | vertical;
 };
 
+pub const Joint = struct {
+    pub const top_left: u8 = 1 << 0;
+    pub const top_right: u8 = 1 << 1;
+    pub const bottom_right: u8 = 1 << 2;
+    pub const bottom_left: u8 = 1 << 3;
+};
+
+pub const OutsideColor = union(enum) {
+    terminal_background,
+    rgb: style.Color,
+    palette: u8,
+};
+
+pub const RoundStyle = struct {
+    /// In 1/256 of the cell width. Null uses the terminal's radius.
+    radius: ?u9 = null,
+    outside: ?OutsideColor = null,
+};
+
 pub const Placement = enum(u1) {
     /// The stroke lies inside the cell, flush with the edge.
     inside = 0,
@@ -121,24 +140,24 @@ pub const Group = struct {
 /// that exceed it drop the oldest group rather than rejecting the command.
 pub const max_groups = 4;
 
-/// A cell's border set: disjoint segment groups plus joint flags. Joint flags
-/// are stored so the wire encoder can carry rounded joints later, but the
-/// painter emits square joints today.
+/// A cell's border set: disjoint segment groups and optional rounded joints.
 pub const Set = struct {
     groups: [max_groups]Group = undefined,
     count: u3 = 0,
     joints: u8 = 0,
+    round_style: RoundStyle = .{},
 
     pub fn empty() Set {
         return .{ .count = 0 };
     }
 
     pub fn isEmpty(self: Set) bool {
-        return self.count == 0;
+        return self.count == 0 and self.joints == 0;
     }
 
     pub fn eql(a: Set, b: Set) bool {
         if (a.count != b.count or a.joints != b.joints) return false;
+        if (a.joints != 0 and !std.meta.eql(a.round_style, b.round_style)) return false;
         for (a.groups[0..a.count], b.groups[0..b.count]) |left, right| {
             if (left.mask != right.mask or !left.stroke.eql(right.stroke)) return false;
         }
@@ -247,15 +266,41 @@ pub fn appendPen(
     allocator: std.mem.Allocator,
     set: Set,
 ) !void {
-    for (set.groups[0..set.count]) |group| try appendPenGroup(out, allocator, group);
+    for (set.groups[0..set.count]) |group| try appendStrokeGroup(out, allocator, group, false);
 }
 
-fn appendPenGroup(
+/// Rounds joints of the physical cell at the cursor. Using a rectangle after
+/// writing the glyph keeps radius and outside color out of the rendition pen.
+pub fn appendRoundCell(out: *std.ArrayList(u8), allocator: std.mem.Allocator, set: Set, restore_strokes: bool) !void {
+    if (set.joints == 0) return;
+    // A wide glyph is written with one pen. Its continuation may need its
+    // own edge strokes restored before the terminal can draw the corner.
+    if (restore_strokes) {
+        for (set.groups[0..set.count]) |group| try appendStrokeGroup(out, allocator, group, true);
+    }
+    try appendPrint(out, allocator, "\x1bP1+bcell-border;round;{d};1;1", .{set.joints});
+    if (set.round_style.radius) |radius| {
+        if (radius > 0 and radius <= 256) try appendPrint(out, allocator, ";radius={d}", .{radius});
+    }
+    if (set.round_style.outside) |outside| {
+        try out.appendSlice(allocator, ";outside=");
+        switch (outside) {
+            .terminal_background => try out.appendSlice(allocator, "default"),
+            .rgb => |rgb| try appendColor(out, allocator, .{ .rgb = rgb }),
+            .palette => |index| try appendColor(out, allocator, .{ .palette = index }),
+        }
+    }
+    try out.appendSlice(allocator, "\x1b\\");
+}
+
+fn appendStrokeGroup(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     group: Group,
+    rect: bool,
 ) !void {
-    try appendPrint(out, allocator, "\x1bP1+bcell-border;pen;{d};{d};", .{
+    try appendPrint(out, allocator, "\x1bP1+bcell-border;{s};{d};{d};", .{
+        if (rect) "set" else "pen",
         group.mask,
         group.stroke.width,
     });
@@ -264,6 +309,7 @@ fn appendPenGroup(
         @backingInt(group.stroke.placement),
         @backingInt(group.stroke.layer),
     });
+    if (rect) try out.appendSlice(allocator, ";1;1");
     if (group.stroke.style != .solid) {
         try appendPrint(out, allocator, ";style={s}", .{lineStyleName(group.stroke.style)});
     }
@@ -322,7 +368,7 @@ pub fn appendPenDiff(
     }
     var index: usize = 0;
     while (index < count) : (index += 1) {
-        try appendPenGroup(out, allocator, groups[index]);
+        try appendStrokeGroup(out, allocator, groups[index], false);
     }
 }
 

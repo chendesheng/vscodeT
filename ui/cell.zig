@@ -251,6 +251,46 @@ pub const CellGrid = struct {
         self.border[i] = self.borders.intern(current.with(mask, stroke));
     }
 
+    pub fn roundBorder(
+        self: *CellGrid,
+        col: usize,
+        row: usize,
+        joints: u8,
+        round_style: cell_border.RoundStyle,
+    ) void {
+        if (col >= self.cols or row >= self.rows or joints == 0) return;
+        var set = self.borderSetAt(col, row).*;
+        set.joints |= joints;
+        set.round_style = round_style;
+        self.border[self.index(col, row)] = self.borders.intern(set);
+    }
+
+    pub fn paintRoundedFrame(self: *CellGrid, rect: style.Rect, paint: PaintStyle) void {
+        const left = snap(rect.x);
+        const top = snap(rect.y);
+        const right = snap(rect.right());
+        const bottom = snap(rect.bottom());
+        if (left >= right or top >= bottom) return;
+        if (right - left == 1 and bottom - top == 1) {
+            self.putCodepoint(left, top, '┼', 1, paint);
+            return;
+        }
+        for (left..right) |x| {
+            self.putCodepoint(x, top, '─', 1, paint);
+            self.putCodepoint(x, bottom - 1, '─', 1, paint);
+        }
+        if (bottom - top == 1) return;
+        for (top..bottom) |y| {
+            self.putCodepoint(left, y, '│', 1, paint);
+            self.putCodepoint(right - 1, y, '│', 1, paint);
+        }
+        if (right - left == 1) return;
+        self.putCodepoint(left, top, '╭', 1, paint);
+        self.putCodepoint(right - 1, top, '╮', 1, paint);
+        self.putCodepoint(left, bottom - 1, '╰', 1, paint);
+        self.putCodepoint(right - 1, bottom - 1, '╯', 1, paint);
+    }
+
     fn put(
         self: *CellGrid,
         col: usize,

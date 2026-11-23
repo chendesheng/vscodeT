@@ -33,6 +33,7 @@ pub const max_buttons = 3;
 
 const dialog_max_width: usize = 50;
 const border_width: usize = 1;
+const cell_border = @import("cell_border.zig");
 const horizontal_padding: usize = 2;
 const vertical_padding: usize = 1;
 const warning_glyph: u21 = 0x26A0; // ⚠
@@ -96,6 +97,7 @@ pub const Layout = struct {
     width: usize = 0,
     height: usize = 0,
     content_width: usize = 0,
+    frame_cells: usize = border_width,
     message_rows: usize = 0,
     detail_rows: usize = 0,
     compact: bool = false,
@@ -268,12 +270,22 @@ pub const Dialog = struct {
     /// Lays out and paints the dialog. The previous frame is cleared by the
     /// host, so the modal dim outside the rectangle is recomputed each frame.
     pub fn render(self: *Dialog, grid: *CellGrid) void {
-        const layout = self.computeLayout(grid.cols, grid.rows);
+        self.renderWithBorderCapabilities(grid, .{});
+    }
+
+    pub fn renderWithBorderCapabilities(self: *Dialog, grid: *CellGrid, caps: cell_border.Capabilities) void {
+        const frame_cells = if (caps.has(.round)) @as(usize, 0) else border_width;
+        const layout = self.computeLayout(grid.cols, grid.rows, frame_cells);
         self.layout = layout;
         for (&self.button_rects) |*rect| rect.* = .{};
         if (layout.width == 0 or layout.height == 0) return;
 
         self.dimBackdrop(grid, layout);
+        const corners = self.frameCorners(layout);
+        var backdrop: [4]u32 = undefined;
+        for (corners, 0..) |corner, index| {
+            backdrop[index] = grid.bg[grid.index(corner.x, corner.y)];
+        }
         grid.clearBordersRect(
             @floatFromInt(layout.x),
             @floatFromInt(layout.y),
@@ -289,20 +301,20 @@ pub const Dialog = struct {
         );
 
         self.renderContent(grid, layout);
-        self.renderFrame(grid, layout);
+        self.renderFrame(grid, layout, caps, backdrop);
     }
 
-    fn computeLayout(self: *const Dialog, cols: usize, rows: usize) Layout {
+    fn computeLayout(self: *const Dialog, cols: usize, rows: usize, frame_cells: usize) Layout {
         if (cols == 0 or rows == 0) return .{};
 
         const width = dialogWidth(cols);
-        const content_width = contentWidth(width);
+        const content_width = contentWidth(width, frame_cells);
         const message_rows = @max(countWrappedLines(self.message, content_width), 1);
         const detail_rows = countWrappedLines(self.detail, content_width);
         const details = if (detail_rows > 0) 1 + detail_rows else 0;
-        const vertical_height = 2 * border_width + 2 * vertical_padding +
+        const vertical_height = 2 * frame_cells + 2 * vertical_padding +
             1 + message_rows + details + 1 + self.button_count;
-        const compact_height = 2 * border_width + 2 * vertical_padding +
+        const compact_height = 2 * frame_cells + 2 * vertical_padding +
             message_rows + detail_rows + 1;
 
         var compact = false;
@@ -319,6 +331,7 @@ pub const Dialog = struct {
             .width = width,
             .height = height,
             .content_width = content_width,
+            .frame_cells = frame_cells,
             .message_rows = message_rows,
             .detail_rows = detail_rows,
             .compact = compact,
@@ -326,9 +339,9 @@ pub const Dialog = struct {
     }
 
     fn renderContent(self: *Dialog, grid: *CellGrid, layout: Layout) void {
-        const inner_x = layout.x + border_width + horizontal_padding;
-        const content_bottom = layout.y + layout.height -| border_width;
-        var row = layout.y + border_width + vertical_padding;
+        const inner_x = layout.x + layout.frame_cells + horizontal_padding;
+        const content_bottom = layout.y + layout.height -| layout.frame_cells;
+        var row = layout.y + layout.frame_cells + vertical_padding;
 
         if (!layout.compact) {
             if (row < content_bottom) {
@@ -382,7 +395,7 @@ pub const Dialog = struct {
                 total += width;
                 if (index + 1 < self.button_count) total += 1;
             }
-            const inner_x = layout.x + border_width + horizontal_padding;
+            const inner_x = layout.x + layout.frame_cells + horizontal_padding;
             var col = inner_x + (layout.content_width -| total) / 2;
 
             for (widths[0..self.button_count], 0..) |width, index| {
@@ -400,7 +413,7 @@ pub const Dialog = struct {
             return;
         }
 
-        const inner_x = layout.x + border_width + horizontal_padding;
+        const inner_x = layout.x + layout.frame_cells + horizontal_padding;
         for (0..self.button_count) |index| {
             const y = row + index;
             if (y >= content_bottom) break;
@@ -440,48 +453,47 @@ pub const Dialog = struct {
         drawButtonLabel(grid, rect, self.buttons[index], paint);
     }
 
-    fn renderFrame(self: *const Dialog, grid: *CellGrid, layout: Layout) void {
-        const x = layout.x;
-        const y = layout.y;
-        const right = x + layout.width -| 1;
-        const bottom = y + layout.height -| 1;
-        const paint = PaintStyle{
-            .fg = cell.packColor(self.theme.border),
-            .bg = cell.packColor(self.theme.background),
+    const FrameCorner = struct { x: usize, y: usize, joint: u8 };
+
+    fn frameCorners(_: *const Dialog, layout: Layout) [4]FrameCorner {
+        const right = layout.x + layout.width - 1;
+        const bottom = layout.y + layout.height - 1;
+        const joint = cell_border.Joint;
+        return .{
+            .{ .x = layout.x, .y = layout.y, .joint = joint.top_left },
+            .{ .x = right, .y = layout.y, .joint = joint.top_right },
+            .{ .x = layout.x, .y = bottom, .joint = joint.bottom_left },
+            .{ .x = right, .y = bottom, .joint = joint.bottom_right },
         };
+    }
 
-        if (layout.width == 1 and layout.height == 1) {
-            grid.putCodepoint(x, y, 0x253C, 1, paint); // ┼
+    fn renderFrame(self: *const Dialog, grid: *CellGrid, layout: Layout, caps: cell_border.Capabilities, backdrop: [4]u32) void {
+        if (layout.frame_cells != 0) {
+            grid.paintRoundedFrame(.{
+                .x = @floatFromInt(layout.x),
+                .y = @floatFromInt(layout.y),
+                .w = @floatFromInt(layout.width),
+                .h = @floatFromInt(layout.height),
+            }, .{ .fg = cell.packColor(self.theme.border), .bg = cell.packColor(self.theme.background) });
             return;
         }
-        if (layout.height == 1) {
-            var col = x;
-            while (col <= right) : (col += 1) {
-                grid.putCodepoint(col, y, 0x2500, 1, paint); // ─
-            }
-            return;
+        const edge = cell_border.Segment;
+        const stroke: cell_border.Stroke = .{ .width = 32, .placement = .inside, .color = .{ .rgb = self.theme.border } };
+        const right = layout.x + layout.width;
+        const bottom = layout.y + layout.height;
+        for (layout.x..right) |x| {
+            grid.addBorder(x, layout.y, edge.top, stroke);
+            grid.addBorder(x, bottom - 1, edge.bottom, stroke);
         }
-        if (layout.width == 1) {
-            var row = y;
-            while (row <= bottom) : (row += 1) {
-                grid.putCodepoint(x, row, 0x2502, 1, paint); // │
-            }
-            return;
+        for (layout.y..bottom) |y| {
+            grid.addBorder(layout.x, y, edge.left, stroke);
+            grid.addBorder(right - 1, y, edge.right, stroke);
         }
-
-        grid.putCodepoint(x, y, 0x250C, 1, paint); // ┌
-        grid.putCodepoint(right, y, 0x2510, 1, paint); // ┐
-        grid.putCodepoint(x, bottom, 0x2514, 1, paint); // └
-        grid.putCodepoint(right, bottom, 0x2518, 1, paint); // ┘
-        var col = x + 1;
-        while (col < right) : (col += 1) {
-            grid.putCodepoint(col, y, 0x2500, 1, paint);
-            grid.putCodepoint(col, bottom, 0x2500, 1, paint);
-        }
-        var row = y + 1;
-        while (row < bottom) : (row += 1) {
-            grid.putCodepoint(x, row, 0x2502, 1, paint);
-            grid.putCodepoint(right, row, 0x2502, 1, paint);
+        for (self.frameCorners(layout), backdrop) |corner, bg| {
+            grid.roundBorder(corner.x, corner.y, corner.joint, .{
+                .radius = if (caps.has(.radius)) 128 else null,
+                .outside = if (!caps.has(.outside)) null else if (bg == 0) .terminal_background else .{ .rgb = cell.unpackColor(bg) },
+            });
         }
     }
 
@@ -522,8 +534,8 @@ fn dialogWidth(cols: usize) usize {
     return width;
 }
 
-fn contentWidth(width: usize) usize {
-    return @max(width -| (2 * border_width) -| (2 * horizontal_padding), 1);
+fn contentWidth(width: usize, frame_cells: usize) usize {
+    return @max(width -| (2 * frame_cells) -| (2 * horizontal_padding), 1);
 }
 
 fn horizontalButtonWidths(dialog: *const Dialog, content_width: usize, widths: *[max_buttons]usize) void {
@@ -743,6 +755,27 @@ fn drawText(
         col += char_width;
         offset += decoded.len;
     }
+}
+
+test "Dialog: rounded corners use glyphs or zero-cell strokes" {
+    const allocator = std.testing.allocator;
+    const dialog = try Dialog.init(allocator, "Save changes?", "Changes are unsaved.", &.{ "Save", "Cancel" });
+    defer dialog.deinit();
+    var grid = try CellGrid.init(allocator, 60, 20);
+    defer grid.deinit();
+    dialog.render(&grid);
+    const fallback = dialog.layout;
+    try std.testing.expectEqual(@as(u32, '╭'), grid.cluster[grid.index(fallback.x, fallback.y)]);
+    try std.testing.expectEqual(@as(u32, '╯'), grid.cluster[grid.index(fallback.x + fallback.width - 1, fallback.y + fallback.height - 1)]);
+
+    grid.clear();
+    const caps = cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,radius,outside\x1b\\").?;
+    dialog.renderWithBorderCapabilities(&grid, caps);
+    const native = dialog.layout;
+    try std.testing.expectEqual(fallback.height - 2, native.height);
+    try std.testing.expectEqual(cell_border.Joint.top_left, grid.borderSetAt(native.x, native.y).joints);
+    try std.testing.expectEqual(@as(?u9, 128), grid.borderSetAt(native.x, native.y).round_style.radius);
+    try std.testing.expect(dialog.buttonRect(0) != null);
 }
 
 test "Dialog: renders warning, message, detail and vertical buttons" {
