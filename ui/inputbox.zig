@@ -36,6 +36,7 @@ const ScrollWindow = scroll.ScrollWindow;
 const event_mod = @import("event.zig");
 const Key = event_mod.Key;
 const KeyEvent = event_mod.KeyEvent;
+const FocusEvent = event_mod.FocusEvent;
 const Modifiers = event_mod.Modifiers;
 const MouseEvent = event_mod.MouseEvent;
 const Node = dom.Node;
@@ -77,8 +78,12 @@ pub const InputBox = struct {
     selection_background: ?Color = null,
     selection_foreground: ?Color = null,
     /// The node built for the last frame, used to map pointer cells back into
-    /// the value. Rebuilt every frame; never retained across frames.
+    /// the value. Rebuilt every frame; `node_document` and `node_generation`
+    /// keep it from being dereferenced after `Document.clear` reset the arena.
     node: ?*Node = null,
+    node_document: ?*Document = null,
+    node_generation: u64 = 0,
+    node_serial: u64 = 0,
 
     /// Whether layout should keep the caret inside the visible window. Manual
     /// scrolling clears it; edits, caret moves and resizes re-arm it.
@@ -206,7 +211,7 @@ pub const InputBox = struct {
         self.enabled = false;
         self.focused = false;
         self.last_edit_group = .none;
-        if (self.node) |node| {
+        if (self.liveNode()) |node| {
             if (node.document.activeElement() == node) node.document.blur();
         }
     }
@@ -264,11 +269,15 @@ pub const InputBox = struct {
     }
 
     /// Builds the inline text run for a box of `width` cells. The returned root
-    /// is focusable; the caller is responsible for focusing it.
+    /// is focusable; the caller is responsible for focusing it (the box listens
+    /// for focus/blur and keeps `focused` in sync after that).
     pub fn build(self: *InputBox, doc: *Document, width: usize) !*Node {
         const root = try doc.createElement(.div);
         root.asElement().focusable = self.enabled;
         self.node = root;
+        self.node_document = doc;
+        self.node_generation = doc.generation;
+        self.node_serial = root.serial;
         root.setStyle(.{
             .position = .absolute,
             .left = .{ .cells = 0 },
@@ -283,6 +292,7 @@ pub const InputBox = struct {
             .pointer = .text,
         });
         try root.addEventListener(.{ .context = self, .key_down = onKey });
+        try root.addEventListener(.{ .context = self, .focus = onFocus, .blur = onBlur });
         // A click places the caret; dragging with the button held selects.
         // The press is not canceled, so the host's press-to-focus still runs.
         // A horizontal wheel scrolls the visible window.
@@ -397,7 +407,7 @@ pub const InputBox = struct {
     /// horizontal wheel scrolls the visible window.
     pub fn handleMouse(self: *InputBox, event: *MouseEvent) bool {
         if (!self.enabled) return false;
-        const root = self.node orelse return false;
+        const root = self.liveNode() orelse return false;
         const doc = root.document;
 
         switch (event.kind) {
@@ -870,6 +880,17 @@ pub const InputBox = struct {
         while (at > 0 and (self.value.items[at] & 0xc0) == 0x80) : (at -= 1) {}
         return at;
     }
+
+    /// The last built node, or null when the document was cleared or the node
+    /// was recycled since. Never dereference `node` without this check.
+    fn liveNode(self: *const InputBox) ?*Node {
+        const node = self.node orelse return null;
+        const doc = self.node_document orelse return null;
+        if (doc.generation != self.node_generation) return null;
+        if (node.recycled) return null;
+        if (node.serial != self.node_serial) return null;
+        return node;
+    }
 };
 
 fn isWordSpace(cp: u21) bool {
@@ -894,6 +915,23 @@ fn onMouse(context: ?*anyopaque, event: *MouseEvent) void {
         event.preventDefault();
         event.stopPropagation();
     }
+}
+
+/// Document focus is the source of truth once the host focuses the built node;
+/// mirror it into the public `focused` flag so painting and key handling agree.
+fn onFocus(context: ?*anyopaque, _: *FocusEvent) void {
+    const self: *InputBox = @ptrCast(@alignCast(context orelse return));
+    if (!self.enabled) return;
+    self.focused = true;
+    self.mouse_selecting = false;
+    self.last_edit_group = .none;
+}
+
+fn onBlur(context: ?*anyopaque, _: *FocusEvent) void {
+    const self: *InputBox = @ptrCast(@alignCast(context orelse return));
+    self.focused = false;
+    self.mouse_selecting = false;
+    self.last_edit_group = .none;
 }
 
 // ---------------------------------------------------------------------------
@@ -1698,4 +1736,41 @@ test "InputBox: unknown ctrl/alt chords are consumed without editing" {
     try std.testing.expect(!input.handleKey(&event));
     event = .{ .key = .page_down };
     try std.testing.expect(!input.handleKey(&event));
+}
+
+test "InputBox: document focus syncs the flag and a cleared document is safe" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 10, .rows = 1 });
+    defer surface.deinit();
+
+    var input = InputBox.init(allocator);
+    defer input.deinit();
+
+    const doc = surface.document();
+    const node = try input.build(doc, 10);
+    doc.setRoot(node);
+    try std.testing.expect(doc.focus(node));
+    try std.testing.expect(input.focused);
+
+    // Moving DOM focus away fires blur and clears the flag, so keys no longer
+    // reach the box even when the host forgot to write `focused` itself.
+    const other = try doc.createElement(.div);
+    other.asElement().focusable = true;
+    _ = try node.appendChild(other);
+    try std.testing.expect(doc.focus(other));
+    try std.testing.expect(!input.focused);
+    var event = KeyEvent{ .key = .{ .char = 'x' } };
+    try std.testing.expect(!input.handleKey(&event));
+
+    // `clear` invalidates the arena; disable must not dereference the old node.
+    doc.clear();
+    input.disable();
+    try std.testing.expect(!input.focused);
+
+    // A rebuilt node participates again.
+    input.enable();
+    const rebuilt = try input.build(doc, 10);
+    doc.setRoot(rebuilt);
+    try std.testing.expect(doc.focus(rebuilt));
+    try std.testing.expect(input.focused);
 }
