@@ -6,7 +6,7 @@
 // marker edge can sit on either half of a row. The paint boundary chooses a
 // half block or quadrant glyph from the winning marker's lane and `vertical`.
 // There is no alpha, border or canvas background; colors are supplied by the
-// TUI and already composited. `MIN_DECORATION_HEIGHT` is one cell (two halves)
+// TUI and already composited. `MIN_DECORATION_HEIGHT` is one half-cell
 // instead of six pixels, and cursor ticks are one half-cell tall.
 //
 // A row represents a range of document lines when the document is taller than
@@ -58,8 +58,9 @@ pub const Settings = struct {
     outer_height: usize,
     overview_ruler_lanes: usize = 3,
     hide_cursor: bool = false,
-    /// Minimum decoration height in terminal rows. The ruler projects into two
-    /// half-cells per row, so this is doubled internally.
+    /// Minimum decoration height in terminal half-cells. A single-line marker
+    /// in a long document is one half-cell tall; upstream uses six device
+    /// pixels, which is roughly half a cell too.
     min_decoration_height: usize = 1,
 };
 
@@ -89,8 +90,8 @@ pub fn render(
     const canvas_halves_f: f64 = @floatFromInt(canvas_halves);
     const outer_height: f64 = @floatFromInt(settings.outer_height);
     const height_ratio = canvas_halves_f / outer_height;
-    const min_height: f64 = @floatFromInt(@max(settings.min_decoration_height, 1) * 2);
-    const half_min_height = min_height / 2;
+    const min_height: f64 = @floatFromInt(@max(settings.min_decoration_height, 1));
+    const leading_halves = @floor(min_height / 2);
 
     const sorted = try allocator.dupe(Decoration, decorations);
     defer allocator.free(sorted);
@@ -108,13 +109,14 @@ pub fn render(
         if (y2 - y1 < min_height) {
             // Same centering and canvas clamping as upstream, in half-cells.
             var center = @floor((y1 + y2) / 2);
-            if (center < half_min_height) {
-                center = half_min_height;
-            } else if (center + half_min_height > canvas_halves_f) {
-                center = canvas_halves_f - half_min_height;
+            const trailing_halves = min_height - leading_halves;
+            if (center < leading_halves) {
+                center = leading_halves;
+            } else if (center + trailing_halves > canvas_halves_f) {
+                center = canvas_halves_f - trailing_halves;
             }
-            y1 = center - half_min_height;
-            y2 = center + half_min_height;
+            y1 = center - leading_halves;
+            y2 = y1 + min_height;
         }
 
         if (y1 < 0) {
@@ -226,9 +228,11 @@ test "decorationsOverviewRuler: maps lines to rows" {
     defer allocator.free(rows);
 
     var expected = [_]?Marker{ null, null, null, null, null, null, null, null, null, null };
-    expected[0] = .{ .color = red, .lane = .center, .vertical = .full };
-    expected[4] = .{ .color = red, .lane = .center, .vertical = .full };
-    expected[9] = .{ .color = red, .lane = .center, .vertical = .full };
+    // A one-line marker is one half-cell tall: the upper half when it projects
+    // to an even half index and the lower half when it projects to an odd one.
+    expected[0] = .{ .color = red, .lane = .center, .vertical = .upper };
+    expected[4] = .{ .color = red, .lane = .center, .vertical = .lower };
+    expected[9] = .{ .color = red, .lane = .center, .vertical = .lower };
     try expectRows(rows, &expected);
 }
 
@@ -306,9 +310,9 @@ test "decorationsOverviewRuler: higher z-index wins a shared half-row" {
     });
     defer allocator.free(rows);
 
-    // Red covers row 0's lower half through row 3; blue starts on the same
-    // lower half and wins the halves it overlaps.
-    try expectMarker(rows[0], blue, .center, .lower);
+    // Red covers row 0's lower half through row 3; blue lands on row 1's upper
+    // half and wins the halves it overlaps.
+    try expectMarker(rows[0], red, .center, .lower);
     try expectMarker(rows[1], blue, .center, .upper);
     // Red is still visible further down.
     try expectMarker(rows[2], red, .center, .full);
@@ -389,7 +393,7 @@ test "decorationsOverviewRuler: many decorations in one row collapse" {
     });
     defer allocator.free(rows);
 
-    try expectMarker(rows[0], red, .center, .full);
+    try expectMarker(rows[0], red, .center, .upper);
     var count: usize = 0;
     for (rows) |row| {
         if (row != null) count += 1;

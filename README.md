@@ -1492,7 +1492,10 @@ TUI editor:
   horizontal axis uses the left and right half blocks (`▌`/`▐`) and the
   vertical axis uses the upper and lower half blocks (`▀`/`▄`). A marker is
   drawn with its lane's half block on full rows or a quadrant on a half row
-  (`▘`/`▖` for the center lane, `▝`/`▗` for the left and right lanes). The
+  (`▘`/`▖` for the center lane, `▝`/`▗` for the left and right lanes). A marker
+  that would shrink below a cell is one half-cell tall, so a single-line word
+  occurrence in a long document is one quadrant instead of a full-height
+  block. The
   cursor tick is one half-cell tall at its projected
   position, closer to the browser's two-pixel cursor line. The thumb is also
   1.5 cells wide and covers the markers on its rows. Its top and bottom edges

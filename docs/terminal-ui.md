@@ -1352,7 +1352,8 @@ Library constraints:
   canvas pixels. Each row is split into two half-cells, so the projection keeps
   half-row precision: a marker edge can land on the upper or lower half of a
   row and is painted with the lane's half block or a quadrant (`▘`/`▖` for the
-  center lane, `▝`/`▗` for the left and right lanes). A row represents a range
+  center lane, `▝`/`▗` for the left and right lanes). A marker that would be
+  smaller than a row is one half-cell tall. A row represents a range
   of document lines when the document is taller than the track, and lanes
   collapse onto the cell halves. The view supplies markers from find, the
   current find match, bracket matches with the overview-ruler option, word
@@ -1835,9 +1836,10 @@ pane is not keyboard-focusable.
   delayed run, keeping/updating occurrences, stopping on edits, multi-line
   selections and focus loss, and next/previous navigation. Scrollbar tests
   cover the reserved column, marker colors and rows, half-row marker edges and
-  quadrant glyphs, the thumb covering a marker row, cursor markers, the
-  no-thumb short-document case, half-cell thumb geometry, click/drag
-  scrolling, narrow terminals and the per-decoration overview-ruler flag. The
+  quadrant glyphs, single-line half-cell markers, the thumb covering a marker
+  row, cursor markers, the no-thumb short-document case, half-cell thumb
+  geometry, click/drag scrolling, narrow terminals and the per-decoration
+  overview-ruler flag. The
   ported `ScrollbarState` tests include the upstream cases, a one-row minimum
   and the exact fractional slider geometry.
 - Library unit tests cover: tree linking/invariants, box-tree derivation

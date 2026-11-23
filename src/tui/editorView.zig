@@ -4694,6 +4694,39 @@ test "View: half-cell markers use quadrant glyphs" {
     try std.testing.expectEqual(word_fg, grid.fg[grid.index(second, 3)]);
 }
 
+test "View: single-line center marker uses one half-cell" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text = try numberedLines(allocator, 13);
+    defer allocator.free(text);
+    const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.setDecorations(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(11, 1, 11, 2), .kind = .word_highlight },
+    });
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const cols = view.surface.document().cols;
+    const grid = view.surface.grid();
+    const word_fg = ui.cell.packColor(color(overview_word_color));
+
+    // Line 11 projects to half-cell 7, so the center lane is one half-cell
+    // tall instead of expanding to a full row.
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(cols - 2, 3)]);
+    try std.testing.expectEqual(@as(u32, '▖'), grid.cluster[grid.index(cols - 1, 3)]);
+    try std.testing.expectEqual(word_fg, grid.fg[grid.index(cols - 1, 3)]);
+}
+
 test "View: indent guides mark leading whitespace and blank lines" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
