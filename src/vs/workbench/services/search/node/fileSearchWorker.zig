@@ -178,15 +178,15 @@ pub const FileSearchWorker = struct {
     thread: ?std.Thread = null,
     stop: bool = false,
 
-    session_epoch: std.atomic.Value(u64) = .init(0),
-    request_epoch: std.atomic.Value(u64) = .init(0),
+    session_epoch: std.atomic.Value(u32) = .init(0),
+    request_epoch: std.atomic.Value(u32) = .init(0),
 
     /// Main-thread-owned until the worker takes it.
     pending_session: ?*Session = null,
     pending_filter: ?[]u8 = null,
 
     active_session: ?*Session = null,
-    active_session_epoch: u64 = 0,
+    active_session_epoch: u32 = 0,
     active_walker: ?*FileWalker = null,
     /// One raw path record per workspace file, not one picker item per file.
     /// Every keystroke must rank all cached candidates; `computeResult` then
@@ -477,7 +477,7 @@ pub const FileSearchWorker = struct {
         };
     }
 
-    fn buildListing(self: *FileSearchWorker, session: *Session, session_epoch: u64) Listing {
+    fn buildListing(self: *FileSearchWorker, session: *Session, session_epoch: u32) Listing {
         if (session.folders.len == 0) return self.emptyListing(null, null);
 
         var folder_infos = std.array_list.Managed(search.FolderInfo).init(self.allocator);
@@ -601,8 +601,8 @@ pub const FileSearchWorker = struct {
     fn computeResult(
         self: *FileSearchWorker,
         filter: []const u8,
-        session_epoch: u64,
-        request_epoch: u64,
+        session_epoch: u32,
+        request_epoch: u32,
     ) void {
         if (self.session_epoch.load(.acquire) != session_epoch or
             self.request_epoch.load(.acquire) != request_epoch)
