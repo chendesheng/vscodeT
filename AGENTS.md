@@ -231,6 +231,18 @@ state that in the comment and keep the behavioral contract intact.
   instead of inventing per-widget style tables. Implement the closest terminal
   rendering, document the substitution in the file header, and keep the
   upstream behavior and tests intact.
+- When a view part is genuinely browser-only (full HTML/CSS engine, browser
+  event loop, compositor, native selection), isolate the missing piece, port
+  the portable state/commands, wire what the TUI can support, and document the
+  exact gap in `README.md` and `docs/terminal-ui.md`.
+- Port upstream `View`/`ViewPart` orchestration (`render`,
+  `_flushAccumulatedAndRenderNow`, `shouldRender`/`prepareRender`/`render`).
+  Do not add a terminal-only `rebuild`/`resize` method; rendering and size
+  changes flow through the upstream layout/configuration and view-event
+  contracts.
+- Performance optimizations go into `ui/`; a ported view must not accumulate
+  non-upstream caches or fast paths. An editor-side optimization is acceptable
+  only when it mirrors an upstream one.
 
 ### Porting CSS files
 
@@ -260,18 +272,6 @@ by hand instead of copying the styling decisions into the widget:
 6. Test the registration (`editorCss.zig`), the class attachment and the
    resulting box/cell style, and keep the existing widget behavior and tests
    intact. Update `docs/css.md` and the ported-file table when adding a sheet.
-- When a view part is genuinely browser-only (full HTML/CSS engine, browser
-  event loop, compositor, native selection), isolate the missing piece, port
-  the portable state/commands, wire what the TUI can support, and document the
-  exact gap in `README.md` and `docs/terminal-ui.md`.
-- Port upstream `View`/`ViewPart` orchestration (`render`,
-  `_flushAccumulatedAndRenderNow`, `shouldRender`/`prepareRender`/`render`).
-  Do not add a terminal-only `rebuild`/`resize` method; rendering and size
-  changes flow through the upstream layout/configuration and view-event
-  contracts.
-- Performance optimizations go into `ui/`; a ported view must not accumulate
-  non-upstream caches or fast paths. An editor-side optimization is acceptable
-  only when it mirrors an upstream one.
 
 ## Zig conventions
 
