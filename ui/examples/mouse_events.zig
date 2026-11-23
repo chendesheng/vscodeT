@@ -1,7 +1,7 @@
 //! Every mouse event kind in one place: idle hover, press, move, release, click
 //! and wheel are logged with their cell, button, modifiers, wheel delta and
-//! hit-tested target. Idle motion highlights the zone under the pointer; the
-//! log is the demo.
+//! hit-tested target. `HoverStyle` highlights the zone or one-cell divider
+//! under the pointer.
 //!
 //! Press `q` to quit. Input is read from stdin with SGR mouse reports, so the
 //! example can also be driven by a pipe.
@@ -23,6 +23,8 @@ const background = common.rgb(16, 16, 22);
 const foreground = common.rgb(220, 220, 235);
 const dim = common.rgb(140, 140, 160);
 const log_color = common.rgb(180, 220, 180);
+const divider_color = common.rgb(96, 104, 120);
+const divider_hover_color = common.rgb(40, 220, 255);
 
 const zone_names = [_][]const u8{ "left", "middle", "right" };
 const zone_colors = [_]ui.Color{
@@ -90,7 +92,7 @@ fn build(
         .color = foreground,
         .bold = true,
     });
-    _ = try common.addLabel(doc, root, "hover a zone; press, drag, release, click and wheel | q quit", .{
+    _ = try common.addLabel(doc, root, "Hover a zone or the thin divider. Press q to quit.", .{
         .position = .absolute,
         .left = .{ .cells = 2 },
         .top = .{ .cells = 1 },
@@ -112,11 +114,24 @@ fn build(
             .background = zone_colors[index],
             .text_align = .center,
         });
+        zone.setHoverStyle(.{ .background = zone_hover_colors[index] });
         _ = try common.addText(doc, zone, name, .{
             .color = foreground,
         });
         app.zone_nodes[index] = zone;
     }
+
+    const divider = try common.addBox(doc, root, .{
+        .position = .absolute,
+        .left = .{ .cells = 20 },
+        .top = .{ .cells = 3 },
+        .width = .{ .cells = 1 },
+        .height = .{ .cells = 3 },
+        .background = divider_color,
+        .pointer = .ew_resize,
+    });
+    divider.setHoverStyle(.{ .background = divider_hover_color });
+    app.divider = divider;
 
     _ = try common.addLabel(doc, root, "event log (newest at the bottom)", .{
         .position = .absolute,
@@ -153,24 +168,17 @@ fn build(
         .click = App.onClick,
         .wheel = App.onWheel,
     });
-    // Capture motion before the logger so the hover style follows the pointer.
-    try root.addEventListener(.{
-        .context = app,
-        .capture = true,
-        .mouse_move = App.onHover,
-    });
-
-    app.push("ready: hover, click a zone, drag, and wheel");
+    app.push("Hover the divider between left and middle. It turns cyan.");
 }
 
 const App = struct {
     allocator: Allocator,
     doc: *ui.Document,
     zone_nodes: [3]*ui.Node = undefined,
+    divider: *ui.Node = undefined,
     log_rows: [log_lines]*ui.Node = undefined,
     log_text: [log_lines][120]u8 = undefined,
     log_lens: [log_lines]usize = @splat(0),
-    hovered_zone: ?usize = null,
 
     fn zoneIndex(self: *const App, target: ?*ui.Node) ?usize {
         var current = target;
@@ -184,20 +192,9 @@ const App = struct {
     }
 
     fn zoneName(self: *const App, target: ?*ui.Node) []const u8 {
+        if (target == self.divider) return "divider";
         const index = self.zoneIndex(target) orelse return "root";
         return zone_names[index];
-    }
-
-    fn onHover(context: ?*anyopaque, event: *ui.MouseEvent) void {
-        const self: *App = @ptrCast(@alignCast(context orelse return));
-        const hovered = self.zoneIndex(event.target);
-        if (hovered == self.hovered_zone) return;
-        self.hovered_zone = hovered;
-        for (self.zone_nodes, 0..) |zone, index| {
-            var style = zone.style().*;
-            style.background = if (hovered == index) zone_hover_colors[index] else zone_colors[index];
-            zone.setStyle(style);
-        }
     }
 
     fn push(self: *App, text: []const u8) void {

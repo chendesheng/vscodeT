@@ -111,8 +111,11 @@ viewport. The focus example handles Tab/Shift-Tab and Enter. The two mouse examp
 sequences; `example-mouse` shows selection, hover and wheel scrolling, and its
 rows request the hand pointer through the OSC 22 path, while
 `example-mouse-events` logs every mouse event with its hit-tested target and
-highlights the hovered zone. `example-todo` is a standalone TodoMVC scene with
-its own input loop: add todos through `ui.InputBox`, toggle rows, edit a
+uses `Node.setHoverStyle` to highlight the hovered zone. Hover over the one-cell
+divider between **left** and **middle** to turn it cyan and request a resize
+pointer. Move away to restore its gray background. `example-todo` is a
+standalone TodoMVC scene with its own input loop: add todos through
+`ui.InputBox`, toggle rows, edit a
 focused row, filter All/Active/Completed, clear completed and toggle all.
 The subtitle and long todo text wrap, and the list window scrolls in row cells.
 
