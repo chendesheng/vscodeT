@@ -647,7 +647,6 @@ pub fn main(init: std.process.Init) !void {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.pollFileWatcher(now_ms)) needs_render = true;
         if (workbench.pollBreadcrumbs()) needs_render = true;
-        if (workbench.pollOutline(now_ms)) needs_render = true;
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         if (workbench.pollSearch(now_ms)) needs_render = true;
         if (workbench.pollJsonLanguage()) needs_render = true;
@@ -689,7 +688,6 @@ pub fn main(init: std.process.Init) !void {
         }
         if (workbench.quickAccessWantsTick()) timeout = 0;
         if (workbench.searchWantsTick()) timeout = 0;
-        if (workbench.outlineWantsTick()) timeout = 0;
         if (workbench.fileWatcherTimeout(now_ms)) |watcher_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(watcher_timeout, 250))));
         }
@@ -698,9 +696,6 @@ pub fn main(init: std.process.Init) !void {
         }
         if (workbench.bracketGuidesTimeout(now_ms)) |guides_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(guides_timeout, 250))));
-        }
-        if (workbench.outlineTimeout(now_ms)) |outline_timeout| {
-            timeout = @min(timeout, @as(i32, @intCast(@min(outline_timeout, 250))));
         }
         if (workbench.backgroundTokenizationPending()) timeout = @min(timeout, 4);
         if (workbench.hasLatencySensitiveReads()) timeout = @min(timeout, 4);

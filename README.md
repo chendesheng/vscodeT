@@ -569,8 +569,10 @@ console API for raw mode, sizing and input polling.
   Collapse All / Expand All, Follow Cursor, Filter on Type, Sort By
   Position/Name/Category title actions, and problem count/rollup badges from
   the marker service. Cursor and content changes come through the editor's
-  `ViewCursorStateChanged` / `ViewLinesChanged` view events; content rebuilds
-  are debounced like upstream. It is the Outline view of the Explorer view
+  `ViewCursorStateChanged` / `ViewLinesChanged` view events; the terminal has
+  no timer service, so content rebuilds run directly from the line-change
+  event instead of a workbench polling loop. It is the Outline view of the
+  Explorer view
   container, stacked under the file tree with its own collapsible section
   header, matching upstream `outline.contribution.ts`; `outline.focus` expands
   and focuses it. Tree state is not persisted, and the browser data-tree find

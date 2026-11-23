@@ -729,7 +729,9 @@ indentation and twisties, symbol glyphs, marker counts/rollup bubbles,
 selection/hover/focus colors, wheel scrolling and Enter-to-reveal. The title
 actions are Collapse All, Expand All, Follow Cursor, Filter on Type and the
 three Sort By commands. Follow Cursor selects the symbol enclosing the cursor;
-content changes schedule a 200 ms rebuild, matching upstream's debounce.
+content changes rebuild from the editor's `ViewLinesChanged` event. The
+terminal has no `TimeoutTimer`, so this is direct rather than debounced and is
+never driven by a workbench polling loop.
 The view lives in the Explorer view container, stacked under the file tree with
 its own collapsible section header, matching upstream `outline.contribution.ts`;
 `outline.focus` expands the section and focuses it. Terminal adaptations: tree

@@ -137,8 +137,6 @@ const IOutlineCreator = outline_mod.IOutlineCreator;
 const DocumentSymbolsOutline = @import("../contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutline;
 const OutlineModel = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModel;
 const OutlineMarker = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineMarker;
-const ViewEventHandler = @import("../../editor/common/viewEventHandler.zig").ViewEventHandler;
-const view_events = @import("../../editor/common/viewEvents.zig");
 const outline_pane_mod = @import("../contrib/outline/browser/outlinePane.zig");
 const OutlinePane = outline_pane_mod.OutlinePane;
 const outline_contrib = @import("../contrib/outline/browser/outline.zig");
@@ -603,11 +601,6 @@ pub const Workbench = struct {
     outline_service: OutlineService,
     /// Terminal Outline side panel (`outline` view container).
     outline_view: ?*OutlinePane = null,
-    outline_dirty: bool = false,
-    /// Cursor/content listener for the breadcrumb symbol chain. It follows the
-    /// active tab's editor, like upstream's per-editor outline subscriptions.
-    cursor_handler: ViewEventHandler = .{},
-    cursor_handler_editor: ?*Editor = null,
     breadcrumbs_service: BreadcrumbsService,
     breadcrumbs_settings: BreadcrumbsSettings,
     breadcrumbs_control: ?*BreadcrumbsControl = null,
@@ -807,7 +800,6 @@ pub const Workbench = struct {
         self.outline_registration = null;
         self.document_symbol_listener = null;
         self.outline_view = null;
-        self.outline_dirty = false;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -971,7 +963,6 @@ pub const Workbench = struct {
         self.outline_registration = null;
         self.document_symbol_listener = null;
         self.outline_view = null;
-        self.outline_dirty = false;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -1168,7 +1159,6 @@ pub const Workbench = struct {
         self.outline_registration = null;
         self.document_symbol_listener = null;
         self.outline_view = null;
-        self.outline_dirty = false;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         self.configuration = null;
         self.settings_watcher = null;
@@ -1290,14 +1280,6 @@ pub const Workbench = struct {
         try self.registerViewContainers();
         try self.initExplorerContainer();
         try self.sidebar_part.setWidth(28);
-        self.cursor_handler = ViewEventHandler.init(self, .{
-            .onCursorStateChanged = onWorkbenchCursorStateChanged,
-            .onLinesChanged = onWorkbenchLinesChanged,
-            .onLinesInserted = onWorkbenchLinesInserted,
-            .onLinesDeleted = onWorkbenchLinesDeleted,
-        });
-        self.cursor_handler_editor = null;
-
         try self.initStatusHint();
     }
 
@@ -1910,7 +1892,6 @@ pub const Workbench = struct {
         self.breadcrumbs_arena.deinit();
         self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
-        self.detachCursorHandler();
         if (self.outline_view) |view| {
             view.deinit();
             self.outline_view = null;
@@ -6080,6 +6061,7 @@ pub const Workbench = struct {
             self.unregisterWorkingCopy(tab);
             if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
             self.detachHistoryTab(tab);
+            self.detachTabViewHandlers(tab);
             tab.deinit();
         }
         if (removed_active) pane.syncActivePane();
@@ -7185,6 +7167,16 @@ pub const Workbench = struct {
         return reopened;
     }
 
+    /// Detaches raw editor view-event handlers before a tab destroys its
+    /// editor. Upstream disposes the outline/pane before the editor; the
+    /// terminal keeps one shared OutlinePane, so it must let go of the editor
+    /// while the editor is still alive.
+    fn detachTabViewHandlers(self: *Workbench, tab: *Tab) void {
+        if (self.outline_view) |view| {
+            if (view.editor == tab.editor) view.setEditor(null) catch {};
+        }
+    }
+
     fn performCloseTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
         if (!self.in_closed_batch) self.history.closed_batch_id +%= 1;
         if (pane.indexOfTab(tab)) |index| {
@@ -7207,6 +7199,7 @@ pub const Workbench = struct {
             if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
         }
         self.detachHistoryTab(tab);
+        self.detachTabViewHandlers(tab);
         tab.deinit();
 
         if (self.tabCount() == 0) return;
@@ -8138,6 +8131,7 @@ pub const Workbench = struct {
         self.detachHistoryTab(tab);
         self.unregisterWorkingCopy(tab);
         if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
+        self.detachTabViewHandlers(tab);
         tab.deinit();
     }
 
@@ -9847,27 +9841,6 @@ pub const Workbench = struct {
         return view;
     }
 
-    fn syncCursorHandler(self: *Workbench) void {
-        const tab = self.activeTab();
-        const editor: ?*Editor = if (tab) |active| blk: {
-            if (active.isImage() or active.isDiff()) break :blk null;
-            break :blk active.editor;
-        } else null;
-        if (self.cursor_handler_editor == editor) return;
-        self.detachCursorHandler();
-        if (editor) |value| {
-            value.addViewEventHandler(&self.cursor_handler);
-            self.cursor_handler_editor = value;
-        }
-    }
-
-    fn detachCursorHandler(self: *Workbench) void {
-        if (self.cursor_handler_editor) |editor| editor.removeViewEventHandler(&self.cursor_handler);
-        self.cursor_handler_editor = null;
-    }
-
-    /// Binds the outline pane to the active text editor. Called before the
-    /// outline body renders, like upstream's active-editor listener.
     fn syncOutlineView(self: *Workbench) !void {
         const tab = self.activeTab();
         const editor: ?*Editor = if (tab) |active| blk: {
@@ -9878,41 +9851,6 @@ pub const Workbench = struct {
         view.setThemeColors(self.theme_palette);
         view.setBorderRendering(self.part.cell_borders);
         if (view.editor != editor) try view.setEditor(editor);
-    }
-
-    pub fn pollOutline(self: *Workbench, now_ms: i64) bool {
-        self.syncCursorHandler();
-        const explorer_active = std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "explorer");
-        const outline_visible = if (explorer_active) blk: {
-            const container = self.explorer_container orelse break :blk false;
-            const rect = container.bodyRect("outline") orelse break :blk false;
-            break :blk rect.h > 0;
-        } else false;
-        if (outline_visible) {
-            self.syncOutlineView() catch {};
-        } else if (self.outline_view) |view| {
-            if (view.editor != null) view.setEditor(null) catch {};
-        }
-        const view = self.outline_view orelse return false;
-        if (view.poll(now_ms)) {
-            self.outline_dirty = false;
-            return true;
-        }
-        if (self.outline_dirty) {
-            self.outline_dirty = false;
-            return true;
-        }
-        return false;
-    }
-
-    pub fn outlineWantsTick(self: *const Workbench) bool {
-        const view = self.outline_view orelse return false;
-        return view.wantsTick();
-    }
-
-    pub fn outlineTimeout(self: *const Workbench, now_ms: i64) ?i64 {
-        const view = self.outline_view orelse return null;
-        return view.timeout(now_ms);
     }
 
     pub fn pollBreadcrumbs(self: *Workbench) bool {
@@ -10228,30 +10166,6 @@ pub const Workbench = struct {
     }
 };
 
-fn onWorkbenchCursorStateChanged(context: *anyopaque, _: *const view_events.ViewCursorStateChangedEvent) bool {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
-    return false;
-}
-
-fn onWorkbenchLinesChanged(context: *anyopaque, _: *const view_events.ViewLinesChangedEvent) bool {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
-    return false;
-}
-
-fn onWorkbenchLinesInserted(context: *anyopaque, _: *const view_events.ViewLinesInsertedEvent) bool {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
-    return false;
-}
-
-fn onWorkbenchLinesDeleted(context: *anyopaque, _: *const view_events.ViewLinesDeletedEvent) bool {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.breadcrumbs_control) |control| control.refreshElements() catch {};
-    return false;
-}
-
 fn explorerPaneRenderBody(context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const sidebar = self.sidebar orelse return;
@@ -10433,10 +10347,7 @@ fn outlineRevealRange(context: *anyopaque, range: Range) !void {
     try tab.editor.setSelections(&.{Selection.init(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn)});
 }
 
-fn outlineRequestRender(context: *anyopaque) void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.outline_dirty = true;
-}
+fn outlineRequestRender(_: *anyopaque) void {}
 
 const InactiveBreadcrumb = struct {
     control: *BreadcrumbsControl,
@@ -15993,6 +15904,32 @@ test "Workbench: outline side panel shows provider symbols" {
 
     try view.setFollowCursor(true);
     try std.testing.expect(view.titleActions().len >= 4);
+}
+
+test "Workbench: closing the active tab detaches the outline editor handler" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path_a = try seedFile(allocator, io, &tmp, "outline-a.txt", "alpha");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "outline-b.txt", "beta");
+    defer allocator.free(path_b);
+
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    defer workbench.deinit();
+    _ = try workbench.showActivityById("explorer");
+    workbench.explorer_container.?.model.setCollapsed("outline", false);
+    try workbench.syncOutlineView();
+
+    const view = workbench.outline_view.?;
+    const old_editor = workbench.activeTab().?.editor;
+    try std.testing.expect(view.editor == old_editor);
+
+    _ = try workbench.closeActive();
+    try std.testing.expect(view.editor == null);
+    try std.testing.expect(workbench.activeTab() != null);
 }
 
 test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {

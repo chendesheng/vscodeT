@@ -41,7 +41,6 @@ const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorW
 const view_events = @import("../../../../editor/common/viewEvents.zig");
 const view_handler_mod = @import("../../../../editor/common/viewEventHandler.zig");
 const ViewEventHandler = view_handler_mod.ViewEventHandler;
-const time_compat = @import("../../../../base/common/timeCompat.zig");
 const markerSeverity = @import("../../../../platform/markers/common/markers.zig").MarkerSeverity;
 
 pub const Host = struct {
@@ -91,7 +90,6 @@ pub const OutlinePane = struct {
     message: ?[]const u8 = null,
     theme: ?*const theme_colors_mod.ThemeColors = null,
     focused: bool = false,
-    pending_rebuild_at: ?i64 = null,
     border: bool = false,
     action_buf: [6]views.TitleAction = undefined,
 
@@ -214,7 +212,7 @@ pub const OutlinePane = struct {
 
     /// Rebinds the pane to the active editor. Called by the workbench when the
     /// active tab or group changes; the editor's view events then drive cursor
-    /// following and debounced content rebuilds.
+    /// following and content rebuilds.
     pub fn setEditor(self: *OutlinePane, editor: ?*Editor) !void {
         if (self.editor == editor) return;
         self.detachEditor();
@@ -238,7 +236,6 @@ pub const OutlinePane = struct {
     /// Recreates the outline for the current editor, matching upstream's
     /// `createOutline` hand-off. The terminal service is synchronous.
     pub fn refresh(self: *OutlinePane) !void {
-        self.pending_rebuild_at = null;
         self.disposeOutline();
         self.list.setSelection(null);
         self.selected_element = null;
@@ -282,28 +279,6 @@ pub const OutlinePane = struct {
         }
     }
 
-    pub fn poll(self: *OutlinePane, now_ms: i64) bool {
-        const due = self.pending_rebuild_at orelse return false;
-        if (now_ms < due) return false;
-        self.pending_rebuild_at = null;
-        self.refresh() catch {
-            self.message = "The outline could not be created.";
-            self.rows.clearRetainingCapacity();
-            self.replaceList() catch {};
-        };
-        self.host.request_render(self.host.context);
-        return true;
-    }
-
-    pub fn wantsTick(self: *const OutlinePane) bool {
-        return self.pending_rebuild_at != null;
-    }
-
-    pub fn timeout(self: *const OutlinePane, now_ms: i64) ?i64 {
-        const due = self.pending_rebuild_at orelse return null;
-        return @max(due - now_ms, 0);
-    }
-
     fn onCursorStateChanged(context: *anyopaque, _: *const view_events.ViewCursorStateChangedEvent) bool {
         const self: *OutlinePane = @ptrCast(@alignCast(context));
         if (!self.view_state.follow_cursor) return false;
@@ -313,25 +288,34 @@ pub const OutlinePane = struct {
     }
 
     fn onLinesChanged(context: *anyopaque, _: *const view_events.ViewLinesChangedEvent) bool {
-        return scheduleRebuild(context);
+        return rebuildNow(context);
     }
 
     fn onLinesInserted(context: *anyopaque, _: *const view_events.ViewLinesInsertedEvent) bool {
-        return scheduleRebuild(context);
+        return rebuildNow(context);
     }
 
     fn onLinesDeleted(context: *anyopaque, _: *const view_events.ViewLinesDeletedEvent) bool {
-        return scheduleRebuild(context);
+        return rebuildNow(context);
     }
 
     fn onFlushed(context: *anyopaque, _: *const view_events.ViewFlushedEvent) bool {
-        return scheduleRebuild(context);
+        return rebuildNow(context);
     }
 
-    fn scheduleRebuild(context: *anyopaque) bool {
+    /// Upstream `DocumentSymbolsOutline` debounces this through a
+    /// `TimeoutTimer`; the terminal has no timer service, so the outline is
+    /// rebuilt directly from the editor's line-change event rather than by a
+    /// workbench polling loop.
+    fn rebuildNow(context: *anyopaque) bool {
         const self: *OutlinePane = @ptrCast(@alignCast(context));
-        self.pending_rebuild_at = time_compat.milliTimestamp() + 200;
-        return false;
+        self.refresh() catch {
+            self.message = "The outline could not be created.";
+            self.rows.clearRetainingCapacity();
+            self.replaceList() catch {};
+        };
+        self.host.request_render(self.host.context);
+        return true;
     }
 
     pub fn setFollowCursor(self: *OutlinePane, value: bool) !void {
