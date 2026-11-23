@@ -10404,7 +10404,7 @@ pub const Workbench = struct {
         }
     }
 
-    /// Paints the sash.css hover or active highlight as a cell stroke.
+    /// Paints the sash.css hover or active highlight across one cell.
     fn renderSash(self: *Workbench, node: *LayoutNode) void {
         const split = node.kind.split;
         const cell_borders = self.part.cell_borders;
@@ -10413,11 +10413,11 @@ pub const Workbench = struct {
         const hovered = if (self.hovered_sash) |sash| sash == .editor and sash.editor == node else false;
         const highlighted = active or hovered;
         const color = if (highlighted) self.sashHoverStyle().background.? else self.themeColor("editorGroup.border", .{ 70, 70, 70 });
-        // Keep the gutter on the editor palette, like the side-bar divider
-        // keeps its own surface background.
+        const editor_bg = ui.cell.packColor(self.themeColor("editor.background", .{ 30, 30, 33 }));
+        const sash_color = ui.cell.packColor(color);
         const style: ui.cell.PaintStyle = .{
-            .fg = ui.cell.packColor(color),
-            .bg = ui.cell.packColor(self.themeColor("editor.background", .{ 30, 30, 33 })),
+            .fg = if (highlighted) editor_bg else sash_color,
+            .bg = if (highlighted) sash_color else editor_bg,
         };
         const stroke: ui.cell_border.Stroke = .{
             .width = if (highlighted) sash_highlight_width else divider_width,
@@ -10439,6 +10439,7 @@ pub const Workbench = struct {
                     if (cell_borders) {
                         cells.addBorder(x - 1, y, edge.right, stroke);
                         cells.addBorder(x, y, edge.left, stroke);
+                        if (highlighted) paintSashBackground(cells, x - 1, y, sash_color);
                     } else {
                         cells.putCodepoint(x, y, '│', 1, style);
                     }
@@ -10455,6 +10456,7 @@ pub const Workbench = struct {
                     if (cell_borders) {
                         cells.addBorder(x, y - 1, edge.bottom, stroke);
                         cells.addBorder(x, y, edge.top, stroke);
+                        if (highlighted) paintSashBackground(cells, x, y - 1, sash_color);
                     } else {
                         cells.putCodepoint(x, y, '─', 1, style);
                     }
@@ -10496,11 +10498,14 @@ pub const Workbench = struct {
         cells.cluster[at] = junction;
     }
 
-    fn highlightFrameGlyph(cells: *ui.CellGrid, x: usize, y: usize, color: u32) void {
+    fn paintSashBackground(cells: *ui.CellGrid, x: usize, y: usize, color: u32) void {
         const at = cells.index(x, y);
-        switch (cells.cluster[at]) {
-            '─', '│', '╭', '╮', '╰', '╯' => cells.fg[at] = color,
-            else => {},
+        cells.bg[at] = color;
+        // ANSI output writes a wide glyph with one style for both cells.
+        if (x + 1 < cells.cols and cells.widthAt(x, y) == 2) {
+            cells.bg[at + 1] = color;
+        } else if (x > 0 and cells.widthAt(x - 1, y) == 2) {
+            cells.bg[at - 1] = color;
         }
     }
 
@@ -10517,6 +10522,7 @@ pub const Workbench = struct {
         const active = self.sidebar_resize != null;
         const highlighted = active or (self.hovered_sash != null and self.hovered_sash.? == .sidebar);
         const sash_color = if (highlighted) self.sashHoverStyle().background.? else color;
+        const sash_bg = ui.cell.packColor(sash_color);
         if (self.part.cell_borders) {
             const rounded = self.part.cell_border_capabilities.has(.round);
             self.paintCellFrame(rect, .{
@@ -10525,13 +10531,16 @@ pub const Workbench = struct {
                 .placement = .inside,
             });
             if (highlighted) {
-                for (0..rows) |row| cells.addBorder(right, row, ui.cell_border.Segment.right, .{
-                    .width = sash_highlight_width,
-                    .color = .{ .rgb = sash_color },
-                    .placement = .inside,
-                    .layer = .above_text,
-                    .priority = 3,
-                });
+                for (0..rows) |row| {
+                    cells.addBorder(right, row, ui.cell_border.Segment.right, .{
+                        .width = sash_highlight_width,
+                        .color = .{ .rgb = sash_color },
+                        .placement = .inside,
+                        .layer = .above_text,
+                        .priority = 3,
+                    });
+                    paintSashBackground(cells, right, row, sash_bg);
+                }
             }
             return;
         }
@@ -10540,13 +10549,18 @@ pub const Workbench = struct {
             .fg = ui.cell.packColor(color),
             .bg = ui.cell.packColor(self.themeColor("sideBar.background", .{ 30, 30, 33 })),
         };
+        const sash_paint: ui.cell.PaintStyle = if (highlighted) .{ .fg = paint.bg, .bg = sash_bg } else paint;
         if (self.glyphSidebarFrame()) {
             cells.paintRoundedFrame(rect, paint);
             if (highlighted) {
-                for (0..rows) |row| highlightFrameGlyph(cells, right, row, ui.cell.packColor(sash_color));
+                for (0..rows) |row| {
+                    const at = cells.index(right, row);
+                    cells.fg[at] = sash_paint.fg;
+                    cells.bg[at] = sash_paint.bg;
+                }
             }
         } else {
-            for (0..rows) |row| cells.putCodepoint(right, row, '│', 1, .{ .fg = ui.cell.packColor(sash_color), .bg = paint.bg });
+            for (0..rows) |row| cells.putCodepoint(right, row, '│', 1, sash_paint);
         }
     }
 
@@ -14260,6 +14274,8 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         try workbench.render(&out.writer);
         const cells = &workbench.frame.prev;
         const at = cells.index(x, y);
+        const background_at = cells.index(x, if (borders) y - 1 else y);
+        const idle_background = cells.bg[background_at];
         if (!borders) {
             try std.testing.expectEqual(@as(u32, '─'), cells.cluster[at]);
             try std.testing.expectEqual(expected_bg, cells.bg[at]);
@@ -14270,23 +14286,24 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = y }));
         try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointerShape());
         try workbench.render(&out.writer);
+        try std.testing.expectEqual(expected_highlight, cells.bg[background_at]);
         if (borders) {
             const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
             try std.testing.expectEqual(sash_highlight_width, stroke.width);
             try std.testing.expectEqual(expected_highlight, ui.cell.packColor(stroke.color.rgb));
         } else {
-            try std.testing.expectEqual(expected_highlight, cells.fg[at]);
+            try std.testing.expectEqual(expected_bg, cells.fg[at]);
         }
 
         try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = y, .button = .left }));
         try workbench.render(&out.writer);
+        try std.testing.expectEqual(expected_highlight, cells.bg[background_at]);
         if (borders) {
             const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
             try std.testing.expectEqual(expected_highlight, ui.cell.packColor(stroke.color.rgb));
         } else {
             try std.testing.expectEqual(@as(u32, '─'), cells.cluster[at]);
-            try std.testing.expectEqual(expected_highlight, cells.fg[at]);
-            try std.testing.expectEqual(expected_bg, cells.bg[at]);
+            try std.testing.expectEqual(expected_bg, cells.fg[at]);
         }
 
         try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x, .y = y, .button = .left }));
@@ -14295,6 +14312,7 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         try std.testing.expect(!workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = y - 2 }));
         try std.testing.expectEqual(ui.Pointer.default, workbench.pointerShape());
         try workbench.render(&out.writer);
+        try std.testing.expectEqual(idle_background, cells.bg[background_at]);
         if (borders) {
             const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
             try std.testing.expectEqual(divider_width, stroke.width);
@@ -15018,18 +15036,24 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
         for (0..2) |cell| {
             const width = workbench.sidebarWidth();
             const x = ui.cell.snap(workbench.sidebarFrameRect().right()) - 1 + cell;
+            const border_x = x - cell;
+            const background_at = grid_cells.index(border_x, 3);
             workbench.beginMousePointer();
+            try workbench.render(&out.writer);
+            const idle_background = grid_cells.bg[background_at];
             try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = 3 }));
             try std.testing.expectEqual(ui.Pointer.ew_resize, workbench.pointerShape());
             try workbench.render(&out.writer);
-            const border_x = x - cell;
             const highlight = ui.cell.packColor(workbench.sashHoverStyle().background.?);
+            try std.testing.expectEqual(highlight, grid_cells.bg[background_at]);
             if (native) {
                 const stroke = grid_cells.borderSetAt(border_x, 3).strokeAt(ui.cell_border.Segment.right) orelse return error.MissingSashStroke;
                 try std.testing.expectEqual(highlight, ui.cell.packColor(stroke.color.rgb));
-            } else {
-                try std.testing.expectEqual(highlight, grid_cells.fg[grid_cells.index(border_x, 3)]);
             }
+            workbench.beginMousePointer();
+            try std.testing.expect(!workbench.handleSashMouse(&.{ .kind = .move, .x = x + 4, .y = 3 }));
+            try workbench.render(&out.writer);
+            try std.testing.expectEqual(idle_background, grid_cells.bg[background_at]);
 
             try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = 3, .button = .left }));
             try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x, .y = 3, .button = .left }));

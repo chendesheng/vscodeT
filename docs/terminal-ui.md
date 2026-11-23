@@ -631,9 +631,9 @@ keeps the dividers and uses the outer cells for content.
 Dragging a sash with the left button updates the split ratio, clamped to a
 10-column/3-row minimum. Closing the last tab in a pane removes the group from
 the split tree and promotes its sibling, mirroring Grid branch demotion.
-During resize the sash uses VS Code's `sash.hoverBorder`, which defaults to
-`focusBorder`. Terminals with cell borders paint the highlight on the shared
-edge.
+On hover and during resize, the sash fills a row or column of cells with
+VS Code's `sash.hoverBorder`, which defaults to `focusBorder`. In cell-border
+terminals, the highlight uses cells on one side of the shared edge.
 Modal dialogs, the breadcrumb picker and editor hovers use rounded cell edges
 when the terminal advertises `round` and rounded glyphs otherwise. The `radius`
 and `outside` extensions control the arc radius and fill the area outside each
