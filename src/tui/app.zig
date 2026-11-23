@@ -384,7 +384,11 @@ pub fn main(init: std.process.Init) !void {
     // and the read-only preview may have set a non-default OSC 22 shape).
     defer ui.pointer.writeShape(out, .default) catch {};
 
-    try tui.installSigWinch();
+    if (webvm_i386) {
+        diag("sigwinch skipped");
+    } else {
+        try tui.installSigWinch();
+    }
 
     var size = try tui.getTerminalSize();
 
@@ -716,9 +720,13 @@ pub fn main(init: std.process.Init) !void {
     // Match upstream's `WorkbenchPhase.AfterRestored`: the workspace watcher
     // starts only after the restored UI has painted. `fileService.watch` is
     // asynchronous, so the recursive scan runs on the watcher worker.
-    workbench.runContributionPhase(.after_restored) catch |err| {
-        report(log_service, "workspace watcher unavailable: {s}", .{@errorName(err)});
-    };
+    if (webvm_i386) {
+        diag("watcher skipped");
+    } else {
+        workbench.runContributionPhase(.after_restored) catch |err| {
+            report(log_service, "workspace watcher unavailable: {s}", .{@errorName(err)});
+        };
+    }
     infoLog(log_service, "startup: after-restored={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
