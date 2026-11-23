@@ -226,9 +226,9 @@ const PaintStyle = ui.cell.PaintStyle;
 // opens the Settings editor as an editor tab. The port therefore registers only
 // the view containers it actually hosts.
 pub const default_activities = [_]Activity{
-    .{ .id = "explorer", .name = "Explorer", .glyph = 'E', .order = 1 },
-    .{ .id = "search", .name = "Search", .glyph = 'F', .order = 2 },
-    .{ .id = "scm", .name = "Source Control", .glyph = 'G', .order = 3 },
+    .{ .id = "explorer", .name = "Explorer", .glyph = '\u{f07b}', .order = 1 },
+    .{ .id = "search", .name = "Search", .glyph = '\u{f002}', .order = 2 },
+    .{ .id = "scm", .name = "Source Control", .glyph = '\u{e702}', .order = 3 },
 };
 
 /// The visible activity at a terminal row. Rows start under the top padding

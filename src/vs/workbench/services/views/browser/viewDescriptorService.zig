@@ -193,7 +193,7 @@ test "viewDescriptorService: default and custom locations" {
     const explorer = try registry.register(.{
         .id = "workbench.view.explorer",
         .title = "Explorer",
-        .glyph = 'E',
+        .glyph = '\u{f07b}',
         .order = 0,
     }, .sidebar, .{ .is_default = true });
 

@@ -1298,19 +1298,19 @@ pub const Workbench = struct {
         _ = try registry.register(.{
             .id = "explorer",
             .title = "Explorer",
-            .glyph = 'E',
+            .glyph = '\u{f07b}',
             .order = 0,
         }, .sidebar, .{ .is_default = true });
         _ = try registry.register(.{
             .id = "search",
             .title = "Search",
-            .glyph = 'F',
+            .glyph = '\u{f002}',
             .order = 1,
         }, .sidebar, .{});
         _ = try registry.register(.{
             .id = "scm",
             .title = "Source Control",
-            .glyph = 'G',
+            .glyph = '\u{e702}',
             .order = 2,
         }, .sidebar, .{});
         // Panel containers: Problems order 0, Terminal order 3, matching
