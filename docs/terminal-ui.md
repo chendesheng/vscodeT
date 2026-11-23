@@ -1346,23 +1346,31 @@ Library constraints:
   focuses it and places the byte caret; the option toggles (`Aa`, `ab`, `.*`,
   `Sel`) and `All` highlight on idle hover and run their action on click while
   keeping input focus. Clicking the editor blurs the bar without closing it.
-- The right edge reserves one text cell shared by the overview ruler and the
-  scrollbar. `decorationsOverviewRuler.zig` ports the upstream scaled
+- The right edge reserves two text cells for the 1.5-cell overview-ruler and
+  scrollbar strip. `decorationsOverviewRuler.zig` ports the upstream scaled
   `y1`/`y2` projection and z-order paint rules, but writes cell rows instead of
-  canvas pixels: a row represents a range of document lines when the document
-  is taller than the track, and lanes collapse onto the cell. The view
-  supplies markers from find, the current find match, bracket matches with the
-  overview-ruler option, word occurrences and cursor positions. The thumb is
-  painted afterwards in the same cell as a foreground block glyph, so it
-  covers the markers on its rows. This follows Flow's vertical-scrollbar
-  rendering technique: a one-column plane erased to the editor background and
-  then a single glyph, with no background run at the terminal edge (the
-  terminal equivalent of the browser's overlapping slider and ruler layers). `ScrollbarState` is ported from `base/browser/ui/scrollbar` and
-  drives a one-cell-wide slider with a one-row minimum; click, thumb drag and
-  wheel use the upstream offset/delta math at row resolution. Cells have no alpha, so
-  the marker colors are composited over the dark editor background. There is
-  no minimap, horizontal scrollbar, pixel-lane width, border or smooth
-  scrolling.
+  canvas pixels. Each row is split into two half-cells, so the projection keeps
+  half-row precision: a marker edge can land on the upper or lower half of a
+  row and is painted with the lane's half block or a quadrant (`▘`/`▖` for the
+  center lane, `▝`/`▗` for the left and right lanes). A row represents a range
+  of document lines when the document is taller than the track, and lanes
+  collapse onto the cell halves. The view supplies markers from find, the
+  current find match, bracket matches with the overview-ruler option, word
+  occurrences and cursor positions. The thumb is painted afterwards in the
+  same cells as a foreground block glyph, so it covers the markers on its
+  rows. This follows Flow's vertical-scrollbar rendering technique: a plane
+  erased to the editor background and then a single glyph, with no background
+  run at the terminal edge (the terminal equivalent of the browser's
+  overlapping slider and ruler layers). `ScrollbarState` is ported from
+  `base/browser/ui/scrollbar` and drives a 1.5-cell-wide slider with a
+  one-row minimum; the thumb paint uses its exact fractional position and
+  size quantized to half cells, and its mouse hit box covers every row the
+  painted thumb touches. Click, thumb drag and wheel still use the upstream
+  rounded offset/delta math at row resolution. A row shares one
+  foreground color, so markers are hidden on the cells the thumb covers.
+  Cells have no alpha, so the marker colors are composited over the dark
+  editor background. There is no minimap, horizontal scrollbar, pixel-lane
+  width, border or smooth scrolling.
 - Gutter width follows the existing `gutterWidthFor` logic; line numbers are
   right-aligned with `text_align = .right`.
 - Text soft-wraps at the terminal width by default. `editor.wordWrap` is
@@ -1826,11 +1834,12 @@ pane is not keyboard-focusable.
   editor viewport. Word-highlighter tests cover the textual provider, the
   delayed run, keeping/updating occurrences, stopping on edits, multi-line
   selections and focus loss, and next/previous navigation. Scrollbar tests
-  cover the reserved column, marker colors and rows, the thumb covering a
-  marker row, cursor markers, the no-thumb short-document case, thumb geometry,
-  click/drag scrolling, narrow terminals and the per-decoration overview-ruler
-  flag. The ported
-  `ScrollbarState` tests include the upstream cases and a one-row minimum.
+  cover the reserved column, marker colors and rows, half-row marker edges and
+  quadrant glyphs, the thumb covering a marker row, cursor markers, the
+  no-thumb short-document case, half-cell thumb geometry, click/drag
+  scrolling, narrow terminals and the per-decoration overview-ruler flag. The
+  ported `ScrollbarState` tests include the upstream cases, a one-row minimum
+  and the exact fractional slider geometry.
 - Library unit tests cover: tree linking/invariants, box-tree derivation
   (viewport root, principal/text boxes, anonymous inline/flex items,
   `display: contents`/`none`, order sorting, mutation invalidation),
@@ -1926,11 +1935,12 @@ map, is tracked in the [TUI porting inventory](porting-inventory.md).
   selection and editing are codepoint based, so combining marks/graphemes are
   not grouped.
 - The editor scrollbar/overview ruler is a right-aligned 1.5-cell strip with
-  three half-cell marker lanes; the 1.5-cell thumb covers markers on its rows
-  and resolves its top/bottom edges to half-cell quadrants. It has no pixel
-  lanes, minimap, horizontal scrollbar, rounded/smooth slider, translucent
-  marker alpha or diagnostics markers; a marker row can represent many
-  document lines. There is no generic scrollable
+  three half-cell marker lanes projected to half rows; the 1.5-cell thumb
+  covers markers on its rows and resolves its top/bottom edges to half-cell
+  half blocks and quadrants. It has no pixel lanes, minimap, horizontal
+  scrollbar, rounded/smooth slider, translucent marker alpha or diagnostics
+  markers; a marker row can represent many document lines. There is no
+  generic scrollable
   viewport (the editor scrolls its top view line; the preview rebuilds), glyph
   margin, view zones or IME. The editor view paints the current line,
   selections, hardware cursor, find ranges and overview markers; overlay widget

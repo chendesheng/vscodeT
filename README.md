@@ -1487,19 +1487,29 @@ TUI editor:
   use the left lane (right half of the first cell), word occurrences the
   center lane (left half of the second cell), bracket matches the right lane
   (right half of the second cell), and the current find match and cursors use
-  the full 1.5-cell width. The cursor tick is half-height at the top of its
-  row (`▝▀`), closer to the browser's two-pixel cursor line. The thumb is also
+  the full 1.5-cell width. Every row is split into an upper and a lower half
+  for the overview ruler, so a marker edge can land on either half: the
+  horizontal axis uses the left and right half blocks (`▌`/`▐`) and the
+  vertical axis uses the upper and lower half blocks (`▀`/`▄`). A marker is
+  drawn with its lane's half block on full rows or a quadrant on a half row
+  (`▘`/`▖` for the center lane, `▝`/`▗` for the left and right lanes). The
+  cursor tick is one half-cell tall at its projected
+  position, closer to the browser's two-pixel cursor line. The thumb is also
   1.5 cells wide and covers the markers on its rows. Its top and bottom edges
   are quantized to half cells:
   `▝▀` on an upper edge, `▗▄` on a lower edge, and `▐█` on a full row, using the
-  unrounded slider position from `ScrollbarState`. Because
+  exact (fractional) slider position and size from `ScrollbarState`, so the
+  thumb can end on a half cell and still reaches the end of the track. Because
   a terminal has one row per cell, a row can represent many document lines:
-  markers are quantized to rows and collisions use the upstream z-order
-  (current find over find over bracket/word, cursors last). Clicking the track
-  jumps the viewport and dragging the thumb scrolls; the caret does not move.
-  Cells have no alpha, so the upstream translucent colors are composited over
-  the dark background. The read-only `--preview` mode does not reserve this
-  column. No minimap, pixel lanes, horizontal scrollbar or smooth scrolling.
+  markers are quantized to half rows and collisions use the upstream z-order
+  (current find over find over bracket/word, cursors last). A row shares one
+  foreground color, so a marker is hidden on the cells the thumb covers.
+  Clicking the track jumps the viewport and dragging the thumb scrolls; the
+  thumb hit box covers every row its painted half-cell edge touches, and the
+  caret does not move. Cells have no alpha, so the upstream translucent colors
+  are composited over the dark background. The read-only `--preview` mode does
+  not reserve this column. No minimap, pixel lanes, horizontal scrollbar or
+  smooth scrolling.
 - Editing: `Enter`, `Tab`/`Shift-Tab`, `Backspace`, `Delete`, bracketed paste.
 - `Ctrl-A` selects all; `Escape` clears the selection.
 - Smart select: `Shift-Alt-Right` expands and `Shift-Alt-Left` shrinks every

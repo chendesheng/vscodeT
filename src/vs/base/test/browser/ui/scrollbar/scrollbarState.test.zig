@@ -76,6 +76,25 @@ test "ScrollbarState: terminal one-cell slider" {
     try testing.expectEqual(@as(f64, 80), paged);
 }
 
+test "ScrollbarState: exact geometry keeps fractional halves" {
+    // 6 visible lines over 13: the proportional slider is 36/13 = 2.769 cells,
+    // while upstream floors it to 2 whole cells for hit testing.
+    var actual = ScrollbarState.initWithMinimumSliderSize(0, 1, 0, 6, 13, 3, 1);
+
+    try testing.expectEqual(@as(f64, 2), actual.getSliderSize());
+    try testing.expectApproxEqAbs(@as(f64, 36.0 / 13.0), actual.getSliderSizeExact(), 1e-9);
+    // Exact travel uses the exact size, so the thumb reaches the track end at
+    // the maximum scroll position instead of stopping short.
+    try testing.expectApproxEqAbs(
+        @as(f64, 3.0 * (6.0 - 36.0 / 13.0) / 7.0),
+        actual.getSliderPositionExact(),
+        1e-9,
+    );
+
+    _ = actual.setScrollPosition(7);
+    try testing.expectApproxEqAbs(@as(f64, 6.0 - 36.0 / 13.0), actual.getSliderPositionExact(), 1e-9);
+}
+
 test "ScrollbarState: not needed when content fits" {
     var actual = ScrollbarState.initWithMinimumSliderSize(0, 1, 0, 10, 10, 0, 1);
 

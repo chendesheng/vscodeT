@@ -4381,9 +4381,9 @@ test "View: right column paints markers and the overlapping thumb" {
     const find_fg = ui.cell.packColor(color(overview_find_color));
     const thumb_fg = ui.cell.packColor(color(scrollbar_thumb_color));
 
-    // Twenty lines in a seven-row track need a 1.5-cell thumb. The cursor
-    // scrolls the viewport, so the exact thumb position starts at the lower
-    // half of row 0; half-cell glyphs render that edge.
+    // Twenty lines in a seven-row track need a 2.45-cell thumb. The cursor
+    // scrolls the viewport, so the exact thumb starts at the lower half of row
+    // 0 and ends at the row 2 boundary; half-cell glyphs render both edges.
     try std.testing.expectEqual(@as(u32, '▗'), grid.cluster[grid.index(marker_col, 0)]);
     try std.testing.expectEqual(@as(u32, '▄'), grid.cluster[grid.index(thumb_col, 0)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(marker_col, 0)]);
@@ -4392,12 +4392,14 @@ test "View: right column paints markers and the overlapping thumb" {
     try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 1)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(marker_col, 1)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(thumb_col, 1)]);
-    try std.testing.expectEqual(@as(u32, '▝'), grid.cluster[grid.index(marker_col, 2)]);
-    try std.testing.expectEqual(@as(u32, '▀'), grid.cluster[grid.index(thumb_col, 2)]);
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 2)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(thumb_col, 2)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(marker_col, 2)]);
     try std.testing.expectEqual(thumb_fg, grid.fg[grid.index(thumb_col, 2)]);
-    // Find markers use the first lane: right half of the first cell.
-    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(marker_col, 3)]);
+    // The second find spans the lower half of row 2 (covered by the thumb) and
+    // the upper half of row 3, so its left lane is the upper-right quadrant of
+    // the first cell.
+    try std.testing.expectEqual(@as(u32, '▝'), grid.cluster[grid.index(marker_col, 3)]);
     try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(thumb_col, 3)]);
     try std.testing.expectEqual(find_fg, grid.fg[grid.index(marker_col, 3)]);
 
@@ -4641,13 +4643,55 @@ test "View: half-cell thumb uses quadrant edges" {
     const first = cols - 2;
     const second = cols - 1;
 
-    // The thumb starts at half a cell and is one cell tall: lower half of row
-    // 0, upper half of row 1.
+    // The exact thumb is 25/13 cells tall and starts at half a cell; both
+    // edges quantize to half cells, so the lower half of row 0, all of row 1
+    // and the upper half of row 2 are painted.
     try std.testing.expectEqual(@as(u32, '▗'), grid.cluster[grid.index(first, 0)]);
     try std.testing.expectEqual(@as(u32, '▄'), grid.cluster[grid.index(second, 0)]);
-    try std.testing.expectEqual(@as(u32, '▝'), grid.cluster[grid.index(first, 1)]);
-    try std.testing.expectEqual(@as(u32, '▀'), grid.cluster[grid.index(second, 1)]);
-    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(first, 2)]);
+    try std.testing.expectEqual(@as(u32, '▐'), grid.cluster[grid.index(first, 1)]);
+    try std.testing.expectEqual(@as(u32, '█'), grid.cluster[grid.index(second, 1)]);
+    try std.testing.expectEqual(@as(u32, '▝'), grid.cluster[grid.index(first, 2)]);
+    try std.testing.expectEqual(@as(u32, '▀'), grid.cluster[grid.index(second, 2)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(first, 3)]);
+}
+
+test "View: half-cell markers use quadrant glyphs" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const text = try numberedLines(allocator, 13);
+    defer allocator.free(text);
+    const editor = try Editor.createFromText(allocator, io, text, "test.txt", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try view.setDecorations(&[_]editorBrowser.Decoration{
+        .{ .range = Range.init(8, 1, 10, 2), .kind = .word_highlight },
+    });
+    try view.refresh();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+
+    const cols = view.surface.document().cols;
+    const grid = view.surface.grid();
+    const first = cols - 2;
+    const second = cols - 1;
+    const word_fg = ui.cell.packColor(color(overview_word_color));
+
+    // Lines 8-10 project to half-cells 5..7: the lower half of row 2 and the
+    // upper half of row 3. The center lane uses the left quadrants of the
+    // second cell.
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(first, 2)]);
+    try std.testing.expectEqual(@as(u32, '▖'), grid.cluster[grid.index(second, 2)]);
+    try std.testing.expectEqual(word_fg, grid.fg[grid.index(second, 2)]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(first, 3)]);
+    try std.testing.expectEqual(@as(u32, '▘'), grid.cluster[grid.index(second, 3)]);
+    try std.testing.expectEqual(word_fg, grid.fg[grid.index(second, 3)]);
 }
 
 test "View: indent guides mark leading whitespace and blank lines" {

@@ -2,8 +2,9 @@
 //
 // Terminal adaptation: the slider minimum can be expressed in terminal cells
 // through `initWithMinimumSliderSize`. The editor scrollbar passes `1` instead
-// of the upstream 20px default so a one-row thumb remains usable. All other
-// geometry stays upstream-shaped.
+// of the upstream 20px default so a one-row thumb remains usable. The exact
+// fractional getters expose sub-cell slider geometry for terminal painting;
+// click and drag movement still use the upstream rounded offset/delta math.
 
 const std = @import("std");
 
@@ -220,12 +221,29 @@ pub const ScrollbarState = struct {
         return self._computedSliderPosition;
     }
 
+    /// Unrounded slider size, for sub-cell rendering. Upstream rounds the
+    /// slider to whole pixels; the terminal keeps the fractional proportional
+    /// size so the thumb's bottom edge can land on a half cell.
+    pub fn getSliderSizeExact(self: *const ScrollbarState) f64 {
+        if (!self._computedIsNeeded) return 0;
+        const availableSize = @max(0, self._visibleSize - self._oppositeScrollbarSize);
+        const representableSize = @max(0, availableSize - 2 * self._arrowSize);
+        return @max(self._minimumSliderSize, self._visibleSize * representableSize / self._scrollSize);
+    }
+
     /// Unrounded slider position, for sub-cell rendering. The scrollbar state
     /// keeps the upstream rounded value for hit testing; the terminal view uses
-    /// this to place the thumb at half-cell precision.
+    /// the exact size and position to place the thumb at half-cell precision.
+    /// Using the exact size as the travel denominator keeps the thumb flush
+    /// with the end of the track at the maximum scroll position.
     pub fn getSliderPositionExact(self: *const ScrollbarState) f64 {
         if (!self._computedIsNeeded) return 0;
-        return self._scrollPosition * self._computedSliderRatio;
+        const availableSize = @max(0, self._visibleSize - self._oppositeScrollbarSize);
+        const representableSize = @max(0, availableSize - 2 * self._arrowSize);
+        const sliderTravel = representableSize - self.getSliderSizeExact();
+        const scrollTravel = self._scrollSize - self._visibleSize;
+        if (sliderTravel <= 0 or scrollTravel <= 0) return 0;
+        return self._scrollPosition * (sliderTravel / scrollTravel);
     }
 
     /// Compute a desired `scrollPosition` such that `offset` ends up in the

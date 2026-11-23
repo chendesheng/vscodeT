@@ -3,10 +3,17 @@
 // Terminal adaptation: the browser scrollbar is a `SmoothScrollableElement`
 // with DOM range/slider parts and bitmap/theme shadows. The terminal paints
 // the same scroll state into the reserved right-hand cells: overview-ruler
-// markers first, then the half-cell-precision thumb glyph. The wheel path ports
-// `ScrollableElement._onMouseWheel`: scale by `mouseWheelScrollSensitivity`,
-// apply `fastScrollSensitivity` for Alt, accumulate sub-line remainders and
-// move whole view lines through the editor's `ViewLayout`. The scroll-state contract comes from the ported
+// markers first, then the half-cell-precision thumb glyph. Ruler markers
+// project to half-cells too, so a marker edge can sit on the upper or lower
+// half of a row and is drawn with a quadrant or half-block glyph. The thumb
+// uses the exact (fractional) slider position and size from `ScrollbarState`,
+// and both edges are quantized to half cells. The thumb's mouse hit box covers
+// every row the painted thumb touches, so its painted edges remain draggable.
+// A terminal row shares one foreground color, so the thumb still owns every
+// cell it touches. The wheel path ports `ScrollableElement._onMouseWheel`: scale by
+// `mouseWheelScrollSensitivity`, apply `fastScrollSensitivity` for Alt,
+// accumulate sub-line remainders and move whole view lines through the
+// editor's `ViewLayout`. The scroll-state contract comes from the ported
 // `scrollbarState` and `decorationsOverviewRuler`.
 
 const std = @import("std");
@@ -364,13 +371,13 @@ fn desiredCell(
 ) CellPaint {
     const thumb_part = thumbPartAt(halves, row);
     if (thumb_part != .none) {
-        const glyph: []const u8 = switch (thumb_part) {
+        const vertical: decorationsOverviewRuler.Vertical = switch (thumb_part) {
             .none => unreachable,
-            .full => "\u{2590}\u{2588}",
-            .upper => "\u{259D}\u{2580}",
-            .lower => "\u{2597}\u{2584}",
+            .full => .full,
+            .upper => .upper,
+            .lower => .lower,
         };
-        return .{ .glyph = glyph, .color = color(scrollbar_thumb_color) };
+        return .{ .glyph = markerGlyph(.full, vertical), .color = color(scrollbar_thumb_color) };
     }
     const marker = if (row < row_markers.len) row_markers[row] else null;
     if (marker) |paint| {
@@ -474,22 +481,26 @@ fn thumbHalfGeometry(state: scrollbar_state.ScrollbarState, track_height: usize)
     const total_halves = track_height * 2;
     if (track_height == 0 or total_halves == 0) return .{ .top = 0, .end = 0 };
 
-    const raw_top = @round(state.getSliderPositionExact() * 2);
-    const raw_size = @round(state.getSliderSize() * 2);
-    const size: usize = if (raw_size <= 0)
-        1
-    else
-        @intFromFloat(raw_size);
+    // Round each edge independently from the exact geometry, so the thumb size
+    // keeps its fractional half-cell instead of being forced to whole cells.
+    const exact_top = state.getSliderPositionExact();
+    const raw_top = @round(exact_top * 2);
+    const raw_end = @round((exact_top + state.getSliderSizeExact()) * 2);
+
     const top: usize = if (raw_top <= 0)
         0
     else if (raw_top >= @as(f64, @floatFromInt(total_halves - 1)))
         total_halves - 1
     else
         @intFromFloat(raw_top);
-    return .{
-        .top = top,
-        .end = @min(top + size, total_halves),
-    };
+    var end: usize = if (raw_end <= 0)
+        0
+    else if (raw_end >= @as(f64, @floatFromInt(total_halves)))
+        total_halves
+    else
+        @intFromFloat(raw_end);
+    if (end <= top) end = @min(top + 1, total_halves);
+    return .{ .top = top, .end = end };
 }
 
 fn thumbPartAt(halves: ThumbHalves, row: usize) ThumbPart {
@@ -509,26 +520,14 @@ const ThumbGeometry = struct {
 fn thumbGeometry(state: scrollbar_state.ScrollbarState, track_height: usize) ThumbGeometry {
     if (track_height == 0) return .{ .top = 0, .size = 0 };
 
-    const raw_size = @round(state.getSliderSize());
-    var size: usize = if (raw_size >= @as(f64, @floatFromInt(track_height)))
-        track_height
-    else if (raw_size <= 0)
-        1
-    else
-        @intFromFloat(raw_size);
-    if (size == 0) size = 1;
-    if (size > track_height) size = track_height;
-
-    const max_top = track_height - size;
-    const raw_top = @round(state.getSliderPosition());
-    const top: usize = if (raw_top <= 0)
-        0
-    else if (raw_top >= @as(f64, @floatFromInt(max_top)))
-        max_top
-    else
-        @intFromFloat(raw_top);
-
-    return .{ .top = top, .size = size };
+    // Pointer events address whole rows, so the hit box covers every row the
+    // half-cell thumb touches. This keeps the painted edges draggable even
+    // though the paint is more precise than the upstream rounded slider.
+    const halves = thumbHalfGeometry(state, track_height);
+    if (halves.end <= halves.top) return .{ .top = 0, .size = 0 };
+    const top = halves.top / 2;
+    const last = (halves.end - 1) / 2;
+    return .{ .top = top, .size = last - top + 1 };
 }
 
 fn applyScrollPosition(editor: *Editor, desired: f64) usize {
@@ -545,6 +544,34 @@ fn applyScrollPosition(editor: *Editor, desired: f64) usize {
 
 fn color(rgb: [3]u8) ui.Color {
     return .{ .r = rgb[0], .g = rgb[1], .b = rgb[2] };
+}
+
+test "editorScrollbar: half-cell marker glyphs cover every lane" {
+    const testing = std.testing;
+
+    try testing.expectEqualStrings("▐ ", markerGlyph(.left, .full));
+    try testing.expectEqualStrings("▝ ", markerGlyph(.left, .upper));
+    try testing.expectEqualStrings("▗ ", markerGlyph(.left, .lower));
+    try testing.expectEqualStrings(" ▌", markerGlyph(.center, .full));
+    try testing.expectEqualStrings(" ▘", markerGlyph(.center, .upper));
+    try testing.expectEqualStrings(" ▖", markerGlyph(.center, .lower));
+    try testing.expectEqualStrings(" ▐", markerGlyph(.right, .full));
+    try testing.expectEqualStrings(" ▝", markerGlyph(.right, .upper));
+    try testing.expectEqualStrings(" ▗", markerGlyph(.right, .lower));
+    try testing.expectEqualStrings("▐█", markerGlyph(.full, .full));
+    try testing.expectEqualStrings("▝▀", markerGlyph(.full, .upper));
+    try testing.expectEqualStrings("▗▄", markerGlyph(.full, .lower));
+}
+
+test "editorScrollbar: thumb edges use the exact fractional size" {
+    const testing = std.testing;
+    // Five visible lines over 13 give a 25/13-cell slider; both edges land on
+    // half cells instead of rounding the size down to one whole cell.
+    const state = scrollbar_state.ScrollbarState.initWithMinimumSliderSize(0, 1, 0, 5, 13, 1, 1);
+    const halves = thumbHalfGeometry(state, 5);
+
+    try testing.expectEqual(@as(usize, 1), halves.top);
+    try testing.expectEqual(@as(usize, 5), halves.end);
 }
 
 test "editorScrollbar: wheel sensitivity, fast scroll and remainder" {
