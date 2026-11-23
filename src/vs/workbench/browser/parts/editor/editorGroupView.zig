@@ -63,6 +63,7 @@ pub fn EditorGroupView(comptime View: type) type {
         hits: std.array_list.Managed(TabHit),
         title_action_hit: ?tab_bar.TitleActionHit = null,
         rect: ui.Rect = .{},
+        frame_rect: ui.Rect = .{},
         /// The workbench reserves a breadcrumb row when `breadcrumbs.enabled`.
         breadcrumbs_visible: bool = false,
         breadcrumbs_suppressed: bool = false,

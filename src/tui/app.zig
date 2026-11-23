@@ -460,7 +460,7 @@ pub fn main(init: std.process.Init) !void {
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
     defer workbench.deinit();
-    workbench.setCellBorders(border_probe.supported);
+    workbench.setCellBorderCapabilities(if (border_probe.supported) border_probe.capabilities else null);
     workbench.setImageProtocol(image_probe.capability);
     workbench.setCellPixelSize(size.cell_width_px, size.cell_height_px);
     // OSC 22 needs no probe: a terminal without pointer-shape support ignores
@@ -844,6 +844,7 @@ pub fn main(init: std.process.Init) !void {
                 .focus => |focused| {
                     if (!focused) {
                         if (workbench.cancelEditorDrag()) needs_render = true;
+                        if (workbench.cancelSashDrag()) needs_render = true;
                     }
                 },
                 .key => |*event| {
