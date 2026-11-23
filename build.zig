@@ -628,7 +628,12 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     });
     terminal_tests.root_module.addImport("ui", ui);
     terminal_tests.root_module.addImport("ghostty-vt", ghostty_vt);
+    const terminal_options = b.addOptions();
+    const enable_fsevents = fseventsEnabled(b, target);
+    terminal_options.addOption(bool, "fsevents", enable_fsevents);
+    terminal_tests.root_module.addOptions("build_options", terminal_options);
     linkPtyLibraries(terminal_tests.root_module, target);
+    linkMacFrameworks(terminal_tests.root_module, target, enable_fsevents);
     const run_terminal_tests = b.addRunArtifact(terminal_tests);
     const terminal_test_step = b.step("test-terminal", "Run integrated-terminal tests");
     terminal_test_step.dependOn(&run_terminal_tests.step);
