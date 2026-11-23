@@ -213,66 +213,8 @@ const ProbeHost = struct {
 /// allocator, which reports full traces.
 var app_debug_allocator: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .{};
 
-/// CheerpX's 32-bit console does not implement the gathered writes used by
-/// `Io.Threaded`'s file writer. This writer sends the buffered frame with a
-/// plain `write(2)` and is selected only for the i386 WebVM build.
-const webvm_i386 = builtin.os.tag == .linux and builtin.cpu.arch == .x86;
-
-fn diag(comptime text: []const u8) void {
-    if (webvm_i386) std.debug.print("diag: " ++ text ++ "\n", .{});
-}
-
-const RawStdoutWriter = struct {
-    interface: Io.Writer,
-
-    fn init(buffer: []u8) RawStdoutWriter {
-        return .{ .interface = .{ .vtable = &.{ .drain = drain }, .buffer = buffer } };
-    }
-
-    fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        try writeAll(w.buffered());
-        w.end = 0;
-        var consumed: usize = 0;
-        for (data, 0..) |slice, index| {
-            const repeat = if (index + 1 == data.len) splat else 1;
-            for (0..repeat) |_| try writeAll(slice);
-            consumed += slice.len * repeat;
-        }
-        return consumed;
-    }
-
-    fn writeAll(bytes: []const u8) Io.Writer.Error!void {
-        if (comptime builtin.os.tag == .windows) {
-            return error.WriteFailed;
-        } else {
-            var index: usize = 0;
-            while (index < bytes.len) {
-                const rc = std.posix.system.write(std.posix.STDOUT_FILENO, bytes[index..].ptr, bytes.len - index);
-                switch (std.posix.errno(rc)) {
-                    .SUCCESS => {
-                        const written: usize = @intCast(rc);
-                        if (written == 0) return error.WriteFailed;
-                        index += written;
-                    },
-                    .INTR => continue,
-                    else => return error.WriteFailed,
-                }
-            }
-        }
-    }
-};
-
 pub fn main(init: std.process.Init) !void {
-    diag("main start");
-    // CheerpX's 32-bit Linux emulation does not service the threaded/io_uring
-    // backend behind std.process.Init: the first file open and stdout write
-    // fail with Unexpected/WriteFailed. The WebVM build is i386, so use the
-    // blocking single-threaded Io that the port already uses for timestamps.
-    // Native x86_64 builds keep init.io.
-    const io = if (builtin.cpu.arch == .x86)
-        Io.Threaded.global_single_threaded.io()
-    else
-        init.io;
+    const io = init.io;
     const allocator = if (comptime builtin.mode == .debug) app_debug_allocator.allocator() else init.gpa;
     defer if (comptime builtin.mode == .debug) {
         if (app_debug_allocator.deinit() == .leak) {
@@ -309,14 +251,12 @@ pub fn main(init: std.process.Init) !void {
     vscode_environment.cli_logs_path = args.logs_path;
     var profile = try vscode_profile.discover(allocator, vscode_environment);
     defer profile.deinit();
-    diag("after profile");
 
     var file_logger: ?*logger.FileLogger = null;
-    if (webvm_i386) {
-        diag("file logger skipped");
-    } else if (profile.mainLogPath(allocator) catch null) |log_path| {
-        defer allocator.free(log_path);
-        file_logger = logger.FileLogger.create(allocator, io, log_path) catch |err| blk: {
+    const log_path = profile.mainLogPath(allocator) catch null;
+    defer if (log_path) |path| allocator.free(path);
+    if (log_path) |path| {
+        file_logger = logger.FileLogger.create(allocator, io, path) catch |err| blk: {
             std.debug.print("log file unavailable: {s}\n", .{@errorName(err)});
             break :blk null;
         };
@@ -355,13 +295,8 @@ pub fn main(init: std.process.Init) !void {
 
     var out_buffer: [65536]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &out_buffer);
-    var raw_stdout = RawStdoutWriter.init(&out_buffer);
-    const out: *Io.Writer = if (webvm_i386)
-        &raw_stdout.interface
-    else
-        &stdout_writer.interface;
+    const out = &stdout_writer.interface;
     defer out.flush() catch {};
-    diag("i386 raw stdout");
 
     const orig_termios = try tui.enableRawMode();
     tui.rememberOrigTermios(orig_termios);
@@ -384,11 +319,7 @@ pub fn main(init: std.process.Init) !void {
     // and the read-only preview may have set a non-default OSC 22 shape).
     defer ui.pointer.writeShape(out, .default) catch {};
 
-    if (webvm_i386) {
-        diag("sigwinch skipped");
-    } else {
-        try tui.installSigWinch();
-    }
+    try tui.installSigWinch();
 
     var size = try tui.getTerminalSize();
 
@@ -524,9 +455,7 @@ pub fn main(init: std.process.Init) !void {
             report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
-        diag("before workbench init");
         workbench = try Workbench.init(allocator, io, files.items, size.width, size.height);
-        diag("after workbench init");
     }
     infoLog(log_service, "startup: workbench-init={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
@@ -539,16 +468,8 @@ pub fn main(init: std.process.Init) !void {
     // the sequence and the frame is unaffected.
     workbench.setPointerShapes(true);
     if (declarative) |*decl_ext| workbench.setDeclarativeExtensions(decl_ext);
-    if (webvm_i386) {
-        diag("async tokenization skipped");
-    } else {
-        workbench.enableAsyncTokenization();
-    }
-    if (webvm_i386) {
-        diag("language features skipped");
-    } else {
-        workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
-    }
+    workbench.enableAsyncTokenization();
+    workbench.enableLanguageFeatures() catch |err| report(log_service, "language features unavailable: {s}", .{@errorName(err)});
     workbench.setJsonLanguageClient(json_client);
 
     try workbench.setUserSettingsPaths(profile.settings_paths);
@@ -648,14 +569,8 @@ pub fn main(init: std.process.Init) !void {
     if (folders.items.len > 0) {
         try workbench.setWorkspaceFolders(folders.items);
     }
-    diag("before sidebar");
     try workbench.initSidebarFromWorkspace();
-    diag("after sidebar");
-    if (webvm_i386) {
-        diag("git skipped");
-    } else {
-        workbench.initGit() catch {};
-    }
+    workbench.initGit() catch {};
     if (workbench.activeTab()) |active| {
         try active.ensureControllers();
     } else {
@@ -707,12 +622,9 @@ pub fn main(init: std.process.Init) !void {
     infoLog(log_service, "workbench ready: {d} tab(s)", .{workbench.tabCount()});
     workbench.refreshStatus();
     if (workbench.activeTab()) |active| try active.view.refresh();
-    diag("before first render");
     try workbench.render(out);
-    diag("after first render");
     try workbench.syncCursor(out);
     try out.flush();
-    diag("after first flush");
     infoLog(log_service, "startup: first-frame={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
@@ -720,13 +632,9 @@ pub fn main(init: std.process.Init) !void {
     // Match upstream's `WorkbenchPhase.AfterRestored`: the workspace watcher
     // starts only after the restored UI has painted. `fileService.watch` is
     // asynchronous, so the recursive scan runs on the watcher worker.
-    if (webvm_i386) {
-        diag("watcher skipped");
-    } else {
-        workbench.runContributionPhase(.after_restored) catch |err| {
-            report(log_service, "workspace watcher unavailable: {s}", .{@errorName(err)});
-        };
-    }
+    workbench.runContributionPhase(.after_restored) catch |err| {
+        report(log_service, "workspace watcher unavailable: {s}", .{@errorName(err)});
+    };
     infoLog(log_service, "startup: after-restored={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });

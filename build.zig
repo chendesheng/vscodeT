@@ -142,11 +142,12 @@ fn ghosttyVtModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.M
     // the MSVC-targeted Zig toolchain on Windows.
     //
     // Ghostty's SIMD path also needs libc++ and the simdutf/highway C++
-    // sources, which the MSVC-targeted build does not supply. Use its
-    // scalar fallback there; the other platforms keep SIMD enabled.
+    // sources. The MSVC-targeted build does not supply them, and in a
+    // cross-compiled aarch64 build the simdutf/highway artifacts are built
+    // for the host. Use the scalar fallback for those targets.
     const dep = b.lazyDependency("ghostty", .{
         .@"vt-features" = "-kitty-graphics",
-        .simd = target.result.os.tag != .windows and target.result.cpu.arch != .x86 and target.result.cpu.arch != .aarch64,
+        .simd = target.result.os.tag != .windows and target.result.cpu.arch != .aarch64,
     }) orelse @panic("libghostty-vt dependency was not resolved");
     return dep.module("ghostty-vt");
 }

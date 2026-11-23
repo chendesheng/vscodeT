@@ -43,7 +43,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const raw_file = @import("../../base/common/rawFile.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -689,7 +688,10 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
-        self.async_io_state = createWorkbenchIo(allocator);
+        self.async_io_state = Io.Threaded.init(allocator, .{
+            .async_limit = .unlimited,
+            .environ = asyncEnviron(),
+        });
         errdefer self.async_io_state.deinit();
         self.async_io = self.async_io_state.io();
         self.pending_open = null;
@@ -853,7 +855,10 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
-        self.async_io_state = createWorkbenchIo(allocator);
+        self.async_io_state = Io.Threaded.init(allocator, .{
+            .async_limit = .unlimited,
+            .environ = asyncEnviron(),
+        });
         errdefer self.async_io_state.deinit();
         self.async_io = self.async_io_state.io();
         self.pending_open = null;
@@ -1050,7 +1055,10 @@ pub const Workbench = struct {
         self.* = undefined;
         self.allocator = allocator;
         self.io = io;
-        self.async_io_state = createWorkbenchIo(allocator);
+        self.async_io_state = Io.Threaded.init(allocator, .{
+            .async_limit = .unlimited,
+            .environ = asyncEnviron(),
+        });
         errdefer self.async_io_state.deinit();
         self.async_io = self.async_io_state.io();
         self.pending_open = null;
@@ -17044,24 +17052,10 @@ fn asyncEnviron() std.process.Environ {
     };
 }
 
-/// CheerpX does not implement the signal handler used by the threaded Io
-/// backend. The i386 WebVM build uses the single-threaded instance instead;
-/// interactive async opens can fail with ConcurrencyUnavailable, but the
-/// workbench itself can still render and edit synchronously.
-fn createWorkbenchIo(allocator: Allocator) Io.Threaded {
-    if (builtin.os.tag == .linux and builtin.cpu.arch == .x86) {
-        return Io.Threaded.init_single_threaded;
-    }
-    return Io.Threaded.init(allocator, .{
-        .async_limit = .unlimited,
-        .environ = asyncEnviron(),
-    });
-}
-
 /// Reads, BOM-detects, decodes and canonicalizes a file. Runs on the async Io,
 /// never on the TUI thread for interactive opens.
 fn loadOpenText(allocator: Allocator, io: Io, path: []const u8) !editor_widget.LoadedText {
-    const raw = raw_file.readFileAlloc(allocator, io, path, .unlimited) catch |err| switch (err) {
+    const raw = Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| switch (err) {
         // The synchronous open path treats a missing file as a new, empty
         // buffer; keep that behavior for interactive opens too.
         error.FileNotFound => try allocator.alloc(u8, 0),

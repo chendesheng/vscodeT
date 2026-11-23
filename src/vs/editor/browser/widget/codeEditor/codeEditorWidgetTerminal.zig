@@ -8,7 +8,6 @@
 // plus `Editor` (one independent view: wrapping, cursors, folding, scroll).
 // Split editor groups create a second `Editor` over the same document.
 const std = @import("std");
-const raw_file = @import("../../../../base/common/rawFile.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -4686,7 +4685,7 @@ pub const Editor = struct {
     /// Reads and decodes a file for an external-change reload. Runs on a worker
     /// thread; does not touch the editor/model.
     pub fn readReloadedContent(allocator: Allocator, io: Io, path: []const u8) !ReloadedContent {
-        const bytes = try raw_file.readFileAlloc(allocator, io, path, .unlimited);
+        const bytes = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
         defer allocator.free(bytes);
         const encoding = if (encoding_mod.detectBOM(bytes)) |bom| bom.encoding else .utf8;
         const decoded = try encoding_mod.decode(allocator, bytes, encoding);
@@ -4906,7 +4905,7 @@ fn createModel(
     const raw: []u8 = if (text) |content|
         try allocator.dupe(u8, content)
     else
-        raw_file.readFileAlloc(allocator, io, path, .unlimited) catch |err| switch (err) {
+        Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| switch (err) {
             error.FileNotFound => try allocator.alloc(u8, 0),
             else => return err,
         };
@@ -4935,7 +4934,7 @@ fn createModel(
 fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, grammar: extensions_registry.Grammar) void {
     const path = std.fs.path.join(allocator, &.{ root, grammar.path }) catch return;
     defer allocator.free(path);
-    const data = raw_file.readFileAlloc(allocator, io, path, .unlimited) catch return;
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch return;
     defer allocator.free(data);
     text_mate_tokenizer.registerGrammar(grammar.language, grammar.scope, data);
 }

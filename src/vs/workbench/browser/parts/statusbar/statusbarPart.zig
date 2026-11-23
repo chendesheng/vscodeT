@@ -407,7 +407,7 @@ pub const StatusbarPart = struct {
         hasher.update(std.mem.asBytes(&x));
         hasher.update(std.mem.asBytes(&y));
         hasher.update(std.mem.asBytes(&width));
-        const hovered: usize = @intCast(self.hovered orelse 0);
+        const hovered: usize = self.hovered orelse 0;
         hasher.update(std.mem.asBytes(&hovered));
         const flags = [_]u8{
             @intFromBool(options.no_folder),
