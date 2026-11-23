@@ -1897,9 +1897,11 @@ resolved by the server), applies `textDocument/formatting` edits through
 server's document-symbol provider for breadcrumbs/outline and the
 `workbench.action.gotoSymbol` picker. The `json.schemas` setting is forwarded to
 the server so configured schema associations participate in validation,
-completion and hover. The server bundle is optional: without
-`host/dist/jsonServer.mjs` the editor keeps the bundled grammar and no JSON
-language features are attached. The pinned server does not advertise definition
+completion and hover. The server bundle is optional: `zig build json-server`
+produces it (after `npm ci` in `host/`), and without it the editor keeps the
+bundled grammar and no JSON language features are attached. The JSON client
+integration tests in `zig build test` run when the bundle is present and skip
+otherwise. The pinned server does not advertise definition
 or references; code actions and workspace diagnostics also remain unwired.
 
 Indentation is independent of the language server. It comes from the built-in

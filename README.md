@@ -302,6 +302,7 @@ fails at runtime.
 ```sh
 cd host && npm ci                          # esbuild, @vscode/ripgrep, @vscode/spdlog
 cd .. && zig build host                    # bundles from the pinned vscode/ submodule
+zig build json-server                      # optional JSON language server bundle
 zig build run -- [--user-data-dir <dir>] [--extensions-dir <dir>] [--logsPath <dir>] [<file>...]
 zig build test-e2e                        # boots the Node host and runs TypeScript extension interop
 ```
@@ -310,8 +311,10 @@ zig build test-e2e                        # boots the Node host and runs TypeScr
 itself never runs Node; `zig build host` is the explicit step that produces
 `host/dist/extensionHost.mjs`.
 
-`npm run build:json` (in `host/`) is the optional `host/dist/jsonServer.mjs`
-step. If the host bundle is missing at startup, the app reports
+`zig build json-server` is the explicit step that produces the optional
+`host/dist/jsonServer.mjs`. When that bundle is present, `zig build test` runs
+the JSON language-client integration tests instead of skipping them. If the
+extension host bundle is missing at startup, the app reports
 `extension host disabled: host/dist/extensionHost.mjs is missing` in the main
 log instead of waiting for the host socket to time out.
 
@@ -327,8 +330,8 @@ installation and copies the extension and SDK from it; there is no path or SDK
 override. The extension is a runtime asset, not vendored source.
 
 The JSON server bundle reuses the runtime dependencies of the pinned
-`vscode/extensions/json-language-features/server`; install them there first
-with `npm install` if the bundle step cannot resolve `vscode-languageserver`.
+`vscode/extensions/json-language-features/server`; `host/package.json` pins the
+same packages, so `npm ci` in `host/` is enough to build it.
 
 The Node host is used for provisioned built-in Node extensions such as
 `typescript-language-features`. VSCodeVim is no longer discovered or loaded.
@@ -466,7 +469,10 @@ suite on Linux (inotify), macOS (kqueue) and Windows (`ReadDirectoryChangesW`).
 The Linux, macOS and Windows jobs initialize the
 shallow `vscode/` submodule at the pinned commit, so the tokenizer, theme and
 extension-asset tests run against the real upstream tree instead of the
-fallbacks. The Windows job installs oniguruma with vcpkg and passes
+fallbacks. The Linux and macOS jobs install the `host/` npm dependencies and
+run `zig build json-server` before the tests, so the JSON language-client
+integration tests run there instead of skipping. The Windows job installs
+oniguruma with vcpkg and passes
 `-Donig-include`/`-Donig-lib` to the build; the terminal layer uses the Windows
 console API for raw mode, sizing and input polling.
 

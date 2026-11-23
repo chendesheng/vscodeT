@@ -29,6 +29,13 @@ jobs:
           sudo apt-get install -y libonig-dev ripgrep
       - name: Build
         run: zig build
+      - name: Build the JSON language server
+        run: |
+          cd host
+          # The JSON bundle only needs esbuild's platform package, so the
+          # native host dependencies do not need their install scripts.
+          npm ci --ignore-scripts
+          npm run build:json
       - name: Test
         run: zig build test --summary all
 
@@ -47,6 +54,13 @@ jobs:
         run: brew install oniguruma ripgrep
       - name: Build
         run: zig build
+      - name: Build the JSON language server
+        run: |
+          cd host
+          # The JSON bundle only needs esbuild's platform package, so the
+          # native host dependencies do not need their install scripts.
+          npm ci --ignore-scripts
+          npm run build:json
       - name: Test
         run: zig build test --summary all
 

@@ -98,6 +98,13 @@ fn setupExtensionHost(b: *std.Build) void {
     const host_build = b.addSystemCommand(&.{ "node", "build.js" });
     host_build.setCwd(b.path("host"));
     host_step.dependOn(&host_build.step);
+
+    // Same contract for the optional JSON language server: `zig build test`
+    // runs the JSON client integration tests only when the bundle exists.
+    const json_step = b.step("json-server", "Bundle the Node JSON language server (host/dist/jsonServer.mjs)");
+    const json_build = b.addSystemCommand(&.{ "node", "build-json-server.js" });
+    json_build.setCwd(b.path("host"));
+    json_step.dependOn(&json_build.step);
 }
 
 fn linkPtyLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {

@@ -5,9 +5,36 @@
 // server. It is deliberately not a general language-client implementation:
 // the TUI owns one local Node process and drives it from the main thread.
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const time_compat = @import("../../../../base/common/timeCompat.zig");
+
+/// The client creates its own `Io` for the server process. `std.process.spawn`
+/// resolves the bare `node` executable name against that `Io`'s environment,
+/// not the calling process's, so the instance must carry the process
+/// environment or every start fails with `FileNotFound`.
+fn processEnviron() std.process.Environ {
+    return switch (builtin.os.tag) {
+        .windows => .{ .block = .global },
+        else => if (builtin.link_libc)
+            .{ .block = .{ .slice = @ptrCast(@as([:null]?[*:0]u8, std.mem.span(std.c.environ))) } }
+        else
+            .empty,
+    };
+}
+
+/// `std.os.linux.getpid` type-checks on every target but issues a Linux
+/// syscall, which traps with SIGSYS on other kernels. The LSP `processId` is
+/// sent during the initialize handshake on every platform.
+fn currentProcessId() u32 {
+    return switch (builtin.os.tag) {
+        .linux => @intCast(std.os.linux.getpid()),
+        .plan9 => std.os.plan9.getpid(),
+        .windows => std.os.windows.GetCurrentProcessId(),
+        else => @intCast(std.c.getpid()),
+    };
+}
 
 pub const Diagnostic = struct {
     start_line: u32,
@@ -84,7 +111,7 @@ pub const Client = struct {
             .root_uri = try allocator.dupe(u8, "file:///"),
         };
         errdefer allocator.free(self.root_uri);
-        self.io_state = std.Io.Threaded.init(std.heap.page_allocator, .{});
+        self.io_state = std.Io.Threaded.init(std.heap.page_allocator, .{ .environ = processEnviron() });
         self.io = self.io_state.io();
 
         self.child = std.process.spawn(self.io, .{
@@ -98,7 +125,7 @@ pub const Client = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var params: std.json.ObjectMap = .empty;
-        try params.put(arena.allocator(), "processId", .{ .integer = @intCast(std.os.linux.getpid()) });
+        try params.put(arena.allocator(), "processId", .{ .integer = @intCast(currentProcessId()) });
         try params.put(arena.allocator(), "rootUri", .{ .string = self.root_uri });
         try params.put(arena.allocator(), "workspaceFolders", blk: {
             var folders = std.json.Array.init(arena.allocator());
