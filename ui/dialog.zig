@@ -281,27 +281,22 @@ pub const Dialog = struct {
         if (layout.width == 0 or layout.height == 0) return;
 
         self.dimBackdrop(grid, layout);
-        const corners = self.frameCorners(layout);
-        var backdrop: [4]u32 = undefined;
-        for (corners, 0..) |corner, index| {
-            backdrop[index] = grid.bg[grid.index(corner.x, corner.y)];
-        }
-        grid.clearBordersRect(
-            @floatFromInt(layout.x),
-            @floatFromInt(layout.y),
-            @floatFromInt(layout.width),
-            @floatFromInt(layout.height),
-        );
-        grid.fillRect(
-            @floatFromInt(layout.x),
-            @floatFromInt(layout.y),
-            @floatFromInt(layout.width),
-            @floatFromInt(layout.height),
-            self.backgroundPaint(),
-        );
+        const rect: style.Rect = .{
+            .x = @floatFromInt(layout.x),
+            .y = @floatFromInt(layout.y),
+            .w = @floatFromInt(layout.width),
+            .h = @floatFromInt(layout.height),
+        };
+        const frame = if (frame_cells == 0) cell.RoundedCellFrame.capture(grid, rect) else null;
+        grid.clearBordersRect(rect.x, rect.y, rect.w, rect.h);
+        grid.fillRect(rect.x, rect.y, rect.w, rect.h, self.backgroundPaint());
 
         self.renderContent(grid, layout);
-        self.renderFrame(grid, layout, caps, backdrop);
+        if (frame) |native| {
+            native.paint(grid, caps, .{ .rgb = self.theme.border });
+        } else {
+            grid.paintRoundedFrame(rect, .{ .fg = cell.packColor(self.theme.border), .bg = cell.packColor(self.theme.background) });
+        }
     }
 
     fn computeLayout(self: *const Dialog, cols: usize, rows: usize, frame_cells: usize) Layout {
@@ -451,50 +446,6 @@ pub const Dialog = struct {
             paint,
         );
         drawButtonLabel(grid, rect, self.buttons[index], paint);
-    }
-
-    const FrameCorner = struct { x: usize, y: usize, joint: u8 };
-
-    fn frameCorners(_: *const Dialog, layout: Layout) [4]FrameCorner {
-        const right = layout.x + layout.width - 1;
-        const bottom = layout.y + layout.height - 1;
-        const joint = cell_border.Joint;
-        return .{
-            .{ .x = layout.x, .y = layout.y, .joint = joint.top_left },
-            .{ .x = right, .y = layout.y, .joint = joint.top_right },
-            .{ .x = layout.x, .y = bottom, .joint = joint.bottom_left },
-            .{ .x = right, .y = bottom, .joint = joint.bottom_right },
-        };
-    }
-
-    fn renderFrame(self: *const Dialog, grid: *CellGrid, layout: Layout, caps: cell_border.Capabilities, backdrop: [4]u32) void {
-        if (layout.frame_cells != 0) {
-            grid.paintRoundedFrame(.{
-                .x = @floatFromInt(layout.x),
-                .y = @floatFromInt(layout.y),
-                .w = @floatFromInt(layout.width),
-                .h = @floatFromInt(layout.height),
-            }, .{ .fg = cell.packColor(self.theme.border), .bg = cell.packColor(self.theme.background) });
-            return;
-        }
-        const edge = cell_border.Segment;
-        const stroke: cell_border.Stroke = .{ .width = 32, .placement = .inside, .color = .{ .rgb = self.theme.border } };
-        const right = layout.x + layout.width;
-        const bottom = layout.y + layout.height;
-        for (layout.x..right) |x| {
-            grid.addBorder(x, layout.y, edge.top, stroke);
-            grid.addBorder(x, bottom - 1, edge.bottom, stroke);
-        }
-        for (layout.y..bottom) |y| {
-            grid.addBorder(layout.x, y, edge.left, stroke);
-            grid.addBorder(right - 1, y, edge.right, stroke);
-        }
-        for (self.frameCorners(layout), backdrop) |corner, bg| {
-            grid.roundBorder(corner.x, corner.y, corner.joint, .{
-                .radius = if (caps.has(.radius)) 128 else null,
-                .outside = if (!caps.has(.outside)) null else if (bg == 0) .terminal_background else .{ .rgb = cell.unpackColor(bg) },
-            });
-        }
     }
 
     fn dimBackdrop(self: *const Dialog, grid: *CellGrid, layout: Layout) void {

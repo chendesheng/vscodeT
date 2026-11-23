@@ -3,6 +3,7 @@
 const std = @import("std");
 const ansi = @import("ansi.zig");
 const cell = @import("cell.zig");
+const cell_border = @import("cell_border.zig");
 const dom = @import("dom.zig");
 const box = @import("box.zig");
 const frame_mod = @import("frame.zig");
@@ -40,6 +41,9 @@ pub const Surface = struct {
     box_tree: *box.BoxTree,
     frame: frame_mod.Frame,
     color_depth: ColorDepth,
+    /// The negotiated paint extensions. The box tree separately controls
+    /// whether ordinary borders take up layout cells.
+    border_capabilities: cell_border.Capabilities = .{},
     pointer_shapes: bool = false,
     /// Desired pointer shape for the next rendered frame. The host updates it
     /// from mouse events; the renderer diffs it against `pointer_state`.
@@ -167,7 +171,7 @@ pub const Surface = struct {
         try self.ensureLayout();
         self.resolveHover();
         self.frame.begin();
-        paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
+        paint.paintTreeWithBorderCapabilities(self.box_tree, &self.doc, &self.frame.next, self.border_capabilities);
         self.frame.swap();
     }
 
@@ -184,7 +188,7 @@ pub const Surface = struct {
         try self.ensureLayout();
         self.resolveHover();
         self.frame.begin();
-        paint.paintTree(self.box_tree, &self.doc, &self.frame.next);
+        paint.paintTreeWithBorderCapabilities(self.box_tree, &self.doc, &self.frame.next, self.border_capabilities);
 
         const encoded = try ansi.encode(
             self.allocator,

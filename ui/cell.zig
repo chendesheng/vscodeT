@@ -75,6 +75,58 @@ pub fn unpackColor(value: u32) style.Color {
 
 pub const ColorDepth = enum { ansi, ansi256, rgb };
 
+/// Captures the four corner backgrounds before a popup paints over them.
+pub const RoundedCellFrame = struct {
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+    backdrop: [4]u32,
+
+    pub fn capture(grid: *const CellGrid, rect: style.Rect) ?RoundedCellFrame {
+        const left = snap(rect.x);
+        const top = snap(rect.y);
+        const right = snap(rect.right());
+        const bottom = snap(rect.bottom());
+        if (left >= right or top >= bottom or right > grid.cols or bottom > grid.rows) return null;
+        return .{
+            .left = left,
+            .top = top,
+            .right = right,
+            .bottom = bottom,
+            .backdrop = .{
+                grid.bg[grid.index(left, top)],
+                grid.bg[grid.index(right - 1, top)],
+                grid.bg[grid.index(left, bottom - 1)],
+                grid.bg[grid.index(right - 1, bottom - 1)],
+            },
+        };
+    }
+
+    pub fn paint(self: RoundedCellFrame, grid: *CellGrid, caps: cell_border.Capabilities, color: cell_border.ColorValue) void {
+        const edge = cell_border.Segment;
+        const stroke: cell_border.Stroke = .{ .width = 32, .placement = .inside, .color = color };
+        for (self.left..self.right) |x| {
+            grid.addBorder(x, self.top, edge.top, stroke);
+            grid.addBorder(x, self.bottom - 1, edge.bottom, stroke);
+        }
+        for (self.top..self.bottom) |y| {
+            grid.addBorder(self.left, y, edge.left, stroke);
+            grid.addBorder(self.right - 1, y, edge.right, stroke);
+        }
+        const joint = cell_border.Joint;
+        const xs = [4]usize{ self.left, self.right - 1, self.left, self.right - 1 };
+        const ys = [4]usize{ self.top, self.top, self.bottom - 1, self.bottom - 1 };
+        const joints = [4]u8{ joint.top_left, joint.top_right, joint.bottom_left, joint.bottom_right };
+        for (xs, ys, joints, self.backdrop) |x, y, corner, bg| {
+            grid.roundBorder(x, y, corner, .{
+                .radius = if (caps.has(.radius)) 128 else null,
+                .outside = if (!caps.has(.outside)) null else if (bg == 0) .terminal_background else .{ .rgb = unpackColor(bg) },
+            });
+        }
+    }
+};
+
 const no_border: cell_border.Set = .{ .groups = undefined, .count = 0 };
 
 pub const CellGrid = struct {

@@ -33,14 +33,23 @@ pub fn paintDocument(doc: *dom.Document, grid: *CellGrid) !void {
 }
 
 pub fn paintTree(tree: *const box.BoxTree, doc: *const dom.Document, grid: *CellGrid) void {
+    paintTreeWithBorderCapabilities(tree, doc, grid, .{});
+}
+
+pub fn paintTreeWithBorderCapabilities(tree: *const box.BoxTree, doc: *const dom.Document, grid: *CellGrid, capabilities: cell_border.Capabilities) void {
     const viewport = Rect{
         .x = 0,
         .y = 0,
         .w = @floatFromInt(doc.cols),
         .h = @floatFromInt(doc.rows),
     };
-    paintBox(doc, tree.root, grid, .{}, viewport, tree.cell_borders);
+    paintBox(doc, tree.root, grid, .{}, viewport, .{ .cell_borders = tree.cell_borders, .capabilities = capabilities });
 }
+
+const BorderOptions = struct {
+    cell_borders: bool,
+    capabilities: cell_border.Capabilities,
+};
 
 fn paintBox(
     doc: *const dom.Document,
@@ -48,7 +57,7 @@ fn paintBox(
     grid: *CellGrid,
     inherited: PaintStyle,
     clip: Rect,
-    cell_borders: bool,
+    borders: BorderOptions,
 ) void {
     if (clip.isEmpty()) return;
 
@@ -107,24 +116,35 @@ fn paintBox(
                         const fill = Rect.intersect(fragment_rect, clip);
                         grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
                     }
-                    if (cell_borders) {
+                    if (borders.cell_borders) {
                         drawCellBorder(grid, fragment_rect, current.cell_border, style.border_style, border_color, own, clip);
                     } else {
-                        drawBorder(grid, fragment_rect, border, border_color, own, clip);
+                        drawBorder(grid, fragment_rect, border, border_color, own, clip, style.border_style == .rounded);
                     }
                 }
             } else {
+                const round = style.border_style == .rounded;
+                const fill = Rect.intersect(rect, clip);
+                const rounded_frame = if (round and borders.capabilities.has(.round) and
+                    border.left > 0 and border.right > 0 and border.top > 0 and border.bottom > 0 and
+                    std.meta.eql(fill, rect))
+                    cell.RoundedCellFrame.capture(grid, rect)
+                else
+                    null;
                 if (paints_background) {
                     // An ancestor's overflow clip cuts everything this box paints, so
                     // a child background must not paint into the gutter outside the
                     // padding edge the way its text already is cut.
-                    const fill = Rect.intersect(rect, clip);
                     grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
                 }
-                if (cell_borders) {
+                if (rounded_frame) |frame| {
+                    if (paints_background) grid.clearBordersRect(rect.x, rect.y, rect.w, rect.h);
+                    const stroke = cellBorderStroke(border.top, border_color, own);
+                    frame.paint(grid, borders.capabilities, stroke.color);
+                } else if (borders.cell_borders) {
                     drawCellBorder(grid, rect, current.cell_border, style.border_style, border_color, own, clip);
                 } else {
-                    drawBorder(grid, rect, border, border_color, own, clip);
+                    drawBorder(grid, rect, border, border_color, own, clip, round);
                 }
             }
 
@@ -134,7 +154,7 @@ fn paintBox(
             };
 
             for (current.children.items) |child| {
-                paintBox(doc, child, grid, own, child_clip, cell_borders);
+                paintBox(doc, child, grid, own, child_clip, borders);
             }
         },
     }
@@ -228,6 +248,7 @@ fn drawBorder(
     border_color: ?style_mod.Color,
     inherited: PaintStyle,
     clip: Rect,
+    round: bool,
 ) void {
     if (border.left <= 0 and border.right <= 0 and border.top <= 0 and border.bottom <= 0) return;
 
@@ -250,9 +271,9 @@ fn drawBorder(
         var col = x0;
         while (col < x1) : (col += 1) {
             const glyph: u21 = if (left > 0 and col < x0 + left)
-                '┌'
+                (if (round) '╭' else '┌')
             else if (right > 0 and col >= x1 - right)
-                '┐'
+                (if (round) '╮' else '┐')
             else
                 '─';
             putBorderGlyph(grid, col, row, glyph, paint, clip);
@@ -264,9 +285,9 @@ fn drawBorder(
         var col = x0;
         while (col < x1) : (col += 1) {
             const glyph: u21 = if (left > 0 and col < x0 + left)
-                '└'
+                (if (round) '╰' else '└')
             else if (right > 0 and col >= x1 - right)
-                '┘'
+                (if (round) '╯' else '┘')
             else
                 '─';
             putBorderGlyph(grid, col, row, glyph, paint, clip);

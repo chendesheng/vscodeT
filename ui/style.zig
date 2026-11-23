@@ -69,7 +69,8 @@ pub const EdgeDecl = struct {
     }
 };
 
-pub const BorderStyle = enum { none, single };
+/// Rounded is the terminal representation of a single stroke with rounded corners.
+pub const BorderStyle = enum { none, single, rounded };
 
 /// The mouse pointer shape requested by an element, matching the CSS `cursor`
 /// names that kitty's OSC 22 protocol standardizes. `Style.pointer` is
