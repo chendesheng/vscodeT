@@ -60,6 +60,10 @@ pub const SearchWidget = struct {
     contexts: [4]FieldContext,
     callbacks: ?Callbacks = null,
     focus_field: Field = .search,
+    /// Whether the search view (not just the pointer) owns input focus. The
+    /// Search view sets this from its panel/results focus state; a row hover
+    /// must never change it.
+    focused: bool = false,
     replace_visible: bool = false,
     details_visible: bool = false,
     match_case: bool = false,
@@ -242,10 +246,10 @@ pub const SearchWidget = struct {
             .color = foreground,
         });
 
-        self.search.focused = self.focus_field == .search;
-        self.replace.focused = self.focus_field == .replace;
-        self.includes.focused = self.focus_field == .includes;
-        self.excludes.focused = self.focus_field == .excludes;
+        self.search.focused = self.focused and self.focus_field == .search;
+        self.replace.focused = self.focused and self.focus_field == .replace;
+        self.includes.focused = self.focused and self.focus_field == .includes;
+        self.excludes.focused = self.focused and self.focus_field == .excludes;
 
         const search_width = @max(@as(usize, 1), width -| 9);
         self.nodes[0] = try self.appendInput(doc, root, &self.search, 0, layout.search_y, search_width);
@@ -380,7 +384,11 @@ pub const SearchWidget = struct {
             }
         }
         const field = self.fieldAt(y) orelse return false;
-        self.focus_field = field;
+        const activating = event.kind == .down or event.kind == .click;
+        // Idle motion is hover, not activation. Only a press changes which
+        // input owns the caret (and therefore the keyboard).
+        if (activating) self.focus_field = field;
+        if (event.kind == .move and field != self.focus_field) return true;
         var local = event.*;
         local.y = y;
         local.x = x;
@@ -469,4 +477,40 @@ test "SearchWidget: mouse clicks toggle options and place the caret" {
     var event = ui.MouseEvent{ .kind = .down, .x = 25, .y = 0 };
     try std.testing.expect(widget.handleMouse(25, 0, &event));
     try std.testing.expectEqual(Option.regex, state.option.?);
+}
+
+test "SearchWidget: hover does not move input focus, press does" {
+    const allocator = std.testing.allocator;
+    const widget = try SearchWidget.init(allocator);
+    defer widget.deinit();
+
+    widget.focused = true;
+    widget.replace_visible = true;
+    widget.focus_field = .replace;
+    try widget.render(28);
+    try std.testing.expect(!widget.search.focused);
+    try std.testing.expect(widget.replace.focused);
+
+    // Idle motion over the search row is hover only.
+    var move = ui.MouseEvent{ .kind = .move, .x = 2, .y = 0 };
+    try std.testing.expect(widget.handleMouse(2, 0, &move));
+    try std.testing.expectEqual(Field.replace, widget.focus_field);
+    try widget.render(28);
+    try std.testing.expect(!widget.search.focused);
+    try std.testing.expect(widget.replace.focused);
+
+    // A press moves the caret and the keyboard to the search field.
+    var down = ui.MouseEvent{ .kind = .down, .x = 2, .y = 0, .button = .left };
+    try std.testing.expect(widget.handleMouse(2, 0, &down));
+    try std.testing.expectEqual(Field.search, widget.focus_field);
+    try widget.render(28);
+    try std.testing.expect(widget.search.focused);
+    try std.testing.expect(!widget.replace.focused);
+
+    // The view owning no input focus hides the caret without forgetting the
+    // last field.
+    widget.focused = false;
+    try widget.render(28);
+    try std.testing.expect(!widget.search.focused);
+    try std.testing.expectEqual(Field.search, widget.focus_field);
 }

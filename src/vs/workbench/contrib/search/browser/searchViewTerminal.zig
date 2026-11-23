@@ -267,6 +267,7 @@ pub const SearchView = struct {
         self.results_focused = false;
         self.focus_field = .search;
         self.widget.focus_field = .search;
+        self.widget.focused = true;
         self.controller.setPanelFocused(true);
         self.controller.focus = .search;
         self.controller.last_focus_input = true;
@@ -277,6 +278,7 @@ pub const SearchView = struct {
         self.results_focused = false;
         self.widget.replace_visible = true;
         self.widget.focus_field = .replace;
+        self.widget.focused = true;
         self.focus_field = .replace;
         self.controller.setPanelFocused(true);
         self.controller.focus = .replace;
@@ -289,12 +291,15 @@ pub const SearchView = struct {
 
     pub fn blur(self: *SearchView) void {
         self.panel_focused = false;
+        self.results_focused = false;
+        self.widget.focused = false;
         self.controller.setPanelFocused(false);
     }
 
     pub fn focusResults(self: *SearchView) void {
         self.panel_focused = true;
         self.results_focused = true;
+        self.widget.focused = false;
         self.controller.setPanelFocused(true);
         self.controller.focus = .results;
         self.controller.last_focus_input = false;
@@ -893,14 +898,22 @@ pub const SearchView = struct {
         const input_top = self.header_rows;
         const input_bottom = input_top + self.widget.layout.height;
         if (local_y >= input_top and local_y < input_bottom) {
-            self.panel_focused = true;
-            self.results_focused = false;
+            // Pointer motion only hovers a field; press/click moves input
+            // focus. Treating motion as activation made the caret jump rows.
+            const activating = event.kind == .down or event.kind == .click;
+            if (activating) {
+                self.panel_focused = true;
+                self.results_focused = false;
+                self.widget.focused = true;
+            }
             var local = event.*;
             local.x = local_x;
             local.y = local_y - input_top;
             if (self.widget.handleMouse(local_x, local_y - input_top, &local)) {
-                self.focus_field = self.widget.focus_field;
-                self.setControllerFocusFromField();
+                if (activating) {
+                    self.focus_field = self.widget.focus_field;
+                    self.setControllerFocusFromField();
+                }
             }
             return true;
         }
@@ -1011,9 +1024,11 @@ pub const SearchView = struct {
             _ = drawText(grid, x + width -| 3, y, 3, "...", .{ .fg = ui.cell.packColor(dim), .bg = ui.cell.packColor(header_background) });
         }
 
+        // The caret belongs to the field only while the view owns input focus;
+        // results navigation and leaving the side bar both hide it.
+        self.widget.focused = self.panel_focused and !self.results_focused;
         try self.widget.render(width);
         try grid.blit(self.widget.grid(), x, y + self.header_rows, width, self.widget.layout.height);
-
         const status_y = y + self.header_rows + self.widget.layout.height;
         var status_buffer: [240]u8 = undefined;
         var status = self.controller.messageText(&status_buffer);

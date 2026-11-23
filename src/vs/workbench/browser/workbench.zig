@@ -164,6 +164,7 @@ const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 
 const search_view_mod = @import("../contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
+const search_widget_mod = @import("../contrib/search/browser/searchWidget.zig");
 const search_service_mod = @import("../services/search/common/searchService.zig");
 const SearchService = search_service_mod.SearchService;
 const search_types = @import("../services/search/common/search.zig");
@@ -14787,6 +14788,65 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     defer after.deinit();
     try workbench.render(&after.writer);
     try std.testing.expect(view.scroll > scroll_before);
+}
+
+test "Workbench: search input focus follows presses, not hover" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "search_focus.txt", "alpha\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 16);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    view.focusReplace();
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(view.panel_focused);
+    try std.testing.expectEqual(search_widget_mod.Field.replace, view.widget.focus_field);
+    try std.testing.expect(!view.widget.search.focused);
+    try std.testing.expect(view.widget.replace.focused);
+
+    // Idle mode-1003 motion over the search row is hover only: the replace
+    // field keeps the caret and panel focus does not change.
+    const x = ui.cell.snap(view.last_rect.x) + 2;
+    const y = ui.cell.snap(view.last_rect.y) + view.header_rows;
+    var hover = ui.MouseEvent{ .kind = .move, .x = x, .y = y };
+    try std.testing.expect(workbench.handleSidebarMouse(&hover));
+    try std.testing.expect(view.panel_focused);
+    try std.testing.expectEqual(search_widget_mod.Field.replace, view.widget.focus_field);
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(!view.widget.search.focused);
+    try std.testing.expect(view.widget.replace.focused);
+
+    // A press does move focus and the caret.
+    var down = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
+    try std.testing.expect(workbench.handleSidebarMouse(&down));
+    try std.testing.expectEqual(search_widget_mod.Field.search, view.widget.focus_field);
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(view.widget.search.focused);
+    try std.testing.expect(!view.widget.replace.focused);
+
+    // Leaving the side bar clears the visual focus as well as the controller
+    // flag, so the caret does not keep looking focused behind the editor.
+    workbench.focusEditor();
+    out.clearRetainingCapacity();
+    try workbench.render(&out.writer);
+    try std.testing.expect(!view.panel_focused);
+    try std.testing.expect(!view.widget.search.focused);
+    try std.testing.expect(!view.widget.replace.focused);
 }
 
 test "Workbench: status bar context menu hides an entry" {
