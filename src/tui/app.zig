@@ -236,13 +236,22 @@ const RawStdoutWriter = struct {
     }
 
     fn writeAll(bytes: []const u8) Io.Writer.Error!void {
-        if (comptime builtin.os.tag == .windows) return error.WriteFailed;
-        var index: usize = 0;
-        while (index < bytes.len) {
-            const written = std.posix.write(std.posix.STDOUT_FILENO, bytes[index..]) catch
-                return error.WriteFailed;
-            if (written == 0) return error.WriteFailed;
-            index += written;
+        if (comptime builtin.os.tag == .windows) {
+            return error.WriteFailed;
+        } else {
+            var index: usize = 0;
+            while (index < bytes.len) {
+                const rc = std.posix.system.write(std.posix.STDOUT_FILENO, bytes[index..].ptr, bytes.len - index);
+                switch (std.posix.errno(rc)) {
+                    .SUCCESS => {
+                        const written: usize = @intCast(rc);
+                        if (written == 0) return error.WriteFailed;
+                        index += written;
+                    },
+                    .INTR => continue,
+                    else => return error.WriteFailed,
+                }
+            }
         }
     }
 };
