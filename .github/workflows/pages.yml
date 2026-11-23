@@ -42,6 +42,30 @@ jobs:
         run: zig build wasm -Doptimize=ReleaseSmall -Dwasm-only=true
       - name: Smoke test
         run: node web/smoke.mjs zig-out/web/editor.wasm
+      - name: Build Oniguruma for aarch64
+        run: scripts/build-onig-aarch64.sh "$PWD/aarch64-onig"
+      - name: Build aarch64 binary
+        run: |
+          zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall \
+            -Donig-include="$PWD/third_party/oniguruma/src" \
+            -Donig-lib="$PWD/aarch64-onig"
+      - name: Prepare unkernel demo
+        run: |
+          set -euo pipefail
+          demo=zig-out/web/unkernel
+          mkdir -p "$demo/vendor"
+          cp web/unkernel/index.html web/unkernel/main.js web/unkernel/style.css "$demo/"
+          cp zig-out/bin/zig "$demo/vscodet"
+          cp -R zig-out/web/vendor/ghostty-web "$demo/vendor/"
+          npm install --prefix /tmp/unkernel-sdk --no-save --ignore-scripts unkernel@0.2.0-261123-8f039c5
+          mkdir -p "$demo/vendor/unkernel"
+          cp -R /tmp/unkernel-sdk/node_modules/unkernel/dist/. "$demo/vendor/unkernel/"
+          UNKERNEL_CACHE_DIR=/tmp/unkernel-cache node --input-type=module -e '
+            import { fetchDistro } from "/tmp/unkernel-sdk/node_modules/unkernel/dist/node.mjs";
+            process.stdout.write(await fetchDistro("alpine"));
+          ' > /tmp/unkernel-alpine-path
+          cp "$(cat /tmp/unkernel-alpine-path)" "$demo/alpine.erofs"
+          ls -lh "$demo"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
