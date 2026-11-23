@@ -166,6 +166,25 @@ function installMouseAdapter(term, terminalElement, write) {
   window.addEventListener("blur", () => { pressed = null; });
 }
 
+function installResizeHandler(term, fit, terminalElement, pty) {
+  let scheduled = false;
+  const refit = () => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      try { fit.fit(); } catch { return; }
+      try { pty.resize(term.cols, term.rows); } catch { /* pty ended */ }
+    });
+  };
+
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(refit).observe(terminalElement);
+  }
+  window.addEventListener("resize", refit);
+  window.visualViewport?.addEventListener("resize", refit);
+}
+
 async function start() {
   const support = await checkSupport();
   if (!support.ok) {
@@ -229,8 +248,10 @@ async function start() {
 
   term.onData((data) => { pty.write(data).catch(() => {}); });
   term.onResize(({ cols, rows }) => pty.resize(cols, rows));
+  installResizeHandler(term, fit, terminalElement, pty);
   showStatus("");
   try { fit.fit(); } catch { /* keep the current size */ }
+  try { pty.resize(term.cols, term.rows); } catch { /* pty ended */ }
 
   pty.ended.then((result) => {
     showStatus(`vscodeT ended: ${JSON.stringify(result)}`, true);
