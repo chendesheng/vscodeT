@@ -53,7 +53,8 @@ It does not need a DOM or a browser.
 
 ## Not in the demo
 
-- The workbench shell (explorer, tabs, command palette, panels).
+- The workbench shell: sidebar/explorer, tabs, status-bar parts, panel and
+  quick open (Ctrl/Cmd+P).
 - The integrated terminal: it needs a PTY, which browsers/wasm cannot provide.
 - File watching, the Node extension host and language servers, image previews.
 - Find/hover widgets and the diff editor.

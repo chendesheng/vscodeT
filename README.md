@@ -14,8 +14,9 @@ sources (currently the Git extension) into `src/extensions/...`, mirroring
 [Open vscodeT in the browser](https://chendesheng.github.io/vscodeT/) — the
 editor compiled to WebAssembly and rendered with Ghostty through
 [`ghostty-web`](https://github.com/coder/ghostty-web). The demo is a single-file
-editor; the workbench shell and the integrated terminal are not part of it.
-See [`web/README.md`](web/README.md) for the build and the exact scope.
+editor view only: the workbench shell (sidebar, tabs, Ctrl+P quick open) and
+the integrated terminal are not part of it. See [`web/README.md`](web/README.md)
+for the build and the exact scope.
 
 Requires Zig 0.17 or newer.
 

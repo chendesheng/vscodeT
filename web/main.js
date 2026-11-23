@@ -231,6 +231,104 @@ function sendInput(bytes) {
   scheduleRender();
 }
 
+// Ghostty's Terminal has its own terminal-centric mouse handling: in the
+// alternate screen its wheel handler turns a wheel notch into Up/Down arrow
+// keys, and its SelectionManager competes with the editor's selection. For a
+// full-screen TUI we want the same SGR reports the native TUI would read.
+// Intercept at window capture, before Ghostty's parent/canvas listeners, and
+// feed SGR bytes to the editor host ourselves.
+function installMouseAdapter() {
+  const canvas = term.element?.querySelector('canvas') ?? terminalElement.querySelector('canvas');
+  if (!canvas) return;
+
+  let pressed = null;
+
+  function canvasRect() {
+    return canvas.getBoundingClientRect();
+  }
+
+  function inside(event) {
+    const rect = canvasRect();
+    return (
+      event.clientX >= rect.left &&
+      event.clientX < rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY < rect.bottom
+    );
+  }
+
+  function cellAt(event) {
+    const rect = canvasRect();
+    const cw = term.renderer?.charWidth || rect.width / Math.max(term.cols, 1);
+    const ch = term.renderer?.charHeight || rect.height / Math.max(term.rows, 1);
+    const col = Math.floor((event.clientX - rect.left) / cw);
+    const row = Math.floor((event.clientY - rect.top) / ch);
+    return {
+      col: Math.min(Math.max(col, 0), Math.max(term.cols - 1, 0)) + 1,
+      row: Math.min(Math.max(row, 0), Math.max(term.rows - 1, 0)) + 1,
+    };
+  }
+
+  function modifiers(event) {
+    return (event.shiftKey ? 4 : 0) + (event.altKey ? 8 : 0) + (event.ctrlKey ? 16 : 0);
+  }
+
+  function sendMouse(code, x, y, release) {
+    sendInput(encoder.encode(`\x1b[<${code};${x};${y}${release ? 'm' : 'M'}`));
+  }
+
+  function onDown(event) {
+    if (!inside(event) || event.button > 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    term.focus();
+    pressed = event.button;
+    const { col, row } = cellAt(event);
+    sendMouse(event.button + modifiers(event), col, row, false);
+  }
+
+  function onMove(event) {
+    if (pressed === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!inside(event)) return;
+    const { col, row } = cellAt(event);
+    sendMouse(32 + pressed + modifiers(event), col, row, false);
+  }
+
+  function onUp(event) {
+    if (pressed === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const button = pressed;
+    pressed = null;
+    const { col, row } = cellAt(event);
+    sendMouse(button + modifiers(event), col, row, true);
+  }
+
+  function onWheel(event) {
+    if (!inside(event) || event.deltaY === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const { col, row } = cellAt(event);
+    const button = event.deltaY < 0 ? 64 : 65;
+    sendMouse(button + modifiers(event), col, row, false);
+  }
+
+  function onContextMenu(event) {
+    if (!inside(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  window.addEventListener('mousedown', onDown, { capture: true, passive: false });
+  window.addEventListener('mousemove', onMove, { capture: true, passive: false });
+  window.addEventListener('mouseup', onUp, { capture: true, passive: false });
+  window.addEventListener('wheel', onWheel, { capture: true, passive: false });
+  window.addEventListener('contextmenu', onContextMenu, { capture: true, passive: false });
+  window.addEventListener('blur', () => { pressed = null; });
+}
+
 async function copySelection() {
   if (!wasm) return;
   wasm.wasm_selection();
@@ -351,11 +449,12 @@ async function start() {
     term.attachCustomKeyEventHandler(onKeyDown);
     term.onData((data) => sendInput(encoder.encode(data)));
     term.onResize(() => syncSize());
+    installMouseAdapter();
 
     syncSize();
     scheduleRender();
     term.focus();
-    showStatus('Ready — Ctrl/Cmd+S saves, Ctrl/Cmd+C copies, Ctrl/Cmd+V pastes.');
+    showStatus('Ready — editor-only demo (no workbench/sidebar/Ctrl+P). Ctrl/Cmd+S saves, Ctrl/Cmd+C copies, Ctrl/Cmd+V pastes.');
   } catch (error) {
     console.error(error);
     showStatus(`Failed to start: ${error?.message ?? error}`, true);
