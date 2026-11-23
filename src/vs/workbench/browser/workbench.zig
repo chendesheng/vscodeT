@@ -43,6 +43,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const raw_file = @import("../../base/common/rawFile.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -16943,7 +16944,7 @@ fn createWorkbenchIo(allocator: Allocator) Io.Threaded {
 /// Reads, BOM-detects, decodes and canonicalizes a file. Runs on the async Io,
 /// never on the TUI thread for interactive opens.
 fn loadOpenText(allocator: Allocator, io: Io, path: []const u8) !editor_widget.LoadedText {
-    const raw = Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| switch (err) {
+    const raw = raw_file.readFileAlloc(allocator, io, path, .unlimited) catch |err| switch (err) {
         // The synchronous open path treats a missing file as a new, empty
         // buffer; keep that behavior for interactive opens too.
         error.FileNotFound => try allocator.alloc(u8, 0),
