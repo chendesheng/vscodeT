@@ -2,8 +2,9 @@
 // ported workbench tree stack.
 //
 // The pane follows the active editor, creates an outline through the ported
-// `IOutlineService`, and renders the provider tree through `AsyncDataTree`, the
-// same tree component the Explorer uses. Expansion/collapse, selection,
+// `IOutlineService`, and renders the provider tree through the ported
+// `DataTree` (`WorkbenchDataTree` upstream), the same workbench tree component
+// the Explorer uses. Expansion/collapse, selection,
 // keyboard/mouse navigation, wheel scrolling and indent guides therefore come
 // from the ported tree rather than a parallel row list. The pane listens to the
 // editor's `ViewCursorStateChanged` / `ViewLinesChanged` view events for cursor
