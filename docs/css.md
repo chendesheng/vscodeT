@@ -130,6 +130,7 @@ Rules:
   | `blockDecorations.css` | `0x0000` | container, block |
   | `viewLines.css` (structural) | `0x0010` | view-lines, view-line |
   | `overlayWidgets.css` | `0x0020` | overlayWidgets |
+  | `sash.css` | `0x0030` | sash, vertical, horizontal |
 
 - The editor registers every sheet once in `View.init` through
   `editorCss.register(document)`. `Document.clear()` preserves them.
@@ -149,7 +150,15 @@ The first ports attach classes in the terminal view:
 
 - `View.block_root` and each block node (`blockDecorations_css`),
 - the line-scroll content and each `ViewLine` DOM node (`viewLines_css`),
-- `View.overlay_widgets_root` (`overlayWidgets_css`).
+- `View.overlay_widgets_root` (`overlayWidgets_css`),
+- the find widget's resize handle (`sash_css`).
+
+The sidebar, editor splits, diff gutter and terminal splitters use the sash
+cursor declarations with their cell hit tests. The find widget attaches the
+sheet's `HoverStyle` to its sash node. The sidebar and editor splits use the
+same `sash.hoverBorder` declaration for native cell borders or line glyphs.
+The terminal uses one-cell sash geometry. Linked orthogonal handles and the
+browser's sash limit and disabled styling are outside the port.
 
 ## Examples
 

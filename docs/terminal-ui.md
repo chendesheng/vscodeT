@@ -878,8 +878,11 @@ entries `.pointer`, sashes `.ew_resize`/`.ns_resize`, editor drags
 Direct-painted chrome (activity bar, tab strip, panel tabs, status bar, sidebar
 title, sashes, dialog buttons, quick-pick rows, terminal tabs) has no style
 tree; the workbench maps its existing hit-test results to the same shapes in
-its mouse handlers. `app.zig` resets the shape to `default` before routing each
-non-wheel mouse event and calls `Workbench.updateMousePointer` for the pane
+its mouse handlers. The sash cursors come from the hand-ported `sash_css.zig`
+sheet, which also styles the find widget's resize node. For sidebar and editor
+sashes the workbench paints the `sash.hoverBorder` color on the divider when
+hovered or grabbed. `app.zig` resets the shape to `default` before routing each
+mouse move and calls `Workbench.updateMousePointer` for the pane
 under the pointer (`Tab.pointerAt` covers the editor, Markdown preview split,
 image pane and diff widget).
 
