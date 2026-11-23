@@ -209,6 +209,7 @@ async function start() {
   term.open(terminalElement);
   const fit = new FitAddon();
   term.loadAddon(fit);
+  fit.observeResize?.();
   try { fit.fit(); } catch { /* keep 80x24 */ }
 
   showStatus("Booting Linux…");
