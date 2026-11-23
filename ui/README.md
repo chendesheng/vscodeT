@@ -265,8 +265,25 @@ Listeners can also use `capture = true`, `focus_in`/`focus_out` (bubbling), and
 `stopPropagation` / `stopImmediatePropagation` / `preventDefault` on a
 `ui.KeyEvent`. `doc.focus(node)` moves focus; `doc.blur()` clears it; `Tab` and
 `Shift+Tab` are the default action of a non-prevented key event. Focus events
-carry `related_target`. A terminal only reports key presses, so there is no
-`keyup`/`keypress` and no repeat flag.
+carry `related_target`; `focus_in`/`focus_out` run capture, target and bubble
+passes and can be stopped with `stopPropagation`, but focus events are not
+cancelable. A blur starts by clearing focus, so `activeElement()` is the root
+during `blur`/`focusout`, and a handler that focuses another node aborts the
+pending move (the requested node never receives `focus`/`focusin`).
+
+`Tab` follows HTML: positive tabindex values first, then tabindex 0 in tree
+order. A focused element with negative tabindex (or any non-tab-stop) is not in
+the sequential order, so Tab continues from the nearest tab stop after/before it
+in tree order. A mouse press records the sequential focus starting point, so
+Tab after clicking non-focusable content continues from the click position
+rather than restarting at the first stop. `activeElement()` returns the root as
+the body fallback; `focusedElement()` returns the focused element or null.
+
+A listener may add or remove listeners while an event is dispatching. Removed
+listeners are skipped from that point on; each node snapshots its listener list
+when the dispatch reaches it, so listeners appended to that node afterwards are
+not visited by the current dispatch. A terminal only reports key presses, so
+there is no `keyup`/`keypress` and no repeat flag.
 
 Text runs in decoded events borrow the input buffer; dispatch them before
 reusing that buffer.
@@ -298,7 +315,8 @@ element under a cell wins. A text box reports its parent element, matching
 Listeners can handle `mouse_down`, `mouse_move`, `mouse_up`, `click` and
 `wheel`; all run capture → target → bubble and honor `stopPropagation` /
 `preventDefault`. A non-canceled press focuses the nearest focusable ancestor,
-or blurs. Wheel deltas are in lines (±3 per notch, as in TermDOM) and cancelable;
+or blurs. Motion never changes focus; it only updates the hover target (see
+below). Wheel deltas are in lines (±3 per notch, as in TermDOM) and cancelable;
 the host decides what to scroll.
 
 ### Hover
@@ -508,17 +526,22 @@ modes. The UAX #14 tables cover Unicode 17.0.0.
 ```zig
 var input = ui.InputBox.init(allocator);
 defer input.deinit();
-input.focused = true;
 input.placeholder = "Find";
 input.on_enter = onEnter;
 
-const node = try input.build(doc, width); // focusable root; call doc.focus(node)
+const node = try input.build(doc, width); // focusable root
+_ = try doc.root.?.appendChild(node);     // connect before focusing
+_ = doc.focus(node);                      // focus/blur now sync input.focused
 var event = ui.KeyEvent{ .key = .{ .text = "query" } };
 _ = input.handleKey(&event);              // true when the input consumed it
 ```
 
 It owns a UTF-8 buffer, a byte caret and an `(anchor, cursor)` selection, and
 paints a block caret (an inverted cell) instead of using the hardware cursor.
+`build` installs focus/blur listeners, so focusing the built node sets
+`input.focused` and blurring it clears the caret and drag state. Hosts that
+paint before focusing may still seed `focused` directly; the document state wins
+after the focus event.
 The selection is rendered as a background/reverse run and replaces the caret
 while non-empty:
 
@@ -553,6 +576,12 @@ caret; a horizontal wheel (`delta_x`, including Shift+wheel) or
 `selection_background`/`selection_foreground` theme the selection (reverse video
 when no background is set). `setEnabled(false)`/`disable()` makes the box
 non-focusable, dim and keyless; `enable()` restores it.
+
+`InputBox` retains the last built node only while it is live: `Document.clear`
+bumps the document generation, so `disable`/`handleMouse` ignore a stale node
+instead of dereferencing the reset arena. `deinit` itself does not touch the
+document. Do not deinitialize a box while its built node is still connected and
+receiving events; clear the document (or remove the node) first.
 
 There is no double-click word selection (terminal reports carry no click
 counts), no grapheme/IME segmentation (selection is codepoint based), and no

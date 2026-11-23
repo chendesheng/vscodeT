@@ -179,7 +179,9 @@ pub const Node = struct {
     next: ?*Node = null,
     prev: ?*Node = null,
     document: *Document,
-    listeners: []Listener = &.{}, // arena-owned, registration order
+    listeners: std.ArrayList(ListenerEntry), // stable order, tombstones
+    recycled: bool = false,
+    serial: u64 = 0,                    // document-assigned identity
 };
 
 pub const Element = struct {
@@ -194,7 +196,9 @@ pub const Element = struct {
 };
 
 // Document also holds `active_element: ?*Node`, exposed as `activeElement()`
-// with the root as the body-like fallback.
+// with the root as the body-like fallback and `focusedElement()` for the raw
+// value, plus `focus_start` (the last press position) and `generation` (bumped
+// by `clear`, which invalidates node pointers).
 
 pub const Text = struct {
     data: []u8, // owned
@@ -231,18 +235,26 @@ pub const Text = struct {
 Event delivery is DOM-shaped but typed, and follows the same split as
 Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
 
-- Every node has a listener list (`addEventListener` / `removeEventListener`).
-  A listener is a struct of optional callbacks (`key_down`, `mouse_down`,
-  `mouse_move`, `mouse_up`, `click`, `wheel`, `focus`, `blur`, `focus_in`,
-  `focus_out`) plus an optional context. There is no `Event` base class and no
-  per-type `on*` property.
-- Key and mouse events run capture (root → parent), target, then bubble
-  (parent → root). `stopPropagation`, `stopImmediatePropagation` and
-  `preventDefault` have the usual meanings. Only `key_down` exists: a terminal
-  reports bytes, not releases or repeats. There is no `keyup`/`keypress`.
+- Every node has a listener list (`addEventListener` /
+  `removeEventListener`). A listener is a struct of optional callbacks
+  (`key_down`, `mouse_down`, `mouse_move`, `mouse_up`, `click`, `wheel`,
+  `focus`, `blur`, `focus_in`, `focus_out`) plus an optional context. There is
+  no `Event` base class and no per-type `on*` property. Entries are stable and
+  arena-owned: removing a listener marks it removed, so an in-flight dispatch
+  keeps walking a valid list and skips the removed entry. Each node snapshots
+  its listener count when the dispatch reaches it, so entries appended to that
+  node afterwards are not visited by the current dispatch.
+- Key, mouse and `focusin`/`focusout` events run capture (root → parent),
+  target, then bubble (parent → root). `stopPropagation`,
+  `stopImmediatePropagation` and `preventDefault` have the usual meanings for
+  key and mouse events; focus events can be stopped but are not cancelable.
+  Only `key_down` exists: a terminal reports bytes, not releases or repeats.
+  There is no `keyup`/`keypress`.
 - `Document.activeElement` is the focused element, falling back to the root when
   nothing is focused (the browser's `body` fallback), so a root listener still
-  receives keys before any widget takes focus.
+  receives keys before any widget takes focus. `Document.focusedElement()`
+  returns the focused element or null, which distinguishes "nothing focused"
+  from "the root is focused".
 - Mouse events carry zero-based terminal-cell coordinates. `Surface.elementFromPoint`
   solves pending layout, walks the box tree in reverse paint order and clips to
   `overflow: hidden`/`clip`; a text hit reports its parent element, like the DOM
@@ -264,10 +276,22 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
   negative values are programmatically focusable but skipped by Tab. Tab is the
   default action of a non-prevented key event. Focus requires a connected,
   rendered (no `display: none` ancestor), visible element.
+- A focused element outside the sequential order (negative tabindex, or a node
+  that is not a tab stop) makes Tab use DOM order: it selects the nearest tab
+  stop after/before the element in tree order, as the HTML sequential
+  navigation algorithm does. A mouse press records a sequential focus starting
+  point, so Tab after a press on non-focusable content continues from that
+  position instead of restarting at the first stop.
 - A focus move dispatches `blur` then `focusout` on the old element and `focus`
   then `focusin` on the new one, with `related_target` pointing at the other
-  element. `focus`/`blur` do not bubble; `focusin`/`focusout` do. Removing a
-  focused subtree clears `activeElement` silently, as the references do.
+  element. `focus`/`blur` do not bubble or capture; `focusin`/`focusout` do
+  both and honor `stopPropagation`. Focus is cleared before the old element's
+  blur, so `activeElement` is the root during `blur`/`focusout`; a blur,
+  focusout or focus handler that moves focus aborts the pending move, so the
+  requested element does not receive `focus`/`focusin` afterwards. The focusin
+  path is captured before the target phase, so reparenting a node in a handler
+  does not change the ancestors still notified. Removing a focused subtree
+  clears `activeElement` silently, as the references do.
 - `ui/input.zig` decodes terminal bytes into key and mouse events: printable
   runs, control bytes, cursor/editing keys (including modifier parameters),
   bracketed paste, and SGR mouse reports (`CSI < b ; x ; y M/m`). Text runs
@@ -1929,13 +1953,20 @@ map, is tracked in the [TUI porting inventory](porting-inventory.md).
   drag auto-scroll and generic `overflow: auto` scrolling are not. IME,
   scheduler and `Range`/`Selection` are still absent. Keyboard events and
   focus are in; key release/repeat, CSI u/kitty reports are not. Focus events
-  have no capture pass and there are no `:focus`-style selectors; focus is
-  explicit state plus listeners.
+  are not cancelable and there are no `:focus`-style selectors; focus is
+  explicit state plus listeners. Hiding or removing focusability from the
+  focused element keeps it focused, matching Chrome's dynamic behavior; only
+  removing the node clears focus (silently).
 - The one-line input has no system clipboard (host hooks only), no
   double-click word selection, no horizontal scrollbar and no validation
   message/context view; history (`HistoryInputBox`) stays host-owned. Its
   selection and editing are codepoint based, so combining marks/graphemes are
-  not grouped.
+  not grouped. For a box built into a `Document`, focus/blur listeners keep
+  `InputBox.focused` in sync with `document.activeElement`, and the retained
+  node is validated against the document generation so `Document.clear` cannot
+  leave a dangling node behind. `deinit` does not touch the document; a host
+  must clear the document or remove the node before destroying a box whose
+  listeners could still fire.
 - The editor scrollbar/overview ruler is a right-aligned 1.5-cell strip with
   three half-cell marker lanes projected to half rows; the 1.5-cell thumb
   covers markers on its rows and resolves its top/bottom edges to half-cell
