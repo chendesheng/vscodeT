@@ -11347,7 +11347,10 @@ fn outlineCreate(context: *anyopaque, editor: OutlineEditor, target: outline_mod
         .current_position = outlineCurrentPosition,
         .reveal_range = outlineRevealRange,
         .request_render = outlineRequestRender,
-        .is_symbol_visible = if (target == .Breadcrumbs) breadcrumbSymbolVisible else outlineSymbolVisible,
+        .symbol_filter = .{
+            .context = self,
+            .is_visible = if (target == .Breadcrumbs) breadcrumbSymbolVisible else outlineSymbolVisible,
+        },
     });
     const result = outline.interfacePtr();
     result.config.collapse_by_default = target == .OutlinePane and outlineCollapseByDefault(self);
@@ -19654,6 +19657,58 @@ test "Workbench: inactive breadcrumbs reuse a persistent control" {
     try workbench.render(&out.writer);
     try std.testing.expectEqual(@as(usize, 1), workbench.breadcrumbs_inactive.count());
     try std.testing.expectEqual(first, workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?);
+}
+
+test "Workbench: breadcrumb symbol filtering survives editor group focus changes" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "focus.ts", "one\ntwo");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json",
+        \\{"breadcrumbs.filePath":"off","breadcrumbs.showFunctions":false}
+    );
+    defer allocator.free(settings);
+
+    const Symbols = struct {
+        fn provide(_: *anyopaque, arena: Allocator, _: *@import("../../editor/common/model/textModel.zig").TextModel, _: CancellationToken) ![]languages.DocumentSymbol {
+            return arena.dupe(languages.DocumentSymbol, &.{
+                .{ .name = "VisibleClass", .kind = 5, .range = Range.init(1, 1, 1, 4), .selection_range = Range.init(1, 1, 1, 4) },
+                .{ .name = "HiddenFunction", .kind = 12, .range = Range.init(2, 1, 2, 4), .selection_range = Range.init(2, 1, 2, 4) },
+            });
+        }
+    };
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 12);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings});
+    try workbench.enableLanguageFeatures();
+    const registration = try workbench.language_features.?.document_symbol_provider.register(.{ .language = "*" }, .{
+        .context = workbench,
+        .provide_document_symbols = Symbols.provide,
+    });
+    defer registration.dispose();
+
+    const first = workbench.activePane().?;
+    try workbench.splitActive(.horizontal);
+    const second = workbench.activePane().?;
+    try std.testing.expect(first != second);
+    try second.activeTab().?.editor.setCursorPosition(Position.init(2, 1));
+    try workbench.focusPane(first);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    for ([_]*GroupPane{ second, first }) |pane| {
+        try workbench.cycleGroup();
+        try std.testing.expectEqual(pane, workbench.activePane().?);
+        try workbench.render(&out.writer);
+        const row = try workbench.frame.prev.rowText(allocator, 1);
+        defer allocator.free(row);
+        try std.testing.expect(std.mem.indexOf(u8, row, "VisibleClass") != null);
+        try std.testing.expect(std.mem.indexOf(u8, row, "HiddenFunction") == null);
+    }
 }
 
 test "Workbench: content widgets show diagnostics in a rounded hover" {

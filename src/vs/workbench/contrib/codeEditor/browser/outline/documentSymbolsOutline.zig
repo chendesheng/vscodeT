@@ -40,11 +40,13 @@ pub const Host = struct {
     current_position: *const fn (context: *anyopaque) ?Position,
     reveal_range: *const fn (context: *anyopaque, range: Range) anyerror!void,
     request_render: *const fn (context: *anyopaque) void,
-    /// `outline.show*` configuration for one symbol kind. Upstream
-    /// `DocumentSymbolFilter` reads the same keys from the text resource
-    /// configuration service; the terminal callback keeps this module free of
-    /// the configuration service.
-    is_symbol_visible: ?*const fn (context: *anyopaque, kind: u32) bool = null,
+    /// The terminal adapter for `DocumentSymbolFilter` and breadcrumb kind
+    /// filtering. As in upstream, the settings lookup has its own context,
+    /// separate from the editor used for selection and reveal.
+    symbol_filter: ?struct {
+        context: *anyopaque,
+        is_visible: *const fn (context: *anyopaque, kind: u32) bool,
+    } = null,
 };
 
 pub const DocumentSymbolsOutline = struct {
@@ -196,8 +198,8 @@ pub const DocumentSymbolsOutline = struct {
     }
 
     fn visible(self: *DocumentSymbolsOutline, kind: u32) bool {
-        const callback = self.host.is_symbol_visible orelse return true;
-        return callback(self.host.context, kind);
+        const filter = self.host.symbol_filter orelse return true;
+        return filter.is_visible(filter.context, kind);
     }
 
     fn isSymbolVisible(context: *anyopaque, element: *anyopaque) bool {
