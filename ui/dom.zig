@@ -90,6 +90,19 @@ pub const Document = struct {
     /// The element last hit by pointer motion. `Node.isHovered` derives the
     /// CSS-like hover chain from it. Cleared when the node leaves the tree.
     hover_target: ?*Node = null,
+    /// Sequential focus navigation starting point: the element a press last
+    /// landed on. When nothing is focused, Tab continues in tree order from
+    /// this position instead of restarting at the first tab stop. Cleared when
+    /// the node leaves the tree or `clear` resets the document.
+    focus_start: ?*Node = null,
+    /// Incremented when `clear` resets the arena and invalidates every node
+    /// pointer. Widgets that retain a node across frames compare it with the
+    /// value captured in `build` before dereferencing the node.
+    generation: u64 = 1,
+    /// Monotonic identity assigned to each node when it is created or reused
+    /// from the free list. Widgets that retain a node pointer compare it with
+    /// `Node.serial` to reject a recycled node reusing the same address.
+    next_node_serial: u64 = 1,
     cols: usize,
     rows: usize,
     tab_size: usize,
@@ -194,6 +207,8 @@ pub const Document = struct {
         self.root = null;
         self.active_element = null;
         self.hover_target = null;
+        self.focus_start = null;
+        self.generation +%= 1;
     }
 
     /// Retires `node` and its subtree into the free list. The caller must not
@@ -257,8 +272,17 @@ pub const Document = struct {
         node.parent = null;
         node.next = null;
         node.prev = null;
-        node.listeners.items.len = 0;
+        node.listeners.clearRetainingCapacity();
+        node.recycled = true;
+        node.serial = 0;
         self.free_nodes.append(self.allocator, node) catch {};
+    }
+
+    fn takeNodeSerial(self: *Document) u64 {
+        const serial = self.next_node_serial;
+        self.next_node_serial +%= 1;
+        if (self.next_node_serial == 0) self.next_node_serial = 1;
+        return serial;
     }
 
     pub fn createElement(self: *Document, tag: Tag) !*Node {
@@ -269,7 +293,9 @@ pub const Document = struct {
             node.next = null;
             node.prev = null;
             node.document = self;
-            node.listeners.items.len = 0;
+            node.listeners.clearRetainingCapacity();
+            node.recycled = false;
+            node.serial = self.takeNodeSerial();
             return node;
         }
         const allocator = self.arena.allocator();
@@ -277,6 +303,7 @@ pub const Document = struct {
         node.* = .{
             .kind = .{ .element = .{ .tag = tag } },
             .document = self,
+            .serial = self.takeNodeSerial(),
         };
         return node;
     }
@@ -300,7 +327,9 @@ pub const Document = struct {
             node.next = null;
             node.prev = null;
             node.document = self;
-            node.listeners.items.len = 0;
+            node.listeners.clearRetainingCapacity();
+            node.recycled = false;
+            node.serial = self.takeNodeSerial();
             return node;
         }
         const allocator = self.arena.allocator();
@@ -308,6 +337,7 @@ pub const Document = struct {
         node.* = .{
             .kind = .{ .text = .{ .data = data } },
             .document = self,
+            .serial = self.takeNodeSerial(),
         };
         return node;
     }
@@ -341,9 +371,16 @@ pub const Document = struct {
         return self.setHoverTarget(null);
     }
 
-    /// The focused element, or the root when nothing is focused.
+    /// The focused element, or the root when nothing is focused. Browsers
+    /// return the body in the same situation; our root viewport is that
+    /// fallback. Use `focusedElement` when "nothing focused" must be distinct.
     pub fn activeElement(self: *const Document) ?*Node {
         return event.activeElement(self);
+    }
+
+    /// The focused element, or null when focus is on the document root/body.
+    pub fn focusedElement(self: *const Document) ?*Node {
+        return self.active_element;
     }
 
     /// Moves keyboard focus. Returns false when the node is not a connected,
@@ -406,21 +443,33 @@ pub const Node = struct {
     next: ?*Node = null,
     prev: ?*Node = null,
     document: *Document,
-    /// Event listeners, in registration order. Arena-owned for the lifetime of
-    /// the document; `removeEventListener` only compacts the list.
-    listeners: std.ArrayList(Listener) = .empty,
+    /// Event listeners in registration order. Removing marks an entry removed
+    /// instead of shifting the list, so an in-progress dispatch stays valid.
+    /// The backing list is arena-owned and reused when the node is recycled.
+    listeners: std.ArrayList(event.ListenerEntry) = .empty,
+    /// Set while this node sits in the document's free list. A widget that
+    /// retains a node pointer across frames can check this before using it.
+    recycled: bool = false,
+    /// Identity assigned by the document. Zero while recycled.
+    serial: u64 = 0,
 
-    /// Registers a listener. Adding is O(1); dispatch walks the list in order.
+    /// Registers a listener. Adding is O(1) amortized; dispatch walks the list
+    /// in registration order.
     pub fn addEventListener(self: *Node, listener: Listener) !void {
-        try self.listeners.append(self.document.arena.allocator(), listener);
+        try self.listeners.append(
+            self.document.arena.allocator(),
+            .{ .listener = listener },
+        );
     }
 
     /// Removes the first listener equal to `listener`; returns whether one was
-    /// found.
+    /// found. The entry stays in the list as a tombstone so a dispatch that is
+    /// already walking it remains safe and does not invoke it.
     pub fn removeEventListener(self: *Node, listener: Listener) bool {
-        for (self.listeners.items, 0..) |existing, i| {
-            if (existing.eql(listener)) {
-                _ = self.listeners.orderedRemove(i);
+        for (self.listeners.items) |*entry| {
+            if (entry.removed) continue;
+            if (entry.listener.eql(listener)) {
+                entry.removed = true;
                 return true;
             }
         }
@@ -1130,4 +1179,25 @@ test "Document: class styles survive clear and nodes hold integer IDs" {
     try std.testing.expect(next.hasClass(Class.selected));
     next.removeClass(Class.selected);
     try std.testing.expect(!next.hasClass(Class.selected));
+}
+
+test "Document: a recycled node receives a new serial" {
+    const allocator = std.testing.allocator;
+    var doc = try Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    const child = try doc.createElement(.div);
+    _ = try root.appendChild(child);
+    const old_serial = child.serial;
+    try std.testing.expect(old_serial != 0);
+
+    doc.destroy(child);
+    try std.testing.expect(child.recycled);
+
+    const reused = try doc.createElement(.div);
+    try std.testing.expectEqual(child, reused);
+    try std.testing.expect(!reused.recycled);
+    try std.testing.expect(reused.serial != old_serial);
 }

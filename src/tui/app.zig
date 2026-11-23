@@ -1705,7 +1705,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     const open_row = try view.surface.grid().rowText(allocator, 0);
     defer allocator.free(open_row);
     try std.testing.expect(std.mem.indexOf(u8, open_row, "Find") != null);
-    try std.testing.expect(view.surface.document().active_element != null);
+    try std.testing.expect(view.surface.document().focusedElement() != null);
 
     // Escape is handled by the widget, not inserted into the document.
     var close_events = try ui.input.decodeKeys(allocator, "\x1b");
@@ -1906,13 +1906,13 @@ test "app: hovering a word shows the rendered markdown hover" {
     var release = down;
     release.kind = .up;
     _ = try view.dispatchMouse(&release);
-    try std.testing.expect(view.surface.document().active_element != null);
+    try std.testing.expect(view.surface.document().focusedElement() != null);
     try std.testing.expect(hover.isFocused());
 
     var escape = ui.KeyEvent{ .key = .escape };
     try std.testing.expect(view.dispatchKey(&escape));
     try std.testing.expect(!hover.isVisible());
-    try std.testing.expect(view.surface.document().active_element == null);
+    try std.testing.expect(view.surface.document().focusedElement() == null);
 }
 
 test "app: vim motions reach the hover before the extension key handler" {

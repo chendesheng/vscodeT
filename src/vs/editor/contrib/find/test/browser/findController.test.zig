@@ -98,7 +98,7 @@ test "FindController: opens, searches incrementally and closes" {
     const closed_row = try rowText(view, allocator, 0);
     defer allocator.free(closed_row);
     try std.testing.expect(std.mem.indexOf(u8, closed_row, "Find") == null);
-    try std.testing.expect(view.surface.document().active_element == null);
+    try std.testing.expect(view.surface.document().focusedElement() == null);
 }
 
 test "FindController: replace row replaces the current match" {
@@ -333,7 +333,7 @@ test "FindController: clicking the input focuses it and clicking the editor blur
 
     // The widget restores its input after the per-frame rebuild.
     try view.refresh();
-    try std.testing.expect(view.surface.document().active_element != null);
+    try std.testing.expect(view.surface.document().focusedElement() != null);
     try std.testing.expect(iface.is_focused(iface.context));
 
     // A click on the editor text blurs the widget; the next rebuild does not
@@ -346,9 +346,9 @@ test "FindController: clicking the input focuses it and clicking the editor blur
     };
     try std.testing.expect(try view.dispatchMouse(&away));
     try std.testing.expect(!iface.is_focused(iface.context));
-    try std.testing.expect(view.surface.document().active_element == null);
+    try std.testing.expect(view.surface.document().focusedElement() == null);
     try view.refresh();
-    try std.testing.expect(view.surface.document().active_element == null);
+    try std.testing.expect(view.surface.document().focusedElement() == null);
 }
 
 test "FindController: find toggles hover and click from the mouse" {
@@ -412,7 +412,7 @@ test "FindController: find toggles hover and click from the mouse" {
     var up = ui.MouseEvent{ .kind = .up, .x = toggle_x, .y = 0, .button = .left };
     _ = try view.dispatchMouse(&up);
     try std.testing.expect(controller.state.matchCase());
-    try std.testing.expect(view.surface.document().active_element != null);
+    try std.testing.expect(view.surface.document().focusedElement() != null);
 
     _ = try view.dispatchMouse(&down);
     _ = try view.dispatchMouse(&up);
@@ -462,7 +462,7 @@ test "FindController: clicking All runs replace-all" {
     const second_line = try editor.model.getLineContent(2);
     defer second_line.deinit();
     try std.testing.expectEqualStrings("beta omega", second_line.items);
-    try std.testing.expect(view.surface.document().active_element != null);
+    try std.testing.expect(view.surface.document().focusedElement() != null);
 }
 
 test "FindController: the host theme reaches the find bar" {

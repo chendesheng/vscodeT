@@ -95,8 +95,21 @@ pub const FocusEvent = struct {
     target: ?*dom.Node = null,
     current_target: ?*dom.Node = null,
     related_target: ?*dom.Node = null,
-    /// `target` for focus/blur; `bubble` for focusin/focusout ancestors.
+    /// `target` for focus/blur; `capture`/`bubble` for focusin/focusout.
     phase: Phase = .target,
+    /// Focus events are not cancelable, but focusin/focusout bubble and can be
+    /// stopped like any other bubbling event.
+    propagation_stopped: bool = false,
+    immediate_stopped: bool = false,
+
+    pub fn stopPropagation(self: *FocusEvent) void {
+        self.propagation_stopped = true;
+    }
+
+    pub fn stopImmediatePropagation(self: *FocusEvent) void {
+        self.propagation_stopped = true;
+        self.immediate_stopped = true;
+    }
 };
 
 /// The button a mouse event names. A SGR release names the button that was
@@ -141,11 +154,10 @@ pub const MouseEvent = struct {
 
 /// A listener callback plus the optional context passed back to it.
 ///
-/// Key and mouse listeners run in the capture or bubble pass according to
-/// `capture`; a mouse listener runs only for its own event kind. Focus callbacks
-/// run on the target only for `focus`/`blur`; `focus_in` and `focus_out`
-/// additionally run on ancestors. Capture is ignored for focus events in this
-/// POC.
+/// Key, mouse and focusin/focusout listeners run in the capture or bubble pass
+/// according to `capture`; a mouse listener runs only for its own event kind.
+/// Focus callbacks run on the target only for `focus`/`blur`; `focus_in` and
+/// `focus_out` additionally capture and bubble through ancestors.
 pub const Listener = struct {
     context: ?*anyopaque = null,
     capture: bool = false,
@@ -174,6 +186,43 @@ pub const Listener = struct {
             a.blur == b.blur and
             a.focus_in == b.focus_in and
             a.focus_out == b.focus_out;
+    }
+};
+
+/// One entry in a node's listener list. Removing a listener marks the entry
+/// removed instead of shifting the list, so a dispatch in progress keeps valid
+/// indices while handlers add or remove listeners. Entries are arena-owned with
+/// the node's backing list, which is reused when the node is recycled.
+pub const ListenerEntry = struct {
+    listener: Listener,
+    removed: bool = false,
+};
+
+/// Iterates the entries that were present when the dispatch reached the node.
+/// Entries appended during dispatch are not visited; removed entries are
+/// skipped. The node's serial guards against a recycled node reusing the slot.
+pub const ListenerIterator = struct {
+    node: *dom.Node,
+    index: usize = 0,
+    end: usize,
+    serial: u64,
+
+    pub fn init(node: *dom.Node) ListenerIterator {
+        return .{
+            .node = node,
+            .end = node.listeners.items.len,
+            .serial = node.serial,
+        };
+    }
+
+    pub fn next(self: *ListenerIterator) ?Listener {
+        while (self.index < self.end and self.index < self.node.listeners.items.len) {
+            const entry = self.node.listeners.items[self.index];
+            self.index += 1;
+            if (self.node.serial != self.serial) return null;
+            if (!entry.removed) return entry.listener;
+        }
+        return null;
     }
 };
 
@@ -225,7 +274,8 @@ fn dispatchAtTarget(target: *dom.Node, event: *KeyEvent) void {
     // and regardless of `capture`. `stopPropagation` on the target therefore
     // does not silence the remaining target listeners; only immediate
     // propagation does.
-    for (target.listeners.items) |listener| {
+    var listeners = ListenerIterator.init(target);
+    while (listeners.next()) |listener| {
         if (event.immediate_stopped) return;
         if (listener.key_down) |handler| handler(listener.context, event);
     }
@@ -242,7 +292,8 @@ fn dispatchBubble(target: *dom.Node, event: *KeyEvent) void {
 }
 
 fn invokeKeyListeners(node: *dom.Node, event: *KeyEvent, capture: bool) void {
-    for (node.listeners.items) |listener| {
+    var listeners = ListenerIterator.init(node);
+    while (listeners.next()) |listener| {
         if (event.immediate_stopped) return;
         if (listener.capture != capture) continue;
         if (listener.key_down) |handler| handler(listener.context, event);
@@ -300,7 +351,8 @@ fn dispatchMouseCapture(node: *dom.Node, event: *MouseEvent) void {
 fn dispatchMouseAtTarget(target: *dom.Node, event: *MouseEvent) void {
     event.current_target = target;
     event.phase = .target;
-    for (target.listeners.items) |listener| {
+    var listeners = ListenerIterator.init(target);
+    while (listeners.next()) |listener| {
         if (event.immediate_stopped) return;
         invokeMouseListener(listener, event);
     }
@@ -317,7 +369,8 @@ fn dispatchMouseBubble(target: *dom.Node, event: *MouseEvent) void {
 }
 
 fn invokeMouseListeners(node: *dom.Node, event: *MouseEvent, capture: bool) void {
-    for (node.listeners.items) |listener| {
+    var listeners = ListenerIterator.init(node);
+    while (listeners.next()) |listener| {
         if (event.immediate_stopped) return;
         if (listener.capture != capture) continue;
         invokeMouseListener(listener, event);
@@ -339,8 +392,14 @@ fn runMouseDefaultAction(document: *dom.Document, event: *MouseEvent) void {
     if (event.kind != .down) return;
     if (focusableAncestor(document, event.target)) |node| {
         _ = focus(document, node);
-    } else if (document.active_element != null) {
-        blur(document);
+        // The next Tab starts at the element that was pressed, matching the
+        // browser's sequential focus navigation starting point.
+        document.focus_start = node;
+    } else {
+        if (document.active_element != null) blur(document);
+        // A press on non-focusable content still sets the starting point; Tab
+        // then continues in tree order from that position instead of restarting.
+        document.focus_start = event.target;
     }
 }
 
@@ -374,19 +433,34 @@ pub fn activeElement(document: *const dom.Document) ?*dom.Node {
 }
 
 /// Moves focus to `node`. Only connected, rendered, `focusable` elements take
-/// focus. An already focused node is a no-op; failure leaves focus untouched.
+/// focus. An already focused node is a no-op.
+///
+/// This follows the browser focus-update sequence: focus is cleared before the
+/// old element's blur/focusout, and the move is abandoned when a blur, focusout
+/// or focus handler retargets focus. That keeps `activeElement` and the events
+/// observers see consistent with the final focused element.
 pub fn focus(document: *dom.Document, node: *dom.Node) bool {
     if (document.active_element == node) return true;
     if (!canFocus(document, node)) return false;
 
     const previous = document.active_element;
-    document.active_element = node;
-
+    // The browser's activeElement is the body (our root fallback) while blur
+    // and focusout run; the next focused element is only installed afterwards.
+    document.active_element = null;
     if (previous) |old| {
         dispatchFocusEvent(old, .blur, .{ .related_target = node });
         dispatchFocusEvent(old, .focus_out, .{ .related_target = node });
+        // A handler moved focus (or already installed the requested node);
+        // the outer call must not dispatch focus/focusin again.
+        if (document.active_element != null) return document.active_element == node;
     }
+
+    if (!canFocus(document, node)) return false;
+    document.active_element = node;
     dispatchFocusEvent(node, .focus, .{ .related_target = previous });
+    // focusin is delivered only while the node still owns focus. A focus
+    // handler may blur it or move focus elsewhere.
+    if (document.active_element != node) return false;
     dispatchFocusEvent(node, .focus_in, .{ .related_target = previous });
     return true;
 }
@@ -401,19 +475,27 @@ pub fn blur(document: *dom.Document) void {
 
 /// Clears focus when the active element is inside a subtree that is about to
 /// be removed. Like the references, no blur fires for an element that is
-/// already leaving the tree.
+/// already leaving the tree. The sequential focus starting point is dropped too
+/// when it pointed into the removed subtree.
 pub fn clearFocusWithin(document: *dom.Document, subtree: *dom.Node) void {
-    const active = document.active_element orelse return;
-    if (!isInclusiveAncestor(subtree, active)) return;
-    document.active_element = null;
+    if (document.active_element) |active| {
+        if (isInclusiveAncestor(subtree, active)) document.active_element = null;
+    }
+    if (document.focus_start) |start| {
+        if (isInclusiveAncestor(subtree, start)) document.focus_start = null;
+    }
 }
 
 /// Clears focus after the root changed, when the active element is no longer
-/// connected to the new tree.
+/// connected to the new tree. A stale sequential focus starting point is
+/// dropped the same way.
 pub fn clearDetachedFocus(document: *dom.Document) void {
-    const active = document.active_element orelse return;
-    if (isConnected(document, active)) return;
-    document.active_element = null;
+    if (document.active_element) |active| {
+        if (!isConnected(document, active)) document.active_element = null;
+    }
+    if (document.focus_start) |start| {
+        if (!isConnected(document, start)) document.focus_start = null;
+    }
 }
 
 /// A focusable area: connected, `focusable`, rendered, and visible. A negative
@@ -430,26 +512,32 @@ pub fn canFocus(document: *const dom.Document, node: *dom.Node) bool {
     return node.computedVisibility() == .visible;
 }
 
-/// Moves focus to the next/previous tab stop, in sequential focus navigation
-/// order. Positive `tab_index` values come first in ascending order, then
-/// `tab_index == 0` in tree order, tying on tree order within a group. Negative
-/// values are focusable but not tab stops. Navigation wraps around.
+/// Moves focus to the next/previous tab stop. Positive `tab_index` values come
+/// first in ascending order, then `tab_index == 0` in tree order, tying on tree
+/// order within a group. Negative values are focusable but not tab stops.
+///
+/// When the current element (or the last pressed element) is not itself a tab
+/// stop, the HTML algorithm switches to DOM order and picks the nearest tab
+/// stop after/before it in tree order. Navigation wraps around.
 pub fn moveFocus(document: *dom.Document, direction: FocusDirection) bool {
     const root = document.root orelse return false;
     const current = document.active_element;
-    const current_stop = findFocusStop(document, current);
+    const start_node = current orelse document.focus_start;
+    const start = findFocusStart(document, start_node);
 
     var search = FocusSearch{
         .document = document,
         .forward = direction == .forward,
-        .current = current,
-        .current_stop = current_stop,
+        .active = current,
+        .start = start,
     };
-    search.walk(root);
+    search.walk(root, false);
 
-    const target = search.chosen orelse search.edge orelse return false;
+    const target = search.target() orelse return false;
     if (target == current) return true;
-    return focus(document, target);
+    const moved = focus(document, target);
+    if (moved) document.focus_start = null;
+    return moved;
 }
 
 const FocusStop = struct {
@@ -457,34 +545,47 @@ const FocusStop = struct {
     order: usize,
 };
 
-fn findFocusStop(document: *dom.Document, target: ?*dom.Node) ?FocusStop {
+/// The focused/starting element and its position in tree order. `is_stop` is
+/// false for a negative tabindex, non-focusable or hidden element; Tab then
+/// selects in DOM order instead of tabindex order.
+const FocusStart = struct {
+    node: *dom.Node,
+    tab_index: i32,
+    order: usize,
+    is_stop: bool,
+};
+
+fn findFocusStart(document: *dom.Document, target: ?*dom.Node) ?FocusStart {
     const wanted = target orelse return null;
     const root = document.root orelse return null;
     var order: usize = 0;
-    return findFocusStopWalk(document, root, wanted, &order);
+    return findFocusStartWalk(document, root, wanted, &order);
 }
 
-fn findFocusStopWalk(
+fn findFocusStartWalk(
     document: *dom.Document,
     node: *dom.Node,
     wanted: *dom.Node,
     order: *usize,
-) ?FocusStop {
+) ?FocusStart {
     if (node.isElement()) {
         const element = node.asElement();
         const current_order = order.*;
         order.* += 1;
         if (node == wanted) {
-            if (element.tab_index >= 0 and canFocus(document, node)) {
-                return .{ .tab_index = element.tab_index, .order = current_order };
-            }
+            return .{
+                .node = node,
+                .tab_index = element.tab_index,
+                .order = current_order,
+                .is_stop = element.tab_index >= 0 and canFocus(document, node),
+            };
         }
     }
-    if (node.isElement() and node.declaredDisplay() == .none) return null;
-
+    // Tree order includes hidden subtrees; candidate filtering happens in the
+    // search walk, which carries the hidden state down the tree.
     var child = node.first_child;
     while (child) |current| : (child = current.next) {
-        if (findFocusStopWalk(document, current, wanted, order)) |found| return found;
+        if (findFocusStartWalk(document, current, wanted, order)) |found| return found;
     }
     return null;
 }
@@ -492,39 +593,65 @@ fn findFocusStopWalk(
 const FocusSearch = struct {
     document: *dom.Document,
     forward: bool,
-    current: ?*dom.Node,
-    current_stop: ?FocusStop = null,
+    active: ?*dom.Node,
+    start: ?FocusStart = null,
     order: usize = 0,
     edge: ?*dom.Node = null,
     edge_stop: FocusStop = .{ .tab_index = 0, .order = 0 },
     chosen: ?*dom.Node = null,
     chosen_stop: FocusStop = .{ .tab_index = 0, .order = 0 },
+    dom_chosen: ?*dom.Node = null,
+    dom_chosen_order: usize = 0,
 
-    fn walk(self: *FocusSearch, node: *dom.Node) void {
+    fn walk(self: *FocusSearch, node: *dom.Node, inherited_hidden: bool) void {
+        var hidden = inherited_hidden;
         if (node.isElement()) {
             const element = node.asElement();
-            const stop = FocusStop{ .tab_index = element.tab_index, .order = self.order };
+            const current_order = self.order;
             self.order += 1;
-
-            if (element.tab_index >= 0 and canFocus(self.document, node)) {
-                if (self.edge == null or self.beforeEdge(stop)) {
-                    self.edge = node;
-                    self.edge_stop = stop;
-                }
-                if (self.current_stop) |current_stop| {
-                    if (node != self.current and self.pastCurrent(stop, current_stop)) {
-                        if (self.chosen == null or self.beforeChosen(stop)) {
-                            self.chosen = node;
-                            self.chosen_stop = stop;
-                        }
-                    }
-                }
+            if (node.declaredDisplay() == .none) hidden = true;
+            if (!hidden and element.tab_index >= 0 and canFocus(self.document, node)) {
+                self.consider(node, element.tab_index, current_order);
             }
         }
-        if (node.isElement() and node.declaredDisplay() == .none) return;
 
         var child = node.first_child;
-        while (child) |current| : (child = current.next) self.walk(current);
+        while (child) |current| : (child = current.next) self.walk(current, hidden);
+    }
+
+    fn consider(self: *FocusSearch, node: *dom.Node, tab_index: i32, order: usize) void {
+        const stop = FocusStop{ .tab_index = tab_index, .order = order };
+        if (self.edge == null or self.beforeEdge(stop)) {
+            self.edge = node;
+            self.edge_stop = stop;
+        }
+
+        const start = self.start orelse return;
+        if (start.is_stop) {
+            if (node == self.active) return;
+            const start_stop = FocusStop{ .tab_index = start.tab_index, .order = start.order };
+            if (self.pastCurrent(stop, start_stop)) {
+                if (self.chosen == null or self.beforeChosen(stop)) {
+                    self.chosen = node;
+                    self.chosen_stop = stop;
+                }
+            }
+        } else {
+            if (node == start.node) return;
+            const after = if (self.forward) start.order < order else order < start.order;
+            if (!after) return;
+            if (self.beforeDomChosen(order)) {
+                self.dom_chosen = node;
+                self.dom_chosen_order = order;
+            }
+        }
+    }
+
+    fn target(self: *const FocusSearch) ?*dom.Node {
+        if (self.start) |start| {
+            if (!start.is_stop) return self.dom_chosen orelse self.edge;
+        }
+        return self.chosen orelse self.edge;
     }
 
     fn beforeEdge(self: *const FocusSearch, candidate: FocusStop) bool {
@@ -546,6 +673,11 @@ const FocusSearch = struct {
             return focusOrderBefore(candidate, self.chosen_stop);
         }
         return focusOrderBefore(self.chosen_stop, candidate);
+    }
+
+    fn beforeDomChosen(self: *const FocusSearch, order: usize) bool {
+        if (self.dom_chosen == null) return true;
+        return if (self.forward) order < self.dom_chosen_order else order > self.dom_chosen_order;
     }
 };
 
@@ -572,21 +704,84 @@ fn dispatchFocusEvent(target: *dom.Node, kind: FocusKind, options: FocusEventOpt
         .related_target = options.related_target,
     };
 
-    const bubbles = kind == .focus_in or kind == .focus_out;
-    var current: ?*dom.Node = target;
-    while (current) |node| : (current = if (bubbles) node.parent else null) {
-        event.current_target = node;
-        event.phase = if (node == target) .target else .bubble;
+    event.current_target = target;
+    event.phase = .target;
+    switch (kind) {
+        // focus/blur fire at the target only and do not capture or bubble.
+        .focus, .blur => invokeFocusListeners(target, kind, &event, .target),
+        .focus_in, .focus_out => {
+            // Capture the path before dispatching so a handler that reparents
+            // a node cannot change the ancestors still to notify.
+            const parent = target.parent;
+            if (parent) |outer| dispatchFocusCapture(outer, kind, &event);
+            if (!event.propagation_stopped) {
+                // The capture pass leaves current_target on the last ancestor.
+                event.current_target = target;
+                event.phase = .target;
+                invokeFocusListeners(target, kind, &event, .target);
+            }
+            if (!event.propagation_stopped) {
+                if (parent) |outer| dispatchFocusBubble(outer, kind, &event);
+            }
+        },
+    }
+}
 
-        for (node.listeners.items) |listener| {
-            const handler = switch (kind) {
-                .focus => listener.focus,
-                .blur => listener.blur,
-                .focus_in => listener.focus_in,
-                .focus_out => listener.focus_out,
-            } orelse continue;
-            handler(listener.context, &event);
-        }
+fn dispatchFocusCapture(node: *dom.Node, kind: FocusKind, event: *FocusEvent) void {
+    const parent = node.parent;
+    if (parent) |outer| {
+        dispatchFocusCapture(outer, kind, event);
+        if (event.propagation_stopped) return;
+    }
+    event.current_target = node;
+    event.phase = .capture;
+    invokeFocusListeners(node, kind, event, .capture);
+}
+
+fn dispatchFocusBubble(node: *dom.Node, kind: FocusKind, event: *FocusEvent) void {
+    if (event.propagation_stopped) return;
+    const parent = node.parent;
+    event.current_target = node;
+    event.phase = .bubble;
+    invokeFocusListeners(node, kind, event, .bubble);
+    if (event.propagation_stopped) return;
+    if (parent) |outer| dispatchFocusBubble(outer, kind, event);
+}
+
+fn invokeFocusListeners(node: *dom.Node, kind: FocusKind, event: *FocusEvent, phase: Phase) void {
+    switch (phase) {
+        .capture => invokeFocusPass(node, kind, event, .capture, true),
+        // At the target, DOM runs capture listeners first (still reporting the
+        // target phase), then the non-capture listeners. stopPropagation in the
+        // capture group prevents the bubble group.
+        .target => {
+            invokeFocusPass(node, kind, event, .target, true);
+            if (event.propagation_stopped) return;
+            invokeFocusPass(node, kind, event, .target, false);
+        },
+        .bubble => invokeFocusPass(node, kind, event, .bubble, false),
+    }
+}
+
+fn invokeFocusPass(
+    node: *dom.Node,
+    kind: FocusKind,
+    event: *FocusEvent,
+    phase: Phase,
+    capture: bool,
+) void {
+    var listeners = ListenerIterator.init(node);
+    while (listeners.next()) |listener| {
+        if (event.immediate_stopped) return;
+        if (listener.capture != capture) continue;
+        const handler = switch (kind) {
+            .focus => listener.focus,
+            .blur => listener.blur,
+            .focus_in => listener.focus_in,
+            .focus_out => listener.focus_out,
+        } orelse continue;
+        event.phase = phase;
+        handler(listener.context, event);
     }
 }
 
@@ -910,9 +1105,17 @@ test "event: Tab follows tabindex groups and skips display none" {
     try std.testing.expect(doc.moveFocus(.backward));
     try std.testing.expectEqual(zero, doc.activeElement().?);
 
-    // A negative tabindex is not a tab stop: Tab restarts at the first stop.
+    // A negative tabindex is not a tab stop, so Tab uses DOM order from that
+    // element rather than restarting at the first tab stop or using tabindex
+    // order. Forward continues at the next tab stop in tree order.
     try std.testing.expect(doc.focus(negative));
     try std.testing.expect(doc.moveFocus(.forward));
+    try std.testing.expectEqual(last_zero, doc.activeElement().?);
+
+    // Backward finds the nearest tab stop before the negative element in tree
+    // order, which is the nested tabindex=1 element, not the first stop.
+    try std.testing.expect(doc.focus(negative));
+    try std.testing.expect(doc.moveFocus(.backward));
     try std.testing.expectEqual(one, doc.activeElement().?);
 }
 
@@ -1194,4 +1397,438 @@ test "event: class display none makes an element unfocusable" {
 
     try std.testing.expect(!doc.focus(child));
     try std.testing.expect(!canFocus(&doc, child));
+}
+
+test "event: removing listeners during focus and key dispatch is safe" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    child.asElement().focusable = true;
+    _ = try root.appendChild(child);
+    doc.setRoot(root);
+
+    const Remover = struct {
+        node: *dom.Node,
+        listener: Listener = .{},
+        focus_in: usize = 0,
+        key: usize = 0,
+
+        fn onFocusIn(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.focus_in += 1;
+            _ = self.node.removeEventListener(self.listener);
+        }
+
+        fn onKey(context: ?*anyopaque, _: *KeyEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.key += 1;
+            _ = self.node.removeEventListener(self.listener);
+        }
+    };
+
+    const Counter = struct {
+        focus_in: usize = 0,
+        key: usize = 0,
+
+        fn onFocusIn(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.focus_in += 1;
+        }
+
+        fn onKey(context: ?*anyopaque, _: *KeyEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.key += 1;
+        }
+    };
+
+    var remover = Remover{ .node = child };
+    var counter = Counter{};
+    remover.listener = .{ .context = &remover, .focus_in = Remover.onFocusIn };
+    try child.addEventListener(remover.listener);
+    try child.addEventListener(.{ .context = &counter, .focus_in = Counter.onFocusIn });
+
+    try std.testing.expect(doc.focus(child));
+    try std.testing.expectEqual(@as(usize, 1), remover.focus_in);
+    try std.testing.expectEqual(@as(usize, 1), counter.focus_in);
+
+    remover.listener = .{ .context = &remover, .key_down = Remover.onKey };
+    try child.addEventListener(remover.listener);
+    try child.addEventListener(.{ .context = &counter, .key_down = Counter.onKey });
+    _ = doc.dispatchKey(.enter, .{});
+    try std.testing.expectEqual(@as(usize, 1), remover.key);
+    try std.testing.expectEqual(@as(usize, 1), counter.key);
+}
+
+test "event: focus is cleared during blur and a redirect aborts the pending target" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const a = try doc.createElement(.div);
+    const b = try doc.createElement(.div);
+    const c = try doc.createElement(.div);
+    a.asElement().focusable = true;
+    b.asElement().focusable = true;
+    c.asElement().focusable = true;
+    _ = try root.appendChild(a);
+    _ = try root.appendChild(b);
+    _ = try root.appendChild(c);
+    doc.setRoot(root);
+
+    var a_log = FocusLog{};
+    var b_log = FocusLog{};
+    var c_log = FocusLog{};
+    try a.addEventListener(a_log.listener());
+    try b.addEventListener(b_log.listener());
+    try c.addEventListener(c_log.listener());
+
+    const Redirect = struct {
+        doc: *dom.Document,
+        target: *dom.Node,
+        seen_active: ?*dom.Node = null,
+
+        fn onBlur(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.seen_active = self.doc.activeElement();
+            _ = self.doc.focus(self.target);
+        }
+    };
+    var redirect = Redirect{ .doc = &doc, .target = c };
+    try a.addEventListener(.{ .context = &redirect, .blur = Redirect.onBlur });
+
+    try std.testing.expect(doc.focus(a));
+    a_log = .{};
+    b_log = .{};
+    c_log = .{};
+
+    // The blur handler focuses c. B must not receive focus/focusin, and the
+    // active element during blur is the root/body fallback.
+    try std.testing.expect(!doc.focus(b));
+    try std.testing.expectEqual(c, doc.activeElement().?);
+    try std.testing.expect(redirect.seen_active == root);
+    try std.testing.expectEqual(@as(usize, 1), a_log.blur_count);
+    try std.testing.expectEqual(@as(usize, 1), a_log.focus_out_count);
+    try std.testing.expectEqual(@as(usize, 0), b_log.focus_count);
+    try std.testing.expectEqual(@as(usize, 0), b_log.focus_in_count);
+    try std.testing.expectEqual(@as(usize, 1), c_log.focus_count);
+    try std.testing.expectEqual(@as(usize, 1), c_log.focus_in_count);
+}
+
+test "event: a focus handler can blur or redirect before focusin" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const a = try doc.createElement(.div);
+    const b = try doc.createElement(.div);
+    const c = try doc.createElement(.div);
+    a.asElement().focusable = true;
+    b.asElement().focusable = true;
+    c.asElement().focusable = true;
+    _ = try root.appendChild(a);
+    _ = try root.appendChild(b);
+    _ = try root.appendChild(c);
+    doc.setRoot(root);
+
+    var b_log = FocusLog{};
+    var c_log = FocusLog{};
+    try b.addEventListener(b_log.listener());
+    try c.addEventListener(c_log.listener());
+
+    const Redirect = struct {
+        doc: *dom.Document,
+        target: *dom.Node,
+
+        fn onFocus(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            _ = self.doc.focus(self.target);
+        }
+    };
+    var redirect = Redirect{ .doc = &doc, .target = c };
+    try b.addEventListener(.{ .context = &redirect, .focus = Redirect.onFocus });
+
+    try std.testing.expect(doc.focus(a));
+    b_log = .{};
+    c_log = .{};
+
+    // B receives focus, redirects to c, then loses focus; focusin is not
+    // delivered for the aborted transition.
+    try std.testing.expect(!doc.focus(b));
+    try std.testing.expectEqual(c, doc.activeElement().?);
+    try std.testing.expectEqual(@as(usize, 1), b_log.focus_count);
+    try std.testing.expectEqual(@as(usize, 1), b_log.blur_count);
+    try std.testing.expectEqual(@as(usize, 1), b_log.focus_out_count);
+    try std.testing.expectEqual(@as(usize, 0), b_log.focus_in_count);
+    try std.testing.expectEqual(@as(usize, 1), c_log.focus_count);
+    try std.testing.expectEqual(@as(usize, 1), c_log.focus_in_count);
+}
+
+test "event: target focus runs capture listeners before bubble listeners" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    child.asElement().focusable = true;
+    _ = try root.appendChild(child);
+    doc.setRoot(root);
+
+    const Recorder = struct {
+        order: *std.ArrayListUnmanaged([2]u8),
+        allocator: std.mem.Allocator,
+
+        fn push(self: *@This(), value: []const u8) void {
+            self.order.append(self.allocator, .{ value[0], value[1] }) catch {};
+        }
+        fn bubble1(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.push("b1");
+        }
+        fn capture(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.push("c2");
+        }
+        fn bubble3(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.push("b3");
+        }
+        fn stopCapture(context: ?*anyopaque, event: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            self.push("s0");
+            event.stopPropagation();
+        }
+    };
+
+    var order: std.ArrayListUnmanaged([2]u8) = .empty;
+    defer order.deinit(allocator);
+    var recorder = Recorder{ .order = &order, .allocator = allocator };
+    try child.addEventListener(.{ .context = &recorder, .focus = Recorder.bubble1 });
+    try child.addEventListener(.{ .context = &recorder, .capture = true, .focus = Recorder.capture });
+    try child.addEventListener(.{ .context = &recorder, .focus = Recorder.bubble3 });
+
+    try std.testing.expect(doc.focus(child));
+    try std.testing.expectEqualSlices([2]u8, &.{ "c2".*, "b1".*, "b3".* }, order.items);
+
+    order.clearRetainingCapacity();
+    _ = doc.blur();
+    var stopper = Recorder{ .order = &order, .allocator = allocator };
+    try child.addEventListener(.{ .context = &stopper, .capture = true, .focus = Recorder.stopCapture });
+    try std.testing.expect(doc.focus(child));
+    try std.testing.expectEqualSlices([2]u8, &.{ "c2".*, "s0".* }, order.items);
+}
+
+const PhaseLog = struct {
+    nodes: [16]?*dom.Node = @splat(null),
+    phases: [16]Phase = @splat(.target),
+    count: usize = 0,
+
+    fn onFocusIn(context: ?*anyopaque, event: *FocusEvent) void {
+        const self: *@This() = @ptrCast(@alignCast(context orelse return));
+        if (self.count == self.nodes.len) return;
+        self.nodes[self.count] = event.current_target;
+        self.phases[self.count] = event.phase;
+        self.count += 1;
+    }
+};
+
+test "event: focusin runs capture, target and bubble and honors stopPropagation" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const parent = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    child.asElement().focusable = true;
+    _ = try root.appendChild(parent);
+    _ = try parent.appendChild(child);
+    doc.setRoot(root);
+
+    var root_capture = PhaseLog{};
+    var parent_capture = PhaseLog{};
+    var parent_bubble = PhaseLog{};
+    var root_bubble = PhaseLog{};
+    try root.addEventListener(.{ .context = &root_capture, .capture = true, .focus_in = PhaseLog.onFocusIn });
+    try parent.addEventListener(.{ .context = &parent_capture, .capture = true, .focus_in = PhaseLog.onFocusIn });
+    try parent.addEventListener(.{ .context = &parent_bubble, .focus_in = PhaseLog.onFocusIn });
+    try root.addEventListener(.{ .context = &root_bubble, .focus_in = PhaseLog.onFocusIn });
+
+    var target_log = PhaseLog{};
+    try child.addEventListener(.{ .context = &target_log, .focus_in = PhaseLog.onFocusIn });
+
+    try std.testing.expect(doc.focus(child));
+    try std.testing.expectEqual(@as(usize, 1), root_capture.count);
+    try std.testing.expectEqual(Phase.capture, root_capture.phases[0]);
+    try std.testing.expectEqual(@as(usize, 1), parent_capture.count);
+    try std.testing.expectEqual(Phase.capture, parent_capture.phases[0]);
+    try std.testing.expectEqual(@as(usize, 1), target_log.count);
+    try std.testing.expectEqual(Phase.target, target_log.phases[0]);
+    try std.testing.expectEqual(@as(usize, 1), parent_bubble.count);
+    try std.testing.expectEqual(Phase.bubble, parent_bubble.phases[0]);
+    try std.testing.expectEqual(@as(usize, 1), root_bubble.count);
+    try std.testing.expectEqual(Phase.bubble, root_bubble.phases[0]);
+
+    // stopPropagation at the target suppresses the ancestors but not the
+    // remaining listeners on the target.
+    const Stopper = struct {
+        fn onFocusIn(_: ?*anyopaque, event: *FocusEvent) void {
+            event.stopPropagation();
+        }
+    };
+    try child.addEventListener(.{ .focus_in = Stopper.onFocusIn });
+    var after_stop = PhaseLog{};
+    try child.addEventListener(.{ .context = &after_stop, .focus_in = PhaseLog.onFocusIn });
+    root_bubble.count = 0;
+    parent_bubble.count = 0;
+    target_log.count = 0;
+    try std.testing.expect(doc.focus(child));
+    // Already focused: no event at all.
+    try std.testing.expectEqual(@as(usize, 0), target_log.count);
+
+    _ = doc.blur();
+    try std.testing.expect(doc.focus(child));
+    try std.testing.expectEqual(@as(usize, 1), target_log.count);
+    try std.testing.expectEqual(@as(usize, 1), after_stop.count);
+    try std.testing.expectEqual(@as(usize, 0), parent_bubble.count);
+    try std.testing.expectEqual(@as(usize, 0), root_bubble.count);
+}
+
+test "event: focusin path is fixed before dispatch" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const first_parent = try doc.createElement(.div);
+    const second_parent = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    child.asElement().focusable = true;
+    _ = try first_parent.appendChild(child);
+    _ = try root.appendChild(first_parent);
+    _ = try root.appendChild(second_parent);
+    doc.setRoot(root);
+
+    const Move = struct {
+        child: *dom.Node,
+        new_parent: *dom.Node,
+        fn onFocusIn(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            _ = self.new_parent.appendChild(self.child) catch {};
+        }
+    };
+    var move = Move{ .child = child, .new_parent = second_parent };
+    try child.addEventListener(.{ .context = &move, .focus_in = Move.onFocusIn });
+
+    var first_bubble = PhaseLog{};
+    var second_bubble = PhaseLog{};
+    try first_parent.addEventListener(.{ .context = &first_bubble, .focus_in = PhaseLog.onFocusIn });
+    try second_parent.addEventListener(.{ .context = &second_bubble, .focus_in = PhaseLog.onFocusIn });
+
+    try std.testing.expect(doc.focus(child));
+    try std.testing.expectEqual(second_parent, child.parent.?);
+    try std.testing.expectEqual(@as(usize, 1), first_bubble.count);
+    try std.testing.expectEqual(@as(usize, 0), second_bubble.count);
+}
+
+test "event: Tab continues from the last pressed tree position" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const first = try doc.createElement(.div);
+    const spacer = try doc.createElement(.div);
+    const last = try doc.createElement(.div);
+    first.asElement().focusable = true;
+    last.asElement().focusable = true;
+    _ = try root.appendChild(first);
+    _ = try root.appendChild(spacer);
+    _ = try root.appendChild(last);
+    doc.setRoot(root);
+
+    // Without a press, Tab starts at the first tab stop.
+    try std.testing.expect(doc.moveFocus(.forward));
+    try std.testing.expectEqual(first, doc.activeElement().?);
+
+    _ = doc.blur();
+    var down = MouseEvent{ .kind = .down, .x = 1, .y = 1, .button = .left };
+    doc.dispatchMouse(spacer, &down);
+    try std.testing.expect(doc.focusedElement() == null);
+    try std.testing.expectEqual(spacer, doc.focus_start.?);
+    try std.testing.expect(doc.moveFocus(.forward));
+    try std.testing.expectEqual(last, doc.activeElement().?);
+}
+
+test "event: hiding the focused element keeps focus, as in the browser" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const child = try doc.createElement(.div);
+    child.asElement().focusable = true;
+    _ = try root.appendChild(child);
+    doc.setRoot(root);
+
+    var keys: usize = 0;
+    const Counter = struct {
+        fn onKey(context: ?*anyopaque, _: *KeyEvent) void {
+            const count: *usize = @ptrCast(@alignCast(context orelse return));
+            count.* += 1;
+        }
+    };
+    try child.addEventListener(.{ .context = &keys, .key_down = Counter.onKey });
+
+    try std.testing.expect(doc.focus(child));
+    child.setStyle(.{ .display = .none });
+    // Chrome keeps the hidden element focused and continues routing keys to
+    // it; only removing the node clears focus.
+    try std.testing.expectEqual(child, doc.activeElement().?);
+    try std.testing.expect(!canFocus(&doc, child));
+    _ = doc.dispatchKey(.enter, .{});
+    try std.testing.expectEqual(@as(usize, 1), keys);
+}
+
+test "event: a blur handler may install the pending target itself" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    const a = try doc.createElement(.div);
+    const b = try doc.createElement(.div);
+    a.asElement().focusable = true;
+    b.asElement().focusable = true;
+    _ = try root.appendChild(a);
+    _ = try root.appendChild(b);
+    doc.setRoot(root);
+
+    var b_log = FocusLog{};
+    try b.addEventListener(b_log.listener());
+
+    const Install = struct {
+        doc: *dom.Document,
+        target: *dom.Node,
+        fn onBlur(context: ?*anyopaque, _: *FocusEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(context orelse return));
+            _ = self.doc.focus(self.target);
+        }
+    };
+    var install = Install{ .doc = &doc, .target = b };
+    try a.addEventListener(.{ .context = &install, .blur = Install.onBlur });
+
+    try std.testing.expect(doc.focus(a));
+    b_log = .{};
+    // The handler already focused b during a's blur, so the outer call
+    // succeeds without dispatching focus/focusin a second time.
+    try std.testing.expect(doc.focus(b));
+    try std.testing.expectEqual(b, doc.activeElement().?);
+    try std.testing.expectEqual(@as(usize, 1), b_log.focus_count);
+    try std.testing.expectEqual(@as(usize, 1), b_log.focus_in_count);
 }

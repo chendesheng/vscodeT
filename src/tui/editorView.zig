@@ -875,7 +875,7 @@ pub const View = struct {
     pub fn dispatchKey(self: *View, event: *ui.KeyEvent) bool {
         self.ensureRendered() catch return false;
         const doc = self.surface.document();
-        if (doc.active_element == null) return false;
+        if (doc.focusedElement() == null) return false;
         doc.dispatchEvent(event);
         return event.default_prevented or event.propagation_stopped;
     }
@@ -1650,7 +1650,7 @@ pub const View = struct {
         self.ensureRendered() catch return null;
         // A focused widget paints its own block caret; the hardware cursor
         // belongs to the editor.
-        if (self.surface.document().active_element != null) return null;
+        if (self.surface.document().focusedElement() != null) return null;
         const row = self.cursor_row orelse return null;
         const rows = self.surface.document().rows;
         const cols = self.surface.document().cols;
