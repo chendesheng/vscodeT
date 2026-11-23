@@ -10,3 +10,4 @@ zig-pkg/
 host/node_modules/
 host/dist/
 .zig-tmp/
+.cache-nerd-font/

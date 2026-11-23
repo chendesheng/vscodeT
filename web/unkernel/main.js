@@ -6,6 +6,7 @@ import { createKernel, checkSupport } from "./vendor/unkernel/web.mjs";
 const statusElement = document.getElementById("status");
 const terminalElement = document.getElementById("terminal");
 const decoder = new TextDecoder();
+const FONT_FAMILY = '"IosevkaTerm Nerd Font", "JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
 const THEME = {
   background: "#1e1e1e",
@@ -93,6 +94,78 @@ async function loadGhostty() {
   return new Ghostty(instance);
 }
 
+function installMouseAdapter(term, terminalElement, write) {
+  const canvas = term.element?.querySelector("canvas") ?? terminalElement.querySelector("canvas");
+  if (!canvas) return;
+  let pressed = null;
+
+  const inside = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    return event.clientX >= rect.left && event.clientX < rect.right &&
+      event.clientY >= rect.top && event.clientY < rect.bottom;
+  };
+  const cellAt = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const cw = term.renderer?.charWidth || rect.width / Math.max(term.cols, 1);
+    const ch = term.renderer?.charHeight || rect.height / Math.max(term.rows, 1);
+    const col = Math.floor((event.clientX - rect.left) / cw);
+    const row = Math.floor((event.clientY - rect.top) / ch);
+    return {
+      col: Math.min(Math.max(col, 0), Math.max(term.cols - 1, 0)) + 1,
+      row: Math.min(Math.max(row, 0), Math.max(term.rows - 1, 0)) + 1,
+    };
+  };
+  const modifiers = (event) => (event.shiftKey ? 4 : 0) + (event.altKey ? 8 : 0) + (event.ctrlKey ? 16 : 0);
+  const send = (code, x, y, release) => {
+    write(`\x1b[<${code};${x};${y}${release ? "m" : "M"}`);
+  };
+  const onDown = (event) => {
+    if (!inside(event) || event.button > 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    term.focus();
+    pressed = event.button;
+    const { col, row } = cellAt(event);
+    send(event.button + modifiers(event), col, row, false);
+  };
+  const onMove = (event) => {
+    if (pressed === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!inside(event)) return;
+    const { col, row } = cellAt(event);
+    send(32 + pressed + modifiers(event), col, row, false);
+  };
+  const onUp = (event) => {
+    if (pressed === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const button = pressed;
+    pressed = null;
+    const { col, row } = cellAt(event);
+    send(button + modifiers(event), col, row, true);
+  };
+  const onWheel = (event) => {
+    if (!inside(event) || event.deltaY === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const { col, row } = cellAt(event);
+    send((event.deltaY < 0 ? 64 : 65) + modifiers(event), col, row, false);
+  };
+  const onContextMenu = (event) => {
+    if (!inside(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  window.addEventListener("mousedown", onDown, { capture: true, passive: false });
+  window.addEventListener("mousemove", onMove, { capture: true, passive: false });
+  window.addEventListener("mouseup", onUp, { capture: true, passive: false });
+  window.addEventListener("wheel", onWheel, { capture: true, passive: false });
+  window.addEventListener("contextmenu", onContextMenu, { capture: true, passive: false });
+  window.addEventListener("blur", () => { pressed = null; });
+}
+
 async function start() {
   const support = await checkSupport();
   if (!support.ok) {
@@ -100,6 +173,7 @@ async function start() {
   }
 
   showStatus("Loading terminal…");
+  await document.fonts.load('14px "IosevkaTerm Nerd Font"').catch(() => {});
   const ghostty = await loadGhostty();
   const term = new Terminal({
     ghostty,
@@ -110,7 +184,7 @@ async function start() {
     cursorBlink: true,
     cursorStyle: "bar",
     fontSize: 14,
-    fontFamily: '"JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    fontFamily: FONT_FAMILY,
     theme: THEME,
   });
   term.open(terminalElement);
@@ -146,6 +220,8 @@ async function start() {
     ["--user-data-dir", "/home/user/.vscodet", "/home/user/workspace", "/home/user/workspace/demo.ts"],
     { cols: term.cols, rows: term.rows, cwd: "/home/user", user: "user" },
   );
+
+  installMouseAdapter(term, terminalElement, (data) => { pty.write(data).catch(() => {}); });
 
   pty.output.pipeTo(new WritableStream({
     write(chunk) { term.write(chunk); },

@@ -38,6 +38,12 @@ jobs:
           key: ${{ runner.os }}-zig-${{ hashFiles('build.zig', 'build.zig.zon', 'third_party/**', 'src/**', 'ui/**', 'textmate/**') }}
           restore-keys: |
             ${{ runner.os }}-zig-
+      - uses: actions/cache@v4
+        with:
+          path: .cache-nerd-font
+          key: iosevka-term-nerd-font-3.5.1
+      - name: Fetch IosevkaTerm Nerd Font
+        run: scripts/fetch-iosevka-nerd-font.sh "$PWD/.cache-nerd-font"
       - name: Build
         run: zig build wasm -Doptimize=ReleaseSmall -Dwasm-only=true
       - name: Smoke test
@@ -57,6 +63,7 @@ jobs:
           cp web/unkernel/index.html web/unkernel/main.js web/unkernel/style.css "$demo/"
           cp zig-out/bin/zig "$demo/vscodet"
           cp -R zig-out/web/vendor/ghostty-web "$demo/vendor/"
+          cp -R "$PWD/.cache-nerd-font" "$demo/fonts"
           npm install --prefix /tmp/unkernel-sdk --no-save --ignore-scripts unkernel@0.2.0-261123-8f039c5
           mkdir -p "$demo/vendor/unkernel"
           cp -R /tmp/unkernel-sdk/node_modules/unkernel/dist/. "$demo/vendor/unkernel/"

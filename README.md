@@ -69,6 +69,9 @@ zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall \
 The Pages workflow then downloads the pinned unkernel SDK and Alpine image,
 copies the binary into `zig-out/web/unkernel/`, and deploys both demos.
 unkernel is MIT/GPL-2.0 and has no proprietary runtime; Ghostty is MIT.
+The page uses [IosevkaTerm Nerd Font](https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1)
+(from the Nerd Fonts release) so the workbench's icons render; the 14 MB
+Regular face is downloaded/cached in CI rather than checked in.
 
 ## Performance
 
