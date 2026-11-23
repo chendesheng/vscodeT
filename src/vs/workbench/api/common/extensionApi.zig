@@ -34,6 +34,14 @@ pub const ITextEditor = struct {
     path: []const u8,
     language_id: []const u8,
 
+    /// Forward a key to the editor after extension key handling. The host
+    /// dispatches editor contributions and editing commands directly.
+    keyboard_input: struct {
+        context: *anyopaque,
+        dispatch: *const fn (context: *anyopaque, event: *const KeyInputEvent) void,
+        cancel_suggestions: ?*const fn (context: *anyopaque) void = null,
+    },
+
     get_selections_fn: *const fn (context: *anyopaque, allocator: Allocator) anyerror![]Selection,
     set_selections_fn: *const fn (context: *anyopaque, selections: []const Selection) anyerror!void,
     cursor_position_fn: *const fn (context: *anyopaque) Position,
@@ -97,6 +105,12 @@ pub const ITextEditor = struct {
     }
     pub fn insertText(self: ITextEditor, text: []const u8) !void {
         return self.insert_text_fn(self.context, text);
+    }
+    pub fn dispatchEditorKey(self: ITextEditor, event: *const KeyInputEvent) void {
+        self.keyboard_input.dispatch(self.keyboard_input.context, event);
+    }
+    pub fn cancelEditorSuggestions(self: ITextEditor) void {
+        if (self.keyboard_input.cancel_suggestions) |cancel| cancel(self.keyboard_input.context);
     }
     pub fn newline(self: ITextEditor) !void {
         return self.newline_fn(self.context);

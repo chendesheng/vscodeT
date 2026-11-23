@@ -392,8 +392,13 @@ pub const VimEngine = struct {
                 var view = std.unicode.Utf8View.init(text) catch return false;
                 var iterator = view.iterator();
                 var consumed = false;
-                while (iterator.nextCodepoint()) |codepoint| {
-                    consumed = (try self.handleChar(codepoint)) or consumed;
+                while (iterator.i < text.len) {
+                    if (self.mode == .insert or self.mode == .replace) {
+                        var remaining = event.*;
+                        remaining.key = .{ .text = text[iterator.i..] };
+                        return (try self.handleInsert(&remaining)) or consumed;
+                    }
+                    consumed = (try self.handleChar(iterator.nextCodepoint().?)) or consumed;
                 }
                 return consumed;
             },
@@ -1360,6 +1365,7 @@ pub const VimEngine = struct {
     }
 
     fn finishInsert(self: *VimEngine) !void {
+        if (self.mode == .insert) self.editor.cancelEditorSuggestions();
         self.last_insert_position = self.editor.cursorPosition();
         if (self.block_insert) {
             self.block_insert = false;
@@ -1384,6 +1390,21 @@ pub const VimEngine = struct {
     }
 
     fn handleInsert(self: *VimEngine, event: *const KeyInputEvent) !bool {
+        const editor_key = switch (event.key) {
+            .text => !self.insert_register,
+            .char => !event.mods.ctrl and !event.mods.alt and !self.insert_register,
+            .enter, .tab, .backtab, .backspace, .delete, .up, .down, .left, .right, .home, .end, .page_up, .page_down => true,
+            else => false,
+        };
+        if (self.mode == .insert and editor_key) {
+            self.editor.dispatchEditorKey(event);
+            switch (event.key) {
+                .text, .char, .enter, .tab, .backtab, .backspace, .delete => self.did_change = true,
+                else => {},
+            }
+            return true;
+        }
+
         switch (event.key) {
             .text => |text| {
                 if (self.insert_register) {
@@ -1402,12 +1423,12 @@ pub const VimEngine = struct {
                 return true;
             },
             .char => |char| {
+                if (self.insert_register and !event.mods.alt) {
+                    self.insert_register = false;
+                    try self.insertRegisterAt(char);
+                    return true;
+                }
                 if (event.mods.ctrl) {
-                    if (self.insert_register) {
-                        self.insert_register = false;
-                        try self.insertRegisterAt(char);
-                        return true;
-                    }
                     switch (char) {
                         'w' => try self.deleteWordBefore(),
                         'u' => try self.deleteToLineStart(),

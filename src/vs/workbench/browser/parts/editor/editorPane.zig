@@ -15,6 +15,7 @@ const ui = @import("ui");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const View = @import("../../../../../tui/editorView.zig").View;
 const Cell = @import("../../../../../tui/editorView.zig").Cell;
+const editor_input_dispatch = @import("../../../../../tui/editorInputDispatch.zig");
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
 const DiffView = @import("./textDiffEditor.zig").DiffView;
@@ -257,6 +258,22 @@ pub const Tab = struct {
 
         self.controllers = controllers;
         controllers.word_highlighter.onEditorChanged(time_compat.milliTimestamp());
+    }
+
+    pub fn handleEditorKey(self: *Tab, event: *ui.KeyEvent, is_pasting: *bool, now_ms: i64) !bool {
+        try self.ensureControllers();
+        const controllers = self.controllers orelse return false;
+        return editor_input_dispatch.handleKeyEvent(
+            self.view,
+            controllers.hover,
+            controllers.word_highlighter,
+            controllers.find,
+            controllers.suggest,
+            self.editor,
+            event,
+            is_pasting,
+            now_ms,
+        );
     }
 
     pub fn onEditorChanged(self: *Tab, now_ms: i64) void {

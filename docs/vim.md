@@ -44,8 +44,9 @@ editor:
   wide characters. At the first/last line the motion is a no-op (as in
   VSCodeVim), so a repeated `k`/`j` does not clear the remembered column.
 - Visual selections are the editor's `Selection` values.
-- Insert-mode text goes through `Editor.typeCharacter`/`newline`, so
-  auto-closing and auto-indent continue to work.
+- Insert-mode typing, editing, and navigation use the regular editor key
+  dispatch. This gives Insert mode the same suggestions, snippet navigation,
+  auto-closing pairs, and auto-indent as editing with Vim disabled.
 
 There is no separate diff-based undo history and no Vim-owned desired-column
 field.

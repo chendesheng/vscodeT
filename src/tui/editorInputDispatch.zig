@@ -8,6 +8,11 @@
 const std = @import("std");
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const input = @import("ui").input;
+const View = @import("./editorView.zig").View;
+const ContentHoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+const WordHighlighterContribution = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
+const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestController;
 
 /// Returns true when Ctrl+Q should terminate the host (the TUI handles it,
 /// the browser demo ignores it).
@@ -147,4 +152,64 @@ pub fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool 
         .insert => {},
     }
     return false;
+}
+
+/// Runs the editor contributions and editor command for a decoded key.
+/// Returns true when the key requests a host quit.
+pub fn handleKeyEvent(
+    view: *View,
+    hover: *ContentHoverController,
+    word_highlighter: *WordHighlighterContribution,
+    find: *FindController,
+    suggest: ?*SuggestController,
+    editor: *Editor,
+    event: *input.KeyEvent,
+    is_pasting: *bool,
+    now_ms: i64,
+) !bool {
+    if (suggest) |controller| {
+        if (try controller.handleKey(event, now_ms)) return false;
+    }
+    if (hover.onKeyDown(event)) return false;
+    if (suggest) |controller| {
+        if (controller.hasSnippetSession()) {
+            switch (event.key) {
+                .tab => if (try controller.nextSnippetPlaceholder()) return false,
+                .backtab => if (try controller.previousSnippetPlaceholder()) return false,
+                .escape => {
+                    controller.cancelSnippetSession();
+                    return false;
+                },
+                else => {},
+            }
+        }
+    }
+    if (word_highlighter.handleKey(event)) {
+        find.onEditorChanged();
+        return false;
+    }
+    if (view.dispatchKey(event)) return false;
+    if (suggest) |controller| {
+        switch (event.key) {
+            .char, .text, .enter, .tab, .backspace, .delete => controller.beforeTyping(),
+            else => {},
+        }
+    }
+    if (dispatch(editor, event.*, is_pasting)) return true;
+    if (suggest) |controller| {
+        if (printableChar(event.*)) |ch| {
+            _ = try controller.onTypedCharacter(ch, now_ms);
+        }
+        _ = try controller.onEditorChanged();
+    }
+    find.onEditorChanged();
+    return false;
+}
+
+fn printableChar(event: input.KeyEvent) ?u8 {
+    return switch (event.key) {
+        .char => |ch| if (ch >= 0x20 and ch <= 0x7e and !event.mods.ctrl and !event.mods.alt) @intCast(ch) else null,
+        .text => |text| if (text.len == 1 and text[0] >= 0x20 and text[0] <= 0x7e) text[0] else null,
+        else => null,
+    };
 }

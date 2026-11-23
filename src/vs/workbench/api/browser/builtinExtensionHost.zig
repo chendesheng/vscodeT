@@ -10,6 +10,9 @@ const ArrayList = std.array_list.Managed;
 const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const EditorTextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const Workbench = @import("../../browser/workbench.zig").Workbench;
+const Tab = @import("../../browser/parts/editor/editorPane.zig").Tab;
+const editor_input_dispatch = @import("../../../../tui/editorInputDispatch.zig");
+const time_compat = @import("../../../base/common/timeCompat.zig");
 const Position = @import("../../../editor/common/core/position.zig").Position;
 const Range = @import("../../../editor/common/core/range.zig").Range;
 const Selection = @import("../../../editor/common/core/selection.zig").Selection;
@@ -121,7 +124,13 @@ pub const BuiltinExtensionHost = struct {
 
     fn activeEditorInterface(self: *BuiltinExtensionHost) ?ITextEditor {
         const tab = self.workbench.activeTab() orelse return null;
-        return editorInterface(tab.editor);
+        var editor = editorInterface(tab.editor);
+        editor.keyboard_input = .{
+            .context = tab,
+            .dispatch = tabDispatchEditorKey,
+            .cancel_suggestions = tabCancelEditorSuggestions,
+        };
+        return editor;
     }
 };
 
@@ -131,6 +140,7 @@ pub fn editorInterface(editor: *Editor) ITextEditor {
         .model = editor.model,
         .path = editor.path,
         .language_id = editor.languageId(),
+        .keyboard_input = .{ .context = editor, .dispatch = editorDispatchKey },
         .get_selections_fn = editorGetSelections,
         .set_selections_fn = editorSetSelections,
         .cursor_position_fn = editorCursorPosition,
@@ -167,6 +177,27 @@ pub fn editorInterface(editor: *Editor) ITextEditor {
 
 fn editorFrom(context: *anyopaque) *Editor {
     return @ptrCast(@alignCast(context));
+}
+
+fn editorDispatchKey(context: *anyopaque, event: *const key_input.KeyInputEvent) void {
+    var is_pasting = false;
+    _ = editor_input_dispatch.dispatch(editorFrom(context), event.*, &is_pasting);
+}
+
+fn tabDispatchEditorKey(context: *anyopaque, event: *const key_input.KeyInputEvent) void {
+    const tab: *Tab = @ptrCast(@alignCast(context));
+    var key = event.*;
+    var is_pasting = false;
+    _ = tab.handleEditorKey(&key, &is_pasting, time_compat.milliTimestamp()) catch |err| {
+        tab.editor.setMessage("edit failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn tabCancelEditorSuggestions(context: *anyopaque) void {
+    const tab: *Tab = @ptrCast(@alignCast(context));
+    const controllers = tab.controllers orelse return;
+    controllers.suggest.cancelSnippetSession();
+    controllers.suggest.cancel();
 }
 
 fn editorGetSelections(context: *anyopaque, allocator: Allocator) anyerror![]Selection {

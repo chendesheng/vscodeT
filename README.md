@@ -419,6 +419,8 @@ Vim uses the editor's own state instead of a parallel history:
 
 - `u`/`Ctrl-R` call `Editor.undo()`/`Editor.redo()`. One insert session or
   operator change is one editor undo group; no diff tracker is kept.
+- Insert mode uses the regular editor key dispatch for typing, completion,
+  snippet navigation, automatic closing pairs, and indentation.
 - `j`/`k` use the editor's `leftoverVisibleColumns`, so the visible column is
   preserved across tabs, wide characters and short lines; at the first and last
   line the motion is a no-op that keeps the remembered column.

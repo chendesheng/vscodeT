@@ -8,6 +8,7 @@ const input = ui.input;
 const terminal_input = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const editorInputDispatch = @import("./editorInputDispatch.zig");
+const handleKeyEvent = editorInputDispatch.handleKeyEvent;
 const View = @import("./editorView.zig").View;
 const Workbench = @import("../vs/workbench/browser/workbench.zig").Workbench;
 const extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig");
@@ -914,20 +915,7 @@ pub fn main(init: std.process.Init) !void {
                         if (current.handleDiffKey(event)) needs_render = true;
                         continue;
                     }
-                    try current.ensureControllers();
-
-                    const tab_controllers = current.controllers orelse continue;
-                    if (try handleKeyEvent(
-                        current.view,
-                        tab_controllers.hover,
-                        tab_controllers.word_highlighter,
-                        tab_controllers.find,
-                        tab_controllers.suggest,
-                        current.editor,
-                        event,
-                        &workbench.is_pasting,
-                        now_ms,
-                    )) return;
+                    if (try current.handleEditorKey(event, &workbench.is_pasting, now_ms)) return;
                 },
                 .mouse => |*event| {
                     // Only motion re-resolves the whole workbench: a press or
@@ -1057,68 +1045,6 @@ pub fn main(init: std.process.Init) !void {
 fn dispatchExtensionKey(workbench: *Workbench, host: anytype, event: *ui.KeyEvent) bool {
     if (workbench.notifyEditorKeyDown(event)) return false;
     return host.dispatchKey(event);
-}
-
-/// Handles one decoded editor event. The workbench routes Ctrl-Q (and the
-/// modal quit confirmation) before this helper; Ctrl-F/Ctrl-R still open the
-/// find bar from either side (Ctrl-H is Backspace on terminals). Returns true
-/// when the app should quit.
-fn handleKeyEvent(
-    view: *View,
-    hover: *ContentHoverController,
-    word_highlighter: *WordHighlighterContribution,
-    find: *FindController,
-    suggest: ?*SuggestController,
-    editor: *Editor,
-    event: *input.KeyEvent,
-    is_pasting: *bool,
-    now_ms: i64,
-) !bool {
-    if (suggest) |controller| {
-        if (try controller.handleKey(event, now_ms)) return false;
-    }
-    if (hover.onKeyDown(event)) return false;
-    if (suggest) |controller| {
-        if (controller.hasSnippetSession()) {
-            switch (event.key) {
-                .tab => if (try controller.nextSnippetPlaceholder()) return false,
-                .backtab => if (try controller.previousSnippetPlaceholder()) return false,
-                .escape => {
-                    controller.cancelSnippetSession();
-                    return false;
-                },
-                else => {},
-            }
-        }
-    }
-    if (word_highlighter.handleKey(event)) {
-        find.onEditorChanged();
-        return false;
-    }
-    if (view.dispatchKey(event)) return false;
-    if (suggest) |controller| {
-        switch (event.key) {
-            .char, .text, .enter, .tab, .backspace, .delete => controller.beforeTyping(),
-            else => {},
-        }
-    }
-    if (dispatch(editor, event.*, is_pasting)) return true;
-    if (suggest) |controller| {
-        if (printableChar(event.*)) |ch| {
-            _ = try controller.onTypedCharacter(ch, now_ms);
-        }
-        _ = try controller.onEditorChanged();
-    }
-    find.onEditorChanged();
-    return false;
-}
-
-fn printableChar(event: input.KeyEvent) ?u8 {
-    return switch (event.key) {
-        .char => |ch| if (ch >= 0x20 and ch <= 0x7e and !event.mods.ctrl and !event.mods.alt) @intCast(ch) else null,
-        .text => |text| if (text.len == 1 and text[0] >= 0x20 and text[0] <= 0x7e) text[0] else null,
-        else => null,
-    };
 }
 
 /// Routes one mouse event through the view. The view owns hit testing, focus,

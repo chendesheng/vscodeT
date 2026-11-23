@@ -109,6 +109,7 @@ pub const SuggestController = struct {
     pub fn cancelSnippetSession(self: *SuggestController) void {
         if (self.snippet_session) |session| session.deinit();
         self.snippet_session = null;
+        self.choice_active = false;
     }
 
     pub fn setTheme(self: *SuggestController, theme: suggestWidget.Theme) void {
