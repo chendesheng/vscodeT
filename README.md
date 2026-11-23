@@ -9,6 +9,14 @@ is ported into `src/vs/...` at matching upstream paths, and built-in extension
 sources (currently the Git extension) into `src/extensions/...`, mirroring
 `vscode/extensions/...`.
 
+## Live demo
+
+[Open vscodeT in the browser](https://chendesheng.github.io/vscodeT/) — the
+editor compiled to WebAssembly and rendered with Ghostty through
+[`ghostty-web`](https://github.com/coder/ghostty-web). The demo is a single-file
+editor; the workbench shell and the integrated terminal are not part of it.
+See [`web/README.md`](web/README.md) for the build and the exact scope.
+
 Requires Zig 0.17 or newer.
 
 ```sh
@@ -145,6 +153,14 @@ git clone --recurse-submodules --shallow-submodules <repo-url>
 # or, in an existing checkout:
 git submodule update --init --depth 1
 ```
+
+The wasm demo additionally uses the `third_party/oniguruma` git submodule,
+pinned to Oniguruma **6.9.10** at commit
+`4ef89209a239c1aea328cf13c05a2807e5c146d1`. The submodule is left unmodified;
+the wasm-only `config.h` and provenance live in
+`third_party/oniguruma-config/`. The same `git submodule update --init
+--depth 1` initializes it alongside `vscode/`; `zig build wasm` needs it, while
+the native `zig build` still uses the system libonig.
 
 Without an initialized submodule, `zig build` still works with the vendored
 grammar and theme fallbacks in `src/support/` (Zig, TOML, YAML and Markdown,
@@ -471,6 +487,40 @@ language extensions stay in step. Still missing: the contribution scanner,
 configuration writes, full `tabGroups`, the rest of the built-in command set,
 and the extension keybinding registry. See `docs/extensions.md` for the port
 status and the remaining work.
+
+## WebAssembly demo
+
+The browser demo is a separate additive build; the native TUI remains the
+primary product. It compiles the editor core and view to `wasm32-wasi` and uses
+Ghostty's VT engine (pinned [`ghostty-web`](https://github.com/coder/ghostty-web))
+as the terminal, not xterm.js. The Ghostty browser bundle is downloaded at
+build time from the pinned npm tarball (hash-checked); no browser binary is
+checked into this repository.
+
+```sh
+git submodule update --init --depth 1 third_party/oniguruma
+zig build wasm -Doptimize=ReleaseSmall
+python3 -m http.server -d zig-out/web 8000
+# open http://localhost:8000
+```
+
+The build fetches the pinned `ghostty-web` tarball with Node (network needed on
+the first run; the hash-checked files are then reused from `zig-out/web`).
+
+`zig build wasm-smoke` runs the headless end-to-end test: the editor's ANSI
+frames are parsed by Ghostty's actual VT engine and the resulting cells are
+checked for text, syntax colors, typing, resize and save round-trip.
+
+The demo supports single-file editing with syntax highlighting, selection,
+multi-cursor keys, mouse, resize, open/save and clipboard. It does not include
+the workbench (explorer, tabs, command palette), the integrated terminal (it
+needs a PTY), file watching, the Node extension host, image previews or the diff
+editor. See [`web/README.md`](web/README.md) for details and known limits.
+
+`.github/workflows/pages.yml` builds the demo, runs the smoke test and deploys
+`zig-out/web` to GitHub Pages (`https://chendesheng.github.io/vscodeT/`) on
+pushes to `main`. The repository's Pages source must be **GitHub Actions**;
+this is a one-time repository setting.
 
 ## Continuous integration
 

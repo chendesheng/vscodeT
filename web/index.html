@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vscodeT — WebAssembly demo</title>
+  <meta name="description" content="The vscodeT terminal editor compiled to WebAssembly and rendered with Ghostty (ghostty-web).">
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="toolbar">
+      <div class="brand">vscodeT <span>wasm + Ghostty</span></div>
+      <div class="actions">
+        <button id="open" type="button">Open…</button>
+        <button id="save" type="button">Save</button>
+        <button id="copy" type="button">Copy</button>
+        <button id="paste" type="button">Paste</button>
+      </div>
+      <div id="file-label" title="open document">/demo.ts</div>
+    </header>
+    <main id="terminal" aria-label="editor terminal"></main>
+    <footer id="status">Loading editor…</footer>
+  </div>
+  <input id="file-input" type="file" hidden>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

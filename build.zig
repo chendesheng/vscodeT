@@ -16,13 +16,14 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const watcher_only = b.option(bool, "watcher-only", "Build only the file-watcher tests") orelse false;
+    const wasm_only = b.option(bool, "wasm-only", "Configure only the WebAssembly demo (no native TUI)") orelse false;
     const enable_fsevents = fseventsEnabled(b, target);
     const onig_paths = OnigPaths{
         .include_dir = b.option([]const u8, "onig-include", "Directory containing oniguruma.h"),
         .lib_dir = b.option([]const u8, "onig-lib", "Directory containing the oniguruma library"),
     };
 
-    if (!watcher_only) {
+    if (!watcher_only and !wasm_only) {
         const onig = onigModule(b, target, optimize, onig_paths);
 
         const vscode_textmate_dep = b.dependency("vscode_textmate", .{
@@ -83,6 +84,10 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run_cmd.step);
 
         setupTests(b, target, optimize, onig, vscode_textmate, ui, markdown, vscode_syntax, ghostty_vt, onig_paths);
+    }
+
+    if (!watcher_only) {
+        addWasmDemo(b, optimize);
     }
 
     setupWatcherTests(b, target, optimize);
@@ -473,6 +478,166 @@ fn addOnigLibraryPath(b: *std.Build, module: *std.Build.Module, paths: OnigPaths
             } else |_| {}
         }
     }
+}
+
+/// Sources needed by the wasm static library. The Oniguruma submodule also
+/// contains helper programs (`mktable.c`) and the POSIX/Windows shims, which
+/// are not part of the editor's regex/tokenizer path.
+const onig_wasm_sources = [_][]const u8{
+    "src/regparse.c",
+    "src/regcomp.c",
+    "src/regexec.c",
+    "src/regenc.c",
+    "src/regerror.c",
+    "src/regext.c",
+    "src/regsyntax.c",
+    "src/regtrav.c",
+    "src/regversion.c",
+    "src/st.c",
+    "src/reggnu.c",
+    "src/unicode.c",
+    "src/unicode_unfold_key.c",
+    "src/unicode_fold1_key.c",
+    "src/unicode_fold2_key.c",
+    "src/unicode_fold3_key.c",
+    "src/ascii.c",
+    "src/utf8.c",
+    "src/utf16_be.c",
+    "src/utf16_le.c",
+    "src/utf32_be.c",
+    "src/utf32_le.c",
+    "src/euc_jp.c",
+    "src/euc_jp_prop.c",
+    "src/sjis.c",
+    "src/sjis_prop.c",
+    "src/iso8859_1.c",
+    "src/iso8859_2.c",
+    "src/iso8859_3.c",
+    "src/iso8859_4.c",
+    "src/iso8859_5.c",
+    "src/iso8859_6.c",
+    "src/iso8859_7.c",
+    "src/iso8859_8.c",
+    "src/iso8859_9.c",
+    "src/iso8859_10.c",
+    "src/iso8859_11.c",
+    "src/iso8859_13.c",
+    "src/iso8859_14.c",
+    "src/iso8859_15.c",
+    "src/iso8859_16.c",
+    "src/euc_tw.c",
+    "src/euc_kr.c",
+    "src/big5.c",
+    "src/gb18030.c",
+    "src/koi8_r.c",
+    "src/cp1251.c",
+    "src/onig_init.c",
+};
+
+fn onigWasmLibrary(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Step.Compile {
+    const library = b.addLibrary(.{
+        .name = "onig",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    library.root_module.addCSourceFiles(.{
+        .root = b.path("third_party/oniguruma"),
+        .files = &onig_wasm_sources,
+        .flags = &.{"-DHAVE_CONFIG_H"},
+    });
+    // The submodule is left untouched: the wasm `config.h` lives beside it in
+    // the main repository and must win over any file in the submodule.
+    library.root_module.addIncludePath(b.path("third_party/oniguruma-config"));
+    library.root_module.addIncludePath(b.path("third_party/oniguruma"));
+    library.root_module.addIncludePath(b.path("third_party/oniguruma/src"));
+    return library;
+}
+
+/// The browser demo: the editor, view and their portable dependencies built as
+/// a wasm32-wasi reactor. The page (`web/`) supplies the terminal (Ghostty via
+/// `ghostty-web`) and a minimal WASI shim; no PTY, filesystem or threads are
+/// involved.
+fn addWasmDemo(b: *std.Build, optimize: std.builtin.Optimize) void {
+    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
+    const ui = b.dependency("ui", .{ .target = wasm_target, .optimize = optimize }).module("ui");
+    const vscode_syntax = vscodeSyntaxAssets(b, wasm_target, optimize);
+    const markdown = markdownModule(b, wasm_target, optimize);
+    const onig_lib = onigWasmLibrary(b, wasm_target, optimize);
+
+    // The checked-in bindings avoid a cold `translate-c` run (and the system
+    // oniguruma.h) for wasm. The native build still translates the header.
+    const onig = b.createModule(.{
+        .root_source_file = b.path("src/support/onigurumaBindings.zig"),
+        .target = wasm_target,
+        .optimize = optimize,
+    });
+
+    // Build the standalone vscode_textmate package directly so both the root
+    // and the tokenizer share the same wasm Oniguruma module.
+    const textmate = b.createModule(.{
+        .root_source_file = b.path("textmate/src/root.zig"),
+        .target = wasm_target,
+        .optimize = optimize,
+    });
+    textmate.addImport("c_onig", onig);
+
+    const exe = b.addExecutable(.{
+        .name = "editor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    // Reactor, not a command: the page calls the exported wasm_* functions
+    // without running `_start`.
+    exe.entry = .disabled;
+    exe.rdynamic = true;
+    exe.root_module.addImport("ui", ui);
+    exe.root_module.addImport("vscode_textmate", textmate);
+    exe.root_module.addImport("vscode-syntax", vscode_syntax);
+    exe.root_module.addImport("oniguruma", onig);
+    exe.root_module.addImport("markdown", markdown);
+    exe.root_module.linkLibrary(onig_lib);
+
+    const install_wasm = b.addInstallFile(exe.getEmittedBin(), "web/editor.wasm");
+    const install_assets = b.addInstallDirectory(.{
+        .source_dir = b.path("web"),
+        .install_dir = .prefix,
+        .install_subdir = "web",
+    });
+
+    // The Ghostty browser bundle is pinned by `web/ghostty-web.lock.json` and
+    // fetched into the output directory; no browser binary is checked in.
+    const fetch_vendor = b.addSystemCommand(&.{
+        "node",
+        "web/fetch-ghostty-web.mjs",
+        "zig-out/web/vendor/ghostty-web",
+    });
+    fetch_vendor.step.dependOn(&install_assets.step);
+
+    const wasm_step = b.step("wasm", "Build the browser WebAssembly demo into zig-out/web");
+    wasm_step.dependOn(&install_wasm.step);
+    wasm_step.dependOn(&install_assets.step);
+    wasm_step.dependOn(&fetch_vendor.step);
+
+    const smoke = b.addSystemCommand(&.{
+        "node",
+        "web/smoke.mjs",
+        "zig-out/web/editor.wasm",
+        "zig-out/web/vendor/ghostty-web/ghostty-vt.wasm",
+        "zig-out/web/vendor/ghostty-web/ghostty-web.js",
+    });
+    smoke.step.dependOn(&install_wasm.step);
+    smoke.step.dependOn(&install_assets.step);
+    smoke.step.dependOn(&fetch_vendor.step);
+    const smoke_step = b.step("wasm-smoke", "Run the browser demo smoke test (requires node)");
+    smoke_step.dependOn(&smoke.step);
 }
 
 fn setupWatcherTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) void {

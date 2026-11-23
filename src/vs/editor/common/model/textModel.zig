@@ -1746,7 +1746,7 @@ pub const TextModel = struct {
                 defer lineHeightChangeEvent.deinit();
 
                 while (affectedLines.next()) |specialLineHeightChange| {
-                    try lineHeightChangeEvent.append(ModelLineHeightChanged.init(specialLineHeightChange.ownerId, specialLineHeightChange.decorationId, specialLineHeightChange.lineNumber, specialLineHeightChange.lineHeight));
+                    try lineHeightChangeEvent.append(ModelLineHeightChanged.init(@intCast(specialLineHeightChange.ownerId), specialLineHeightChange.decorationId, specialLineHeightChange.lineNumber, specialLineHeightChange.lineHeight));
                 }
                 try self._onDidChangeLineHeight.fire(ModelLineHeightChangedEvent.init(lineHeightChangeEvent.items));
             }

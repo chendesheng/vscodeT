@@ -1,0 +1,28 @@
+{
+  "name": "ghostty-web",
+  "version": "0.4.0",
+  "tarball": "https://registry.npmjs.org/ghostty-web/-/ghostty-web-0.4.0.tgz",
+  "tarballSha256": "90bf473b6c7f43ab5e52ee98d8295e04fb1c6b07b928e9795489df1e8cb8802e",
+  "files": [
+    {
+      "from": "package/dist/ghostty-web.js",
+      "to": "ghostty-web.js",
+      "sha256": "078b3fe37e4ef469d3f3d7772ee263070f8613e5a6f5ff305c85778907f45e72"
+    },
+    {
+      "from": "package/dist/ghostty-vt.wasm",
+      "to": "ghostty-vt.wasm",
+      "sha256": "d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a"
+    },
+    {
+      "from": "package/dist/__vite-browser-external-2447137e.js",
+      "to": "__vite-browser-external-2447137e.js",
+      "sha256": "f8c456031e5001c0cda4837cd9ee3a33d79beeba120ec633ec9d990632fb2aa6"
+    },
+    {
+      "from": "package/LICENSE",
+      "to": "LICENSE",
+      "sha256": "5eccd0eeca906db6d661b64dd05e1d4a4b2e49d37d43bbcfd2c8cce4d7832920"
+    }
+  ]
+}

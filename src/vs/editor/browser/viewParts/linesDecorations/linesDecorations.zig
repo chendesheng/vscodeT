@@ -138,7 +138,7 @@ pub const LinesDecorationsOverlay = struct {
     }
 
     fn prepareRenderCallback(overlay: *DynamicViewOverlay, context: *const RenderingContext) void {
-        const self: *LinesDecorationsOverlay = @fieldParentPtr("base", overlay);
+        const self: *LinesDecorationsOverlay = @alignCast(@fieldParentPtr("base", overlay));
         self.prepareRender(context);
     }
 

@@ -269,12 +269,12 @@ pub const ViewCursors = struct {
     }
 
     pub fn prepareRenderCallback(part: *ViewPart, context: *const RenderingContext) void {
-        const self: *ViewCursors = @fieldParentPtr("base", part);
+        const self: *ViewCursors = @alignCast(@fieldParentPtr("base", part));
         self.prepareRender(context);
     }
 
     pub fn renderCallback(part: *ViewPart, restricted: *RestrictedRenderingContext) void {
-        const self: *ViewCursors = @fieldParentPtr("base", part);
+        const self: *ViewCursors = @alignCast(@fieldParentPtr("base", part));
         self.render(restricted);
     }
 

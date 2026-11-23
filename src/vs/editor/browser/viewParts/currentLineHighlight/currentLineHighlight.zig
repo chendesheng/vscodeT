@@ -281,12 +281,12 @@ pub const AbstractLineHighlightOverlay = struct {
     }
 
     fn prepareRenderCallback(overlay: *DynamicViewOverlay, context: *const RenderingContext) void {
-        const self: *AbstractLineHighlightOverlay = @fieldParentPtr("base", overlay);
+        const self: *AbstractLineHighlightOverlay = @alignCast(@fieldParentPtr("base", overlay));
         self.prepareRender(context);
     }
 
     fn renderCallback(overlay: *DynamicViewOverlay, start_line_number: usize, line_number: usize) []const u8 {
-        const self: *AbstractLineHighlightOverlay = @fieldParentPtr("base", overlay);
+        const self: *AbstractLineHighlightOverlay = @alignCast(@fieldParentPtr("base", overlay));
         _ = start_line_number;
         const data = self.renderedLine(line_number) orelse return "";
         if (!data.highlight) return "";

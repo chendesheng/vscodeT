@@ -394,7 +394,7 @@ pub const SelectionsOverlay = struct {
     }
 
     fn prepareRenderCallback(overlay: *DynamicViewOverlay, context: *const RenderingContext) void {
-        const self: *SelectionsOverlay = @fieldParentPtr("base", overlay);
+        const self: *SelectionsOverlay = @alignCast(@fieldParentPtr("base", overlay));
         self.prepareRender(context);
     }
 

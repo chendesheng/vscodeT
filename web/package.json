@@ -1,0 +1,6 @@
+{
+  "name": "vscodet-wasm-demo",
+  "private": true,
+  "type": "module",
+  "description": "Static browser demo for the vscodeT editor (wasm + ghostty-web)"
+}

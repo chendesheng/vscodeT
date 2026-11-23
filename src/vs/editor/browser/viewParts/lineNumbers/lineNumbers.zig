@@ -221,12 +221,12 @@ pub const LineNumbersOverlay = struct {
     }
 
     fn prepareRenderCallback(overlay: *DynamicViewOverlay, context: *const RenderingContext) void {
-        const self: *LineNumbersOverlay = @fieldParentPtr("base", overlay);
+        const self: *LineNumbersOverlay = @alignCast(@fieldParentPtr("base", overlay));
         self.prepareRender(context);
     }
 
     fn renderCallback(overlay: *DynamicViewOverlay, start_line_number: usize, line_number: usize) []const u8 {
-        const self: *LineNumbersOverlay = @fieldParentPtr("base", overlay);
+        const self: *LineNumbersOverlay = @alignCast(@fieldParentPtr("base", overlay));
         return self.render(start_line_number, line_number);
     }
 
