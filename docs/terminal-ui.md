@@ -620,19 +620,17 @@ discards the query keeps the old rendering. Widgets that size themselves with
 `border_width * 2` (the hover and suggest content widgets) have not opted into
 the cell-border path yet; the workbench does.
 
-The workbench uses the article's pane chrome. Each editor pane's border box
-(tab row plus editor content) gets its own outline. The terminal draws the
-outline on cell edges, so adjacent panes need no separator gutter. Terminals
-with the `round` extension draw a thin inside stroke with rounded corners on
-each pane. Basic cell-border terminals merge square outlines at shared edges.
-The active pane uses the focus color and priority. The pane divider is also
-the sash hit zone: a left-button drag updates the split ratio (clamped to a
-10-column/3-row minimum), and closing the last tab in a pane removes the group
-from the split tree and promotes its sibling, mirroring Grid branch demotion.
-The sidebar and editor each have their own frame, including when a single
-editor fills the workbench. The glyph fallback reserves the outer cells
-for rounded box-drawing outlines, with no extra spacer between frames.
-Compact terminals use a single separator to keep room for content.
+The workbench draws one frame around the editor area, following VS Code's
+`editorBorder.css`. The sidebar has a separate frame. A single editor keeps
+its frame when the sidebar is hidden. Straight dividers between groups use
+`editorGroup.border` and meet at T-junctions in nested splits. Cell-border
+terminals draw the frame and dividers on cell edges. The `round` extension
+rounds the outer frame corners. The glyph fallback uses rounded box-drawing
+outlines and one-cell dividers with junction glyphs. In compact terminals it
+keeps the dividers and uses the outer cells for content.
+Dragging a sash with the left button updates the split ratio, clamped to a
+10-column/3-row minimum. Closing the last tab in a pane removes the group from
+the split tree and promotes its sibling, mirroring Grid branch demotion.
 During resize the sash uses VS Code's `sash.hoverBorder`, which defaults to
 `focusBorder`. Terminals with cell borders paint the highlight on the shared
 edge.

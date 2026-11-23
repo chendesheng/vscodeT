@@ -529,14 +529,12 @@ console API for raw mode, sizing and input polling.
   content-box `min_width`/`max_width`, justify/align, gap, order, auto margins
   and content-derived auto sizes. Text
   fragments and inline-element fragments paint per line. On startup the TUI
-  probes the draft cell-border protocol; when the terminal supports it, every
-  editor pane is outlined on its own cell edges (active pane on top by
-  priority). With the round capability, the sidebar, each editor pane and
-  each modal dialog have their own rounded outline. Panes share a draggable
-  boundary with no spacer. A single editor keeps its outline when the
-  sidebar is hidden.
-  The glyph fallback uses rounded box-drawing outlines and a single separator
-  in compact splits. The library does not import editor code.
+  probes the draft cell-border protocol. The sidebar, the entire editor area
+  and each modal dialog have their own outline, with rounded corners when the
+  terminal supports them. Editor groups share straight, draggable dividers.
+  The editor frame remains visible for a single editor with the sidebar hidden.
+  The glyph fallback uses rounded box-drawing outlines and single-cell dividers
+  with T-junctions. The library does not import editor code.
 - Multi-file editing uses the ported workbench editor-group model
   (`src/vs/workbench/common/editor/editorGroupModel.zig`), the editor part,
   group view and pane layers (`src/vs/workbench/browser/parts/editor/`), a
@@ -1779,9 +1777,9 @@ Editor contributions:
   (model-to-tab mapping, active tab, pane activation) and `editorPanes.zig`
   (active pane, page position, size constraints); `src/vs/workbench/browser/workbench.zig` is
   the terminal adapter that renders the split tree with a tab row per group
-  and composites every pane into one frame. With cell borders each pane
-  is outlined and the active pane's outline wins shared edges; the divider is
-  a draggable sash. Drag selected tabs or the empty background of a tab strip
+  and composites every pane into one frame. Cell-edge borders draw the editor
+  frame and the draggable sashes without consuming rows or columns.
+  Drag selected tabs or the empty background of a tab strip
   to reorder tabs, move or copy editors, split panes, or move, copy or merge
   editor groups. The destination tint and floating drag image work in ordinary
   terminals. Cell-border support adds thin outlines. Drag transfers stay in

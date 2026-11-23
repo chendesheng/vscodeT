@@ -18,10 +18,9 @@
 //! onto a pane edge, or onto a tab strip with an insertion preview; the full
 //! N-ary branch model is not ported yet.
 //!
-//! With cell-border support the panes use the article's chrome: each pane is
-//! outlined on its own cell edges, the active pane's outline has priority 1,
-//! and adjacent outlines merge into shared dividers. The glyph fallback keeps
-//! the one-cell gutter and box-drawing divider instead.
+//! Like VS Code's editorBorder.css, the rounded outline encloses the entire
+//! editor area. The split tree draws straight sashes inside it. Cell borders
+//! draw both on cell edges; the glyph fallback reserves a cell for each line.
 //!
 //! A split duplicates the active input into the new group, matching upstream
 //! `EditorGroupView.copyEditor`: both panes show the same `EditorDocument` and
@@ -322,13 +321,8 @@ const SymbolActionContext = struct {
     action: *const go_to_commands.ActionDescriptor,
 };
 
-/// Pane chrome for the terminal editor part. The active pane's outline uses
-/// the focused border colour and priority 1, so it wins a shared edge in a
-/// terminal that implements cell-border priority merging; inactive panes are
-/// dim. The stroke width is 1/8 cell, matching the article's thin outlines.
-const inactive_pane_border = ui.Color{ .r = 70, .g = 70, .b = 70 };
-const active_pane_border = ui.Color{ .r = 0x4d, .g = 0x9b, .b = 0xd6 };
-const pane_border_width: u8 = 32;
+const frame_border_width: u8 = 32;
+const divider_width: u8 = 16;
 
 const DropZone = editor_drop_target.Zone;
 const DragSource = struct { pane: *GroupPane, tab: ?*Tab };
@@ -3736,8 +3730,7 @@ pub const Workbench = struct {
             if (!self.paneExists(expanded)) {
                 self.expanded_pane = null;
             } else {
-                expanded.frame_rect = rect;
-                expanded.rect = self.part.paneContentRect(rect);
+                expanded.rect = self.part.contentRect();
                 expanded.layout();
             }
         }
@@ -8638,7 +8631,7 @@ pub const Workbench = struct {
                 terminal_panel.contains(self.panelRect(), mouse.x, mouse.y))
                 return .terminal_panel;
         }
-        const pane = self.paneAt(mouse.x, mouse.y) orelse self.part.frameViewAt(mouse.x, mouse.y) orelse return null;
+        const pane = self.paneAt(mouse.x, mouse.y) orelse return null;
         if (pane.tabs_visible and mouse.y == ui.cell.snap(pane.rect.y)) {
             if (pane.title_action_hit) |hit| {
                 if (mouse.x >= hit.start and mouse.x < hit.end) return null;
@@ -8764,8 +8757,8 @@ pub const Workbench = struct {
                 if (pane == source.pane and (zone == .center or (!copy and
                     (source.tab == null or pane.tabs.items.len < 2)))) return;
                 if (!canTransferTabs(source, tabs, if (zone == .center) pane else null, copy)) return;
-                const gap = self.part.gap(editor_drop_target.orientation(zone), pane.frame_rect);
-                const rect = editor_drop_target.positionOverlay(pane.frame_rect, area, zone, gap);
+                const gap = self.part.gap(editor_drop_target.orientation(zone), pane.rect);
+                const rect = editor_drop_target.positionOverlay(pane.rect, area, zone, gap);
                 if (rect.w <= 0 or rect.h <= 0) return;
                 self.drag_target = DropOverlay.position(previous_overlay, pane, zone, rect, now);
             },
@@ -8776,8 +8769,7 @@ pub const Workbench = struct {
     }
 
     fn editorDropArea(_: *Workbench, pane: *GroupPane) ui.Rect {
-        const inset = ui.cell.snap(pane.rect.y) -| ui.cell.snap(pane.frame_rect.y);
-        return editor_drop_target.dropArea(pane.frame_rect, inset + if (pane.tabs.items.len == 0) @as(usize, 0) else pane.titleHeight());
+        return editor_drop_target.dropArea(pane.rect, if (pane.tabs.items.len == 0) 0 else pane.titleHeight());
     }
 
     fn editorDragSetting(self: *Workbench, key: []const u8, default: bool) bool {
@@ -10145,7 +10137,6 @@ pub const Workbench = struct {
         if (self.expanded_pane) |expanded| {
             if (self.paneExists(expanded)) {
                 try self.renderPane(expanded);
-                self.renderPaneFrame(expanded);
             } else {
                 self.expanded_pane = null;
             }
@@ -10153,14 +10144,10 @@ pub const Workbench = struct {
         if (self.expanded_pane == null) {
             for (self.part.group_views.items) |pane| {
                 try self.renderPane(pane);
-                self.renderPaneFrame(pane);
-            }
-            if (!self.part.cell_borders and !self.part.glyphPaneFrames()) {
-                self.renderDividers(self.part.root);
-            } else if (self.part.active_sash) |sash| {
-                self.renderSash(sash);
             }
         }
+        self.renderEditorFrame();
+        if (self.expanded_pane == null) self.renderDividers(self.part.root);
         if (self.drag_target) |target| {
             target.paint(&self.frame.next, self.theme_palette, self.part.cell_borders, self.animateEditorDrop(), time_compat.milliTimestamp());
         }
@@ -10408,8 +10395,7 @@ pub const Workbench = struct {
     fn renderSash(self: *Workbench, node: *LayoutNode) void {
         const split = node.kind.split;
         const cell_borders = self.part.cell_borders;
-        const glyph_frame = !cell_borders and self.part.glyphPaneFrames();
-        if (!cell_borders and !glyph_frame and self.part.gap(split.direction, node.rect) == 0) return;
+        if (!cell_borders and self.part.gap(split.direction, node.rect) == 0) return;
         const active = self.part.active_sash == node;
         const color = if (active) self.activeSashColor() else self.themeColor("editorGroup.border", .{ 70, 70, 70 });
         // Keep the gutter on the editor palette, like the side-bar divider
@@ -10419,45 +10405,80 @@ pub const Workbench = struct {
             .bg = ui.cell.packColor(self.themeColor("editor.background", .{ 30, 30, 33 })),
         };
         const stroke: ui.cell_border.Stroke = .{
-            .width = 64,
+            .width = if (active) 64 else divider_width,
             .color = .{ .rgb = color },
-            .layer = .above_text,
-            .priority = 3,
+            .layer = if (active) .above_text else .below_text,
+            .priority = if (active) 3 else 0,
         };
         const edge = ui.cell_border.Segment;
         const cells = &self.frame.next;
+        const left = ui.cell.snap(node.rect.x);
+        const right = ui.cell.snap(node.rect.right());
+        const top = ui.cell.snap(node.rect.y);
+        const bottom = ui.cell.snap(node.rect.bottom());
         switch (split.direction) {
             .horizontal => {
                 const x = ui.cell.snap(split.first.rect.right());
-                if (x == ui.cell.snap(node.rect.x) or x >= ui.cell.snap(node.rect.right())) return;
-                for (ui.cell.snap(node.rect.y)..ui.cell.snap(node.rect.bottom())) |y| {
+                if (x <= left or x >= right or top == bottom) return;
+                for (top..bottom) |y| {
                     if (cell_borders) {
                         cells.addBorder(x - 1, y, edge.right, stroke);
                         cells.addBorder(x, y, edge.left, stroke);
-                    } else if (glyph_frame) {
-                        highlightFrameGlyph(cells, x - 1, y, style.fg);
-                        highlightFrameGlyph(cells, x, y, style.fg);
                     } else {
-                        cells.putCodepoint(x, y, if (active) '┃' else '│', 1, style);
+                        cells.putCodepoint(x, y, '│', 1, style);
                     }
+                }
+                if (!cell_borders) {
+                    if (top > 0) self.joinGlyphSash(x, top - 1, .down);
+                    self.joinGlyphSash(x, bottom, .up);
                 }
             },
             .vertical => {
                 const y = ui.cell.snap(split.first.rect.bottom());
-                if (y == ui.cell.snap(node.rect.y) or y >= ui.cell.snap(node.rect.bottom())) return;
-                for (ui.cell.snap(node.rect.x)..ui.cell.snap(node.rect.right())) |x| {
+                if (y <= top or y >= bottom or left == right) return;
+                for (left..right) |x| {
                     if (cell_borders) {
                         cells.addBorder(x, y - 1, edge.bottom, stroke);
                         cells.addBorder(x, y, edge.top, stroke);
-                    } else if (glyph_frame) {
-                        highlightFrameGlyph(cells, x, y - 1, style.fg);
-                        highlightFrameGlyph(cells, x, y, style.fg);
                     } else {
-                        cells.putCodepoint(x, y, if (active) '━' else '─', 1, style);
+                        cells.putCodepoint(x, y, '─', 1, style);
                     }
+                }
+                if (!cell_borders) {
+                    if (left > 0) self.joinGlyphSash(left - 1, y, .right);
+                    self.joinGlyphSash(right, y, .left);
                 }
             },
         }
+    }
+
+    /// The outer frame and parent sash are painted before their children.
+    /// Add a stem at each end of a glyph sash that meets one of those lines.
+    fn joinGlyphSash(self: *Workbench, x: usize, y: usize, stem: enum { up, right, down, left }) void {
+        const cells = &self.frame.next;
+        if (x >= cells.cols or y >= ui.cell.snap(self.part.viewport.bottom())) return;
+        if (x < ui.cell.snap(self.part.viewport.x)) return;
+        const at = cells.index(x, y);
+        const junction: u32 = switch (cells.cluster[at]) {
+            '─' => switch (stem) {
+                .up => '┴',
+                .down => '┬',
+                else => return,
+            },
+            '│' => switch (stem) {
+                .left => '┤',
+                .right => '├',
+                else => return,
+            },
+            '┬' => if (stem == .up) '┼' else return,
+            '┴' => if (stem == .down) '┼' else return,
+            '├' => if (stem == .left) '┼' else return,
+            '┤' => if (stem == .right) '┼' else return,
+            else => return,
+        };
+        // In a compact grid a zero-width split may have editor text here.
+        if (self.part.viewAt(x, y) != null) return;
+        cells.cluster[at] = junction;
     }
 
     fn highlightFrameGlyph(cells: *ui.CellGrid, x: usize, y: usize, color: u32) void {
@@ -10489,7 +10510,7 @@ pub const Workbench = struct {
         if (self.part.cell_borders) {
             const rounded = self.part.cell_border_capabilities.has(.round);
             self.paintCellFrame(rect, .{
-                .width = if (rounded) 16 else pane_border_width,
+                .width = if (rounded) 16 else frame_border_width,
                 .color = .{ .rgb = color },
                 .placement = .inside,
             });
@@ -10519,12 +10540,11 @@ pub const Workbench = struct {
         }
     }
 
-    fn renderPaneFrame(self: *Workbench, pane: *GroupPane) void {
-        const active = self.focus == .editor and pane.group == self.service.activeGroup();
-        const color = if (active) self.themeColor("focusBorder", .{ 0x4d, 0x9b, 0xd6 }) else self.themeColor("editorGroup.border", .{ 70, 70, 70 });
-        const rect = pane.frame_rect;
+    fn renderEditorFrame(self: *Workbench) void {
+        const color = self.themeColor("editorGroup.border", .{ 70, 70, 70 });
+        const rect = self.part.viewport;
         if (!self.part.cell_borders) {
-            if (std.meta.eql(rect, pane.rect)) return;
+            if (!self.part.glyphFrame()) return;
             self.frame.next.paintRoundedFrame(rect, .{
                 .fg = ui.cell.packColor(color),
                 .bg = ui.cell.packColor(self.themeColor("editor.background", .{ 30, 30, 33 })),
@@ -10533,10 +10553,9 @@ pub const Workbench = struct {
         }
         const rounded = self.part.cell_border_capabilities.has(.round);
         self.paintCellFrame(rect, .{
-            .width = if (rounded) 16 else pane_border_width,
+            .width = if (rounded) 16 else frame_border_width,
             .color = .{ .rgb = color },
             .placement = if (rounded) .inside else .centered,
-            .priority = if (active) 1 else 0,
         });
     }
 
@@ -11024,7 +11043,7 @@ pub const Workbench = struct {
         if (self.outline_view) |view| view.setBorderRendering(enabled);
         if (self.part.cell_borders == enabled) return;
         self.part.setCellBorders(enabled);
-        if (self.sidebarShown()) self.layoutAll();
+        if (self.sidebarShown() or self.expanded_pane != null) self.layoutAll();
     }
 
     pub fn setCellBorderCapabilities(self: *Workbench, capabilities: ?ui.cell_border.Capabilities) void {
@@ -14116,44 +14135,15 @@ test "Workbench: cell borders remove the split gutter" {
     const left_edge = ui.cell.snap(first.rect.right()) - 1;
     const right_edge = ui.cell.snap(second.rect.x);
     const row: usize = 2;
-    try std.testing.expect(grid.borderIdAt(left_edge, row) != 0);
-    try std.testing.expect(grid.borderIdAt(right_edge, row) != 0);
-
-    var left_mask: u12 = 0;
-    for (grid.borderSetAt(left_edge, row).groups[0..grid.borderSetAt(left_edge, row).count]) |group| left_mask |= group.mask;
-    try std.testing.expect((left_mask & ui.cell_border.Segment.right) != 0);
-    var right_mask: u12 = 0;
-    for (grid.borderSetAt(right_edge, row).groups[0..grid.borderSetAt(right_edge, row).count]) |group| right_mask |= group.mask;
-    try std.testing.expect((right_mask & ui.cell_border.Segment.left) != 0);
-
-    // Every pane is outlined; the active pane uses the focus colour and
-    // priority 1 so it wins a merged shared edge.
-    const active_set = grid.borderSetAt(ui.cell.snap(second.rect.x), ui.cell.snap(second.rect.y));
-    var active_priority: u4 = 0;
-    var active_color: ui.Color = .{ .r = 0, .g = 0, .b = 0 };
-    for (active_set.groups[0..active_set.count]) |group| {
-        if ((group.mask & ui.cell_border.Segment.top) != 0) {
-            active_priority = group.stroke.priority;
-            if (group.stroke.color == .rgb) active_color = group.stroke.color.rgb;
-        }
-    }
-    try std.testing.expectEqual(@as(u4, 1), active_priority);
-    try std.testing.expect(active_color.eql(active_pane_border));
-
-    const inactive_set = grid.borderSetAt(ui.cell.snap(first.rect.x), ui.cell.snap(first.rect.y));
-    var inactive_priority: u4 = 9;
-    var inactive_color: ui.Color = .{ .r = 0, .g = 0, .b = 0 };
-    for (inactive_set.groups[0..inactive_set.count]) |group| {
-        if ((group.mask & ui.cell_border.Segment.top) != 0) {
-            inactive_priority = group.stroke.priority;
-            if (group.stroke.color == .rgb) inactive_color = group.stroke.color.rgb;
-        }
-    }
-    try std.testing.expectEqual(@as(u4, 0), inactive_priority);
-    try std.testing.expect(inactive_color.eql(inactive_pane_border));
+    const edge = ui.cell_border.Segment;
+    const left_stroke = grid.borderSetAt(left_edge, row).strokeAt(edge.right) orelse return error.MissingSashStroke;
+    const right_stroke = grid.borderSetAt(right_edge, row).strokeAt(edge.left) orelse return error.MissingSashStroke;
+    try std.testing.expect(left_stroke.eql(right_stroke));
+    try std.testing.expectEqual(divider_width, left_stroke.width);
+    try std.testing.expectEqual(.centered, left_stroke.placement);
 }
 
-test "Workbench: cell borders round each pane without taking cells" {
+test "Workbench: mixed editor splits join inside a single rounded frame" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
@@ -14162,34 +14152,63 @@ test "Workbench: cell borders round each pane without taking cells" {
     defer allocator.free(path);
     const workbench = try Workbench.init(allocator, io, &.{path}, 60, 24);
     defer workbench.deinit();
-    try workbench.splitActive(.vertical);
+    const first = workbench.activePane().?;
+    try workbench.splitActive(.horizontal);
+    _ = try workbench.part.splitGroup(first, .vertical, false);
+    workbench.layoutAll();
 
-    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,palette,round,outside,radius\x1b\\").?;
-    workbench.setCellBorderCapabilities(caps);
+    const rounded = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,palette,round,outside,radius\x1b\\").?;
+    const basic = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,palette\x1b\\").?;
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
-    const split = workbench.part.root.kind.split;
-    const x = ui.cell.snap(split.first.rect.x);
-    const right = ui.cell.snap(split.first.rect.right()) - 1;
-    const top = ui.cell.snap(split.first.rect.y);
-    const seam = ui.cell.snap(split.second.rect.y);
-    const bottom = ui.cell.snap(split.second.rect.bottom()) - 1;
-    try std.testing.expectEqual(ui.cell.snap(split.first.rect.bottom()), seam);
-    const cells = &workbench.frame.prev;
-    const joint = ui.cell_border.Joint;
-    try std.testing.expectEqual(joint.top_left, cells.borderSetAt(x, top).joints);
-    try std.testing.expectEqual(joint.top_right, cells.borderSetAt(right, top).joints);
-    try std.testing.expectEqual(joint.bottom_left, cells.borderSetAt(x, bottom).joints);
-    try std.testing.expectEqual(joint.bottom_right, cells.borderSetAt(right, bottom).joints);
-    try std.testing.expectEqual(@as(?u9, 128), cells.borderSetAt(x, top).round_style.radius);
-    try std.testing.expectEqual(joint.top_left, cells.borderSetAt(x, seam).joints);
-    try std.testing.expectEqual(joint.bottom_left, cells.borderSetAt(x, seam - 1).joints);
 
-    workbench.setCellBorderCapabilities(ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,palette\x1b\\").?);
-    try workbench.render(&out.writer);
-    try std.testing.expectEqual(@as(u8, 0), cells.borderSetAt(x, top).joints);
-    try std.testing.expectEqual(ui.cell.snap(split.first.rect.bottom()), seam);
+    for ([_]?ui.cell_border.Capabilities{ null, basic, rounded }) |caps| {
+        workbench.setCellBorderCapabilities(caps);
+        try workbench.render(&out.writer);
+        const outer = workbench.editorAreaRect();
+        const x = ui.cell.snap(outer.x);
+        const right = ui.cell.snap(outer.right()) - 1;
+        const top = ui.cell.snap(outer.y);
+        const bottom = ui.cell.snap(outer.bottom()) - 1;
+        const sides = workbench.part.root.kind.split;
+        const stack = sides.first.kind.split;
+        const column = ui.cell.snap(sides.first.rect.right());
+        const row = ui.cell.snap(stack.first.rect.bottom());
+        const cells = &workbench.frame.prev;
+        if (caps) |native| {
+            try std.testing.expectEqual(outer, workbench.part.root.rect);
+            try std.testing.expectEqual(column, ui.cell.snap(sides.second.rect.x));
+            try std.testing.expectEqual(row, ui.cell.snap(stack.second.rect.y));
+            const joint = ui.cell_border.Joint;
+            const has_round = native.has(.round);
+            try std.testing.expectEqual(if (has_round) joint.top_left else 0, cells.borderSetAt(x, top).joints);
+            try std.testing.expectEqual(if (has_round) joint.top_right else 0, cells.borderSetAt(right, top).joints);
+            try std.testing.expectEqual(if (has_round) joint.bottom_left else 0, cells.borderSetAt(x, bottom).joints);
+            try std.testing.expectEqual(if (has_round) joint.bottom_right else 0, cells.borderSetAt(right, bottom).joints);
+            const edge = ui.cell_border.Segment;
+            const frame_join = cells.borderSetAt(column, top);
+            try std.testing.expectEqual(@as(u8, 0), frame_join.joints);
+            try std.testing.expect(frame_join.strokeAt(edge.top) != null);
+            try std.testing.expect(frame_join.strokeAt(edge.left) != null);
+            const split_join = cells.borderSetAt(column - 1, row);
+            try std.testing.expectEqual(@as(u8, 0), split_join.joints);
+            try std.testing.expect(split_join.strokeAt(edge.top) != null);
+            try std.testing.expect(split_join.strokeAt(edge.right) != null);
+            try std.testing.expect(cells.borderSetAt(column, row).strokeAt(edge.top) == null);
+        } else {
+            try std.testing.expectEqual(x + 1, ui.cell.snap(first.rect.x));
+            try std.testing.expectEqual(column + 1, ui.cell.snap(sides.second.rect.x));
+            try std.testing.expectEqual(row + 1, ui.cell.snap(stack.second.rect.y));
+            try std.testing.expectEqual(@as(u32, '╭'), cells.cluster[cells.index(x, top)]);
+            try std.testing.expectEqual(@as(u32, '╮'), cells.cluster[cells.index(right, top)]);
+            try std.testing.expectEqual(@as(u32, '╰'), cells.cluster[cells.index(x, bottom)]);
+            try std.testing.expectEqual(@as(u32, '╯'), cells.cluster[cells.index(right, bottom)]);
+            try std.testing.expectEqual(@as(u32, '┬'), cells.cluster[cells.index(column, top)]);
+            try std.testing.expectEqual(@as(u32, '┴'), cells.cluster[cells.index(column, bottom)]);
+            try std.testing.expectEqual(@as(u32, '├'), cells.cluster[cells.index(x, row)]);
+            try std.testing.expectEqual(@as(u32, '┤'), cells.cluster[cells.index(column, row)]);
+        }
+    }
 }
 
 test "Workbench: stacked editor dividers use the editor background and sash color with and without cell borders" {
@@ -14228,7 +14247,7 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         const y = ui.cell.snap(split.first.rect.bottom());
         try workbench.render(&out.writer);
         const cells = &workbench.frame.prev;
-        const at = cells.index(x, y -| @as(usize, @intFromBool(!borders)));
+        const at = cells.index(x, y);
         if (!borders) {
             try std.testing.expectEqual(@as(u32, '─'), cells.cluster[at]);
             try std.testing.expectEqual(expected_bg, cells.bg[at]);
@@ -14249,8 +14268,9 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .up, .x = x, .y = y, .button = .left }));
         try workbench.render(&out.writer);
         if (borders) {
-            const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingPaneStroke;
-            try std.testing.expectEqual(pane_border_width, stroke.width);
+            const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
+            try std.testing.expectEqual(divider_width, stroke.width);
+            try std.testing.expectEqual(expected_idle, ui.cell.packColor(stroke.color.rgb));
         } else {
             try std.testing.expectEqual(expected_idle, cells.fg[at]);
         }
@@ -14677,14 +14697,14 @@ test "Workbench: editor drag paints all four destinations and uses the release c
             try sendDragMouse(workbench, 0, left, center_y, true);
             const destination = workbench.activePane().?;
             try std.testing.expect(destination.activeTab() == dragged);
-            try std.testing.expect(destination.frame_rect.x < pane.rect.x);
+            try std.testing.expect(destination.rect.x < pane.rect.x);
         } else {
             try sendDragMouse(workbench, 0, edge_x, edge_y, true);
             const destination = workbench.activePane().?;
             try std.testing.expect(destination.activeTab() == dragged);
-            try std.testing.expectEqual(overlay.rect.x, destination.frame_rect.x);
-            try std.testing.expectEqual(overlay.rect.w, destination.frame_rect.w);
-            try std.testing.expectEqual(overlay.rect.bottom(), destination.frame_rect.bottom());
+            try std.testing.expectEqual(overlay.rect.x, destination.rect.x);
+            try std.testing.expectEqual(overlay.rect.w, destination.rect.w);
+            try std.testing.expectEqual(overlay.rect.bottom(), destination.rect.bottom());
         }
         try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
         try std.testing.expect(workbench.drag_target == null and workbench.editor_drag.source == null);
@@ -14954,7 +14974,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
         const side_x = ui.cell.snap(side.x);
         const side_right = ui.cell.snap(side.right()) - 1;
         const editor = workbench.activePane().?;
-        try std.testing.expectEqual(side_right + 1, ui.cell.snap(editor.frame_rect.x));
+        try std.testing.expectEqual(side_right + 1, ui.cell.snap(workbench.editorAreaRect().x));
         try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
         if (native) {
             try std.testing.expectEqual(ui.cell_border.Joint.top_left, grid_cells.borderSetAt(side_x, 0).joints);
@@ -14975,7 +14995,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
         try workbench.render(&out.writer);
         const editor_x = workbench.activityBarWidth();
         const editor_right = workbench.cols - 1;
-        try std.testing.expectEqual(editor_x, ui.cell.snap(editor.frame_rect.x));
+        try std.testing.expectEqual(editor_x, ui.cell.snap(workbench.editorAreaRect().x));
         if (native) {
             try std.testing.expectEqual(ui.cell_border.Joint.top_left, grid_cells.borderSetAt(editor_x, 0).joints);
             try std.testing.expectEqual(ui.cell_border.Joint.top_right, grid_cells.borderSetAt(editor_right, 0).joints);

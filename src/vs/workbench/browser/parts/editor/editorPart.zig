@@ -43,8 +43,8 @@ pub fn EditorPart(comptime GroupView: type) type {
         service: *editor_groups.EditorGroupsService,
         group_views: std.array_list.Managed(*GroupView),
         root: *LayoutNode,
-        /// Cell-border terminals use zero-width gutters; shared pane outlines
-        /// merge into the divider. The glyph fallback needs a gutter cell.
+        /// Cell-border terminals draw dividers on cell edges. The glyph
+        /// fallback needs a gutter cell.
         cell_borders: bool = false,
         cell_border_capabilities: ui.cell_border.Capabilities = .{},
         /// The split whose boundary is being dragged, if any.
@@ -200,7 +200,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         /// control and active editor pane.
         pub fn layout(self: *Self, rect: ui.Rect) void {
             self.viewport = rect;
-            grid.layoutRoot(*GroupView, self.root, rect, self, gapCallback);
+            grid.layoutRoot(*GroupView, self.root, self.contentRect(), self, gapCallback);
             self.syncRects(self.root);
             for (self.group_views.items) |view| view.layout();
         }
@@ -230,16 +230,8 @@ pub fn EditorPart(comptime GroupView: type) type {
         }
 
         pub fn viewAt(self: *const Self, x: usize, y: usize) ?*GroupView {
-            return self.viewAtRect(x, y, .rect);
-        }
-
-        pub fn frameViewAt(self: *const Self, x: usize, y: usize) ?*GroupView {
-            return self.viewAtRect(x, y, .frame_rect);
-        }
-
-        fn viewAtRect(self: *const Self, x: usize, y: usize, comptime field: enum { rect, frame_rect }) ?*GroupView {
             for (self.group_views.items) |view| {
-                const rect = @field(view, @tagName(field));
+                const rect = view.rect;
                 if (x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right()) and
                     y >= ui.cell.snap(rect.y) and y < ui.cell.snap(rect.bottom()))
                 {
@@ -299,24 +291,24 @@ pub fn EditorPart(comptime GroupView: type) type {
             self.layout(self.viewport);
         }
 
-        /// Gutter cells between two panes. Cell borders need none: both panes
-        /// put a centred stroke on their own side of the shared edge.
+        /// Gutter cells between two panes. Cell borders need none.
         pub fn gap(self: *const Self, direction: Orientation, rect: ui.Rect) f64 {
-            if (self.cell_borders or self.glyphPaneFrames()) return 0;
+            if (self.cell_borders) return 0;
             return switch (direction) {
                 .horizontal => if (rect.w >= 6) 1 else 0,
                 .vertical => if (rect.h >= 6) 1 else 0,
             };
         }
 
-        /// Framed glyphs use the pane's edge cells. Keep enough room for
-        /// tabs, breadcrumbs and editor content in compact terminals.
-        pub fn glyphPaneFrames(self: *const Self) bool {
+        /// Reserve edge cells only around the entire grid. Compact terminals
+        /// keep those cells available for content.
+        pub fn glyphFrame(self: *const Self) bool {
             return !self.cell_borders and self.viewport.w >= 24 and self.viewport.h >= 14;
         }
 
-        pub fn paneContentRect(self: *const Self, rect: ui.Rect) ui.Rect {
-            if (!self.glyphPaneFrames() or rect.w < 4 or rect.h < 5) return rect;
+        pub fn contentRect(self: *const Self) ui.Rect {
+            const rect = self.viewport;
+            if (!self.glyphFrame()) return rect;
             return .{ .x = rect.x + 1, .y = rect.y + 1, .w = rect.w - 2, .h = rect.h - 2 };
         }
 
@@ -364,10 +356,7 @@ pub fn EditorPart(comptime GroupView: type) type {
 
         fn syncRects(self: *const Self, node: *LayoutNode) void {
             switch (node.kind) {
-                .leaf => |view| {
-                    view.frame_rect = node.rect;
-                    view.rect = self.paneContentRect(node.rect);
-                },
+                .leaf => |view| view.rect = node.rect,
                 .split => |split| {
                     self.syncRects(split.first);
                     self.syncRects(split.second);
@@ -390,7 +379,6 @@ fn collectOrdered(comptime T: type, node: *grid.Node(*T), views: *std.array_list
 const TestView = struct {
     group: *editor_groups.EditorGroup,
     rect: ui.Rect = .{},
-    frame_rect: ui.Rect = .{},
     layouts: usize = 0,
     deinited: bool = false,
 
