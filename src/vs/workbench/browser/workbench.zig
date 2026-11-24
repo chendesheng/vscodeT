@@ -1691,6 +1691,7 @@ pub const Workbench = struct {
             .{ .id = "list.expand", .label = "Expand", .category = "List", .context = self, .run = commandListExpand },
             .{ .id = "list.toggleExpand", .label = "Toggle Expand", .category = "List", .context = self, .run = commandListToggleExpand },
             .{ .id = "list.select", .label = "Select", .category = "List", .context = self, .run = commandListSelect },
+            .{ .id = "github.publish", .label = "Publish to GitHub", .category = "GitHub", .context = self, .run = commandGithubPublish },
             .{ .id = "simpleBrowser.show", .label = "Show", .category = "Simple Browser", .context = self, .run = commandOpenBrowser },
             .{ .id = "workbench.action.browser.open", .label = "Open Integrated Browser", .show_in_palette = false, .context = self, .run = commandOpenBrowser },
             .{ .id = "workbench.action.openSettingsJson", .label = "Open User Settings (JSON)", .category = "Preferences", .context = self, .run = commandOpenSettingsJson },
@@ -3464,26 +3465,33 @@ pub const Workbench = struct {
         if (uri.host == null or (!std.ascii.eqlIgnoreCase(uri.scheme, "http") and !std.ascii.eqlIgnoreCase(uri.scheme, "https"))) return error.InvalidBrowserAddress;
         for (url) |byte| if (byte < 0x20 or byte == 0x7f) return error.InvalidBrowserAddress;
 
-        const search_path = std.c.getenv("PATH") orelse return error.LynxNotInstalled;
-        var directories = std.mem.tokenizeScalar(u8, std.mem.span(search_path), std.fs.path.delimiter);
-        while (directories.next()) |directory| {
+        const executable = try self.findTerminalExecutable("lynx") orelse return error.LynxNotInstalled;
+        defer self.allocator.free(executable);
+        const pane = self.activePane() orelse return error.GroupPaneMissing;
+        const service = try self.ensureTerminalService();
+        const instance = try service.createInstanceWithProfile(.{
+            .path = executable,
+            .args = &.{ "-restrictions=exec,shell", url },
+            .profile_name = "Simple Browser",
+        });
+        errdefer instance.deinit();
+        try instance.rename("Simple Browser");
+        _ = try self.openTerminalEditor(pane, service, instance);
+    }
+
+    pub fn findTerminalExecutable(self: *Workbench, name: []const u8) !?[]u8 {
+        const search_path = std.c.getenv("PATH") orelse return null;
+        var paths = std.mem.tokenizeScalar(u8, std.mem.span(search_path), std.fs.path.delimiter);
+        while (paths.next()) |directory| {
             if (!std.fs.path.isAbsolute(directory)) continue;
-            const executable = try std.fs.path.join(self.allocator, &.{ directory, "lynx" });
-            defer self.allocator.free(executable);
-            std.Io.Dir.accessAbsolute(self.io, executable, .{ .execute = true }) catch continue;
-            const pane = self.activePane() orelse return error.GroupPaneMissing;
-            const service = try self.ensureTerminalService();
-            const instance = try service.createInstanceWithProfile(.{
-                .path = executable,
-                .args = &.{ "-restrictions=exec,shell", url },
-                .profile_name = "Simple Browser",
-            });
-            errdefer instance.deinit();
-            try instance.rename("Simple Browser");
-            _ = try self.openTerminalEditor(pane, service, instance);
-            return;
+            const executable = try std.fs.path.join(self.allocator, &.{ directory, name });
+            std.Io.Dir.accessAbsolute(self.io, executable, .{ .execute = true }) catch {
+                self.allocator.free(executable);
+                continue;
+            };
+            return executable;
         }
-        return error.LynxNotInstalled;
+        return null;
     }
 
     fn newTerminalEditor(self: *Workbench) !void {
@@ -14419,6 +14427,20 @@ fn commandOpenEditorAtIndex1(context: *anyopaque) anyerror!void {
 fn commandRevertAndCloseActiveEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.revertAndCloseActiveEditor();
+}
+
+fn commandGithubPublish(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const folder = if (self.repository) |provider| provider.root else self.workspaceFolderPath() orelse {
+        self.setStatusHint("Open a folder to publish to GitHub", .{});
+        return;
+    };
+    const executable = try self.findTerminalExecutable("gh") orelse {
+        self.setStatusHint("Install GitHub CLI and add gh to PATH to publish a repository", .{});
+        return;
+    };
+    defer self.allocator.free(executable);
+    try self.runTaskInTerminal("Publish to GitHub", executable, &.{ "repo", "create" }, folder);
 }
 
 fn commandOpenBrowser(context: *anyopaque) anyerror!void {
