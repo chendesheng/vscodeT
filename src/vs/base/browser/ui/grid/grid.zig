@@ -288,11 +288,19 @@ fn removeFrom(comptime T: type, allocator: Allocator, node: *Node(T), target: T)
     }
 }
 
-pub fn splitRects(rect: ui.Rect, direction: Orientation, ratio: f64, gutter: f64) struct { first: ui.Rect, second: ui.Rect } {
+const SplitRects = struct { first: ui.Rect, second: ui.Rect };
+
+pub fn splitRects(rect: ui.Rect, direction: Orientation, ratio: f64, gutter: f64) SplitRects {
+    const extent = if (direction == .horizontal) rect.w else rect.h;
+    return splitRectsAt(rect, direction, @floor(@max(extent - gutter, 0) * ratio), gutter);
+}
+
+/// Assigns the two adjacent grid views using the first view's SplitView size.
+pub fn splitRectsAt(rect: ui.Rect, direction: Orientation, first_size: f64, gutter: f64) SplitRects {
     switch (direction) {
         .horizontal => {
             const available = @max(rect.w - gutter, 0);
-            const first_width = @floor(available * ratio);
+            const first_width = std.math.clamp(first_size, 0, available);
             return .{
                 .first = .{ .x = rect.x, .y = rect.y, .w = first_width, .h = rect.h },
                 .second = .{ .x = rect.x + first_width + gutter, .y = rect.y, .w = available - first_width, .h = rect.h },
@@ -300,7 +308,7 @@ pub fn splitRects(rect: ui.Rect, direction: Orientation, ratio: f64, gutter: f64
         },
         .vertical => {
             const available = @max(rect.h - gutter, 0);
-            const first_height = @floor(available * ratio);
+            const first_height = std.math.clamp(first_size, 0, available);
             return .{
                 .first = .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = first_height },
                 .second = .{ .x = rect.x, .y = rect.y + first_height + gutter, .w = rect.w, .h = available - first_height },

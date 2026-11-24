@@ -1,18 +1,93 @@
 // Portable part of `src/vs/workbench/browser/layout.ts`.
 //
-// The browser `Layout` owns the workbench grid, DOM sashes, part instances and
-// the full layout engine. The terminal model keeps the state the editor shell
-// needs: which parts are visible, their cell size, the side-bar position, the
-// zen-mode runtime state and the centered-editor-layout state. The terminal
-// workbench still owns the grid composition and cell painting.
+// The workbench grid lays out the parts and delegates sash resizing to
+// SplitView. The terminal shell supplies cell sizes and paints the parts.
 
 const std = @import("std");
+const ui = @import("ui");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../base/common/event.zig").Emitter;
+const grid = @import("../../base/browser/ui/grid/grid.zig");
+const split_view = @import("../../base/browser/ui/splitview/splitview.zig");
 const layout_service = @import("../services/layout/browser/layoutService.zig");
 
 pub const Parts = layout_service.Parts;
 pub const Position = layout_service.Position;
+
+/// Port of the workbench grid's middle section for a left sidebar and a
+/// bottom, center-aligned panel. As in createGridDescriptor, the editor and
+/// panel share a vertical branch inside the horizontal middle section.
+pub const WorkbenchGrid = struct {
+    pub const Sash = enum {
+        sidebar,
+        panel,
+
+        pub fn coordinate(self: Sash, x: usize, y: usize) usize {
+            return if (self == .sidebar) x else y;
+        }
+    };
+
+    pub const Layout = struct {
+        activity_bar: ui.Rect,
+        sidebar: ui.Rect,
+        editor_column: ui.Rect,
+        editor: ui.Rect,
+        panel: ui.Rect,
+    };
+
+    pub const Limits = struct { minimum: usize, maximum: usize };
+
+    drag: ?struct {
+        sash: Sash,
+        state: split_view.SashDragState,
+        views: [2]split_view.ViewSize,
+    } = null,
+
+    pub fn layout(rect: ui.Rect, activity_width: usize, sidebar_width: usize, panel_height: usize) Layout {
+        const activity = grid.splitRectsAt(rect, .horizontal, @floatFromInt(activity_width), 0);
+        const middle = grid.splitRectsAt(activity.second, .horizontal, @floatFromInt(sidebar_width), 0);
+        const editor = grid.splitRectsAt(middle.second, .vertical, middle.second.h - @as(f64, @floatFromInt(panel_height)), 0);
+        return .{
+            .activity_bar = activity.first,
+            .sidebar = middle.first,
+            .editor_column = middle.second,
+            .editor = editor.first,
+            .panel = editor.second,
+        };
+    }
+
+    pub fn activeSash(self: *const WorkbenchGrid) ?Sash {
+        const drag = self.drag orelse return null;
+        return drag.sash;
+    }
+
+    /// The fixed-size part in each branch contributes its size constraints.
+    /// Its sibling takes the rest of the available space.
+    pub fn onSashStart(self: *WorkbenchGrid, sash: Sash, start: usize, rects: Layout, limits: Limits) void {
+        const side = switch (sash) {
+            .sidebar => ui.cell.snap(rects.sidebar.w),
+            .panel => ui.cell.snap(rects.panel.h),
+        };
+        const remaining = switch (sash) {
+            .sidebar => ui.cell.snap(rects.editor_column.w),
+            .panel => ui.cell.snap(rects.editor.h),
+        };
+        const fixed: split_view.ViewSize = .{ .size = side, .minimum = limits.minimum, .maximum = limits.maximum };
+        const flexible: split_view.ViewSize = .{ .size = remaining, .minimum = 0, .maximum = side + remaining };
+        const views = if (sash == .sidebar) [2]split_view.ViewSize{ fixed, flexible } else .{ flexible, fixed };
+        self.drag = .{ .sash = sash, .state = .onSashStart(start, views), .views = views };
+    }
+
+    pub fn onSashChange(self: *const WorkbenchGrid, current: usize) usize {
+        const drag = self.drag.?;
+        const sizes = drag.state.onSashChange(current, drag.views);
+        return sizes[if (drag.sash == .sidebar) 0 else 1];
+    }
+
+    pub fn onSashEnd(self: *WorkbenchGrid) void {
+        self.drag = null;
+    }
+};
 
 pub const PartState = struct {
     visible: bool = true,
@@ -40,6 +115,7 @@ pub const LayoutModel = struct {
     allocator: Allocator,
     states: [8]PartState = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} },
     sidebar_position: Position = .left,
+    workbench_grid: WorkbenchGrid = .{},
     /// Port of `LayoutStateKeys.ZEN_MODE_ACTIVE` / `ZEN_MODE_EXIT_INFO`.
     zen_mode_active: bool = false,
     zen_mode_exit_info: ZenModeExitInfo = .{},

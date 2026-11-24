@@ -1313,7 +1313,8 @@ console API for raw mode, sizing and input polling.
   `no-drop` according to the target. Leaving the app
   restores `default`. The shape is resolved from the inherited
   `ui.Style.pointer` field by hit testing, with direct-painted chrome mapped at
-  its existing hit tests. Sidebar and editor sashes also highlight with
+  its existing hit tests. Drag the bottom panel's horizontal divider to
+  resize the panel. The sidebar, bottom panel and editor sashes highlight with
   `sash.hoverBorder` on hover and during a drag. Terminals without OSC 22 ignore
   the pointer sequence.
   Double-click and context menus are not wired. Horizontal wheel/Shift+wheel
