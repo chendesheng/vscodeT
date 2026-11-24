@@ -396,52 +396,7 @@ pub const EditorDocument = struct {
         var declarative_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer declarative_arena.deinit();
 
-        var language_config = language_configuration.empty();
-        var language_config_owned = true;
-        errdefer if (language_config_owned) language_config.deinit();
-        var has_language_config = false;
-        if (declarative) |registry| {
-            if (registry.language(language_id)) |contribution| {
-                if (contribution.configuration) |relative| {
-                    if (language_config_point.load(declarative_arena.allocator(), contribution.root, relative)) |config| {
-                        language_config = config;
-                        has_language_config = true;
-                    } else |_| {}
-                }
-                if (registry.grammarForLanguage(language_id)) |grammar| {
-                    // The grammar may come from a different extension than the
-                    // language contribution; resolve its path against its own
-                    // root, like VS Code's extension location.
-                    registerDeclarativeGrammar(io, allocator, grammar.root, grammar);
-                }
-            }
-        }
-        if (!has_language_config) {
-            if (language.bundledLanguageConfiguration(language_id)) |data| {
-                if (language_config_point.loadText(declarative_arena.allocator(), data)) |config| {
-                    language_config = config;
-                    has_language_config = true;
-                } else |_| {}
-            }
-        }
-        if (!has_language_config) {
-            if (language.commentRuleFor(language_id)) |comments| {
-                language_config.comments = comments;
-                has_language_config = true;
-            }
-            if (language.bracketsFor(language_id)) |brackets| {
-                language_config.brackets = brackets;
-                has_language_config = true;
-            }
-            if (language.foldingRulesFor(language_id)) |rules| {
-                language_config.folding = rules;
-                has_language_config = true;
-            }
-        }
-        if (has_language_config) {
-            try language_service.registerLanguageConfiguration(language_id, language_config);
-            language_config_owned = false;
-        }
+        try configureDocumentLanguage(allocator, io, language_service, declarative_arena.allocator(), declarative, language_id);
 
         const language_config_service = try allocator.create(LanguageConfigurationService);
         errdefer allocator.destroy(language_config_service);
@@ -1594,18 +1549,12 @@ pub const Editor = struct {
                 .filenamePatterns = contribution.filename_patterns,
             });
         }
-        if (registry.language(self.languageId())) |contribution| {
-            if (contribution.configuration) |relative| {
-                if (language_config_point.load(self.document.declarative_arena.allocator(), contribution.root, relative)) |config| {
-                    try self.language_service.registerLanguageConfiguration(self.languageId(), config);
-                } else |_| {}
-            }
-            if (registry.grammarForLanguage(self.languageId())) |grammar| {
-                registerDeclarativeGrammar(self.io, self.allocator, grammar.root, grammar);
-            }
-        }
-        if (self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null)) |guessed| {
-            if (!std.mem.eql(u8, guessed, self.languageId())) try self.setLanguage(guessed);
+        const guessed = self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null) orelse self.languageId();
+        if (std.mem.eql(u8, guessed, self.languageId())) {
+            try configureDocumentLanguage(self.allocator, self.io, self.language_service, self.document.declarative_arena.allocator(), registry, guessed);
+            for (self.document.editors.items) |editor| try editor.applyLanguageState(guessed);
+        } else {
+            try self.setLanguage(guessed);
         }
     }
 
@@ -2397,32 +2346,9 @@ pub const Editor = struct {
     pub fn setLanguage(self: *Editor, language_id: []const u8) !void {
         if (std.mem.eql(u8, language_id, self.model.getLanguageId())) return;
 
-        self.model.setLanguage(language_id);
+        try configureDocumentLanguage(self.allocator, self.io, self.language_service, self.document.declarative_arena.allocator(), self.document.declarative, language_id);
         try self.codec.register(language_id);
-
-        var config = language_configuration.empty();
-        var has_config = false;
-        if (language.bundledLanguageConfiguration(language_id)) |data| {
-            if (language_config_point.loadText(self.document.declarative_arena.allocator(), data)) |loaded| {
-                config = loaded;
-                has_config = true;
-            } else |_| {}
-        }
-        if (!has_config) {
-            if (language.commentRuleFor(language_id)) |comments| {
-                config.comments = comments;
-                has_config = true;
-            }
-            if (language.bracketsFor(language_id)) |brackets| {
-                config.brackets = brackets;
-                has_config = true;
-            }
-            if (language.foldingRulesFor(language_id)) |rules| {
-                config.folding = rules;
-                has_config = true;
-            }
-        }
-        if (has_config) try self.language_service.registerLanguageConfiguration(language_id, config);
+        self.model.setLanguage(language_id);
         for (self.document.editors.items) |editor| {
             try editor.applyLanguageState(language_id);
         }
@@ -4943,6 +4869,39 @@ fn createModel(
     return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service);
 }
 
+fn configureDocumentLanguage(
+    allocator: Allocator,
+    io: Io,
+    service: *LanguageService,
+    arena: Allocator,
+    registry: ?*const extensions_registry.Registry,
+    language_id: []const u8,
+) !void {
+    var config: ?language_configuration.LanguageConfiguration = null;
+    if (registry) |catalog| {
+        if (catalog.grammarForLanguage(language_id)) |grammar| {
+            registerDeclarativeGrammar(io, allocator, grammar.root, grammar);
+        }
+        if (catalog.language(language_id)) |definition| {
+            if (definition.configuration) |path| config = language_config_point.load(arena, definition.root, path) catch null;
+        }
+    }
+    if (config == null) {
+        if (language.bundledLanguageConfiguration(language_id)) |data| config = language_config_point.loadText(arena, data) catch null;
+    }
+    if (config == null) {
+        var fallback = language_configuration.empty();
+        fallback.comments = language.commentRuleFor(language_id);
+        fallback.brackets = language.bracketsFor(language_id);
+        fallback.folding = language.foldingRulesFor(language_id);
+        if (fallback.comments != null or fallback.brackets != null or fallback.folding != null) config = fallback;
+    }
+    if (config) |*value| {
+        errdefer value.deinit();
+        try service.registerLanguageConfiguration(language_id, value.*);
+    }
+}
+
 fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, grammar: extensions_registry.Grammar) void {
     if (text_mate_tokenizer.hasCatalogGrammar(grammar.location, grammar.scope)) return;
     const path = std.fs.path.join(allocator, &.{ root, grammar.path }) catch return;
@@ -6623,6 +6582,24 @@ test "declarative markdown-basics configuration reaches the editor" {
     try std.testing.expect(config.folding != null);
     try std.testing.expect(config.folding.?.offSide orelse false);
     try std.testing.expect(config.brackets != null and config.brackets.?.len >= 3);
+}
+
+test "Editor: a late language contribution configures file detection and manual language changes" {
+    const allocator = std.testing.allocator;
+    std.Io.Dir.cwd().access(time_compat.io, "vscode/extensions/lua/package.json", .{}) catch return error.SkipZigTest;
+    var catalog = try extensions_registry.scan(allocator, &.{"vscode/extensions/lua"});
+    defer catalog.deinit();
+    const editor = try Editor.createFromText(allocator, time_compat.io, "-- hello", "script.lua", 32, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.applyDeclarativeExtensions(&catalog);
+    try std.testing.expectEqualStrings("lua", editor.languageId());
+    try editor.setLanguage("plaintext");
+    try editor.setLanguage("lua");
+    const config = editor.language_service.getLanguageConfiguration("lua") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("--", config.comments.?.lineComment.?.comment);
 }
 
 test "Editor: JSON language features populate diagnostics and completion" {
