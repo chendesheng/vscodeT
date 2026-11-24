@@ -792,16 +792,16 @@ pub const Git = struct {
         defer argv.deinit();
 
         if (files.len > 0) {
-            try argv.appendSlice(&.{ self.exe, "add", "-A", "--" });
-            try argv.appendSlice(files);
-            var add_result = try self.run(argv.items, root, status_output_limit);
-            defer self.allocator.free(add_result.stdout);
-            defer self.allocator.free(add_result.stderr);
-            if (!add_result.term.success()) return error.GitFailed;
-            argv.clearRetainingCapacity();
+            try self.runResourceAction(root, .stage, files);
         }
 
-        try argv.appendSlice(&.{ self.exe, "commit", "-m", message });
+        try argv.appendSlice(&.{ self.exe, "commit" });
+        if (options.amend) try argv.append("--amend");
+        if (options.amend and message.len == 0) {
+            try argv.append("--no-edit");
+        } else {
+            try argv.appendSlice(&.{ "-m", message });
+        }
         if (options.no_verify orelse false) try argv.append("--no-verify");
         if (options.sign_commit) |sign| {
             if (sign) try argv.append("-S") else try argv.append("--no-gpg-sign");
@@ -814,6 +814,44 @@ pub const Git = struct {
             if (isNothingToCommit(commit_result.stderr)) return;
             return error.GitFailed;
         }
+    }
+
+    pub const ResourceAction = enum { stage, unstage, unstage_unborn, restore };
+
+    pub fn runResourceAction(self: *Git, root: []const u8, action: ResourceAction, files: []const []const u8) !void {
+        if (files.len == 0) return;
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.allocator);
+        try argv.appendSlice(self.allocator, &.{ self.exe, "--literal-pathspecs" });
+        try argv.appendSlice(self.allocator, switch (action) {
+            .stage => &.{ "add", "-A", "--" },
+            .unstage => &.{ "restore", "--staged", "--" },
+            .unstage_unborn => &.{ "rm", "--cached", "-f", "--ignore-unmatch", "--" },
+            .restore => &.{ "restore", "--worktree", "--" },
+        });
+        for (files) |file| {
+            if (file.len == 0 or std.mem.indexOfScalar(u8, file, 0) != null) return error.InvalidPath;
+        }
+        try argv.appendSlice(self.allocator, files);
+        const result = try self.run(argv.items, root, status_output_limit);
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return error.GitFailed;
+    }
+
+    pub const RemoteAction = enum { fetch, pull, push, publish };
+
+    pub fn runRemoteAction(self: *Git, root: []const u8, action: RemoteAction, remote: ?[]const u8) !void {
+        const args: []const []const u8 = switch (action) {
+            .fetch => &.{ self.exe, "fetch", "--all" },
+            .pull => &.{ self.exe, "pull" },
+            .push => &.{ self.exe, "push" },
+            .publish => &.{ self.exe, "push", "--set-upstream", "--", remote orelse return error.NoRemote, "HEAD" },
+        };
+        const result = try self.run(args, root, status_output_limit);
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+        if (!result.term.success()) return error.GitFailed;
     }
 
     /// `git log` with the upstream extension's record format. Returns an owned

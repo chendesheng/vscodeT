@@ -217,6 +217,7 @@ pub const GitUpstreamRef = struct {
 };
 
 pub const GitCommitOptions = struct {
+    amend: bool = false,
     /// Skips the pre-commit and commit-msg hooks.
     no_verify: ?bool = null,
     /// Overrides whether the commit is signed. Leaves the user's signing

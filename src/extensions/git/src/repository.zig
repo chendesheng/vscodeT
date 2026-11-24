@@ -40,6 +40,7 @@ pub const ResourceKind = enum { merge, index, working, untracked };
 pub const GitScmResource = struct {
     provider: *Repository,
     relative_path: []u8,
+    original_path: ?[]u8 = null,
     absolute_path: []u8,
     kind: ResourceKind,
     /// Porcelain v2 status letter (`M`, `A`, `D`, `R`, `?`, ...).
@@ -53,6 +54,7 @@ pub const GitScmResource = struct {
     pub fn destroy(self: *GitScmResource) void {
         const allocator = self.provider.allocator;
         allocator.free(self.relative_path);
+        if (self.original_path) |path| allocator.free(path);
         allocator.free(self.absolute_path);
         if (self.decorations.tooltip) |tooltip| allocator.free(tooltip);
         allocator.destroy(self);
@@ -328,6 +330,8 @@ pub const Repository = struct {
         errdefer self.allocator.destroy(resource);
         const relative = try self.allocator.dupe(u8, change.path);
         errdefer self.allocator.free(relative);
+        const original = if (change.original_path) |path| try self.allocator.dupe(u8, path) else null;
+        errdefer if (original) |path| self.allocator.free(path);
         const absolute = if (change.path.len > 0 and std.fs.path.isAbsolute(change.path))
             try self.allocator.dupe(u8, change.path)
         else
@@ -346,6 +350,7 @@ pub const Repository = struct {
         resource.* = .{
             .provider = self,
             .relative_path = relative,
+            .original_path = original,
             .absolute_path = absolute,
             .kind = kind,
             .status = status,
