@@ -561,6 +561,7 @@ pub const View = struct {
     /// Whether this view paints the editor's fallback status row. The
     /// multi-group workbench disables it in favour of its status-bar part.
     status_bar_visible: bool = true,
+    ghost_text: @import("../vs/editor/contrib/inlineCompletions/browser/ghostText.zig").GhostText,
     glyph_tooltip: GlyphTooltip = .{},
     /// The retained editor subtree (viewport, windowed content, chrome).
     /// Ordinary refreshes update these nodes in place.
@@ -637,6 +638,7 @@ pub const View = struct {
         self.* = .{
             .allocator = allocator,
             .editor = editor,
+            .ghost_text = .{ .editor = editor },
             .surface = undefined,
             .block_nodes = std.array_list.Managed(*ui.Node).init(allocator),
             .configuration_listeners = std.array_list.Managed(ConfigurationListener).init(allocator),
@@ -646,6 +648,7 @@ pub const View = struct {
         self.terminal_view_host = try TerminalViewHost.init(allocator, editor);
         errdefer self.terminal_view_host.deinit();
         try self.terminal_view_host.viewRef().addContentWidget(self.glyph_tooltip.interface());
+        try self.terminal_view_host.viewRef().addContentWidget(self.ghost_text.widget());
 
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
@@ -656,6 +659,7 @@ pub const View = struct {
     }
 
     pub fn deinit(self: *View) void {
+        self.ghost_text.clear();
         self.block_nodes.deinit();
         self.clearPaintStyles();
         self.paint_styles.deinit(self.allocator);
@@ -1321,6 +1325,7 @@ pub const View = struct {
     /// them because the registry colors are cached per document.
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
+        self.ghost_text.foreground = if (palette) |colors| colors.color("editorGhostText.foreground", .{ 128, 128, 128 }) else color(.{ 128, 128, 128 });
         self.terminal_view_host.viewRef().marginPart().setTheme(marginTheme(palette));
         self.clearPaintStyles();
         self.refreshBracketHighlightColors();
@@ -6371,4 +6376,27 @@ test "View: bracket colorization follows a line insertion above the pair" {
     try std.testing.expectEqual(level0[0], open.r);
     try std.testing.expectEqual(level0[1], open.g);
     try std.testing.expectEqual(level0[2], open.b);
+}
+
+test "View: ghost text starts at the caret, clips at the edge and leaves the buffer intact" {
+    const allocator = std.testing.allocator;
+    const editor = try Editor.createFromText(allocator, @import("../vs/base/common/timeCompat.zig").io, "éx", "test.txt", 30, 7);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try editor.setCursorPosition(Position.init(1, 4));
+    try std.testing.expect(try view.ghost_text.show(Range.init(1, 1, 1, 4), "éxabcdefg"));
+    try view.refresh();
+    const entries = view.terminal_view_host.viewRef().contentWidgets().entries.items;
+    try std.testing.expectEqual(@as(usize, 1), entries.len);
+    try std.testing.expectEqual(@as(usize, 0), entries[0].top);
+    try std.testing.expectEqual(editor.gutterWidth() + 2, entries[0].left);
+    var line = try editor.model.getLineContent(1);
+    defer line.deinit();
+    try std.testing.expectEqualStrings("éx", line.items);
+    view.ghost_text.clear();
+    try std.testing.expect(!try view.ghost_text.accept());
 }

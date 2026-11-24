@@ -58,10 +58,8 @@ pub const IOverlayWidget = struct {
     is_focused: *const fn (context: *anyopaque) bool,
 };
 
-/// Mirrors upstream `ContentWidgetPositionPreference`. Upstream also has
-/// `EXACT`; the terminal anchors a widget to a line and flips it above or
-/// below, which is the pair of preferences the hover widget uses.
-pub const ContentWidgetPositionPreference = enum { above, below };
+/// Exact widgets start at the anchor cell. Popups may move to fit.
+pub const ContentWidgetPositionPreference = enum { above, below, exact };
 
 /// Mirrors upstream `IContentWidgetPosition`.
 pub const IContentWidgetPosition = struct {

@@ -89,7 +89,7 @@ pub const ViewContentWidgets = struct {
             }
             const row = view_position.lineNumber - top;
 
-            const width = @min(widget.width(widget.context, cols), text_right);
+            var width = @min(widget.width(widget.context, cols), text_right);
             const height = @min(widget.height(widget.context), text_height);
             if (width == 0 or height == 0) continue;
 
@@ -108,6 +108,10 @@ pub const ViewContentWidgets = struct {
 
             const anchor_x = @as(isize, @intCast(gutter + anchor_cell)) -
                 @as(isize, @intCast(scroll_left));
+            if (widget_position.preference == .exact) {
+                if (anchor_x < @as(isize, @intCast(gutter)) or anchor_x >= @as(isize, @intCast(text_right))) continue;
+                width = @min(width, text_right - @as(usize, @intCast(anchor_x)));
+            }
             const max_left = text_right -| width;
             const left: usize = if (anchor_x <= @as(isize, @intCast(gutter)))
                 gutter
@@ -116,6 +120,7 @@ pub const ViewContentWidgets = struct {
             else
                 @intCast(anchor_x);
             var widget_top: usize = switch (widget_position.preference) {
+                .exact => row,
                 .below => row + 1,
                 .above => row -| height,
             };
