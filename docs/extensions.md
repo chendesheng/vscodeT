@@ -1,25 +1,8 @@
 # Extension system: reuse VS Code's host, port the editor side
 
-Status: the S0/S2 foundation and a first S7 slice are working. `host/` boots
-the real Node host over a Unix socket, `rpcProtocol.zig` implements the wire
-codec, the generated `extHost.protocol.zig` table has all 171 identifiers,
-and `src/vs/workbench/api/browser/extensionHostAdapter.zig` mirrors the active tab, routes text through
-`type`/`default:type`, applies edits and selections, publishes status bar
-entries and loads the provisioned built-in Node extension assets (currently
-`typescript-language-features`). User extension-folder discovery and the
-VSCodeVim fixture are removed.
-Declarative scanning now loads the bundled `theme-defaults` and
-`markdown-basics` contributions: the theme files (including the
-`dark_plus.json` → `dark_vs.json` include chain), the markdown language and
-grammar, and its JSONC language configuration. `zig build test-e2e` covers the Node extension host with the TypeScript extension. Declarative
-scanning now loads `theme-defaults` and `markdown-basics`. VS Code's real
-`typescript-language-features` extension is provisioned as a built-in runtime
-asset (`host/build-typescript-extension.js`) and loaded into the same host as
-Node extensions; TS/JS diagnostics, completion, hover, formatting and document
-symbols are wired through the ported language-feature bridge (§15.7). The remaining
-`MainThread*` actors, the general contribution scanner, configuration writes,
-`tabGroups`, extension keybindings and the built-in command set are still
-incomplete. The prerequisite workbench services are ported (§3.3).
+The native TUI installs and scans 87 desktop extension manifests. Its built-in catalog supplies language associations, TextMate grammars and injections, editing rules, snippets, color themes and language-specific settings. The extension host runs upstream language services over local IPC on macOS and Linux. The inventory records implementation and verification for each package. [Built-in extension status](vscode-builtin-extension-status.md)
+
+`zig build host` builds the pinned TypeScript, HTML, CSS, Emmet, PHP, Git Base and Search Result packages. An optional adapter connects GitHub's Copilot Language Server to the terminal editor. `zig build test-e2e` exercises the provider bridge. Configuration writes, extension keybindings, several main-thread APIs and Windows IPC remain incomplete.
 
 Upstream reference: `vscode/`, the shallow git submodule, at **1.147.0**,
 commit `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
@@ -30,7 +13,7 @@ invalidates the generated protocol table, so the host version is pinned and
 checked at startup (see §2.5 and §6.4). This document replaces an earlier draft
 that referenced 1.108.0.
 
-Local snapshot: HEAD `e98be57`. The services the extension system consumes
+Historical baseline at `e98be57`. The services the extension system consumes
 (language, configuration, files, working copies, editor groups, status bar,
 themes, keybindings, logging) are already ported; §3.3 maps them. No RPC,
 scanner, contribution, or `MainThread*` module exists yet.
@@ -1916,15 +1899,7 @@ markers remain deferred.
 ### 15.7 TypeScript/JavaScript extension
 
 The built-in `typescript-language-features` extension is not reimplemented.
-`host/build-typescript-extension.js` copies VS Code's shipped extension bundle
-and its TypeScript SDK (`extensions/node_modules/typescript`) into
-`host/dist/extensions`; `VSCODE_APP_PATH`/`TYPESCRIPT_SDK` select another
-installation. `extensionHostManager.buildInitData` now emits all loadable
-extensions (the TypeScript builtin plus another Node extension) in one
-payload, with per-extension `isBuiltin` and activation events. The workbench
-sends `$activateByEvent("onLanguage:<id>")` after the document delta is queued;
-`extensions.zig` deduplicates those events in the portable
-`services/extensions/common/extensionService.zig`.
+The host build compiles TypeScript from the pinned extension sources and installs the matching SDK. The standalone `host/build-typescript-extension.js` entry point provisions the same TypeScript bundle.
 
 The extension's `contributes.configuration` defaults are registered before the
 host starts (`workbench/api/common/configurationExtensionPoint.zig`), and the
