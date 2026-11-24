@@ -74,9 +74,6 @@ pub const ConfigurationModel = struct {
     }
 
     pub fn fromJsonWithOptions(allocator: Allocator, text: []const u8, options: ParseOptions) !ConfigurationModel {
-        var model = try initEmpty(allocator);
-        errdefer model.deinit();
-
         // Parse the raw JSONC in a scratch arena; only the normalized tree is
         // retained in the model arena.
         var scratch = std.heap.ArenaAllocator.init(allocator);
@@ -84,7 +81,13 @@ pub const ConfigurationModel = struct {
         const sanitized = try stripJsonc(scratch.allocator(), text);
         const raw = std.json.parseFromSliceLeaky(Value, scratch.allocator(), sanitized, .{
             .duplicate_field_behavior = .use_last,
-        }) catch return model;
+        }) catch return initEmpty(allocator);
+        return fromValueWithOptions(allocator, raw, options);
+    }
+
+    fn fromValueWithOptions(allocator: Allocator, raw: Value, options: ParseOptions) !ConfigurationModel {
+        var model = try initEmpty(allocator);
+        errdefer model.deinit();
         if (raw != .object) return model;
 
         const arena = model.arena.allocator();
@@ -155,25 +158,7 @@ pub const ConfigurationModel = struct {
     /// Builds a model from an already parsed JSON object, for `.code-workspace`
     /// files whose `settings` member is itself the raw settings object.
     pub fn fromValue(allocator: Allocator, value: Value) !ConfigurationModel {
-        var model = try initEmpty(allocator);
-        errdefer model.deinit();
-        if (value != .object) return model;
-
-        const arena = model.arena.allocator();
-        var normalized: Value = .{ .object = .empty };
-        var iterator = value.object.iterator();
-        while (iterator.next()) |entry| {
-            if (std.mem.eql(u8, entry.key_ptr.*, "__proto__")) continue;
-            if (isOverrideIdentifierKey(entry.key_ptr.*)) {
-                const key = try arena.dupe(u8, entry.key_ptr.*);
-                try normalized.object.put(arena, key, try configuration.cloneValue(arena, entry.value_ptr.*));
-            } else {
-                try configuration.addToValueTree(arena, &normalized, entry.key_ptr.*, entry.value_ptr.*);
-            }
-            try model.keys.append(try arena.dupe(u8, entry.key_ptr.*));
-        }
-        model.contents = normalized;
-        return model;
+        return fromValueWithOptions(allocator, value, .{});
     }
 
     pub fn isEmpty(self: *const ConfigurationModel) bool {

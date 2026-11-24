@@ -45,6 +45,11 @@ pub const Extension = struct {
     root: []const u8,
     identifier: []const u8,
     is_builtin: bool,
+    configuration_defaults: ?std.json.Value = null,
+
+    pub fn id(self: Extension) []const u8 {
+        return self.identifier[0 .. std.mem.lastIndexOfScalar(u8, self.identifier, '@') orelse self.identifier.len];
+    }
 };
 
 pub const ScanError = error{
@@ -181,11 +186,16 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
     const publisher = stringField(object, "publisher") orelse "undefined_publisher";
     const identifier = try std.fmt.allocPrint(scratch, "{s}.{s}@{s}", .{ publisher, name, version });
     const root_copy = try scratch.dupe(u8, absolute);
-    try contributions.extensions.append(.{ .root = root_copy, .identifier = identifier, .is_builtin = true });
+    const extension = try contributions.extensions.addOne();
+    extension.* = .{ .root = root_copy, .identifier = identifier, .is_builtin = true };
 
     const contributes = object.get("contributes") orelse return true;
     if (contributes != .object) return true;
     const points = contributes.object;
+    if (points.get("configurationDefaults")) |defaults| {
+        if (defaults == .object)
+            extension.configuration_defaults = try @import("../../../../platform/configuration/common/configuration.zig").cloneValue(scratch, defaults);
+    }
 
     // VS Code manifests store theme labels as `%nlsKey%`; resolve the default
     // `package.nls.json` so the scanner exposes the same label a user sees.

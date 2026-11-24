@@ -528,14 +528,12 @@ pub const ConfigurationRegistry = struct {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
             const scratch = arena.allocator();
-            var contents: std.json.Value = .{ .object = .empty };
-            var keys = std.array_list.Managed([]const u8).init(scratch);
+            var raw: std.json.ObjectMap = .empty;
             var iterator = self.properties.iterator();
             while (iterator.next()) |entry| {
-                try configuration.addToValueTree(scratch, &contents, entry.key_ptr.*, entry.value_ptr.default);
-                try keys.append(entry.key_ptr.*);
+                try raw.put(scratch, entry.key_ptr.*, entry.value_ptr.default);
             }
-            property_model = try ConfigurationModel.init(allocator, contents, keys.items);
+            property_model = try ConfigurationModel.fromValue(allocator, .{ .object = raw });
             try models.append(&property_model.?);
         }
         return ConfigurationModel.merge(allocator, models.items);

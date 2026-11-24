@@ -2701,6 +2701,7 @@ pub const Workbench = struct {
                 },
             },
         );
+        if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
         self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
         if (self.settings_watcher) |watcher| {
@@ -4395,11 +4396,23 @@ pub const Workbench = struct {
     /// Applies declarative language/grammar contributions to the open tabs and
     /// to tabs opened later.
     pub fn setDeclarativeExtensions(self: *Workbench, registry: *const extensions_registry.Registry) void {
+        if (self.declarative == registry) return;
         self.snippet_provider.setCatalog(registry);
         self.declarative = registry;
+        self.applyExtensionDefaults(registry) catch {};
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| tab.editor.applyDeclarativeExtensions(registry) catch {};
         }
+    }
+
+    fn applyExtensionDefaults(self: *Workbench, catalog: *const extensions_registry.Registry) !void {
+        const config = self.configuration orelse return;
+        for (catalog.extensions) |extension| {
+            if (extension.configuration_defaults) |defaults| {
+                try configuration_extension_point.registerConfigurationDefaults(config.registry, defaults);
+            }
+        }
+        try config.reload();
     }
 
     /// Ensures the workspace configuration service exists. Extension
@@ -4414,6 +4427,19 @@ pub const Workbench = struct {
     pub fn registerExtensionConfiguration(self: *Workbench, manifest: std.json.Value, extension_id: []const u8) void {
         self.ensureConfigurationReady();
         const config = self.configuration orelse return;
+        if (self.declarative) |catalog| {
+            for (catalog.extensions) |extension| {
+                if (!std.ascii.eqlIgnoreCase(extension.id(), extension_id) or extension.configuration_defaults == null) continue;
+                // Language overrides were already loaded from the installed manifest.
+                if (manifest != .object) return;
+                const points = manifest.object.get("contributes") orelse return;
+                if (points != .object) return;
+                const properties = points.object.get("configuration") orelse return;
+                configuration_extension_point.registerConfigurationValue(config.registry, properties, extension_id) catch return;
+                config.reload() catch {};
+                return;
+            }
+        }
         configuration_extension_point.registerManifest(config.registry, manifest, extension_id) catch return;
         config.reload() catch {};
     }
@@ -15526,6 +15552,13 @@ test "Workbench: declarative markdown configuration applies to open tabs" {
     const workbench = try Workbench.init(allocator, time_compat.io, &.{buffer[0..length]}, 40, 9);
     defer workbench.deinit();
     workbench.setDeclarativeExtensions(&registry);
+
+    workbench.ensureConfigurationReady();
+    const key = "diffEditor.ignoreTrimWhitespace";
+    const markdown = @import("../../platform/configuration/common/configuration.zig").Overrides{ .override_identifier = "markdown" };
+    try std.testing.expectEqual(false, workbench.configuration.?.getValue(key, markdown).?.bool);
+    try workbench.setUserSettingsPaths(&.{});
+    try std.testing.expectEqual(false, workbench.configuration.?.getValue(key, markdown).?.bool);
 
     const tab = workbench.activeTab().?;
     try std.testing.expectEqualStrings("markdown", tab.editor.languageId());

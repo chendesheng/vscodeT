@@ -34,7 +34,7 @@ pub fn registerManifest(
     }
 }
 
-fn registerConfigurationValue(
+pub fn registerConfigurationValue(
     registry: *ConfigurationRegistry,
     value: std.json.Value,
     extension_id: []const u8,
@@ -96,7 +96,7 @@ fn registerNode(
     }
 }
 
-fn registerConfigurationDefaults(
+pub fn registerConfigurationDefaults(
     registry: *ConfigurationRegistry,
     value: std.json.Value,
 ) !void {
