@@ -171,6 +171,27 @@ pub const TerminalEmulator = struct {
         self.terminal.scrollViewport(.bottom);
     }
 
+    pub fn isAtShellInput(self: *const TerminalEmulator) bool {
+        return self.terminal.screens.active.cursor.semantic_content == .input;
+    }
+
+    pub fn promptInput(self: *TerminalEmulator, allocator: Allocator) !?[]const u8 {
+        const screen = self.terminal.screens.active;
+        const cursor = screen.cursor;
+        if (!self.isAtShellInput()) return null;
+        const at = cursor.page_pin.*;
+        if (at.x == 0) return "";
+        const end = at.left(1);
+        if (end.rowAndCell().cell.semantic_content != .input) return "";
+        var start = end;
+        while (start.x > 0) {
+            const prev = start.left(1);
+            if (prev.rowAndCell().cell.semantic_content != .input) break;
+            start = prev;
+        }
+        return try screen.selectionString(allocator, .{ .sel = .init(start, end, false), .trim = false });
+    }
+
     pub fn title(self: *const TerminalEmulator) ?[]const u8 {
         return self.terminal.getTitle();
     }

@@ -46,6 +46,8 @@ pub const Options = struct {
     multi_root: bool = false,
 };
 
+const CompletionShell = enum { bash, zsh, fish, pwsh };
+
 pub const TerminalInstance = struct {
     allocator: Allocator,
     id: usize,
@@ -67,6 +69,7 @@ pub const TerminalInstance = struct {
     cwd: ?[]u8 = null,
     initial_cwd: ?[]u8 = null,
     workspace_folder: ?[]u8 = null,
+    shell_type: ?CompletionShell = null,
     process_name: []u8,
     profile_name: []u8,
     static_title: ?[]u8 = null,
@@ -107,6 +110,7 @@ pub const TerminalInstance = struct {
             if (self.initial_cwd) |value| allocator.free(value);
             if (self.workspace_folder) |value| allocator.free(value);
         }
+        self.shell_type = std.meta.stringToEnum(CompletionShell, std.fs.path.stem(options.shell));
         self.labels = try TerminalLabelComputer.init(allocator);
         self.labels.title_template = options.title_template;
         self.labels.description_template = options.description_template;

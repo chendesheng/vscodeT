@@ -69,6 +69,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     await bundleExtension('npm', 'dist/npmMain.js', [], {
         which: 'npm-extension-which', 'request-light': 'npm-extension-http', 'vscode-uri': 'npm-extension-uri'
     });
+    await bundleExtension('terminal-suggest', 'dist/terminalSuggestMain.js');
     await bundleExtension('simple-browser', 'dist/extension.js');
     await bundleExtension('merge-conflict', 'dist/mergeConflictMain.js');
     await bundleExtension('git-base', 'dist/extension.js');

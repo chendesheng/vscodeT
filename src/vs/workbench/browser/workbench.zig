@@ -3413,7 +3413,7 @@ pub const Workbench = struct {
         return terminal_configuration.Config.load(self.configuration);
     }
 
-    fn focusedTerminal(self: *const Workbench) ?*terminal_service_mod.TerminalInstance {
+    pub fn focusedTerminal(self: *const Workbench) ?*terminal_service_mod.TerminalInstance {
         if (self.focus == .terminal and self.terminalVisible()) {
             if (self.terminal_tabbed_view.tab_list.focused) return null;
             return self.terminal_service.?.active();
@@ -3708,6 +3708,14 @@ pub const Workbench = struct {
             }
         }
         const instance = self.focusedTerminal() orelse return self.focus == .terminal and self.terminalPanelActive();
+        if (event.mods.ctrl and !event.mods.alt and event.key == .char and (event.key.char == ' ' or event.key.char == 0)) {
+            const suggest = "workbench.action.terminal.requestCompletions";
+            const enabled = if (self.configuration) |config| config.getBool("terminal.integrated.suggest.enabled", true) else true;
+            if (enabled and instance.shell_type != null and instance.emulator.isAtShellInput() and self.commands.get(suggest) != null) {
+                try self.commands.execute(suggest);
+                return true;
+            }
+        }
 
         if (event.mods.alt and event.mods.shift and !event.mods.ctrl) {
             switch (event.key) {

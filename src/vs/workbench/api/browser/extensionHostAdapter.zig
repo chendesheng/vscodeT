@@ -179,6 +179,7 @@ pub const Extensions = struct {
     diagnostics_actor: ?*MainThreadDiagnostics = null,
     storage_actor: ?MainThreadStorage = null,
     statusbar_actor: ?MainThreadStatusBar = null,
+    terminal_completions: ?@import("terminalCompletionSession.zig").Session = null,
     task_actor: @import("mainThreadTask.zig").MainThreadTask = undefined,
     commands_actor: ?MainThreadCommands = null,
     configuration_actor: ?MainThreadConfiguration = null,
@@ -301,6 +302,14 @@ pub const Extensions = struct {
         } };
         try self.task_actor.init(workbench, self.host, self.descriptions);
         errdefer self.task_actor.deinit();
+        for (self.descriptions) |extension| {
+            if (!std.ascii.eqlIgnoreCase(extension.identifier, "vscode.terminal-suggest")) continue;
+            self.terminal_completions = .{ .workbench = workbench, .host = self.host, .arena = .init(allocator) };
+            const terminal_suggest = @import("terminalCompletionSession.zig");
+            try workbench.commands.register(.{ .id = terminal_suggest.command, .label = "Request Completions", .category = "Terminal", .context = &self.terminal_completions.?, .run = terminal_suggest.Session.request });
+            break;
+        }
+        errdefer if (self.terminal_completions) |*session| session.deinit();
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -310,6 +319,7 @@ pub const Extensions = struct {
     }
 
     pub fn deinit(self: *Extensions) void {
+        if (self.terminal_completions) |*session| session.deinit();
         self.task_actor.deinit();
         self.inline_completions.deinit();
         self.setScrollListener(null);
@@ -771,6 +781,10 @@ pub const Extensions = struct {
         if (self.visible_ranges_dirty) self.sendVisibleRanges() catch {};
         if (self.language_features_actor) |*actor| {
             if (self.inline_completions.tick(actor) catch false) self.needs_render = true;
+        }
+        if (self.terminal_completions) |*session| {
+            if (session.changed) self.needs_render = true;
+            session.changed = false;
         }
         const result = self.needs_render;
         self.needs_render = false;
