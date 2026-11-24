@@ -12,7 +12,17 @@ connection.onRequest('initialize', () => {
 });
 connection.onNotification('initialized', () => connection.sendNotification('didChangeStatus', { kind: 'Normal', message: 'Ready' }));
 connection.onNotification('textDocument/didOpen', ({ textDocument }) => documents.set(textDocument.uri, textDocument.text));
-connection.onNotification('textDocument/didChange', ({ textDocument, contentChanges }) => documents.set(textDocument.uri, contentChanges.at(-1).text));
+connection.onNotification('textDocument/didFocus', ({ textDocument }) => record(textDocument ? 'focused' : 'blurred'));
+connection.onNotification('textDocument/didChange', ({ textDocument, contentChanges }) => {
+    let text = documents.get(textDocument.uri);
+    for (const change of contentChanges) {
+        const offset = p => text.split('\n').slice(0, p.line).reduce((n, line) => n + line.length + 1, 0) + p.character;
+        const { start, end } = change.range;
+        text = text.slice(0, offset(start)) + change.text + text.slice(offset(end));
+    }
+    documents.set(textDocument.uri, text);
+    record('changed ' + text);
+});
 connection.onRequest('textDocument/inlineCompletion', ({ textDocument, position }) => {
     const text = documents.get(textDocument.uri);
     if (position.line !== 0 || position.character !== text.length) return { items: [] };

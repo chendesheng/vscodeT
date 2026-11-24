@@ -20,7 +20,8 @@ function activate(context) {
     status.show();
     const child = spawn(executable, ['--stdio'], { stdio: ['pipe', 'pipe', 'ignore'] });
     const connection = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
-    const versions = new Map();
+    const documents = new Map();
+    let focusedUri;
     const serverItems = new WeakMap();
     let deviceFlow;
     let signingIn = false;
@@ -65,8 +66,35 @@ function activate(context) {
             settings: { telemetry: { telemetryLevel: vscode.workspace.getConfiguration('telemetry').get('telemetryLevel', 'off') } }
         });
     }
+    const positionDto = p => ({ line: p.line, character: p.character });
+    const rangeDto = r => ({ start: positionDto(r.start), end: positionDto(r.end) });
+
+    function focus(uri) {
+        if (focusedUri === uri) return;
+        focusedUri = uri;
+        return connection.sendNotification('textDocument/didFocus', uri ? { textDocument: { uri } } : {});
+    }
+    function sync(document, changes) {
+        const uri = document.uri.toString();
+        const previous = documents.get(uri);
+        const version = document.version;
+        if (previous?.version === version) return;
+        const end = positionDto(document.lineAt(document.lineCount - 1).range.end);
+        documents.set(uri, { version, end });
+        if (!previous) {
+            return connection.sendNotification('textDocument/didOpen', {
+                textDocument: { uri, version, languageId: document.languageId, text: document.getText() }
+            });
+        }
+        // VS Code orders range edits from the end of the document. Each edit
+        // can therefore be applied sequentially to the server's previous text.
+        const contentChanges = changes?.length ? changes.map(c => ({ range: rangeDto(c.range), text: c.text })) :
+            [{ range: { start: { line: 0, character: 0 }, end: previous.end }, text: document.getText() }];
+        return connection.sendNotification('textDocument/didChange', { textDocument: { uri, version }, contentChanges });
+    }
     async function close(uri) {
-        if (versions.delete(uri)) await connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
+        if (focusedUri === uri) await focus(undefined);
+        if (documents.delete(uri)) await connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
     }
     async function signIn() {
         if (signingIn) return;
@@ -104,6 +132,15 @@ function activate(context) {
         await connection.sendRequest('signOut', {});
         report('Signed out', signInId);
     }), vscode.commands.registerCommand(acceptId, command => connection.sendRequest('workspace/executeCommand', command)),
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+        const uri = editor?.document.uri.toString();
+        Promise.resolve(focus(documents.has(uri) ? uri : undefined)).catch(failed);
+    }),
+    vscode.workspace.onDidChangeTextDocument(({ document, contentChanges }) => {
+        if (documents.has(document.uri.toString()) && enabled(document)) {
+            Promise.resolve(sync(document, contentChanges)).catch(failed);
+        }
+    }),
     vscode.workspace.onDidCloseTextDocument(doc => close(doc.uri.toString()).catch(failed)),
     vscode.workspace.onDidChangeConfiguration(async () => {
         try {
@@ -121,15 +158,8 @@ function activate(context) {
             if (token.isCancellationRequested || document.isClosed || !enabled(document)) return [];
             const uri = document.uri.toString();
             const version = document.version;
-            // Eagerly record each queued version so concurrent requests cannot
-            // open the same document twice. JSON-RPC preserves write order.
-            const previous = versions.get(uri);
-            versions.set(uri, version);
-            if (previous === undefined) {
-                await connection.sendNotification('textDocument/didOpen', { textDocument: { uri, version, languageId: document.languageId, text: document.getText() } });
-            } else if (previous !== version) {
-                await connection.sendNotification('textDocument/didChange', { textDocument: { uri, version }, contentChanges: [{ text: document.getText() }] });
-            }
+            await sync(document);
+            if (vscode.window.activeTextEditor?.document === document) await focus(uri);
             if (token.isCancellationRequested || document.version !== version) return [];
             const options = vscode.window.activeTextEditor?.options;
             const result = await connection.sendRequest('textDocument/inlineCompletion', {

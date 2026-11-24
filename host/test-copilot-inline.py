@@ -55,6 +55,7 @@ def run(root):
         wait_for(lambda: "shown val = 42" in events.read_text())
         os.write(master, b"ue")
         wait_for(lambda: "shown value = 42" in events.read_text())
+        assert "changed value" in events.read_text() and "focused" in events.read_text()
         os.write(master, b"\t")
         wait_for(lambda: "github.copilot.didAcceptCompletionItem fixture" in events.read_text())
         os.write(master, b"\x13")
