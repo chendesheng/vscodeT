@@ -387,34 +387,22 @@ zig build run -- [--user-data-dir <dir>] [--extensions-dir <dir>] [--logsPath <d
 zig build test-e2e                        # boots the Node host and runs TypeScript extension interop
 ```
 
-`host/build.js` always reads the embedded pinned `vscode/` checkout. `zig build`
-itself never runs Node; `zig build host` is the explicit step that produces
-`host/dist/extensionHost.mjs`.
+The native binary resolves executable extensions from its install prefix.
+`zig build host` builds the launcher and the upstream PHP, Git Base and Search
+Result bundles, then installs them under `lib/vscode-textbuffer` with the Node
+runtime dependencies. It uses the same prefix as `zig build` (including
+`--prefix`). The ordinary native build requires no Node installation.
 
-`zig build json-server` is the explicit step that produces the optional
-`host/dist/jsonServer.mjs`. When that bundle is present, `zig build test` runs
-the JSON language-client integration tests instead of skipping them. If the
-extension host bundle is missing at startup, the app reports
-`extension host disabled: host/dist/extensionHost.mjs is missing` in the main
-log instead of waiting for the host socket to time out.
+To add TypeScript and JavaScript IntelliSense, run
+`npm --prefix host run build:typescript-extension` before `zig build host`.
+This provisions the extension and its SDK from a local VS Code installation
+or built checkout. Only executable packages present in both the installed
+runtime and the built-in catalog are passed to the extension host.
 
-On Windows the host is not started: its transport is a Unix socket and the
-launcher runs through `/bin/sh`. The app reports
-`extension host disabled: UnsupportedPlatform` and otherwise keeps running;
-ConPTY and a named-pipe transport are follow-ups.
-
-`npm run build:typescript-extension` (in `host/`) is the optional step that
-provisions VS Code's real `typescript-language-features` extension and
-its TypeScript SDK under `host/dist/extensions`. It autodetects a standard VS Code
-installation and copies the extension and SDK from it; there is no path or SDK
-override. The extension is a runtime asset, not vendored source.
-
-The JSON server bundle reuses the runtime dependencies of the pinned
-`vscode/extensions/json-language-features/server`; `host/package.json` pins the
-same packages, so `npm ci` in `host/` is enough to build it.
-
-The Node host is used for provisioned built-in Node extensions such as
-`typescript-language-features`. VSCodeVim is no longer discovered or loaded.
+`zig build json-server` builds and installs the optional standalone JSON server.
+The intermediate bundles under `host/dist` are also used by the repository's
+interop tests. The host transport currently supports macOS and Linux.
+Windows requires a local IPC transport and a native launcher.
 
 Vim is a compiled-in built-in extension (`vscode-textbuffer.vim`), enabled
 with `"vim.enabled": true` in the user settings or after startup with the
@@ -476,7 +464,7 @@ therefore gets its upstream `<!-- -->` comment rule, bracket pairs, auto-closing
 pairs and off-side folding even when the built-in grammar was already bundled.
 
 JSON and JSONC editors use the bundled VS Code JSON language server when
-`host/dist/jsonServer.mjs` is present. Syntax diagnostics are pulled after
+the installed `lib/vscode-textbuffer/jsonServer.mjs` is present. Syntax diagnostics are pulled after
 edits and shown as severity-colored squiggle underlines over their ranges in
 the editor, in the `Problems` panel view and in the status-bar counts; `Ctrl-Space` completion
 comes from the same server. Without the server bundle the editor keeps the
@@ -493,7 +481,7 @@ language configuration. The build embeds that upstream
 closing-bracket outdent also work without `host/dist/jsonServer.mjs`.
 
 TypeScript and JavaScript editors use VS Code's real
-`typescript-language-features` extension when `host/dist/extensions` has been
+`typescript-language-features` extension when the runtime has been
 provisioned. The extension is activated by `onLanguage:<id>` after the document
 delta is queued; its own tsserver client provides semantic/syntax diagnostics
 (shown as squiggly underlines, overview marks, the Problems view and the workspace count),

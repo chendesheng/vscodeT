@@ -288,9 +288,13 @@ pub fn main(init: std.process.Init) !void {
     if (declarative) |*registry| tokenizer.setGrammarCatalog(registry.grammars);
     defer tokenizer.setGrammarCatalog(&.{});
 
+    const runtime_dir = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../lib/vscode-textbuffer" });
+    defer allocator.free(runtime_dir);
+    const json_server = try std.fs.path.join(allocator, &.{ runtime_dir, "jsonServer.mjs" });
+    defer allocator.free(json_server);
     var json_client: ?*json_language.Client = null;
-    if (std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{})) |_| {
-        json_client = json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs") catch |err| blk: {
+    if (std.Io.Dir.cwd().access(time_compat.io, json_server, .{})) |_| {
+        json_client = json_language.Client.start(allocator, "node", json_server) catch |err| blk: {
             infoLog(log_service, "JSON language server unavailable: {s}", .{@errorName(err)});
             break :blk null;
         };
@@ -592,19 +596,28 @@ pub fn main(init: std.process.Init) !void {
     var extension_host: ?*extensions.Extensions = null;
     defer if (extension_host) |ext| ext.deinit();
     var extension_paths = std.array_list.Managed(extensions.Extensions.ExtensionPath).init(allocator);
-    defer extension_paths.deinit();
-    const typescript_extension_path = "host/dist/extensions/typescript-language-features";
-    if (std.Io.Dir.cwd().access(io, typescript_extension_path, .{})) |_| {
-        try extension_paths.append(.{ .path = typescript_extension_path, .is_builtin = true });
-    } else |err| {
-        if (err != error.FileNotFound) infoLog(log_service, "TypeScript extension unavailable: {s}", .{@errorName(err)});
+    defer {
+        for (extension_paths.items) |entry| allocator.free(entry.path);
+        extension_paths.deinit();
+    }
+    if (declarative) |*catalog| {
+        for (catalog.extensions) |extension| {
+            const path = try std.fs.path.join(allocator, &.{ runtime_dir, "extensions", std.fs.path.basename(extension.root) });
+            errdefer allocator.free(path);
+            if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
+                try extension_paths.append(.{ .path = path, .is_builtin = true });
+            } else |err| {
+                if (err != error.FileNotFound) infoLog(log_service, "extension unavailable at {s}: {s}", .{ path, @errorName(err) });
+                allocator.free(path);
+            }
+        }
     }
     if (extension_paths.items.len > 0) {
         if (profile.user_data_dir) |user_data_dir| {
             std.Io.Dir.cwd().createDirPath(io, user_data_dir) catch {};
-            extension_host = extensions.Extensions.init(allocator, io, workbench, extension_paths.items, user_data_dir) catch |err| blk: {
+            extension_host = extensions.Extensions.init(allocator, io, workbench, extension_paths.items, user_data_dir, runtime_dir) catch |err| blk: {
                 if (err == error.ExtensionHostBundleMissing) {
-                    report(log_service, "extension host disabled: host/dist/extensionHost.mjs is missing; run `zig build host` (details in README)", .{});
+                    report(log_service, "extension host disabled: installed extensionHost.mjs is missing; run `zig build host` (details in README)", .{});
                 } else {
                     report(log_service, "extension host disabled: {s}", .{@errorName(err)});
                 }
@@ -614,7 +627,7 @@ pub fn main(init: std.process.Init) !void {
             infoLog(log_service, "extension host disabled: no user data directory", .{});
         }
     } else {
-        infoLog(log_service, "extension host disabled: no TypeScript extension found", .{});
+        infoLog(log_service, "extension host disabled: no executable built-ins installed", .{});
     }
     infoLog(log_service, "startup: extension-host={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,

@@ -174,14 +174,34 @@ fn setupExtensionHost(b: *std.Build) void {
     const host_step = b.step("host", "Bundle the Node extension host (host/dist/extensionHost.mjs)");
     const host_build = b.addSystemCommand(&.{ "node", "build.js" });
     host_build.setCwd(b.path("host"));
-    host_step.dependOn(&host_build.step);
+    const runtime_dir = "lib/vscode-textbuffer";
+    const extensions_build = b.addSystemCommand(&.{ "node", "build-builtin-extensions.js" });
+    extensions_build.setCwd(b.path("host"));
+    const install_host = b.addInstallFile(b.path("host/dist/extensionHost.mjs"), runtime_dir ++ "/extensionHost.mjs");
+    install_host.step.dependOn(&host_build.step);
+    host_step.dependOn(&install_host.step);
+    const install_extensions = b.addInstallDirectory(.{
+        .source_dir = b.path("host/dist/extensions"),
+        .install_dir = .prefix,
+        .install_subdir = runtime_dir ++ "/extensions",
+    });
+    install_extensions.step.dependOn(&extensions_build.step);
+    host_step.dependOn(&install_extensions.step);
+    const modules = b.addInstallDirectory(.{
+        .source_dir = b.path("host/node_modules"),
+        .install_dir = .prefix,
+        .install_subdir = runtime_dir ++ "/node_modules",
+    });
+    host_step.dependOn(&modules.step);
 
     // Same contract for the optional JSON language server: `zig build test`
     // runs the JSON client integration tests only when the bundle exists.
     const json_step = b.step("json-server", "Bundle the Node JSON language server (host/dist/jsonServer.mjs)");
     const json_build = b.addSystemCommand(&.{ "node", "build-json-server.js" });
     json_build.setCwd(b.path("host"));
-    json_step.dependOn(&json_build.step);
+    const install_json = b.addInstallFile(b.path("host/dist/jsonServer.mjs"), runtime_dir ++ "/jsonServer.mjs");
+    install_json.step.dependOn(&json_build.step);
+    json_step.dependOn(&install_json.step);
 }
 
 fn linkPtyLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {

@@ -202,6 +202,7 @@ pub const Extensions = struct {
         workbench: *Workbench,
         extension_paths: []const ExtensionPath,
         user_data_dir: []const u8,
+        runtime_dir: []const u8,
     ) !*Extensions {
         const self = try allocator.create(Extensions);
         errdefer allocator.destroy(self);
@@ -235,7 +236,7 @@ pub const Extensions = struct {
             .last_selections = std.array_list.Managed(Selection).init(allocator),
         };
 
-        const host_script = try std.fs.path.join(allocator, &.{ "host", "dist", "extensionHost.mjs" });
+        const host_script = try std.fs.path.join(allocator, &.{ runtime_dir, "extensionHost.mjs" });
         defer allocator.free(host_script);
         // Fail before spawning node: without the bundle the host can never
         // connect, and the manager would otherwise wait for its socket timeout.
@@ -248,7 +249,7 @@ pub const Extensions = struct {
             .workspace_path = workspace_path,
             .workspace_name = "workspace",
             .user_data_dir = data,
-            .app_root = ".",
+            .app_root = runtime_dir,
             .parent_pid = @intCast(manager.currentProcessId()),
         });
         errdefer self.host.deinit();
@@ -297,7 +298,7 @@ pub const Extensions = struct {
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
         };
-        try self.boot();
+        try self.boot(runtime_dir);
         return self;
     }
 
@@ -636,7 +637,7 @@ pub const Extensions = struct {
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostConfiguration), "$acceptConfigurationChanged", &args, null, manager.noop_callback) catch {};
     }
 
-    fn boot(self: *Extensions) !void {
+    fn boot(self: *Extensions, runtime_dir: []const u8) !void {
         try self.host.expectControl(2, 10_000);
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
@@ -648,7 +649,7 @@ pub const Extensions = struct {
             .workspace_path = workspace,
             .workspace_name = "workspace",
             .user_data_dir = self.user_data_dir,
-            .app_root = ".",
+            .app_root = runtime_dir,
             .parent_pid = @intCast(manager.currentProcessId()),
         });
         try self.host.sendInitData(init_data);
@@ -1770,7 +1771,7 @@ test "Extensions: language feature registration reaches the workbench registries
     defer workbench.deinit();
     try workbench.enableLanguageFeatures();
 
-    var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture");
+    var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
     defer extension_host.deinit();
 
     const deadline = time_compat.milliTimestamp() + 10_000;
@@ -1888,6 +1889,7 @@ test "Extensions: relative paths mirror the model URI language features use" {
         workbench,
         &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }},
         ".cache-ext/data-relative-fixture",
+        "host/dist",
     );
     defer extension_host.deinit();
 
@@ -1951,6 +1953,7 @@ test "Extensions: real TypeScript extension drives the language features" {
         workbench,
         &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
         ".cache-ext/data-ts-test",
+        "host/dist",
     );
     defer extension_host.deinit();
 
@@ -2129,6 +2132,7 @@ test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
         workbench,
         &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
         ".cache-ext/data-js-test",
+        "host/dist",
     );
     defer extension_host.deinit();
 
