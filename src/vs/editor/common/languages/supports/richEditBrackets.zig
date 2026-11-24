@@ -207,8 +207,9 @@ fn groupFuzzyBrackets(allocator: Allocator, raw_brackets: []const CharacterPair)
 }
 
 fn collectSuperstrings(pieces: *ArrayList([]const u8), brackets: []const InternalBracket, current_index: usize) !void {
-    var i: usize = 0;
-    while (i < pieces.items.len) : (i += 1) {
+    // Only inspect the original delimiters. The longer matches appended
+    // below already contain one of them.
+    for (0..pieces.items.len) |i| {
         const piece = pieces.items[i];
         for (brackets, 0..) |bracket, index| {
             if (index == current_index) continue;
