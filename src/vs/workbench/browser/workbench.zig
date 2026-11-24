@@ -600,6 +600,8 @@ pub const Workbench = struct {
     /// restore as another navigation.
     history_navigating: bool = false,
     history_state_path: ?[]u8 = null,
+    view_state_storage: ?[]u8 = null,
+    sidebar_view_to_move: ?[]const u8 = null,
     history_tab: ?*Tab = null,
     history_selection_listener: ?Tab.SelectionListener = null,
     history_content_listener: ?editor_widget.ChangeListener = null,
@@ -686,7 +688,6 @@ pub const Workbench = struct {
     scm_history_view: ?*scm_history_view_mod.SCMHistoryViewPane = null,
     scm_view_model: ?*view_container_model_mod.ViewContainerModel = null,
     scm_container: ?*view_pane_container_mod.ViewPaneContainer = null,
-    scm_panes: ?[]view_pane_container_mod.Pane = null,
     repository: ?*repository_mod.Repository = null,
     git_root: ?[]u8 = null,
     scm_interface: ?*scm_common.ISCMService = null,
@@ -763,7 +764,6 @@ pub const Workbench = struct {
         self.scm_history_view = null;
         self.scm_view_model = null;
         self.scm_container = null;
-        self.scm_panes = null;
         self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
@@ -929,7 +929,6 @@ pub const Workbench = struct {
         self.scm_history_view = null;
         self.scm_view_model = null;
         self.scm_container = null;
-        self.scm_panes = null;
         self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
@@ -1128,7 +1127,6 @@ pub const Workbench = struct {
         self.scm_history_view = null;
         self.scm_view_model = null;
         self.scm_container = null;
-        self.scm_panes = null;
         self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
@@ -1389,11 +1387,10 @@ pub const Workbench = struct {
             .icon = "E",
         });
         errdefer model.deinit();
-        try model.addView(.{ .id = "explorer", .name = "Explorer", .order = 0, .weight = 70 });
-        try model.addView(.{ .id = "outline", .name = "Outline", .order = 1, .weight = 30, .collapsed = true });
+        try addSidebarViewDescriptors(model, false, false);
         model.setActiveView("explorer");
 
-        const panes = try self.allocator.alloc(view_pane_container_mod.Pane, 2);
+        const panes = try self.allocator.alloc(view_pane_container_mod.Pane, 4);
         panes[0] = .{
             .id = "explorer",
             .title = "Explorer",
@@ -1412,9 +1409,37 @@ pub const Workbench = struct {
             .handle_mouse = outlinePaneHandleMouse,
             .title_actions = outlinePaneTitleActions,
         };
+        panes[2] = .{
+            .id = "changes",
+            .title = "Changes",
+            .context = self,
+            .render_body = scmChangesRenderBody,
+            .handle_key = scmChangesHandleKey,
+            .handle_mouse = scmChangesHandleMouse,
+            .title_actions = scmChangesTitleActions,
+        };
+        panes[3] = .{
+            .id = "graph",
+            .title = "Graph",
+            .context = self,
+            .render_body = scmHistoryRenderBody,
+            .handle_key = scmHistoryHandleKey,
+            .handle_mouse = scmHistoryHandleMouse,
+            .title_actions = scmHistoryTitleActions,
+            .show_actions = .when_expanded,
+        };
+        for (panes) |*pane| pane.run_title_action = runPaneTitleAction;
         self.explorer_panes = panes;
         self.explorer_view_model = model;
         self.explorer_container = try view_pane_container_mod.ViewPaneContainer.init(self.allocator, model, panes);
+    }
+
+    fn addSidebarViewDescriptors(model: *view_container_model_mod.ViewContainerModel, has_scm: bool, has_history: bool) !void {
+        const scm = std.mem.eql(u8, model.container.id, "scm");
+        try model.addView(.{ .id = "explorer", .name = "Explorer", .order = 0, .weight = 70, .in_container = !scm, .can_toggle_visibility = false });
+        try model.addView(.{ .id = "outline", .name = "Outline", .order = 1, .weight = 30, .in_container = !scm, .collapsed = true });
+        try model.addView(.{ .id = "changes", .name = "Changes", .order = 1, .weight = 40, .in_container = scm, .available = has_scm });
+        try model.addView(.{ .id = "graph", .name = "Graph", .order = 2, .weight = 40, .in_container = scm, .available = has_history });
     }
 
     fn fillPaneComposites(self: *Workbench, part: *pane_composite_mod.PaneCompositePart, location: views_mod.ViewContainerLocation) !void {
@@ -1491,6 +1516,8 @@ pub const Workbench = struct {
 
     fn initQuickAccess(self: *Workbench) !void {
         self.history_state_path = null;
+        self.view_state_storage = null;
+        self.sidebar_view_to_move = null;
         self.history_navigating = false;
         self.history_tab = null;
         self.history_selection_listener = null;
@@ -1688,6 +1715,7 @@ pub const Workbench = struct {
             .{ .id = "git.commit", .label = "Commit", .category = "Source Control", .context = self, .run = commandGitCommit },
             .{ .id = scm_view_mod.CHANGES_MENU_ACTION_ID, .label = "Changes More Actions", .show_in_palette = false, .context = self, .run = commandScmChangesMenu },
             .{ .id = scm_history_view_mod.GRAPH_MENU_ACTION_ID, .label = "Graph More Actions", .show_in_palette = false, .context = self, .run = commandScmGraphMenu },
+            .{ .id = "workbench.scm.action.showMenu", .label = "Source Control More Actions", .show_in_palette = false, .context = self, .run = commandScmMenu },
             .{ .id = "git.fetchAll", .label = "Fetch From All Remotes", .category = "Source Control", .context = self, .run = commandGitFetch },
             .{ .id = "git.pullRef", .label = "Pull", .category = "Source Control", .context = self, .run = commandGitPull },
             .{ .id = "git.pushRef", .label = "Push", .category = "Source Control", .context = self, .run = commandGitPush },
@@ -1977,6 +2005,9 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        self.saveSidebarViewStates() catch {};
+        if (self.view_state_storage) |path| self.allocator.free(path);
+        self.view_state_storage = null;
         self.clearTabDrag();
         self.cancelAsyncJobs();
         if (self.textmate_background) |factory| {
@@ -2285,6 +2316,11 @@ pub const Workbench = struct {
                 value.mergedTitleActions(self.allocator) catch null
             else
                 null;
+            self.sidebar_part.pane.setTitleActions(merged orelse &.{}, &.{
+                .{ .id = "workbench.scm.action.showMenu", .label = "More Actions", .glyph = '…' },
+            }) catch {};
+        } else if (std.mem.eql(u8, container, "explorer")) {
+            const merged = if (self.explorer_container) |value| value.mergedTitleActions(self.allocator) catch null else null;
             self.sidebar_part.pane.setTitleActions(merged orelse &.{}, &.{}) catch {};
         } else {
             self.sidebar_part.pane.setTitleActions(&.{}, &.{}) catch {};
@@ -2410,9 +2446,18 @@ pub const Workbench = struct {
         // explicit and drops picker items that borrow old paths.
         self.quick_access.endFileSession();
         if (self.terminal_service) |service| service.options.workspace_root = null;
+        self.saveSidebarViewStates() catch {};
         self.workspace.deinit();
         self.workspace = replacement;
         replacement_owned = true;
+        if (self.view_state_storage != null) {
+            const has_scm = self.scm_view_model != null;
+            const has_history = if (self.repository) |provider| provider.historyProvider() != null else false;
+            if (self.explorer_view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
+            if (self.scm_view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
+            try self.restoreSidebarViewStates();
+            self.updateSidebarTitleActions();
+        }
         try self.ensureConfiguration();
         if (self.terminal_service) |service| {
             service.options.workspace_root = self.workspaceFolderPath();
@@ -2898,6 +2943,7 @@ pub const Workbench = struct {
         // Switching the visible view container invalidates the hover state
         // painted by the previous one.
         self.clearSidebarViewHover();
+        if (self.activeSidebarViewContainer()) |container| container.cancelHeaderDrag();
         _ = try self.activity_bar_part.setActive(activity.id);
         _ = try self.sidebar_part.openPaneComposite(activity.id);
         try self.setSidebarVisible(true);
@@ -2941,6 +2987,10 @@ pub const Workbench = struct {
 
     pub fn focusEditor(self: *Workbench) void {
         self.focus = .editor;
+        if (self.activeSidebarViewContainer()) |container| {
+            container.cancelHeaderDrag();
+            container.focused_header = null;
+        }
         if (self.scm_view) |view| view.blurInput();
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
@@ -4306,10 +4356,6 @@ pub const Workbench = struct {
             self.allocator.destroy(model);
             self.scm_view_model = null;
         }
-        if (self.scm_panes) |panes| {
-            self.allocator.free(panes);
-            self.scm_panes = null;
-        }
         if (self.scm_history_view) |view| {
             view.deinit();
             self.allocator.destroy(view);
@@ -4517,40 +4563,20 @@ pub const Workbench = struct {
             .icon = "",
         });
         self.scm_view_model = view_model;
-        try view_model.addView(.{ .id = "changes", .name = "Changes", .order = 1, .weight = 40 });
-        try view_model.addView(.{
-            .id = "graph",
-            .name = "Graph",
-            .visible = provider.historyProvider() != null,
-            .order = 2,
-            .weight = 40,
-        });
+        const has_history = provider.historyProvider() != null;
+        try addSidebarViewDescriptors(view_model, true, has_history);
+        if (self.explorer_view_model) |model| {
+            for (model.views.items) |*view| {
+                if (std.mem.eql(u8, view.id, "changes")) view.available = true;
+                if (std.mem.eql(u8, view.id, "graph")) view.available = has_history;
+            }
+        }
         view_model.setActiveView("changes");
 
-        const panes = try self.allocator.alloc(view_pane_container_mod.Pane, 2);
-        panes[0] = .{
-            .id = "changes",
-            .title = "Changes",
-            .context = self,
-            .render_body = scmChangesRenderBody,
-            .handle_key = scmChangesHandleKey,
-            .handle_mouse = scmChangesHandleMouse,
-            .title_actions = scmChangesTitleActions,
-        };
-        panes[1] = .{
-            .id = "graph",
-            .title = "Graph",
-            .context = self,
-            .render_body = scmHistoryRenderBody,
-            .handle_key = scmHistoryHandleKey,
-            .handle_mouse = scmHistoryHandleMouse,
-            .title_actions = scmHistoryTitleActions,
-        };
-        self.scm_panes = panes;
         self.scm_container = try view_pane_container_mod.ViewPaneContainer.init(
             self.allocator,
             view_model,
-            panes,
+            self.explorer_panes.?,
         );
 
         self.git_status_accessor = try self.statusbar.addEntry(.{
@@ -5933,6 +5959,68 @@ pub const Workbench = struct {
     pub fn markdownPreviewTimeout(self: *Workbench, now_ms: i64) ?u32 {
         if (self.activeTab()) |tab| return tab.markdownPreviewTimeout(now_ms);
         return null;
+    }
+
+    pub fn setSidebarViewStorage(self: *Workbench, user_data_dir: []const u8) !void {
+        const path = try std.fs.path.join(self.allocator, &.{ user_data_dir, "User", "workspaceStorage" });
+        if (self.view_state_storage) |old| self.allocator.free(old);
+        self.view_state_storage = path;
+        try self.restoreSidebarViewStates();
+        self.updateSidebarTitleActions();
+    }
+
+    fn sidebarViewStatePath(self: *Workbench) !?[]u8 {
+        const storage = self.view_state_storage orelse return null;
+        const workspace = self.workspace.getWorkspace();
+        var hash = std.hash.Wyhash.init(0);
+        for (workspace.folders.items) |folder| {
+            hash.update(folder.resource);
+            hash.update(&.{0});
+        }
+        var key: [16]u8 = undefined;
+        const workspace_key = try std.fmt.bufPrint(&key, "{x:0>16}", .{hash.final()});
+        return try std.fs.path.join(self.allocator, &.{ storage, workspace_key, "views.state.json" });
+    }
+
+    fn restoreSidebarViewStates(self: *Workbench) !void {
+        const path = (try self.sidebarViewStatePath()) orelse return;
+        defer self.allocator.free(path);
+        const bytes = Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(64 * 1024)) catch return;
+        defer self.allocator.free(bytes);
+        const state = std.json.parseFromSlice([]view_container_model_mod.ViewState, self.allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
+        defer state.deinit();
+        if (self.explorer_view_model) |model| model.restoreState(state.value);
+        if (self.scm_view_model) |model| model.restoreState(state.value);
+    }
+
+    fn saveSidebarViewStates(self: *Workbench) !void {
+        const path = (try self.sidebarViewStatePath()) orelse return;
+        defer self.allocator.free(path);
+        var entries: std.ArrayList(view_container_model_mod.ViewState) = .empty;
+        defer entries.deinit(self.allocator);
+        for ([_]?*view_container_model_mod.ViewContainerModel{ self.explorer_view_model, self.scm_view_model }) |maybe_model| {
+            const model = maybe_model orelse continue;
+            for (model.views.items) |view| {
+                if (!view.in_container) continue;
+                try entries.append(self.allocator, .{
+                    .id = view.id,
+                    .container = model.container.id,
+                    .visible = view.visible,
+                    .collapsed = view.collapsed,
+                    .order = view.order,
+                    .size = view.size,
+                });
+            }
+        }
+        var out: Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        try std.json.Stringify.value(entries.items, .{}, &out.writer);
+        const cwd = Io.Dir.cwd();
+        if (std.fs.path.dirname(path)) |directory| try cwd.createDirPath(self.io, directory);
+        var atomic = try cwd.createFileAtomic(self.io, path, .{ .replace = true });
+        defer atomic.deinit(self.io);
+        try atomic.file.writeStreamingAll(self.io, out.written());
+        try atomic.replace(self.io);
     }
 
     const HistorySelectionDto = struct {
@@ -8916,7 +9004,14 @@ pub const Workbench = struct {
 
     pub fn cancelSashDrag(self: *Workbench) bool {
         const grid = &self.layout_model.workbench_grid;
-        if (self.part.active_sash == null and grid.activeSash() == null and self.hovered_sash == null) return false;
+        var sidebar_drag = false;
+        if (self.activeSidebarViewContainer()) |container| {
+            sidebar_drag = container.header_press != null or container.sash_dragging != null or container.sash_hovered != null;
+            container.cancelHeaderDrag();
+            container.sash_dragging = null;
+            container.sash_hovered = null;
+        }
+        if (!sidebar_drag and self.part.active_sash == null and grid.activeSash() == null and self.hovered_sash == null) return false;
         self.part.active_sash = null;
         grid.onSashEnd();
         self.hovered_sash = null;
@@ -8928,6 +9023,17 @@ pub const Workbench = struct {
     /// handling; a drag consumes every event until the button is released.
     pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (self.editor_drag.source != null) return false;
+        if (!self.quick_access.isOpen() and self.sidebarShown()) {
+            if (self.activeSidebarViewContainer()) |container| {
+                if (container.header_press != null and (event.kind == .move or event.kind == .up)) {
+                    return self.handleSidebarPaneHeader(container, event, .{});
+                }
+                if (container.sash_dragging != null and container.handleSashMouse(event)) {
+                    self.pointer = sash_css.pointer(.horizontal);
+                    return true;
+                }
+            }
+        }
         if (self.layout_model.workbench_grid.activeSash() != null) return self.handleWorkbenchSashMouse(event);
         if (if (self.expanded_pane == null) self.part.active_sash else null) |split| {
             switch (event.kind) {
@@ -8962,6 +9068,15 @@ pub const Workbench = struct {
         }
 
         if (self.handleWorkbenchSashMouse(event)) return true;
+        if (!self.quick_access.isOpen() and self.sidebarShown()) {
+            if (self.activeSidebarViewContainer()) |container| {
+                if (container.handleSashMouse(event)) {
+                    if (event.kind == .move) self.clearSidebarViewHover();
+                    self.pointer = if (container.sash_hovered != null or container.sash_dragging != null) sash_css.pointer(.horizontal) else .default;
+                    return true;
+                }
+            }
+        }
         if (self.expanded_pane != null or self.quick_access.isOpen()) return false;
         if (event.kind != .down or event.button != .left) {
             // Keep the editor from treating a click on the sash as a caret
@@ -9844,6 +9959,8 @@ pub const Workbench = struct {
         if (self.sidebar) |sidebar| sidebar.clearHover();
         if (self.search_view) |view| view.clearHover();
         if (self.scm_container) |container| container.clearHover();
+        if (self.scm_view) |view| view.clearHover();
+        if (self.explorer_container) |container| container.clearHover();
         if (self.scm_history_view) |view| view.clearHover();
         if (self.outline_view) |view| view.clearHover();
     }
@@ -9873,6 +9990,14 @@ pub const Workbench = struct {
         // Let the global Escape Escape chord exit zen mode when the side bar
         // was reopened while zen mode is active.
         if (event.key == .escape and self.layout_model.isZenModeActive()) return false;
+        if (event.key == .escape) {
+            if (self.activeSidebarViewContainer()) |container| {
+                if (container.header_press != null) {
+                    container.cancelHeaderDrag();
+                    return true;
+                }
+            }
+        }
         if (event.key == .escape and !std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) {
             // A focused sticky-scroll widget is the innermost focus target;
             // Escape leaves it before leaving the side bar (upstream leaves it
@@ -9948,6 +10073,146 @@ pub const Workbench = struct {
         }
     }
 
+    fn activeSidebarViewContainer(self: *const Workbench) ?*view_pane_container_mod.ViewPaneContainer {
+        const id = self.activity_bar_part.active_id orelse return null;
+        return self.sidebarViewContainer(id);
+    }
+
+    fn sidebarViewContainer(self: *const Workbench, id: []const u8) ?*view_pane_container_mod.ViewPaneContainer {
+        if (std.mem.eql(u8, id, "scm")) return self.scm_container;
+        if (std.mem.eql(u8, id, "explorer")) return self.explorer_container;
+        return null;
+    }
+
+    const SidebarViewDrop = struct {
+        container: *view_pane_container_mod.ViewPaneContainer,
+        rect: ui.Rect,
+    };
+
+    fn sidebarViewDropContainer(self: *Workbench, x: usize, y: usize) ?SidebarViewDrop {
+        const activity_rect = self.activityRect();
+        if (x >= ui.cell.snap(activity_rect.x) and x < ui.cell.snap(activity_rect.right())) {
+            if (activity_bar_mod.hitAt(&self.activity_bar_part, x, y, activity_rect)) |index| {
+                const activity = self.activity_bar_part.activityAtVisibleIndex(index) orelse return null;
+                return .{
+                    .container = self.sidebarViewContainer(activity.id) orelse return null,
+                    .rect = .{ .x = activity_rect.x, .y = @floatFromInt(y), .w = activity_rect.w, .h = 1 },
+                };
+            }
+        }
+        const sidebar_rect = self.sidebarRect();
+        const hit = sidebar_part_mod.hitTest(&self.sidebar_part, sidebar_rect, x, y) orelse return null;
+        if (hit != .composite) return null;
+        return .{
+            .container = self.sidebarViewContainer(hit.composite) orelse return null,
+            .rect = sidebar_part_mod.compositeItemRect(&self.sidebar_part, sidebar_rect, hit.composite) orelse return null,
+        };
+    }
+
+    fn moveSidebarView(
+        self: *Workbench,
+        source: *view_pane_container_mod.ViewPaneContainer,
+        id: []const u8,
+        destination: *view_pane_container_mod.ViewPaneContainer,
+    ) bool {
+        if (!source.model.moveTo(id, destination.model)) return false;
+        source.cancelHeaderDrag();
+        _ = self.showActivityById(destination.model.container.id) catch false;
+        destination.setActive(id);
+        self.updateSidebarTitleActions();
+        return true;
+    }
+
+    fn handleSidebarPaneHeader(
+        self: *Workbench,
+        container: *view_pane_container_mod.ViewPaneContainer,
+        event: *const ui.MouseEvent,
+        content: ui.Rect,
+    ) bool {
+        if (event.kind == .up and container.dragging_header) {
+            if (self.sidebarViewDropContainer(event.x, event.y)) |destination| {
+                if (self.moveSidebarView(container, container.header_press.?.id, destination.container)) {
+                    self.pointer = .default;
+                    return true;
+                }
+            }
+        }
+        const outcome = container.handleHeaderMouse(event, content) orelse return false;
+        if (event.kind == .move and container.dragging_header) {
+            container.drop_activity = null;
+            if (self.sidebarViewDropContainer(event.x, event.y)) |destination| {
+                if (container.model.canMoveTo(container.header_press.?.id, destination.container.model)) {
+                    container.drop_activity = destination.rect;
+                }
+            }
+        }
+        if (event.kind == .down) {
+            self.focus = .sidebar;
+            if (self.scm_view) |view| view.blurInput();
+        }
+        switch (outcome) {
+            .handled => self.pointer = if (container.dragging_header) .grabbing else .pointer,
+            .action => |id| self.runSidebarTitleAction(id),
+            .context_menu => |id| self.showSidebarViewMenu(container, id) catch {},
+        }
+        return true;
+    }
+
+    fn showSidebarViewMenu(
+        self: *Workbench,
+        container: *view_pane_container_mod.ViewPaneContainer,
+        header_id: ?[]const u8,
+    ) !void {
+        var items: std.ArrayList(QuickPickItem) = .empty;
+        defer items.deinit(self.allocator);
+        const model = container.model;
+        const visible = try model.visibleViews(self.allocator);
+        defer self.allocator.free(visible);
+        self.sidebar_view_to_move = null;
+        const selected_id = header_id orelse if (visible.len == 1) visible[0].id else null;
+        if (selected_id) |id| {
+            for (visible) |view| {
+                if (!std.mem.eql(u8, view.id, id)) continue;
+                if (view.can_move) {
+                    const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
+                    if (other) |destination| {
+                        self.sidebar_view_to_move = view.id;
+                        try items.append(self.allocator, .{ .item = .{ .id = "moveView", .label = "Move View", .description = destination.model.container.title } });
+                    }
+                }
+                if (header_id != null and view.can_toggle_visibility and visible.len > 1) {
+                    try items.append(self.allocator, .{ .item = .{ .id = view.id, .label = "Hide View", .description = view.name } });
+                }
+                if (items.items.len != 0) try items.append(self.allocator, .{ .separator = .{} });
+                break;
+            }
+        }
+        for (model.views.items) |view| {
+            if (!view.in_container or !view.available or !view.can_toggle_visibility or (view.visible and visible.len <= 1)) continue;
+            try items.append(self.allocator, .{ .item = .{
+                .id = view.id,
+                .label = view.name,
+                .description = if (view.visible) "✓" else "",
+            } });
+        }
+        if (items.items.len == 0) return;
+        try self.quick_access.inputService().showPick(items.items, .{ .placeholder = "Views" }, onSidebarViewPick, self);
+    }
+
+    fn onSidebarViewPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+        const container = self.activeSidebarViewContainer() orelse return;
+        if (std.mem.eql(u8, item.id, "moveView")) {
+            const id = self.sidebar_view_to_move orelse return;
+            const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
+            if (other) |destination| _ = self.moveSidebarView(container, id, destination);
+            return;
+        }
+        container.model.toggleVisibility(item.id);
+        self.updateSidebarTitleActions();
+    }
+
     pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         // The activity bar stays clickable while the side bar is hidden; an
         // entry click reveals the side bar again, like upstream.
@@ -9997,6 +10262,10 @@ pub const Workbench = struct {
             event.y < content_top or
             event.y >= content_top + content_height;
         if (in_chrome) {
+            if (event.kind == .down and event.button == .right) {
+                if (self.activeSidebarViewContainer()) |container| self.showSidebarViewMenu(container, null) catch {};
+                return true;
+            }
             if (event.kind == .move) {
                 self.clearSidebarViewHover();
                 const hit = sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y);
@@ -10024,55 +10293,25 @@ pub const Workbench = struct {
         if (event.kind == .move) sidebar_part_mod.setHovered(&self.sidebar_part, null);
         if (event.kind == .down) self.focus = .sidebar;
         const active_id = self.activity_bar_part.active_id orelse "";
-        if (std.mem.eql(u8, active_id, "scm")) {
-            if (self.scm_container) |container| {
-                const hit = container.hitTest(content, event.x, event.y);
-                if (event.kind == .move) {
-                    // Mode-1003 terminals report idle motion. Motion only
-                    // paints the hovered title action or the view's row hover;
-                    // it never activates a title action or toggles a section.
-                    container.setHoveredAt(event.x, event.y);
-                    var over_history = false;
-                    if (hit) |value| switch (value) {
-                        .body => |id| {
-                            over_history = std.mem.eql(u8, id, "graph");
-                            _ = container.handleMouse(@constCast(event), content) catch false;
-                        },
-                        else => {},
-                    };
-                    if (!over_history) {
-                        if (self.scm_history_view) |view| view.clearHover();
-                        if (self.scm_view) |view| view.clearHover();
-                    }
-                    return true;
-                }
-                const activating = event.kind == .down or event.kind == .click;
-                if (activating) {
-                    // A click on a title action runs it without toggling the
-                    // section (upstream prevents the header click from the
-                    // actions container); every other header cell toggles.
-                    if (hit) |value| switch (value) {
-                        .action => |action| {
-                            container.setActive(action.id);
-                            self.runSidebarTitleAction(action.action);
-                        },
-                        .toggle => |id| {
-                            container.model.setCollapsed(id, !container.model.isCollapsed(id));
-                            container.setActive(id);
-                        },
-                        .body => {
-                            _ = container.handleMouse(@constCast(event), content) catch false;
-                        },
-                    };
-                    return true;
-                }
-                if (hit) |value| switch (value) {
-                    .body => _ = container.handleMouse(@constCast(event), content) catch false,
-                    else => {},
-                };
-            } else if (self.scm_view) |view| {
-                _ = view.handleMouse(@constCast(event), content) catch false;
+        if (self.activeSidebarViewContainer()) |container| {
+            if (self.handleSidebarPaneHeader(container, event, content)) return true;
+            const hit = container.hitTest(content, event.x, event.y);
+            const body_id = if (hit != null and hit.? == .body) hit.?.body else "";
+            if (event.kind == .move) {
+                container.setHoveredAt(event.x, event.y);
+                self.updateSidebarBodyHover(body_id, event, container);
+                if (hit != null and (hit.? == .action or hit.? == .toggle)) self.pointer = .pointer;
+                return true;
             }
+            if (std.mem.eql(u8, body_id, "explorer")) {
+                if (explorerPreviewPress(event)) container.setActive(body_id);
+                return self.handleExplorerBodyMouse(event);
+            }
+            if (body_id.len > 0) _ = container.handleMouse(event, content) catch false;
+            return true;
+        }
+        if (std.mem.eql(u8, active_id, "scm")) {
+            if (self.scm_view) |view| _ = view.handleMouse(@constCast(event), content) catch false;
             return true;
         }
         if (std.mem.eql(u8, active_id, "search")) {
@@ -10082,70 +10321,43 @@ pub const Workbench = struct {
             }
             return true;
         }
-        if (!std.mem.eql(u8, active_id, "explorer")) return true;
+        if (std.mem.eql(u8, active_id, "explorer")) return self.handleExplorerBodyMouse(event);
+        return true;
+    }
 
-        // Explorer viewlet: the Explorer tree and the Outline section share one
-        // container. Header clicks/toggles and the Outline body are routed
-        // here; an Explorer body click falls through to the tree click path
-        // below so preview opening stays unchanged.
-        if (self.explorer_container) |container| {
-            const hit = container.hitTest(content, event.x, event.y);
-            if (event.kind == .move) {
-                container.setHoveredAt(event.x, event.y);
-                if (hit) |value| switch (value) {
-                    .body => |id| {
-                        if (std.mem.eql(u8, id, "outline")) {
-                            self.syncOutlineView() catch {};
-                            if (self.outline_view) |view| {
-                                _ = view.handleMouse(@constCast(event), container.bodyRect(id) orelse content);
-                                self.pointer = if (view.hasHoveredRow()) .pointer else .default;
-                            }
-                            return true;
-                        }
-                        if (std.mem.eql(u8, id, "explorer")) {
-                            if (self.sidebar) |sidebar| {
-                                _ = sidebar.handleMouse(@constCast(event));
-                                self.pointer = if (sidebar.hasHoveredRow()) .pointer else .default;
-                            }
-                            return true;
-                        }
-                    },
-                    else => {},
-                };
-                if (self.sidebar) |sidebar| sidebar.clearHover();
-                if (self.outline_view) |view| view.clearHover();
-                self.pointer = .default;
-                return true;
-            }
-            const activating = event.kind == .down or event.kind == .click;
-            if (activating) {
-                if (hit) |value| switch (value) {
-                    .action => |action| {
-                        container.setActive(action.id);
-                        self.runSidebarTitleAction(action.action);
-                        return true;
-                    },
-                    .toggle => |id| {
-                        container.model.setCollapsed(id, !container.model.isCollapsed(id));
-                        container.setActive(id);
-                        return true;
-                    },
-                    .body => |id| {
-                        container.setActive(id);
-                        if (std.mem.eql(u8, id, "outline")) {
-                            self.syncOutlineView() catch {};
-                            if (self.outline_view) |view| {
-                                _ = view.handleMouse(@constCast(event), container.bodyRect(id) orelse content);
-                                self.pointer = if (view.hasHoveredRow()) .pointer else .default;
-                            }
-                            return true;
-                        }
-                    },
-                };
-                if (hit == null) return true;
-            }
+    fn updateSidebarBodyHover(
+        self: *Workbench,
+        id: []const u8,
+        event: *const ui.MouseEvent,
+        container: *view_pane_container_mod.ViewPaneContainer,
+    ) void {
+        self.pointer = .default;
+        if (self.sidebar) |sidebar| {
+            if (!std.mem.eql(u8, id, "explorer")) sidebar.clearHover();
         }
+        if (self.outline_view) |view| {
+            if (!std.mem.eql(u8, id, "outline")) view.clearHover();
+        }
+        if (self.scm_view) |view| {
+            if (!std.mem.eql(u8, id, "changes")) view.clearHover();
+        }
+        if (self.scm_history_view) |view| {
+            if (!std.mem.eql(u8, id, "graph")) view.clearHover();
+        }
+        const rect = container.bodyRect(id) orelse return;
+        _ = container.handleMouse(event, rect) catch false;
+        if (std.mem.eql(u8, id, "explorer")) {
+            if (self.sidebar) |sidebar| self.pointer = if (sidebar.hasHoveredRow()) .pointer else .default;
+        } else if (std.mem.eql(u8, id, "outline")) {
+            if (self.outline_view) |view| self.pointer = if (view.hasHoveredRow()) .pointer else .default;
+        } else if (std.mem.eql(u8, id, "changes")) {
+            if (self.scm_view) |view| self.pointer = view.pointerAt(event, rect);
+        } else if (std.mem.eql(u8, id, "graph")) {
+            if (self.scm_history_view) |view| self.pointer = view.pointerAt();
+        }
+    }
 
+    fn handleExplorerBodyMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         const sidebar = self.sidebar orelse return false;
         if (event.kind == .move) {
             _ = sidebar.handleMouse(event);
@@ -10156,7 +10368,7 @@ pub const Workbench = struct {
             _ = sidebar.handleMouse(event);
             return true;
         }
-        if (event.kind == .down) {
+        if (explorerPreviewPress(event)) {
             if (sidebar.handleClickPreview(event.x, event.y) catch null) |path| {
                 // A single Explorer click opens a preview through the async
                 // text-open job, like Enter. The status hint reports a failed
@@ -10166,6 +10378,10 @@ pub const Workbench = struct {
             }
         }
         return true;
+    }
+
+    fn explorerPreviewPress(event: *const ui.MouseEvent) bool {
+        return event.kind == .down and (event.button == .left or event.button == .none);
     }
 
     /// The panel title and the active panel view's input. Terminal content is
@@ -10866,6 +11082,8 @@ pub const Workbench = struct {
             const active_id = self.activity_bar_part.active_id orelse "";
             if (std.mem.eql(u8, active_id, "explorer")) {
                 if (self.explorer_container) |container| {
+                    container.native_outline = self.part.cell_borders and self.part.cell_border_capabilities.has(.rect);
+                    container.always_show_header_actions = if (self.configuration) |config| config.getBool("workbench.view.alwaysShowHeaderActions", false) else false;
                     try container.render(&self.frame.next, content, focused, self.theme_palette);
                 } else if (self.sidebar) |sidebar| {
                     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
@@ -10889,6 +11107,8 @@ pub const Workbench = struct {
                 }
             } else if (std.mem.eql(u8, active_id, "scm")) {
                 if (self.scm_container) |container| {
+                    container.native_outline = self.part.cell_borders and self.part.cell_border_capabilities.has(.rect);
+                    container.always_show_header_actions = if (self.configuration) |config| config.getBool("workbench.view.alwaysShowHeaderActions", false) else false;
                     try container.render(&self.frame.next, content, focused, self.theme_palette);
                 } else if (self.scm_view) |view| {
                     if (self.theme_palette) |palette| view.setThemeColors(palette);
@@ -10901,6 +11121,11 @@ pub const Workbench = struct {
             }
 
             self.renderSidebarFrame();
+            if (self.activeSidebarViewContainer()) |container| {
+                if (container.drop_activity) |drop_rect| {
+                    view_pane_container_mod.ViewPaneContainer.paintDropOverlay(&self.frame.next, drop_rect, self.theme_palette);
+                }
+            }
         }
 
         self.renderCenteredLayoutMargins();
@@ -12267,6 +12492,11 @@ fn explorerPaneHandleMouse(context: *anyopaque, event: *const ui.MouseEvent, rec
     return sidebar.handleMouse(event);
 }
 
+fn runPaneTitleAction(context: *anyopaque, id: []const u8) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.runSidebarTitleAction(id);
+}
+
 fn explorerPaneTitleActions(_: *anyopaque) []const views_mod.TitleAction {
     return &.{};
 }
@@ -13029,6 +13259,12 @@ fn commandGitCommit(context: *anyopaque) anyerror!void {
     _ = view.commitInput();
 }
 
+fn commandScmMenu(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const container = self.scm_container orelse return;
+    try self.showSidebarViewMenu(container, null);
+}
+
 fn commandScmChangesMenu(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const view = self.scm_view orelse return;
@@ -13245,8 +13481,10 @@ fn commandFocusBreadcrumbs(context: *anyopaque) anyerror!void {
 
 fn commandFocusOutline(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    _ = try self.showActivityById("explorer");
-    if (self.explorer_container) |container| {
+    const location = if (self.scm_view_model) |model| if (model.contains("outline")) "scm" else "explorer" else "explorer";
+    _ = try self.showActivityById(location);
+    if (self.activeSidebarViewContainer()) |container| {
+        container.model.setVisible("outline", true);
         container.model.setCollapsed("outline", false);
         container.setActive("outline");
     }
@@ -20411,12 +20649,34 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
         };
         try std.testing.expect(workbench.handleSidebarMouse(&hover));
         try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
-        hover.kind = .down;
+        hover.kind = .click;
+        hover.button = .left;
         try std.testing.expect(workbench.handleSidebarMouse(&hover));
         try std.testing.expect(workbench.scm_view_model.?.isCollapsed("changes"));
         try std.testing.expect(workbench.handleSidebarMouse(&hover));
         try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
     }
+
+    // Dragging the separator increases Changes and leaves the Graph expanded.
+    try workbench.render(&scm_frame.writer);
+    const scm_container = workbench.scm_container.?;
+    const sash = scm_container.sashes.items[0].rect;
+    const before = scm_container.bodyRect("changes").?.h;
+    var drag_sash = ui.MouseEvent{
+        .kind = .down,
+        .x = ui.cell.snap(sash.x) + 3,
+        .y = ui.cell.snap(sash.y),
+        .button = .left,
+    };
+    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    drag_sash.kind = .move;
+    drag_sash.y += 2;
+    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    drag_sash.kind = .up;
+    try std.testing.expect(workbench.handleSashMouse(&drag_sash));
+    try workbench.render(&scm_frame.writer);
+    try std.testing.expectEqual(before + 2, scm_container.bodyRect("changes").?.h);
+    try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("graph"));
 
     // Pointer motion over the Graph body still drives the row hover: body
     // moves are forwarded to the pane while header moves only track the
@@ -20659,11 +20919,11 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const graph_header_y = ui.cell.snap(header.y);
     const header_start = ui.cell.snap(header.x);
     const header_end = header_start + ui.cell.snap(header.w);
-    const header_surface = &(container.headers.items[1].surface orelse return error.TestExpectedScmContainer);
+    const header_surface = &(container.headers.items[3].surface orelse return error.TestExpectedScmContainer);
     var over_title = ui.MouseEvent{ .kind = .move, .x = header_start + 1, .y = graph_header_y };
     try std.testing.expect(workbench.handleSidebarMouse(&over_title));
     try std.testing.expect(!container.model.isCollapsed("graph"));
-    for (container.headers.items[1].nodes.items) |entry| {
+    for (container.headers.items[3].nodes.items) |entry| {
         if (entry.id.len != 0) try std.testing.expect(!entry.node.isHovered());
     }
     var action_x: ?usize = null;
@@ -20685,25 +20945,25 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const hovered = header_surface.document().hoverTarget();
     try std.testing.expect(hovered != null);
     var on_action = false;
-    for (container.headers.items[1].nodes.items) |entry| {
+    for (container.headers.items[3].nodes.items) |entry| {
         if (entry.id.len != 0 and entry.node == hovered.?) on_action = true;
     }
     try std.testing.expect(on_action);
 
     // Moving back over the title clears the action hover.
     try std.testing.expect(workbench.handleSidebarMouse(&over_title));
-    for (container.headers.items[1].nodes.items) |entry| {
+    for (container.headers.items[3].nodes.items) |entry| {
         if (entry.id.len != 0) try std.testing.expect(!entry.node.isHovered());
     }
 
     // The left click toggles the section; a second click restores it for the
     // Load More click below.
-    var header_click = ui.MouseEvent{ .kind = .down, .x = header_start + 1, .y = graph_header_y, .button = .left };
+    var header_click = ui.MouseEvent{ .kind = .click, .x = header_start + 1, .y = graph_header_y, .button = .left };
     try std.testing.expect(workbench.handleSidebarMouse(&header_click));
     try std.testing.expect(container.model.isCollapsed("graph"));
     try workbench.render(&out.writer);
     const collapsed_y = ui.cell.snap(container.sections.items[1].header_rect.y);
-    var expand_click = ui.MouseEvent{ .kind = .down, .x = header_start + 1, .y = collapsed_y, .button = .left };
+    var expand_click = ui.MouseEvent{ .kind = .click, .x = header_start + 1, .y = collapsed_y, .button = .left };
     try std.testing.expect(workbench.handleSidebarMouse(&expand_click));
     try std.testing.expect(!container.model.isCollapsed("graph"));
     try workbench.render(&out.writer);

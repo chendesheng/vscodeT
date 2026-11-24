@@ -572,6 +572,7 @@ pub fn main(init: std.process.Init) !void {
     }
     try workbench.initSidebarFromWorkspace();
     workbench.initGit() catch {};
+    if (profile.user_data_dir) |user_data| workbench.setSidebarViewStorage(user_data) catch {};
     if (workbench.activeTab()) |active| {
         try active.ensureControllers();
     } else {

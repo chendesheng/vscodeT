@@ -1,7 +1,4 @@
-// Tests for the terminal `ViewPaneContainer` layout/collapse subset. Upstream
-// `viewPaneContainer.test.ts` only covers CSS spacing; these cases pin the
-// terminal row split, collapsed sections, merged single view, header hits and
-// the click-only expansion contract.
+// Terminal coverage for the PaneView layout, focus, toolbar, and drag paths.
 const std = @import("std");
 const testing = std.testing;
 const ui = @import("ui");
@@ -11,6 +8,7 @@ const container_mod = @import("../../../../browser/parts/views/viewPaneContainer
 
 const TestPane = struct {
     renders: usize = 0,
+    actions_run: usize = 0,
     actions_list: []const views.TitleAction = &.{},
 
     fn render(context: *anyopaque, _: *ui.CellGrid, _: ui.Rect, _: bool) anyerror!void {
@@ -22,6 +20,10 @@ const TestPane = struct {
     }
     fn mouse(_: *anyopaque, _: *const ui.MouseEvent, _: ui.Rect) anyerror!bool {
         return false;
+    }
+    fn runAction(context: *anyopaque, _: []const u8) void {
+        const self: *TestPane = @ptrCast(@alignCast(context));
+        self.actions_run += 1;
     }
     fn actions(context: *anyopaque) []const views.TitleAction {
         const self: *TestPane = @ptrCast(@alignCast(context));
@@ -40,7 +42,7 @@ test "ViewPaneContainer: splits rows by weight and collapses to a header" {
     var second = TestPane{};
     const panes = [_]container_mod.Pane{
         .{ .id = "changes", .title = "Changes", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
-        .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
+        .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .show_actions = .when_expanded },
     };
     const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
     defer {
@@ -52,8 +54,8 @@ test "ViewPaneContainer: splits rows by weight and collapses to a header" {
     try container.layout(rect);
     try testing.expectEqual(@as(usize, 2), container.sections.items.len);
     try testing.expectEqual(@as(f64, 1), container.sections.items[0].header_rect.h);
-    try testing.expect(container.sections.items[0].body_rect.h >= 4);
-    try testing.expect(container.sections.items[1].body_rect.h >= 4);
+    try testing.expectEqual(@as(f64, 4), container.sections.items[0].body_rect.h);
+    try testing.expectEqual(@as(f64, 3), container.sections.items[1].body_rect.h);
     const changes_body = container.sections.items[0].body_rect.h;
     const graph_body = container.sections.items[1].body_rect.h;
 
@@ -67,7 +69,7 @@ test "ViewPaneContainer: splits rows by weight and collapses to a header" {
     const graph_header_y = ui.cell.snap(container.sections.items[1].header_rect.y);
     const header_hit = container.hitTest(rect, 1, graph_header_y);
     try testing.expect(header_hit != null);
-    var click = ui.MouseEvent{ .kind = .down, .x = 1, .y = graph_header_y, .button = .left };
+    var click = ui.MouseEvent{ .kind = .click, .x = 1, .y = graph_header_y, .button = .left };
     try testing.expect(try container.handleMouse(&click, rect));
     try testing.expect(!model.isCollapsed("graph"));
 }
@@ -86,7 +88,7 @@ test "ViewPaneContainer: pointer motion over a header never toggles the section"
     var second = TestPane{ .actions_list = &graph_actions };
     const panes = [_]container_mod.Pane{
         .{ .id = "changes", .title = "Changes", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
-        .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
+        .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .show_actions = .when_expanded },
     };
     const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
     defer {
@@ -161,7 +163,7 @@ test "ViewPaneContainer: pointer motion over a header never toggles the section"
     try testing.expect(!model.isCollapsed("graph"));
 
     // The left click (upstream's header click listener) toggles.
-    var click = ui.MouseEvent{ .kind = .down, .x = 1, .y = header_y, .button = .left };
+    var click = ui.MouseEvent{ .kind = .click, .x = 1, .y = header_y, .button = .left };
     try testing.expect(try container.handleMouse(&click, rect));
     try testing.expect(model.isCollapsed("graph"));
 }
@@ -177,7 +179,7 @@ test "ViewPaneContainer: a single visible view merges into the container" {
     var second = TestPane{};
     const panes = [_]container_mod.Pane{
         .{ .id = "changes", .title = "Changes", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
-        .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
+        .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .show_actions = .when_expanded },
     };
     const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
     defer {
@@ -191,4 +193,152 @@ test "ViewPaneContainer: a single visible view merges into the container" {
     try testing.expectEqual(@as(f64, 0), container.sections.items[0].header_rect.h);
     try testing.expectEqual(@as(f64, 10), container.sections.items[0].body_rect.h);
     try testing.expectEqualStrings("changes", container.sections.items[0].id);
+}
+
+test "ViewPaneContainer: CSS action visibility and keyboard focus follow pane state" {
+    const allocator = testing.allocator;
+    var model = model_mod.ViewContainerModel.init(allocator, .{ .id = "scm", .title = "Source Control", .icon = "" });
+    defer model.deinit();
+    try model.addView(.{ .id = "changes", .name = "Changes", .order = 1 });
+    try model.addView(.{ .id = "graph", .name = "Graph", .order = 2 });
+    var first = TestPane{ .actions_list = &.{.{ .id = "changes.refresh", .label = "Refresh", .glyph = '↻' }} };
+    var second = TestPane{ .actions_list = &.{.{ .id = "graph.refresh", .label = "Refresh", .glyph = '↻' }} };
+    const panes = [_]container_mod.Pane{
+        .{ .id = "changes", .title = "Changes", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .run_title_action = TestPane.runAction },
+        .{ .id = "graph", .title = "Graph", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .show_actions = .when_expanded },
+    };
+    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    defer {
+        container.deinit();
+        allocator.destroy(container);
+    }
+    const rect: ui.Rect = .{ .x = 0, .y = 0, .w = 20, .h = 12 };
+    var grid = try ui.CellGrid.init(allocator, 20, 12);
+    defer grid.deinit();
+    try container.render(&grid, rect, false, null);
+    try testing.expectEqual(@as(usize, 0), container.headers.items[0].actions.len);
+    try testing.expectEqual(@as(usize, 1), container.headers.items[1].actions.len);
+    container.always_show_header_actions = true;
+    try container.render(&grid, rect, false, null);
+    try testing.expectEqual(@as(usize, 1), container.headers.items[0].actions.len);
+    container.always_show_header_actions = false;
+
+    container.setHoveredAt(3, 2); // Hovering the body also reveals the header toolbar.
+    try container.render(&grid, rect, false, null);
+    try testing.expectEqual(@as(usize, 1), container.headers.items[0].actions.len);
+    container.clearHover();
+
+    var key: ui.KeyEvent = .{ .key = .backtab };
+    try testing.expect(try container.handleKey(&key));
+    try testing.expectEqualStrings("changes", container.focused_header.?);
+    key.key = .tab;
+    try testing.expect(try container.handleKey(&key));
+    key.key = .enter;
+    try testing.expect(try container.handleKey(&key));
+    try testing.expectEqual(@as(usize, 1), first.actions_run);
+    try testing.expect(!model.isCollapsed("changes"));
+
+    key.key = .backtab;
+    try testing.expect(try container.handleKey(&key));
+    key.key = .down;
+    try testing.expect(try container.handleKey(&key));
+    try testing.expectEqualStrings("graph", container.focused_header.?);
+    key.key = .left;
+    try testing.expect(try container.handleKey(&key));
+    try container.render(&grid, rect, true, null);
+    try testing.expect(model.isCollapsed("graph"));
+    try testing.expectEqual(@as(usize, 0), container.headers.items[1].actions.len);
+    key.key = .right;
+    try testing.expect(try container.handleKey(&key));
+    try testing.expect(!model.isCollapsed("graph"));
+}
+
+test "ViewPaneContainer: a sash resizes the nearest expanded panes and dragging a header moves it" {
+    const allocator = testing.allocator;
+    var model = model_mod.ViewContainerModel.init(allocator, .{ .id = "test", .title = "Views", .icon = "" });
+    defer model.deinit();
+    try model.addView(.{ .id = "a", .name = "A", .order = 1 });
+    try model.addView(.{ .id = "b", .name = "B", .order = 2 });
+    try model.addView(.{ .id = "c", .name = "C", .order = 3 });
+
+    var first = TestPane{};
+    var second = TestPane{};
+    var third = TestPane{};
+    const panes = [_]container_mod.Pane{
+        .{ .id = "a", .title = "A", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
+        .{ .id = "b", .title = "B", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
+        .{ .id = "c", .title = "C", .context = &third, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
+    };
+    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    defer {
+        container.deinit();
+        allocator.destroy(container);
+    }
+
+    const rect: ui.Rect = .{ .x = 0, .y = 0, .w = 20, .h = 20 };
+    try container.layout(rect);
+    try testing.expectEqual(@as(usize, 2), container.sashes.items.len);
+    const first_size = container.bodyRect("a").?.h;
+    const middle_size = container.bodyRect("b").?.h;
+    var event: ui.MouseEvent = .{ .kind = .down, .button = .left, .x = 3, .y = ui.cell.snap(container.sashes.items[1].rect.y) };
+    try testing.expect(container.handleSashMouse(&event));
+    event.kind = .up;
+    event.y += 2;
+    try testing.expect(container.handleSashMouse(&event));
+    try container.layout(rect);
+    try testing.expectEqual(first_size, container.bodyRect("a").?.h);
+    try testing.expectEqual(middle_size + 2, container.bodyRect("b").?.h);
+
+    var grid = try ui.CellGrid.init(allocator, 20, 20);
+    defer grid.deinit();
+    event.kind = .down;
+    event.y = ui.cell.snap(container.sections.items[2].header_rect.y);
+    try testing.expect(try container.handleMouse(&event, rect));
+    const source_y = event.y;
+    try container.render(&grid, rect, true, null);
+    const upper_body_y: usize = 1;
+    const lower_body_y = ui.cell.snap(container.sections.items[0].body_rect.bottom()) - 1;
+    const upper_bg = grid.bg[grid.index(event.x, upper_body_y)];
+    const lower_bg = grid.bg[grid.index(event.x, lower_body_y)];
+    const header_bg = grid.bg[grid.index(event.x, 0)];
+    event.kind = .move;
+    event.y = upper_body_y;
+    try testing.expect(try container.handleMouse(&event, rect));
+    try container.render(&grid, rect, true, null);
+    try testing.expect(upper_bg != grid.bg[grid.index(event.x, upper_body_y)]);
+    try testing.expectEqual(lower_bg, grid.bg[grid.index(event.x, lower_body_y)]);
+    event.y = lower_body_y;
+    try testing.expect(try container.handleMouse(&event, rect));
+    try container.render(&grid, rect, true, null);
+    try testing.expectEqual(header_bg, grid.bg[grid.index(event.x, 0)]);
+    try testing.expectEqual(upper_bg, grid.bg[grid.index(event.x, upper_body_y)]);
+    try testing.expect(lower_bg != grid.bg[grid.index(event.x, lower_body_y)]);
+    event.y = source_y;
+    try testing.expect(try container.handleMouse(&event, rect));
+    try testing.expect(container.drop_target == null);
+    event.y = lower_body_y;
+    event.kind = .up;
+    try testing.expect(try container.handleMouse(&event, rect));
+    try container.layout(rect);
+    try testing.expectEqualStrings("a", container.sections.items[0].id);
+    try testing.expectEqualStrings("c", container.sections.items[1].id);
+    try testing.expect(container.drop_target == null);
+
+    event.kind = .down;
+    event.y = ui.cell.snap(container.sections.items[1].header_rect.y);
+    try testing.expect(try container.handleMouse(&event, rect));
+    event.kind = .move;
+    event.y = 0;
+    try testing.expect(try container.handleMouse(&event, rect));
+    event.kind = .up;
+    try testing.expect(try container.handleMouse(&event, rect));
+    try container.layout(rect);
+    try testing.expectEqualStrings("c", container.sections.items[0].id);
+    try testing.expect(!model.isCollapsed("c"));
+
+    model.setCollapsed("a", true);
+    try container.layout(rect);
+    try testing.expectEqual(@as(usize, 2), container.sashes.items.len);
+    try testing.expectEqual(@as(usize, 0), container.sashes.items[0].first);
+    try testing.expectEqual(@as(usize, 2), container.sashes.items[0].second);
 }

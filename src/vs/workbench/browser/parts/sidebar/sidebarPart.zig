@@ -695,6 +695,19 @@ pub fn hitTest(part: *const SidebarPart, rect: ui.Rect, x: usize, y: usize) ?Sid
     return null;
 }
 
+pub fn compositeItemRect(part: *const SidebarPart, rect: ui.Rect, id: []const u8) ?ui.Rect {
+    const chrome = layout(part, rect);
+    const bar = chrome.header orelse chrome.footer orelse return null;
+    const surface = if (part.bar_surface) |*value| value else return null;
+    for (part.bar_nodes.items) |entry| {
+        if (!std.mem.eql(u8, entry.id, id)) continue;
+        const box = surface.box_tree.find(entry.node) orelse continue;
+        const width = @min(box.rect.w, bar.w - box.rect.x);
+        return .{ .x = bar.x + box.rect.x, .y = bar.y, .w = width, .h = 1 };
+    }
+    return null;
+}
+
 pub fn setHovered(part: *SidebarPart, hit: ?SidebarPart.Hit) void {
     part.hovered_action_id = null;
     part.hovered_composite_id = null;
