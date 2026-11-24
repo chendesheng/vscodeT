@@ -1,4 +1,4 @@
-// Port of the Activity Bar / layout defaults registered by
+// Port of the Activity Bar, layout and editor tips defaults registered by
 // `src/vs/workbench/browser/workbench.contribution.ts`
 // (`LayoutSettings` in `services/layout/browser/layoutService.ts`).
 //
@@ -12,6 +12,7 @@
 pub const defaults_json =
     \\{
     \\  "workbench": {
+    \\    "tips": { "enabled": true },
     \\    "activityBar": {
     \\      "location": "default",
     \\      "autoHide": false,

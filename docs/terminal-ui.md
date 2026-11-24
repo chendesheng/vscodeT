@@ -1460,6 +1460,12 @@ Library constraints:
   arguments as workspace folders and file arguments as initial editors;
   `ExplorerModel` creates one root per workspace folder. The workbench starts
   with an empty editor group when only a folder is opened.
+- The editor group watermark uses retained terminal UI nodes for its centered
+  cell artwork and shortcut rows. The sole empty group shows three actions
+  with resolved terminal keybindings, updated when the user keymap reloads.
+  Short panes keep the rows when the full logo would exceed the viewport.
+  Empty split groups show the artwork alone when it fits. The browser SVG,
+  toolbar and randomized tips are replaced by cell artwork and a fixed list.
 - The Explorer sidebar is a terminal tree view
   (`src/vs/workbench/contrib/files/browser/views/explorerView.zig`) over `ExplorerModel`/`ExplorerItem` from
   `src/vs/workbench/contrib/files/common/explorerModel.zig`: lazy directory

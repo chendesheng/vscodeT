@@ -1202,6 +1202,13 @@ console API for raw mode, sizing and input polling.
   folder shows that folder as the Explorer root and starts with an empty
   editor group; files on the command line still open as tabs. Opening only
   files uses an empty workspace, as upstream does.
+- An empty editor group centers a cell-art watermark. The sole empty group
+  also shows Show All Commands, Toggle Terminal, and Find in Files with the
+  current terminal keybindings. Click a row or use Tab, the arrow keys, and
+  Enter or Space. `workbench.tips.enabled` controls the shortcut rows. In a
+  short pane the rows take priority over the artwork. Empty split groups show
+  the watermark alone when it fits. The terminal uses a fixed set of tips and
+  cell artwork in place of the browser's randomized tips and SVG letterpress.
 - The editor is rendered through the library (`src/tui/editorView.zig`): text,
   syntax colors, configured ruler columns (`editor.rulers`), a one-row scroll
   shadow after scrolling, `marginClassName` gutter row tints and marker-cell glyphs for

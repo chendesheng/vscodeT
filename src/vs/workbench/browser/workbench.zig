@@ -58,6 +58,7 @@ const sash_css = @import("../../base/browser/ui/sash/sash_css.zig");
 const editor_drop_target = @import("./parts/editor/editorDropTarget.zig");
 const editor_tabs_control = @import("./parts/editor/editorTabsControl.zig");
 const editor_group_view = @import("./parts/editor/editorGroupView.zig");
+const editor_group_watermark = @import("./parts/editor/editorGroupWatermark.zig");
 const editor_part = @import("./parts/editor/editorPart.zig");
 const Tab = @import("./parts/editor/editorPane.zig").Tab;
 const FileEditorInput = @import("../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
@@ -8095,6 +8096,7 @@ pub const Workbench = struct {
     fn applyKeybindingConsumers(self: *Workbench) void {
         const removals = self.userRemovalOverrides();
         for (self.part.group_views.items) |pane| {
+            if (pane.watermark) |*watermark| watermark.invalidateShortcuts();
             for (pane.tabs.items) |tab| {
                 if (!tab.isDiff()) tab.editor.reloadShortcutKeybindings(removals);
             }
@@ -8841,7 +8843,7 @@ pub const Workbench = struct {
                 return .terminal_panel;
         }
         const pane = self.paneAt(mouse.x, mouse.y) orelse return null;
-        if (pane.tabs_visible and mouse.y == ui.cell.snap(pane.rect.y)) {
+        if (!pane.isEmpty() and pane.tabs_visible and mouse.y == ui.cell.snap(pane.rect.y)) {
             if (pane.title_action_hit) |hit| {
                 if (mouse.x >= hit.start and mouse.x < hit.end) return null;
             }
@@ -9948,6 +9950,16 @@ pub const Workbench = struct {
             self.clearTabHover();
             return false;
         };
+        if (pane.isEmpty()) {
+            self.clearTabHover();
+            if (self.handleWatermarkMouse(pane, event)) return true;
+            if (event.kind == .down) {
+                pane.focus();
+                self.focusEditor();
+                if (pane.watermark) |*watermark| watermark.blur();
+            }
+            return false;
+        }
         const pane_y = ui.cell.snap(pane.rect.y);
         const breadcrumb_y = pane_y + pane.titleHeight();
 
@@ -10257,6 +10269,80 @@ pub const Workbench = struct {
         return null;
     }
 
+    fn handleWatermarkMouse(self: *Workbench, pane: *GroupPane, event: *const ui.MouseEvent) bool {
+        switch (event.kind) {
+            .move => {},
+            .down, .up => if (event.button != .left) return false,
+            else => return false,
+        }
+        const watermark = if (pane.watermark) |*view| view else return false;
+        const surface = self.synchronizeEditorDom() catch return false;
+        const target = (surface.elementFromPoint(event.x, event.y) catch null) orelse return false;
+        if (watermark.rowAt(target) == null) return false;
+        if (event.kind == .down) self.focusEditor();
+        self.pointer = .pointer;
+        var mouse = event.*;
+        surface.document().dispatchMouse(target, &mouse);
+        return true;
+    }
+
+    pub fn handleWatermarkKey(self: *Workbench, event: *const ui.KeyEvent) bool {
+        if (self.focus != .editor or self.quick_access.isOpen()) return false;
+        const pane = self.activePane() orelse return false;
+        if (!pane.isEmpty()) return false;
+        const watermark = if (pane.watermark) |*view| view else return false;
+        return watermark.handleKey(event);
+    }
+
+    fn renderWatermarkShortcuts(self: *Workbench, watermark: *editor_group_watermark.EditorGroupWatermark) !void {
+        const service = try self.ensureGlobalService();
+        var labels: [editor_group_watermark.entries.len]?[]const u8 = @splat(null);
+        for (editor_group_watermark.entries, &labels) |entry, *label| {
+            if (self.commands.get(entry.id) == null) continue;
+            if (try service.service.lookupKeybinding(self.allocator, entry.id, false)) |binding| {
+                label.* = binding.getLabel();
+            }
+        }
+        try watermark.renderShortcuts(labels, self, executeWatermarkShortcut);
+    }
+
+    fn executeWatermarkShortcut(context: *anyopaque, id: []const u8) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.commands.execute(id) catch |err| std.log.warn("Editor shortcut {s} failed: {s}", .{ id, @errorName(err) });
+    }
+
+    fn watermarkColors(self: *const Workbench) editor_group_watermark.Colors {
+        const background = self.themeColor("editor.background", .{ 30, 30, 33 });
+        const foreground = self.themeColor("foreground", .{ 204, 204, 204 });
+        const description = self.themeColor("descriptionForeground", .{ 167, 167, 167 });
+        return .{
+            .background = background,
+            .foreground = foreground,
+            .description = description,
+            .letterpress = watermarkTint(background, foreground),
+            .hover = self.themeColor("toolbar.hoverBackground", .{ 60, 60, 63 }),
+            .key_foreground = self.themeColor("keybindingLabel.foreground", .{ description.r, description.g, description.b }),
+            .key_background = self.themeColor("keybindingLabel.background", .{ 48, 48, 51 }),
+        };
+    }
+
+    fn watermarkTint(background: ui.Color, foreground: ui.Color) ui.Color {
+        // The letterpress is recessed on a dark theme and raised on a light
+        // theme. On pure black/white, use the foreground to retain contrast.
+        const brightness = @as(u16, background.r) + background.g + background.b;
+        const edge: u16 = if (brightness >= 384) 255 else 0;
+        if (brightness < 30 or brightness > 735) return .{
+            .r = @intCast((@as(u16, background.r) * 9 + foreground.r) / 10),
+            .g = @intCast((@as(u16, background.g) * 9 + foreground.g) / 10),
+            .b = @intCast((@as(u16, background.b) * 9 + foreground.b) / 10),
+        };
+        return .{
+            .r = @intCast((@as(u16, background.r) * 2 + edge) / 3),
+            .g = @intCast((@as(u16, background.g) * 2 + edge) / 3),
+            .b = @intCast((@as(u16, background.b) * 2 + edge) / 3),
+        };
+    }
+
     fn synchronizeEditorDom(self: *Workbench) !*ui.Surface {
         if (self.expanded_pane) |pane| {
             if (!self.paneExists(pane)) self.expanded_pane = null;
@@ -10285,6 +10371,7 @@ pub const Workbench = struct {
         const surface = &self.editor_surface.?;
         try surface.resize(self.cols, self.rows);
         surface.border_capabilities = self.part.cell_border_capabilities;
+        const show_tips = self.part.count() == 1 and self.findBoolSetting(editor_group_watermark.settings_key, true);
         for (self.part.group_views.items) |pane| {
             const visible = self.expanded_pane == null or self.expanded_pane == pane;
             const active = pane.activeTab();
@@ -10296,8 +10383,16 @@ pub const Workbench = struct {
             try pane.layoutDom(self.editor_grid, visible);
             if (!visible) continue;
             const container = pane.dom.?.editor_container;
-            const height = ui.cell.snap(pane.rect.h) -| pane.chromeHeight();
             const width = ui.cell.snap(pane.rect.w);
+            const group_height = ui.cell.snap(pane.rect.h);
+            const height = group_height -| pane.chromeHeight();
+            if (pane.isEmpty() and pane.watermark == null) {
+                pane.watermark = try editor_group_watermark.EditorGroupWatermark.init(pane.dom.?.group);
+            }
+            if (pane.watermark) |*watermark| {
+                if (pane.isEmpty() and show_tips and watermark.shortcuts == null) try self.renderWatermarkShortcuts(watermark);
+                watermark.layout(width, group_height, pane.isEmpty(), show_tips, self.watermarkColors());
+            }
             if (active) |tab| {
                 if (width == 0 or height == 0) continue;
                 try tab.mount(
@@ -10324,6 +10419,9 @@ pub const Workbench = struct {
         self.syncTerminalFocus();
         const active_pane = self.activePane();
         for (self.part.group_views.items) |pane| {
+            if (pane.watermark) |*watermark| {
+                if (pane != active_pane or self.focus != .editor or self.quick_access.isOpen()) watermark.blur();
+            }
             for (pane.tabs.items) |tab| {
                 const desired = tab.terminal_input == null and self.focus == .editor and
                     pane == active_pane and pane.activeTab() == tab and
@@ -10636,6 +10734,11 @@ pub const Workbench = struct {
         const width = ui.cell.snap(pane.rect.w);
         const height = ui.cell.snap(pane.rect.h);
         if (width == 0 or height == 0) return;
+        if (pane.isEmpty()) {
+            pane.hits.clearRetainingCapacity();
+            pane.title_action_hit = null;
+            return;
+        }
 
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
         defer ordered.deinit();
@@ -14321,6 +14424,106 @@ fn frameText(allocator: Allocator, frame: *const ui.Frame) ![]u8 {
         try text.append('\n');
     }
     return text.toOwnedSlice();
+}
+
+test "Workbench: empty editor renders the watermark and runs its shortcuts" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "watermark.txt", "");
+    defer allocator.free(path);
+    const workbench = try Workbench.init(allocator, io, &.{}, 90, 32);
+    defer workbench.deinit();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    try workbench.render(&out.writer);
+    const initial = try frameText(allocator, &workbench.frame);
+    defer allocator.free(initial);
+    try std.testing.expect(std.mem.indexOf(u8, initial, "▟████▙▄  ▗▄████████▀▘▐██████") != null);
+    const commands = std.mem.indexOf(u8, initial, "Show All Commands").?;
+    const terminal = std.mem.indexOf(u8, initial, "Toggle Terminal").?;
+    const search = std.mem.indexOf(u8, initial, "Find in Files").?;
+    try std.testing.expect(commands < terminal and terminal < search);
+    try std.testing.expect(std.mem.indexOf(u8, initial, "Ctrl+Shift+P") != null);
+
+    const watermark = &workbench.activePane().?.watermark.?;
+    const commands_row = watermark.shortcuts.?.first_child.?;
+    const terminal_row = commands_row.next.?;
+    const search_row = terminal_row.next.?;
+    const label_x = commands_row.first_child.?.next.?.asElement().rect.x;
+    try std.testing.expectEqual(label_x, terminal_row.first_child.?.next.?.asElement().rect.x);
+    try std.testing.expectEqual(label_x, search_row.first_child.?.next.?.asElement().rect.x);
+    try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .tab }));
+    try std.testing.expectEqual(commands_row, watermark.root.document.focusedElement().?);
+    try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .down }));
+    try std.testing.expectEqual(terminal_row, watermark.root.document.focusedElement().?);
+    try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .up }));
+    try std.testing.expectEqual(commands_row, watermark.root.document.focusedElement().?);
+    try std.testing.expect(workbench.handleWatermarkKey(&.{ .key = .enter }));
+    try std.testing.expect(workbench.quick_access.isOpen());
+    var escape = ui.KeyEvent{ .key = .escape };
+    _ = try workbench.handleQuickAccessKey(&escape);
+
+    const hit = search_row.first_child.?.prev.?.asElement().rect;
+    var mouse = ui.MouseEvent{ .kind = .move, .x = ui.cell.snap(hit.x), .y = ui.cell.snap(hit.y) };
+    try std.testing.expect(workbench.handleTabMouse(&mouse));
+    try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointer);
+    mouse.kind = .down;
+    mouse.button = .left;
+    try std.testing.expect(workbench.handleTabMouse(&mouse));
+    try std.testing.expectEqualStrings("search", workbench.activity_bar_part.active_id.?);
+
+    try workbench.openPath(path);
+    try workbench.render(&out.writer);
+    try std.testing.expectEqual(ui.style.Display.none, watermark.root.declaredDisplay());
+    try std.testing.expect(workbench.activeTab() != null);
+    _ = try workbench.closeActive();
+    try workbench.render(&out.writer);
+    try std.testing.expectEqual(ui.style.Display.block, watermark.root.declaredDisplay());
+}
+
+test "Workbench: watermark tips respond to resized panes, settings, and keybindings" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "watermark-keybindings.json",
+        \\[
+        \\  { "key": "ctrl+alt+g", "command": "workbench.action.showCommands" },
+        \\  { "key": "alt+shift+t", "command": "-workbench.action.terminal.toggleTerminal" }
+        \\]
+    );
+    defer allocator.free(path);
+    const settings_path = try seedFile(allocator, io, &tmp, "watermark-settings.json", "{}");
+    defer allocator.free(settings_path);
+    const workbench = try Workbench.init(allocator, io, &.{}, 90, 32);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+
+    try workbench.setKeybindingsPaths(&.{path});
+    try workbench.resize(90, 12);
+    try workbench.render(&out.writer);
+    const short = try frameText(allocator, &workbench.frame);
+    defer allocator.free(short);
+    try std.testing.expect(std.mem.indexOf(u8, short, "Ctrl+Alt+G") != null);
+    try std.testing.expect(std.mem.indexOf(u8, short, "Find in Files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, short, "Toggle Terminal") == null);
+    try std.testing.expect(std.mem.indexOf(u8, short, "▗▄██▙▄▖") == null);
+
+    workbench.ensureConfigurationReady();
+    try workbench.setUserConfigurationValue(editor_group_watermark.settings_key, .{ .bool = false });
+    try workbench.resize(90, 32);
+    try workbench.render(&out.writer);
+    const inactive = try frameText(allocator, &workbench.frame);
+    defer allocator.free(inactive);
+    try std.testing.expect(std.mem.indexOf(u8, inactive, "▗▄██▙▄▖") != null);
+    try std.testing.expect(std.mem.indexOf(u8, inactive, "Show All Commands") == null);
+    try std.testing.expect(!workbench.handleWatermarkKey(&.{ .key = .tab }));
 }
 
 test "Workbench: threaded tokenizer shuts down after tabs" {

@@ -899,6 +899,7 @@ pub fn main(init: std.process.Init) !void {
                         .unhandled => {},
                     }
                     if (try workbench.handleBreadcrumbsKey(event)) continue;
+                    if (workbench.handleWatermarkKey(event)) continue;
 
                     const current = workbench.activeTab() orelse continue;
                     if (current.isImage()) {

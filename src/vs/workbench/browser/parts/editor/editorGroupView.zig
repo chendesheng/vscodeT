@@ -31,6 +31,7 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
+const EditorGroupWatermark = @import("editorGroupWatermark.zig").EditorGroupWatermark;
 const editorPanes = @import("editorPanes.zig");
 const tab_bar = @import("multiEditorTabsControl.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
@@ -78,6 +79,7 @@ pub fn EditorGroupView(comptime View: type) type {
         tabs_visible: bool = true,
         panes: editorPanes.EditorPanes(View) = .{},
         dom: ?GroupDom = null,
+        watermark: ?EditorGroupWatermark = null,
         /// Upstream `EditorGroupView.onDidFocus`. The part listens to this to
         /// make a focused group the active group (`doSetGroupActive`).
         on_did_focus: Emitter(*Self),

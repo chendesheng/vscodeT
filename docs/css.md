@@ -137,7 +137,7 @@ Rules:
   | `folding.css` | `0x0040` | codicon-folding, codicon-folding-collapsed, alwaysShowFoldIcons |
   | `gridview.css` | `0x0050` | monaco-grid-view |
   | `splitview.css` | `0x0060` | split-view-view, hidden view |
-  | `editorgroupview.css` | `0x0070` | editor-group-container, title, editor-instance, empty editor container, grid-view-container |
+  | `editorgroupview.css` | `0x0070` | editor-group-container, title, editor-instance, empty editor container, grid-view-container, editor group watermark and shortcut rows |
   | `editor.css` (viewport) | `0x0080` | monaco-editor, overflow-guard |
   | `searchview.css` | `0x0090` | search-view, search-widgets-container, search-widget, search/replace containers, query details and file types |
   | `searchEditor.css` | `0x00a0` | search-editor, context line input and toggle |
@@ -161,6 +161,7 @@ The ports attach classes in the terminal view:
 - `View.block_root` and each block node (`blockDecorations_css`),
 - the line-scroll content and each `ViewLine` DOM node (`viewLines_css`),
 - `View.overlay_widgets_root` (`overlayWidgets_css`),
+- the editor group's retained watermark and action rows (`editorgroupview_css`),
 - the find widget's resize handle (`sash_css`),
 - each gutter fold cell (`folding_css`); the margin root carries its
   `HoverStyle`, which reveals the hidden expanded icons while the gutter is
