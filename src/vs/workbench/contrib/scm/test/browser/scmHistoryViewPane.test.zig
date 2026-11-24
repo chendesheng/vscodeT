@@ -20,12 +20,18 @@ const TestHost = struct {
     opened: usize = 0,
     focused: usize = 0,
     picked: usize = 0,
+    opened_history: usize = 0,
 
     fn openChange(context: *anyopaque, item: *const history.ISCMHistoryItem, change: *const history.ISCMHistoryItemChange) anyerror!void {
         _ = item;
         _ = change;
         const self: *TestHost = @ptrCast(@alignCast(context));
         self.opened += 1;
+    }
+
+    fn openChanges(context: *anyopaque, _: *const history.ISCMHistoryItem, _: []const history.ISCMHistoryItemChange) anyerror!void {
+        const self: *TestHost = @ptrCast(@alignCast(context));
+        self.opened_history += 1;
     }
 
     fn focusEditor(context: *anyopaque) void {
@@ -160,6 +166,60 @@ fn createView(allocator: Allocator, host: *TestHost, provider: *TestHistoryProvi
     view.setConfig(.{ .page_size = 2, .page_on_scroll = false });
     view.setProvider(provider.interface());
     return view;
+}
+
+test "SCM history view pane: hover exposes Open Changes without expanding the row" {
+    const allocator = testing.allocator;
+    var host = TestHost{};
+    var provider: TestHistoryProvider = undefined;
+    try provider.init(allocator, 6);
+    defer provider.deinit();
+    const view = try createView(allocator, &host, &provider);
+    defer {
+        view.deinit();
+        allocator.destroy(view);
+    }
+    view.host.open_changes = TestHost.openChanges;
+    const rect = testRect();
+    var grid = try ui.CellGrid.init(allocator, 40, 12);
+    defer grid.deinit();
+    try view.render(&grid, rect, false);
+    try testing.expect(grid.cluster[grid.index(37, 0)] != scm_history.open_changes_glyph);
+    _ = try view.handleMouse(&.{ .kind = .move, .x = 9, .y = 0 }, rect);
+    try view.render(&grid, rect, false);
+    try testing.expectEqual(@as(u32, scm_history.open_changes_glyph), grid.cluster[grid.index(37, 0)]);
+    const rows_before = view.rows.items.len;
+    try testing.expect(try view.handleMouse(&.{ .kind = .down, .button = .left, .x = 37, .y = 0 }, rect));
+    try testing.expectEqual(@as(usize, 1), host.opened_history);
+    try testing.expectEqual(rows_before, view.rows.items.len);
+}
+
+test "SCM history view pane: the scrollbar thumb follows wheel scrolling" {
+    const allocator = testing.allocator;
+    var host = TestHost{};
+    var provider: TestHistoryProvider = undefined;
+    try provider.init(allocator, 6);
+    defer provider.deinit();
+    const view = try createView(allocator, &host, &provider);
+    defer {
+        view.deinit();
+        allocator.destroy(view);
+    }
+    const rect = ui.Rect{ .x = 0, .y = 0, .w = 40, .h = 2 };
+    var grid = try ui.CellGrid.init(allocator, 40, 2);
+    defer grid.deinit();
+    const track = ui.cell.packColor(.{ .r = 30, .g = 32, .b = 40 });
+    const thumb = ui.cell.packColor(.{ .r = 105, .g = 108, .b = 122 });
+    try view.render(&grid, rect, false);
+    try testing.expectEqual(thumb, grid.bg[grid.index(39, 0)]);
+    try testing.expectEqual(track, grid.bg[grid.index(39, 1)]);
+    try testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(39, 1)]);
+
+    try testing.expect(try view.handleMouse(&.{ .kind = .wheel, .x = 39, .y = 0, .delta_y = 1 }, rect));
+    try view.render(&grid, rect, false);
+    try testing.expectEqual(track, grid.bg[grid.index(39, 0)]);
+    try testing.expectEqual(thumb, grid.bg[grid.index(39, 1)]);
+    try testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(39, 0)]);
 }
 
 test "SCM history view pane: load more appends the next page" {

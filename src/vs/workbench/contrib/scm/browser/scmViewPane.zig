@@ -15,28 +15,15 @@
 // collapse behavior follow the tree widget contract.
 //
 // Terminal adaptations:
-// - The commit input is a pinned single-line `ui.InputBox` above the list
-//   instead of a scrollable, auto-growing Monaco editor row. A labelled
-//   Commit button sits below it (upstream keeps the check action at the right
-//   of the input toolbar); Enter, the button or Ctrl-Enter from the list
-//   accepts the message. There is no multi-line message, input history or
-//   validation popup.
-// - The Git extension's smart-commit prompt has no terminal modal; the host
-//   commits the index when it has staged changes and otherwise stages the
-//   working/untracked changes (`git.smartCommitChanges`) before committing.
-// - The Git action button (`scm.showActionButton`), the commit dropdown
-//   (amend/signed/push) and group/resource inline actions
-//   (`git.stageAll`, `git.discard`, ...) are write UI that remains unported;
-//   the tree rows are still selectable.
-// - There are no file/status icons (`git.decorations.enabled`), no hover
-//   tooltips, no multi-selection, no tree filter/find and no auto-reveal.
-// - The tree scrollbar is a one-column cell track instead of the browser list
-//   scrollbar, and a row is one terminal cell tall.
-// - Tree folder rows append `/` to the compressed folder name because the
-//   terminal has no folder icon.
-// - Single click toggles a collapsible row (a terminal has no double click);
-//   a resource row opens its change on single click, like upstream's
-//   `openOnSingleClick`.
+// - The commit message uses a single-line InputBox and scrolls with the Git
+//   action button and resource rows. Named branches have a split commit picker.
+// - The host commits the index when it has staged changes. With an empty
+//   index it uses the terminal smart-commit behavior and stages the selected
+//   working/untracked changes before committing.
+// - File and folder icons use the shared workbench glyphs. Rows and the tree
+//   scrollbar are one cell tall.
+// - Multiline messages, input validation/history, multi-selection, tree
+//   filtering and automatic reveal are unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
@@ -45,6 +32,10 @@ const views = @import("../../../common/views.zig");
 const scm = @import("../common/scm.zig");
 const resource_tree = @import("../../../../base/common/resourceTree.zig");
 const comparers = @import("../../../../base/common/comparers.zig");
+const file_icon = @import("../../../browser/fileIcon.zig");
+const css = @import("./media/scm_css.zig");
+const IndentGuides = @import("../../../../base/browser/ui/tree/abstractTree.zig").RenderIndentGuides;
+const list_scrollbar = @import("../../../../base/browser/ui/list/listScrollbarTerminal.zig");
 
 pub const SET_LIST_VIEW_MODE_ACTION_ID = "workbench.scm.action.setListViewMode";
 pub const SET_TREE_VIEW_MODE_ACTION_ID = "workbench.scm.action.setTreeViewMode";
@@ -52,6 +43,30 @@ pub const SET_SORT_BY_NAME_ACTION_ID = "workbench.scm.action.setSortKey.name";
 pub const SET_SORT_BY_PATH_ACTION_ID = "workbench.scm.action.setSortKey.path";
 pub const SET_SORT_BY_STATUS_ACTION_ID = "workbench.scm.action.setSortKey.status";
 pub const REFRESH_ACTION_ID = "git.refresh";
+pub const CHANGES_MENU_ACTION_ID = "workbench.scm.action.showChangesMenu";
+pub const COMMIT_ACTION_ID = "git.commit";
+pub const CommitAction = enum { commit, amend, push, sync };
+pub const ResourceAction = enum {
+    open_file,
+    open_change,
+    discard,
+    stage,
+    unstage,
+
+    fn glyph(self: ResourceAction) u21 {
+        return switch (self) {
+            .open_file => '⇥',
+            .open_change => '▤',
+            .discard => '↶',
+            .stage => '+',
+            .unstage => '−',
+        };
+    }
+};
+pub const BranchAction = union(enum) {
+    publish,
+    sync: struct { ahead: usize, behind: usize },
+};
 
 pub const ISCMService = scm.ISCMService;
 pub const ISCMRepository = scm.ISCMRepository;
@@ -71,6 +86,16 @@ pub const Config = struct {
     always_show_repositories: bool = false,
     provider_count_badge: ProviderCountBadge = .hidden,
     compact_folders: bool = true,
+    show_action_button: bool = true,
+    show_commit_action: bool = true,
+    show_publish_action: bool = true,
+    show_sync_action: bool = true,
+    decoration_colors: bool = true,
+    decoration_badges: bool = true,
+    indent_guides: IndentGuides = .on_hover,
+    always_show_actions: bool = false,
+    inline_open_file_action: bool = true,
+    open_diff_on_click: bool = true,
     /// `scm.showInputActionButton`: hide the commit toolbar while keeping the
     /// message box and its Enter shortcut.
     show_input_action_button: bool = true,
@@ -79,12 +104,15 @@ pub const Config = struct {
 pub const Host = struct {
     context: *anyopaque,
     open_change: *const fn (context: *anyopaque, resource: *ISCMResource) anyerror!void,
+    resource_action: ?*const fn (context: *anyopaque, action: ResourceAction, resource: *ISCMResource) anyerror!void = null,
     refresh: *const fn (context: *anyopaque) void,
     focus_editor: *const fn (context: *anyopaque) void,
     /// Commits the typed message. The host owns staging policy (the terminal
     /// substitutes Git's smart-commit prompt by staging changed files when the
     /// index is empty) and reports failures through `status`.
-    commit: *const fn (context: *anyopaque, message: []const u8) anyerror!void,
+    commit: *const fn (context: *anyopaque, message: []const u8, action: CommitAction) anyerror!void,
+    commit_menu: ?*const fn (context: *anyopaque) void = null,
+    branch_action: ?*const fn (context: *anyopaque, action: BranchAction) void = null,
     /// Shows a one-line status hint, used for an empty commit message.
     status: *const fn (context: *anyopaque, message: []const u8) void,
 };
@@ -153,6 +181,10 @@ pub const SCMViewPane = struct {
     selection: ?usize = null,
     scroll: usize = 0,
     hovered_row: ?usize = null,
+    hovered_col: ?usize = null,
+    list_hovered: bool = false,
+    list_focused: bool = false,
+    fresh_repository: bool = false,
     visible_rows: usize = 0,
     /// Rows above the list: the section header plus its divider while the view
     /// paints them, zero when the side bar part paints the title.
@@ -160,18 +192,17 @@ pub const SCMViewPane = struct {
 
     theme: ?*const theme_colors_mod.ThemeColors = null,
     arena: std.heap.ArenaAllocator,
-    /// The commit-message editor row pinned above the list. Upstream owns one
-    /// `SCMInputWidget` per repository inside the tree; the terminal pins the
-    /// single repository's input so it stays editable while the list scrolls.
+    /// The terminal projection of `SCMInputWidget` for the active repository.
     input_box: ui.InputBox,
     input_surface: ?ui.Surface = null,
     input_focused: bool = false,
     input_rows: usize = 0,
-    commit_hovered: bool = false,
+    branch_action: ?BranchAction = null,
+    hovered_input_action: ?InputAction = null,
     collapsed_repositories: std.StringHashMap(void),
     collapsed_groups: std.StringHashMap(void),
     collapsed_folders: std.StringHashMap(void),
-    actions: [2]views.TitleAction = undefined,
+    actions: [3]views.TitleAction = undefined,
 
     pub fn init(allocator: Allocator, service: *ISCMService, host: Host) SCMViewPane {
         return .{
@@ -243,20 +274,24 @@ pub const SCMViewPane = struct {
     }
 
     pub fn titleActions(self: *SCMViewPane) []const views.TitleAction {
+        const has_repository = self.service.repositoryCount() > 0;
         self.actions[0] = .{
+            .id = COMMIT_ACTION_ID,
+            .label = "Commit",
+            .glyph = '✓',
+            .enabled = self.canCommit(),
+        };
+        self.actions[1] = .{
             .id = REFRESH_ACTION_ID,
             .label = "Refresh",
-            .glyph = '\u{27F3}',
-            .enabled = self.service.repositoryCount() > 0,
+            .glyph = '↻',
+            .enabled = has_repository,
         };
-        const select_id = if (self.view_mode == .list) SET_TREE_VIEW_MODE_ACTION_ID else SET_LIST_VIEW_MODE_ACTION_ID;
-        self.actions[1] = .{
-            .id = select_id,
-            .label = if (self.view_mode == .list) "View as Tree" else "View as List",
-            .glyph = if (self.view_mode == .list) '\u{25A4}' else '\u{2630}',
-            // Upstream only shows the navigation action while a repository
-            // exists (`RepositoryCount != 0`).
-            .enabled = self.service.repositoryCount() > 0,
+        self.actions[2] = .{
+            .id = CHANGES_MENU_ACTION_ID,
+            .label = "More Actions",
+            .glyph = '…',
+            .enabled = has_repository,
         };
         return &self.actions;
     }
@@ -281,6 +316,7 @@ pub const SCMViewPane = struct {
         self.hovered_row = null;
         _ = self.arena.reset(.retain_capacity);
         self.buildRows() catch {};
+        self.input_rows = self.inputRowCount();
         self.restoreSelection(previous);
         self.clampScroll();
         self.syncInput();
@@ -316,11 +352,31 @@ pub const SCMViewPane = struct {
         return input.visible();
     }
 
-    /// Input row + border row, plus the commit-button row unless
-    /// `scm.showInputActionButton` hides it.
     fn inputRowCount(self: *const SCMViewPane) usize {
-        if (!self.inputVisible()) return 0;
-        return if (self.config.show_input_action_button) 3 else 2;
+        if (self.showActionButton()) return self.actionButtonRow() + 1;
+        return if (self.inputVisible()) 2 else 0;
+    }
+
+    fn showActionButton(self: *const SCMViewPane) bool {
+        const repository = self.activeRepository() orelse return false;
+        return (repository.input.visible() or (self.host.commit_menu != null and repository.provider.detail != null)) and
+            self.config.show_action_button and self.config.show_input_action_button and
+            (self.config.show_commit_action or self.activeBranchAction() != null);
+    }
+
+    fn activeBranchAction(self: *const SCMViewPane) ?BranchAction {
+        if (self.host.branch_action == null or (self.canCommit() and self.config.show_commit_action)) return null;
+        const action = self.branch_action orelse return null;
+        return switch (action) {
+            .publish => if (self.config.show_publish_action) action else null,
+            .sync => if (self.config.show_sync_action) action else null,
+        };
+    }
+
+    fn showCommitDropdown(self: *const SCMViewPane, width: usize) bool {
+        const repo = self.activeRepository() orelse return false;
+        return repo.provider.detail != null and self.activeBranchAction() == null and
+            self.host.commit_menu != null and width >= css.dropdown_width + 4;
     }
 
     fn repositoryHasChanges(repository: *const ISCMRepository) bool {
@@ -353,20 +409,24 @@ pub const SCMViewPane = struct {
     /// index is empty; successful commits clear the input and refresh the
     /// repository state.
     pub fn commitInput(self: *SCMViewPane) bool {
+        return self.commitInputWithAction(.commit);
+    }
+
+    pub fn commitInputWithAction(self: *SCMViewPane, action: CommitAction) bool {
         self.ensureInputConfigured();
         const repository = self.activeRepository() orelse return false;
         const input = repository.input;
         if (!input.enabled()) return false;
-        if (!repositoryHasChanges(repository)) {
+        if (action != .amend and !repositoryHasChanges(repository)) {
             self.host.status(self.host.context, "No changes to commit");
             return false;
         }
         const message = std.mem.trim(u8, input.value(), " \t\r\n");
-        if (message.len == 0) {
+        if (action != .amend and message.len == 0) {
             self.host.status(self.host.context, "Commit message is required");
             return false;
         }
-        self.host.commit(self.host.context, message) catch return false;
+        self.host.commit(self.host.context, message, action) catch return false;
         self.input_box.clear() catch {};
         input.setValue("", true);
         self.host.refresh(self.host.context);
@@ -566,14 +626,13 @@ pub const SCMViewPane = struct {
                     current = only;
                 }
             }
-            const display = try std.fmt.allocPrint(arena, "{s}/", .{label});
             const key = try std.fmt.allocPrint(arena, "{s}\x00{s}\x00{s}", .{ repository_id, group.id, current.relative_path });
             const collapsed = self.collapsed_folders.contains(key);
             try self.rows.append(.{
                 .kind = .folder,
                 .group = group,
                 .key = key,
-                .label = display,
+                .label = label,
                 .depth = depth,
                 .collapsible = true,
                 .collapsed = collapsed,
@@ -702,7 +761,7 @@ pub const SCMViewPane = struct {
     }
 
     fn ensureSelectionVisible(self: *SCMViewPane) void {
-        const selected = self.selection orelse return;
+        const selected = (self.selection orelse return) + self.input_rows;
         if (self.visible_rows == 0) return;
         if (selected < self.scroll) {
             self.scroll = selected;
@@ -713,8 +772,12 @@ pub const SCMViewPane = struct {
     }
 
     fn clampScroll(self: *SCMViewPane) void {
-        const max_scroll = self.rows.items.len -| self.visible_rows;
+        const max_scroll = self.contentRowCount() -| self.visible_rows;
         if (self.scroll > max_scroll) self.scroll = max_scroll;
+    }
+
+    fn contentRowCount(self: *const SCMViewPane) usize {
+        return self.input_rows + self.rows.items.len;
     }
 
     fn toggleSelected(self: *SCMViewPane) bool {
@@ -780,12 +843,11 @@ pub const SCMViewPane = struct {
 
         switch (event.key) {
             .tab => {
-                // The browser tabs from the tree into the input row; the
-                // terminal has no DOM tab order, so Tab focuses the pinned
-                // input explicitly.
+                // Tab reveals and focuses the message row.
                 if (self.inputVisible()) {
                     const input = self.activeInput() orelse return false;
                     if (!input.enabled()) return false;
+                    self.scroll = 0;
                     self.input_focused = true;
                     self.input_box.focused = true;
                     return true;
@@ -802,7 +864,7 @@ pub const SCMViewPane = struct {
             .right => return self.expandOrSelectChild(),
             .enter => {
                 if (self.selectedResource()) |resource| {
-                    try self.host.open_change(self.host.context, resource);
+                    try self.openResource(resource);
                     return true;
                 }
                 return false;
@@ -868,46 +930,64 @@ pub const SCMViewPane = struct {
         const height = ui.cell.snap(rect.h);
         if (event.x < x or event.x >= x + width) return false;
         if (event.y < y or event.y >= y + height) return false;
-        const input_top = y + self.header_rows;
-        const input_bottom = input_top + self.input_rows;
-        if (event.y < input_top) return false;
-        if (event.y < input_bottom) {
-            return self.handleInputMouse(event, x, input_top);
+        const list_top = y + self.header_rows;
+        if (event.y < list_top) return false;
+        const list_height = height -| self.header_rows;
+        const list_width = list_scrollbar.contentWidth(width, list_height, self.contentRowCount());
+        const col = event.x - x;
+        const offset = event.y - list_top;
+        const row = self.scroll + offset;
+        if (col < list_width and row < self.input_rows and event.kind != .wheel) {
+            var local = event.*;
+            local.x = col;
+            local.y = row;
+            self.clearHover();
+            return self.handleInputMouse(&local, list_width);
         }
-        // Hovering or scrolling the list must not take keyboard focus away
-        // from the commit message; only a press outside the input does.
-        self.commit_hovered = false;
-        const list_height = height -| (self.header_rows + self.input_rows);
+        // A wheel scroll moves the viewport without changing keyboard focus.
+        self.hovered_input_action = null;
 
         switch (event.kind) {
             .move => {
-                const row = self.rowAt(event.y - input_bottom, list_height);
-                const changed = row != self.hovered_row;
-                self.hovered_row = row;
+                const hovered = if (col < list_width) self.resourceRowAt(row) else null;
+                const changed = !self.list_hovered or hovered != self.hovered_row or col != self.hovered_col;
+                self.list_hovered = true;
+                self.hovered_row = hovered;
+                self.hovered_col = col;
                 return changed;
             },
             .wheel => {
                 if (!self.scrollBy(event.delta_y, list_height)) return false;
-                self.hovered_row = self.rowAt(event.y - input_bottom, list_height);
+                self.list_hovered = true;
+                self.hovered_row = if (col < list_width) self.resourceRowAt(self.scroll + offset) else null;
+                self.hovered_col = col;
                 return true;
             },
             .down, .click => {
+                if (event.button != .left or col >= list_width) return false;
                 self.input_focused = false;
                 self.input_box.focused = false;
-                const row_index = self.rowAt(event.y - input_bottom, list_height) orelse {
+                const row_index = self.resourceRowAt(row) orelse {
                     const changed = self.selection != null;
                     self.selection = null;
                     return changed;
                 };
+                if (self.inlineActions(row_index, list_width).hit(col)) |action| {
+                    if (resolveResource(&self.rows.items[row_index])) |resource| {
+                        self.selection = row_index;
+                        if (self.host.resource_action) |run| try run(self.host.context, action, resource);
+                        return true;
+                    }
+                }
                 self.selection = row_index;
-                const row = self.rows.items[row_index];
-                if (row.collapsible) {
-                    try self.setRowCollapsed(row);
+                const resource_row = self.rows.items[row_index];
+                if (resource_row.collapsible) {
+                    try self.setRowCollapsed(resource_row);
                     return true;
                 }
-                if (row.kind == .resource) {
+                if (resource_row.kind == .resource) {
                     if (resolveResource(&self.rows.items[row_index])) |resource| {
-                        try self.host.open_change(self.host.context, resource);
+                        try self.openResource(resource);
                     }
                 }
                 return true;
@@ -916,66 +996,136 @@ pub const SCMViewPane = struct {
         }
     }
 
-    fn handleInputMouse(
-        self: *SCMViewPane,
-        event: *ui.MouseEvent,
-        x: usize,
-        input_top: usize,
-    ) bool {
-        const show_button = self.config.show_input_action_button and self.input_rows >= 3;
-        const button_row = input_top + 2;
-        const on_input_row = event.y == input_top;
-        const over_button = show_button and event.y == button_row;
-        const over_text = on_input_row;
-
-        var local = event.*;
-        local.y = 0;
-        // `InputBox.handleMouse` subtracts its own rendered rect origin
-        // (the input container starts at cell 1 of the surface).
-        local.x = if (event.x > x) event.x - x else 0;
-
-        switch (event.kind) {
-            .move => {
-                self.commit_hovered = over_button and self.canCommit();
-                if (over_text) _ = self.input_box.handleMouse(&local);
-                return true;
-            },
-            .wheel => {
-                if (over_text) _ = self.input_box.handleMouse(&local);
-                return true;
-            },
-            .down, .click => {
-                if (over_button) {
-                    _ = self.commitInput();
-                    return true;
-                }
-                if (over_text) {
-                    const input = self.activeInput() orelse return true;
-                    if (!input.enabled()) return true;
-                    self.input_focused = true;
-                    self.input_box.focused = true;
-                    _ = self.input_box.handleMouse(&local);
-                    return true;
-                }
-                self.input_focused = false;
-                self.input_box.focused = false;
-                self.commit_hovered = false;
-                return true;
-            },
-            else => return true,
+    fn openResource(self: *SCMViewPane, resource: *ISCMResource) !void {
+        if (!self.config.open_diff_on_click) {
+            if (self.host.resource_action) |run| return run(self.host.context, .open_file, resource);
         }
+        try self.host.open_change(self.host.context, resource);
     }
 
-    fn rowAt(self: *const SCMViewPane, list_offset: usize, list_height: usize) ?usize {
-        if (list_offset >= list_height) return null;
-        const index = self.scroll + list_offset;
+    const InlineActions = struct {
+        items: [3]ResourceAction = undefined,
+        count: usize = 0,
+        start: usize = 0,
+
+        fn hit(self: InlineActions, col: usize) ?ResourceAction {
+            if (col < self.start) return null;
+            const slot = (col - self.start) / css.inline_action_width;
+            return if (slot < self.count) self.items[slot] else null;
+        }
+    };
+
+    fn inlineActions(self: *const SCMViewPane, index: usize, width: usize) InlineActions {
+        const row = self.rows.items[index];
+        var actions = InlineActions{};
+        if (self.host.resource_action == null or row.kind != .resource) return actions;
+        if (!self.config.always_show_actions and self.hovered_row != index and
+            !(self.list_focused and self.selection == index)) return actions;
+        const group = row.group orelse return actions;
+        const staged = std.mem.eql(u8, group.id, "index");
+        const working = std.mem.eql(u8, group.id, "working");
+        if (self.config.inline_open_file_action) {
+            actions.items[actions.count] = if (self.config.open_diff_on_click) .open_file else .open_change;
+            actions.count += 1;
+        }
+        const untracked = if (row.letter) |letter| std.mem.eql(u8, letter, "U") else false;
+        if (working and !(self.fresh_repository and untracked)) {
+            actions.items[actions.count] = .discard;
+            actions.count += 1;
+        }
+        actions.items[actions.count] = if (staged) .unstage else .stage;
+        actions.count += 1;
+        const end = self.resourceLabelEnd(row, width);
+        const label_start = 3 + row.depth * 2;
+        const fit = @min(actions.count, (end -| (label_start + 2)) / css.inline_action_width);
+        if (fit < actions.count) {
+            std.mem.copyForwards(ResourceAction, actions.items[0..fit], actions.items[actions.count - fit .. actions.count]);
+            actions.count = fit;
+        }
+        actions.start = end - actions.count * css.inline_action_width;
+        return actions;
+    }
+
+    pub fn pointerAt(self: *const SCMViewPane, event: *const ui.MouseEvent, rect: ui.Rect) ui.Pointer {
+        const col = event.x -| ui.cell.snap(rect.x);
+        const width = ui.cell.snap(rect.w);
+        const list_width = list_scrollbar.contentWidth(width, self.visible_rows, self.contentRowCount());
+        const top = ui.cell.snap(rect.y) + self.header_rows;
+        if (event.y < top or col >= list_width) return .default;
+        const row = self.scroll + event.y - top;
+        if (row < self.input_rows) {
+            if (self.actionAt(col, row, list_width) != null) return .pointer;
+            return if (row == 0 and self.inputVisible()) .text else .default;
+        }
+        if (self.hovered_row) |index| {
+            if (index < self.rows.items.len and self.inlineActions(index, list_width).hit(col) != null) return .pointer;
+        }
+        return .default;
+    }
+
+    const InputAction = enum { commit, dropdown };
+
+    fn actionAt(self: *const SCMViewPane, x: usize, row: usize, width: usize) ?InputAction {
+        if (!self.showActionButton() or row != self.actionButtonRow()) return null;
+        const right = width -| css.right_inset;
+        if (x < css.gutter or x >= right) return null;
+        if (self.showCommitDropdown(right - css.gutter) and x >= right - css.dropdown_width) return .dropdown;
+        return .commit;
+    }
+
+    fn actionButtonRow(self: *const SCMViewPane) usize {
+        return if (self.inputVisible()) css.action_button_row else 0;
+    }
+
+    fn handleInputMouse(
+        self: *SCMViewPane,
+        local: *ui.MouseEvent,
+        width: usize,
+    ) bool {
+        const action = self.actionAt(local.x, local.y, width);
+        const over_input = self.inputVisible() and local.y == 0 and
+            local.x >= css.gutter and local.x < width -| css.right_inset;
+
+        switch (local.kind) {
+            .move => {
+                self.hovered_input_action = action;
+                if (over_input) _ = self.input_box.handleMouse(local);
+            },
+            .down, .click => {
+                if (local.button != .left) return false;
+                if (action) |target| {
+                    switch (target) {
+                        .commit => {
+                            if (self.activeBranchAction()) |branch| {
+                                if (self.host.branch_action) |run| run(self.host.context, branch);
+                            } else if (self.canCommit()) {
+                                _ = self.commitInput();
+                            }
+                        },
+                        .dropdown => if (self.host.commit_menu) |menu| menu(self.host.context),
+                    }
+                } else {
+                    const enabled = if (self.activeInput()) |input| input.enabled() else false;
+                    self.input_focused = over_input and enabled;
+                    self.input_box.focused = self.input_focused;
+                    if (self.input_focused) _ = self.input_box.handleMouse(local);
+                }
+            },
+            else => {},
+        }
+        return true;
+    }
+
+    fn resourceRowAt(self: *const SCMViewPane, row: usize) ?usize {
+        if (row < self.input_rows) return null;
+        const index = row - self.input_rows;
         if (index >= self.rows.items.len) return null;
         return index;
     }
 
     fn scrollBy(self: *SCMViewPane, delta: i32, list_height: usize) bool {
-        if (delta == 0 or self.rows.items.len <= list_height) return false;
-        const max_scroll: isize = @intCast(self.rows.items.len - list_height);
+        if (delta == 0 or self.contentRowCount() <= list_height) return false;
+        const max_scroll: isize = @intCast(self.contentRowCount() - list_height);
         const current: isize = @intCast(self.scroll);
         const next = std.math.clamp(current + delta, 0, max_scroll);
         if (next == current) return false;
@@ -985,6 +1135,9 @@ pub const SCMViewPane = struct {
 
     pub fn clearHover(self: *SCMViewPane) void {
         self.hovered_row = null;
+        self.hovered_col = null;
+        self.list_hovered = false;
+        self.hovered_input_action = null;
     }
 
     /// Drops commit-message focus without touching the text. The workbench
@@ -993,7 +1146,7 @@ pub const SCMViewPane = struct {
     pub fn blurInput(self: *SCMViewPane) void {
         self.input_focused = false;
         self.input_box.focused = false;
-        self.commit_hovered = false;
+        self.hovered_input_action = null;
     }
 
     pub fn setThemeColors(self: *SCMViewPane, palette: ?*const theme_colors_mod.ThemeColors) void {
@@ -1014,7 +1167,6 @@ pub const SCMViewPane = struct {
         selection_foreground: ui.Color,
         badge_background: ui.Color,
         badge_foreground: ui.Color,
-        scrollbar: ui.Color,
         input_background: ui.Color,
         input_foreground: ui.Color,
         input_placeholder: ui.Color,
@@ -1026,6 +1178,7 @@ pub const SCMViewPane = struct {
         button_foreground: ui.Color,
         button_hover: ui.Color,
         button_secondary: ui.Color,
+        button_separator: ui.Color,
         disabled_foreground: ui.Color,
     };
 
@@ -1040,7 +1193,6 @@ pub const SCMViewPane = struct {
             .selection_foreground = .{ .r = 255, .g = 255, .b = 255 },
             .badge_background = .{ .r = 77, .g = 77, .b = 77 },
             .badge_foreground = .{ .r = 255, .g = 255, .b = 255 },
-            .scrollbar = .{ .r = 108, .g = 108, .b = 108 },
             .input_background = .{ .r = 60, .g = 60, .b = 60 },
             .input_foreground = .{ .r = 204, .g = 204, .b = 204 },
             .input_placeholder = .{ .r = 150, .g = 150, .b = 150 },
@@ -1052,6 +1204,7 @@ pub const SCMViewPane = struct {
             .button_foreground = .{ .r = 255, .g = 255, .b = 255 },
             .button_hover = .{ .r = 17, .g = 119, .b = 187 },
             .button_secondary = .{ .r = 42, .g = 45, .b = 46 },
+            .button_separator = .{ .r = 150, .g = 150, .b = 150 },
             .disabled_foreground = .{ .r = 120, .g = 120, .b = 120 },
         };
         if (self.theme) |palette| {
@@ -1064,7 +1217,6 @@ pub const SCMViewPane = struct {
             result.selection_foreground = palette.colorOr("list.activeSelectionForeground", result.selection_foreground);
             result.badge_background = palette.colorOr("badge.background", result.badge_background);
             result.badge_foreground = palette.colorOr("badge.foreground", result.badge_foreground);
-            result.scrollbar = palette.colorOr("scrollbarSlider.background", result.scrollbar);
             result.input_background = palette.colorOr("input.background", result.input_background);
             result.input_foreground = palette.colorOr("input.foreground", result.input_foreground);
             result.input_placeholder = palette.colorOr("input.placeholderForeground", result.input_placeholder);
@@ -1074,6 +1226,7 @@ pub const SCMViewPane = struct {
             result.toolbar_hover = palette.colorOr("toolbar.hoverBackground", result.toolbar_hover);
             result.button_background = palette.colorOr("button.background", result.button_background);
             result.button_foreground = palette.colorOr("button.foreground", result.button_foreground);
+            result.button_separator = palette.colorOr("button.separator", result.button_separator);
             result.button_hover = palette.colorOr("button.hoverBackground", result.button_hover);
             result.button_secondary = palette.colorOr("button.secondaryBackground", result.button_secondary);
             result.disabled_foreground = palette.colorOr("disabledForeground", result.disabled_foreground);
@@ -1085,6 +1238,8 @@ pub const SCMViewPane = struct {
     /// workbench renders the content without the view's own section header.
     pub const RenderOptions = struct {
         show_header: bool = true,
+        cell_borders: bool = false,
+        border_capabilities: ui.cell_border.Capabilities = .{},
     };
 
     pub fn render(self: *SCMViewPane, grid: *ui.CellGrid, rect: ui.Rect, focused: bool, options: RenderOptions) !void {
@@ -1105,32 +1260,82 @@ pub const SCMViewPane = struct {
         self.header_rows = if (options.show_header) 2 else 0;
         if (options.show_header) renderHeader(grid, x, y, width, height, focused, palette);
 
-        const available_above_list = height -| self.header_rows;
-        const wanted_input_rows = self.inputRowCount();
-        self.input_rows = if (wanted_input_rows > 0 and available_above_list > 0)
-            @min(wanted_input_rows, available_above_list)
-        else
-            0;
-        const input_top = y + self.header_rows;
-        if (self.input_rows > 0) {
-            try self.renderInput(grid, x, input_top, width, self.input_rows, focused, palette);
-        }
-
-        const list_top = input_top + self.input_rows;
-        const list_height = height -| (self.header_rows + self.input_rows);
+        self.input_rows = self.inputRowCount();
+        const list_top = y + self.header_rows;
+        const list_height = height -| self.header_rows;
+        const total_rows = self.contentRowCount();
+        const list_width = list_scrollbar.contentWidth(width, list_height, total_rows);
+        const resized = self.visible_rows != list_height;
         self.visible_rows = list_height;
+        self.list_focused = focused and !self.input_focused;
         self.clampScroll();
-        self.ensureSelectionVisible();
+        if (resized) self.ensureSelectionVisible();
 
-        var screen_row: usize = 0;
+        const visible_input_rows = @min(list_height, self.input_rows -| self.scroll);
+        if (visible_input_rows > 0) {
+            try self.renderInput(grid, x, list_top, list_width, self.scroll, visible_input_rows, palette, options);
+        }
+        const guide = if (self.config.indent_guides != .none and self.list_focused) self.activeGuide() else null;
+        const show_inactive = self.config.indent_guides == .always or
+            (self.config.indent_guides == .on_hover and self.list_hovered);
+        var screen_row = visible_input_rows;
         while (screen_row < list_height) : (screen_row += 1) {
-            const row_index = self.scroll + screen_row;
-            if (row_index >= self.rows.items.len) break;
-            self.renderRow(grid, row_index, x, list_top + screen_row, width, focused, palette);
+            const row_index = self.resourceRowAt(self.scroll + screen_row) orelse break;
+            self.renderRow(grid, row_index, x, list_top + screen_row, list_width, focused, palette);
+            if (guide != null or show_inactive) {
+                self.renderGuides(grid, row_index, x, list_top + screen_row, list_width, self.rowBackground(row_index, focused, palette), guide, show_inactive, options);
+            }
         }
 
-        if (self.rows.items.len > list_height and list_height > 0) {
-            self.renderScrollbar(grid, x, list_top, width, list_height, focused, palette);
+        list_scrollbar.paint(grid, .{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(list_top),
+            .w = @floatFromInt(width),
+            .h = @floatFromInt(list_height),
+        }, total_rows, @floatFromInt(self.scroll));
+    }
+
+    const ActiveGuide = struct { depth: usize, first: usize, end: usize };
+
+    fn activeGuide(self: *const SCMViewPane) ?ActiveGuide {
+        var parent = self.selectedRowIndex() orelse return null;
+        const rows = self.rows.items;
+        if (parent + 1 >= rows.len or rows[parent + 1].depth <= rows[parent].depth) {
+            const depth = rows[parent].depth;
+            if (depth == 0) return null;
+            while (parent > 0 and rows[parent].depth >= depth) parent -= 1;
+        }
+        const depth = rows[parent].depth;
+        var end = parent + 1;
+        while (end < rows.len and rows[end].depth > depth) : (end += 1) {}
+        return .{ .depth = depth, .first = parent + 1, .end = end };
+    }
+
+    fn renderGuides(
+        self: *const SCMViewPane,
+        grid: *ui.CellGrid,
+        index: usize,
+        x: usize,
+        y: usize,
+        width: usize,
+        background: ui.Color,
+        guide: ?ActiveGuide,
+        show_inactive: bool,
+        options: RenderOptions,
+    ) void {
+        for (0..self.rows.items[index].depth) |depth| {
+            const col = 1 + depth * 2;
+            if (col >= width) break;
+            const active = if (guide) |g| g.depth == depth and index >= g.first and index < g.end else false;
+            if (!active and !show_inactive) continue;
+            const fallback = if (active) ui.Color{ .r = 88, .g = 88, .b = 88 } else ui.Color{ .r = 57, .g = 57, .b = 57 };
+            const token = if (active) "tree.indentGuidesStroke" else "tree.inactiveIndentGuidesStroke";
+            const color = if (self.theme) |palette| palette.colorOr(token, fallback) else fallback;
+            if (options.cell_borders and options.border_capabilities.has(.center)) {
+                grid.addBorder(x + col, y, ui.cell_border.Segment.vertical, .{ .width = 16, .color = .{ .rgb = color } });
+            } else {
+                grid.putCodepoint(x + col, y, '│', 1, .{ .fg = ui.cell.packColor(color), .bg = ui.cell.packColor(background) });
+            }
         }
     }
 
@@ -1160,129 +1365,120 @@ pub const SCMViewPane = struct {
         }
     }
 
-    /// Paints the pinned commit-message row (and its bottom border in the
-    /// following cell row). The input widget is a one-row `ui.Surface` because
-    /// `ui.InputBox` owns caret, selection and mouse mapping in its own
-    /// document.
+    /// The input and Git action button use the same horizontal inset.
     fn renderInput(
         self: *SCMViewPane,
         grid: *ui.CellGrid,
         x: usize,
         y: usize,
         width: usize,
+        first_row: usize,
         rows: usize,
-        focused: bool,
         palette: Colors,
+        options: RenderOptions,
     ) !void {
-        _ = focused;
-        if (width == 0) return;
-        if (self.input_surface == null or self.input_surface.?.doc.cols != width) {
-            if (self.input_surface) |*surface| {
-                try surface.resize(width, 1);
-            } else {
-                self.input_surface = try ui.Surface.init(self.allocator, .{ .cols = width, .rows = 1 });
-            }
+        const control_width = width -| (css.gutter + css.right_inset);
+        if (control_width == 0) return;
+        if (self.input_surface == null) {
+            self.input_surface = try ui.Surface.init(self.allocator, .{ .cols = width, .rows = rows });
+            _ = try self.input_surface.?.document().registerSheet(css.sheet);
         }
         const surface = &self.input_surface.?;
+        try surface.resize(width, rows);
+        surface.setCellBorders(options.cell_borders);
+        surface.border_capabilities = options.border_capabilities;
         const doc = surface.document();
         doc.clear();
-
         const root = try doc.createElement(.div);
         root.setStyle(.{
             .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(width) },
-            .height = .{ .cells = 1 },
+            .width = .{ .percent = 100 },
+            .height = .{ .percent = 100 },
             .overflow = .hidden,
-            .background = palette.input_background,
-            .color = palette.input_foreground,
-            .white_space = .pre,
+            .background = palette.background,
         });
-        doc.setRoot(root);
 
-        self.input_box.color = palette.input_foreground;
-        self.input_box.placeholder_color = palette.input_placeholder;
-        self.input_box.selection_background = palette.active_selection;
-        self.input_box.selection_foreground = palette.selection_foreground;
-        self.input_box.focused = self.input_focused;
-        const input = self.activeInput();
-        const input_enabled = if (input) |value| value.enabled() else false;
-        self.input_box.enabled = input_enabled;
-        self.input_box.placeholder = if (input) |value| value.placeholder() else "Message";
-
-        const text_width = width -| 2;
-        if (text_width > 0) {
-            const container = try doc.createElement(.div);
-            container.setStyle(.{
+        if (first_row == 0 and self.inputVisible()) {
+            const editor = try doc.createElement(.div);
+            try editor.addClass(css.Class.scm_editor);
+            editor.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = css.gutter },
+                .top = .{ .cells = 0 },
+                .width = .{ .cells = @floatFromInt(control_width) },
+                .background = palette.input_background,
+                .border = if (options.cell_borders) ui.EdgeDecl.all(1) else null,
+                .border_color = if (self.input_focused) palette.focus_border else palette.input_border,
+            });
+            self.input_box.color = palette.input_foreground;
+            self.input_box.placeholder_color = palette.input_placeholder;
+            self.input_box.selection_background = palette.active_selection;
+            self.input_box.selection_foreground = palette.selection_foreground;
+            self.input_box.focused = self.input_focused;
+            const holder = try doc.createElement(.div);
+            holder.setStyle(.{
                 .position = .absolute,
                 .left = .{ .cells = 1 },
                 .top = .{ .cells = 0 },
-                .width = .{ .cells = @floatFromInt(text_width) },
+                .width = .{ .cells = @floatFromInt(control_width -| 2) },
                 .height = .{ .cells = 1 },
-                .overflow = .hidden,
-                .white_space = .pre,
             });
-            const node = try self.input_box.build(doc, text_width);
-            _ = try container.appendChild(node);
-            _ = try root.appendChild(container);
+            const node = try self.input_box.build(doc, control_width -| 2);
+            _ = try holder.appendChild(node);
+            _ = try editor.appendChild(holder);
+            _ = try root.appendChild(editor);
         }
 
-        doc.setRoot(root);
-        try surface.paintFrame();
-        try grid.blit(surface.grid(), x, y, width, 1);
+        const button_row = self.actionButtonRow();
+        if (self.showActionButton() and button_row >= first_row and button_row - first_row < rows) {
+            const branch_action = self.activeBranchAction();
+            const enabled = branch_action != null or self.canCommit();
+            const background = if (enabled) palette.button_background else palette.button_secondary;
+            var label_buffer: [96]u8 = undefined;
+            const label = if (branch_action) |action| switch (action) {
+                .publish => "⇧ Publish Branch",
+                .sync => |counts| std.fmt.bufPrint(&label_buffer, "↻ Sync Changes {d}↓ {d}↑", .{ counts.behind, counts.ahead }) catch "↻ Sync Changes",
+            } else "✓ Commit";
+            const split = try doc.createElement(.div);
+            try split.addClass(css.Class.button_container);
+            split.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = css.gutter },
+                .top = .{ .cells = @floatFromInt(button_row - first_row) },
+                .width = .{ .cells = @floatFromInt(control_width) },
+                .background = background,
+                .color = if (enabled) palette.button_foreground else palette.disabled_foreground,
+                .border = if (options.cell_borders) ui.EdgeDecl.all(1) else null,
+                .border_color = background,
+            });
+            _ = try root.appendChild(split);
+            const primary = try doc.createElement(.span);
+            try primary.addClass(css.Class.primary_button);
+            primary.setStyle(.{
+                .pointer = if (enabled) .pointer else .default,
+                .background = if (enabled and self.hovered_input_action == .commit) palette.button_hover else null,
+            });
+            _ = try primary.appendText(label);
+            _ = try split.appendChild(primary);
 
-        if (rows > 1) {
-            const border = if (self.input_focused) palette.focus_border else palette.input_border;
-            var column: usize = 0;
-            while (column < width) : (column += 1) {
-                grid.putCodepoint(x + column, y + 1, '\u{2500}', 1, .{
-                    .fg = ui.cell.packColor(border),
-                    .bg = ui.cell.packColor(palette.background),
+            if (self.showCommitDropdown(control_width)) {
+                const dropdown = try doc.createElement(.span);
+                try dropdown.addClass(css.Class.dropdown_button);
+                dropdown.setStyle(.{
+                    .pointer = .pointer,
+                    .background = if (self.hovered_input_action == .dropdown) palette.button_hover else null,
                 });
+                const divider = try doc.createElement(.span);
+                divider.setStyle(.{ .position = .absolute, .left = .{ .cells = 0 }, .color = palette.button_separator });
+                _ = try divider.appendText("│");
+                _ = try dropdown.appendChild(divider);
+                _ = try dropdown.appendText("⌄");
+                _ = try split.appendChild(dropdown);
             }
         }
-
-        if (rows > 2 and self.config.show_input_action_button) {
-            self.renderCommitButton(grid, x, y + 2, width, input_enabled, palette);
-        }
-    }
-
-    /// Terminal counterpart of the upstream commit toolbar action. The
-    /// browser puts a check action at the right of the input; the terminal
-    /// renders a labelled button in its own row below the message so it is
-    /// discoverable with a mouse or keyboard.
-    fn renderCommitButton(
-        self: *SCMViewPane,
-        grid: *ui.CellGrid,
-        x: usize,
-        y: usize,
-        width: usize,
-        input_enabled: bool,
-        palette: Colors,
-    ) void {
-        if (width < 3) return;
-        const can_commit = self.canCommit() and input_enabled;
-        const background = if (!can_commit)
-            palette.button_secondary
-        else if (self.commit_hovered)
-            palette.button_hover
-        else
-            palette.button_background;
-        const foreground = if (can_commit) palette.button_foreground else palette.disabled_foreground;
-        const button_x = x + 1;
-        const button_width = width - 2;
-        grid.fillRect(@floatFromInt(button_x), @floatFromInt(y), @floatFromInt(button_width), 1, .{
-            .bg = ui.cell.packColor(background),
-        });
-
-        const label = "\u{2713} Commit";
-        const label_width = displayWidth(label);
-        const start = button_x + (button_width -| label_width) / 2;
-        drawText(grid, start, y, button_width -| (start - button_x), label, .{
-            .fg = ui.cell.packColor(foreground),
-            .bg = ui.cell.packColor(background),
-        });
+        doc.setRoot(root);
+        try surface.paintFrame();
+        try grid.blit(surface.grid(), x, y, width, rows);
     }
 
     fn renderRow(
@@ -1351,10 +1547,12 @@ pub const SCMViewPane = struct {
                 drawTwistie(grid, x, y, row.depth, row.collapsed, background, palette.dim);
                 const right = x + width -| 2;
                 if (label_col < right) {
-                    _ = drawTextEllipsis(grid, label_col, y, right - label_col, row.label, text_style);
+                    const icon = file_icon.folder(!row.collapsed);
+                    grid.putCodepoint(label_col, y, icon.glyph, 1, .{ .fg = ui.cell.packColor(icon.color), .bg = text_style.bg });
+                    _ = drawTextEllipsis(grid, label_col + 2, y, right -| (label_col + 2), row.label, text_style);
                 }
             },
-            .resource => self.renderResourceRow(grid, row, x, y, width, background, dim_fg, selected and focused, palette, text_style),
+            .resource => self.renderResourceRow(grid, row_index, x, y, width, background, dim_fg, selected and focused, palette, text_style),
         }
     }
 
@@ -1369,7 +1567,7 @@ pub const SCMViewPane = struct {
     fn renderResourceRow(
         self: *SCMViewPane,
         grid: *ui.CellGrid,
-        row: Row,
+        index: usize,
         x: usize,
         y: usize,
         width: usize,
@@ -1379,12 +1577,24 @@ pub const SCMViewPane = struct {
         palette: Colors,
         text_style: ui.cell.PaintStyle,
     ) void {
-        const label_col = x + 3 + row.depth * 2;
-        const badge_col: ?usize = if (row.letter != null and width >= 5) x + width - 3 else null;
-        const right = if (badge_col) |column| column -| 1 else x + width -| 2;
+        const row = self.rows.items[index];
+        const icon_col = x + 1 + row.depth * 2;
+        const label_col = icon_col + 2;
+        const badge_col: ?usize = if (self.resourceBadgeColumn(row, width)) |col| x + col else null;
+        const actions = self.inlineActions(index, width);
+        const right = x + (if (actions.count != 0) actions.start else self.resourceLabelEnd(row, width));
         if (label_col >= right) return;
 
-        const name = drawTextEllipsis(grid, label_col, y, right - label_col, row.label, text_style);
+        const icon = file_icon.file(row.label);
+        grid.putCodepoint(icon_col, y, icon.glyph, 1, .{ .fg = ui.cell.packColor(icon.color), .bg = text_style.bg });
+        var name_style = text_style;
+        if (self.config.decoration_colors and !active_selection) {
+            if (row.color) |id| {
+                const color = self.decorationColor(id);
+                name_style.fg = ui.cell.packColor(if (row.faded) mix(background, color, 0.7) else color);
+            }
+        }
+        const name = drawTextEllipsis(grid, label_col, y, right - label_col, row.label, name_style);
         if (!name.truncated) {
             if (row.description) |description| {
                 const description_col = label_col + name.used + 1;
@@ -1396,6 +1606,20 @@ pub const SCMViewPane = struct {
                     });
                 }
             }
+        }
+
+        for (actions.items[0..actions.count], 0..) |action, slot| {
+            const start = actions.start + slot * css.inline_action_width;
+            const hovered = self.hovered_row == index and if (self.hovered_col) |col|
+                col >= start and col < start + css.inline_action_width
+            else
+                false;
+            const bg = ui.cell.packColor(if (hovered) palette.toolbar_hover else background);
+            if (hovered) grid.fillRect(@floatFromInt(x + start), @floatFromInt(y), css.inline_action_width, 1, .{ .bg = bg });
+            grid.putCodepoint(x + start + css.inline_action_width / 2, y, action.glyph(), 1, .{
+                .fg = ui.cell.packColor(palette.icon_foreground),
+                .bg = bg,
+            });
         }
 
         if (badge_col) |column| {
@@ -1417,6 +1641,14 @@ pub const SCMViewPane = struct {
         }
     }
 
+    fn resourceBadgeColumn(self: *const SCMViewPane, row: Row, width: usize) ?usize {
+        return if (self.config.decoration_badges and row.letter != null and width >= 5) width - 3 else null;
+    }
+
+    fn resourceLabelEnd(self: *const SCMViewPane, row: Row, width: usize) usize {
+        return if (self.resourceBadgeColumn(row, width)) |column| column - 1 else width -| 2;
+    }
+
     fn drawTwistie(
         grid: *ui.CellGrid,
         x: usize,
@@ -1427,7 +1659,7 @@ pub const SCMViewPane = struct {
         color: ui.Color,
     ) void {
         const column = x + 1 + depth * 2;
-        const glyph = if (collapsed) "\u{25B8}" else "\u{25BE}";
+        const glyph = if (collapsed) "›" else "⌄";
         drawText(grid, column, y, 1, glyph, .{
             .fg = ui.cell.packColor(color),
             .bg = ui.cell.packColor(background),
@@ -1481,26 +1713,6 @@ pub const SCMViewPane = struct {
             .fg = ui.cell.packColor(palette.badge_foreground),
             .bg = ui.cell.packColor(palette.badge_background),
         });
-    }
-
-    fn renderScrollbar(self: *SCMViewPane, grid: *ui.CellGrid, x: usize, list_top: usize, width: usize, height: usize, focused: bool, palette: Colors) void {
-        const total = self.rows.items.len;
-        if (total <= height or height == 0) return;
-        const thumb_length = @max(@as(usize, 1), height * height / total);
-        const max_start = height - thumb_length;
-        const start = if (total - height == 0) 0 else self.scroll * max_start / (total - height);
-        const column = x + width -| 1;
-        var index: usize = 0;
-        while (index < height) : (index += 1) {
-            const in_thumb = index >= start and index < start + thumb_length;
-            // Keep the row background under the scrollbar so a selected row
-            // does not get a one-cell hole at its right edge.
-            const background = self.rowBackground(self.scroll + index, focused, palette);
-            grid.putCodepoint(column, list_top + index, if (in_thumb) '\u{2588}' else '\u{2502}', 1, .{
-                .fg = ui.cell.packColor(palette.scrollbar),
-                .bg = ui.cell.packColor(background),
-            });
-        }
     }
 };
 
@@ -1667,6 +1879,7 @@ const GroupSpec = struct {
 
 const TestHost = struct {
     opened: usize = 0,
+    last_action: ?ResourceAction = null,
     refreshed: usize = 0,
     focused: usize = 0,
     committed: usize = 0,
@@ -1684,6 +1897,11 @@ const TestHost = struct {
         self.last_opened = resource.source_path;
     }
 
+    fn runAction(context: *anyopaque, action: ResourceAction, _: *ISCMResource) anyerror!void {
+        const self: *TestHost = @ptrCast(@alignCast(context));
+        self.last_action = action;
+    }
+
     fn refresh(context: *anyopaque) void {
         const self: *TestHost = @ptrCast(@alignCast(context));
         self.refreshed += 1;
@@ -1694,7 +1912,7 @@ const TestHost = struct {
         self.focused += 1;
     }
 
-    fn commit(context: *anyopaque, message: []const u8) anyerror!void {
+    fn commit(context: *anyopaque, message: []const u8, _: CommitAction) anyerror!void {
         const self: *TestHost = @ptrCast(@alignCast(context));
         const length = @min(message.len, self.commit_buf.len);
         @memcpy(self.commit_buf[0..length], message[0..length]);
@@ -1893,6 +2111,42 @@ fn moveAt(view: *SCMViewPane, rect: ui.Rect, x: usize, y: usize) !bool {
     return view.handleMouse(&event, rect);
 }
 
+test "scmView: hover reveals ancestor guides and resource actions" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, &.{
+        .{ .id = "working", .label = "Changes", .resources = &.{
+            .{ .relative = "long-file-name-for-test.js", .letter = 'M', .tooltip = "Modified" },
+            .{ .relative = "other.js", .letter = 'U', .tooltip = "Untracked" },
+        } },
+    }, .{});
+    defer fixture.deinit();
+    const view = &fixture.view;
+    view.host.resource_action = TestHost.runAction;
+    const rect = ui.Rect{ .x = 0, .y = 0, .w = 30, .h = 5 };
+    var grid = try ui.CellGrid.init(allocator, 30, 5);
+    defer grid.deinit();
+    try view.render(&grid, rect, false, .{ .show_header = false });
+    try testing.expect(grid.cluster[grid.index(1, 1)] != '│');
+    try testing.expect(view.inlineActions(1, 30).count == 0);
+
+    try testing.expect(try moveAt(view, rect, 10, 1));
+    try view.render(&grid, rect, false, .{ .show_header = false });
+    try testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(1, 1)]);
+    try testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(1, 2)]);
+    const actions = view.inlineActions(1, 30);
+    try testing.expectEqual(@as(usize, 3), actions.count);
+    try testing.expectEqual(@as(u32, '+'), grid.cluster[grid.index(actions.start + 2 * css.inline_action_width + 1, 1)]);
+    try testing.expectEqual(@as(u32, 'M'), grid.cluster[grid.index(27, 1)]);
+    try testing.expect(try clickAt(view, rect, actions.start + 2 * css.inline_action_width, 1));
+    try testing.expectEqual(ResourceAction.stage, fixture.host.last_action.?);
+    try testing.expectEqual(@as(usize, 0), fixture.host.opened);
+
+    view.config.indent_guides = .none;
+    try view.render(&grid, rect, false, .{ .show_header = false });
+    try testing.expect(grid.cluster[grid.index(1, 1)] != '│');
+}
+
 test "scmView: welcome text without providers" {
     const allocator = testing.allocator;
     var service = scm_service_mod.SCMService.init(allocator);
@@ -1965,7 +2219,7 @@ test "scmView: list rows, labels, badges and file decorations" {
 
     const group_row = try rowText(allocator, &grid, 0);
     defer allocator.free(group_row);
-    try testing.expect(std.mem.indexOf(u8, group_row, "\u{25BE} Staged Changes") != null);
+    try testing.expect(std.mem.indexOf(u8, group_row, "⌄ Staged Changes") != null);
     // Count badge: one digit, two cells of padding, two cells of right margin.
     const badge_start = 40 - 2 - 3;
     try testing.expectEqual(@as(u32, '1'), grid.cluster[badge_start + 1]);
@@ -2084,9 +2338,9 @@ test "scmView: tree mode groups folders, compacts chains and sorts folders first
     try testing.expectEqual(@as(usize, 5), view.rows.items.len);
     try testing.expectEqual(RowKind.group, view.rows.items[0].kind);
     try testing.expectEqual(RowKind.folder, view.rows.items[1].kind);
-    try testing.expectEqualStrings("lib/", view.rows.items[1].label);
+    try testing.expectEqualStrings("lib", view.rows.items[1].label);
     try testing.expectEqual(@as(usize, 1), view.rows.items[1].depth);
-    try testing.expectEqualStrings("core/deep/", view.rows.items[2].label);
+    try testing.expectEqualStrings("core/deep", view.rows.items[2].label);
     try testing.expectEqual(@as(usize, 2), view.rows.items[2].depth);
     try testing.expectEqualStrings("a.zig", view.rows.items[3].label);
     try testing.expectEqual(@as(usize, 3), view.rows.items[3].depth);
@@ -2098,10 +2352,11 @@ test "scmView: tree mode groups folders, compacts chains and sorts folders first
     try view.render(&grid, rect, true, .{ .show_header = false });
     const folder_row = try rowText(allocator, &grid, 1);
     defer allocator.free(folder_row);
-    try testing.expect(std.mem.indexOf(u8, folder_row, "\u{25BE} lib/") != null);
+    try testing.expect(std.mem.indexOf(u8, folder_row, "lib") != null);
+    try testing.expectEqual(@as(u32, file_icon.folder(true).glyph), grid.cluster[grid.index(5, 1)]);
     const compressed_row = try rowText(allocator, &grid, 2);
     defer allocator.free(compressed_row);
-    try testing.expect(std.mem.indexOf(u8, compressed_row, "\u{25BE} core/deep/") != null);
+    try testing.expect(std.mem.indexOf(u8, compressed_row, "core/deep") != null);
 
     // Collapsing the compressed folder keeps its header and hides the file.
     var folder_click = ui.MouseEvent{ .kind = .down, .x = 6, .y = 2, .button = .left };
@@ -2112,7 +2367,7 @@ test "scmView: tree mode groups folders, compacts chains and sorts folders first
     try view.render(&grid, rect, true, .{ .show_header = false });
     const collapsed_row = try rowText(allocator, &grid, 2);
     defer allocator.free(collapsed_row);
-    try testing.expect(std.mem.indexOf(u8, collapsed_row, "\u{25B8} core/deep/") != null);
+    try testing.expect(std.mem.indexOf(u8, collapsed_row, "core/deep") != null);
 
     // Right expands, Left collapses, matching the tree widget.
     view.selection = 2;
@@ -2127,9 +2382,9 @@ test "scmView: tree mode groups folders, compacts chains and sorts folders first
     // keeps its collapse state.
     view.setConfig(.{ .default_view_mode = .tree, .compact_folders = false });
     try testing.expectEqual(@as(usize, 5), view.rows.items.len);
-    try testing.expectEqualStrings("lib/", view.rows.items[1].label);
-    try testing.expectEqualStrings("core/", view.rows.items[2].label);
-    try testing.expectEqualStrings("deep/", view.rows.items[3].label);
+    try testing.expectEqualStrings("lib", view.rows.items[1].label);
+    try testing.expectEqualStrings("core", view.rows.items[2].label);
+    try testing.expectEqualStrings("deep", view.rows.items[3].label);
     try testing.expect(view.rows.items[3].collapsed);
 }
 
@@ -2199,6 +2454,11 @@ test "scmView: hover, selection colors, wheel scrolling and paging" {
     defer grid.deinit();
     try view.render(&grid, rect, true, .{ .show_header = false });
     try testing.expectEqual(@as(usize, 4), view.visible_rows);
+    const scrollbar_thumb = ui.cell.packColor(.{ .r = 105, .g = 108, .b = 122 });
+    const scrollbar_track = ui.cell.packColor(.{ .r = 30, .g = 32, .b = 40 });
+    try testing.expectEqual(scrollbar_thumb, grid.bg[grid.index(29, 0)]);
+    try testing.expectEqual(scrollbar_track, grid.bg[grid.index(29, 3)]);
+    try testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(29, 3)]);
 
     // Hover paints `list.hoverBackground`; there is no selection yet.
     try testing.expect(try moveAt(view, rect, 3, 2));
@@ -2221,6 +2481,11 @@ test "scmView: hover, selection colors, wheel scrolling and paging" {
     try testing.expect(try view.handleMouse(&wheel, rect));
     try testing.expectEqual(@as(usize, 3), view.scroll);
     try testing.expectEqual(@as(?usize, 5), view.hovered_row);
+    try view.render(&grid, rect, true, .{ .show_header = false });
+    try testing.expectEqual(@as(?usize, 2), view.selection);
+    try testing.expectEqual(scrollbar_track, grid.bg[grid.index(29, 0)]);
+    try testing.expectEqual(scrollbar_thumb, grid.bg[grid.index(29, 3)]);
+    try testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(29, 0)]);
 
     // PageDown/PageUp move by the visible row count; Home/End jump.
     const page_down = ui.KeyEvent{ .key = .page_down };
@@ -2238,7 +2503,7 @@ test "scmView: hover, selection colors, wheel scrolling and paging" {
     try testing.expectEqual(@as(usize, 0), view.scroll);
 }
 
-test "scmView: selection survives refresh and title actions follow the view mode" {
+test "scmView: selection survives refresh and the title keeps its primary actions" {
     const allocator = testing.allocator;
     var fixture: Fixture = undefined;
     try fixture.init(allocator, &.{
@@ -2256,13 +2521,10 @@ test "scmView: selection survives refresh and title actions follow the view mode
     try testing.expectEqualStrings("b.zig", view.rows.items[2].label);
 
     const actions = view.titleActions();
-    try testing.expectEqual(@as(usize, 2), actions.len);
-    try testing.expectEqualStrings(REFRESH_ACTION_ID, actions[0].id);
-    try testing.expectEqualStrings(SET_TREE_VIEW_MODE_ACTION_ID, actions[1].id);
-    view.setViewMode(.tree);
-    try testing.expectEqualStrings(SET_LIST_VIEW_MODE_ACTION_ID, view.titleActions()[1].id);
-    view.setViewMode(.list);
-    try testing.expectEqualStrings(SET_TREE_VIEW_MODE_ACTION_ID, view.titleActions()[1].id);
+    try testing.expectEqual(@as(usize, 3), actions.len);
+    try testing.expectEqualStrings(COMMIT_ACTION_ID, actions[0].id);
+    try testing.expectEqualStrings(REFRESH_ACTION_ID, actions[1].id);
+    try testing.expectEqualStrings(CHANGES_MENU_ACTION_ID, actions[2].id);
 
     // 'r' asks the host to refresh.
     var char_event = ui.KeyEvent{ .key = .{ .char = 'r' } };
@@ -2301,6 +2563,56 @@ test "scmView: long and wide labels are clipped with an ellipsis" {
     try testing.expect(saw_wide);
 }
 
+test "scmView: the message and commit rows are part of the scroll range" {
+    const allocator = testing.allocator;
+    var fixture: Fixture = undefined;
+    try fixture.init(allocator, &.{
+        .{ .id = "working", .label = "Changes", .resources = &.{
+            .{ .relative = "a.txt", .letter = 'M' },
+            .{ .relative = "b.txt", .letter = 'M' },
+            .{ .relative = "c.txt", .letter = 'M' },
+        } },
+    }, .{});
+    defer fixture.deinit();
+    const view = &fixture.view;
+    const input = fixture.service.interfaces.items[0].input;
+    input.setVisible(true);
+    input.setPlaceholder("Message");
+
+    const rect = ui.Rect{ .x = 0, .y = 0, .w = 30, .h = 4 };
+    var grid = try ui.CellGrid.init(allocator, 30, 4);
+    defer grid.deinit();
+    try view.render(&grid, rect, true, .{ .show_header = false });
+    const scrollbar_thumb = ui.cell.packColor(.{ .r = 105, .g = 108, .b = 122 });
+    const scrollbar_track = ui.cell.packColor(.{ .r = 30, .g = 32, .b = 40 });
+    try testing.expectEqual(scrollbar_thumb, grid.bg[grid.index(29, 0)]);
+    try testing.expectEqual(scrollbar_track, grid.bg[grid.index(29, 3)]);
+
+    var wheel = ui.MouseEvent{ .kind = .wheel, .x = 5, .y = 0, .delta_y = 1 };
+    try testing.expect(try view.handleMouse(&wheel, rect));
+    try view.render(&grid, rect, true, .{ .show_header = false });
+    const shifted_button = try rowText(allocator, &grid, 1);
+    defer allocator.free(shifted_button);
+    try testing.expect(std.mem.indexOf(u8, shifted_button, "✓ Commit") != null);
+    input.setValue("scroll test", false);
+    try testing.expect(try clickAt(view, rect, 8, 1));
+    try testing.expectEqual(@as(usize, 1), fixture.host.committed);
+
+    wheel.delta_y = 2;
+    try testing.expect(try view.handleMouse(&wheel, rect));
+    try view.render(&grid, rect, true, .{ .show_header = false });
+    const first_row = try rowText(allocator, &grid, 0);
+    defer allocator.free(first_row);
+    try testing.expect(std.mem.indexOf(u8, first_row, "Changes") != null);
+    try testing.expectEqual(scrollbar_track, grid.bg[grid.index(29, 0)]);
+    try testing.expectEqual(scrollbar_thumb, grid.bg[grid.index(29, 3)]);
+
+    var tab = ui.KeyEvent{ .key = .tab };
+    try testing.expect(try view.handleKey(&tab));
+    try testing.expectEqual(@as(usize, 0), view.scroll);
+    try testing.expect(view.input_focused);
+}
+
 test "scmView: commit message input and commit button" {
     const allocator = testing.allocator;
     var fixture: Fixture = undefined;
@@ -2323,14 +2635,13 @@ test "scmView: commit message input and commit button" {
     defer grid.deinit();
     try view.render(&grid, rect, true, .{ .show_header = false });
 
-    // The pinned message row shows the branch-aware placeholder; its divider
-    // and a labelled commit button follow, then the group list.
+    // The message row shares an inset with the split action button.
     const input_row = try rowText(allocator, &grid, 0);
     defer allocator.free(input_row);
     try testing.expect(std.mem.indexOf(u8, input_row, "Message (Enter to commit on") != null);
     const border_row = try rowText(allocator, &grid, 1);
     defer allocator.free(border_row);
-    try testing.expect(std.mem.indexOf(u8, border_row, "\u{2500}") != null);
+    try testing.expectEqualStrings("", std.mem.trim(u8, border_row, " "));
     const button_row = try rowText(allocator, &grid, 2);
     defer allocator.free(button_row);
     try testing.expect(std.mem.indexOf(u8, button_row, "\u{2713} Commit") != null);

@@ -781,13 +781,13 @@ const GraphCanvas = struct {
         self.addHorizontal(from, to, color);
     }
 
-    fn drawCircle(self: *GraphCanvas, lane: usize, kind: history.HistoryItemKind, parents: usize) void {
+    fn drawCircle(self: *GraphCanvas, lane: usize, kind: history.HistoryItemKind, parents: usize, color: ?[]const u8) void {
         const cp: u21 = switch (kind) {
             .head => '\u{25C9}', // ◉
             .incoming_changes, .outgoing_changes => '\u{25CC}', // ◌
             .node => if (parents > 1) '\u{25CE}' else '\u{25CF}', // ◎ / ●
         };
-        self.putGlyph(lane, cp, laneColor(lane));
+        self.putGlyph(lane, cp, color orelse laneColor(lane));
     }
 
     fn toGlyphs(self: *GraphCanvas, allocator: Allocator) ![]GraphGlyph {
@@ -805,11 +805,9 @@ pub fn renderSCMHistoryItemGraph(
     const input_swimlanes = view_model.input_swimlanes;
     const output_swimlanes = view_model.output_swimlanes;
 
-    const input_index = findIndex(input_swimlanes, history_item.id);
-    const circle_index = input_index orelse input_swimlanes.len;
+    const circle_index = circleLane(view_model);
 
-    const width = SWIMLANE_WIDTH * (@max(@max(input_swimlanes.len, output_swimlanes.len), 1) + 1);
-    var canvas = try GraphCanvas.init(allocator, width);
+    var canvas = try GraphCanvas.init(allocator, graphWidth(view_model));
     defer canvas.deinit(allocator);
 
     var output_swimlane_index: usize = 0;
@@ -859,7 +857,12 @@ pub fn renderSCMHistoryItemGraph(
         canvas.drawMergeEdge(circle_index, parent_output_index);
     }
 
-    canvas.drawCircle(circle_index, view_model.kind, history_item.parent_ids.len);
+    const circle_color: ?[]const u8 = switch (view_model.kind) {
+        .head, .outgoing_changes => history_item_ref_color,
+        .incoming_changes => history_item_remote_ref_color,
+        .node => if (history_item.references.len != 0) history_item.references[0].color else null,
+    };
+    canvas.drawCircle(circle_index, view_model.kind, history_item.parent_ids.len, circle_color);
 
     return canvas.toGlyphs(allocator);
 }
@@ -884,7 +887,20 @@ pub fn renderSCMHistoryGraphPlaceholder(
 
 /// Rendered graph width in cells for a view model (exposed for the row layout).
 pub fn graphWidth(view_model: *const history.ISCMHistoryItemViewModel) usize {
-    return SWIMLANE_WIDTH * (@max(@max(view_model.input_swimlanes.len, view_model.output_swimlanes.len), 1) + 1);
+    const lanes = @max(view_model.input_swimlanes.len, view_model.output_swimlanes.len);
+    return SWIMLANE_WIDTH * (@max(lanes, circleLane(view_model) + 1) + 1);
+}
+
+fn circleLane(view_model: *const history.ISCMHistoryItemViewModel) usize {
+    const item = view_model.history_item;
+    if (findIndex(view_model.input_swimlanes, item.id)) |lane| return lane;
+    if (view_model.kind == .incoming_changes or view_model.kind == .outgoing_changes) {
+        if (item.parent_ids.len != 0) {
+            if (findIndex(view_model.input_swimlanes, item.parent_ids[0])) |lane| return lane;
+            if (findIndex(view_model.output_swimlanes, item.parent_ids[0])) |lane| return lane;
+        }
+    }
+    return view_model.input_swimlanes.len;
 }
 
 pub fn placeholderWidth(columns: []const history.ISCMHistoryItemGraphNode) usize {

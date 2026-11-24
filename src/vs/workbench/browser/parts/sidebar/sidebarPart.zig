@@ -467,13 +467,15 @@ pub fn renderTitle(
     });
 
     const label = try doc.createElement(.span);
+    const source_control = std.mem.eql(u8, part.pane.active_id orelse "", "scm");
     label.setStyle(.{
         .padding = .{ .left = 1 },
         .min_width = .{ .cells = 0 },
         .overflow = .hidden,
+        .bold = source_control,
     });
     var title_buf: [96]u8 = undefined;
-    _ = try label.appendText(upperAscii(&title_buf, part.pane.title_label.title));
+    _ = try label.appendText(if (source_control) part.pane.title_label.title else upperAscii(&title_buf, part.pane.title_label.title));
     _ = try root.appendChild(label);
 
     const spacer = try doc.createElement(.span);

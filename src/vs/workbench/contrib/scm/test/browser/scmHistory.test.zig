@@ -1239,7 +1239,29 @@ test "scmHistory golden cells: HEAD circle" {
     try testing.expectEqual(@as(usize, 2), cells.len);
     try testing.expectEqual(@as(u21, ' '), cells[0].cp);
     try testing.expectEqual(@as(u21, '\u{25C9}'), cells[1].cp);
-    try testing.expectEqualStrings(scmHistory.color_registry[0], cells[1].color.?);
+    try testing.expectEqualStrings(scmHistory.history_item_ref_color, cells[1].color.?);
+}
+
+test "scmHistory golden cells: incoming marker shares the merge base lane" {
+    const allocator = std.testing.allocator;
+    var input = [_]history.ISCMHistoryItemGraphNode{.{ .id = "base", .color = scmHistory.color_registry[0] }};
+    var output = input;
+    const vm: history.ISCMHistoryItemViewModel = .{
+        .history_item = .{
+            .id = history.SCMIncomingHistoryItemId,
+            .parent_ids = &.{"base"},
+            .subject = "Incoming Changes",
+            .message = "",
+        },
+        .input_swimlanes = &input,
+        .output_swimlanes = &output,
+        .kind = .incoming_changes,
+    };
+    const cells = try scmHistory.renderSCMHistoryItemGraph(allocator, &vm);
+    defer allocator.free(cells);
+    try testing.expectEqual(@as(usize, 2), cells.len);
+    try testing.expectEqual(@as(u21, '◌'), cells[1].cp);
+    try testing.expectEqualStrings(scmHistory.history_item_remote_ref_color, cells[1].color.?);
 }
 
 test "scmHistory golden cells: placeholder" {

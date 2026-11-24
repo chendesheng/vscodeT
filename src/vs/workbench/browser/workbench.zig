@@ -375,6 +375,18 @@ const DialogRequest = union(enum) {
     close_tab: CloseTabRequest,
     quit,
     replace_all,
+    discard_scm: ScmDiscardRequest,
+};
+
+const ScmDiscardRequest = struct {
+    root: []u8,
+    path: []u8,
+    untracked: bool,
+
+    fn deinit(self: ScmDiscardRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.root);
+        allocator.free(self.path);
+    }
 };
 
 const editor_mod = @import("../common/editor.zig");
@@ -1674,6 +1686,12 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.nextPanelView", .label = "View: Next Panel View", .category = "View", .context = self, .run = commandNextPanelView },
             .{ .id = "git.refresh", .label = "Refresh", .category = "Source Control", .context = self, .run = commandGitRefresh },
             .{ .id = "git.commit", .label = "Commit", .category = "Source Control", .context = self, .run = commandGitCommit },
+            .{ .id = scm_view_mod.CHANGES_MENU_ACTION_ID, .label = "Changes More Actions", .show_in_palette = false, .context = self, .run = commandScmChangesMenu },
+            .{ .id = scm_history_view_mod.GRAPH_MENU_ACTION_ID, .label = "Graph More Actions", .show_in_palette = false, .context = self, .run = commandScmGraphMenu },
+            .{ .id = "git.fetchAll", .label = "Fetch From All Remotes", .category = "Source Control", .context = self, .run = commandGitFetch },
+            .{ .id = "git.pullRef", .label = "Pull", .category = "Source Control", .context = self, .run = commandGitPull },
+            .{ .id = "git.pushRef", .label = "Push", .category = "Source Control", .context = self, .run = commandGitPush },
+            .{ .id = "git.publish", .label = "Publish Branch", .category = "Source Control", .context = self, .run = commandGitPublish },
             .{ .id = "workbench.scm.action.graph.refresh", .label = "Source Control Graph: Refresh", .category = "Source Control", .context = self, .run = commandScmHistoryRefresh },
             .{ .id = "workbench.scm.action.graph.pickHistoryItemRefs", .label = "Source Control Graph: Select History Item References", .category = "Source Control", .context = self, .run = commandScmHistoryPickRefs },
             .{ .id = "workbench.scm.action.graph.revealCurrentHistoryItem", .label = "Source Control Graph: Go to Current History Item", .category = "Source Control", .context = self, .run = commandScmHistoryReveal },
@@ -1972,6 +1990,9 @@ pub const Workbench = struct {
         if (self.dialog) |dialog| {
             dialog.deinit();
             self.dialog = null;
+        }
+        if (self.pending_dialog) |request| {
+            if (request == .discard_scm) request.discard_scm.deinit(self.allocator);
         }
         self.pending_dialog = null;
         if (self.outline_registration) |registration| {
@@ -4388,9 +4409,8 @@ pub const Workbench = struct {
         errdefer self.deinitGit();
         if (cli.isDisabled()) return;
 
-        const opened = cli.openRepository(root_value) catch null;
-        if (opened == null) return;
-        const concrete = cli.repositoryForRoot(root_value) orelse return;
+        const opened = (cli.openRepository(root_value) catch null) orelse return;
+        const concrete = cli.repositoryForRoot(opened.root_path) orelse return;
 
         const service = try self.allocator.create(git_service_mod.GitService);
         service.* = git_service_mod.GitService.init(self.allocator);
@@ -4401,7 +4421,7 @@ pub const Workbench = struct {
         self.git_delegate = delegate;
         _ = service.setDelegate(delegate) catch {};
 
-        const root = try self.allocator.dupe(u8, root_value);
+        const root = try self.allocator.dupe(u8, opened.root_path);
         self.git_root = root;
 
         const scm_service = try self.allocator.create(scm_service_mod.SCMService);
@@ -4458,9 +4478,12 @@ pub const Workbench = struct {
         scm_view.* = scm_view_mod.SCMViewPane.init(self.allocator, service_copy, .{
             .context = self,
             .open_change = scmViewOpen,
+            .resource_action = scmViewResourceAction,
             .refresh = scmRefresh,
             .focus_editor = scmFocusEditor,
             .commit = scmViewCommit,
+            .commit_menu = scmCommitMenu,
+            .branch_action = scmBranchAction,
             .status = scmViewStatus,
         });
         self.scm_view = scm_view;
@@ -4474,6 +4497,7 @@ pub const Workbench = struct {
             .{
                 .context = self,
                 .open_change = historyOpenChange,
+                .open_changes = historyOpenChanges,
                 .focus_editor = scmFocusEditor,
                 .pick_refs = historyPickRefs,
             },
@@ -4985,6 +5009,101 @@ pub const Workbench = struct {
         return scmOpenChange(context, resource);
     }
 
+    fn scmViewResourceAction(context: *anyopaque, action: scm_view_mod.ResourceAction, resource: *scm_common.ISCMResource) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.runScmResourceAction(action, resource) catch |err| self.setStatusHint("Source Control action failed: {s}", .{@errorName(err)});
+    }
+
+    fn runScmResourceAction(self: *Workbench, action: scm_view_mod.ResourceAction, resource: *scm_common.ISCMResource) !void {
+        const git_resource: *repository_mod.GitScmResource = @ptrCast(@alignCast(resource.context));
+        const provider = git_resource.provider;
+        switch (action) {
+            .open_file => {
+                if (git_resource.status == 'D') {
+                    try self.openScmChange(provider, git_resource);
+                } else {
+                    try self.openPath(git_resource.absolute_path);
+                    self.focusEditor();
+                }
+            },
+            .open_change => try self.openScmChange(provider, git_resource),
+            .stage, .unstage => {
+                const git = provider.git orelse return error.NoGit;
+                const head = provider.repository.stateRef().head;
+                const has_head = if (head) |branch| branch.ref.commit != null else false;
+                const operation: git_mod.Git.ResourceAction = if (action == .stage) .stage else if (has_head) .unstage else .unstage_unborn;
+                var paths = [_][]const u8{ git_resource.relative_path, "" };
+                var count: usize = 1;
+                if (git_resource.status == 'R') {
+                    if (git_resource.original_path) |path| {
+                        paths[1] = path;
+                        count += 1;
+                    }
+                }
+                try git.runResourceAction(provider.root, operation, paths[0..count]);
+                scmRefresh(self);
+            },
+            .discard => try self.confirmScmDiscard(git_resource),
+        }
+    }
+
+    fn confirmScmDiscard(self: *Workbench, resource: *const repository_mod.GitScmResource) !void {
+        if (self.dialog != null) return error.DialogAlreadyOpen;
+        if (resource.kind != .working and resource.kind != .untracked) return error.InvalidScmResource;
+        const untracked = resource.kind == .untracked;
+        const message = try std.fmt.allocPrint(self.allocator, "{s} {s}?", .{
+            if (untracked) "Permanently delete the untracked file" else "Discard working tree changes to",
+            resource.relative_path,
+        });
+        defer self.allocator.free(message);
+        const root = try self.allocator.dupe(u8, resource.provider.root);
+        errdefer self.allocator.free(root);
+        const path = try self.allocator.dupe(u8, resource.relative_path);
+        errdefer self.allocator.free(path);
+        const dialog = try ui.Dialog.init(
+            self.allocator,
+            message,
+            if (untracked) "This deletes the file from disk." else "This restores the file from the Git index.",
+            &.{ if (untracked) "Delete" else "Discard", dialogs.cancel_label },
+        );
+        dialog.theme = self.dialogTheme();
+        dialog.focused = 1;
+        self.dialog = dialog;
+        self.pending_dialog = .{ .discard_scm = .{ .root = root, .path = path, .untracked = untracked } };
+        self.pointer = .default;
+    }
+
+    fn resolveScmDiscard(self: *Workbench, request: ScmDiscardRequest) !void {
+        const provider = self.repository orelse return error.NoRepository;
+        if (!std.mem.eql(u8, provider.root, request.root)) return error.RepositoryChanged;
+        const git = provider.git orelse return error.NoGit;
+        const absolute = try std.fs.path.join(self.allocator, &.{ request.root, request.path });
+        defer self.allocator.free(absolute);
+        defer scmRefresh(self);
+        var state = try git.status(request.root);
+        defer state.deinit(git.allocator);
+        const candidates = if (request.untracked) state.untracked_changes else state.working_tree_changes;
+        const change = for (candidates) |candidate| {
+            if (std.mem.eql(u8, candidate.path, request.path)) break candidate;
+        } else return error.ChangeNoLongerAvailable;
+        if (request.untracked) {
+            // A single-file unlink also refuses a directory that replaced the
+            // file while the confirmation was open.
+            try Io.Dir.cwd().deleteFile(self.io, absolute);
+            self.files_changed = true;
+            return;
+        }
+        if (change.status == 'R' and change.original_path != null) {
+            try git.runResourceAction(request.root, .restore, &.{ request.path, change.original_path.? });
+            const original = try std.fs.path.join(self.allocator, &.{ request.root, change.original_path.? });
+            defer self.allocator.free(original);
+            self.handleFileChanges(&.{.{ .type = .UPDATED, .resource = original }});
+        } else {
+            try git.runResourceAction(request.root, .restore, &.{request.path});
+        }
+        self.handleFileChanges(&.{.{ .type = .UPDATED, .resource = absolute }});
+    }
+
     fn scmRefresh(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.git_status_dirty = true;
@@ -4996,9 +5115,9 @@ pub const Workbench = struct {
         self.focusEditor();
     }
 
-    fn scmViewCommit(context: *anyopaque, message: []const u8) anyerror!void {
+    fn scmViewCommit(context: *anyopaque, message: []const u8, action: scm_view_mod.CommitAction) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        return self.commitScmMessage(message);
+        try self.commitScmMessageWithAction(message, action);
     }
 
     fn scmViewStatus(context: *anyopaque, message: []const u8) void {
@@ -5006,14 +5125,75 @@ pub const Workbench = struct {
         self.setStatusHint("{s}", .{message});
     }
 
+    fn scmCommitMenu(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.quick_access.inputService().showPick(&.{
+            .{ .item = .{ .id = "commit", .label = "Commit" } },
+            .{ .item = .{ .id = "amend", .label = "Commit (Amend)" } },
+            .{ .separator = .{ .label = "Post-Commit Actions" } },
+            .{ .item = .{ .id = "push", .label = "Commit & Push" } },
+            .{ .item = .{ .id = "sync", .label = "Commit & Sync" } },
+        }, .{ .placeholder = "Select Commit Action" }, scmCommitPick, self) catch {};
+    }
+
+    fn scmCommitPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+        const action = std.meta.stringToEnum(scm_view_mod.CommitAction, item.id) orelse return;
+        if (self.scm_view) |view| _ = view.commitInputWithAction(action);
+    }
+
+    fn scmBranchAction(context: *anyopaque, action: scm_view_mod.BranchAction) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        switch (action) {
+            .publish => commandGitPublish(context) catch |err| self.setStatusHint("Publish failed: {s}", .{@errorName(err)}),
+            .sync => {
+                self.runScmRemoteAction(.pull, null) catch |err| {
+                    self.setStatusHint("Pull failed: {s}", .{@errorName(err)});
+                    return;
+                };
+                commandGitPush(context) catch {};
+            },
+        }
+    }
+
+    fn runScmRemoteAction(self: *Workbench, action: git_mod.Git.RemoteAction, remote: ?[]const u8) !void {
+        const provider = self.repository orelse return error.NoRepository;
+        const git = provider.git orelse return error.NoGit;
+        try git.runRemoteAction(provider.root, action, remote);
+        self.git_status_dirty = true;
+        self.refreshGitStatus();
+        if (self.scm_history_view) |view| view.refresh(.reload) catch {};
+    }
+
+    fn finishScmCommit(self: *Workbench, action: scm_view_mod.CommitAction) void {
+        if (action == .sync) {
+            self.runScmRemoteAction(.pull, null) catch |err| {
+                self.setStatusHint("Committed, but pull failed: {s}", .{@errorName(err)});
+                return;
+            };
+        }
+        if (action == .push or action == .sync) {
+            self.runScmRemoteAction(.push, null) catch |err| {
+                self.setStatusHint("Committed, but push failed: {s}", .{@errorName(err)});
+                return;
+            };
+        }
+        self.setStatusHint("Committed", .{});
+    }
+
     /// Commits `message`. With staged changes the index is committed as-is;
     /// when the index is empty the terminal substitutes upstream's smart
     /// commit prompt by staging the changed files (honoring
     /// `git.smartCommitChanges`), then commits.
     fn commitScmMessage(self: *Workbench, message: []const u8) !void {
+        return self.commitScmMessageWithAction(message, .commit);
+    }
+
+    fn commitScmMessageWithAction(self: *Workbench, message: []const u8, action: scm_view_mod.CommitAction) !void {
         const provider = self.repository orelse return error.NoRepository;
         const state = provider.repository.stateRef();
-        if (message.len == 0) {
+        if (message.len == 0 and action != .amend) {
             self.setStatusHint("Commit message is required", .{});
             return error.EmptyCommitMessage;
         }
@@ -5024,7 +5204,7 @@ pub const Workbench = struct {
         const total = state.index_changes.len +
             state.working_tree_changes.len +
             state.untracked_changes.len;
-        if (total == 0) {
+        if (total == 0 and action != .amend) {
             self.setStatusHint("No changes to commit", .{});
             return error.NoChanges;
         }
@@ -5034,12 +5214,13 @@ pub const Workbench = struct {
             return error.NoGit;
         };
 
-        if (state.index_changes.len > 0) {
-            git.commitFiles(provider.root, &.{}, message, .{}) catch |err| {
+        const options = git_mod.GitCommitOptions{ .amend = action == .amend };
+        if (state.index_changes.len > 0 or total == 0) {
+            git.commitFiles(provider.root, &.{}, message, options) catch |err| {
                 self.setStatusHint("Commit failed: {s}", .{@errorName(err)});
                 return err;
             };
-            self.setStatusHint("Committed", .{});
+            self.finishScmCommit(action);
             return;
         }
 
@@ -5068,11 +5249,11 @@ pub const Workbench = struct {
             self.setStatusHint("No tracked changes to commit", .{});
             return error.NothingStaged;
         }
-        git.commitFiles(provider.root, files.items, message, .{}) catch |err| {
+        git.commitFiles(provider.root, files.items, message, options) catch |err| {
             self.setStatusHint("Commit failed: {s}", .{@errorName(err)});
             return err;
         };
-        self.setStatusHint("Committed", .{});
+        self.finishScmCommit(action);
     }
 
     fn uniqueChangePaths(
@@ -5095,6 +5276,7 @@ pub const Workbench = struct {
     pub fn scmHistoryConfig(self: *Workbench) scm_history_view_mod.Config {
         var config = scm_history_view_mod.Config{};
         const configuration = self.configuration orelse return config;
+        config.always_show_actions = configuration.getBool("scm.alwaysShowActions", false);
         if (configuration.getValue("scm.graph.pageSize", .{})) |value| {
             switch (value.*) {
                 .integer => |number| config.page_size = @intCast(@max(@min(number, 1000), 1)),
@@ -5174,7 +5356,25 @@ pub const Workbench = struct {
             true;
         input.setVisible(visible);
         var branch: ?[]const u8 = null;
-        if (self.repository) |provider| branch = provider.interface().detail;
+        var branch_action: ?scm_view_mod.BranchAction = null;
+        if (self.repository) |provider| {
+            branch = provider.interface().detail;
+            const state = provider.repository.stateRef();
+            if (state.head) |head| {
+                const ahead = head.ahead orelse 0;
+                const behind = head.behind orelse 0;
+                if (head.upstream != null and (ahead > 0 or behind > 0)) {
+                    branch_action = .{ .sync = .{ .ahead = ahead, .behind = behind } };
+                } else if (branch != null and head.upstream == null and state.remotes.len != 0) {
+                    branch_action = .publish;
+                }
+            }
+        }
+        if (self.scm_view) |view| view.branch_action = branch_action;
+        if (self.scm_view) |view| {
+            const head = if (self.repository) |provider| provider.repository.stateRef().head else null;
+            view.fresh_repository = if (head) |ref| ref.ref.commit == null else true;
+        }
         const placeholder = if (branch) |name|
             std.fmt.bufPrint(&self.scm_placeholder_buf, "Message (Enter to commit on \"{s}\")", .{name}) catch "Message (Enter to commit)"
         else
@@ -5208,6 +5408,19 @@ pub const Workbench = struct {
         config.always_show_repositories = configuration.getBool("scm.alwaysShowRepositories", false);
         config.compact_folders = configuration.getBool("scm.compactFolders", true);
         config.show_input_action_button = configuration.getBool("scm.showInputActionButton", true);
+        config.show_action_button = configuration.getBool("scm.showActionButton", true);
+        config.show_commit_action = configuration.getBool("git.showActionButton.commit", true);
+        config.show_publish_action = configuration.getBool("git.showActionButton.publish", true);
+        config.show_sync_action = configuration.getBool("git.showActionButton.sync", true);
+        const decorations = configuration.getBool("git.decorations.enabled", true);
+        config.decoration_colors = decorations and configuration.getBool("explorer.decorations.colors", true);
+        config.decoration_badges = decorations and configuration.getBool("explorer.decorations.badges", true);
+        config.always_show_actions = configuration.getBool("scm.alwaysShowActions", false);
+        config.inline_open_file_action = configuration.getBool("git.showInlineOpenFileAction", true);
+        config.open_diff_on_click = configuration.getBool("git.openDiffOnClick", true);
+        if (configuration.getValue("workbench.tree.renderIndentGuides", .{})) |value| {
+            if (value.* == .string) config.indent_guides = @TypeOf(config.indent_guides).fromString(value.string);
+        }
         if (configuration.getValue("scm.providerCountBadge", .{})) |value| {
             switch (value.*) {
                 .string => |text| {
@@ -5234,7 +5447,11 @@ pub const Workbench = struct {
         const self: *Workbench = @ptrCast(@alignCast(context));
         const view = self.scm_view orelse return;
         if (self.theme_palette) |palette| view.setThemeColors(palette);
-        try view.render(grid, rect, focused, .{ .show_header = false });
+        try view.render(grid, rect, focused, .{
+            .show_header = false,
+            .cell_borders = self.part.cell_borders,
+            .border_capabilities = self.part.cell_border_capabilities,
+        });
     }
 
     fn scmChangesHandleKey(context: *anyopaque, event: *ui.KeyEvent) anyerror!bool {
@@ -5291,7 +5508,11 @@ pub const Workbench = struct {
         change: *const scm_common_history.ISCMHistoryItemChange,
     ) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        const display = history_item.display_id orelse history_item.id;
+        const revision = if (self.scm_history_view) |view| view.itemRevision(history_item.*) else history_item.id;
+        const display = if (std.mem.eql(u8, revision, history_item.id))
+            history_item.display_id orelse history_item.id
+        else
+            revision[0..@min(revision.len, 7)];
         if (history_item.parent_ids.len > 0) {
             const parent = history_item.parent_ids[0];
             const parent_label = if (history_item.display_id) |id|
@@ -5302,7 +5523,7 @@ pub const Workbench = struct {
                 change.path,
                 change.original_path,
                 parent,
-                history_item.id,
+                revision,
                 parent_label,
                 display,
             );
@@ -5311,10 +5532,78 @@ pub const Workbench = struct {
             change.path,
             change.original_path,
             null,
-            history_item.id,
+            revision,
             "Empty",
             display,
         );
+    }
+
+    const HistoryChangesPick = struct {
+        workbench: *Workbench,
+        arena: std.heap.ArenaAllocator,
+        item: scm_common_history.ISCMHistoryItem,
+        changes: []scm_common_history.ISCMHistoryItemChange,
+    };
+
+    fn historyOpenChanges(
+        context: *anyopaque,
+        item: *const scm_common_history.ISCMHistoryItem,
+        changes: []const scm_common_history.ISCMHistoryItemChange,
+    ) anyerror!void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.showHistoryChanges(item, changes) catch |err| self.setStatusHint("Open Changes failed: {s}", .{@errorName(err)});
+    }
+
+    fn showHistoryChanges(self: *Workbench, item: *const scm_common_history.ISCMHistoryItem, changes: []const scm_common_history.ISCMHistoryItemChange) !void {
+        if (changes.len == 0) {
+            self.setStatusHint("No file changes in this history item", .{});
+            return;
+        }
+        if (changes.len == 1) return historyOpenChange(self, item, &changes[0]);
+
+        const state = try self.allocator.create(HistoryChangesPick);
+        errdefer self.allocator.destroy(state);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const allocator = arena.allocator();
+        const saved_changes = try allocator.alloc(scm_common_history.ISCMHistoryItemChange, changes.len);
+        const items = try allocator.alloc(QuickPickItem, changes.len);
+        for (changes, saved_changes, items, 0..) |change, *saved, *entry, index| {
+            saved.* = try change.clone(allocator);
+            entry.* = .{ .item = .{
+                .id = try std.fmt.allocPrint(allocator, "{d}", .{index}),
+                .label = std.fs.path.basename(saved.path),
+                .description = std.fs.path.dirname(saved.path) orelse "",
+            } };
+        }
+        var saved_item = try item.clone(allocator);
+        if (self.scm_history_view) |view| {
+            const revision = view.itemRevision(item.*);
+            if (!std.mem.eql(u8, revision, item.id)) {
+                saved_item.id = try allocator.dupe(u8, revision);
+                saved_item.display_id = saved_item.id[0..@min(saved_item.id.len, 7)];
+            }
+        }
+        state.* = .{ .workbench = self, .arena = arena, .item = saved_item, .changes = saved_changes };
+        try self.quick_access.inputService().showPick(items, .{
+            .placeholder = "Open Changes",
+            .cleanup = freeHistoryChangesPick,
+            .cleanup_context = state,
+        }, onHistoryChangesPick, state);
+    }
+
+    fn freeHistoryChangesPick(context: *anyopaque) void {
+        const state: *HistoryChangesPick = @ptrCast(@alignCast(context));
+        const allocator = state.arena.child_allocator;
+        state.arena.deinit();
+        allocator.destroy(state);
+    }
+
+    fn onHistoryChangesPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+        const state: *HistoryChangesPick = @ptrCast(@alignCast(context));
+        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+        const index = try std.fmt.parseInt(usize, item.id, 10);
+        if (index < state.changes.len) try historyOpenChange(state.workbench, &state.item, &state.changes[index]);
     }
 
     fn historyPickRefs(context: *anyopaque) void {
@@ -7673,6 +7962,11 @@ pub const Workbench = struct {
             .replace_all => if (self.search_view) |view| {
                 if (result == .SAVE) view.confirmReplaceAll() else view.clearReplaceConfirmation();
             },
+            .discard_scm => |discard| {
+                defer discard.deinit(self.allocator);
+                if (result == .SAVE) self.resolveScmDiscard(discard) catch |err|
+                    self.setStatusHint("Discard failed: {s}", .{@errorName(err)});
+            },
         }
     }
 
@@ -8377,6 +8671,7 @@ pub const Workbench = struct {
         if (self.sidebar) |sidebar| sidebar.setThemeColors(palette);
         if (self.search_view) |view| view.setThemeColors(palette);
         if (self.scm_view) |view| view.setThemeColors(palette);
+        if (self.scm_history_view) |view| view.setThemeColors(palette);
         if (self.breadcrumbs_control) |control| control.setThemeColors(palette);
         var inactive_it = self.breadcrumbs_inactive.iterator();
         while (inactive_it.next()) |entry| entry.value_ptr.*.control.setThemeColors(palette);
@@ -12734,6 +13029,75 @@ fn commandGitCommit(context: *anyopaque) anyerror!void {
     _ = view.commitInput();
 }
 
+fn commandScmChangesMenu(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const view = self.scm_view orelse return;
+    try self.quick_access.inputService().showPick(&.{
+        if (view.viewMode() == .list)
+            .{ .item = .{ .id = scm_view_mod.SET_TREE_VIEW_MODE_ACTION_ID, .label = "View as Tree" } }
+        else
+            .{ .item = .{ .id = scm_view_mod.SET_LIST_VIEW_MODE_ACTION_ID, .label = "View as List" } },
+        .{ .item = .{ .id = scm_view_mod.SET_SORT_BY_NAME_ACTION_ID, .label = "Sort by Name" } },
+        .{ .item = .{ .id = scm_view_mod.SET_SORT_BY_PATH_ACTION_ID, .label = "Sort by Path" } },
+        .{ .item = .{ .id = scm_view_mod.SET_SORT_BY_STATUS_ACTION_ID, .label = "Sort by Status" } },
+    }, .{ .placeholder = "Changes Actions" }, onTitleCommandPick, self);
+}
+
+fn commandScmGraphMenu(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const view = self.scm_history_view orelse return;
+    try self.quick_access.inputService().showPick(&.{
+        if (view.viewMode() == .list)
+            .{ .item = .{ .id = scm_history_view_mod.SET_TREE_VIEW_MODE_ACTION_ID, .label = "View as Tree" } }
+        else
+            .{ .item = .{ .id = scm_history_view_mod.SET_LIST_VIEW_MODE_ACTION_ID, .label = "View as List" } },
+        .{ .item = .{ .id = scm_history_view_mod.REFRESH_GRAPH_ACTION_ID, .label = "Refresh" } },
+    }, .{ .placeholder = "Graph Actions" }, onTitleCommandPick, self);
+}
+
+fn onTitleCommandPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+    try self.commands.execute(item.id);
+}
+
+fn commandGitFetch(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.runScmRemoteAction(.fetch, null) catch |err| self.setStatusHint("Fetch failed: {s}", .{@errorName(err)});
+}
+
+fn commandGitPull(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.runScmRemoteAction(.pull, null) catch |err| self.setStatusHint("Pull failed: {s}", .{@errorName(err)});
+}
+
+fn commandGitPush(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.runScmRemoteAction(.push, null) catch |err| self.setStatusHint("Push failed: {s}", .{@errorName(err)});
+}
+
+fn commandGitPublish(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const provider = self.repository orelse return;
+    const remotes = provider.repository.stateRef().remotes;
+    var items: std.ArrayList(QuickPickItem) = .empty;
+    defer items.deinit(self.allocator);
+    for (remotes) |remote| {
+        if (!remote.is_read_only) try items.append(self.allocator, .{ .item = .{ .id = remote.name, .label = remote.name } });
+    }
+    if (items.items.len == 0) {
+        self.setStatusHint("No remote to publish to", .{});
+        return;
+    }
+    try self.quick_access.inputService().showPick(items.items, .{ .placeholder = "Select a Remote to Publish the Branch" }, onGitPublishPick, self);
+}
+
+fn onGitPublishPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+    self.runScmRemoteAction(.publish, item.id) catch |err| self.setStatusHint("Publish failed: {s}", .{@errorName(err)});
+}
+
 fn commandGitOpenChange(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const view = self.scm_view orelse return;
@@ -16732,7 +17096,7 @@ test "Workbench: activity bar switches view containers" {
     try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
     out.clearRetainingCapacity();
     try workbench.render(&out.writer);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "SOURCE CONTROL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "Source Control") != null);
 
     // Upstream has no Settings view container: its activity bar gear is the
     // `workbench.actions.manage` global action that opens the Settings editor
@@ -20016,15 +20380,14 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     var scm_frame: std.Io.Writer.Allocating = .init(allocator);
     defer scm_frame.deinit();
     try workbench.render(&scm_frame.writer);
-    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "SOURCE CONTROL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Source Control") != null);
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Graph") != null);
     // Changes renders the staged and working groups and their file names.
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Staged Changes") != null);
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "staged.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "untracked.txt") != null);
-    // The commit-message input is pinned above the list with the branch in
-    // its placeholder and the check button at the right.
-    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Message (Enter to commit") != null);
+    // The Changes tree starts with the branch-aware message input and Commit button.
+    try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Message (Enter to") != null);
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "\u{2713} Commit") != null);
     try std.testing.expectEqualStrings(
         "Message (Enter to commit on \"main\")",

@@ -7,8 +7,8 @@
 // rows are absolute 1-cell nodes, mouse/focus events go through the DOM, and the
 // result is composited through `ui.Surface`. Terminal adaptations:
 // - hover is plain text (no markdown/avatars/commands);
-// - one click selects, a second click on the selected commit toggles expansion
-//   (there is no multi-diff "open commit" action);
+// - one click selects and a second click on the selected commit toggles
+//   expansion. Open Changes uses the host's single-file diff and picker;
 // - the page fetch is synchronous and capped; the terminal has no progress UI;
 // - the tree mode compresses single-child folders like `scm.compactFolders`.
 const std = @import("std");
@@ -19,14 +19,20 @@ const scm_history = @import("./scmHistory.zig");
 const resource_tree = @import("../../../../base/common/resourceTree.zig");
 const storage_mod = @import("../../../../platform/storage/common/storage.zig");
 const views = @import("../../../common/views.zig");
+const css = @import("./media/scm_css.zig");
+const file_icon = @import("../../../browser/fileIcon.zig");
+const list_scrollbar = @import("../../../../base/browser/ui/list/listScrollbarTerminal.zig");
 const theme_colors_mod = @import("../../../browser/themeColors.zig");
 
 pub const HISTORY_VIEW_PANE_ID = "workbench.scm.history";
 pub const PICK_HISTORY_ITEM_REFS_ACTION_ID = "workbench.scm.action.graph.pickHistoryItemRefs";
 pub const REVEAL_CURRENT_HISTORY_ITEM_ACTION_ID = "workbench.scm.action.graph.revealCurrentHistoryItem";
+pub const GRAPH_MENU_ACTION_ID = "workbench.scm.action.graph.showMenu";
 pub const REFRESH_GRAPH_ACTION_ID = "workbench.scm.action.graph.refresh";
 pub const SET_LIST_VIEW_MODE_ACTION_ID = "workbench.scm.action.graph.setListViewMode";
 pub const SET_TREE_VIEW_MODE_ACTION_ID = "workbench.scm.action.graph.setTreeViewMode";
+pub const fetch_glyph: u21 = '⇣';
+pub const open_changes_glyph: u21 = '▤';
 
 pub const ViewMode = enum { list, tree };
 
@@ -39,6 +45,7 @@ pub const Config = struct {
     default_view_mode: ViewMode = .list,
     compact_folders: bool = true,
     short_hash_length: usize = 7,
+    always_show_actions: bool = false,
 };
 
 pub const Host = struct {
@@ -48,6 +55,11 @@ pub const Host = struct {
         history_item: *const history.ISCMHistoryItem,
         change: *const history.ISCMHistoryItemChange,
     ) anyerror!void,
+    open_changes: ?*const fn (
+        context: *anyopaque,
+        item: *const history.ISCMHistoryItem,
+        changes: []const history.ISCMHistoryItemChange,
+    ) anyerror!void = null,
     focus_editor: *const fn (context: *anyopaque) void,
     pick_refs: *const fn (context: *anyopaque) void,
 };
@@ -89,6 +101,7 @@ pub const SCMHistoryViewPane = struct {
 
     rows: std.array_list.Managed(Row),
     selection: usize = 0,
+    selection_active: bool = false,
     scroll: usize = 0,
     visible_rows: usize = 0,
 
@@ -105,9 +118,11 @@ pub const SCMHistoryViewPane = struct {
     last_error: ?anyerror = null,
     filter_label_buf: [64]u8 = undefined,
     filter_label_len: usize = 0,
-    actions: [4]views.TitleAction = undefined,
+    actions: [7]views.TitleAction = undefined,
 
     hovered_row: ?usize = null,
+    hovered_action: bool = false,
+    list_focused: bool = false,
     hover_content: ?[]u8 = null,
     last_rect: ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 
@@ -466,7 +481,7 @@ pub const SCMHistoryViewPane = struct {
         const parent = if (item.parent_ids.len > 0) item.parent_ids[0] else null;
         const changes: []const history.ISCMHistoryItemChange = provider.provideHistoryItemChanges(
             self.changes_arena.allocator(),
-            item.id,
+            self.itemRevision(item),
             parent,
         ) catch |err| blk: {
             self.last_error = err;
@@ -474,6 +489,17 @@ pub const SCMHistoryViewPane = struct {
         };
         self.changes.put(item.id, changes) catch {};
         return changes;
+    }
+
+    pub fn itemRevision(self: *const SCMHistoryViewPane, item: history.ISCMHistoryItem) []const u8 {
+        const provider = self.provider orelse return item.id;
+        const reference = if (std.mem.eql(u8, item.id, history.SCMIncomingHistoryItemId))
+            provider.history_item_remote_ref
+        else if (std.mem.eql(u8, item.id, history.SCMOutgoingHistoryItemId))
+            provider.history_item_ref
+        else
+            null;
+        return if (reference) |ref| ref.revision orelse ref.id else item.id;
     }
 
     fn rebuildRows(self: *SCMHistoryViewPane) !void {
@@ -634,30 +660,22 @@ pub const SCMHistoryViewPane = struct {
     }
 
     pub fn titleActions(self: *SCMHistoryViewPane) []const views.TitleAction {
-        const select_id = if (self.view_mode == .list) SET_TREE_VIEW_MODE_ACTION_ID else SET_LIST_VIEW_MODE_ACTION_ID;
-        self.actions[0] = .{
-            .id = PICK_HISTORY_ITEM_REFS_ACTION_ID,
-            .label = self.filterLabel(),
-            .glyph = '\u{2442}',
-            .show_label = true,
+        const provider = self.provider orelse return &.{};
+        const has_remote = provider.history_item_remote_ref != null;
+        self.actions = .{
+            // The terminal uses the Nerd Font git-branch glyph.
+            .{ .id = PICK_HISTORY_ITEM_REFS_ACTION_ID, .label = self.filterLabel(), .glyph = 0xf418, .show_label = true },
+            .{ .id = REVEAL_CURRENT_HISTORY_ITEM_ACTION_ID, .label = "Go to Current History Item", .glyph = 0xebf8, .enabled = self.hasCurrentHistoryItem() },
+            .{ .id = "git.fetchAll", .label = "Fetch From All Remotes", .glyph = fetch_glyph },
+            .{ .id = "git.pullRef", .label = "Pull", .glyph = '↓', .enabled = has_remote },
+            if (has_remote)
+                .{ .id = "git.pushRef", .label = "Push", .glyph = '↑' }
+            else
+                .{ .id = "git.publish", .label = "Publish Branch", .glyph = 0xeac3 },
+            .{ .id = REFRESH_GRAPH_ACTION_ID, .label = "Refresh", .glyph = '↻' },
+            .{ .id = GRAPH_MENU_ACTION_ID, .label = "More Actions", .glyph = '…' },
         };
-        self.actions[1] = .{
-            .id = REVEAL_CURRENT_HISTORY_ITEM_ACTION_ID,
-            .label = "Go to Current History Item",
-            .glyph = '\u{2316}',
-            .enabled = self.hasCurrentHistoryItem(),
-        };
-        self.actions[2] = .{
-            .id = REFRESH_GRAPH_ACTION_ID,
-            .label = "Refresh",
-            .glyph = '\u{27F3}',
-        };
-        self.actions[3] = .{
-            .id = select_id,
-            .label = if (self.view_mode == .list) "View as Tree" else "View as List",
-            .glyph = if (self.view_mode == .list) '\u{25A4}' else '\u{2630}',
-        };
-        return self.actions[0..4];
+        return &self.actions;
     }
 
     pub fn handleKey(self: *SCMHistoryViewPane, event: *const ui.KeyEvent) !bool {
@@ -701,6 +719,7 @@ pub const SCMHistoryViewPane = struct {
             },
             .char => |ch| {
                 if (ch == ' ') {
+                    self.selection_active = true;
                     try self.toggleSelected();
                     return true;
                 }
@@ -712,6 +731,7 @@ pub const SCMHistoryViewPane = struct {
             },
             else => return false,
         }
+        self.selection_active = true;
         self.ensureSelectionVisible();
         self.revision += 1;
         return true;
@@ -761,11 +781,27 @@ pub const SCMHistoryViewPane = struct {
             self.revision += 1;
             return true;
         }
-        if (event.kind != .down and event.kind != .click) {
-            if (event.kind == .move) self.setHover(row_index, x, y, width);
+        const list_width = list_scrollbar.contentWidth(width, height, self.rows.items.len);
+        const col = event.x - x;
+        if (col >= list_width) {
+            if (event.kind == .move) self.clearHover();
             return false;
         }
-        if (row_index >= self.rows.items.len) return false;
+        const over_action = if (self.actionStart(row_index, list_width)) |start|
+            col >= start and col < start + css.inline_action_width
+        else
+            false;
+        if (event.kind != .down and event.kind != .click) {
+            if (event.kind == .move) self.setHover(row_index, self.hitActionSlot(row_index, col, list_width));
+            return false;
+        }
+        if (row_index >= self.rows.items.len or event.button != .left) return false;
+        if (over_action) {
+            const vm = self.rows.items[row_index].history_item;
+            const changes = self.ensureChanges(vm);
+            if (self.host.open_changes) |run| try run(self.host.context, &self.view_models[vm].history_item, changes);
+            return true;
+        }
         // Upstream opens the Load More element on click (`onDidOpen`), so the
         // first click must page in history instead of only moving the cursor.
         if (std.meta.activeTag(self.rows.items[row_index]) == .load_more) {
@@ -773,9 +809,10 @@ pub const SCMHistoryViewPane = struct {
             self.ensureSelectionVisible();
             return true;
         }
-        if (row_index == self.selection) {
+        if (self.selection_active and row_index == self.selection) {
             try self.toggleSelected();
         } else {
+            self.selection_active = true;
             self.selection = row_index;
             self.revision += 1;
             if (std.meta.activeTag(self.rows.items[row_index]) == .change) {
@@ -787,15 +824,37 @@ pub const SCMHistoryViewPane = struct {
         return true;
     }
 
-    fn setHover(self: *SCMHistoryViewPane, row_index: usize, x: usize, y: usize, width: usize) void {
-        _ = x;
-        _ = y;
-        _ = width;
-        if (self.hovered_row == row_index) return;
+    fn actionSlot(self: *const SCMHistoryViewPane, row_index: usize, width: usize) ?usize {
+        if (self.host.open_changes == null or row_index >= self.rows.items.len) return null;
+        const row = self.rows.items[row_index];
+        if (row != .history_item) return null;
+        const graph_width = scm_history.graphWidth(&self.view_models[row.history_item]) + 1;
+        const start = width -| (css.right_inset + css.inline_action_width);
+        return if (start > graph_width + 2) start else null;
+    }
+
+    fn actionStart(self: *const SCMHistoryViewPane, row_index: usize, width: usize) ?usize {
+        if (!self.config.always_show_actions and self.hovered_row != row_index and
+            !(self.list_focused and self.selection_active and self.selection == row_index)) return null;
+        return self.actionSlot(row_index, width);
+    }
+
+    fn hitActionSlot(self: *const SCMHistoryViewPane, row_index: usize, col: usize, width: usize) bool {
+        const start = self.actionSlot(row_index, width) orelse return false;
+        return col >= start and col < start + css.inline_action_width;
+    }
+
+    pub fn pointerAt(self: *const SCMHistoryViewPane) ui.Pointer {
+        return if (self.hovered_action) .pointer else .default;
+    }
+
+    fn setHover(self: *SCMHistoryViewPane, row_index: usize, over_action: bool) void {
+        if (self.hovered_row == row_index and self.hovered_action == over_action) return;
         self.hovered_row = row_index;
+        self.hovered_action = over_action;
         if (self.hover_content) |content| self.allocator.free(content);
         self.hover_content = null;
-        if (row_index >= self.rows.items.len) return;
+        if (over_action or row_index >= self.rows.items.len) return;
         switch (self.rows.items[row_index]) {
             .history_item => |vm| {
                 self.hover_content = scm_history.buildHistoryItemHover(
@@ -830,6 +889,7 @@ pub const SCMHistoryViewPane = struct {
 
     pub fn clearHover(self: *SCMHistoryViewPane) void {
         self.hovered_row = null;
+        self.hovered_action = false;
         if (self.hover_content) |content| self.allocator.free(content);
         self.hover_content = null;
     }
@@ -845,6 +905,7 @@ pub const SCMHistoryViewPane = struct {
         const height = ui.cell.snap(rect.h);
         if (width == 0 or height == 0) return;
         self.visible_rows = height;
+        self.list_focused = focused;
         self.last_rect = rect;
         self.clampScroll();
 
@@ -853,6 +914,7 @@ pub const SCMHistoryViewPane = struct {
                 try surface.resize(width, height);
             } else {
                 self.surface = try ui.Surface.init(self.allocator, .{ .cols = width, .rows = height });
+                _ = try self.surface.?.document().registerSheet(css.sheet);
             }
         }
         const surface = &self.surface.?;
@@ -861,72 +923,56 @@ pub const SCMHistoryViewPane = struct {
         hasher.update(std.mem.asBytes(&self.revision));
         hasher.update(std.mem.asBytes(&self.scroll));
         hasher.update(std.mem.asBytes(&self.selection));
+        const hovered = self.hovered_row orelse std.math.maxInt(usize);
+        hasher.update(std.mem.asBytes(&hovered));
         hasher.update(std.mem.asBytes(&width));
         hasher.update(std.mem.asBytes(&height));
         hasher.update(&[_]u8{
             @intFromBool(focused),
+            @intFromBool(self.hovered_action),
             @intFromBool(self.outdated),
             @intFromBool(self.view_mode == .tree),
         });
         hasher.update(std.mem.asBytes(&self.theme_ptr));
         const signature = hasher.final();
-        if (self.signature == signature) {
-            try grid.blit(surface.grid(), x, y, width, height);
-            return;
-        }
+        if (self.signature != signature) {
+            const colors = self.viewColors();
+            const doc = surface.document();
+            doc.clear();
+            const root = try doc.createElement(.div);
+            root.setStyle(.{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = 0 },
+                .width = .{ .cells = @floatFromInt(width) },
+                .height = .{ .cells = @floatFromInt(height) },
+                .overflow = .hidden,
+                .background = colors.background,
+                .color = colors.foreground,
+                .white_space = .pre,
+            });
+            doc.setRoot(root);
 
-        const colors = self.viewColors();
-        const doc = surface.document();
-        doc.clear();
-        const root = try doc.createElement(.div);
-        root.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .cells = @floatFromInt(width) },
-            .height = .{ .cells = @floatFromInt(height) },
-            .overflow = .hidden,
-            .background = colors.background,
-            .color = colors.foreground,
-            .white_space = .pre,
-        });
-        doc.setRoot(root);
-
-        if (self.rows.items.len == 0) {
-            const welcome = try doc.createElement(.div);
-            welcome.setStyle(.{ .padding = .{ .left = 1, .right = 1 }, .color = colors.dim });
-            _ = try welcome.appendText("The selected source control provider does not have any source control history items.");
-            _ = try root.appendChild(welcome);
-        } else {
-            const end = @min(self.rows.items.len, self.scroll + height);
-            var row_index = self.scroll;
-            while (row_index < end) : (row_index += 1) {
-                try self.appendRow(doc, root, row_index, focused, colors, width);
+            if (self.rows.items.len == 0) {
+                const welcome = try doc.createElement(.div);
+                welcome.setStyle(.{ .padding = .{ .left = 1, .right = 1 }, .color = colors.dim });
+                _ = try welcome.appendText("The selected source control provider does not have any source control history items.");
+                _ = try root.appendChild(welcome);
+            } else {
+                const list_width = list_scrollbar.contentWidth(width, height, self.rows.items.len);
+                const end = @min(self.rows.items.len, self.scroll + height);
+                var row_index = self.scroll;
+                while (row_index < end) : (row_index += 1) {
+                    try self.appendRow(doc, root, row_index, focused, colors, list_width);
+                }
             }
-        }
 
-        if (self.rows.items.len > height) {
-            var index: usize = 0;
-            while (index < height) : (index += 1) {
-                const style = ui.Style{
-                    .position = .absolute,
-                    .left = .{ .cells = @floatFromInt(width -| 1) },
-                    .top = .{ .cells = @floatFromInt(index) },
-                    .width = .{ .cells = 1 },
-                    .height = .{ .cells = 1 },
-                    .color = colors.scrollbar,
-                };
-                const dot = try doc.createElement(.div);
-                dot.setStyle(style);
-                _ = try dot.appendText("\u{2502}");
-                _ = try root.appendChild(dot);
-            }
+            doc.setRoot(root);
+            try surface.paintFrame();
+            self.signature = signature;
         }
-
-        doc.setRoot(root);
-        try surface.paintFrame();
-        self.signature = signature;
         try grid.blit(surface.grid(), x, y, width, height);
+        list_scrollbar.paint(grid, rect, self.rows.items.len, @floatFromInt(self.scroll));
     }
 
     fn appendRow(
@@ -939,7 +985,7 @@ pub const SCMHistoryViewPane = struct {
         width: usize,
     ) !void {
         const row = self.rows.items[row_index];
-        const selected = row_index == self.selection;
+        const selected = self.selection_active and row_index == self.selection;
         const background = if (selected)
             (if (focused) colors.selection_background else colors.inactive_selection_background)
         else if (self.hovered_row != null and self.hovered_row.? == row_index)
@@ -948,6 +994,7 @@ pub const SCMHistoryViewPane = struct {
             colors.background;
         const foreground = if (selected) colors.selection_foreground else colors.foreground;
         const line = try doc.createElement(.div);
+        try line.addClass(css.Class.history_item);
         line.setStyle(.{
             .position = .absolute,
             .left = .{ .cells = 0 },
@@ -968,41 +1015,47 @@ pub const SCMHistoryViewPane = struct {
                 const glyphs = scm_history.renderSCMHistoryItemGraph(self.allocator, vm) catch &.{};
                 defer if (glyphs.len > 0) self.allocator.free(glyphs);
                 try appendGlyphs(doc, line, glyphs, self.theme);
-                const badges = try self.historyBadges(doc, line, vm.history_item, colors);
-                const graph_width = scm_history.graphWidth(vm);
-                const label_width = width -| graph_width -| badges -| 1;
+                const graph_width = scm_history.graphWidth(vm) + 1;
+                const action_start = self.actionStart(row_index, width);
+                const label_end = action_start orelse (width -| css.right_inset);
+                const label_area = label_end -| graph_width;
+                const badges = try self.historyBadges(doc, vm.history_item, colors, label_area / 2);
+                const label_width = label_area -| (badges.width + 1);
                 const label = try doc.createElement(.span);
-                label.setStyle(.{
-                    .white_space = .pre,
-                    .overflow = .hidden,
-                    .flex_grow = 1,
-                    .flex_shrink = 1,
-                    .color = foreground,
-                    .bold = vm.kind == .head,
-                    // Upstream's `IconLabel` keeps a four-pixel gap after the
-                    // leading graph/icon; the terminal equivalent is one cell.
-                    .padding = .{ .left = 1 },
-                });
+                try label.addClass(css.Class.history_label);
+                label.setStyle(.{ .color = foreground, .bold = vm.kind == .head });
                 const subject_text = try truncate(self.allocator, vm.history_item.subject, label_width);
                 defer self.allocator.free(subject_text);
                 _ = try label.appendText(subject_text);
-                _ = try line.appendChild(label);
+                const left = label_width -| doc.measureText(subject_text);
                 if (vm.history_item.author) |author| {
-                    const author_width = label_width / 2;
-                    if (author_width > 3) {
+                    if (left > 2) {
                         const description = try doc.createElement(.span);
                         description.setStyle(.{
-                            .white_space = .pre,
-                            .overflow = .hidden,
-                            .flex_shrink = 1,
                             .color = if (selected) colors.selection_foreground else colors.dim,
+                            .padding = .{ .left = 1 },
                         });
-                        const author_text = try truncate(self.allocator, author, author_width);
+                        const author_text = try truncate(self.allocator, author, left - 1);
                         defer self.allocator.free(author_text);
                         _ = try description.appendText(author_text);
-                        _ = try line.appendChild(description);
+                        _ = try label.appendChild(description);
                     }
                 }
+                _ = try line.appendChild(label);
+                _ = try line.appendChild(badges.node);
+                if (action_start != null) {
+                    const button = try doc.createElement(.span);
+                    try button.addClass(css.Class.history_action);
+                    button.setStyle(.{
+                        .color = foreground,
+                        .background = if (self.hovered_action and self.hovered_row == row_index) colors.hover_background else null,
+                    });
+                    _ = try button.appendText("▤");
+                    _ = try line.appendChild(button);
+                }
+                const inset = try doc.createElement(.span);
+                inset.setStyle(.{ .width = .{ .cells = css.right_inset }, .flex_shrink = 0 });
+                _ = try line.appendChild(inset);
             },
             .change => |change| {
                 const vm = &self.view_models[change.vm];
@@ -1017,24 +1070,31 @@ pub const SCMHistoryViewPane = struct {
                 indent.setStyle(.{ .white_space = .pre, .flex_shrink = 0 });
                 _ = try indent.appendText(try indentText(doc.arena.allocator(), 2 + change.depth * 2));
                 _ = try line.appendChild(indent);
+                const name = std.fs.path.basename(change.change.path);
+                try appendFileIcon(doc, line, file_icon.file(name));
+                const label = try doc.createElement(.span);
+                try label.addClass(css.Class.history_label);
+                label.setStyle(.{ .color = foreground });
+                _ = try label.appendText(name);
+                if (self.view_mode == .list) {
+                    if (std.fs.path.dirname(change.change.path)) |dir| {
+                        const description = try doc.createElement(.span);
+                        description.setStyle(.{ .color = colors.dim, .padding = .{ .left = 1 } });
+                        _ = try description.appendText(dir);
+                        _ = try label.appendChild(description);
+                    }
+                }
+                _ = try line.appendChild(label);
                 if (change.change.status != 0) {
                     const status = try doc.createElement(.span);
-                    status.setStyle(.{ .color = statusColor(change.change.status, self.theme), .flex_shrink = 0 });
-                    const status_char = [1]u8{change.change.status};
-                    _ = try status.appendText(&status_char);
+                    status.setStyle(.{
+                        .color = statusColor(change.change.status, self.theme),
+                        .flex_shrink = 0,
+                        .padding = .{ .left = 1, .right = css.right_inset },
+                    });
+                    _ = try status.appendText(&.{change.change.status});
                     _ = try line.appendChild(status);
                 }
-                const label = try doc.createElement(.span);
-                label.setStyle(.{
-                    .white_space = .pre,
-                    .overflow = .hidden,
-                    .flex_grow = 1,
-                    .color = foreground,
-                    .padding = .{ .left = 1 },
-                });
-                const name = if (self.view_mode == .tree) std.fs.path.basename(change.change.path) else change.change.path;
-                _ = try label.appendText(name);
-                _ = try line.appendChild(label);
             },
             .folder => |folder| {
                 const vm = &self.view_models[folder.vm];
@@ -1049,12 +1109,13 @@ pub const SCMHistoryViewPane = struct {
                 indent.setStyle(.{ .white_space = .pre, .flex_shrink = 0 });
                 _ = try indent.appendText(try indentText(doc.arena.allocator(), 2 + folder.depth * 2));
                 _ = try line.appendChild(indent);
+                const collapsed = self.collapsed_folders.contains(folder.key);
+                _ = try line.appendText(if (collapsed) "› " else "⌄ ");
+                try appendFileIcon(doc, line, file_icon.folder(!collapsed));
                 const label = try doc.createElement(.span);
-                label.setStyle(.{ .white_space = .pre, .color = foreground });
-                const glyph = if (self.collapsed_folders.contains(folder.key)) "\u{25B8} " else "\u{25BE} ";
-                _ = try label.appendText(glyph);
+                try label.addClass(css.Class.history_label);
+                label.setStyle(.{ .color = foreground });
                 _ = try label.appendText(folder.name);
-                _ = try label.appendText("/");
                 _ = try line.appendChild(label);
             },
             .load_more => |load_more| {
@@ -1083,34 +1144,65 @@ pub const SCMHistoryViewPane = struct {
     fn historyBadges(
         self: *SCMHistoryViewPane,
         doc: *ui.Document,
-        line: *ui.Node,
         item: history.ISCMHistoryItem,
         colors: Colors,
-    ) !usize {
+        available: usize,
+    ) !struct { node: *ui.Node, width: usize } {
+        const badges = try doc.createElement(.span);
+        try badges.addClass(css.Class.history_badges);
         var used: usize = 0;
-        const badge_nodes = try doc.createElement(.span);
-        badge_nodes.setStyle(.{ .display = .flex, .flex_direction = .row, .flex_shrink = 0 });
-        _ = try line.appendChild(badge_nodes);
-        var shown: usize = 0;
-        for (item.references) |reference| {
+        const refs = item.references;
+        const first_named = refs.len > 0 and refs[0].color != null;
+        for (refs, 0..) |reference, index| {
+            if (available -| used < 3) break;
             if (!self.config.badges_all and reference.color == null) continue;
-            if (shown >= 2) break;
-            const style = ui.Style{
+            const icon = reference.icon orelse continue;
+            const show_name = first_named and index == 0;
+            var count: usize = 1;
+            if (!show_name) {
+                const group_start: usize = @intFromBool(first_named);
+                for (refs[group_start..index]) |other| {
+                    if (other.icon == icon and optionalColorEql(other.color, reference.color)) {
+                        count = 0;
+                        break;
+                    }
+                }
+                if (count == 0) continue;
+                for (refs[index + 1 ..]) |other| {
+                    if (other.icon == icon and optionalColorEql(other.color, reference.color)) count += 1;
+                }
+            }
+
+            const glyph: []const u8 = switch (icon) {
+                .head => "\u{ebf8}",
+                .branch => "\u{ec6f}",
+                .remote => "\u{ebaa}",
+                .tag => "\u{ea66}",
+            };
+            const text = if (show_name)
+                try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ glyph, reference.name })
+            else if (count > 1)
+                try std.fmt.allocPrint(self.allocator, "{d} {s}", .{ count, glyph })
+            else
+                try self.allocator.dupe(u8, glyph);
+            defer self.allocator.free(text);
+            const label = try truncate(self.allocator, text, available - used - 2);
+            defer self.allocator.free(label);
+            const badge = try doc.createElement(.span);
+            badge.setStyle(.{
                 .padding = .{ .left = 1, .right = 1 },
                 .flex_shrink = 0,
                 .background = if (reference.color) |color| resolveColorId(self.theme, color) else colors.badge_background,
-                .color = if (reference.color != null) colors.background else colors.badge_foreground,
-            };
-            const badge = try doc.createElement(.span);
-            badge.setStyle(style);
-            var text = reference.name;
-            if (reference.icon == .head) text = "*";
-            _ = try badge.appendText(text);
-            _ = try badge_nodes.appendChild(badge);
-            used += doc.measureText(text) + 2;
-            shown += 1;
+                .color = if (reference.color != null)
+                    (if (self.theme) |theme| theme.colorOr("scmGraph.historyItemHoverLabelForeground", colors.background) else colors.background)
+                else
+                    colors.badge_foreground,
+            });
+            _ = try badge.appendText(label);
+            _ = try badges.appendChild(badge);
+            used += doc.measureText(label) + 2;
         }
-        return used;
+        return .{ .node = badges, .width = used };
     }
 
     const Colors = struct {
@@ -1123,7 +1215,6 @@ pub const SCMHistoryViewPane = struct {
         hover_background: ui.Color,
         badge_background: ui.Color,
         badge_foreground: ui.Color,
-        scrollbar: ui.Color,
     };
 
     fn viewColors(self: *const SCMHistoryViewPane) Colors {
@@ -1139,7 +1230,6 @@ pub const SCMHistoryViewPane = struct {
                 .hover_background = palette.color("list.hoverBackground", .{ 45, 45, 45 }),
                 .badge_background = palette.color("badge.background", .{ 97, 97, 97 }),
                 .badge_foreground = palette.color("badge.foreground", .{ 255, 255, 255 }),
-                .scrollbar = palette.color("scrollbarSlider.background", .{ 108, 108, 108 }),
             };
         }
         return .{
@@ -1152,7 +1242,6 @@ pub const SCMHistoryViewPane = struct {
             .hover_background = .{ .r = 45, .g = 45, .b = 45 },
             .badge_background = .{ .r = 97, .g = 97, .b = 97 },
             .badge_foreground = .{ .r = 255, .g = 255, .b = 255 },
-            .scrollbar = .{ .r = 108, .g = 108, .b = 108 },
         };
     }
 
@@ -1164,33 +1253,37 @@ pub const SCMHistoryViewPane = struct {
 };
 
 fn truncate(allocator: Allocator, text: []const u8, max_width: usize) ![]u8 {
-    var result = std.array_list.Managed(u8).init(allocator);
-    errdefer result.deinit();
+    if (max_width == 0) return allocator.dupe(u8, "");
     var width: usize = 0;
     var index: usize = 0;
+    var ellipsis_end: usize = 0;
     while (index < text.len) {
         const decoded = ui.dom.decodeAt(text, index);
         if (decoded.len == 0) break;
         const cells = ui.dom.defaultMeasureWidth(decoded.cp);
-        if (cells == 0) {
-            index += decoded.len;
-            continue;
-        }
         if (width + cells > max_width) {
-            if (max_width > 0) try result.appendSlice("\u{2026}");
-            break;
+            return std.fmt.allocPrint(allocator, "{s}…", .{text[0..ellipsis_end]});
         }
-        try result.appendSlice(text[index .. index + decoded.len]);
         width += cells;
         index += decoded.len;
+        if (width < max_width) ellipsis_end = index;
     }
-    return result.toOwnedSlice();
+    return allocator.dupe(u8, text[0..index]);
 }
 
 fn indentText(allocator: Allocator, cells: usize) ![]u8 {
     const result = try allocator.alloc(u8, cells);
     @memset(result, ' ');
     return result;
+}
+
+fn appendFileIcon(doc: *ui.Document, parent: *ui.Node, icon: file_icon.Icon) !void {
+    const node = try doc.createElement(.span);
+    node.setStyle(.{ .color = icon.color, .flex_shrink = 0 });
+    var buffer: [4]u8 = undefined;
+    const len = try std.unicode.utf8Encode(icon.glyph, &buffer);
+    _ = try node.appendText(buffer[0..len]);
+    _ = try parent.appendChild(node);
 }
 
 fn appendGlyphs(
@@ -1200,7 +1293,7 @@ fn appendGlyphs(
     theme: ?*const theme_colors_mod.ThemeColors,
 ) !void {
     const graph = try doc.createElement(.span);
-    graph.setStyle(.{ .display = .flex, .flex_direction = .row, .flex_shrink = 0, .white_space = .pre });
+    try graph.addClass(css.Class.graph_container);
     _ = try parent.appendChild(graph);
     var index: usize = 0;
     while (index < glyphs.len) {

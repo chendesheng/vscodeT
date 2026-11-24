@@ -18,6 +18,7 @@ pub const splitview = @import("../../base/browser/ui/splitview/splitview_css.zig
 pub const editor_group = @import("../../workbench/browser/parts/editor/media/editorgroupview_css.zig");
 pub const search_view = @import("../../workbench/contrib/search/browser/media/searchview_css.zig");
 pub const search_editor = @import("../../workbench/contrib/searchEditor/browser/media/searchEditor_css.zig");
+pub const scm = @import("../../workbench/contrib/scm/browser/media/scm_css.zig");
 pub const code_editor = @import("widget/codeEditor/editor_css.zig");
 
 pub const block_decorations = block_decorations_css;
@@ -43,6 +44,7 @@ pub fn registerWorkbench(doc: *ui.Document) !void {
     _ = try doc.registerSheet(splitview.sheet);
     _ = try doc.registerSheet(editor_group.sheet);
     try registerSearchView(doc);
+    _ = try doc.registerSheet(scm.sheet);
 }
 
 pub fn registerSearchView(doc: *ui.Document) !void {
