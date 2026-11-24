@@ -388,9 +388,10 @@ zig build test-e2e                        # boots the Node host and runs TypeScr
 ```
 
 The native binary resolves executable extensions from its install prefix.
-`zig build host` builds the launcher and seven extensions from the pinned
+`zig build host` builds the launcher and eleven upstream extensions from the pinned
 checkout. These provide TypeScript/JavaScript, HTML, CSS/Less/SCSS, Emmet,
-PHP, Git Base and Search Result. The build installs their bundles, language
+PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict
+and Simple Browser. The build installs their bundles, language
 servers and TypeScript SDK under `lib/vscode-textbuffer` in the same prefix
 as `zig build` (including `--prefix`). The ordinary native build requires
 no Node installation. Only executable packages present in both the installed
@@ -400,6 +401,14 @@ runtime and the built-in catalog are passed to the extension host.
 The intermediate bundles under `host/dist` are also used by the repository's
 interop tests. The host transport currently supports macOS and Linux.
 Windows requires a local IPC transport and a native launcher.
+
+#### Simple Browser
+
+Install Lynx on the terminal host and put `lynx` on `PATH`. Open the command
+palette, select **Simple Browser: Show** and enter an HTTP or HTTPS URL. The
+page opens in an editor tab. Press Enter on a link to follow it and Left to go
+back. Pages that require a graphical browser or client-side JavaScript need a
+different renderer. [Lynx](https://lynx.invisible-island.net/)
 
 #### Copilot inline completions
 

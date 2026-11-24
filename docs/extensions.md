@@ -2,7 +2,7 @@
 
 The native TUI installs and scans 87 desktop extension manifests. Its built-in catalog supplies language associations, TextMate grammars and injections, editing rules, snippets, color themes and language-specific settings. The extension host runs upstream language services over local IPC on macOS and Linux. The inventory records implementation and verification for each package. [Built-in extension status](vscode-builtin-extension-status.md)
 
-`zig build host` builds the pinned TypeScript, HTML, CSS, Emmet, PHP, Git Base and Search Result packages. An optional adapter connects GitHub's Copilot Language Server to the terminal editor. `zig build test-e2e` exercises the provider bridge. Configuration writes, extension keybindings, several main-thread APIs and Windows IPC remain incomplete.
+`zig build host` builds the pinned TypeScript, HTML, CSS, Emmet, PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict and Simple Browser packages. An optional adapter connects GitHub's Copilot Language Server to the terminal editor. `zig build test-e2e` exercises the provider bridge. Configuration writes, extension keybindings, several main-thread APIs and Windows IPC remain incomplete.
 
 Upstream reference: `vscode/`, the shallow git submodule, at **1.147.0**,
 commit `e31c2e52f563620846caab877103f630ea361b9c`. The actor table, method
