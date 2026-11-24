@@ -1687,6 +1687,8 @@ pub const Workbench = struct {
             .{ .id = "list.expand", .label = "Expand", .category = "List", .context = self, .run = commandListExpand },
             .{ .id = "list.toggleExpand", .label = "Toggle Expand", .category = "List", .context = self, .run = commandListToggleExpand },
             .{ .id = "list.select", .label = "Select", .category = "List", .context = self, .run = commandListSelect },
+            .{ .id = "simpleBrowser.show", .label = "Show", .category = "Simple Browser", .context = self, .run = commandOpenBrowser },
+            .{ .id = "workbench.action.browser.open", .label = "Open Integrated Browser", .show_in_palette = false, .context = self, .run = commandOpenBrowser },
             .{ .id = "workbench.action.openSettingsJson", .label = "Open User Settings (JSON)", .category = "Preferences", .context = self, .run = commandOpenSettingsJson },
             .{ .id = "workbench.action.openGlobalKeybindingsFile", .label = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .context = self, .run = commandOpenKeybindingsJson },
             .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
@@ -3436,6 +3438,38 @@ pub const Workbench = struct {
         self.terminal_tabbed_view.tab_list.focused = false;
         _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
         self.revealActiveTerminalTab();
+    }
+
+    pub fn openBrowser(self: *Workbench, address: ?[]const u8) !void {
+        const url = std.mem.trim(u8, address orelse "", " \t\r\n");
+        if (url.len == 0) {
+            try self.quick_access.inputService().showPick(&.{}, .{ .placeholder = "Enter an HTTP or HTTPS URL", .allow_free_input = true }, onBrowserAddress, self);
+            return;
+        }
+        const uri = std.Uri.parse(url) catch return error.InvalidBrowserAddress;
+        if (uri.host == null or (!std.ascii.eqlIgnoreCase(uri.scheme, "http") and !std.ascii.eqlIgnoreCase(uri.scheme, "https"))) return error.InvalidBrowserAddress;
+        for (url) |byte| if (byte < 0x20 or byte == 0x7f) return error.InvalidBrowserAddress;
+
+        const search_path = std.c.getenv("PATH") orelse return error.LynxNotInstalled;
+        var directories = std.mem.tokenizeScalar(u8, std.mem.span(search_path), std.fs.path.delimiter);
+        while (directories.next()) |directory| {
+            if (!std.fs.path.isAbsolute(directory)) continue;
+            const executable = try std.fs.path.join(self.allocator, &.{ directory, "lynx" });
+            defer self.allocator.free(executable);
+            std.Io.Dir.accessAbsolute(self.io, executable, .{ .execute = true }) catch continue;
+            const pane = self.activePane() orelse return error.GroupPaneMissing;
+            const service = try self.ensureTerminalService();
+            const instance = try service.createInstanceWithProfile(.{
+                .path = executable,
+                .args = &.{ "-restrictions=exec,shell", url },
+                .profile_name = "Simple Browser",
+            });
+            errdefer instance.deinit();
+            try instance.rename("Simple Browser");
+            _ = try self.openTerminalEditor(pane, service, instance);
+            return;
+        }
+        return error.LynxNotInstalled;
     }
 
     fn newTerminalEditor(self: *Workbench) !void {
@@ -14332,6 +14366,24 @@ fn commandOpenEditorAtIndex1(context: *anyopaque) anyerror!void {
 fn commandRevertAndCloseActiveEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.revertAndCloseActiveEditor();
+}
+
+fn commandOpenBrowser(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.openBrowser(null);
+}
+
+fn onBrowserAddress(context: *anyopaque, picker: *QuickPick) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (picker.value.items.len == 0) return;
+    self.openBrowser(picker.value.items) catch |err| {
+        const message = switch (err) {
+            error.LynxNotInstalled => "Install Lynx and add lynx to PATH to use Simple Browser.",
+            error.InvalidBrowserAddress => "Simple Browser requires an HTTP or HTTPS URL.",
+            else => return err,
+        };
+        if (self.activeTab()) |tab| tab.editor.setMessage("{s}", .{message}) else return err;
+    };
 }
 
 fn commandCreateTerminalEditor(context: *anyopaque) anyerror!void {

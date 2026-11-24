@@ -1368,6 +1368,11 @@ fn applyFoldCommand(editor: *Editor, command: []const u8, args: []const std.json
 fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: std.json.Value, arena: Allocator) anyerror!?std.json.Value {
     const self: *Extensions = @ptrCast(@alignCast(context));
     const args: []const std.json.Value = if (command_args == .array) command_args.array.items else &.{};
+    if (std.mem.eql(u8, command, "workbench.action.browser.open") or std.mem.eql(u8, command, "simpleBrowser.show")) {
+        try self.workbench.openBrowser(if (args.len > 0 and args[0] == .string) args[0].string else null);
+        self.needs_render = true;
+        return null;
+    }
     if (std.mem.eql(u8, command, "editorScroll")) {
         if (self.active) |active| {
             _ = applyEditorScroll(active.editor, args);
