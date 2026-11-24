@@ -1626,6 +1626,15 @@ Library constraints:
   `top`/`bottom` the rail is hidden and the activity items become a one-row
   icon composite bar in the side bar header/footer. The rail stays when the
   side bar is closed, and an entry click reopens it.
+- The side bar sash uses SplitView's drag-start sizes, snap threshold and
+  cached visible width. Horizontal workbench minimums follow the existing
+  scale of 17 CSS pixels per terminal column, rounded up. The side bar needs
+  10 columns, each editor group needs 13, and a visible bottom panel needs 18.
+  Glyph borders and split gutters take additional cells. Double-click fits the
+  visible Explorer labels, including their indentation and compressed folder
+  paths. Source Control requests 24 columns and Search uses the 18-column
+  preferred-width floor. Alt-drag uses the upstream last-sash bounds. Terminal
+  mouse reports carry modifier changes on pointer motion.
 - The primary side bar is a ported pane-composite part
   (`src/vs/workbench/browser/parts/sidebar/sidebarPart.zig`), mirroring the
   panel: `SidebarPart` keeps the pane-composite registry, width/position/
@@ -1650,7 +1659,7 @@ Library constraints:
   menus, the title toolbar overflow/"More Actions" menu, `focusActivityBar`,
   `workbench.activityBar.iconClickBehavior`, the
   toggle-activity-bar-visibility action, the right-hand side bar position, the
-  active viewlet's optimal width and the `workbench.sidebar.activeviewletid`
+  and the `workbench.sidebar.activeviewletid`
   storage persistence.
 - The Search panel is split into a portable search service/tree and a terminal
   view. `searchService.zig` searches open/dirty editor buffers synchronously

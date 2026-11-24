@@ -15,6 +15,12 @@ const std = @import("std");
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const ConfigurationService = @import("../../configuration/browser/configurationService.zig").ConfigurationService;
 
+/// Horizontal workbench constraints use the sidebar's 170 px / 10 columns
+/// scale. Round minimums up so a fractional column still reserves space.
+pub fn widthInCells(pixels: usize) usize {
+    return std.math.divCeil(usize, pixels, 17) catch unreachable;
+}
+
 /// Upstream `Parts`. The terminal paints the same single-window parts.
 pub const Parts = enum {
     titlebar,

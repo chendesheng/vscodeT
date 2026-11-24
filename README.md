@@ -804,9 +804,12 @@ console API for raw mode, sizing and input polling.
   Selecting a row that is already visible keeps the scroll position, and the
   auto-reveal that follows opening a file only scrolls when the row is outside
   the visible, non-sticky area. The one-cell
-  divider between the activity bar/side bar and the editor area is draggable:
-  press and move to resize the side bar, clamped to half the window. `Ctrl-B`
-  toggles the side panel and `Escape` returns focus to the editor. The generic VS Code list/tree view is
+  divider lets the side bar grow until the editor groups or the visible bottom
+  panel reach their minimum width. The side bar holds at 10 columns, then snaps
+  closed when the drag crosses half its minimum. Reverse the drag or pull the
+  edge beside the activity bar to reopen it. `Ctrl-B` restores the width from
+  the start of the drag. Double-click the divider to fit the active view.
+  `Escape` returns focus to the editor. The generic VS Code list/tree view is
   being replaced in layers under `src/vs/base/browser/ui/list` and
   `src/vs/base/browser/ui/tree`: `rangeMap`, the virtualized `ListView`,
   `ListWidget`, the index/object tree models and a terminal `AbstractTree`.
@@ -986,9 +989,8 @@ console API for raw mode, sizing and input polling.
   focus model), `workbench.activityBar.iconClickBehavior`,
   the toggle-activity-bar-visibility action (the configuration service has no
   `updateValue`), the right-hand side bar position, the
-  `workbench.sidebar.activeviewletid` workbench-storage persistence, boundary
-  sash classes and the active viewlet's optimal width (the terminal keeps the
-  configured width).
+  `workbench.sidebar.activeviewletid` workbench-storage persistence and browser boundary
+  sash classes.
 - Zen mode ports `workbench.zenMode.contribution.ts` and the `toggleZenMode`
   transition from `layout.ts` (`src/vs/workbench/browser/workbench.zenMode.contribution.zig`
   and the `Workbench` layout methods). `Ctrl-K Z` toggles it and

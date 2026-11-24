@@ -25,6 +25,19 @@ pub fn Node(comptime T: type) type {
         },
         rect: ui.Rect = .{},
 
+        /// GridView branch constraints add along the split axis and take the
+        /// largest child constraint across it.
+        pub fn minimumWidth(self: *const Self, leaf_width: usize, gutter: usize) usize {
+            return switch (self.kind) {
+                .leaf => leaf_width,
+                .split => |split| blk: {
+                    const first = split.first.minimumWidth(leaf_width, gutter);
+                    const second = split.second.minimumWidth(leaf_width, gutter);
+                    break :blk if (split.direction == .horizontal) first + gutter + second else @max(first, second);
+                },
+            };
+        }
+
         pub const Split = struct {
             direction: Orientation,
             ratio: f64,
@@ -95,7 +108,7 @@ pub fn Grid(comptime T: type) type {
             gap_context: anytype,
             comptime gap: fn (@TypeOf(gap_context), Orientation, ui.Rect) f64,
         ) void {
-            layoutNode(T, self.root, rect, gap_context, gap);
+            layoutNode(T, self.root, rect, gap_context, gap, 0);
         }
     };
 }
@@ -218,7 +231,7 @@ pub fn layoutRoot(
     gap_context: anytype,
     comptime gap: fn (@TypeOf(gap_context), Orientation, ui.Rect) f64,
 ) void {
-    layoutNode(T, root, rect, gap_context, gap);
+    layoutNode(T, root, rect, gap_context, gap, 0);
 }
 
 fn initLeaf(comptime T: type, allocator: Allocator, value: T) !*Node(T) {
@@ -317,21 +330,29 @@ pub fn splitRectsAt(rect: ui.Rect, direction: Orientation, first_size: f64, gutt
     }
 }
 
-fn layoutNode(
+pub fn layoutNode(
     comptime T: type,
     node: *Node(T),
     rect: ui.Rect,
     gap_context: anytype,
     comptime gap: fn (@TypeOf(gap_context), Orientation, ui.Rect) f64,
+    leaf_minimum_width: usize,
 ) void {
     node.rect = rect;
     switch (node.kind) {
         .leaf => {},
         .split => |split| {
             const gutter = gap(gap_context, split.direction, rect);
-            const positions = splitRects(rect, split.direction, split.ratio, gutter);
-            layoutNode(T, split.first, positions.first, gap_context, gap);
-            layoutNode(T, split.second, positions.second, gap_context, gap);
+            var positions = splitRects(rect, split.direction, split.ratio, gutter);
+            if (leaf_minimum_width != 0 and split.direction == .horizontal) {
+                const first: f64 = @floatFromInt(split.first.minimumWidth(leaf_minimum_width, @intFromFloat(gutter)));
+                const second: f64 = @floatFromInt(split.second.minimumWidth(leaf_minimum_width, @intFromFloat(gutter)));
+                if (rect.w >= first + gutter + second) {
+                    positions = splitRectsAt(rect, .horizontal, std.math.clamp(positions.first.w, first, rect.w - gutter - second), gutter);
+                }
+            }
+            layoutNode(T, split.first, positions.first, gap_context, gap, leaf_minimum_width);
+            layoutNode(T, split.second, positions.second, gap_context, gap, leaf_minimum_width);
         },
     }
 }

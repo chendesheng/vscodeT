@@ -22,8 +22,9 @@
 // single-cell dividers in the workbench layout. The active viewlet settings key
 // (`workbench.sidebar.activeviewletid`, WORKSPACE scope) is not persisted: the
 // terminal has no session-surviving workspace storage. `focusActivityBar`,
-// boundary sashes and the activity bar visibility action need a focus model,
-// sash objects and configuration writes the terminal does not have yet.
+// browser boundary sash classes and the activity bar visibility action need a
+// focus model, browser classes and configuration writes. The workbench grid
+// owns the draggable terminal sash.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -48,7 +49,7 @@ pub const SidebarPart = struct {
     width: usize = 28,
     position: Position = .left,
     /// Upstream `minimumWidth` is 170 px; the terminal minimum is 10 cells.
-    minimum_width: usize = 10,
+    minimum_width: usize = layout_service.widthInCells(170),
     maximum_width: usize = std.math.maxInt(usize),
     /// Port of `SidebarPart.activeViewletSettingsKey`.
     active_viewlet_settings_key: []const u8 = "workbench.sidebar.activeviewletid",
@@ -147,11 +148,10 @@ pub const SidebarPart = struct {
     }
 
     /// Port of `SidebarPart.get preferredWidth`: the active viewlet's optimal
-    /// width with a 300 px floor. Terminal views do not report an optimal
-    /// width, so the configured width is the only preference.
-    pub fn preferredWidth(self: *const SidebarPart) ?usize {
-        _ = self;
-        return null;
+    /// width with a 300 px floor. Both dimensions are terminal columns here.
+    pub fn preferredWidth(self: *const SidebarPart, optimal_width: usize) ?usize {
+        if (self.pane.active_id == null) return null;
+        return @max(layout_service.widthInCells(300), optimal_width);
     }
 
     /// Applies `workbench.activityBar.location` and
@@ -725,7 +725,7 @@ test "sidebarPart: width clamps to the terminal minimum" {
     try std.testing.expectEqual(@as(usize, 10), part.width);
     try part.setWidth(28);
     try std.testing.expectEqual(@as(usize, 28), part.width);
-    try std.testing.expect(part.preferredWidth() == null);
+    try std.testing.expect(part.preferredWidth(0) == null);
 }
 
 test "sidebarPart: visibility, position and active pane composite" {

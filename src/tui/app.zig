@@ -941,8 +941,8 @@ pub fn main(init: std.process.Init) !void {
                     if (workbench.handleBreadcrumbPopupMouse(event)) continue;
                     if (workbench.handleTabDragMouse(event)) continue;
                     if (workbench.handleQuickAccessMouse(event)) continue;
-                    if (workbench.handleStatusbarMouse(event)) continue;
                     if (workbench.handleSashMouse(event)) continue;
+                    if (workbench.handleStatusbarMouse(event)) continue;
                     if (workbench.handlePanelMouse(event)) continue;
                     if (workbench.handleSidebarMouse(event)) {
                         sidebar_event_count += 1;

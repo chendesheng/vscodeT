@@ -133,7 +133,7 @@ Rules:
   | `blockDecorations.css` | `0x0000` | container, block |
   | `viewLines.css` (structural) | `0x0010` | view-lines, view-line |
   | `overlayWidgets.css` | `0x0020` | overlayWidgets |
-  | `sash.css` | `0x0030` | sash, vertical, horizontal |
+  | `sash.css` | `0x0030` | sash, vertical, horizontal, vertical minimum/maximum |
   | `folding.css` | `0x0040` | codicon-folding, codicon-folding-collapsed, alwaysShowFoldIcons |
   | `gridview.css` | `0x0050` | monaco-grid-view |
   | `splitview.css` | `0x0060` | split-view-view, hidden view |

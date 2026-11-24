@@ -1,6 +1,6 @@
 // Port of the two-view resize path in src/vs/base/browser/ui/splitview/splitview.ts.
 // Terminal cells replace CSS pixels. The workbench branches have two views,
-// no snapping, and no modifier-driven resize of a second sash.
+// with an optional snapping view before the sash.
 
 const std = @import("std");
 
@@ -8,6 +8,7 @@ pub const ViewSize = struct {
     size: usize,
     minimum: usize,
     maximum: usize,
+    snap: bool = false,
 };
 
 /// SplitView.onSashStart captures the initial view sizes. Every change is
@@ -15,13 +16,37 @@ pub const ViewSize = struct {
 pub const SashDragState = struct {
     start: usize,
     sizes: [2]usize,
+    snap_before_limit: ?i64 = null,
+    alt: bool = false,
 
     pub fn onSashStart(start: usize, views: [2]ViewSize) SashDragState {
-        return .{ .start = start, .sizes = .{ views[0].size, views[1].size } };
+        const before = views[0];
+        var state = SashDragState{ .start = start, .sizes = .{ before.size, views[1].size } };
+        if (before.snap) {
+            const half: i64 = @intCast(before.minimum / 2);
+            const visible = before.size != 0;
+            const min_delta = @max(offset(if (visible) before.minimum else 0, before.size), offset(views[1].size, views[1].maximum));
+            state.snap_before_limit = min_delta + if (visible) -half else half;
+        }
+        return state;
     }
 
     pub fn onSashChange(self: SashDragState, current: usize, views: [2]ViewSize) [2]usize {
-        return resize(offset(current, self.start), self.sizes, views);
+        var bounds = views;
+        var delta = offset(current, self.start);
+        if (self.snap_before_limit) |limit| {
+            // A hidden ViewItem exposes zero for both effective bounds.
+            const visible = if (self.alt) self.sizes[0] != 0 else delta >= limit;
+            if (!visible) {
+                bounds[0].minimum = 0;
+                bounds[0].maximum = 0;
+            }
+            if (self.alt) {
+                // The last sash resizes its preceding view with half bounds.
+                delta = std.math.clamp(delta, @divTrunc(offset(bounds[0].minimum, self.sizes[0]), 2), @divTrunc(offset(bounds[0].maximum, self.sizes[0]), 2));
+            }
+        }
+        return resize(delta, self.sizes, bounds);
     }
 };
 

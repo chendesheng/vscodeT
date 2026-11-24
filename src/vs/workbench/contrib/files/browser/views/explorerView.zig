@@ -513,6 +513,30 @@ pub const Sidebar = struct {
         return !self.tree.isCollapsed(item);
     }
 
+    /// ExplorerView.getOptimalWidth measures the right edge of rendered file
+    /// labels, including indentation and untruncated compressed folder names.
+    pub fn getOptimalWidth(self: *Sidebar, rows: usize) usize {
+        const start = @min(ui.cell.snap(self.tree.scrollTop()), self.count());
+        var widest: usize = 0;
+        for (start..@min(start + rows, self.count())) |index| {
+            const row = self.tree.tree.renderedNode(index) orelse continue;
+            const compressed = row.element orelse continue;
+            var width = label_offset + (row.depth -| 1) * self.indent_cells;
+            for (compressed.elements, 0..) |node, i| {
+                const item = node.element orelse continue;
+                width += @intFromBool(i > 0);
+                var offset: usize = 0;
+                while (offset < item.name.len) {
+                    const decoded = ui.dom.decodeAt(item.name, offset);
+                    offset += decoded.len;
+                    width += ui.dom.defaultMeasureWidth(decoded.cp);
+                }
+            }
+            widest = @max(widest, width);
+        }
+        return widest;
+    }
+
     pub fn setThemeColors(self: *Sidebar, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme = palette;
     }
@@ -697,6 +721,10 @@ fn readRenderIndentGuides(configuration: *ConfigurationService) abstract_tree.Re
     };
 }
 
+// Two cells of padding, then the twistie, its gap, the icon and its gap.
+const row_padding = 2;
+const label_offset = row_padding + 4;
+
 fn renderRow(
     context: *anyopaque,
     row: *const list.Row,
@@ -778,7 +806,7 @@ fn renderRow(
         );
     }
 
-    var col = row.x + 2;
+    var col = row.x + row_padding;
     const indent_width = (row.depth -| 1) * row.indent;
     var indent: usize = 0;
     while (indent < indent_width and col < row.x + row.width) : (indent += 1) {

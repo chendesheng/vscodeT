@@ -24,6 +24,8 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
+const layout_service = @import("../../../services/layout/browser/layoutService.zig");
+const editor_panes = @import("editorPanes.zig");
 const grid = @import("../../../../base/browser/ui/grid/grid.zig");
 const sash_css = @import("../../../../base/browser/ui/sash/sash_css.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
@@ -34,7 +36,7 @@ const Orientation = grid.Orientation;
 
 /// Upstream's terminal-adapted minimum pane sizes. The browser uses pixel
 /// minima on its grid views; cells are the terminal unit.
-pub const min_pane_width: usize = 10;
+pub const min_pane_width = layout_service.widthInCells(editor_panes.default_min_dimensions.width);
 pub const min_pane_height: usize = 3;
 
 pub fn EditorPart(comptime GroupView: type) type {
@@ -92,6 +94,12 @@ pub fn EditorPart(comptime GroupView: type) type {
 
         pub fn count(self: *const Self) usize {
             return self.group_views.items.len;
+        }
+
+        pub fn minimumWidth(self: *const Self, height: usize) usize {
+            const width = self.root.minimumWidth(min_pane_width, @intFromBool(!self.cell_borders));
+            // The glyph frame surrounds the grid only above its compact cutoff.
+            return if (!self.cell_borders and width >= 24 and height >= 14) width + 2 else width;
         }
 
         pub fn activeView(self: *const Self) ?*GroupView {
@@ -203,7 +211,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         /// control and active editor pane.
         pub fn layout(self: *Self, rect: ui.Rect) void {
             self.viewport = rect;
-            grid.layoutRoot(*GroupView, self.root, self.contentRect(), self, gapCallback);
+            grid.layoutNode(*GroupView, self.root, self.contentRect(), self, gapCallback, min_pane_width);
             self.syncRects(self.root);
             for (self.group_views.items) |view| view.layout();
         }

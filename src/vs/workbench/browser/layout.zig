@@ -37,8 +37,11 @@ pub const WorkbenchGrid = struct {
 
     pub const Limits = struct { minimum: usize, maximum: usize };
 
+    last_sidebar_click: ?struct { x: usize, y: usize, time: i64 } = null,
     drag: ?struct {
         sash: Sash,
+        click_y: ?usize = null,
+        current: usize,
         state: split_view.SashDragState,
         views: [2]split_view.ViewSize,
     } = null,
@@ -63,7 +66,7 @@ pub const WorkbenchGrid = struct {
 
     /// The fixed-size part in each branch contributes its size constraints.
     /// Its sibling takes the rest of the available space.
-    pub fn onSashStart(self: *WorkbenchGrid, sash: Sash, start: usize, rects: Layout, limits: Limits) void {
+    pub fn onSashStart(self: *WorkbenchGrid, sash: Sash, start: usize, rects: Layout, limits: Limits, sibling_minimum: usize, alt: bool) void {
         const side = switch (sash) {
             .sidebar => ui.cell.snap(rects.sidebar.w),
             .panel => ui.cell.snap(rects.panel.h),
@@ -72,14 +75,17 @@ pub const WorkbenchGrid = struct {
             .sidebar => ui.cell.snap(rects.editor_column.w),
             .panel => ui.cell.snap(rects.editor.h),
         };
-        const fixed: split_view.ViewSize = .{ .size = side, .minimum = limits.minimum, .maximum = limits.maximum };
-        const flexible: split_view.ViewSize = .{ .size = remaining, .minimum = 0, .maximum = side + remaining };
+        const fixed: split_view.ViewSize = .{ .size = side, .minimum = limits.minimum, .maximum = limits.maximum, .snap = sash == .sidebar };
+        const flexible: split_view.ViewSize = .{ .size = remaining, .minimum = sibling_minimum, .maximum = std.math.maxInt(usize) };
         const views = if (sash == .sidebar) [2]split_view.ViewSize{ fixed, flexible } else .{ flexible, fixed };
-        self.drag = .{ .sash = sash, .state = .onSashStart(start, views), .views = views };
+        self.drag = .{ .sash = sash, .current = start, .state = .onSashStart(start, views), .views = views };
+        self.drag.?.state.alt = alt;
     }
 
-    pub fn onSashChange(self: *const WorkbenchGrid, current: usize) usize {
-        const drag = self.drag.?;
+    pub fn onSashChange(self: *WorkbenchGrid, current: usize) usize {
+        const drag = &self.drag.?;
+        if (current != drag.current) drag.click_y = null;
+        drag.current = current;
         const sizes = drag.state.onSashChange(current, drag.views);
         return sizes[if (drag.sash == .sidebar) 0 else 1];
     }

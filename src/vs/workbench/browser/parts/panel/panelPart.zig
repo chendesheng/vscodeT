@@ -38,6 +38,7 @@ pub const PanelPart = struct {
     /// Terminal cells. Upstream stores pixels in the layout service.
     size: usize = 10,
     position: Position = .bottom,
+    minimum_width: usize = @import("../../../services/layout/browser/layoutService.zig").widthInCells(300),
     /// Upstream `minimumHeight` is 77 px; the terminal title plus one content
     /// row is the smallest useful panel.
     minimum_height: usize = 2,

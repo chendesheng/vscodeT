@@ -1,8 +1,7 @@
 // Port of `src/vs/base/browser/ui/sash/sash.css`.
 // The terminal uses one cell for the sash size and a paint-only style for
 // the hover/active pseudo-element. Browser touch, transitions, debugging rules,
-// platform cursor aliases, and orthogonal drag handles are omitted. Limit
-// and disabled styles require the corresponding sash states.
+// platform cursor aliases, and orthogonal drag handles are omitted. Directional cursors represent the sidebar width limits.
 
 const ui = @import("ui");
 
@@ -12,6 +11,8 @@ pub const Class = enum(u16) {
     sash = base,
     vertical = base + 1,
     horizontal = base + 2,
+    vertical_minimum = base + 3,
+    vertical_maximum = base + 4,
 };
 
 const styles = [_]ui.Style{
@@ -21,6 +22,8 @@ const styles = [_]ui.Style{
     .{ .pointer = .ew_resize, .top = .{ .cells = 0 }, .width = .{ .cells = 1 }, .height = .{ .percent = 100 } },
     // .monaco-sash.horizontal
     .{ .pointer = .ns_resize, .left = .{ .cells = 0 }, .width = .{ .percent = 100 }, .height = .{ .cells = 1 } },
+    .{ .pointer = .e_resize },
+    .{ .pointer = .w_resize },
 };
 
 pub const sheet = ui.css.Sheet{ .base = base, .styles = &styles };

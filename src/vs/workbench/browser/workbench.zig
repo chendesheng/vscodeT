@@ -2372,8 +2372,23 @@ pub const Workbench = struct {
     }
 
     fn sidebarWidth(self: *const Workbench) usize {
-        const max_width = @max(self.cols / 2, 10);
-        return @min(self.layout_model.size(.sidebar), @max(max_width, 1));
+        return self.clampSidebarWidth(self.layout_model.size(.sidebar));
+    }
+
+    fn sidebarMinimum(self: *const Workbench) usize {
+        return self.sidebar_part.minimum_width + self.sidebarFrameInset();
+    }
+
+    fn editorColumnMinimum(self: *const Workbench) usize {
+        const available = self.cols -| self.activityBarWidth() -| self.sidebarMinimum();
+        const editor = if (self.expanded_pane != null) editor_part.min_pane_width else self.part.minimumWidth(self.workbenchRows() -| self.panelHeight());
+        const panel = if (self.panelShown()) self.panel_part.minimum_width else 0;
+        return @min(available, @max(editor, panel));
+    }
+
+    fn clampSidebarWidth(self: *const Workbench, width: usize) usize {
+        const maximum = self.cols -| self.activityBarWidth() -| self.editorColumnMinimum() -| self.sidebarFrameInset();
+        return @min(maximum, std.math.clamp(width, self.sidebar_part.minimum_width, self.sidebar_part.maximum_width));
     }
 
     fn activityBarWidth(self: *const Workbench) usize {
@@ -2388,7 +2403,7 @@ pub const Workbench = struct {
 
     fn sidebarShown(self: *const Workbench) bool {
         return self.layout_model.isVisible(.sidebar) and self.sidebar != null and
-            self.activityBarWidth() + self.sidebarWidth() + 8 < self.cols;
+            self.cols > self.activityBarWidth() + self.sidebarMinimum();
     }
 
     fn setSidebarVisible(self: *Workbench, visible: bool) !void {
@@ -2398,8 +2413,8 @@ pub const Workbench = struct {
     }
 
     fn setSidebarWidth(self: *Workbench, width: usize) !void {
-        try self.layout_model.setSize(.sidebar, width);
         try self.sidebar_part.setWidth(width);
+        try self.layout_model.setSize(.sidebar, self.sidebar_part.width);
     }
 
     /// Port of the composite action collection: the active side bar view
@@ -4149,7 +4164,7 @@ pub const Workbench = struct {
         self.hovered_sash = null;
         if (self.layout_model.workbench_grid.activeSash()) |sash| {
             const visible = switch (sash) {
-                .sidebar => self.sidebarShown(),
+                .sidebar => self.sidebar != null, // A snapped sidebar keeps pointer capture.
                 .panel => self.panelShown(),
             };
             if (!visible) self.layout_model.workbench_grid.onSashEnd();
@@ -7833,9 +7848,8 @@ pub const Workbench = struct {
     /// panel sizes that determine the editor area.
     pub fn resizeEditorArea(self: *Workbench, width_delta: isize, height_delta: isize) !void {
         if (width_delta != 0 and self.sidebarShown()) {
-            const current: isize = @intCast(self.layout_model.size(.sidebar));
-            const next = @min(@max(current - width_delta, 10), @as(isize, @intCast(@max(self.cols / 2, 10))));
-            try self.setSidebarWidth(@intCast(next));
+            const current: isize = @intCast(self.sidebarWidth());
+            try self.setSidebarWidth(self.clampSidebarWidth(@intCast(@max(current -| width_delta, 0))));
         }
         if (height_delta != 0 and self.panelShown()) {
             const current: isize = @intCast(self.panelHeight());
@@ -9230,8 +9244,14 @@ pub const Workbench = struct {
     }
 
     fn sidebarSashAt(self: *const Workbench, x: usize, y: usize) bool {
+        if (self.sidebar == null or y >= self.workbenchRows() or
+            self.cols <= self.activityBarWidth() + self.sidebarMinimum()) return false;
+        if (!self.sidebarShown()) {
+            // The collapsed sash shares the first editor cell beside the rail.
+            return x == self.activityBarWidth() and !self.layout_model.isZenModeActive();
+        }
+        if (self.clampSidebarWidth(self.sidebar_part.maximum_width) == self.sidebar_part.minimum_width) return false;
         const frame = self.sidebarFrameRect();
-        if (y >= ui.cell.snap(frame.bottom())) return false;
         const edge = ui.cell.snap(frame.right());
         if (x == edge - 1) return true;
         // Native borders meet between cells. The glyph editor frame adds a
@@ -9267,14 +9287,34 @@ pub const Workbench = struct {
     }
 
     fn workbenchSashAt(self: *const Workbench, x: usize, y: usize) ?WorkbenchGrid.Sash {
-        if (self.sidebarShown() and self.sidebarSashAt(x, y)) return .sidebar;
+        if (self.sidebarSashAt(x, y)) return .sidebar;
         const list = &self.terminal_tabbed_view.tab_list;
         if (list.dragged_instance != null or list.dragging_sash or list.dragging_pane_sash != null) return null;
         return if (self.panelShown() and self.panelSashAt(x, y)) .panel else null;
     }
 
-    fn workbenchSashPointer(sash: WorkbenchGrid.Sash) ui.Pointer {
-        return sash_css.pointer(if (sash == .sidebar) .vertical else .horizontal);
+    fn workbenchSashPointer(self: *const Workbench, sash: WorkbenchGrid.Sash) ui.Pointer {
+        if (sash == .panel) return sash_css.pointer(.horizontal);
+        if (!self.sidebarShown() or self.sidebarWidth() == self.sidebar_part.minimum_width) return sash_css.pointer(.vertical_minimum);
+        if (self.sidebarWidth() == self.clampSidebarWidth(self.sidebar_part.maximum_width)) return sash_css.pointer(.vertical_maximum);
+        return sash_css.pointer(.vertical);
+    }
+
+    /// Grid.onDidSashReset first asks the adjacent view for its preferred size.
+    fn resetSidebarSash(self: *Workbench) !void {
+        const id = self.sidebar_part.pane.active_id orelse "";
+        var optimal: usize = 0;
+        if (std.mem.eql(u8, id, "scm")) {
+            optimal = layout_service_mod.widthInCells(400);
+        } else if (self.activeSidebarViewContainer()) |container| {
+            if (container.bodyRect("explorer")) |body| {
+                optimal = self.sidebar.?.getOptimalWidth(ui.cell.snap(body.h)) + layout_service_mod.widthInCells(16);
+            }
+        }
+        const available = self.cols -| self.activityBarWidth();
+        const preferred = self.sidebar_part.preferredWidth(optimal) orelse (available / 2 -| self.sidebarFrameInset());
+        try self.setSidebarWidth(self.clampSidebarWidth(preferred));
+        self.layoutAll();
     }
 
     fn workbenchSashHighlighted(self: *const Workbench, sash: WorkbenchGrid.Sash) bool {
@@ -9289,43 +9329,72 @@ pub const Workbench = struct {
         const grid = &self.layout_model.workbench_grid;
         if (grid.activeSash()) |sash| {
             if (event.kind == .down) return true;
+            if (grid.drag.?.click_y != event.y) grid.drag.?.click_y = null;
+            if (sash == .sidebar and event.kind == .move and grid.drag.?.state.alt != event.mods.alt) {
+                // Terminals report modifier changes with the next mouse motion.
+                const previous = grid.drag.?.current;
+                self.startWorkbenchSash(sash, previous, event.mods.alt);
+            }
             const size = grid.onSashChange(sash.coordinate(event.x, event.y));
             switch (sash) {
                 .sidebar => {
+                    const visible = size != 0;
+                    const changed = self.layout_model.isVisible(.sidebar) != visible;
+                    if (changed) {
+                        // ViewItem.setVisible caches the size at pointer-down.
+                        if (!visible) {
+                            self.setSidebarWidth(grid.drag.?.state.sizes[0] -| self.sidebarFrameInset()) catch return true;
+                            if (self.focus == .sidebar) self.focusEditor();
+                        }
+                        self.setSidebarVisible(visible) catch return true;
+                    }
                     const width = size -| self.sidebarFrameInset();
-                    if (width != self.layout_model.size(.sidebar)) {
+                    if (visible and width != self.layout_model.size(.sidebar)) {
                         self.setSidebarWidth(width) catch return true;
                         self.layoutAll();
-                    }
+                    } else if (changed) self.layoutAll();
                 },
                 .panel => self.resizePanelTo(size),
             }
             if (event.kind == .up or event.kind == .click) {
+                const click = sash == .sidebar and grid.drag.?.click_y != null and self.sidebarShown();
                 grid.onSashEnd();
+                const last = grid.last_sidebar_click;
+                grid.last_sidebar_click = null;
+                if (click) {
+                    const now = time_compat.milliTimestamp();
+                    if (last != null and last.?.x == event.x and last.?.y == event.y and now - last.?.time <= 400) {
+                        self.resetSidebarSash() catch return true;
+                    } else grid.last_sidebar_click = .{ .x = event.x, .y = event.y, .time = now };
+                }
                 const hovered = self.workbenchSashAt(event.x, event.y);
                 self.hovered_sash = if (hovered) |hit| .{ .workbench = hit } else null;
-                self.pointer = if (hovered) |hit| workbenchSashPointer(hit) else .default;
+                self.pointer = if (hovered) |hit| self.workbenchSashPointer(hit) else .default;
             } else {
-                self.pointer = workbenchSashPointer(sash);
+                self.pointer = self.workbenchSashPointer(sash);
             }
             return true;
         }
 
         const sash = self.workbenchSashAt(event.x, event.y) orelse return false;
-        self.pointer = workbenchSashPointer(sash);
+        self.pointer = self.workbenchSashPointer(sash);
         if (event.kind == .move) {
             self.hovered_sash = .{ .workbench = sash };
             if (sash == .panel) self.panel_part.setHovered(null);
         }
         if (event.kind == .down and event.button == .left) {
-            const border = self.sidebarFrameInset();
-            const limits: WorkbenchGrid.Limits = switch (sash) {
-                .sidebar => .{ .minimum = 10 + border, .maximum = @max(self.cols / 2, 10) + border },
-                .panel => self.panelHeightLimits(),
-            };
-            grid.onSashStart(sash, sash.coordinate(event.x, event.y), self.workbenchGridLayout(), limits);
+            self.startWorkbenchSash(sash, sash.coordinate(event.x, event.y), event.mods.alt);
+            grid.drag.?.click_y = event.y;
         }
         return true;
+    }
+
+    fn startWorkbenchSash(self: *Workbench, sash: WorkbenchGrid.Sash, coordinate: usize, alt: bool) void {
+        const limits: WorkbenchGrid.Limits = switch (sash) {
+            .sidebar => .{ .minimum = self.sidebarMinimum(), .maximum = self.sidebar_part.maximum_width +| self.sidebarFrameInset() },
+            .panel => self.panelHeightLimits(),
+        };
+        self.layout_model.workbench_grid.onSashStart(sash, coordinate, self.workbenchGridLayout(), limits, if (sash == .sidebar) self.editorColumnMinimum() else 0, alt);
     }
 
     fn orderedTabAt(self: *Workbench, pane: *GroupPane, index: usize) ?*Tab {
@@ -11299,6 +11368,12 @@ pub const Workbench = struct {
         if (self.panelShown()) {
             try self.renderPanel();
             self.renderPanelFrame();
+        }
+        if (!self.sidebarShown() and self.workbenchSashHighlighted(.sidebar)) {
+            const x = self.activityBarWidth();
+            if (x < self.cols) for (0..self.workbenchRows()) |y| {
+                paintSashBackground(&self.frame.next, x, y, ui.cell.packColor(self.sashHoverStyle().background.?));
+            };
         }
         if (self.statusBarVisible()) {
             if (self.theme_palette) |palette| self.statusbar.main_part.setThemeColors(palette);
@@ -17304,7 +17379,8 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path = try seedFile(allocator, io, &tmp, "resize_a.txt", "alpha");
+    const filename = "a_long_filename_for_the_resize_test.txt";
+    const path = try seedFile(allocator, io, &tmp, filename, "alpha");
     defer allocator.free(path);
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
@@ -17330,12 +17406,99 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     try std.testing.expect(workbench.handleSashMouse(&up));
     try std.testing.expect(workbench.layout_model.workbench_grid.activeSash() == null);
 
-    // The same gesture clamps at the upstream-style half-window maximum.
+    // The editor minimum, not a fraction of the window, stops the sash.
     const far = ui.MouseEvent{ .kind = .down, .x = workbench.activityBarWidth() + workbench.sidebarWidth(), .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&far));
     const drag_far = ui.MouseEvent{ .kind = .move, .x = 10_000, .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&drag_far));
-    try std.testing.expectEqual(@as(usize, 35), workbench.sidebarWidth());
+    try std.testing.expect(workbench.sidebarWidth() > workbench.cols / 2);
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(workbench.editorAreaRect().w));
+
+    try std.testing.expectEqual(ui.Pointer.w_resize, workbench.pointerShape());
+    try sidebarMouseForTest(workbench, .up, drag_far.x);
+    const maximum = workbench.sidebarWidth();
+    const rail = workbench.activityBarWidth();
+    const minimum = workbench.sidebarMinimum();
+    const half = minimum / 2;
+    const start = rail + maximum;
+    const threshold = start - ui.cell.snap(workbench.sidebarFrameRect().w) + minimum - half;
+    workbench.focusSidebar();
+    try sidebarMouseForTest(workbench, .down, start);
+    try sidebarMouseForTest(workbench, .move, threshold);
+    try std.testing.expectEqual(workbench.sidebar_part.minimum_width, workbench.sidebarWidth());
+    try std.testing.expectEqual(ui.Pointer.e_resize, workbench.pointerShape());
+    try sidebarMouseForTest(workbench, .move, threshold - 1);
+    try std.testing.expect(!workbench.sidebarShown());
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+    try std.testing.expectEqual(rail, workbench.editorAreaX());
+
+    // The same captured press can cross the threshold in either direction.
+    try sidebarMouseForTest(workbench, .move, threshold);
+    try std.testing.expect(workbench.sidebarShown());
+    try std.testing.expectEqual(workbench.sidebar_part.minimum_width, workbench.sidebarWidth());
+    try sidebarMouseForTest(workbench, .up, threshold - 1);
+    try std.testing.expect(!workbench.sidebar_part.isVisible());
+    try workbench.toggleSidebar();
+    try std.testing.expectEqual(maximum, workbench.sidebarWidth());
+    try workbench.toggleSidebar();
+
+    // A fresh press on the hidden sash snaps open at half the minimum.
+    try sidebarMouseForTest(workbench, .down, rail);
+    try sidebarMouseForTest(workbench, .move, rail + half - 1);
+    try std.testing.expect(!workbench.sidebarShown());
+    try sidebarMouseForTest(workbench, .move, rail + half);
+    try std.testing.expect(workbench.sidebarShown());
+    try std.testing.expectEqual(workbench.sidebar_part.minimum_width, workbench.sidebarWidth());
+    try sidebarMouseForTest(workbench, .up, rail + minimum + 4);
+    try std.testing.expectEqual(minimum + 4, ui.cell.snap(workbench.sidebarFrameRect().w));
+
+    // Double-click measures the full label even while its paint is clipped.
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try workbench.render(&output.writer);
+    const click_x = ui.cell.snap(workbench.sidebarFrameRect().right()) - 1;
+    for (0..2) |_| {
+        try sidebarMouseForTest(workbench, .down, click_x);
+        try sidebarMouseForTest(workbench, .up, click_x);
+    }
+    try std.testing.expectEqual(6 + filename.len + 1, workbench.sidebarWidth());
+
+    // Alt-drag keeps the sidebar visible and applies the last-sash half bound.
+    const alt_start = workbench.sidebarWidth();
+    const alt_edge = ui.cell.snap(workbench.sidebarFrameRect().right()) - 1;
+    for ([_]ui.MouseKind{ .down, .move, .up }) |kind| {
+        try std.testing.expect(workbench.handleSashMouse(&.{
+            .kind = kind,
+            .x = if (kind == .down) alt_edge else 0,
+            .y = 2,
+            .button = .left,
+            .mods = .{ .alt = true },
+        }));
+    }
+    try std.testing.expectEqual(alt_start - (alt_start - workbench.sidebar_part.minimum_width) / 2, workbench.sidebarWidth());
+
+    try workbench.showProblems();
+    try workbench.resizeEditorArea(-100, 0);
+    try std.testing.expectEqual(@as(usize, 18), ui.cell.snap(workbench.panelFrameRect().w));
+    workbench.closePanel();
+
+    // An uneven editor split must still reserve each group's minimum.
+    try workbench.splitActive(.horizontal);
+    workbench.part.root.kind.split.ratio = 0.8;
+    try workbench.resizeEditorArea(-100, 0);
+    const split = workbench.part.root.kind.split;
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.first.rect.w));
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.second.rect.w));
+    try workbench.resize(50, 12);
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.first.rect.w));
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.second.rect.w));
+    workbench.maximizeActiveGroup();
+    try workbench.resizeEditorArea(-100, 0);
+    try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(workbench.editorAreaRect().w));
+}
+
+fn sidebarMouseForTest(workbench: *Workbench, kind: ui.MouseKind, x: usize) !void {
+    try std.testing.expect(workbench.handleSashMouse(&.{ .kind = kind, .x = x, .y = 2, .button = .left }));
 }
 
 test "Workbench: workspace search streams results and opens a match" {
