@@ -56,8 +56,6 @@ pub const TerminalScrollbar = struct {
 
     const Cell = struct {
         node: *ui.Node,
-        glyph_buf: [8]u8 = undefined,
-        glyph_len: usize = 0,
         color: ui.Color = .{ .r = 0, .g = 0, .b = 0 },
     };
 
@@ -271,15 +269,6 @@ pub const TerminalScrollbar = struct {
             _ = try column.appendChild(cell);
             try self.cells.append(.{ .node = cell });
         }
-        if (self.cells.items.len != previous_cells) {
-            // The list may have moved the inline glyph buffers, so re-point the
-            // retained text nodes at their current storage.
-            for (self.cells.items) |cell| {
-                if (cell.node.first_child) |text| {
-                    text.setTextBorrowed(cell.glyph_buf[0..cell.glyph_len]);
-                }
-            }
-        }
         while (self.cells.items.len > text_height) {
             const dropped = self.cells.pop().?;
             if (host) |retained| retained.removeSubtree(dropped.node);
@@ -389,17 +378,11 @@ fn desiredCell(
 /// Rewrites one retained scrollbar cell. Returns whether its painted glyph or
 /// colour changed.
 fn paintCell(cell: *TerminalScrollbar.Cell, glyph: []const u8, cell_color: ui.Color) bool {
-    if (cell.glyph_len == glyph.len and cell.color.eql(cell_color) and
-        std.mem.eql(u8, cell.glyph_buf[0..cell.glyph_len], glyph))
-    {
-        return false;
-    }
-    const len = @min(glyph.len, cell.glyph_buf.len);
-    @memcpy(cell.glyph_buf[0..len], glyph[0..len]);
-    cell.glyph_len = len;
-    cell.color = cell_color;
     const text = cell.node.first_child orelse return false;
-    text.setTextBorrowed(cell.glyph_buf[0..len]);
+    if (cell.color.eql(cell_color) and std.mem.eql(u8, text.asText().data, glyph)) return false;
+    cell.color = cell_color;
+    // desiredCell selects string literals, so the text survives cell-list growth.
+    text.setTextBorrowed(glyph);
     text.setStyle(.{ .color = cell_color });
     cell.node.asElement().style.color = cell_color;
     return true;
@@ -614,4 +597,29 @@ test "editorScrollbar: wheel sensitivity, fast scroll and remainder" {
     // Clamps at the end of the document.
     _ = scrollbar.delegateScrollFromMouseWheelEvent(editor, 1000, .{}, 1.0, 1.0);
     try testing.expectEqual(editor.viewLineCount() -| editor.textHeight() + 1, editor.topViewLine());
+}
+
+test "editorScrollbar: unchanged thumb rows keep their glyphs when the viewport grows" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const lines: [40]u8 = @splat('\n');
+    const editor = try Editor.createFromText(allocator, io, &lines, "test.txt", 40, 12);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var doc = try ui.Document.init(allocator, .{ .cols = 40, .rows = 32 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    var scrollbar = TerminalScrollbar.init(allocator);
+    defer scrollbar.deinit();
+
+    for ([_]usize{ 12, 32 }) |height| {
+        editor.setViewport(40, height);
+        try scrollbar.render(&doc, root, editor, &.{}, editor.textHeight(), 40, 2, null);
+        for (scrollbar.cells.items[0..2]) |cell| {
+            try std.testing.expectEqualStrings("▐█", cell.node.first_child.?.asText().data);
+        }
+    }
 }
