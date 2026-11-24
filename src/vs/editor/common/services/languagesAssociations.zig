@@ -1,10 +1,9 @@
 // Port of `src/vs/editor/common/services/languagesAssociations.ts`.
 //
 // Terminal adaptations: the upstream module-global association lists become an
-// explicit `LanguageAssociations` instance (no hidden global state), and
-// `firstline` regexes are `FirstLineMatcher` callbacks because the port has no
-// JavaScript regex engine. Data-URI labels are read from the URI path.
+// explicit `LanguageAssociations` instance. Data-URI labels use the URI path.
 const std = @import("std");
+const RegExp = @import("../../../../support/regexp.zig").RegExp;
 const Allocator = std.mem.Allocator;
 
 const glob = @import("../../../base/common/glob.zig");
@@ -24,6 +23,7 @@ pub const ILanguageAssociation = struct {
     extension: ?[]const u8 = null,
     filepattern: ?[]const u8 = null,
     firstline: ?FirstLineMatcher = null,
+    firstline_regex: ?RegExp = null,
 };
 
 /// One entry of a `getAssociations` result.
@@ -39,6 +39,7 @@ const AssociationItem = struct {
     extension: ?[]const u8,
     filepattern: ?[]const u8,
     firstline: ?FirstLineMatcher,
+    firstline_regex: ?RegExp,
     user_configured: bool,
     filepattern_on_path: bool,
 };
@@ -59,6 +60,7 @@ pub const Result = struct {
 pub const LanguageAssociations = struct {
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
+    compiled: std.ArrayList(RegExp) = .empty,
     registered: std.array_list.Managed(AssociationItem),
     non_user: std.array_list.Managed(AssociationItem),
     user: std.array_list.Managed(AssociationItem),
@@ -76,6 +78,8 @@ pub const LanguageAssociations = struct {
     }
 
     pub fn deinit(self: *LanguageAssociations) void {
+        for (self.compiled.items) |regex| regex.deinit();
+        self.compiled.deinit(self.allocator);
         self.registered.deinit();
         self.non_user.deinit();
         self.user.deinit();
@@ -86,6 +90,21 @@ pub const LanguageAssociations = struct {
     /// Registers a platform (built-in) association.
     pub fn registerPlatform(self: *LanguageAssociations, association: ILanguageAssociation) !void {
         try self.register(association, false);
+    }
+
+    pub fn registerFirstLine(self: *LanguageAssociations, id: []const u8, mime: []const u8, pattern: []const u8) !void {
+        if (pattern.len == 0) return;
+        const anchored = if (pattern[0] == '^') pattern else try std.mem.concat(self.arena.allocator(), u8, &.{ "^", pattern });
+        const regex = RegExp.init(anchored, .{}) catch return;
+        if (regex.isMatch("")) {
+            regex.deinit();
+            return;
+        }
+        self.compiled.append(self.allocator, regex) catch |err| {
+            regex.deinit();
+            return err;
+        };
+        try self.registerPlatform(.{ .id = id, .mime = mime, .firstline_regex = regex });
     }
 
     /// Registers a configured (user) association; it wins over platform ones.
@@ -102,6 +121,7 @@ pub const LanguageAssociations = struct {
             .extension = if (association.extension) |value| try arena.dupe(u8, value) else null,
             .filepattern = if (association.filepattern) |value| try arena.dupe(u8, value) else null,
             .firstline = association.firstline,
+            .firstline_regex = association.firstline_regex,
             .user_configured = user_configured,
             .filepattern_on_path = if (association.filepattern) |value|
                 std.mem.indexOfScalar(u8, value, '/') != null
@@ -140,8 +160,13 @@ pub const LanguageAssociations = struct {
     /// Like `getAssociations`, for a filesystem path that has no URI (the
     /// terminal language service stores paths).
     pub fn getAssociationsForPath(self: *const LanguageAssociations, path: ?[]const u8, first_line: ?[]const u8) Result {
-        const resolved_path = path orelse return unknownResult();
-        if (resolved_path.len == 0) return unknownResult();
+        const resolved_path = path orelse "";
+        if (resolved_path.len == 0) {
+            if (first_line) |line| {
+                if (self.getAssociationByFirstline(line)) |match| return matchedResult(match);
+            }
+            return unknownResult();
+        }
         const filename = std.fs.path.basename(resolved_path);
 
         // 1.) User configured mappings have the highest priority.
@@ -239,6 +264,9 @@ pub const LanguageAssociations = struct {
         while (index > 0) {
             index -= 1;
             const association = &self.registered.items[index];
+            if (association.firstline_regex) |regex| {
+                if (regex.isMatch(line)) return association;
+            }
             if (association.firstline) |matcher| {
                 if (matcher(line)) return association;
             }

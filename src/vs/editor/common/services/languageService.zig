@@ -17,7 +17,6 @@ const LanguageRegistryEntry = struct {
     filenames: ?[]const []const u8 = null,
     filename_patterns: ?[]const []const u8 = null,
     mimetypes: ?[]const []const u8 = null,
-    first_line: ?[]const u8 = null,
     icon: ?LanguageIcon = null,
     configuration: ?Uri = null,
 };
@@ -100,8 +99,11 @@ pub const LanguageService = struct {
                     for (aliases) |alias| try self.language_names.put(try arena.dupe(u8, alias), existing.id);
                 }
             }
-            if (def.firstLine) |first_line| {
-                if (existing.first_line == null) existing.first_line = first_line;
+            if (def.mimetypes) |mimes| {
+                if (mimes.len != 0) {
+                    existing.mimetypes = try appendSlices(arena, existing.mimetypes, mimes);
+                    for (mimes) |mime| try self.mime_types.put(try arena.dupe(u8, mime), existing.id);
+                }
             }
             if (def.icon) |icon| existing.icon = icon;
             if (def.configuration) |configuration| existing.configuration = configuration;
@@ -131,7 +133,6 @@ pub const LanguageService = struct {
             .filenames = def.filenames,
             .filename_patterns = def.filenamePatterns,
             .mimetypes = mime_types,
-            .first_line = def.firstLine,
             .icon = def.icon,
             .configuration = def.configuration,
         });
@@ -158,12 +159,11 @@ pub const LanguageService = struct {
     }
 
     /// Registers the path/first-line associations of a language contribution.
-    /// `firstLine` stays in the language registry: upstream stores a `RegExp`,
-    /// the terminal matcher keeps the simple prefix/suffix form.
     fn registerAssociations(self: *LanguageService, def: ILanguageExtensionPoint) !void {
-        if (def.extensions == null and def.filenames == null and def.filenamePatterns == null) return;
+        if (def.extensions == null and def.filenames == null and def.filenamePatterns == null and def.firstLine == null) return;
         const associations = try self.ensureAssociations();
         const mime = self.getMimeType(def.id) orelse try std.fmt.allocPrint(self.arena.allocator(), "text/x-{s}", .{def.id});
+        if (def.firstLine) |pattern| try associations.registerFirstLine(def.id, mime, pattern);
         if (def.extensions) |extensions| {
             for (extensions) |extension| {
                 try associations.registerPlatform(.{ .id = def.id, .mime = mime, .extension = extension });
@@ -320,31 +320,10 @@ pub const LanguageService = struct {
     /// line. Path matching goes through the ported language associations
     /// (filename > pattern > longest extension, later registrations win).
     pub fn guessLanguageIdByFilepathOrFirstLine(self: *LanguageService, path: ?[]const u8, first_line: ?[]const u8) ?[]const u8 {
-        if (self.associations) |associations| {
-            if (path) |value| {
-                const result = associations.getAssociationsForPath(value, null);
-                const id = result.items[0].id;
-                if (!std.mem.eql(u8, id, languages_associations.UNKNOWN_ID)) return id;
-            }
-        }
-
-        // First line has the lowest priority.
-        if (first_line) |line| {
-            var iterator = self.languages.iterator();
-            while (iterator.next()) |entry| {
-                const registry_entry = entry.value_ptr;
-                if (registry_entry.first_line) |pattern| {
-                    var prefix = pattern;
-                    if (prefix.len > 0 and prefix[0] == '^') prefix = prefix[1..];
-                    if (prefix.len > 0 and prefix[prefix.len - 1] == '$') {
-                        if (std.mem.eql(u8, line, prefix[0 .. prefix.len - 1])) return registry_entry.id;
-                    } else if (std.mem.startsWith(u8, line, prefix)) {
-                        return registry_entry.id;
-                    }
-                }
-            }
-        }
-        return null;
+        const associations = self.associations orelse return null;
+        const result = associations.getAssociationsForPath(path, first_line);
+        const id = result.items[0].id;
+        return if (std.mem.eql(u8, id, languages_associations.UNKNOWN_ID)) null else id;
     }
 
     pub fn requestBasicLanguageFeatures(self: *LanguageService, language_id: []const u8) void {

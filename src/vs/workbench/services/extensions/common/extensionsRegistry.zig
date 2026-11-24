@@ -16,6 +16,8 @@ pub const Language = struct {
     extensions: []const []const u8,
     filenames: []const []const u8,
     filename_patterns: []const []const u8,
+    mimetypes: []const []const u8 = &.{},
+    first_line: ?[]const u8 = null,
     /// Path relative to `root`, or null.
     configuration: ?[]const u8,
 };
@@ -220,6 +222,8 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
                     .aliases = try stringArray(scratch, language, "aliases"),
                     .extensions = try stringArray(scratch, language, "extensions"),
                     .filenames = try stringArray(scratch, language, "filenames"),
+                    .first_line = if (stringField(language, "firstLine")) |pattern| try scratch.dupe(u8, pattern) else null,
+                    .mimetypes = try stringArray(scratch, language, "mimetypes"),
                     .filename_patterns = try stringArray(scratch, language, "filenamePatterns"),
                     .configuration = if (stringField(language, "configuration")) |path| try scratch.dupe(u8, path) else null,
                 });

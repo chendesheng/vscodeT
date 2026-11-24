@@ -384,19 +384,20 @@ pub const EditorDocument = struct {
                     .extensions = contribution.extensions,
                     .filenames = contribution.filenames,
                     .filenamePatterns = contribution.filename_patterns,
+                    .firstLine = contribution.first_line,
+                    .mimetypes = contribution.mimetypes,
                 });
             }
         }
 
         // Path matching goes through the ported language associations, which the
         // service derives from the registered language contributions.
-        const language_id = language_service.guessLanguageIdByFilepathOrFirstLine(path, null) orelse "plaintext";
+        const path_language = language_service.guessLanguageIdByFilepathOrFirstLine(path, null);
+        const language_id = path_language orelse "plaintext";
         try codec.register(language_id);
 
         var declarative_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer declarative_arena.deinit();
-
-        try configureDocumentLanguage(allocator, io, language_service, declarative_arena.allocator(), declarative, language_id);
 
         const language_config_service = try allocator.create(LanguageConfigurationService);
         errdefer allocator.destroy(language_config_service);
@@ -413,6 +414,12 @@ pub const EditorDocument = struct {
         errdefer {
             model.deinit();
             allocator.destroy(model);
+        }
+        const detected = path_language orelse (try guessFromFirstLine(language_service, model)) orelse "plaintext";
+        try configureDocumentLanguage(allocator, io, language_service, declarative_arena.allocator(), declarative, detected);
+        if (!std.mem.eql(u8, language_id, detected)) {
+            try codec.register(detected);
+            model.setLanguage(detected);
         }
         // The fallback bracket matcher resolves RichEditBrackets through the
         // terminal language-configuration host; the AST path does not need it.
@@ -1547,9 +1554,11 @@ pub const Editor = struct {
                 .extensions = contribution.extensions,
                 .filenames = contribution.filenames,
                 .filenamePatterns = contribution.filename_patterns,
+                .firstLine = contribution.first_line,
+                .mimetypes = contribution.mimetypes,
             });
         }
-        const guessed = self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null) orelse self.languageId();
+        const guessed = self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null) orelse (try guessFromFirstLine(self.language_service, self.model)) orelse self.languageId();
         if (std.mem.eql(u8, guessed, self.languageId())) {
             try configureDocumentLanguage(self.allocator, self.io, self.language_service, self.document.declarative_arena.allocator(), registry, guessed);
             for (self.document.editors.items) |editor| try editor.applyLanguageState(guessed);
@@ -2335,7 +2344,7 @@ pub const Editor = struct {
             });
         }
 
-        const language_id = self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null) orelse "plaintext";
+        const language_id = self.language_service.guessLanguageIdByFilepathOrFirstLine(self.path, null) orelse (try guessFromFirstLine(self.language_service, self.model)) orelse "plaintext";
         try self.setLanguage(language_id);
     }
 
@@ -4869,6 +4878,13 @@ fn createModel(
     return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service);
 }
 
+fn guessFromFirstLine(service: *LanguageService, model: *TextModel) !?[]const u8 {
+    const end = @min(1001, model.getLineMaxColumn(1));
+    var line = try model.getValueInRange(Range.init(1, 1, 1, end), null);
+    defer line.deinit();
+    return service.guessLanguageIdByFilepathOrFirstLine(null, line.items);
+}
+
 fn configureDocumentLanguage(
     allocator: Allocator,
     io: Io,
@@ -6600,6 +6616,24 @@ test "Editor: a late language contribution configures file detection and manual 
     try editor.setLanguage("lua");
     const config = editor.language_service.getLanguageConfiguration("lua") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("--", config.comments.?.lineComment.?.comment);
+}
+
+test "Editor: manifest first-line and MIME associations survive configuration reload" {
+    const allocator = std.testing.allocator;
+    std.Io.Dir.cwd().access(time_compat.io, "vscode/extensions/python/package.json", .{}) catch return error.SkipZigTest;
+    var registry = try extensions_registry.scan(allocator, &.{ "vscode/extensions/python", "vscode/extensions/javascript" });
+    defer registry.deinit();
+    const editor = try Editor.createFromText(allocator, time_compat.io, "#!/usr/bin/env python3.12\npass", "executable", 40, 6);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    try editor.applyDeclarativeExtensions(&registry);
+    try std.testing.expectEqualStrings("python", editor.languageId());
+    try editor.applyFileAssociations(&.{});
+    try std.testing.expectEqualStrings("python", editor.languageId());
+    try std.testing.expectEqualStrings("javascript", editor.language_service.getLanguageIdByMimeType("text/javascript").?);
+    try std.testing.expectEqualStrings("javascript", editor.language_service.guessLanguageIdByFilepathOrFirstLine("extension.js", "#!/usr/bin/python").?);
 }
 
 test "Editor: JSON language features populate diagnostics and completion" {
