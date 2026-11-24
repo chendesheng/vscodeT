@@ -284,6 +284,9 @@ pub fn main(init: std.process.Init) !void {
         break :blk null;
     };
     defer if (declarative) |*registry| registry.deinit();
+    const tokenizer = @import("../vs/editor/common/model/tokens/textMateTokenizer.zig");
+    if (declarative) |*registry| tokenizer.setGrammarCatalog(registry.grammars);
+    defer tokenizer.setGrammarCatalog(&.{});
 
     var json_client: ?*json_language.Client = null;
     if (std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{})) |_| {

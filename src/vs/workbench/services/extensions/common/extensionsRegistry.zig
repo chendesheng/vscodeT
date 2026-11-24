@@ -20,12 +20,8 @@ pub const Language = struct {
     configuration: ?[]const u8,
 };
 
-pub const Grammar = struct {
-    root: []const u8,
-    language: []const u8,
-    scope: []const u8,
-    path: []const u8,
-};
+const scopes = @import("../../textMate/common/TMScopeRegistry.zig");
+pub const Grammar = scopes.Grammar;
 
 pub const Theme = struct {
     root: []const u8,
@@ -148,6 +144,7 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
         try scanExtensionDirectory(allocator, scratch, absolute, contributions);
     }
 
+    try scopes.resolveInjections(scratch, grammars.items);
     return .{
         .allocator = allocator,
         .arena = arena,
@@ -225,13 +222,15 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
             for (items.array.items) |item| {
                 if (item != .object) continue;
                 const grammar = item.object;
-                const language = stringField(grammar, "language") orelse continue;
+                const language = stringField(grammar, "language") orelse "";
                 const scope = stringField(grammar, "scopeName") orelse continue;
                 const path = stringField(grammar, "path") orelse continue;
                 try contributions.grammars.append(.{
                     .root = root_copy,
                     .language = try scratch.dupe(u8, language),
                     .scope = try scratch.dupe(u8, scope),
+                    .location = try std.fs.path.join(scratch, &.{ root_copy, path }),
+                    .inject_to = try stringArray(scratch, grammar, "injectTo"),
                     .path = try scratch.dupe(u8, path),
                 });
             }
@@ -503,4 +502,16 @@ fn writeTestManifest(tmp: *std.testing.TmpDir, io: std.Io, directory: []const u8
     var file = try tmp.dir.createFile(io, path, .{});
     defer file.close(io);
     try file.writeStreamingAll(io, text);
+}
+
+test "declarative scanner resolves include scopes and Markdown math injections" {
+    const roots = &.{ "vscode/extensions/markdown-basics", "vscode/extensions/markdown-math", "vscode/extensions/yaml" };
+    std.Io.Dir.cwd().access(time_compat.io, roots[0], .{}) catch return error.SkipZigTest;
+    var registry = try scan(std.testing.allocator, roots);
+    defer registry.deinit();
+    const included = scopes.forScope(registry.grammars, "source.yaml.1.2") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 0), included.language.len);
+    const markdown = registry.grammarForLanguage("markdown") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(markdown.injections.len >= 2);
+    for (markdown.injections) |scope| try std.testing.expect(scopes.forScope(registry.grammars, scope) != null);
 }

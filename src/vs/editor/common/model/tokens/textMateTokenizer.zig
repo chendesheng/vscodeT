@@ -32,7 +32,25 @@ var initialized = false;
 var onig_lib: tm_main.OnigLib = undefined;
 var registry: ?*tm_main.Registry = null;
 var fence_grammar: ?*tm_raw.RawGrammar = null;
-var loader_context: u8 = 0;
+const scopes = @import("../../../../workbench/services/textMate/common/TMScopeRegistry.zig");
+const LoaderContext = struct { grammars: []const scopes.Grammar = &.{} };
+var loader_context: LoaderContext = .{};
+
+/// Bind the immutable installed catalog before creating any models or workers.
+/// The composition root releases it after those workers stop.
+pub fn setGrammarCatalog(grammars: []const scopes.Grammar) void {
+    loader_context.grammars = grammars;
+}
+
+pub fn hasCatalogGrammar(location: []const u8, scope: []const u8) bool {
+    const grammar = scopes.forScope(loader_context.grammars, scope) orelse return false;
+    return std.mem.eql(u8, grammar.location, location);
+}
+
+fn getInjections(_: *anyopaque, scope: []const u8) ?[]const []const u8 {
+    const grammar = scopes.forScope(loader_context.grammars, scope) orelse return null;
+    return grammar.injections;
+}
 
 const DynamicGrammar = struct {
     language: []const u8,
@@ -56,6 +74,7 @@ fn ensureInitialized() !void {
         .onig_lib = onig_lib.interface(),
         .context = &loader_context,
         .load_grammar = loadGrammar,
+        .get_injections = getInjections,
     });
     initialized = true;
 }
@@ -107,10 +126,19 @@ fn loadGrammar(_: *anyopaque, scope: []const u8) anyerror!?*tm_raw.RawGrammar {
     grammar_load_mutex.lockUncancelable(time_compat.io);
     defer grammar_load_mutex.unlock(time_compat.io);
     const dynamic_data = if (dynamicGrammarForScope(scope)) |entry| entry.data else null;
-    const data = dynamic_data orelse (vscode_syntax.dataForScope(scope) orelse return null);
-    const raw = try std.heap.page_allocator.create(tm_raw.RawGrammar);
-    errdefer std.heap.page_allocator.destroy(raw);
-    raw.* = try tm.parseRawGrammar.parseRawGrammar(std.heap.page_allocator, data, "embedded.json");
+    const allocator = std.heap.page_allocator;
+    const grammar = scopes.forScope(loader_context.grammars, scope);
+    // The vendored YAML fallback covers the upstream parser limitation
+    // documented alongside the bundled syntax assets.
+    const file = if (grammar != null and dynamic_data == null and !std.mem.eql(u8, scope, "source.yaml"))
+        std.Io.Dir.cwd().readFileAlloc(time_compat.io, grammar.?.location, allocator, .unlimited) catch null
+    else
+        null;
+    defer if (file) |bytes| allocator.free(bytes);
+    const data = dynamic_data orelse file orelse vscode_syntax.dataForScope(scope) orelse return null;
+    const raw = try allocator.create(tm_raw.RawGrammar);
+    errdefer allocator.destroy(raw);
+    raw.* = try tm.parseRawGrammar.parseRawGrammar(allocator, data, if (file != null) grammar.?.path else "embedded.json");
     if (std.mem.eql(u8, scope, "text.html.markdown")) try installMarkdownCodeFences(raw);
     return raw;
 }
@@ -137,6 +165,9 @@ fn installMarkdownCodeFences(markdown: *tm_raw.RawGrammar) !void {
 
 fn grammarScope(languageId: []const u8) ?[]const u8 {
     if (dynamicGrammarForLanguage(languageId)) |entry| return entry.scope;
+    for (loader_context.grammars) |grammar| {
+        if (grammar.language.len != 0 and std.mem.eql(u8, grammar.language, languageId)) return grammar.scope;
+    }
     if (vscode_syntax.scopeForLanguage(languageId)) |scope| return scope;
     const map = .{
         .{ "zig", "source.zig" },
@@ -295,6 +326,7 @@ pub const WorkerRegistry = struct {
             .onig_lib = onig.interface(),
             .context = &loader_context,
             .load_grammar = loadGrammar,
+            .get_injections = getInjections,
         });
         return .{ .allocator = allocator, .onig_lib = onig, .registry = worker_registry };
     }

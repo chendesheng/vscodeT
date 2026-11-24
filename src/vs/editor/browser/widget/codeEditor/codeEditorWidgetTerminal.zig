@@ -4944,6 +4944,7 @@ fn createModel(
 }
 
 fn registerDeclarativeGrammar(io: Io, allocator: Allocator, root: []const u8, grammar: extensions_registry.Grammar) void {
+    if (text_mate_tokenizer.hasCatalogGrammar(grammar.location, grammar.scope)) return;
     const path = std.fs.path.join(allocator, &.{ root, grammar.path }) catch return;
     defer allocator.free(path);
     const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch return;
