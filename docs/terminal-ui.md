@@ -700,9 +700,9 @@ toggling it off restores the split from the existing grid rects. Sash resizing
 pauses while a group is expanded. An edge drop restores the grid before
 retiling. There is no 1px
 active-tab top border, horizontal scrollbar, editor actions toolbar, Add Tab
-control; the tab context menu uses the terminal quick pick; duplicate labels
+control; the tab context menu opens at the pointer; duplicate labels
 append a dimmed `workbench.editor.labelFormat` description; overflow clips
-leading tabs behind a clickable ellipsis that lists them in a quick pick, and
+leading tabs behind a clickable ellipsis that lists them in an anchored menu, and
 reveals the active tab. Preview editors come from Explorer single clicks;
 Enter/quick open/CLI/session opens stay pinned, and an edit pins a preview.
 
@@ -743,6 +743,10 @@ closures, so `ClickHandler` and `OnHide` carry an explicit context pointer next
 to the callback. `popup(allocator, items, options, on_hide)` returns a
 `*ContextMenu` because the terminal has no OS menu window for the host to
 drive.
+
+Editor tabs, the status bar, activity and tab overflow, and terminal menus share
+the workbench popup host. The opening press anchors the menu in screen cells.
+The host consumes its matching release and restores input routing on dismissal.
 
 The menu is deliberately not part of the DOM: it does not enter
 `Document.activeElement`, node listeners or tab order. It paints into a host
@@ -1130,7 +1134,7 @@ Library constraints:
   corresponding quick picker; the file path stays in the tab/title, matching
   upstream's status bar. `Ctrl-Alt-S` is a TUI-specific
   focus toggle, and `Focus Status Bar` is available from the command palette.
-  Not ported: DOM context menus, extension management, window-focus/inactive
+  Not ported: the extension management UI, window-focus/inactive
   backgrounds, auxiliary/scoped status bars, storage persistence of hidden
   entries and codicon rendering.
 - `src/tui/editorView.zig` remains the read-only `--preview` variant, adding
@@ -1799,8 +1803,8 @@ frame diffs compare ids; `putCodepoint` keeps the old single-glyph path. This is
 what lets prompt emoji, combining marks and ZWJ sequences survive the terminal
 pipeline.
 
-The local port uses terminal glyphs and quick picks for browser icons,
-dropdowns and context menus. It stores the side-list width in the active profile.
+The panel toolbar uses terminal glyphs and anchored dropdown menus. Right-clicking
+a terminal tab or empty tab-list space opens the corresponding context menu. It stores the side-list width in the active profile.
 Terminal text selection and copy, find, links, shell-integration decorations,
 Windows ConPTY, persistent and remote processes, cross-window drag and drop,
 ligatures, WebGL, and runtime theme switching remain outside this port. The

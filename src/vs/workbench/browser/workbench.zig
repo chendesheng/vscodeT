@@ -493,6 +493,72 @@ fn runReloadJob(job: *ReloadJob) ReloadOutcome {
     return .{ .content = content };
 }
 
+/// Terminal adapter for the workbench context menu service. Action arguments
+/// belong to the popup until dismissal, including while its action executes.
+const WorkbenchMenu = struct {
+    const Handler = *const fn (*Workbench, *WorkbenchMenu, []const u8) anyerror!void;
+    const Action = struct {
+        owner: *WorkbenchMenu,
+        id: []const u8,
+
+        fn click(context: ?*anyopaque, _: ui.ContextMenuEvent) void {
+            const action: *Action = @ptrCast(@alignCast(context.?));
+            action.owner.selected = action.id;
+        }
+    };
+
+    arena: std.heap.ArenaAllocator,
+    items: std.ArrayList(ui.ContextMenuItem) = .empty,
+    popup: ?*ui.ContextMenu = null,
+    handler: Handler,
+    selected: ?[]const u8 = null,
+    group_id: ?editor_mod.GroupIdentifier = null,
+    tabs: []const *Tab = &.{},
+    opening_press: bool = true,
+
+    fn init(allocator: std.mem.Allocator, handler: Handler) !*WorkbenchMenu {
+        const menu = try allocator.create(WorkbenchMenu);
+        menu.* = .{ .arena = .init(allocator), .handler = handler };
+        return menu;
+    }
+
+    fn deinit(self: *WorkbenchMenu) void {
+        const allocator = self.arena.child_allocator;
+        if (self.popup) |popup| popup.deinit();
+        self.arena.deinit();
+        allocator.destroy(self);
+    }
+
+    fn add(self: *WorkbenchMenu, id: []const u8, item: ui.ContextMenuItem) !void {
+        const arena = self.arena.allocator();
+        const action = try arena.create(Action);
+        action.* = .{ .owner = self, .id = id };
+        var row = item;
+        row.click = .{ .context = action, .callback = Action.click };
+        try self.items.append(arena, row);
+    }
+
+    fn separator(self: *WorkbenchMenu) !void {
+        try self.items.append(self.arena.allocator(), .{ .type = .separator });
+    }
+
+    fn show(self: *WorkbenchMenu, workbench: *Workbench, event: *const ui.MouseEvent) !void {
+        var options = ui.ContextMenuOptions{ .x = event.x, .y = event.y };
+        if (workbench.theme_palette) |palette| {
+            options.theme.background = palette.color("menu.background", .{ 37, 37, 38 });
+            options.theme.foreground = palette.color("menu.foreground", .{ 204, 204, 204 });
+            options.theme.border = palette.color("menu.border", .{ 69, 69, 69 });
+            options.theme.separator = palette.color("menu.separatorBackground", .{ 69, 69, 69 });
+            options.theme.selection_background = palette.color("menu.selectionBackground", .{ 0, 95, 184 });
+            options.theme.selection_foreground = palette.color("menu.selectionForeground", .{ 255, 255, 255 });
+            options.theme.disabled = palette.color("disabledForeground", .{ 138, 138, 138 });
+        }
+        self.popup = try ui.contextmenu.popup(workbench.allocator, self.items.items, options, null);
+        if (workbench.context_menu) |previous| previous.deinit();
+        workbench.context_menu = self;
+    }
+};
+
 pub const Workbench = struct {
     allocator: Allocator,
     io: Io,
@@ -651,9 +717,7 @@ pub const Workbench = struct {
     /// Anchored breadcrumb picker (upstream context-view tree). The popup
     /// borrows its item strings and symbol handles from `breadcrumbs_arena`.
     breadcrumb_popup: ?*breadcrumbs_picker.Picker = null,
-    tab_menu_pane: ?*GroupPane = null,
-    tab_menu_tab: ?*Tab = null,
-    tab_overflow_tabs: ?[]*Tab = null,
+    context_menu: ?*WorkbenchMenu = null,
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
     hovered_title_action_pane: ?*GroupPane = null,
@@ -815,9 +879,7 @@ pub const Workbench = struct {
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
         self.breadcrumb_popup = null;
-        self.tab_menu_pane = null;
-        self.tab_menu_tab = null;
-        self.tab_overflow_tabs = null;
+        self.context_menu = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -980,9 +1042,7 @@ pub const Workbench = struct {
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
         self.breadcrumb_popup = null;
-        self.tab_menu_pane = null;
-        self.tab_menu_tab = null;
-        self.tab_overflow_tabs = null;
+        self.context_menu = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -1178,9 +1238,7 @@ pub const Workbench = struct {
         self.breadcrumbs_input = null;
         self.breadcrumbs_dirty = false;
         self.breadcrumb_popup = null;
-        self.tab_menu_pane = null;
-        self.tab_menu_tab = null;
-        self.tab_overflow_tabs = null;
+        self.context_menu = null;
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
@@ -1871,6 +1929,38 @@ pub const Workbench = struct {
         });
     }
 
+    pub fn dismissContextMenu(self: *Workbench) void {
+        if (self.context_menu) |menu| menu.deinit();
+        self.context_menu = null;
+    }
+
+    fn finishContextMenu(self: *Workbench, menu: *WorkbenchMenu) void {
+        self.context_menu = null;
+        defer menu.deinit();
+        if (menu.selected) |id| menu.handler(self, menu, id) catch |err| {
+            if (self.activeTab()) |tab| tab.editor.setMessage("Menu action failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    pub fn handleContextMenuKey(self: *Workbench, event: *const ui.KeyEvent) bool {
+        const menu = self.context_menu orelse return false;
+        if (menu.popup.?.handleKey(event) == .closed) self.finishContextMenu(menu);
+        return true;
+    }
+
+    pub fn handleContextMenuMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        const menu = self.context_menu orelse return false;
+        // Menus open on button-down. Its matching release belongs to the trigger.
+        if (event.kind == .down) menu.opening_press = false;
+        if (menu.opening_press and event.kind == .up) {
+            menu.opening_press = false;
+            return true;
+        }
+        self.pointer = menu.popup.?.pointerAt(event.x, event.y);
+        if (menu.popup.?.handleMouse(event) == .closed) self.finishContextMenu(menu);
+        return true;
+    }
+
     pub fn handleQuickAccessKey(self: *Workbench, event: *ui.KeyEvent) !bool {
         const was_open = self.quick_access.isOpen();
         const handled = try self.quick_access.handleKey(event);
@@ -2037,10 +2127,7 @@ pub const Workbench = struct {
         }
         self.disposeBreadcrumbs();
         self.disposeAllInactiveBreadcrumbs();
-        if (self.tab_overflow_tabs) |tabs| {
-            self.allocator.free(tabs);
-            self.tab_overflow_tabs = null;
-        }
+        if (self.context_menu) |menu| menu.deinit();
         if (self.home_path) |home| {
             self.allocator.free(home);
             self.home_path = null;
@@ -2911,31 +2998,26 @@ pub const Workbench = struct {
     }
 
     /// The activity-bar ellipsis lists the entries that do not fit the rail.
-    fn showActivityOverflowMenu(self: *Workbench) !void {
+    fn showActivityOverflowMenu(self: *Workbench, event: *const ui.MouseEvent) !void {
         const rect = self.activityRect();
         const capacity = activity_bar_mod.visibleCapacity(rect);
         if (!activity_bar_mod.overflowVisible(&self.activity_bar_part, rect)) return;
         const shown = capacity -| 1;
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        const menu = try WorkbenchMenu.init(self.allocator, runActivityOverflowAction);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
         var visible_index: usize = 0;
         for (self.activity_bar_part.activities.items) |activity| {
             if (!activity.visible) continue;
             defer visible_index += 1;
             if (visible_index < shown) continue;
-            try items.append(.{ .item = .{
-                .id = try std.fmt.allocPrint(arena, "activity:{s}", .{activity.id}),
-                .label = activity.name,
-            } });
+            try menu.add(try std.fmt.allocPrint(arena, "activity:{s}", .{activity.id}), .{ .label = activity.name, .type = .radio, .checked = std.mem.eql(u8, self.activity_bar_part.active_id orelse "", activity.id) });
         }
-        if (items.items.len == 0) return;
-        try self.quick_access.inputService().showPick(
-            items.items,
-            .{ .placeholder = "Activity Bar" },
-            onActivityOverflowPick,
-            self,
-        );
+        if (menu.items.items.len == 0) {
+            menu.deinit();
+            return;
+        }
+        try menu.show(self, event);
     }
 
     pub fn showActivity(self: *Workbench, index: usize) !void {
@@ -3461,7 +3543,7 @@ pub const Workbench = struct {
     }
 
     pub fn terminalAcceptsPaste(self: *const Workbench) bool {
-        return self.terminalFocused() and !self.quick_access.isOpen() and self.dialog == null;
+        return self.terminalFocused() and self.context_menu == null and !self.quick_access.isOpen() and self.dialog == null;
     }
 
     pub fn pasteTerminal(self: *Workbench, content: []const u8) !void {
@@ -3620,7 +3702,7 @@ pub const Workbench = struct {
                 .tab => |index| {
                     self.pointer = .pointer;
                     if (event.kind == .down and event.button == .middle) self.killPanelTerminal(index) catch {};
-                    if (event.kind == .down and event.button == .right) self.showTerminalTabMenu(index) catch {};
+                    if (event.kind == .down and event.button == .right) self.showTerminalTabMenu(index, event) catch {};
                     if (left_press) {
                         const anchor = if (event.mods.shift) service.group.active else null;
                         service.group.selectTab(index, anchor, event.mods.ctrl);
@@ -3642,15 +3724,15 @@ pub const Workbench = struct {
                         switch (hit) {
                             .split, .kill => |index| {
                                 if (event.button == .middle) self.killPanelTerminal(index) catch {};
-                                if (event.button == .right) self.showTerminalTabMenu(index) catch {};
+                                if (event.button == .right) self.showTerminalTabMenu(index, event) catch {};
                             },
                             else => {},
                         }
                     }
                     if (left_press) switch (hit) {
                         .new_terminal => self.newPanelTerminal() catch {},
-                        .profiles => self.showTerminalProfilePicker(null) catch {},
-                        .terminal_picker => self.showTerminalPicker() catch {},
+                        .profiles => self.showTerminalProfileMenu(null, event) catch {},
+                        .terminal_picker => self.showTerminalSwitchMenu(event) catch {},
                         .split => |index| self.splitTerminalTabs(index) catch {},
                         .kill => |index| self.killTerminalTabs(index) catch {},
                         else => unreachable,
@@ -3659,7 +3741,7 @@ pub const Workbench = struct {
                 },
                 .sash => {
                     self.pointer = sash_css.pointer(.vertical);
-                    if (event.kind == .down and event.button == .right) self.showTerminalTabListMenu() catch {};
+                    if (event.kind == .down and event.button == .right) self.showTerminalTabListMenu(event) catch {};
                     if (left_press) {
                         const now = time_compat.milliTimestamp();
                         const double_click = if (list.last_sash_click_ms) |previous| now - previous <= 400 else false;
@@ -3681,7 +3763,7 @@ pub const Workbench = struct {
                     return true;
                 },
                 .empty_tabs => {
-                    if (event.kind == .down and event.button == .right) self.showTerminalTabListMenu() catch {};
+                    if (event.kind == .down and event.button == .right) self.showTerminalTabListMenu(event) catch {};
                     if (left_press) {
                         const now = time_compat.milliTimestamp();
                         if (list.last_clicked == null and now - list.last_click_ms <= 400) self.newPanelTerminal() catch {};
@@ -3771,58 +3853,73 @@ pub const Workbench = struct {
         }, onTerminalPicker, self);
     }
 
-    fn showTerminalProfilePicker(self: *Workbench, group_id: ?editor_mod.GroupIdentifier) !void {
+    fn showTerminalSwitchMenu(self: *Workbench, event: *const ui.MouseEvent) !void {
         const service = self.terminal_service orelse return;
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
+        if (service.count() == 0) return;
+        const menu = try WorkbenchMenu.init(self.allocator, onTerminalMenu);
+        errdefer menu.deinit();
+        for (0..service.count()) |index| {
+            const instance = service.at(index).?;
+            const id = try std.fmt.allocPrint(menu.arena.allocator(), "instance:{d}", .{instance.id});
+            try menu.add(id, .{ .label = instance.displayTitle(), .type = .radio, .checked = service.group.active == index });
+        }
+        try menu.show(self, event);
+    }
+
+    fn showTerminalProfileMenu(self: *Workbench, group_id: ?editor_mod.GroupIdentifier, event: *const ui.MouseEvent) !void {
+        const service = self.terminal_service orelse return;
+        const menu = try WorkbenchMenu.init(self.allocator, onTerminalMenu);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
         for (service.profiles.items, 0..) |profile, index| {
             const id = if (group_id) |id|
                 try std.fmt.allocPrint(arena, "editor-profile:{d}:{d}", .{ id, index })
             else
                 try std.fmt.allocPrint(arena, "profile:{d}", .{index});
-            try items.append(.{ .item = .{ .id = id, .label = profile.profile_name } });
+            try menu.add(id, .{ .label = profile.profile_name });
         }
-        try self.quick_access.inputService().showPick(items.items, .{ .placeholder = "Select Terminal Profile" }, onTerminalPicker, self);
+        if (menu.items.items.len == 0) {
+            menu.deinit();
+            return;
+        }
+        try menu.show(self, event);
     }
 
-    fn showTerminalTabMenu(self: *Workbench, index: usize) !void {
+    fn showTerminalTabMenu(self: *Workbench, index: usize, event: *const ui.MouseEvent) !void {
         const service = self.terminal_service orelse return;
         const instance = service.at(index) orelse return;
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
-        try items.append(.{ .item = .{ .id = try std.fmt.allocPrint(arena, "split:{d}", .{instance.id}), .label = "Split Terminal" } });
+        const menu = try WorkbenchMenu.init(self.allocator, onTerminalMenu);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
+        try menu.add(try std.fmt.allocPrint(arena, "split:{d}", .{instance.id}), .{ .label = "Split Terminal" });
         const range = service.group.groupRange(index);
         if (range.end - range.first > 1) {
-            try items.append(.{ .item = .{ .id = try std.fmt.allocPrint(arena, "unsplit:{d}", .{instance.id}), .label = "Unsplit Terminal" } });
+            try menu.add(try std.fmt.allocPrint(arena, "unsplit:{d}", .{instance.id}), .{ .label = "Unsplit Terminal" });
         }
         if (instance.tab_selected) {
             var selected: usize = 0;
             for (service.group.instances.items) |candidate| selected += @intFromBool(candidate.tab_selected);
-            if (selected > 1) try items.append(.{ .item = .{ .id = try std.fmt.allocPrint(arena, "join:{d}", .{instance.id}), .label = "Join Terminals" } });
+            if (selected > 1) try menu.add(try std.fmt.allocPrint(arena, "join:{d}", .{instance.id}), .{ .label = "Join Terminals" });
         }
-        try items.append(.{ .item = .{ .id = try std.fmt.allocPrint(arena, "rename:{d}", .{instance.id}), .label = "Rename Terminal" } });
-        try items.append(.{ .item = .{ .id = try std.fmt.allocPrint(arena, "move:{d}", .{instance.id}), .label = "Move Terminal into Editor Area" } });
-        try items.append(.{ .item = .{ .id = try std.fmt.allocPrint(arena, "kill:{d}", .{instance.id}), .label = "Kill Terminal" } });
-        try self.appendTerminalTabListActions(&items);
-        try self.quick_access.inputService().showPick(items.items, .{ .placeholder = try arena.dupe(u8, instance.displayTitle()) }, onTerminalPicker, self);
+        try menu.add(try std.fmt.allocPrint(arena, "rename:{d}", .{instance.id}), .{ .label = "Rename Terminal" });
+        try menu.add(try std.fmt.allocPrint(arena, "move:{d}", .{instance.id}), .{ .label = "Move Terminal into Editor Area" });
+        try menu.add(try std.fmt.allocPrint(arena, "kill:{d}", .{instance.id}), .{ .label = "Kill Terminal" });
+        try menu.separator();
+        try self.appendTerminalTabListActions(menu);
+        try menu.show(self, event);
     }
 
-    fn appendTerminalTabListActions(self: *Workbench, items: *std.array_list.Managed(QuickPickItem)) !void {
+    fn appendTerminalTabListActions(self: *Workbench, menu: *WorkbenchMenu) !void {
         const move_left = self.terminalConfig().tabs_location == .right;
-        try items.append(.{ .item = .{
-            .id = if (move_left) "tabs:left" else "tabs:right",
-            .label = if (move_left) "Move Tabs Left" else "Move Tabs Right",
-        } });
-        try items.append(.{ .item = .{ .id = "tabs:hide", .label = "Hide Tabs" } });
+        try menu.add(if (move_left) "tabs:left" else "tabs:right", .{ .label = if (move_left) "Move Tabs Left" else "Move Tabs Right" });
+        try menu.add("tabs:hide", .{ .label = "Hide Tabs" });
     }
 
-    fn showTerminalTabListMenu(self: *Workbench) !void {
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        var items = std.array_list.Managed(QuickPickItem).init(self.breadcrumbs_arena.allocator());
-        try self.appendTerminalTabListActions(&items);
-        try self.quick_access.inputService().showPick(items.items, .{ .placeholder = "Terminal Tabs" }, onTerminalPicker, self);
+    fn showTerminalTabListMenu(self: *Workbench, event: *const ui.MouseEvent) !void {
+        const menu = try WorkbenchMenu.init(self.allocator, onTerminalMenu);
+        errdefer menu.deinit();
+        try self.appendTerminalTabListActions(menu);
+        try menu.show(self, event);
     }
 
     fn joinTerminalTabs(self: *Workbench, service: *TerminalService) !void {
@@ -8226,24 +8323,11 @@ pub const Workbench = struct {
         }
     }
 
-    fn clearTerminalEditorTabInteractions(self: *Workbench, tab: *Tab) void {
-        if (self.tab_menu_tab == tab) {
-            self.tab_menu_tab = null;
-            self.tab_menu_pane = null;
-            self.quick_access.inputService().hide();
-        }
-        if (self.tab_overflow_tabs) |tabs| {
-            if (std.mem.indexOfScalar(*Tab, tabs, tab) != null) {
-                self.quick_access.inputService().hide();
-                self.allocator.free(tabs);
-                self.tab_overflow_tabs = null;
-            }
-        }
-    }
-
     fn performCloseTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
         self.invalidateDragTab(pane, tab);
-        if (tab.terminal_input != null) self.clearTerminalEditorTabInteractions(tab);
+        if (self.context_menu) |menu| {
+            if (std.mem.indexOfScalar(*Tab, menu.tabs, tab) != null) self.dismissContextMenu();
+        }
         if (!self.in_closed_batch) self.history.closed_batch_id +%= 1;
         if (tab.input.canReopen()) if (pane.indexOfTab(tab)) |index| {
             self.history.recordClosedEditor(.{
@@ -9692,15 +9776,9 @@ pub const Workbench = struct {
             .down => {
                 self.leaveEditorHover();
                 if (event.button == .right) {
-                    if (part.hitAt(event.x, event.y) catch null) |hit| {
-                        switch (hit) {
-                            .entry => |handle| {
-                                part.setHovered(handle);
-                                self.showStatusbarContextMenu(handle) catch {};
-                            },
-                            .part => part.clearHover(),
-                        }
-                    }
+                    part.clearHover();
+                    const hit = part.hitAt(event.x, event.y) catch null;
+                    self.showStatusbarContextMenu(if (hit != null and hit.? == .entry) hit.?.entry else null, event) catch {};
                     return true;
                 }
                 part.clearHover();
@@ -9733,16 +9811,16 @@ pub const Workbench = struct {
 
     /// A click on the leading ellipsis lists the tabs clipped out of the strip
     /// and activates the chosen one.
-    fn showTabOverflowMenu(self: *Workbench, pane: *GroupPane) !bool {
+    fn showTabOverflowMenu(self: *Workbench, pane: *GroupPane, event: *const ui.MouseEvent) !bool {
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
         defer ordered.deinit();
         try pane.orderedTabs(self.allocator, &ordered);
         if (pane.hits.items.len >= ordered.items.len) return false;
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
+        const menu = try WorkbenchMenu.init(self.allocator, runTabOverflowAction);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
 
-        var hidden = std.array_list.Managed(*Tab).init(self.allocator);
-        errdefer hidden.deinit();
+        var hidden = std.array_list.Managed(*Tab).init(arena);
         for (ordered.items, 0..) |tab, index| {
             var visible = false;
             for (pane.hits.items) |hit| {
@@ -9754,85 +9832,71 @@ pub const Workbench = struct {
             if (!visible) try hidden.append(tab);
         }
         if (hidden.items.len == 0) {
-            hidden.deinit();
+            menu.deinit();
             return false;
         }
 
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
         for (hidden.items, 0..) |tab, index| {
-            try items.append(.{ .item = .{
-                .id = try std.fmt.allocPrint(arena, "overflow:{d}", .{index}),
-                .label = tab.input.getName(),
-            } });
+            try menu.add(try std.fmt.allocPrint(arena, "overflow:{d}", .{index}), .{ .label = tab.input.getName() });
         }
-        if (self.tab_overflow_tabs) |old| self.allocator.free(old);
-        self.tab_overflow_tabs = try hidden.toOwnedSlice();
-        self.tab_menu_pane = pane;
-        self.tab_menu_tab = null;
-        try self.quick_access.inputService().showPick(
-            items.items,
-            .{ .placeholder = "Open Editor" },
-            onTabOverflowPick,
-            self,
-        );
+        menu.tabs = hidden.items;
+        menu.group_id = pane.group.id;
+        try menu.show(self, event);
         return true;
     }
 
-    /// Terminal form of the upstream tab context menu: close/close-others/
-    /// close-all/pin actions presented through the quick pick.
-    pub fn showTabContextMenu(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
-        try items.append(.{ .item = .{ .id = "tab:close", .label = "Close" } });
-        try items.append(.{ .item = .{ .id = "tab:close_others", .label = "Close Others" } });
-        try items.append(.{ .item = .{ .id = "tab:close_right", .label = "Close to the Right" } });
-        try items.append(.{ .item = .{ .id = "tab:close_saved", .label = "Close Saved" } });
-        try items.append(.{ .item = .{ .id = "tab:close_all", .label = "Close All" } });
+    /// EditorTitleContext actions target the tab under the pointer.
+    pub fn showTabContextMenu(self: *Workbench, pane: *GroupPane, tab: *Tab, event: *const ui.MouseEvent) !void {
+        const menu = try WorkbenchMenu.init(self.allocator, runTabMenuAction);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
+        try menu.add("tab:close", .{ .label = "Close" });
+        try menu.add("tab:close_others", .{ .label = "Close Others" });
+        try menu.add("tab:close_right", .{ .label = "Close to the Right" });
+        try menu.add("tab:close_saved", .{ .label = "Close Saved" });
+        try menu.add("tab:close_all", .{ .label = "Close All" });
+        try menu.separator();
         const pinned = pane.group.model.isPinned(.{ .editor = tab.input });
-        try items.append(.{ .item = .{
-            .id = if (pinned) "tab:unpin" else "tab:pin",
-            .label = if (pinned) "Unpin" else "Pin",
-        } });
-        try items.append(.{ .item = .{ .id = "tab:split_right", .label = "Split Right" } });
-        try items.append(.{ .item = .{ .id = "tab:split_down", .label = "Split Down" } });
+        try menu.add(if (pinned) "tab:unpin" else "tab:pin", .{ .label = if (pinned) "Unpin" else "Pin" });
+        try menu.separator();
+        try menu.add("tab:split_right", .{ .label = "Split Right" });
+        try menu.add("tab:split_down", .{ .label = "Split Down" });
         if (tab.terminal_input != null) {
-            try items.append(.{ .item = .{ .id = "tab:move_terminal_to_panel", .label = "Move Terminal into Panel" } });
-            try items.append(.{ .item = .{ .id = "tab:rename_terminal", .label = "Rename Terminal" } });
+            try menu.add("tab:move_terminal_to_panel", .{ .label = "Move Terminal into Panel" });
+            try menu.add("tab:rename_terminal", .{ .label = "Rename Terminal" });
         }
-        self.tab_menu_pane = pane;
-        self.tab_menu_tab = tab;
-        try self.quick_access.inputService().showPick(
-            items.items,
-            .{ .placeholder = try arena.dupe(u8, tab.input.getName()) },
-            onTabMenuPick,
-            self,
-        );
+        menu.group_id = pane.group.id;
+        menu.tabs = try arena.dupe(*Tab, &.{tab});
+        try menu.show(self, event);
     }
 
-    /// Terminal form of the upstream status-bar context menu: the hide and
-    /// manage-extension actions are presented through the quick pick.
-    pub fn showStatusbarContextMenu(self: *Workbench, handle: statusbar_model_mod.EntryHandle) !void {
-        const entry = self.statusbar.main_part.model.findByHandle(handle) orelse return;
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
-        try items.append(.{ .item = .{
-            .id = try std.fmt.allocPrint(arena, "hide:{s}", .{entry.id}),
-            .label = try std.fmt.allocPrint(arena, "Hide '{s}'", .{entry.item.name()}),
-        } });
-        if (entry.item.entry.extension_id != null) {
-            try items.append(.{ .item = .{
-                .id = try std.fmt.allocPrint(arena, "manage:{s}", .{entry.id}),
-                .label = "Manage Extension",
-            } });
+    /// Mirrors StatusbarPart.getContextMenuActions, including the empty row.
+    pub fn showStatusbarContextMenu(self: *Workbench, handle: ?statusbar_model_mod.EntryHandle, event: *const ui.MouseEvent) !void {
+        const model = &self.statusbar.main_part.model;
+        const menu = try WorkbenchMenu.init(self.allocator, runStatusbarMenuAction);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
+        try menu.add("hide-bar", .{ .label = "Hide Status Bar" });
+        try menu.separator();
+        var seen = std.StringHashMap(void).init(arena);
+        for (model.entries()) |entry| {
+            // Inactive contributions keep an empty placeholder entry in the TUI.
+            if (entry.name().len == 0 and entry.item.text().len == 0) continue;
+            if ((try seen.getOrPut(entry.id)).found_existing) continue;
+            try menu.add(try std.fmt.allocPrint(arena, "toggle:{s}", .{entry.id}), .{
+                .label = entry.item.name(),
+                .type = .checkbox,
+                .checked = !model.isHidden(entry.id),
+            });
         }
-        try self.quick_access.inputService().showPick(
-            items.items,
-            .{ .placeholder = "Status Bar" },
-            onStatusbarMenuPick,
-            self,
-        );
+        if (handle) |target| if (model.findByHandle(target)) |entry| {
+            try menu.separator();
+            if (entry.item.entry.extension_id != null) {
+                try menu.add(try std.fmt.allocPrint(arena, "manage:{s}", .{entry.id}), .{ .label = "Manage Extension" });
+            }
+            try menu.add(try std.fmt.allocPrint(arena, "hide:{s}", .{entry.id}), .{ .label = try std.fmt.allocPrint(arena, "Hide '{s}'", .{entry.item.name()}) });
+        };
+        try menu.show(self, event);
     }
 
     fn ensureStatusbarService(self: *Workbench) !*keybinding_service.KeybindingService {
@@ -10225,7 +10289,7 @@ pub const Workbench = struct {
             self.pointer = if (hit != null) .pointer else .default;
             if (event.kind == .down) {
                 if (activity_bar_mod.overflowHitAt(&self.activity_bar_part, event.x, event.y, activity_rect)) {
-                    self.showActivityOverflowMenu() catch {};
+                    self.showActivityOverflowMenu(event) catch {};
                 } else if (hit) |index| {
                     self.showActivity(index) catch {};
                 }
@@ -10602,7 +10666,7 @@ pub const Workbench = struct {
                             if (tab.terminalInstance()) |instance| {
                                 self.service.activateGroup(pane.group);
                                 if (event.x == hit.start + 1) {
-                                    self.showTerminalProfilePicker(pane.group.id) catch {};
+                                    self.showTerminalProfileMenu(pane.group.id, event) catch {};
                                 } else if (event.mods.alt) {
                                     self.openTerminalEditorToSide(instance) catch {};
                                 } else {
@@ -10628,14 +10692,14 @@ pub const Workbench = struct {
             if (event.button == .right) {
                 if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                     if (self.orderedTabAt(pane, index)) |tab| {
-                        self.showTabContextMenu(pane, tab) catch {};
+                        self.showTabContextMenu(pane, tab, event) catch {};
                     }
                 }
                 return true;
             }
             if (event.button != .left) return false;
             if (pane.hits.items.len > 0 and event.x < pane.hits.items[0].start) {
-                if (self.showTabOverflowMenu(pane) catch false) return true;
+                if (self.showTabOverflowMenu(pane, event) catch false) return true;
             }
             if (tab_bar.closeHitAt(pane.hits.items, event.x)) |index| {
                 if (self.orderedTabAt(pane, index)) |tab| {
@@ -10653,7 +10717,7 @@ pub const Workbench = struct {
                 }
                 if (tab) |value| {
                     if (builtin.os.tag == .macos and event.mods.ctrl) {
-                        self.showTabContextMenu(pane, value) catch {};
+                        self.showTabContextMenu(pane, value, event) catch {};
                         return true;
                     }
                     self.selectTabForDrag(pane, value, index, event.mods) catch return true;
@@ -11163,6 +11227,7 @@ pub const Workbench = struct {
         try self.renderScmHistoryHover();
         try self.quick_access.render(&self.frame.next);
         if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next, self.part.cell_border_capabilities);
+        if (self.context_menu) |menu| menu.popup.?.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
         if (self.dialog) |dialog| dialog.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
         try self.editor_drag.paintImage(&self.frame.next, self.drag_tab_drop != null);
 
@@ -11711,6 +11776,7 @@ pub const Workbench = struct {
     /// composite bar lives and whether the activity bar is shown at all.
     fn applyLayoutSettings(self: *Workbench) void {
         const values = layout_service_mod.LayoutSettingsValues.load(self.configuration, self.workspaceRoot());
+        if (!self.layout_model.isZenModeActive()) self.layout_model.setVisible(.statusbar, values.status_bar_visible) catch {};
         self.activity_bar_part.setCompact(values.activity_bar_compact) catch {};
         self.sidebar_part.setLayoutSettings(values) catch {};
         self.syncActivityBarVisibility() catch {};
@@ -12138,9 +12204,6 @@ pub const Workbench = struct {
     pub fn pollBreadcrumbs(self: *Workbench) bool {
         if (!self.breadcrumbs_dirty) return false;
         self.breadcrumbs_dirty = false;
-        self.tab_menu_pane = null;
-        self.tab_menu_tab = null;
-        self.tab_overflow_tabs = null;
         return true;
     }
 
@@ -12307,7 +12370,7 @@ pub const Workbench = struct {
     }
     pub fn cursorCell(self: *Workbench) ?ViewCell {
         if (self.quick_access.isOpen()) return null;
-        if (self.dialog != null) return null;
+        if (self.dialog != null or self.context_menu != null) return null;
         if (self.breadcrumbPopupVisible()) return null;
         if (self.focus == .terminal) {
             if (!self.terminalVisible()) return null;
@@ -12773,82 +12836,75 @@ fn breadcrumbFocusEditor(context: *anyopaque) void {
     if (self.workbench.activeTab()) |tab| tab.focusEditor();
 }
 
-fn onActivityOverflowPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const item = picker.activeItem() orelse return;
-    if (!std.mem.startsWith(u8, item.id, "activity:")) return;
-    _ = try self.showActivityById(item.id[9..]);
+fn runActivityOverflowAction(self: *Workbench, _: *WorkbenchMenu, id: []const u8) anyerror!void {
+    if (!std.mem.startsWith(u8, id, "activity:")) return;
+    _ = try self.showActivityById(id[9..]);
 }
 
-fn onTabOverflowPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const item = picker.activeItem() orelse return;
-    const index = itemIndex(item.id, "overflow:") orelse return;
-    const tabs = self.tab_overflow_tabs orelse return;
-    self.tab_overflow_tabs = null;
-    defer self.allocator.free(tabs);
+fn runTabOverflowAction(self: *Workbench, menu: *WorkbenchMenu, id: []const u8) anyerror!void {
+    const index = itemIndex(id, "overflow:") orelse return;
+    const tabs = menu.tabs;
     if (index >= tabs.len) return;
-    const pane = self.tab_menu_pane orelse return;
-    self.tab_menu_pane = null;
+    const group = self.service.getGroup(menu.group_id.?) orelse return;
+    const pane = self.paneForGroup(group) orelse return;
+    if (pane.indexOfTab(tabs[index]) == null) return;
     try pane.activateTab(tabs[index]);
     self.focusEditor();
     self.layoutAll();
 }
 
-fn onTabMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const item = picker.activeItem() orelse return;
-    const pane = self.tab_menu_pane orelse return;
-    const tab = self.tab_menu_tab orelse return;
-    self.tab_menu_pane = null;
-    self.tab_menu_tab = null;
+fn runTabMenuAction(self: *Workbench, menu: *WorkbenchMenu, id: []const u8) anyerror!void {
+    const group = self.service.getGroup(menu.group_id.?) orelse return;
+    const pane = self.paneForGroup(group) orelse return;
+    const tab = menu.tabs[0];
+    if (pane.indexOfTab(tab) == null) return;
 
-    if (std.mem.eql(u8, item.id, "tab:close")) {
+    if (std.mem.eql(u8, id, "tab:close")) {
         _ = try self.closeTab(pane, tab);
-    } else if (std.mem.eql(u8, item.id, "tab:rename_terminal")) {
+    } else if (std.mem.eql(u8, id, "tab:rename_terminal")) {
         if (tab.terminalInstance()) |instance| try self.showTerminalRename(instance);
-    } else if (std.mem.eql(u8, item.id, "tab:move_terminal_to_panel")) {
+    } else if (std.mem.eql(u8, id, "tab:move_terminal_to_panel")) {
         try self.moveTerminalToPanel(pane, tab);
-    } else if (std.mem.eql(u8, item.id, "tab:close_others")) {
-        const tabs = try self.breadcrumbs_arena.allocator().dupe(*Tab, pane.tabs.items);
+    } else if (std.mem.eql(u8, id, "tab:close_others")) {
+        const tabs = try menu.arena.allocator().dupe(*Tab, pane.tabs.items);
         for (tabs) |candidate| {
             if (candidate == tab) continue;
             _ = try self.closeTab(pane, candidate);
             if (self.dialog != null) break;
         }
-    } else if (std.mem.eql(u8, item.id, "tab:close_right")) {
+    } else if (std.mem.eql(u8, id, "tab:close_right")) {
         const index = pane.indexOfTab(tab) orelse return;
-        const tabs = try self.breadcrumbs_arena.allocator().dupe(*Tab, pane.tabs.items);
+        const tabs = try menu.arena.allocator().dupe(*Tab, pane.tabs.items);
         for (tabs, 0..) |candidate, candidate_index| {
             if (candidate_index <= index) continue;
             _ = try self.closeTab(pane, candidate);
             if (self.dialog != null) break;
         }
-    } else if (std.mem.eql(u8, item.id, "tab:close_saved")) {
-        const tabs = try self.breadcrumbs_arena.allocator().dupe(*Tab, pane.tabs.items);
+    } else if (std.mem.eql(u8, id, "tab:close_saved")) {
+        const tabs = try menu.arena.allocator().dupe(*Tab, pane.tabs.items);
         for (tabs) |candidate| {
             if (candidate.editor.isDirty()) continue;
             _ = try self.closeTab(pane, candidate);
             if (self.dialog != null) break;
         }
-    } else if (std.mem.eql(u8, item.id, "tab:close_all")) {
-        const tabs = try self.breadcrumbs_arena.allocator().dupe(*Tab, pane.tabs.items);
+    } else if (std.mem.eql(u8, id, "tab:close_all")) {
+        const tabs = try menu.arena.allocator().dupe(*Tab, pane.tabs.items);
         for (tabs) |candidate| {
             _ = try self.closeTab(pane, candidate);
             if (self.dialog != null) break;
         }
-    } else if (std.mem.eql(u8, item.id, "tab:pin")) {
+    } else if (std.mem.eql(u8, id, "tab:pin")) {
         _ = pane.group.model.pin(tab.input) catch {};
         self.layoutAll();
-    } else if (std.mem.eql(u8, item.id, "tab:unpin")) {
+    } else if (std.mem.eql(u8, id, "tab:unpin")) {
         _ = pane.group.model.unpin(tab.input) catch {};
         self.layoutAll();
-    } else if (std.mem.eql(u8, item.id, "tab:split_right") or
-        std.mem.eql(u8, item.id, "tab:split_down"))
+    } else if (std.mem.eql(u8, id, "tab:split_right") or
+        std.mem.eql(u8, id, "tab:split_down"))
     {
         try pane.activateTab(tab);
         self.focusEditor();
-        try self.splitActive(if (std.mem.eql(u8, item.id, "tab:split_right"))
+        try self.splitActive(if (std.mem.eql(u8, id, "tab:split_right"))
             .horizontal
         else
             .vertical);
@@ -12856,15 +12912,29 @@ fn onTabMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     self.breadcrumbs_dirty = true;
 }
 
-fn onStatusbarMenuPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const item = picker.activeItem() orelse return;
-    if (std.mem.startsWith(u8, item.id, "hide:")) {
-        self.statusbar.main_part.model.hide(item.id[5..]);
+fn runStatusbarMenuAction(self: *Workbench, _: *WorkbenchMenu, id: []const u8) anyerror!void {
+    if (std.mem.eql(u8, id, "hide-bar")) {
+        try self.setUserConfigurationValue(layout_service_mod.LayoutSettings.status_bar_visible, .{ .bool = false });
+        try self.layout_model.setVisible(.statusbar, false);
+        if (self.focus == .statusbar) self.focusEditor();
+        self.layoutAll();
         return;
     }
-    if (std.mem.startsWith(u8, item.id, "manage:")) {
-        const entry = self.statusbar.main_part.model.findEntry(item.id[7..]) orelse return;
+    if (std.mem.startsWith(u8, id, "toggle:")) {
+        const model = &self.statusbar.main_part.model;
+        const entry = model.findEntry(id[7..]) orelse return;
+        var toggle = statusbar_actions.ToggleStatusbarEntryVisibilityAction.init(entry.id, entry.item.name(), model);
+        toggle.run();
+        return;
+    }
+    if (std.mem.startsWith(u8, id, "hide:")) {
+        const model = &self.statusbar.main_part.model;
+        const entry = model.findEntry(id[5..]) orelse return;
+        model.hide(entry.id);
+        return;
+    }
+    if (std.mem.startsWith(u8, id, "manage:")) {
+        const entry = self.statusbar.main_part.model.findEntry(id[7..]) orelse return;
         if (entry.item.entry.extension_id) |extension_id| {
             if (self.statusbar.main_part.command_executor) |executor| {
                 var action = statusbar_actions.ManageExtensionAction{
@@ -14163,12 +14233,20 @@ fn commandFocusStatusBar(context: *anyopaque) anyerror!void {
 
 fn onTerminalPicker(context: *anyopaque, picker: *QuickPick) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    const service = self.terminal_service orelse return;
     const item = picker.activeItem() orelse return;
-    const separator = std.mem.indexOfScalar(u8, item.id, ':') orelse return;
-    const action = item.id[0..separator];
+    try runTerminalAction(self, item.id);
+}
+
+fn onTerminalMenu(self: *Workbench, _: *WorkbenchMenu, id: []const u8) anyerror!void {
+    try runTerminalAction(self, id);
+}
+
+fn runTerminalAction(self: *Workbench, action_id: []const u8) anyerror!void {
+    const service = self.terminal_service orelse return;
+    const separator = std.mem.indexOfScalar(u8, action_id, ':') orelse return;
+    const action = action_id[0..separator];
     if (std.mem.eql(u8, action, "tabs")) {
-        const setting = item.id[separator + 1 ..];
+        const setting = action_id[separator + 1 ..];
         if (std.mem.eql(u8, setting, "hide")) {
             try self.setUserConfigurationValue("terminal.integrated.tabs.enabled", .{ .bool = false });
         } else {
@@ -14178,7 +14256,7 @@ fn onTerminalPicker(context: *anyopaque, picker: *QuickPick) anyerror!void {
         return;
     }
     if (std.mem.eql(u8, action, "editor-profile")) {
-        var segments = std.mem.splitScalar(u8, item.id[separator + 1 ..], ':');
+        var segments = std.mem.splitScalar(u8, action_id[separator + 1 ..], ':');
         const group_id = std.fmt.parseUnsigned(editor_mod.GroupIdentifier, segments.next() orelse return, 10) catch return;
         const profile_index = std.fmt.parseUnsigned(usize, segments.next() orelse return, 10) catch return;
         if (profile_index >= service.profiles.items.len) return;
@@ -14189,7 +14267,7 @@ fn onTerminalPicker(context: *anyopaque, picker: *QuickPick) anyerror!void {
         _ = try self.openTerminalEditor(pane, service, instance);
         return;
     }
-    const id = std.fmt.parseUnsigned(usize, item.id[separator + 1 ..], 10) catch return;
+    const id = std.fmt.parseUnsigned(usize, action_id[separator + 1 ..], 10) catch return;
     if (std.mem.eql(u8, action, "profile")) {
         if (id >= service.profiles.items.len) return;
         _ = try service.createWithProfile(service.profiles.items[id]);
@@ -18985,13 +19063,17 @@ test "Workbench: status bar context menu hides an entry" {
     const model = &workbench.statusbar.main_part.model;
     const entry = if (model.findEntry("status.editor.mode")) |found| found else &model.entries()[0];
     const id = entry.id;
-    try workbench.showStatusbarContextMenu(entry.handle);
-    try std.testing.expect(workbench.isQuickAccessOpen());
-    const picker = workbench.quick_access.inputService().pickerRef();
-    try std.testing.expect(std.mem.startsWith(u8, picker.activeItem().?.label, "Hide"));
+    try workbench.showStatusbarContextMenu(entry.handle, &.{ .kind = .down, .button = .right, .x = 4, .y = 11 });
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expect(workbench.context_menu != null);
+    for (workbench.context_menu.?.popup.?.items) |item| {
+        if (item.type == .checkbox) try std.testing.expect(item.label.len > 0);
+    }
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .end }));
+    try std.testing.expect(std.mem.startsWith(u8, workbench.context_menu.?.popup.?.focusedItem().?.label, "Hide"));
 
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = workbench.handleContextMenuKey(&enter);
     try std.testing.expect(model.isHidden(id));
 }
 
@@ -19860,12 +19942,13 @@ test "Workbench: tab context menu closes the tab" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    try std.testing.expect(workbench.isQuickAccessOpen());
-    const picker = workbench.quick_access.inputService().pickerRef();
-    try std.testing.expectEqualStrings("Close", picker.activeItem().?.label);
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expect(workbench.context_menu != null);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    try std.testing.expectEqualStrings("Close", workbench.context_menu.?.popup.?.focusedItem().?.label);
 
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = workbench.handleContextMenuKey(&enter);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
 }
 
@@ -21336,7 +21419,7 @@ test "Workbench: new terminal creates one tab and hover does not act" {
     try std.testing.expect(workbench.handleTerminalMouse(&tab_right));
     try std.testing.expectEqual(@as(usize, 1), service.group.active);
     var escape: ui.KeyEvent = .{ .key = .escape };
-    try std.testing.expect(try workbench.handleQuickAccessKey(&escape));
+    try std.testing.expect(workbench.handleContextMenuKey(&escape));
     var tab_click = ui.MouseEvent{ .kind = .down, .button = .left, .x = ui.cell.snap(with_tabs.tabs.x) + 1, .y = ui.cell.snap(with_tabs.tabs.y) };
     try std.testing.expect(workbench.handleTerminalMouse(&tab_click));
     try std.testing.expectEqual(@as(usize, 0), service.group.active);
@@ -21956,9 +22039,16 @@ test "Workbench: right click on a tab neither closes nor activates it" {
     const tab_y = ui.cell.snap(pane.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .right };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    try std.testing.expect(workbench.isQuickAccessOpen());
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expect(workbench.context_menu != null);
+    var release = down;
+    release.kind = .up;
+    try std.testing.expect(workbench.handleContextMenuMouse(&release));
+    try std.testing.expect(workbench.context_menu != null);
+    try std.testing.expectEqual(tab_x, workbench.context_menu.?.popup.?.options.x.?);
+    try std.testing.expectEqual(tab_y, workbench.context_menu.?.popup.?.options.y.?);
     var escape = ui.KeyEvent{ .key = .escape };
-    _ = try workbench.handleQuickAccessKey(&escape);
+    _ = workbench.handleContextMenuKey(&escape);
 
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqualStrings("right_b.txt", workbench.activeTab().?.input.getName());
@@ -22143,12 +22233,14 @@ test "Workbench: tab overflow lists clipped tabs" {
         .button = .left,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    try std.testing.expect(workbench.isQuickAccessOpen());
-    const picker = workbench.quick_access.inputService().pickerRef();
-    const hidden_name = picker.activeItem().?.label;
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expect(workbench.context_menu != null);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    const hidden_name = try allocator.dupe(u8, workbench.context_menu.?.popup.?.focusedItem().?.label);
+    defer allocator.free(hidden_name);
 
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = workbench.handleContextMenuKey(&enter);
     try std.testing.expectEqualStrings(hidden_name, workbench.activeTab().?.input.getName());
 }
 
@@ -22179,10 +22271,10 @@ test "Workbench: tab context menu closes to the right" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    const picker = workbench.quick_access.inputService().pickerRef();
-    picker.setActiveIndex(2);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    for (0..2) |_| try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = workbench.handleContextMenuKey(&enter);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
 }
 
@@ -22212,10 +22304,10 @@ test "Workbench: tab context menu splits the captured tab" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    const picker = workbench.quick_access.inputService().pickerRef();
-    picker.setActiveIndex(6);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    for (0..6) |_| try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = workbench.handleContextMenuKey(&enter);
 
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
     try std.testing.expectEqualStrings("split_a.txt", workbench.activeTab().?.input.getName());
@@ -22246,10 +22338,10 @@ test "Workbench: tab context menu closes saved tabs" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    const picker = workbench.quick_access.inputService().pickerRef();
-    picker.setActiveIndex(3);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    for (0..3) |_| try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = workbench.handleContextMenuKey(&enter);
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
 
@@ -22282,10 +22374,10 @@ test "Workbench: close saved keeps dirty tabs" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    const picker = workbench.quick_access.inputService().pickerRef();
-    picker.setActiveIndex(3);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    for (0..3) |_| try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = try workbench.handleQuickAccessKey(&enter);
+    _ = workbench.handleContextMenuKey(&enter);
 
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("dirty_saved_a.txt", workbench.activeTab().?.input.getName());

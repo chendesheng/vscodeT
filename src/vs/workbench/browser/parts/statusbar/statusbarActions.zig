@@ -1,8 +1,7 @@
 // Port of `src/vs/workbench/browser/parts/statusbar/statusbarActions.ts`.
 //
-// The browser actions are menu items in the status-bar context menu. The TUI
-// shows them through the existing quick pick on a right-click: Hide is always
-// offered and Manage Extension is added for extension-owned entries.
+// The workbench context menu uses these actions for entry visibility and
+// extension management.
 
 const std = @import("std");
 

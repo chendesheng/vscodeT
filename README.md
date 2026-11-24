@@ -267,7 +267,7 @@ shortcut.
 Terminal tabs form a resizable list beside the shell. By default the list is on
 the right and hides with one terminal. The `terminal.integrated.tabs` settings
 control visibility, side, click-to-focus mode, and the active title and actions
-in the panel toolbar. The toolbar opens new terminals and the profile picker.
+in the panel toolbar. The toolbar opens new terminals and offers profile and terminal-switch dropdown menus.
 Split groups share the terminal area; each pane has its own PTY size, and the
 list shows branch markers for group members.
 
@@ -667,7 +667,7 @@ console API for raw mode, sizing and input polling.
   activating a tab; pinned tabs share the single row rather than using a
   separate pinned row, duplicate labels append a dimmed parent-directory
   description (`workbench.editor.labelFormat` short/medium/long/default is
-  read), clicking the leading ellipsis lists the clipped tabs in a quick pick,
+  read), clicking the leading ellipsis lists the clipped tabs in an anchored menu,
   `workbench.editor.tabCloseButton` off/left/right controls the close cell,
   `workbench.editor.tabSizing` fit/shrink/fixed sizes the strip,
   `workbench.editor.showTabs` none/single hides the row and reclaims it for
@@ -1258,8 +1258,8 @@ console API for raw mode, sizing and input polling.
   `docs/terminal-ui.md`: codicons are plain text, text ellipsis is
   pre-truncation, focus is an underline, the tooltip is plain text, hidden
   entry state is in memory; Escape dismisses the hover tooltip, a right-click
-  opens the hide/manage-extension actions through the quick pick, while the browser's other context-menu and
-  auxiliary parts are not ported. The
+  opens a menu with status-bar and entry visibility actions. Extension-owned entries also
+  offer Manage Extension. The
   `zig build run -- --preview <file>` read-only mode uses the same token
   renderer and adds Up/Down, PageUp/PageDown, Home, End and mouse-wheel
   scrolling; Ctrl-Q quits. Overlay widgets and a single-line terminal input box

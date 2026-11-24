@@ -12,7 +12,7 @@
 // `right-items` are row-reverse), with the right group kept on one line and
 // clipped at the row edge instead of wrapping. The item max width is the cell
 // equivalent of `max-width: 40vw`. CSS outline/pseudo-elements are replaced by
-// underline/prefix glyphs; DOM context menus, window focus events, auxiliary
+// underline/prefix glyphs; window focus events, auxiliary
 // parts and scoped services have no terminal counterpart.
 
 const std = @import("std");

@@ -43,6 +43,7 @@ pub const ActivityBarPosition = enum {
 
 /// Upstream `LayoutSettings` ids read by the terminal shell.
 pub const LayoutSettings = struct {
+    pub const status_bar_visible = "workbench.statusBar.visible";
     pub const activity_bar_location = "workbench.activityBar.location";
     pub const activity_bar_auto_hide = "workbench.activityBar.autoHide";
     pub const activity_bar_compact = "workbench.activityBar.compact";
@@ -68,6 +69,7 @@ pub const ZenModeSettings = struct {
 
 /// The layout settings the terminal shell reads, with upstream defaults.
 pub const LayoutSettingsValues = struct {
+    status_bar_visible: bool = true,
     activity_bar_location: ActivityBarPosition = .default,
     activity_bar_auto_hide: bool = false,
     activity_bar_compact: bool = false,
@@ -82,6 +84,9 @@ pub const LayoutSettingsValues = struct {
         var values = LayoutSettingsValues{};
         const config = configuration_service orelse return values;
         const overrides: configuration.Overrides = if (resource) |path| .{ .resource = path } else .{};
+        if (config.getValue(LayoutSettings.status_bar_visible, overrides)) |value| {
+            if (value.* == .bool) values.status_bar_visible = value.bool;
+        }
         if (config.getValue(LayoutSettings.activity_bar_location, overrides)) |value| {
             values.activity_bar_location = activityBarPosition(value.*, .default);
         }
