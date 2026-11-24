@@ -1,13 +1,6 @@
-//! The multi-file terminal workbench: the TUI adapter over the ported
-//! workbench editor part, group views, panes and split grid.
-//!
-//! The portable counterparts are ported to their upstream paths:
-//! `editorPart.zig` (group registry, grid, branch demotion and sash math),
-//! `editorGroupView.zig` (tab-to-model mapping, active tab, pane activation)
-//! and `editorPanes.zig` (active pane and page position), plus
-//! `src/vs/base/browser/ui/grid/grid.zig` and `editorDropTarget.zig`. This file
-//! keeps only the terminal shell: rendering, input routing, the sidebar/search
-//! chrome and the CLI/editor services.
+//! Terminal workbench composition root. This file currently owns feature wiring,
+//! host I/O and integration tests. See docs/workbench-audit.md for the mapping
+//! to the pinned workbench.ts, layout, contributions and terminal host.
 //!
 //! Every group gets a tab row and an editor pane, groups are arranged in an
 //! oriented split tree, and the workbench composites all visible panes into one

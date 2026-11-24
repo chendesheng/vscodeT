@@ -27,6 +27,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libonig-dev ripgrep
+      - name: Check workbench boundaries
+        run: zig build check-workbench
       - name: Build
         run: zig build
       - name: Build the JSON language server
@@ -52,6 +54,8 @@ jobs:
           version: 0.17.1
       - name: Install oniguruma and ripgrep
         run: brew install oniguruma ripgrep
+      - name: Check workbench boundaries
+        run: zig build check-workbench
       - name: Build
         run: zig build
       - name: Build the JSON language server
@@ -108,6 +112,8 @@ jobs:
           & "$vcpkg\vcpkg.exe" install oniguruma:x64-windows
           "ONIG_DIR=$vcpkg\installed\x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$vcpkg\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Check workbench boundaries
+        run: zig build check-workbench
       - name: Build
         shell: pwsh
         run: zig build "-Donig-include=$env:ONIG_DIR\include" "-Donig-lib=$env:ONIG_DIR\lib"

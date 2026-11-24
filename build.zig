@@ -4,6 +4,17 @@ const std = @import("std");
 // declaratively construct a build graph that will be executed by an external
 // runner.
 pub fn build(b: *std.Build) void {
+    const boundary_check = b.addExecutable(.{
+        .name = "check-workbench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/check-workbench.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const check = b.addRunArtifact(boundary_check);
+    check.setCwd(b.path("."));
+    b.step("check-workbench", "Check workbench size and import boundaries").dependOn(&check.step);
+
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options

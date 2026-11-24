@@ -394,6 +394,7 @@ Before reporting a port as complete:
 ```sh
 zig build
 zig build test --summary all
+zig build check-workbench
 zig fmt --check <changed files>
 git diff --check
 ```
