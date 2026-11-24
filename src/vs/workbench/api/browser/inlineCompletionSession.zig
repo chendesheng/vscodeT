@@ -26,6 +26,8 @@ pub const Session = struct {
     due: ?i64 = null,
     pending: ?u32 = null,
     handle: u32 = 0,
+    supports_events: bool = false,
+    sent_at: i64 = 0,
     stale: bool = false,
     list_id: ?i64 = null,
     command: ?std.json.Value = null,
@@ -85,7 +87,12 @@ pub const Session = struct {
             self.position = position;
             if (edited and editor.cursorCount() == 1 and editor.modelSelection().isEmpty()) self.due = now + 200;
         }
-        if (self.pending != null or self.due == null or self.due.? > now) return self.changed;
+        if (self.pending) |request| {
+            if (now - self.sent_at < 15_000) return self.changed;
+            self.host.rpc.cancel(request);
+            self.pending = null;
+        }
+        if (self.due == null or self.due.? > now) return self.changed;
         self.due = null;
         if (self.workbench.configuration) |cfg| {
             if (!cfg.getBool("editor.inlineSuggest.enabled", true)) return self.changed;
@@ -93,7 +100,9 @@ pub const Session = struct {
         const a = self.arena.allocator();
         const providers = try actor.inline_providers.ordered(a, editor.model, false);
         if (providers.len == 0) return self.changed;
-        self.handle = providers[0];
+        self.handle = providers[0].handle;
+        self.supports_events = providers[0].supports_events;
+        self.sent_at = now;
         var uuid: [16]u8 = undefined;
         self.workbench.io.random(&uuid);
         uuid[6] = (uuid[6] & 0x0f) | 0x40;
@@ -139,6 +148,11 @@ pub const Session = struct {
             const range = if (item.object.get("range")) |raw| features.rangeFromJson(editor.model, raw) orelse continue else Range.init(p.lineNumber, p.column, p.lineNumber, p.column);
             if (!(tab.view.ghost_text.show(range, text.string) catch false)) continue;
             self.list_id = id.integer;
+            if (self.supports_events) {
+                if (item.object.get("idx")) |index| self.host.notify(endpoint, "$handleInlineCompletionDidShow", &.{
+                    .{ .json = .{ .integer = self.handle } }, .{ .json = id }, .{ .json = index }, .{ .json = text },
+                }) catch {};
+            }
             if (item.object.get("command")) |cmd| self.command = rpc.cloneJsonValue(self.arena.allocator(), cmd) catch null;
             self.changed = true;
             tab.view.invalidate();
@@ -153,7 +167,7 @@ pub const Session = struct {
             if (cmd == .object) {
                 if (cmd.object.get("id")) |id| {
                     const args = cmd.object.get("arguments") orelse std.json.Value{ .array = std.json.Array.init(self.arena.allocator()) };
-                    try self.host.notify(proxy(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &.{ .{ .json = id }, .{ .json = args } });
+                    if (id == .string and args == .array) try self.host.executeContributedCommand(id.string, args.array.items);
                 }
             }
         }

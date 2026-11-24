@@ -68,5 +68,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     await bundleExtension('emmet', 'dist/node/emmetNodeMain.js');
     await bundleWebLanguage('css');
     await bundleWebLanguage('html');
+    const copilot = path.join(destination, 'copilot');
+    await build({ ...options, entryPoints: [path.join(here, 'copilot-inline/extension.cjs')], outfile: path.join(copilot, 'extension.cjs') });
+    await cp(path.join(here, 'copilot-inline/package.json'), path.join(copilot, 'package.json'));
     await bundleTypeScript();
 }

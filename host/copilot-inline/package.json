@@ -1,0 +1,16 @@
+{
+  "name": "copilot-inline",
+  "publisher": "vscode-textbuffer",
+  "displayName": "GitHub Copilot Inline Completions",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.147.0" },
+  "enabledApiProposals": ["inlineCompletionsAdditions"],
+  "main": "./extension.cjs",
+  "activationEvents": ["onLanguage"],
+  "contributes": {
+    "commands": [
+      { "command": "vscode-textbuffer.copilot.signIn", "title": "Sign In", "category": "GitHub Copilot" },
+      { "command": "vscode-textbuffer.copilot.signOut", "title": "Sign Out", "category": "GitHub Copilot" }
+    ]
+  }
+}

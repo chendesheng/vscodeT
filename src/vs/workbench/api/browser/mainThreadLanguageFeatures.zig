@@ -92,12 +92,14 @@ const FormattingState = struct {
     trigger_characters: []const []const u8 = &.{},
 };
 
+pub const InlineProvider = struct { handle: u32, supports_events: bool };
+
 pub const MainThreadLanguageFeatures = struct {
     allocator: Allocator,
     features: *features_mod.LanguageFeaturesService,
     proxy: HostProxy,
     registrations: std.AutoHashMap(u32, *Registration),
-    inline_providers: @import("../../../editor/common/languageFeatureRegistry.zig").LanguageFeatureRegistry(u32),
+    inline_providers: @import("../../../editor/common/languageFeatureRegistry.zig").LanguageFeatureRegistry(InlineProvider),
 
     pub fn init(allocator: Allocator, features: *features_mod.LanguageFeaturesService, proxy: HostProxy) MainThreadLanguageFeatures {
         return .{
@@ -158,7 +160,7 @@ pub const MainThreadLanguageFeatures = struct {
             const handle = handleArg(args) orelse return error.InvalidArguments;
             const selector = try parseSelector(arena, jsonArg(args, 1) orelse return error.InvalidArguments);
             const registration = try self.createRegistration(arena, handle);
-            registration.disposable = try self.inline_providers.register(selector, handle);
+            registration.disposable = try self.inline_providers.register(selector, .{ .handle = handle, .supports_events = boolArg(args, 2) });
             return .empty;
         }
         if (std.mem.eql(u8, method, "$registerHoverProvider")) return self.registerHover(args, arena);

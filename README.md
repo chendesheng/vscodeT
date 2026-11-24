@@ -401,6 +401,28 @@ The intermediate bundles under `host/dist` are also used by the repository's
 interop tests. The host transport currently supports macOS and Linux.
 Windows requires a local IPC transport and a native launcher.
 
+#### Copilot inline completions
+
+Build the native editor and host, install GitHub’s language server, then start
+the editor with the server executable selected. The adapter reads its executable
+from the process environment. [GitHub Copilot Language Server](https://github.com/github/copilot-language-server-release)
+
+```sh
+npm --prefix host ci
+zig build
+zig build host
+npm install -g @github/copilot-language-server@1.574.1
+VSCODE_TEXTBUFFER_COPILOT_SERVER=copilot-language-server zig-out/bin/zig example.py
+```
+
+Open the command palette and run **GitHub Copilot: Sign In**. The status bar
+shows a device code. Run the same command again to open GitHub and enter the
+code. After signing in, type at the end of a line. Tab accepts the suggestion,
+Escape dismisses it, and Undo restores the previous text. Multiline suggestions
+show their first line with a return marker and insert the full text on acceptance.
+Use **GitHub Copilot: Sign Out** to end the session. The adapter honors
+`github.copilot.enable` per language and `editor.inlineSuggest.enabled`.
+
 Vim is a compiled-in built-in extension (`vscode-textbuffer.vim`), enabled
 with `"vim.enabled": true` in the user settings or after startup with the
 `Vim: Enable` / `Vim: Disable` commands; both persist the user-level
