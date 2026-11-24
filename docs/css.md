@@ -135,6 +135,10 @@ Rules:
   | `overlayWidgets.css` | `0x0020` | overlayWidgets |
   | `sash.css` | `0x0030` | sash, vertical, horizontal |
   | `folding.css` | `0x0040` | codicon-folding, codicon-folding-collapsed, alwaysShowFoldIcons |
+  | `gridview.css` | `0x0050` | monaco-grid-view |
+  | `splitview.css` | `0x0060` | split-view-view, hidden view |
+  | `editorgroupview.css` | `0x0070` | editor-group-container, title, editor-instance, empty editor container, grid-view-container |
+  | `editor.css` (viewport) | `0x0080` | monaco-editor, overflow-guard |
 
 - The editor registers every sheet once in `View.init` through
   `editorCss.register(document)`. `Document.clear()` preserves them.

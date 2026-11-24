@@ -175,6 +175,14 @@ pub const Surface = struct {
         self.frame.swap();
     }
 
+    /// Paints this viewport into a host frame with the same dimensions.
+    pub fn paintInto(self: *Surface, target: *cell.CellGrid) !void {
+        std.debug.assert(target.cols == self.doc.cols and target.rows == self.doc.rows);
+        try self.ensureLayout();
+        self.resolveHover();
+        paint.paintTreeWithBorderCapabilities(self.box_tree, &self.doc, target, self.border_capabilities);
+    }
+
     /// Lays out the current tree, paints it, diffs it against the previous
     /// frame and writes the ANSI delta. An unchanged frame writes nothing.
     pub fn render(self: *Surface, writer: *std.Io.Writer, options: RenderOptions) !void {

@@ -603,7 +603,19 @@ pub const DiffEditorWidget = struct {
         self.modified_view.refresh() catch {};
     }
 
-    /// Repaints both pane grids and the center gutter into `frame`.
+    pub fn mount(self: *DiffEditorWidget, surface: *ui.Surface, container: *ui.Node, x: usize, y: usize) !void {
+        if (self.sideBySide()) {
+            const widths = self.paneWidths();
+            const offset = widths.original + widths.gutter;
+            try self.original_view.mountInto(surface, container, x, y, 0);
+            try self.modified_view.mountInto(surface, container, x + offset, y, offset);
+        } else {
+            self.original_view.detach();
+            try self.modified_view.mountInto(surface, container, x, y, 0);
+        }
+    }
+
+    /// Prepares both editor views and paints the center gutter.
     pub fn paint(self: *DiffEditorWidget, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
         if (w == 0 or h == 0) return;
         if (self.width != w or self.height != h) self.layout(w, h);
@@ -611,10 +623,10 @@ pub const DiffEditorWidget = struct {
 
         if (self.sideBySide()) {
             try self.original_view.paint();
-            try ui.CellGrid.blit(&frame.next, self.original_view.grid(), x, y, widths.original, h);
+            if (!self.original_view.isMounted()) try ui.CellGrid.blit(&frame.next, self.original_view.grid(), x, y, widths.original, h);
             self.paintGutter(frame, x + widths.original, y, h);
             try self.modified_view.paint();
-            try ui.CellGrid.blit(
+            if (!self.modified_view.isMounted()) try ui.CellGrid.blit(
                 &frame.next,
                 self.modified_view.grid(),
                 x + widths.original + widths.gutter,
@@ -624,7 +636,7 @@ pub const DiffEditorWidget = struct {
             );
         } else {
             try self.modified_view.paint();
-            try ui.CellGrid.blit(&frame.next, self.modified_view.grid(), x, y, w, h);
+            if (!self.modified_view.isMounted()) try ui.CellGrid.blit(&frame.next, self.modified_view.grid(), x, y, w, h);
         }
     }
 

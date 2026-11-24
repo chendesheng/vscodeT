@@ -868,9 +868,9 @@ reverse-paint-order walk, `overflow` clipping and `pointer-events` rules as
 Emission: the pointer is written only at the top-level writer. `Surface.render`
 keeps a `pointer.State` and writes OSC 22 before the frame when
 `Options.pointer_shapes`/`setPointerShapes(true)` is enabled and the shape from
-`setPointer` differs from the last emitted shape. Sub-surfaces only answer
-`pointerAt`; in the workbench, pane surfaces are composited into one frame, so
+`setPointer` differs from the last emitted shape. In the workbench,
 `Workbench` owns the `pointer.State` and writes it at the start of `render`.
+The shared editor surface resolves pointer style from its layout tree.
 `default` is the initial emitted state, so startup writes nothing, and a host
 resets to `default` on exit (the TUI does this before leaving the alternate
 screen).
@@ -1433,8 +1433,8 @@ Library constraints:
   visible, and cursor/mouse/content-widget coordinates subtract the offset.
   There is still no horizontal scrollbar.
 - The old `src/tui/screen.zig`/`render.zig` path is gone.
-- Multi-file editing keeps one `View` per tab and composites the active view's
-  cell grid below a one-row tab strip in `src/vs/workbench/browser/workbench.zig`. The portable
+- Multi-file editing keeps one `View` per tab. The workbench mounts the visible
+  editor instances in a single editor document. The portable
   editor-part layers live at their upstream paths:
   `src/vs/workbench/browser/parts/editor/editorPart.zig` owns the group
   registry, grid and sash resize; `editorGroupView.zig` maps model editors to
@@ -1443,12 +1443,14 @@ Library constraints:
   input adaptation. `EditorGroupModel` owns
   tab order/MRU/preview/pinned/sticky state, `FileEditorInput` exposes each
   editor's path/dirty/save state, and `Tab` keeps one persistent
-  view/contribution set per file. `ui.Surface.paintFrame` paints without
-  encoding ANSI and `ui.CellGrid.blit` copies the pane grid into the shell
-  frame, so switching tabs reuses the one double-buffered frame diff instead of
-  clearing the screen. Each tab keeps its scroll position and decorations.
-  Groups form a binary split tree; every pane gets its own tab row and active
-  view, and all panes are composited into one frame. Group state is serialized
+  view/contribution set per file. The terminal grid gives each split leaf an
+  absolute cell rectangle in the shared document. `Surface.paintInto` then
+  paints the editor tree into the workbench frame. Text and diff views hit-test
+  against that same tree, and wheel listeners run through DOM propagation.
+  Each tab keeps its scroll position and decorations while detached. The
+  standalone preview uses its own document. Workbench title chrome, shell
+  parts, the terminal emulator and image/Markdown preview output use their
+  existing cell painters. Group state is serialized
   through the workbench editor serializer registry; the JSON session stores
   the group list and active group and restores splits as equal horizontal
   splits. Dirty working copies are not persisted.

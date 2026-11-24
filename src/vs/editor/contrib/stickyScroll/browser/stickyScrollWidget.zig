@@ -616,7 +616,8 @@ pub const StickyScrollWidget = struct {
 
     fn onRowMouseDown(context: ?*anyopaque, event: *ui.MouseEvent) void {
         const self: *StickyScrollWidget = @ptrCast(@alignCast(context orelse return));
-        const index = self.rowIndexAt(event.y) orelse return;
+        const rect = event.current_target.?.parent.?.asElement().rect;
+        const index = self.rowIndexAt(event.y -| ui.cell.snap(rect.y)) orelse return;
         event.preventDefault();
         event.stopPropagation();
         self.host.set_show_end_for_line(self.host.context, null);
@@ -630,7 +631,7 @@ pub const StickyScrollWidget = struct {
         }
 
         const fold_column = host.fold_cell_column(host.context);
-        if (event.x == fold_column and self.foldingIcon(model_line, true) != null) {
+        if (event.x -| ui.cell.snap(rect.x) == fold_column and self.foldingIcon(model_line, true) != null) {
             host.toggle_fold(host.context, model_line);
             return;
         }
@@ -640,7 +641,8 @@ pub const StickyScrollWidget = struct {
 
     fn onRowMouseMove(context: ?*anyopaque, event: *ui.MouseEvent) void {
         const self: *StickyScrollWidget = @ptrCast(@alignCast(context orelse return));
-        const index = self.rowIndexAt(event.y) orelse return;
+        const rect = event.current_target.?.parent.?.asElement().rect;
+        const index = self.rowIndexAt(event.y -| ui.cell.snap(rect.y)) orelse return;
         if (self.hovered_index != index) {
             self.hovered_index = index;
             self.host.request_frame(self.host.context);

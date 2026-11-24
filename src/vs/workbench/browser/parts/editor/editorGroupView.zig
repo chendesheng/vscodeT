@@ -36,6 +36,7 @@ const tab_bar = @import("multiEditorTabsControl.zig");
 const editor_groups = @import("../../../services/editor/common/editorGroupsService.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const editor_mod = @import("../../../common/editor.zig");
+const css = @import("../../../../editor/browser/editorCss.zig");
 
 const EditorInput = editor_input.EditorInput;
 const EditorsOrder = editor_mod.EditorsOrder;
@@ -76,6 +77,7 @@ pub fn EditorGroupView(comptime View: type) type {
         /// `workbench.editor.showTabs`: none/single can hide the title row.
         tabs_visible: bool = true,
         panes: editorPanes.EditorPanes(View) = .{},
+        dom: ?GroupDom = null,
         /// Upstream `EditorGroupView.onDidFocus`. The part listens to this to
         /// make a focused group the active group (`doSetGroupActive`).
         on_did_focus: Emitter(*Self),
@@ -93,11 +95,50 @@ pub fn EditorGroupView(comptime View: type) type {
         /// Disposes the tab views, like upstream `EditorGroupView.dispose()`
         /// disposing the group's editors, then frees the registries.
         pub fn deinit(self: *Self) void {
+            if (self.dom) |dom| {
+                // A tab can already belong to another group before its editor
+                // instance is moved to the new group's container.
+                if (dom.editor_container.first_child) |child| _ = dom.editor_container.removeChild(child);
+                dom.split_view.document.destroy(dom.split_view);
+            }
             for (self.tabs.items) |tab| tab.deinit();
             self.panes.clearActive();
             self.on_did_focus.deinit();
             self.hits.deinit();
             self.tabs.deinit();
+        }
+
+        pub fn layoutDom(self: *Self, grid: *ui.Node, visible: bool) !void {
+            if (self.dom == null) self.dom = try GroupDom.create(grid);
+            const dom = self.dom.?;
+            if (visible) {
+                if (dom.split_view.hasClass(css.splitview.Class.hidden_view)) {
+                    dom.split_view.removeClass(css.splitview.Class.hidden_view);
+                }
+            } else {
+                try dom.split_view.addClass(css.splitview.Class.hidden_view);
+                return;
+            }
+            const chrome: f64 = @floatFromInt(self.chromeHeight());
+            setStyleIfChanged(dom.split_view, .{
+                .left = .{ .cells = self.rect.x },
+                .top = .{ .cells = self.rect.y },
+                .width = .{ .cells = self.rect.w },
+                .height = .{ .cells = self.rect.h },
+            });
+            setStyleIfChanged(dom.title, .{ .height = .{ .cells = chrome } });
+            setStyleIfChanged(dom.editor_container, .{
+                .position = .absolute,
+                .left = .{ .cells = 0 },
+                .top = .{ .cells = chrome },
+                .width = .{ .percent = 100 },
+                .height = .{ .cells = @max(0, self.rect.h - chrome) },
+            });
+            if (self.activeTab() == null) {
+                try dom.editor_container.addClass(css.editor_group.Class.empty_editor_container);
+            } else if (dom.editor_container.hasClass(css.editor_group.Class.empty_editor_container)) {
+                dom.editor_container.removeClass(css.editor_group.Class.empty_editor_container);
+            }
         }
 
         pub fn count(self: *const Self) usize {
@@ -236,6 +277,35 @@ pub fn EditorGroupView(comptime View: type) type {
             self.breadcrumbs_visible = visible;
         }
     };
+}
+
+const GroupDom = struct {
+    split_view: *ui.Node,
+    group: *ui.Node,
+    title: *ui.Node,
+    editor_container: *ui.Node,
+
+    fn create(grid: *ui.Node) !GroupDom {
+        const doc = grid.document;
+        const split_view = try doc.createElement(.div);
+        errdefer doc.destroy(split_view);
+        try split_view.addClass(css.splitview.Class.split_view_view);
+        _ = try grid.appendChild(split_view);
+        const group = try doc.createElement(.div);
+        _ = try split_view.appendChild(group);
+        try group.addClass(css.editor_group.Class.editor_group_container);
+        group.setStyle(.{ .position = .relative });
+        const title = try doc.createElement(.div);
+        _ = try group.appendChild(title);
+        try title.addClass(css.editor_group.Class.title);
+        const editor_container = try doc.createElement(.div);
+        _ = try group.appendChild(editor_container);
+        return .{ .split_view = split_view, .group = group, .title = title, .editor_container = editor_container };
+    }
+};
+
+fn setStyleIfChanged(node: *ui.Node, style: ui.Style) void {
+    if (!std.meta.eql(node.asElement().style, style)) node.setStyle(style);
 }
 
 const TestInput = struct {

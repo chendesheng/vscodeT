@@ -1289,6 +1289,11 @@ console API for raw mode, sizing and input polling.
   (`:`), link and help providers, absolute/relative path queries, open-to-side,
   icons, quick-input buttons and keybinding labels are not ported. Command
   history is in memory for the session.
+- Visible text editors and the two sides of a diff share the workbench's editor
+  document and layout tree. The split grid positions the group elements, and
+  each group mounts its active editor below the title. The port registers the
+  grid, split, group and editor viewport styles on that document. Tabs,
+  breadcrumbs, separators and terminal-backed previews use their cell painters.
 - Mouse input is wired through the library: SGR reports in mode 1003/1006 become
   `ui.MouseEvent`s, `Surface.elementFromPoint` hit-tests the box tree, and a
   press focuses the element under the cell. In the editor, left-click places the

@@ -51,6 +51,8 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const ui = @import("ui");
+const editor_css = @import("../../editor/browser/editorCss.zig");
+const cell_metrics = @import("../../../tui/cellMetrics.zig");
 const grid_mod = @import("../../base/browser/ui/grid/grid.zig");
 const sash_css = @import("../../base/browser/ui/sash/sash_css.zig");
 const editor_drop_target = @import("./parts/editor/editorDropTarget.zig");
@@ -512,6 +514,8 @@ pub const Workbench = struct {
     service: *editor_groups.EditorGroupsService,
     part: *editor_part.EditorPart(GroupPane),
     frame: ui.Frame,
+    editor_surface: ?ui.Surface = null,
+    editor_grid: *ui.Node = undefined,
     editor_drag: EditorDrag = .{},
     drag_target: ?DropOverlay = null,
     drag_tab_drop: ?TabDrop = null,
@@ -1277,6 +1281,7 @@ pub const Workbench = struct {
     }
 
     fn initShellModels(self: *Workbench) !void {
+        self.editor_surface = null;
         self.problems_view = null;
         self.marker_listener = null;
         self.markers_status = null;
@@ -2039,6 +2044,7 @@ pub const Workbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
+        if (self.editor_surface) |*surface| surface.deinit();
         self.terminal_tabbed_view.deinit(self.allocator);
         if (self.terminal_service) |service| {
             service.deinit();
@@ -10140,11 +10146,13 @@ pub const Workbench = struct {
         if (self.breadcrumbs_control) |control| control.clearHover();
     }
 
-    /// Resolves a pane body and translates the event into that tab's coordinates.
-    /// Wheel events target the pane under the pointer independently of focus.
+    /// Resolves the editor instance through the workbench's shared box tree.
+    /// Editors still consume mouse coordinates relative to their own viewport.
     pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?struct { tab: *Tab, event: ui.MouseEvent } {
-        if (event.x < self.editorAreaX()) return null;
-        const pane = self.paneAt(event.x, event.y) orelse return null;
+        if (event.x >= self.cols or event.y >= self.rows or event.x < self.editorAreaX()) return null;
+        const surface = self.synchronizeEditorDom() catch return null;
+        const target = (surface.elementFromPoint(event.x, event.y) catch null) orelse return null;
+        const pane = self.editorGroupAtNode(target) orelse return null;
         if (event.kind != .wheel and pane.group != self.service.activeGroup()) return null;
         const y = ui.cell.snap(pane.rect.y);
         const chrome = pane.chromeHeight();
@@ -10155,6 +10163,75 @@ pub const Workbench = struct {
         adjusted.x -|= ui.cell.snap(pane.rect.x);
         adjusted.y -|= y + chrome;
         return .{ .tab = tab, .event = adjusted };
+    }
+
+    fn editorGroupAtNode(self: *Workbench, target: *ui.Node) ?*GroupPane {
+        var current: ?*ui.Node = target;
+        while (current) |node| : (current = node.parent) {
+            if (!node.hasClass(editor_css.editor_group.Class.editor_group_container)) continue;
+            for (self.part.group_views.items) |pane| {
+                if (pane.dom.?.group == node) return pane;
+            }
+        }
+        return null;
+    }
+
+    fn synchronizeEditorDom(self: *Workbench) !*ui.Surface {
+        if (self.expanded_pane) |pane| {
+            if (!self.paneExists(pane)) self.expanded_pane = null;
+        }
+        if (self.editor_surface == null) {
+            self.editor_surface = try ui.Surface.init(self.allocator, .{
+                .cols = self.cols,
+                .rows = self.rows,
+                .measure_width = cell_metrics.measureCodepoint,
+            });
+            errdefer {
+                self.editor_surface.?.deinit();
+                self.editor_surface = null;
+            }
+            const doc = self.editor_surface.?.document();
+            try editor_css.registerWorkbench(doc);
+            const root = try doc.createElement(.div);
+            root.setStyle(.{ .position = .absolute });
+            try root.addClass(editor_css.editor_group.Class.grid_view_container);
+            doc.setRoot(root);
+            const grid = try doc.createElement(.div);
+            try grid.addClass(editor_css.gridview.Class.monaco_grid_view);
+            _ = try root.appendChild(grid);
+            self.editor_grid = grid;
+        }
+        const surface = &self.editor_surface.?;
+        try surface.resize(self.cols, self.rows);
+        surface.border_capabilities = self.part.cell_border_capabilities;
+        for (self.part.group_views.items) |pane| {
+            const visible = self.expanded_pane == null or self.expanded_pane == pane;
+            const active = pane.activeTab();
+            const terminal_editor_active = if (active) |tab| tab.terminal_input != null else false;
+            if (pane.breadcrumbs_suppressed != terminal_editor_active) {
+                pane.breadcrumbs_suppressed = terminal_editor_active;
+                pane.layout();
+            }
+            try pane.layoutDom(self.editor_grid, visible);
+            if (!visible) continue;
+            const container = pane.dom.?.editor_container;
+            const height = ui.cell.snap(pane.rect.h) -| pane.chromeHeight();
+            const width = ui.cell.snap(pane.rect.w);
+            if (active) |tab| {
+                if (width == 0 or height == 0) continue;
+                try tab.mount(
+                    surface,
+                    container,
+                    ui.cell.snap(pane.rect.x),
+                    ui.cell.snap(pane.rect.y) + pane.chromeHeight(),
+                    width,
+                    height,
+                );
+            } else if (container.first_child) |child| {
+                _ = container.removeChild(child);
+            }
+        }
+        return surface;
     }
 
     /// Publishes the search result count as the Search activity badge. This
@@ -10273,6 +10350,7 @@ pub const Workbench = struct {
     pub fn render(self: *Workbench, writer: *std.Io.Writer) !void {
         if (self.pointer_shapes) try self.pointer_state.update(writer, self.pointer);
         self.syncSearchActivity();
+        const editor_surface = try self.synchronizeEditorDom();
         self.syncEditorFocus();
         self.frame.begin();
         if (self.theme_palette) |palette| {
@@ -10358,6 +10436,7 @@ pub const Workbench = struct {
                 try self.renderPane(pane);
             }
         }
+        try editor_surface.paintInto(&self.frame.next);
         self.renderEditorFrame();
         if (self.expanded_pane == null) self.renderDividers(self.part.root);
         if (self.drag_target) |target| {
@@ -10437,11 +10516,6 @@ pub const Workbench = struct {
     }
 
     fn renderPane(self: *Workbench, pane: *GroupPane) !void {
-        const terminal_editor_active = if (pane.activeTab()) |tab| tab.terminal_input != null else false;
-        if (pane.breadcrumbs_suppressed != terminal_editor_active) {
-            pane.breadcrumbs_suppressed = terminal_editor_active;
-            pane.layout();
-        }
         const x = ui.cell.snap(pane.rect.x);
         const y = ui.cell.snap(pane.rect.y);
         const width = ui.cell.snap(pane.rect.w);
@@ -10562,7 +10636,6 @@ pub const Workbench = struct {
                 );
                 controllers.find.state.loop = self.findLoop();
             }
-            active.view.setCellBorderCapabilities(self.part.cell_border_capabilities);
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
         }
     }
@@ -11546,7 +11619,7 @@ pub const Workbench = struct {
     pub fn beginMousePointer(self: *Workbench) void {
         self.pointer = .default;
         self.hovered_sash = null;
-        if (self.activeTab()) |tab| _ = tab.view.surface.clearHover();
+        if (self.editor_surface) |*surface| _ = surface.clearHover();
     }
 
     /// Resolves the pointer for the editor pane under a mouse cell. The tab
@@ -14432,13 +14505,22 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
     defer out.deinit();
     try workbench.render(&out.writer);
     try std.testing.expect(right_tab.view.isFocused());
+    const surface = &workbench.editor_surface.?;
+    try std.testing.expectEqual(surface.document(), left_tab.view.root_node.?.document);
+    try std.testing.expectEqual(surface.document(), right_tab.view.root_node.?.document);
+    try std.testing.expectEqual(left.dom.?.editor_container, left_tab.element.?.parent.?);
+    try std.testing.expectEqual(right.dom.?.editor_container, right_tab.element.?.parent.?);
+    try std.testing.expect(left.dom.?.split_view.hasClass(editor_css.splitview.Class.split_view_view));
+    try std.testing.expect(left_tab.view.root_node.?.hasClass(editor_css.code_editor.Class.monaco_editor));
+
     const x = ui.cell.snap(left.rect.x) + left_tab.editor.gutterWidth();
     const y = ui.cell.snap(left.rect.y) + left.chromeHeight();
-    const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 3 };
+    var wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 3 };
     try std.testing.expect(!workbench.handleTabMouse(&wheel));
-    var target = workbench.editorMouseEvent(wheel) orelse return error.TestExpectedWheelTarget;
+    const target = workbench.editorMouseEvent(wheel) orelse return error.TestExpectedWheelTarget;
     try std.testing.expectEqual(left_tab, target.tab);
-    _ = try target.tab.view.dispatchMouse(&target.event);
+    const hit = (try surface.elementFromPoint(x, y)) orelse return error.TestExpectedWheelTarget;
+    surface.document().dispatchMouse(hit, &wheel);
     try workbench.render(&out.writer);
 
     try std.testing.expectEqual(@as(usize, 4), left_tab.editor.topViewLine());
@@ -20512,14 +20594,14 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
     const rendered = try frameText(allocator, &workbench.frame);
     defer allocator.free(rendered);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "boom") != null);
-    const fallback = tab.view.grid();
+    const fallback = &workbench.frame.prev;
     for ([_]u32{ '╭', '╮', '╰', '╯' }) |corner| {
         try std.testing.expect(std.mem.indexOfScalar(u32, fallback.cluster, corner) != null);
     }
 
     workbench.setCellBorderCapabilities(ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?);
     try workbench.render(&out.writer);
-    const native = tab.view.grid();
+    const native = &workbench.frame.prev;
     var joints: u8 = 0;
     for (0..native.rows) |y| {
         for (0..native.cols) |x| joints |= native.borderSetAt(x, y).joints;

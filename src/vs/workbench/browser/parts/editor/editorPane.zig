@@ -61,6 +61,7 @@ pub const Tab = struct {
     editor: *Editor,
     /// Modified/first view. For a diff tab this is the modified pane.
     view: *View,
+    element: ?*ui.Node = null,
     /// File input for a normal tab; null for a diff tab.
     file_input: ?*FileEditorInput,
     /// The group-model input (a `FileEditorInput` or a `DiffEditorInput`).
@@ -325,8 +326,32 @@ pub const Tab = struct {
         self.view = diff.widget.modified_view;
     }
 
-    /// Paints the tab into `frame`. A file tab paints its single view; a diff
-    /// tab paints both panes plus the center gutter.
+    /// Mounts the visible editor instance inside its group. The terminal
+    /// emulator and preview renderers also get a container for hit testing.
+    pub fn mount(self: *Tab, surface: *ui.Surface, container: *ui.Node, x: usize, y: usize, w: usize, h: usize) !void {
+        const doc = surface.document();
+        const element = self.element orelse created: {
+            const node = try doc.createElement(.div);
+            errdefer doc.destroy(node);
+            try node.addClass(@import("../../../../editor/browser/editorCss.zig").editor_group.Class.editor_instance);
+            node.setStyle(.{ .position = .relative, .width = .{ .percent = 100 } });
+            self.element = node;
+            break :created node;
+        };
+        if (element.parent != container) {
+            if (container.first_child) |old| _ = container.removeChild(old);
+            _ = try container.appendChild(element);
+        }
+        if (self.terminal_input != null or self.isImage()) return;
+        if (self.last_width != w or self.last_height != h) self.layoutCells(w, h);
+        if (self.diff) |diff| {
+            try diff.widget.mount(surface, element, x, y);
+        } else {
+            try self.view.mountInto(surface, element, x, y, 0);
+        }
+    }
+
+    /// Prepares shared editor elements and paints preview and terminal cells.
     pub fn paint(self: *Tab, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
         if (self.terminalInstance()) |instance| {
             try terminal_editor.paint(instance, &frame.next, .{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(w), .h = @floatFromInt(h) });
@@ -352,12 +377,10 @@ pub const Tab = struct {
         const preview_width = if (self.markdown_preview_visible) markdownPreviewWidth(w) else 0;
         if (preview_width == 0 or self.markdown_preview == null) {
             try self.view.paint();
-            try ui.CellGrid.blit(&frame.next, self.view.grid(), x, y, w, h);
             return;
         }
         const editor_width = w -| preview_width -| 1;
         try self.view.paint();
-        try ui.CellGrid.blit(&frame.next, self.view.grid(), x, y, editor_width, h);
         const divider = ui.cell.PaintStyle{
             .fg = ui.cell.packColor(.{ .r = 70, .g = 70, .b = 70 }),
             .bg = ui.cell.packColor(.{ .r = 30, .g = 30, .b = 33 }),
@@ -694,6 +717,8 @@ pub const Tab = struct {
     }
 
     pub fn deinit(self: *Tab) void {
+        const instance_element = self.element;
+        defer if (instance_element) |element| element.document.destroy(element);
         if (self.selection_handler_added) {
             self.editor.removeViewEventHandler(&self.selection_handler);
             self.selection_handler_added = false;

@@ -13,6 +13,10 @@ const view_lines_css = @import("viewParts/viewLines/viewLines_css.zig");
 const overlay_widgets_css = @import("viewParts/overlayWidgets/overlayWidgets_css.zig");
 const sash_css = @import("../../base/browser/ui/sash/sash_css.zig");
 const folding_css = @import("../contrib/folding/browser/folding_css.zig");
+pub const gridview = @import("../../base/browser/ui/grid/gridview_css.zig");
+pub const splitview = @import("../../base/browser/ui/splitview/splitview_css.zig");
+pub const editor_group = @import("../../workbench/browser/parts/editor/media/editorgroupview_css.zig");
+pub const code_editor = @import("widget/codeEditor/editor_css.zig");
 
 pub const block_decorations = block_decorations_css;
 pub const view_lines = view_lines_css;
@@ -28,6 +32,14 @@ pub fn register(doc: *ui.Document) !void {
     _ = try doc.registerSheet(overlay_widgets_css.sheet);
     _ = try doc.registerSheet(sash_css.sheet);
     _ = try doc.registerSheet(folding_css.sheet);
+    _ = try doc.registerSheet(code_editor.sheet);
+}
+
+pub fn registerWorkbench(doc: *ui.Document) !void {
+    try register(doc);
+    _ = try doc.registerSheet(gridview.sheet);
+    _ = try doc.registerSheet(splitview.sheet);
+    _ = try doc.registerSheet(editor_group.sheet);
 }
 
 test "editor css: sheets register into disjoint class ranges" {
@@ -65,4 +77,21 @@ test "editor css: sheets register into disjoint class ranges" {
     try std.testing.expect(view_lines_css.base < overlay_widgets_css.base);
     try std.testing.expect(overlay_widgets_css.base < sash_css.base);
     try std.testing.expect(sash_css.base < folding_css.base);
+}
+
+test "editor css: workbench editor and split layout rules register together" {
+    var doc = try ui.Document.init(std.testing.allocator, .{ .cols = 20, .rows = 8 });
+    defer doc.deinit();
+    try registerWorkbench(&doc);
+
+    const grid = doc.classStyle(@backingInt(gridview.Class.monaco_grid_view)).?;
+    try std.testing.expectEqual(ui.Overflow.hidden, grid.overflow.?);
+    const split = doc.classStyle(@backingInt(splitview.Class.split_view_view)).?;
+    try std.testing.expectEqual(ui.Position.absolute, split.position.?);
+    const hidden = doc.classStyle(@backingInt(splitview.Class.hidden_view)).?;
+    try std.testing.expectEqual(ui.Display.none, hidden.display.?);
+    const instance = doc.classStyle(@backingInt(editor_group.Class.editor_instance)).?;
+    try std.testing.expectEqual(ui.Dimension{ .percent = 100 }, instance.height.?);
+    const guard = doc.classStyle(@backingInt(code_editor.Class.overflow_guard)).?;
+    try std.testing.expectEqual(ui.Overflow.hidden, guard.overflow.?);
 }

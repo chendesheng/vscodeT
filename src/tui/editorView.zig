@@ -511,9 +511,23 @@ const GlyphTooltip = struct {
 };
 
 pub const View = struct {
+    const Mount = struct {
+        surface: *ui.Surface,
+        parent: *ui.Node,
+        x: usize,
+        y: usize,
+        left: usize,
+    };
+
     allocator: std.mem.Allocator,
     editor: *Editor,
     surface: ui.Surface,
+    owns_surface: bool = false,
+    pointer_shapes: bool = false,
+    mount: ?Mount = null,
+    viewport_width: usize = 0,
+    viewport_height: usize = 0,
+
     /// Overlay widgets anchored to an editor corner, painted above the lines
     /// and the status row.
     /// Content widgets anchored to model positions, painted above the lines
@@ -544,9 +558,8 @@ pub const View = struct {
     /// multi-group workbench disables it in favour of its status-bar part.
     status_bar_visible: bool = true,
     glyph_tooltip: GlyphTooltip = .{},
-    /// The retained document roots (viewport, windowed content, chrome). They
-    /// are rebuilt only on resize/theme/capacity resets; ordinary refreshes
-    /// update the existing tree in place.
+    /// The retained editor subtree (viewport, windowed content, chrome).
+    /// Ordinary refreshes update these nodes in place.
     document_ready: bool = false,
     root_node: ?*ui.Node = null,
     content_root: ?*ui.Node = null,
@@ -632,14 +645,6 @@ pub const View = struct {
 
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
-        self.surface = try ui.Surface.init(allocator, .{
-            .cols = editor.screen_width,
-            .rows = editor.screen_height,
-            .tab_size = editor.tabSize(),
-            .measure_width = cellMetrics.measureCodepoint,
-        });
-        errdefer self.surface.deinit();
-        try editor_css.register(self.surface.document());
         // The first paint/render flushes the initial render. Callers that only
         // construct a view (the workbench open path) can batch widget and
         // layout changes before paying for it.
@@ -653,8 +658,104 @@ pub const View = struct {
         self.configuration_listeners.deinit();
         _ = self.terminal_view_host.viewRef().removeContentWidget("glyph-tooltip");
         self.terminal_view_host.deinit();
-        self.surface.deinit();
+        if (self.mount) |mount| {
+            if (self.root_node) |root| mount.surface.document().destroy(root);
+        } else if (self.owns_surface) {
+            self.surface.deinit();
+        }
         self.allocator.destroy(self);
+    }
+
+    fn renderSurface(self: *View) *ui.Surface {
+        return if (self.mount) |mount| mount.surface else &self.surface;
+    }
+
+    fn ensureSurface(self: *View) !void {
+        if (self.mount != null or self.owns_surface) return;
+        self.surface = try ui.Surface.init(self.allocator, .{
+            .cols = self.editor.screen_width,
+            .rows = self.editor.screen_height,
+            .tab_size = self.editor.tabSize(),
+            .measure_width = cellMetrics.measureCodepoint,
+            .pointer_shapes = self.pointer_shapes,
+        });
+        errdefer self.surface.deinit();
+        try editor_css.register(self.surface.document());
+        self.owns_surface = true;
+    }
+
+    /// Attaches the editor element to a workbench editor instance. Moving the
+    /// tab reparents the same element in the shared document.
+    pub fn mountInto(self: *View, surface: *ui.Surface, parent: *ui.Node, x: usize, y: usize, left: usize) !void {
+        if (self.mount) |previous| {
+            std.debug.assert(previous.surface == surface);
+            if (self.root_node) |root| {
+                if (root.parent != parent) _ = try parent.appendChild(root);
+                if (previous.left != left) {
+                    var style = root.asElement().style;
+                    style.left = .{ .cells = @floatFromInt(left) };
+                    root.setStyle(style);
+                }
+            }
+        } else if (self.owns_surface) {
+            self.terminal_view_host.viewRef().getViewLines().flushWindow();
+            self.surface.deinit();
+            self.owns_surface = false;
+            self.root_node = null;
+            self.block_root = null;
+            self.content_root = null;
+            self.block_nodes.clearRetainingCapacity();
+            self.line_scroll_ready = false;
+            self.resetChromeRoots();
+            self.document_ready = false;
+            self.invalidate();
+        }
+        self.mount = .{ .surface = surface, .parent = parent, .x = x, .y = y, .left = left };
+    }
+
+    /// Detaches a mounted editor that no longer occupies a visible instance.
+    pub fn detach(self: *View) void {
+        if (self.mount == null) return;
+        const root = self.root_node orelse return;
+        if (root.parent) |parent| _ = parent.removeChild(root);
+    }
+
+    pub fn isMounted(self: *const View) bool {
+        return self.mount != null;
+    }
+
+    fn focusedElement(self: *View) ?*ui.Node {
+        if (self.mount == null and !self.owns_surface) return null;
+        const focus = self.renderSurface().document().focusedElement() orelse return null;
+        return if (self.ownsNode(focus)) focus else null;
+    }
+
+    fn ownsNode(self: *const View, target: *ui.Node) bool {
+        var current: ?*ui.Node = target;
+        while (current) |node| : (current = node.parent) {
+            if (node == self.root_node) return true;
+        }
+        return false;
+    }
+
+    fn elementAt(self: *View, x: usize, y: usize) !?*ui.Node {
+        const origin = self.mount orelse return self.surface.elementFromPoint(x, y);
+        const hit = (try origin.surface.elementFromPoint(origin.x + x, origin.y + y)) orelse return null;
+        return if (self.ownsNode(hit)) hit else null;
+    }
+
+    // UI listeners use document coordinates, while the editor mouse target
+    // factory uses viewport-relative cells.
+    fn dispatchAt(self: *View, target: *ui.Node, event: *ui.MouseEvent) void {
+        const x = event.x;
+        const y = event.y;
+        if (self.mount) |mount| {
+            event.x += mount.x;
+            event.y += mount.y;
+        }
+        self.renderSurface().document().dispatchMouse(target, event);
+        event.x = x;
+        event.y = y;
     }
 
     /// Registers a contribution callback invoked after view settings change.
@@ -677,7 +778,7 @@ pub const View = struct {
     }
 
     pub fn setTopInset(self: *View, rows: usize) void {
-        const max_rows = self.surface.document().rows -| 1;
+        const max_rows = self.editor.screen_height -| 1;
         const clamped = @min(rows, max_rows);
         if (clamped == self.top_inset_rows) return;
         self.top_inset_rows = clamped;
@@ -687,8 +788,7 @@ pub const View = struct {
     }
 
     fn applyTopInset(self: *View) void {
-        const doc = self.surface.document();
-        const rows = doc.rows;
+        const rows = self.editor.screen_height;
         const inset = self.top_inset_rows;
         const height = @max(rows -| inset, 1);
         const inset_f: f64 = @floatFromInt(inset);
@@ -876,8 +976,8 @@ pub const View = struct {
     /// handle the key.
     pub fn dispatchKey(self: *View, event: *ui.KeyEvent) bool {
         self.ensureRendered() catch return false;
-        const doc = self.surface.document();
-        if (doc.focusedElement() == null) return false;
+        if (self.focusedElement() == null) return false;
+        const doc = self.renderSurface().document();
         doc.dispatchEvent(event);
         return event.default_prevented or event.propagation_stopped;
     }
@@ -887,30 +987,18 @@ pub const View = struct {
     /// scrolls the viewport. Returns true when the caret or selection changed.
     pub fn dispatchMouse(self: *View, event: *ui.MouseEvent) !bool {
         try self.ensureRendered();
-        const doc = self.surface.document();
+        const surface = self.renderSurface();
         const hit = if (event.kind == .move) hit: {
-            _ = try self.surface.updateHoverAt(event.x, event.y);
-            break :hit doc.hoverTarget();
-        } else try self.surface.elementFromPoint(event.x, event.y);
-        const target = hit orelse (doc.root orelse return false);
-        ui.event.dispatchMouse(doc, target, event);
-        // Upstream the scrollable element, not the pointer handler, owns the
-        // wheel. Route it through the ported scrollbar part so sensitivity,
-        // fast scroll and clamping match the browser path.
-        if (event.kind == .wheel) {
-            // The status row is outside the editor's scrollable element.
-            if (event.y >= self.editor.textHeight()) return false;
-            if (!event.default_prevented and event.delta_y != 0) {
-                _ = self.terminal_view_host.viewRef().scrollbarPart().delegateScrollFromMouseWheelEvent(
-                    self.editor,
-                    event.delta_y,
-                    event.mods,
-                    self.terminal_view_host.options.get(.mouseWheelScrollSensitivity),
-                    self.terminal_view_host.options.get(.fastScrollSensitivity),
-                );
-            }
-            return false;
-        }
+            _ = try surface.updateHoverAt(
+                event.x + if (self.mount) |mount| mount.x else 0,
+                event.y + if (self.mount) |mount| mount.y else 0,
+            );
+            const node = surface.document().hoverTarget() orelse break :hit null;
+            break :hit if (self.ownsNode(node)) node else null;
+        } else try self.elementAt(event.x, event.y);
+        const target = hit orelse (self.root_node orelse return false);
+        self.dispatchAt(target, event);
+        if (event.kind == .wheel) return false;
         return self.mouse_handler.dispatch(.{
             .context = self,
             .element_from_point = mouseElementAt,
@@ -931,6 +1019,22 @@ pub const View = struct {
         }, event, target);
     }
 
+    fn onWheel(context: ?*anyopaque, event: *ui.MouseEvent) void {
+        const self: *View = @ptrCast(@alignCast(context orelse return));
+        if (event.default_prevented or event.delta_y == 0) return;
+        const top = if (self.mount) |mount| mount.y else 0;
+        // The status row is outside the editor's scrollable element.
+        if (event.y -| top >= self.editor.textHeight()) return;
+        const host = self.terminal_view_host;
+        _ = host.viewRef().scrollbarPart().delegateScrollFromMouseWheelEvent(
+            self.editor,
+            event.delta_y,
+            event.mods,
+            host.options.get(.mouseWheelScrollSensitivity),
+            host.options.get(.fastScrollSensitivity),
+        );
+    }
+
     fn mouseIsScrollbarHit(context: *anyopaque, x: usize, y: usize) bool {
         const self: *View = @ptrCast(@alignCast(context));
         return self.isScrollbarCell(x) and
@@ -944,7 +1048,7 @@ pub const View = struct {
             self.editor,
             x,
             y,
-            self.surface.document().cols,
+            self.editor.screen_width,
             self.scrollbar_width,
             self.editor.textHeight(),
         );
@@ -1013,11 +1117,10 @@ pub const View = struct {
         mods: ui.Modifiers,
     ) void {
         const self: *View = @ptrCast(@alignCast(context));
-        const doc = self.surface.document();
-        const target = self.surface.elementFromPoint(x, y) catch null;
-        const target_node = target orelse doc.root orelse return;
-        const press_target = (self.surface.elementFromPoint(press_x, press_y) catch null) orelse
-            (doc.root orelse target_node);
+        const target = self.elementAt(x, y) catch null;
+        const target_node = target orelse self.root_node orelse return;
+        const press_target = (self.elementAt(press_x, press_y) catch null) orelse
+            (self.root_node orelse target_node);
         const click_target = ui.event.commonInclusiveAncestor(press_target, target_node) orelse press_target;
         var click = ui.MouseEvent{
             .kind = .click,
@@ -1026,12 +1129,12 @@ pub const View = struct {
             .button = .left,
             .mods = mods,
         };
-        ui.event.dispatchMouse(doc, click_target, &click);
+        self.dispatchAt(click_target, &click);
     }
 
     fn isScrollbarCell(self: *View, x: usize) bool {
         if (self.scrollbar_width == 0) return false;
-        const cols = self.surface.document().cols;
+        const cols = self.editor.screen_width;
         return x >= cols -| self.scrollbar_width;
     }
 
@@ -1070,12 +1173,12 @@ pub const View = struct {
 
     fn mouseElementAt(context: *anyopaque, x: usize, y: usize) ?*ui.Node {
         const self: *View = @ptrCast(@alignCast(context));
-        return self.surface.elementFromPoint(x, y) catch null;
+        return self.elementAt(x, y) catch null;
     }
 
     fn mouseRootNode(context: *anyopaque) ?*ui.Node {
         const self: *View = @ptrCast(@alignCast(context));
-        return self.surface.document().root;
+        return self.root_node;
     }
 
     fn mouseContentWidgetContains(context: *anyopaque, x: usize, y: usize) bool {
@@ -1097,7 +1200,7 @@ pub const View = struct {
     fn mouseGeometry(context: *anyopaque) mouse_target.Geometry {
         const self: *View = @ptrCast(@alignCast(context));
         return .{
-            .cols = self.surface.document().cols,
+            .cols = self.editor.screen_width,
             .text_height = self.editor.textHeight(),
             .gutter_width = self.editor.gutterWidth(),
             .glyph_width = self.editor.gutterGlyphWidth(),
@@ -1171,7 +1274,7 @@ pub const View = struct {
         self.line_scroll_text_height = text_height;
         const target = self.line_scroll.scrollLeft();
         if ((geometry_changed or target != self.line_scroll_applied) and !self.needs_full_box_rebuild) {
-            self.surface.box_tree.markFullRebuild();
+            self.renderSurface().box_tree.markFullRebuild();
             self.needs_full_box_rebuild = true;
         }
         self.line_scroll_applied = target;
@@ -1184,14 +1287,22 @@ pub const View = struct {
     fn synchronizeViewport(self: *View) !void {
         const width = self.editor.screen_width;
         const height = self.editor.screen_height;
-        const doc = self.surface.document();
-        if (doc.cols == width and doc.rows == height) return;
+        if (self.viewport_width == width and self.viewport_height == height) return;
 
         self.terminal_view_host.viewRef().scrollbarPart().endDrag();
-        try self.surface.resize(width, height);
+        if (self.mount == null) {
+            try self.surface.resize(width, height);
+            self.surface.document().tab_size = self.editor.tabSize();
+        } else if (self.root_node) |root| {
+            var style = root.asElement().style;
+            style.width = .{ .cells = @floatFromInt(width) };
+            style.height = .{ .cells = @floatFromInt(height) };
+            root.setStyle(style);
+        }
+        self.viewport_width = width;
+        self.viewport_height = height;
         self.applyTopInset();
         self.terminal_view_host.viewRef().getViewLines().clearWindow();
-        doc.tab_size = self.editor.tabSize();
         self.needs_full_box_rebuild = true;
     }
 
@@ -1437,6 +1548,7 @@ pub const View = struct {
     pub fn render(self: *View, now: bool, everything: bool) !void {
         if (everything or !now) self.invalidate();
         if (!now or !self.needsRender()) return;
+        try self.ensureSurface();
         try self.flushAccumulatedAndRenderNow();
     }
 
@@ -1462,14 +1574,17 @@ pub const View = struct {
 
     /// Gives the keyboard back to the editor after a content widget closes.
     pub fn focusEditor(self: *View) void {
-        self.surface.document().blur();
+        if (self.focusedElement() != null) self.renderSurface().document().blur();
     }
 
     /// Forwards the workbench focus state to the ported View/overlays. This is
     /// the terminal boundary for upstream `View.focus()`/`blur()`.
     pub fn setFocused(self: *View, focused: bool) bool {
         const changed = self.terminal_view_host.viewRef().setFocused(focused);
-        if (changed) self.invalidate();
+        if (changed) {
+            if (!focused and self.mount != null) self.focusEditor();
+            self.invalidate();
+        }
         return changed;
     }
 
@@ -1510,19 +1625,15 @@ pub const View = struct {
         self.invalidate();
     }
 
-    /// Paints into the view's own frame without writing ANSI. The multi-file
-    /// workbench composites this grid below the tab strip.
+    /// Prepares the editor's DOM. Standalone views also paint their own frame.
     pub fn paint(self: *View) !void {
         try self.ensureRendered();
-        try self.surface.paintFrame();
+        if (self.mount == null) try self.surface.paintFrame();
     }
 
     pub fn grid(self: *View) *const ui.CellGrid {
+        std.debug.assert(self.owns_surface);
         return self.surface.grid();
-    }
-
-    pub fn setCellBorderCapabilities(self: *View, capabilities: ui.cell_border.Capabilities) void {
-        self.surface.border_capabilities = capabilities;
     }
 
     /// Paints the ported `BlockDecorations` ranges into the content layer.
@@ -1566,7 +1677,7 @@ pub const View = struct {
                 @as(isize, @intCast(gutter)) - @as(isize, @intCast(padding[3])),
             );
             const right: isize = @min(
-                @as(isize, @intCast(doc.cols)),
+                @as(isize, @intCast(self.editor.screen_width)),
                 @as(isize, @intCast(gutter + text_width + padding[1])),
             );
             if (right <= left) continue;
@@ -1649,7 +1760,8 @@ pub const View = struct {
     /// resolves to `.text`; the chrome roots and widget styles override it.
     pub fn pointerAt(self: *View, x: usize, y: usize) !ui.Pointer {
         try self.ensureRendered();
-        return (try self.surface.pointerAt(x, y)) orelse .default;
+        const mount = self.mount orelse return (try self.surface.pointerAt(x, y)) orelse .default;
+        return (try mount.surface.pointerAt(mount.x + x, mount.y + y)) orelse .default;
     }
 
     /// Records the pointer shape for the next `render`. Returns true when it
@@ -1658,10 +1770,10 @@ pub const View = struct {
         return self.surface.setPointer(shape);
     }
 
-    /// Enables OSC 22 emission for the single-surface preview host. The
-    /// workbench composites pane surfaces itself and emits at its own frame.
+    /// Enables OSC 22 emission for the standalone preview.
     pub fn setPointerShapes(self: *View, enabled: bool) void {
-        self.surface.setPointerShapes(enabled);
+        self.pointer_shapes = enabled;
+        if (self.owns_surface) self.surface.setPointerShapes(enabled);
     }
 
     /// The hardware cursor cell, valid after the render pass has laid the tree
@@ -1670,10 +1782,10 @@ pub const View = struct {
         self.ensureRendered() catch return null;
         // A focused widget paints its own block caret; the hardware cursor
         // belongs to the editor.
-        if (self.surface.document().focusedElement() != null) return null;
+        if (self.focusedElement() != null) return null;
         const row = self.cursor_row orelse return null;
-        const rows = self.surface.document().rows;
-        const cols = self.surface.document().cols;
+        const rows = self.editor.screen_height;
+        const cols = self.editor.screen_width;
         if (row >= rows) return null;
         const visible_row = row + self.top_inset_rows;
         if (visible_row >= rows) return null;
@@ -1769,6 +1881,13 @@ pub const View = struct {
         // Reserve or release the glyph-margin cell before the frame computes
         // its gutter and wrapping geometry.
         self.terminal_view_host.prepareFrame();
+        const tree = self.renderSurface().box_tree;
+        const restore_invalidation = tree.auto_invalidate;
+        if (self.mount != null) {
+            if (tree.needs_rebuild) self.needs_full_box_rebuild = true;
+            tree.setAutoInvalidate(false);
+        }
+        defer if (self.mount != null) tree.setAutoInvalidate(restore_invalidation);
         try self.synchronizeViewport();
         const editor = self.editor;
         editor.setScrollbarWidth(overviewRulerWidth(editor));
@@ -1818,29 +1937,45 @@ pub const View = struct {
             }
         }
 
-        const doc = self.surface.document();
+        const doc = self.renderSurface().document();
         if (!self.document_ready) {
             self.line_scroll_ready = false;
-            // Drop the rendered window without touching the old nodes: the
-            // whole document is about to be cleared.
             self.terminal_view_host.viewRef().getViewLines().flushWindow();
-            doc.clear();
+            const root = if (self.mount) |mount| root: {
+                if (self.root_node) |existing| {
+                    doc.destroyChildren(existing);
+                    break :root existing;
+                }
+                const created = try doc.createElement(.div);
+                errdefer doc.destroy(created);
+                _ = try mount.parent.appendChild(created);
+                break :root created;
+            } else root: {
+                doc.clear();
+                const created = try doc.createElement(.div);
+                doc.setRoot(created);
+                break :root created;
+            };
+            self.root_node = root;
             self.resetChromeRoots();
-            const root = try doc.createElement(.div);
+            try root.addClass(editor_css.code_editor.Class.monaco_editor);
             root.setStyle(.{
                 .position = .absolute,
-                .left = .{ .cells = 0 },
+                .left = .{ .cells = if (self.mount) |mount| @floatFromInt(mount.left) else 0 },
                 .top = .{ .cells = 0 },
-                .width = .{ .percent = 100 },
-                .height = .{ .percent = 100 },
-                .overflow = .hidden,
+                .width = .{ .cells = @floatFromInt(self.editor.screen_width) },
+                .height = .{ .cells = @floatFromInt(self.editor.screen_height) },
                 .background = if (self.theme_colors) |palette| palette.background else null,
                 // The editor content is text: blank cells beyond a line still
                 // show the I-beam because they hit the root. Chrome roots
                 // override this with the terminal default.
                 .pointer = .text,
             });
-            doc.setRoot(root);
+            const overflow_guard = try doc.createElement(.div);
+            try overflow_guard.addClass(editor_css.code_editor.Class.overflow_guard);
+            try overflow_guard.addEventListener(.{ .context = self, .wheel = onWheel });
+            overflow_guard.setStyle(.{ .width = .{ .percent = 100 }, .height = .{ .percent = 100 } });
+            _ = try root.appendChild(overflow_guard);
             const block_root = try doc.createElement(.div);
             block_root.setStyle(.{
                 .position = .absolute,
@@ -1851,7 +1986,7 @@ pub const View = struct {
             });
             try block_root.addClass(editor_css.block_decorations.Class.block_decorations_container);
             block_root.setPointerEvents(false);
-            _ = try root.appendChild(block_root);
+            _ = try overflow_guard.appendChild(block_root);
             const content_root = try doc.createElement(.div);
             content_root.setStyle(.{
                 .position = .absolute,
@@ -1862,7 +1997,7 @@ pub const View = struct {
                 .pointer = .text,
             });
             content_root.setPointerEvents(false);
-            _ = try root.appendChild(content_root);
+            _ = try overflow_guard.appendChild(content_root);
 
             self.line_scroll_applied = 0;
             self.line_scroll_width = 0;
@@ -1890,7 +2025,7 @@ pub const View = struct {
                 .pointer = .default,
             });
             chrome_root.setPointerEvents(false);
-            _ = try root.appendChild(chrome_root);
+            _ = try overflow_guard.appendChild(chrome_root);
             self.root_node = root;
             self.content_root = content_root;
             self.block_root = block_root;
@@ -1920,8 +2055,8 @@ pub const View = struct {
         self.cursor_row = null;
         self.cursor_col = 0;
 
-        const cols = doc.cols;
-        const rows = doc.rows;
+        const cols = self.editor.screen_width;
+        const rows = self.editor.screen_height;
         const scrollbar_width = if (self.scrollbar_width > 0 and
             cols > editor.gutterWidth() + self.scrollbar_width)
             self.scrollbar_width
@@ -2036,7 +2171,7 @@ pub const View = struct {
         // A full box solve rebuilds every box from the DOM; only incremental
         // frames need the explicit retained-part operations.
         var chrome_host = editorBrowser.RetainedViewPartHost{
-            .tree = self.surface.box_tree,
+            .tree = tree,
             .doc = doc,
         };
         const chrome_host_ptr: ?*editorBrowser.RetainedViewPartHost =
@@ -2163,11 +2298,15 @@ pub const View = struct {
     /// their children, moved lines translate, removed lines were dropped by
     /// `viewLineDisposed`.
     fn syncBoxes(self: *View, doc: *ui.Document) !void {
-        const tree = self.surface.box_tree;
+        const tree = self.renderSurface().box_tree;
         if (self.needs_full_box_rebuild) {
-            try tree.rebuild(doc);
-            try @import("ui").layout.layoutTree(tree, doc);
-            tree.setAutoInvalidate(false);
+            if (self.mount != null) {
+                tree.markFullRebuild();
+            } else {
+                try tree.rebuild(doc);
+                try @import("ui").layout.layoutTree(tree, doc);
+                tree.setAutoInvalidate(false);
+            }
             self.needs_full_box_rebuild = false;
             self.perf.full_box_solves += 1;
             // The full solve already built every line box, including the ones
@@ -2215,20 +2354,19 @@ pub const View = struct {
                 try @import("ui").layout.layoutSubtree(tree, doc, box);
                 self.perf.line_rebuilt += 1;
             } else {
-                const dy = line.paintedTop() - existing.?.rect.y;
+                const origin_y: f64 = if (self.mount) |mount| @floatFromInt(mount.y) else 0;
+                const dy = origin_y + line.paintedTop() - existing.?.rect.y;
                 _ = tree.translateSubtree(node, 0, dy);
                 self.perf.line_translated += 1;
             }
         }
 
-        // The chrome is still rebuilt in place every frame, so its box arena
-        // grows until the next full solve. Rebuild the box tree (not the DOM)
-        // when it grows too large; a document reset is only needed when the
-        // DOM arena itself crosses its bound.
+        // Bound scratch allocations from incremental box changes. A
+        // standalone view can also reclaim its private DOM arena.
         if (tree.arena.queryCapacity() > 32 * 1024 * 1024) {
             self.needs_full_box_rebuild = true;
         }
-        if (doc.arena.queryCapacity() > 64 * 1024 * 1024) {
+        if (self.mount == null and doc.arena.queryCapacity() > 64 * 1024 * 1024) {
             self.document_ready = false;
             self.needs_full_box_rebuild = true;
         }
@@ -2261,8 +2399,9 @@ fn lineScrollCallback(context: ?*anyopaque, left: usize, top: usize) void {
 fn viewLineDisposed(context: *anyopaque, line: *ViewLine) void {
     const self: *View = @ptrCast(@alignCast(context));
     if (line.dom_node) |node| {
-        self.surface.box_tree.removeSubtree(node);
-        self.surface.document().destroy(node);
+        const surface = self.renderSurface();
+        surface.box_tree.removeSubtree(node);
+        surface.document().destroy(node);
         line.dom_node = null;
     }
 }
@@ -4499,7 +4638,7 @@ test "View: mouse target distinguishes overview ruler and scrollbar" {
 
     const view = try View.init(allocator, editor);
     defer view.deinit();
-    const cols = view.surface.document().cols;
+    const cols = editor.screen_width;
 
     const scrollbar = try view.mouseTargetAt(cols - 1, 0);
     try std.testing.expectEqual(editorBrowser.MouseTargetType.scrollbar, scrollbar.type);
