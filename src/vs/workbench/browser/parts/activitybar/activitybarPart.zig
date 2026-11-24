@@ -375,9 +375,8 @@ test "activityBar: draws the active entry from the model" {
     try part.setVisible(true);
 
     render(&part, null, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true, null);
-    const row = try grid.rowText(allocator, 2);
-    defer allocator.free(row);
-    try std.testing.expect(std.mem.indexOf(u8, row, "F") != null);
+    try std.testing.expectEqual(@as(u32, default_activities[1].glyph), grid.cluster[grid.index(1, 2)]);
+    try std.testing.expectEqual(@as(u32, '▎'), grid.cluster[grid.index(0, 2)]);
 
     var service = ActivityService.init(allocator);
     defer service.deinit();
@@ -386,9 +385,7 @@ test "activityBar: draws the active entry from the model" {
         .badge = .{ .description = "572" },
     });
     render(&part, &service, &grid, .{ .x = 0, .y = 0, .w = 3, .h = 4 }, 1, true, null);
-    const badge_row = try grid.rowText(allocator, 2);
-    defer allocator.free(badge_row);
-    try std.testing.expect(std.mem.indexOf(u8, badge_row, "•") != null);
+    try std.testing.expectEqual(@as(u32, '•'), grid.cluster[grid.index(2, 2)]);
 }
 
 test "activityBar: overflow row lists hidden entries" {

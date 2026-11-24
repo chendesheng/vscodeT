@@ -15730,11 +15730,10 @@ test "Workbench: activity bar top moves the composite bar into the side bar" {
     defer out.deinit();
     try workbench.render(&out.writer);
     // Row 0 is the composite bar, row 1 the title label, row 2 the content.
-    const bar_row = try workbench.frame.present().rowText(allocator, 0);
-    defer allocator.free(bar_row);
-    try std.testing.expectEqual(@as(u8, 'E'), bar_row[1]);
-    try std.testing.expectEqual(@as(u8, 'F'), bar_row[4]);
-    const title_row = try workbench.frame.present().rowText(allocator, 1);
+    const grid = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, '\u{f07b}'), grid.cluster[grid.index(1, 0)]);
+    try std.testing.expectEqual(@as(u32, '\u{f002}'), grid.cluster[grid.index(4, 0)]);
+    const title_row = try grid.rowText(allocator, 1);
     defer allocator.free(title_row);
     try std.testing.expect(std.mem.indexOf(u8, title_row, "EXPLORER") != null);
     // The tree is the first thing below the title (`.vscode` sorts first).
@@ -15777,9 +15776,8 @@ test "Workbench: closing the side bar keeps the activity bar" {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try workbench.render(&out.writer);
-    const rail_row = try workbench.frame.present().rowText(allocator, 1);
-    defer allocator.free(rail_row);
-    try std.testing.expectEqual(@as(u8, 'E'), rail_row[1]);
+    const grid = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, '\u{f07b}'), grid.cluster[grid.index(1, 1)]);
 
     _ = try workbench.commands.execute("workbench.action.closeSidebar");
     try std.testing.expect(!workbench.sidebar_part.isVisible());
@@ -15789,9 +15787,8 @@ test "Workbench: closing the side bar keeps the activity bar" {
     // closed; an entry click reveals the side bar again.
     out.clearRetainingCapacity();
     try workbench.render(&out.writer);
-    const closed_rail_row = try workbench.frame.present().rowText(allocator, 1);
-    defer allocator.free(closed_rail_row);
-    try std.testing.expectEqual(@as(u8, 'E'), closed_rail_row[1]);
+    const closed_grid = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, '\u{f07b}'), closed_grid.cluster[closed_grid.index(1, 1)]);
     const rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 1 };
     try std.testing.expect(workbench.handleSidebarMouse(&rail_click));
     try std.testing.expect(workbench.sidebar_part.isVisible());
