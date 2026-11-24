@@ -180,6 +180,7 @@ pub const Extensions = struct {
     storage_actor: ?MainThreadStorage = null,
     statusbar_actor: ?MainThreadStatusBar = null,
     terminal_completions: ?@import("terminalCompletionSession.zig").Session = null,
+    secret_state: @import("mainThreadSecretState.zig").SecretState = .{},
     accounts: @import("mainThreadAuthentication.zig").Accounts = undefined,
     task_actor: @import("mainThreadTask.zig").MainThreadTask = undefined,
     commands_actor: ?MainThreadCommands = null,
@@ -323,6 +324,7 @@ pub const Extensions = struct {
 
     pub fn deinit(self: *Extensions) void {
         if (self.terminal_completions) |*session| session.deinit();
+        self.secret_state.deinit(self.allocator);
         self.accounts.deinit();
         self.task_actor.deinit();
         self.inline_completions.deinit();
@@ -357,7 +359,9 @@ pub const Extensions = struct {
         var nid: u8 = 1;
         while (nid <= protocol.max_nid) : (nid += 1) {
             const entry = protocol.identifier(nid).?;
-            if (nid == @backingInt(protocol.MainContext.MainThreadAuthentication)) {
+            if (nid == @backingInt(protocol.MainContext.MainThreadSecretState)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeSecretState });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadAuthentication)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeAuthentication });
             } else if (nid == 26) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguageFeatures });
@@ -470,6 +474,11 @@ pub const Extensions = struct {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.commands_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
+    }
+
+    fn invokeSecretState(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        return self.secret_state.invoke(self.allocator, self.host, method, args, arena);
     }
 
     fn invokeAuthentication(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
