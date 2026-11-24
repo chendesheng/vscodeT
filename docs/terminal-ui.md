@@ -1362,8 +1362,8 @@ Library constraints:
   undo/redo, caret-follow horizontal scrolling with wheel and drag-edge
   scrolling, enable/disable, and the upstream
   `select`/`getSelection`/`isSelectionAtEnd`/`insertAtCursor` shape.
-  Placeholder, `on_change`/`on_enter`/`on_escape` and the block caret are
-  unchanged. Up/Down and Tab stay host-owned; the find widget owns its search
+  The focused caret is a `│` glyph that occupies one cell between characters.
+  Up/Down and Tab stay host-owned; the find widget owns its search
   history, other input validation/history stays host-owned, and action bars
   remain host concerns. Terminal limits: no double-click word
   selection (reports carry no click counts) and no grapheme/IME segmentation.

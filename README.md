@@ -1257,7 +1257,8 @@ console API for raw mode, sizing and input polling.
   host-owned. The
   find, search and quick-open inputs share the completed `InputBox` editing
   behavior: Shift selection, Ctrl-A, word-wise movement/deletion, undo/redo,
-  mouse drag selection and caret-follow horizontal scrolling.
+  mouse drag selection and caret-follow horizontal scrolling. The focused
+  input caret is drawn as `│`.
 - Quick open is wired through `src/vs/workbench/browser/quickaccess.zig`: `Ctrl-P` opens
   "Go to File" with recent editors first and workspace files as the query is
   typed, and typing `>` switches to the command selector. The command selector

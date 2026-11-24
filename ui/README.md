@@ -555,8 +555,8 @@ var event = ui.KeyEvent{ .key = .{ .text = "query" } };
 _ = input.handleKey(&event);              // true when the input consumed it
 ```
 
-It owns a UTF-8 buffer, a byte caret and an `(anchor, cursor)` selection, and
-paints a block caret (an inverted cell) instead of using the hardware cursor.
+It owns a UTF-8 buffer, a byte caret and an `(anchor, cursor)` selection. The
+focused box paints `│` in its own cell between characters.
 `build` installs focus/blur listeners, so focusing the built node sets
 `input.focused` and blurring it clears the caret and drag state. Hosts that
 paint before focusing may still seed `focused` directly; the document state wins

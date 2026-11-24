@@ -1780,8 +1780,7 @@ pub const View = struct {
     /// out. Returns null when the caret is outside the text area.
     pub fn cursorCell(self: *View) ?Cell {
         self.ensureRendered() catch return null;
-        // A focused widget paints its own block caret; the hardware cursor
-        // belongs to the editor.
+        // A focused widget paints its own caret. The editor owns the hardware cursor.
         if (self.focusedElement() != null) return null;
         const row = self.cursor_row orelse return null;
         const rows = self.editor.screen_height;

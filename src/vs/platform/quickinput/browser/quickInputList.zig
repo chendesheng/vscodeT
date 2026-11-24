@@ -491,7 +491,7 @@ test "QuickPickWidget: focused empty input shows a caret with its placeholder" {
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "Type a file") != null);
     const grid = frame.next;
-    try std.testing.expect(grid.attrs[grid.index(layout.x, layout.y)] & ui.cell.Attr.inverse != 0);
+    try std.testing.expectEqual(@as(u21, '│'), grid.cluster[grid.index(layout.x, layout.y)]);
     try std.testing.expectEqual(
         @as(u16, 0),
         grid.attrs[grid.index(layout.x + 1, layout.y)] & ui.cell.Attr.inverse,

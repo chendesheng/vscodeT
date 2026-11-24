@@ -6,9 +6,8 @@
 //! UTF-8 buffer with an anchor/cursor selection, `on_copy`/`on_paste` hooks
 //! (the library never touches the system clipboard), snapshots for undo/redo,
 //! and a horizontal caret-follow window that can be scrolled by the wheel or
-//! dragged past the edge. The block caret is an inverted cell instead of the
-//! hardware cursor; the editor keeps the hardware cursor, so a widget's caret
-//! must not fight it.
+//! dragged past the edge. The caret is a `│` glyph painted between characters.
+//! It occupies a terminal cell and the editor owns the hardware cursor.
 //!
 //! Focus is the caller's decision: a widget sets `focused` before rebuilding
 //! and focuses the node returned by `build`. Key and mouse listeners are
@@ -48,6 +47,7 @@ pub const InputBox = struct {
     const EditGroup = enum { none, insert, delete };
     const Snapshot = struct { value: []u8, cursor: usize, anchor: usize };
     const max_undo = 100;
+    const caret_glyph = "│";
 
     allocator: Allocator,
     value: std.ArrayList(u8) = .empty,
@@ -65,11 +65,9 @@ pub const InputBox = struct {
     /// A disabled box rejects keys, is not focusable and paints dim text.
     enabled: bool = true,
     placeholder: []const u8 = "",
-    /// Show the placeholder even while the box is focused and empty. The
-    /// block caret is painted over the first placeholder cell so focus stays
-    /// visible. The quick pick and workbench search fields use this; the find
-    /// bar keeps the browser-like behavior where a focused empty box shows
-    /// only its caret.
+    /// Show the placeholder after the caret even while the box is focused and
+    /// empty. The quick pick and workbench search fields use this; the find
+    /// bar shows only its caret when focused and empty.
     placeholder_when_focused: bool = false,
     color: ?Color = null,
     placeholder_color: ?Color = null,
@@ -84,6 +82,8 @@ pub const InputBox = struct {
     node_document: ?*Document = null,
     node_generation: u64 = 0,
     node_serial: u64 = 0,
+    /// Column of the caret in the built text run, for pointer hit testing.
+    rendered_caret_column: ?usize = null,
 
     /// Whether layout should keep the caret inside the visible window. Manual
     /// scrolling clears it; edits, caret moves and resizes re-arm it.
@@ -278,6 +278,7 @@ pub const InputBox = struct {
         self.node_document = doc;
         self.node_generation = doc.generation;
         self.node_serial = root.serial;
+        self.rendered_caret_column = null;
         root.setStyle(.{
             .position = .absolute,
             .left = .{ .cells = 0 },
@@ -312,16 +313,8 @@ pub const InputBox = struct {
         if (self.value.items.len == 0 and
             (!self.focused or !self.enabled or self.placeholder_when_focused))
         {
-            const shows_caret = self.focused and self.enabled;
-            if (shows_caret) {
-                // Empty inputs otherwise render only the focused placeholder,
-                // which leaves no visible caret on terminal hosts. Keep the
-                // block caret in its own cell so the placeholder text remains
-                // a contiguous run for the cell grid and ANSI diff.
-                try appendText(doc, root, " ", .{
-                    .color = self.color,
-                    .reverse = true,
-                });
+            if (self.focused and self.enabled) {
+                try appendText(doc, root, caret_glyph, self.baseStyle());
             }
             if (self.placeholder.len > 0) {
                 try appendText(doc, root, self.placeholder, .{
@@ -387,17 +380,11 @@ pub const InputBox = struct {
             return root;
         }
 
-        try appendText(doc, root, self.value.items[start..self.cursor], self.baseStyle());
-        if (self.cursor < len) {
-            const next = self.nextBoundary(self.cursor);
-            try appendText(doc, root, self.value.items[self.cursor..next], .{
-                .color = self.color,
-                .reverse = true,
-            });
-            try appendText(doc, root, self.value.items[next..], self.baseStyle());
-        } else {
-            try appendText(doc, root, " ", .{ .color = self.color, .reverse = true });
-        }
+        const before = self.value.items[start..self.cursor];
+        try appendText(doc, root, before, self.baseStyle());
+        try appendText(doc, root, caret_glyph, self.baseStyle());
+        try appendText(doc, root, self.value.items[self.cursor..], self.baseStyle());
+        self.rendered_caret_column = doc.measureText(before);
 
         return root;
     }
@@ -420,10 +407,13 @@ pub const InputBox = struct {
                 if (event.button != .left) return false;
                 const left = cell.snap(root.asElement().rect.x);
                 const raw = @as(isize, @intCast(event.x)) - @as(isize, @intCast(left));
+                var local: usize = @intCast(@max(raw, 0));
+                if (self.rendered_caret_column) |column| {
+                    local -= @min(local -| column, doc.measureText(caret_glyph));
+                }
 
                 if (event.kind == .down) {
                     self.mouse_selecting = true;
-                    const local: usize = if (raw <= 0) 0 else @intCast(raw);
                     const position = self.caretAtCell(doc, local);
                     if (event.mods.shift) {
                         self.cursor = position;
@@ -453,7 +443,7 @@ pub const InputBox = struct {
                     return true;
                 }
 
-                const position = self.caretAtCell(doc, @intCast(raw));
+                const position = self.caretAtCell(doc, local);
                 if (self.mouse_selecting) {
                     self.cursor = position;
                 } else {
@@ -752,13 +742,20 @@ pub const InputBox = struct {
         if (width == 0) return;
         const total = doc.measureText(self.value.items);
         const caret = doc.measureText(self.value.items[0..self.cursor]);
+        const caret_width = doc.measureText(caret_glyph);
         // `scroll_x` deliberately has no viewport when the host has not built
         // the box yet; use the current width for the ensure-only window.
-        var window = ScrollWindow.init(width, total + 1, self.scroll_x.offset);
-        _ = window.ensureVisible(caret, caret + 1, 0);
+        var window = ScrollWindow.init(width, total + caret_width, self.scroll_x.offset);
+        _ = window.ensureVisible(caret, caret + caret_width, 0);
         self.scroll_x.setExtents(0, total);
         self.scroll_x.offset = @min(window.offset, total);
         self.syncViewStartToScroll(doc);
+        if (self.scroll_x.offset < window.offset) {
+            // The window starts inside a wide character. Showing the whole
+            // character would put the caret past the right edge again.
+            self.view_start = self.nextBoundaryAt(self.view_start);
+            self.syncScrollToViewStart(doc);
+        }
     }
 
     /// Byte caret for a visible cell offset. Tabs never reach the value (control
@@ -966,7 +963,7 @@ fn expectRow(
 }
 
 fn testWideWidth(cp: u21) u2 {
-    return if (cp >= 0x1100) 2 else 1;
+    return if (cp == '何') 2 else 1;
 }
 
 test "InputBox: typing, deleting and moving the caret" {
@@ -1185,7 +1182,7 @@ test "InputBox: selection covers both cells of a wide character" {
     try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(3, 0)] & cell.Attr.inverse);
 }
 
-test "InputBox: build paints the value and a block caret" {
+test "InputBox: build paints the caret glyph at and within the value" {
     const allocator = std.testing.allocator;
     var surface = try Surface.init(allocator, .{ .cols = 10, .rows = 1 });
     defer surface.deinit();
@@ -1195,13 +1192,11 @@ test "InputBox: build paints the value and a block caret" {
     input.focused = true;
     try input.setValue("hi");
 
-    const row = try renderRow(&surface, &input, allocator, 10);
-    defer allocator.free(row);
-    try std.testing.expectEqualStrings("hi ", row);
-
-    const grid = surface.grid();
-    try std.testing.expect(grid.attrs[grid.index(2, 0)] & cell.Attr.inverse != 0);
-    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(0, 0)] & cell.Attr.inverse);
+    try expectRow(&surface, &input, allocator, 10, "hi│");
+    var left = keyEvent(.left, .{});
+    try std.testing.expect(input.handleKey(&left));
+    try expectRow(&surface, &input, allocator, 10, "h│i");
+    try std.testing.expectEqualStrings("hi", input.getValue());
 
     // The input text keeps the browser's I-beam cursor.
     try std.testing.expectEqual(style_mod.Pointer.text, (try surface.pointerAt(0, 0)).?);
@@ -1220,10 +1215,7 @@ test "InputBox: placeholder can show while focused" {
 
     const row = try renderRow(&surface, &input, allocator, 16);
     defer allocator.free(row);
-    try std.testing.expect(std.mem.startsWith(u8, row, " Search files"));
-    const grid = surface.grid();
-    try std.testing.expect(grid.attrs[grid.index(0, 0)] & cell.Attr.inverse != 0);
-    try std.testing.expectEqual(@as(u16, 0), grid.attrs[grid.index(1, 0)] & cell.Attr.inverse);
+    try std.testing.expectEqualStrings("│Search files", row);
 }
 
 test "InputBox: placeholder shows while empty and unfocused" {
@@ -1238,6 +1230,9 @@ test "InputBox: placeholder shows while empty and unfocused" {
     const row = try renderRow(&surface, &input, allocator, 12);
     defer allocator.free(row);
     try std.testing.expectEqualStrings("Find", row);
+
+    input.focused = true;
+    try expectRow(&surface, &input, allocator, 12, "│");
 }
 
 test "InputBox: a long value scrolls to keep the caret visible" {
@@ -1252,7 +1247,20 @@ test "InputBox: a long value scrolls to keep the caret visible" {
 
     const row = try renderRow(&surface, &input, allocator, 5);
     defer allocator.free(row);
-    try std.testing.expectEqualStrings("ghij ", row);
+    try std.testing.expectEqualStrings("ghij│", row);
+}
+
+test "InputBox: caret-follow scrolls past a wide character when needed" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 2, .rows = 1, .measure_width = testWideWidth });
+    defer surface.deinit();
+
+    var input = InputBox.init(allocator);
+    defer input.deinit();
+    input.focused = true;
+    try input.setValue("何");
+
+    try expectRow(&surface, &input, allocator, 2, "│");
 }
 
 test "InputBox: horizontal scrolling and wheel input" {
@@ -1265,7 +1273,7 @@ test "InputBox: horizontal scrolling and wheel input" {
     input.focused = true;
     try input.setValue("abcdefghij");
 
-    try expectRow(&surface, &input, allocator, 5, "ghij ");
+    try expectRow(&surface, &input, allocator, 5, "ghij│");
 
     // Manual scrolling keeps the window where the host put it.
     try std.testing.expect(input.scrollBy(surface.document(), -3));
@@ -1274,7 +1282,7 @@ test "InputBox: horizontal scrolling and wheel input" {
     // A horizontal wheel moves it back to the caret end.
     var wheel = MouseEvent{ .kind = .wheel, .x = 1, .y = 0, .delta_x = 3 };
     try std.testing.expect(input.handleMouse(&wheel));
-    try expectRow(&surface, &input, allocator, 5, "ghij ");
+    try expectRow(&surface, &input, allocator, 5, "ghij│");
 
     // Clamping at both ends.
     try std.testing.expect(input.scrollBy(surface.document(), -100));
@@ -1286,7 +1294,7 @@ test "InputBox: horizontal scrolling and wheel input" {
     try std.testing.expect(input.scrollBy(surface.document(), -3));
     var event = KeyEvent{ .key = .{ .char = 'X' } };
     try std.testing.expect(input.handleKey(&event));
-    try expectRow(&surface, &input, allocator, 5, "hijX ");
+    try expectRow(&surface, &input, allocator, 5, "hijX│");
 }
 
 test "InputBox: clicking maps a cell to the byte caret" {
@@ -1302,18 +1310,21 @@ test "InputBox: clicking maps a cell to the byte caret" {
     defer input.deinit();
     input.focused = true;
     try input.setValue("a何b");
+    input.select(.{ .start = 1, .end = 1 });
+    try expectRow(&surface, &input, allocator, 10, "a│何b");
 
-    const initial = try renderRow(&surface, &input, allocator, 10);
-    allocator.free(initial);
-
-    var click = MouseEvent{ .kind = .down, .x = 2, .y = 0, .button = .left };
+    var click = MouseEvent{ .kind = .down, .x = 3, .y = 0, .button = .left };
     try std.testing.expect(input.handleMouse(&click));
     // The second cell is the boundary after the wide character.
     try std.testing.expectEqual(@as(usize, 4), input.cursor);
 
-    click.x = 1;
+    click.x = 2;
     _ = input.handleMouse(&click);
     // The left half of the wide character puts the caret before it.
+    try std.testing.expectEqual(@as(usize, 1), input.cursor);
+
+    click.x = 1;
+    try std.testing.expect(input.handleMouse(&click));
     try std.testing.expectEqual(@as(usize, 1), input.cursor);
 
     click.x = 0;
@@ -1321,7 +1332,7 @@ test "InputBox: clicking maps a cell to the byte caret" {
     try std.testing.expectEqual(@as(usize, 0), input.cursor);
 
     // Held-button motion moves the caret too.
-    var drag = MouseEvent{ .kind = .move, .x = 4, .y = 0, .button = .left };
+    var drag = MouseEvent{ .kind = .move, .x = 5, .y = 0, .button = .left };
     _ = input.handleMouse(&drag);
     try std.testing.expectEqual(@as(usize, 5), input.cursor);
 
@@ -1380,7 +1391,7 @@ test "InputBox: dragging past the edge autoscrolls" {
     try input.setValue("abcdef");
     input.select(.{ .start = 0, .end = 0 });
 
-    try expectRow(&surface, &input, allocator, 3, "abc");
+    try expectRow(&surface, &input, allocator, 3, "│ab");
 
     var down = MouseEvent{ .kind = .down, .x = 0, .y = 0, .button = .left };
     try std.testing.expect(input.handleMouse(&down));
