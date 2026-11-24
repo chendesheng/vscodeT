@@ -23,12 +23,18 @@
     "@vscode/spdlog": "^0.15.8",
     "@vscode/sync-api-common": "0.7.2",
     "esbuild": "^0.25.0",
+    "find-up": "5.0.0",
+    "find-yarn-workspace-root": "2.0.0",
     "http-proxy-agent": "^9.1.0",
     "https-proxy-agent": "^9.1.0",
     "image-size": "1.0.2",
     "jsonc-parser": "3.2.0",
     "markdown-it": "14.3.3",
+    "minimatch": "5.1.8",
     "minimist": "^1.2.8",
+    "npm-extension-http": "npm:request-light@0.7.0",
+    "npm-extension-uri": "npm:vscode-uri@3.0.8",
+    "npm-extension-which": "npm:which@4.0.0",
     "parse5": "3.0.2",
     "request-light": "^0.8.0",
     "semver": "7.5.2",
@@ -42,6 +48,7 @@
     "vscode-regexpp": "^3.1.0",
     "vscode-tas-client": "0.1.84",
     "vscode-uri": "^3.1.0",
-    "which": "2.0.2"
+    "which": "2.0.2",
+    "which-pm": "2.2.0"
   }
 }

@@ -16,12 +16,12 @@ const options = {
     mainFields: ['module', 'main'], external: ['vscode', '@vscode/internal-github'], nodePaths: [modules]
 };
 
-async function bundleExtension(name, client, resources = []) {
+async function bundleExtension(name, client, resources = [], alias = {}) {
     const root = path.join(upstream, name);
     const target = path.join(destination, name);
     const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
     const source = client.replace('/dist/', '/src/').replace(/^dist\//, 'src/').replace(/\.js$/, '.ts');
-    await build({ ...options, entryPoints: [path.join(root, source)], outfile: path.join(target, client) });
+    await build({ ...options, alias, entryPoints: [path.join(root, source)], outfile: path.join(target, client) });
     for (const resource of ['package.nls.json', ...resources]) {
         await cp(path.join(root, resource), path.join(target, resource), { recursive: true });
     }
@@ -65,6 +65,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     await cp(path.join(upstream, '../product.json'), path.join(here, 'dist/product.json'));
     await bundleExtension('configuration-editing', 'dist/configurationEditingMain.js');
     await bundleExtension('extension-editing', 'dist/extensionEditingMain.js');
+    for (const name of ['grunt', 'gulp', 'jake']) await bundleExtension(name, 'dist/main.js');
+    await bundleExtension('npm', 'dist/npmMain.js', [], {
+        which: 'npm-extension-which', 'request-light': 'npm-extension-http', 'vscode-uri': 'npm-extension-uri'
+    });
     await bundleExtension('simple-browser', 'dist/extension.js');
     await bundleExtension('merge-conflict', 'dist/mergeConflictMain.js');
     await bundleExtension('git-base', 'dist/extension.js');
