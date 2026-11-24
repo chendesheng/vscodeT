@@ -1,8 +1,8 @@
 // Port of `src/vs/workbench/api/browser/mainThreadWindow.ts` (terminal subset).
 //
-// The terminal window is always focused/active. `$openUri` opens local paths in
-// the workbench; unhandled schemes return false. `$asExternalUri` returns the
-// input URI because there is no URI opener service.
+// The terminal window is always focused/active. The native host opens local
+// files in the workbench and HTTP(S) links in the system browser.
+// `$asExternalUri` preserves the original URI.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");

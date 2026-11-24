@@ -323,6 +323,7 @@ pub const Extensions = struct {
     }
 
     pub fn deinit(self: *Extensions) void {
+        if (self.workbench.quick_access.isOpen()) self.workbench.quick_access.inputService().hide();
         if (self.terminal_completions) |*session| session.deinit();
         self.secret_state.deinit(self.allocator);
         self.accounts.deinit();
@@ -535,6 +536,32 @@ pub const Extensions = struct {
 
     fn windowOpenUriHost(context: *anyopaque, uri: std.json.Value) anyerror!bool {
         const self: *Extensions = @ptrCast(@alignCast(context));
+        if (uri != .object) return false;
+        const scheme = uri.object.get("scheme") orelse return false;
+        if (scheme != .string) return false;
+        if (std.mem.eql(u8, scheme.string, "https") or std.mem.eql(u8, scheme.string, "http")) {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const components = try std_uri.componentsFromJson(uri, a);
+            if (components.authority.len == 0) return false;
+            const url = try std_uri.resourceKeyFromComponents(a, components);
+            for (url) |byte| if (byte < 32 or byte == 127) return false;
+            const opener = switch (@import("builtin").os.tag) {
+                .macos => "/usr/bin/open",
+                .linux => try self.workbench.findTerminalExecutable("xdg-open") orelse return false,
+                else => return false,
+            };
+            defer if (@import("builtin").os.tag == .linux) self.allocator.free(opener);
+            const result = std.process.run(a, self.io, .{
+                .argv = &.{ opener, url },
+                .stdout_limit = .limited(4096),
+                .stderr_limit = .limited(4096),
+                .timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
+            }) catch return false;
+            return result.term.success();
+        }
+        if (!std.mem.eql(u8, scheme.string, "file")) return false;
         const path = uriPath(uri) orelse return false;
         self.workbench.openPath(path) catch return false;
         self.needs_render = true;
@@ -948,6 +975,27 @@ pub const Extensions = struct {
 
     fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
+        if (std.mem.eql(u8, method, "$writeText")) {
+            const self: *Extensions = @ptrCast(@alignCast(context));
+            if (args.len != 1 or args[0] != .json or args[0].json != .string) return error.InvalidClipboardText;
+            const value = args[0].json.string;
+            const output = std.Io.File.stdout();
+            if (!try output.isTty(self.io)) return error.TerminalClipboardUnavailable;
+            const encoder = std.base64.standard.Encoder;
+            const prefix = "\x1b]52;c;";
+            const size = encoder.calcSize(value.len);
+            const sequence = try arena.alloc(u8, prefix.len + size + 1);
+            @memcpy(sequence[0..prefix.len], prefix);
+            _ = encoder.encode(sequence[prefix.len..][0..size], value);
+            sequence[sequence.len - 1] = 7;
+            try output.writeStreamingAll(self.io, sequence);
+            return .empty;
+        }
+        if (std.mem.eql(u8, method, "$showMessage")) {
+            const self: *Extensions = @ptrCast(@alignCast(context));
+            self.needs_render = true;
+            return @import("mainThreadMessageService.zig").Prompt.show(self.workbench, args);
+        }
         if (std.mem.eql(u8, method, "$startFileSearch")) {
             const self: *Extensions = @ptrCast(@alignCast(context));
             return .{ .json = try @import("mainThreadWorkspace.zig").findFiles(self.io, self.allocator, arena, self.workbench.workspaceFolderPath(), args) };
