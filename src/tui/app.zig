@@ -909,7 +909,7 @@ pub fn main(init: std.process.Init) !void {
                     const modal_host = helix_runtime.host orelse vim_runtime.host;
                     if (modal_host) |host| {
                         const editor_focused = workbench.focus == .editor;
-                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isImage() and tab.terminal_input == null else false;
+                        const normal_tab = if (workbench.activeTab()) |tab| !tab.isDiff() and !tab.isImage() and tab.markdown_preview == null and tab.terminal_input == null else false;
                         if (!workbench.is_pasting and editor_focused and normal_tab and
                             dispatchExtensionKey(workbench, host, event))
                         {
@@ -928,6 +928,10 @@ pub fn main(init: std.process.Init) !void {
                     if (workbench.handleWatermarkKey(event)) continue;
 
                     const current = workbench.activeTab() orelse continue;
+                    if (current.markdown_preview) |preview| {
+                        preview.handleKey(event);
+                        continue;
+                    }
                     if (current.isImage()) {
                         switch (current.handleImageKey(event)) {
                             .changed => {
@@ -1021,7 +1025,14 @@ pub fn main(init: std.process.Init) !void {
                         const modal_host = helix_runtime.host orelse vim_runtime.host;
                         if (modal_host) |host| host.resetKeyInput();
                     }
-                    if (!current.isDiff() and current.handleMarkdownPreviewMouse(adjusted, now_ms)) {
+                    if (current.markdown_preview) |preview| {
+                        if (preview.handleMouse(adjusted, now_ms)) |line| {
+                            try workbench.showMarkdownSource();
+                            if (workbench.activeTab()) |source| {
+                                try source.editor.setSelection(Range.init(line, 1, line, 1));
+                                _ = source.editor.revealLine(line, .CenterIfOutsideViewport);
+                            }
+                        }
                         if (event.kind == .move) workbench.leaveEditorHover();
                         needs_render = true;
                         continue;
@@ -1072,7 +1083,7 @@ pub fn main(init: std.process.Init) !void {
                 if (!current.isImage()) {
                     current.onEditorChanged(time_compat.milliTimestamp());
                     workbench.onSearchEditorChanged();
-                    try current.view.refresh();
+                    try current.refresh();
                 } else {
                     try current.refresh();
                 }

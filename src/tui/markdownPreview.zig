@@ -7,7 +7,7 @@
 //! (30 s deadline, 32 MiB cap) and are only issued while the preview exists.
 //!
 //! The portable behavior is ported from
-//! `vscode/extensions/markdown-language-features/preview/preview.ts`,
+//! `vscode/extensions/markdown-language-features/src/preview/preview.ts`,
 //! `preview-src/index.ts` and `preview-src/scroll-sync.ts`. The webview/DOM
 //! layer is replaced by a `ui.Surface` painted only for the visible rows; the
 //! renderer and scroll model live under
@@ -22,9 +22,9 @@ const ui = @import("ui");
 const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
-const Range = @import("../vs/editor/common/core/range.zig").Range;
 const time_compat = @import("../vs/base/common/timeCompat.zig");
 const DeadlineTimer = @import("../vs/base/common/deadlineTimer.zig").DeadlineTimer;
+const ModelContentChanged = @import("../vs/editor/common/textModelEvents.zig").InternalModelContentChangeEvent;
 const viewEvents = @import("../vs/editor/common/viewEvents.zig");
 const ViewEventHandler = @import("../vs/editor/common/viewEventHandler.zig").ViewEventHandler;
 const markdown = @import("../vs/editor/common/markdown/markdownTerminalRenderer.zig");
@@ -171,6 +171,7 @@ pub const MarkdownPreview = struct {
     scroll_disabled_timer: DeadlineTimer = .{},
     reveal_timer: DeadlineTimer = .{},
     view_handler: ViewEventHandler = .{},
+    content_listener: usize,
     last_error: ?anyerror = null,
     theme: ?*const theme_colors_mod.ThemeColors = null,
     image_background: u32 = 0,
@@ -181,6 +182,7 @@ pub const MarkdownPreview = struct {
         self.* = .{
             .allocator = allocator,
             .editor = editor,
+            .content_listener = undefined,
             .image_entries = std.StringHashMap(*ImageEntry).init(allocator),
             .image_specs = std.array_list.Managed(preview_doc.ImageSpec).init(allocator),
             .mermaid = .{ .allocator = allocator, .script_name = "render-mermaid.mjs" },
@@ -199,10 +201,10 @@ pub const MarkdownPreview = struct {
         self.base_dir = try documentBaseDir(allocator, editor.io, editor.path);
         errdefer allocator.free(self.base_dir);
         self.view_handler = ViewEventHandler.init(self, .{
-            .onFlushed = onFlushed,
             .onScrollChanged = onScrollChanged,
             .onCursorStateChanged = onCursorStateChanged,
         });
+        self.content_listener = try editor.model.onDidChangeContentWithContextId(self, onSourceContentChanged);
         editor.addViewEventHandler(&self.view_handler);
         self.last_version = editor.model.getVersionId();
         return self;
@@ -244,6 +246,7 @@ pub const MarkdownPreview = struct {
         self.image_specs.deinit();
         self.image_entries.deinit();
         if (self.base_dir.len > 0) self.allocator.free(self.base_dir);
+        self.editor.model.removeDidChangeContentListener(self.content_listener);
         self.editor.removeViewEventHandler(&self.view_handler);
         self.refresh_timer.cancel();
         self.scrolling_timer.cancel();
@@ -427,18 +430,35 @@ pub const MarkdownPreview = struct {
         return surface.pointerAt(x, y);
     }
 
-    pub fn handleMouse(self: *MarkdownPreview, event: *ui.MouseEvent, now_ms: i64) bool {
-        if (!self.visible) return false;
+    /// Native webviews scroll the focused document with navigation keys.
+    pub fn handleKey(self: *MarkdownPreview, event: *const ui.KeyEvent) void {
+        if (event.mods.alt or event.mods.ctrl) return;
+        const target = switch (event.key) {
+            .up => self.scroll -| 1,
+            .down => self.scroll + 1,
+            .page_up => self.scroll -| self.height,
+            .page_down => self.scroll + self.height,
+            .home => 0,
+            .end => self.maxScroll(),
+            .char => |ch| if (ch == ' ') (if (event.mods.shift) self.scroll -| self.height else self.scroll + self.height) else return,
+            else => return,
+        };
+        self.setScroll(target, .preview);
+    }
+
+    /// Returns the one-based source line requested by a preview double click.
+    pub fn handleMouse(self: *MarkdownPreview, event: *ui.MouseEvent, now_ms: i64) ?usize {
+        if (!self.visible) return null;
         if (event.kind == .wheel) {
             self.scrollBy(event.delta_y, now_ms);
-            return true;
+            return null;
         }
-        if (event.kind != .down) return true;
+        if (event.kind != .down) return null;
         if (event.x >= self.width -| 1) {
             const max_scroll = self.maxScroll();
             const target = if (self.height == 0) 0 else (event.y * max_scroll) / self.height;
             self.setScroll(target, .preview);
-            return true;
+            return null;
         }
 
         const row = self.scroll + event.y;
@@ -447,7 +467,7 @@ pub const MarkdownPreview = struct {
             if (document.linkAt(row, column)) |href| {
                 if (href.len > 0 and href[0] == '#') {
                     _ = self.scrollToAnchor(href[1..]);
-                    return true;
+                    return null;
                 }
             }
         }
@@ -458,12 +478,12 @@ pub const MarkdownPreview = struct {
             false;
         if (double_click) {
             self.last_down_ms = null;
-            if (self.options.double_click_to_switch_to_editor) self.revealLineInEditor(row);
-            return true;
+            if (self.options.double_click_to_switch_to_editor) return self.sourceLineAt(row);
+            return null;
         }
         self.last_down_ms = now_ms;
         self.last_down_row = row;
-        return true;
+        return null;
     }
 
     fn updatePreview(self: *MarkdownPreview, force: bool) !void {
@@ -558,17 +578,16 @@ pub const MarkdownPreview = struct {
         self.scrolling_timer.schedule(200, clearScrolling, self);
     }
 
-    fn revealLineInEditor(self: *MarkdownPreview, row: usize) void {
-        const document = if (self.document) |*value| value else return;
+    fn sourceLineAt(self: *MarkdownPreview, row: usize) ?usize {
+        const document = if (self.document) |*value| value else return null;
         const line = scroll_sync.getEditorLineNumberForPageOffset(
             document,
-            @floatFromInt(self.scroll + row),
+            @floatFromInt(row),
             @floatFromInt(self.scroll),
-        ) orelse return;
-        if (std.math.isNan(line)) return;
+        ) orelse return null;
+        if (std.math.isNan(line)) return null;
         const line_count = self.editor.model.getLineCount();
-        const model_line = @min(line_count, @max(1, @as(usize, @intFromFloat(@floor(line))) + 1));
-        self.editor.setSelection(Range.init(model_line, 1, model_line, 1)) catch {};
+        return @min(line_count, @max(1, @as(usize, @intFromFloat(@floor(line))) + 1));
     }
 
     fn updateActiveBlock(self: *MarkdownPreview) void {
@@ -1198,11 +1217,8 @@ pub const MarkdownPreview = struct {
         self.dirty = false;
     }
 
-    fn onFlushed(context: *anyopaque, _: *const viewEvents.ViewFlushedEvent) bool {
-        const self: *MarkdownPreview = @ptrCast(@alignCast(context));
-        if (self.editor.model.getVersionId() == self.last_version) return false;
+    fn onSourceContentChanged(_: ModelContentChanged, self: *MarkdownPreview) anyerror!void {
         self.refresh(false);
-        return false;
     }
 
     fn onScrollChanged(context: *anyopaque, event: *const viewEvents.ViewScrollChangedEvent) bool {

@@ -11,6 +11,7 @@
 // `IEditorGroupsService` and the editor part.
 
 const std = @import("std");
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const Allocator = std.mem.Allocator;
 const editor_mod = @import("../../../common/editor.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
@@ -60,6 +61,7 @@ pub const SerializedEditorPart = struct {
 };
 
 pub const EditorGroup = struct {
+    service: *EditorGroupsService,
     id: GroupIdentifier,
     model: EditorGroupModel,
     creation_order: u64,
@@ -74,6 +76,7 @@ pub const EditorGroupsService = struct {
     allocator: Allocator,
     groups: std.array_list.Managed(*EditorGroup),
     active: *EditorGroup,
+    on_did_active_editor_change: Emitter(?*EditorInput),
     next_creation_order: u64 = 1,
     next_activation_order: u64 = 1,
 
@@ -85,6 +88,7 @@ pub const EditorGroupsService = struct {
             .allocator = allocator,
             .groups = std.array_list.Managed(*EditorGroup).init(allocator),
             .active = undefined,
+            .on_did_active_editor_change = Emitter(?*EditorInput).init(allocator),
         };
 
         const group = try self.createGroup(config);
@@ -99,6 +103,7 @@ pub const EditorGroupsService = struct {
             group.model.deinit();
             self.allocator.destroy(group);
         }
+        self.on_did_active_editor_change.deinit();
         self.groups.deinit();
         self.allocator.destroy(self);
     }
@@ -142,6 +147,7 @@ pub const EditorGroupsService = struct {
         self.active = group;
         group.activation_order = self.next_activation_order;
         self.next_activation_order += 1;
+        self.on_did_active_editor_change.fire(group.model.activeEditor()) catch {};
     }
 
     /// Adds a group next to `location` (or after the active group). The TUI
@@ -151,9 +157,7 @@ pub const EditorGroupsService = struct {
         _ = location;
         _ = direction;
         const group = try self.createGroup(.{});
-        group.activation_order = self.next_activation_order;
-        self.next_activation_order += 1;
-        self.active = group;
+        self.activateGroup(group);
         return group;
     }
 
@@ -165,9 +169,7 @@ pub const EditorGroupsService = struct {
         _ = self.groups.orderedRemove(index);
         if (self.active == group) {
             const next_index = if (index < self.groups.items.len) index else self.groups.items.len - 1;
-            self.active = self.groups.items[next_index];
-            self.active.activation_order = self.next_activation_order;
-            self.next_activation_order += 1;
+            self.activateGroup(self.groups.items[next_index]);
         }
 
         group.model.deinit();
@@ -266,6 +268,7 @@ pub const EditorGroupsService = struct {
         const first = self.groups.items[0];
         first.model.deinit();
         first.model = try group_mod.EditorGroupModel.initFromSerialized(allocator, config, data.groups[0], registry);
+        _ = try first.model.on_did_model_change.listen(first, onGroupModelChange);
         first.id = first.model.id;
 
         var index: usize = 1;
@@ -273,6 +276,7 @@ pub const EditorGroupsService = struct {
             const group = try self.addGroup(null, .RIGHT);
             group.model.deinit();
             group.model = try group_mod.EditorGroupModel.initFromSerialized(allocator, config, data.groups[index], registry);
+            _ = try group.model.on_did_model_change.listen(group, onGroupModelChange);
             group.id = group.model.id;
         }
 
@@ -286,14 +290,23 @@ pub const EditorGroupsService = struct {
         const group = try self.allocator.create(EditorGroup);
         errdefer self.allocator.destroy(group);
         group.* = .{
+            .service = self,
             .id = 0,
             .model = try EditorGroupModel.init(self.allocator, config),
             .creation_order = self.next_creation_order,
         };
+        errdefer group.model.deinit();
+        _ = try group.model.on_did_model_change.listen(group, onGroupModelChange);
         group.id = group.model.id;
         self.next_creation_order += 1;
         try self.groups.append(group);
         return group;
+    }
+
+    fn onGroupModelChange(event: group_mod.GroupModelChangeEvent, group: *EditorGroup) anyerror!void {
+        if (event == .EDITOR_ACTIVE and group.service.active == group) {
+            try group.service.on_did_active_editor_change.fire(group.model.activeEditor());
+        }
     }
 
     fn indexOf(self: *const EditorGroupsService, group: *EditorGroup) ?usize {

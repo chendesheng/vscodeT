@@ -939,8 +939,9 @@ sheet, which also styles the find widget's resize node. For sidebar and editor
 sashes the workbench paints the `sash.hoverBorder` color on the divider when
 hovered or grabbed. `app.zig` resets the shape to `default` before routing each
 mouse move and calls `Workbench.updateMousePointer` for the pane
-under the pointer (`Tab.pointerAt` covers the editor, Markdown preview split,
-image pane and diff widget).
+under the pointer (`Tab.pointerAt` covers the editor, Markdown preview,
+image pane and diff widget). A side preview occupies a regular editor group.
+Its divider is painted and hit-tested by the editor grid.
 
 No capability probe is added: OSC 22 is out-of-band, has no layout or cell
 payload, and terminals that do not implement it ignore the sequence. The

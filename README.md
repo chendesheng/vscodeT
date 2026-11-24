@@ -1611,11 +1611,14 @@ Markdown:
 
 Markdown preview:
 
-- `Markdown: Open Preview to the Side`, `Markdown: Toggle Preview`
-  (`Ctrl-Shift-V`) and `Markdown: Refresh Preview` open a rendered preview
-  beside the source in the active tab. The active Markdown editor also shows a
-  two-cell `◫⌕` preview button at the right end of its tab row; clicking it
-  toggles the split, and the icon is highlighted while the preview is open.
+- `Markdown: Open Preview to the Side` (`Ctrl-K V`) and the `◫⌕` title
+  action open a focused `Preview <filename>` tab in the neighboring editor
+  group. The workbench reuses that group and its ordinary draggable divider.
+  An unlocked preview follows the active Markdown file. `Markdown: Show Source`
+  returns to the source group, and either tab can be closed independently.
+- `Markdown: Toggle Preview` (`Ctrl-Shift-V`) switches the current file
+  between source and preview in place. `Markdown: Refresh Preview` refreshes
+  the rendered content.
 - The preview shares the terminal Markdown renderer and keeps VS Code's
   bidirectional scroll sync: `markdown.preview.scrollPreviewWithEditor`
   (editor to preview) and `markdown.preview.scrollEditorWithPreview` (preview

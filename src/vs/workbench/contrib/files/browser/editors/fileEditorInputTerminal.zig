@@ -23,6 +23,7 @@ pub const FileEditorInput = struct {
     allocator: Allocator,
     base: EditorInput,
     editor: *Editor,
+    refs: usize = 1,
     dirty_listener: Emitter(void).ListenerId,
 
     /// Upstream `FILE_EDITOR_INPUT_ID`.
@@ -53,9 +54,18 @@ pub const FileEditorInput = struct {
         return self;
     }
 
+    /// A Markdown panel can keep its source document and scroll event source
+    /// alive after the file's tab closes.
+    pub fn retain(self: *FileEditorInput) *FileEditorInput {
+        self.refs += 1;
+        return self;
+    }
+
     /// Closes the input and destroys the owned editor. The caller must close
     /// the editor from the group and detach any view first.
     pub fn deinit(self: *FileEditorInput) void {
+        self.refs -= 1;
+        if (self.refs != 0) return;
         self.editor.on_did_change_dirty.unlisten(self.dirty_listener);
         self.base.dispose();
         self.base.deinit();

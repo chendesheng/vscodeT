@@ -210,7 +210,6 @@ const hover_operation = @import("../../editor/contrib/hover/browser/hoverOperati
 const hover_types = @import("../../editor/contrib/hover/browser/hoverTypes.zig");
 const sticky_actions = @import("../../editor/contrib/stickyScroll/browser/stickyScrollActions.zig");
 const strings = @import("../../base/common/strings.zig");
-const topmost_line_monitor = @import("../contrib/markdown/browser/topmostLineMonitor.zig");
 const MarkdownPreviewConfig = @import("../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
 const media_preview = @import("../contrib/mediaPreview/common/mediaPreview.zig");
 const ImagePreviewEditorInput = @import("../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
@@ -270,6 +269,8 @@ pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, prob
 const ContextKeyHandles = struct {
     editor_focus: context_key_mod.IContextKey,
     editor_text_focus: context_key_mod.IContextKey,
+    editor_lang_id: context_key_mod.IContextKey,
+    active_custom_editor_id: context_key_mod.IContextKey,
     input_focus: context_key_mod.IContextKey,
     list_focus: context_key_mod.IContextKey,
     side_bar_focus: context_key_mod.IContextKey,
@@ -940,6 +941,7 @@ pub const Workbench = struct {
         errdefer self.service.deinit();
         self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
         errdefer self.part.deinit();
+        _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
 
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
@@ -1112,6 +1114,7 @@ pub const Workbench = struct {
 
         self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
         errdefer self.part.deinit();
+        _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
 
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
@@ -1305,6 +1308,7 @@ pub const Workbench = struct {
         errdefer self.service.deinit();
         self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
         errdefer self.part.deinit();
+        _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
         try self.part.restoreGroups();
 
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
@@ -1862,6 +1866,8 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.terminal.focusPrevious", .label = "Focus Previous Terminal Group", .category = "Terminal", .context = self, .run = commandFocusPreviousTerminal },
             .{ .id = "workbench.action.terminal.resizeUp", .label = "Resize Terminal Panel Up", .category = "Terminal", .context = self, .run = commandResizeTerminalUp },
             .{ .id = "workbench.action.terminal.resizeDown", .label = "Resize Terminal Panel Down", .category = "Terminal", .context = self, .run = commandResizeTerminalDown },
+            .{ .id = "markdown.showSource", .label = "Show Source", .category = "Markdown", .requires_editor = true, .context = self, .run = commandShowMarkdownSource },
+            .{ .id = "markdown.showPreview", .label = "Open Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandOpenMarkdownPreview },
             .{ .id = "markdown.showPreviewToSide", .label = "Open Preview to the Side", .category = "Markdown", .requires_editor = true, .context = self, .run = commandShowMarkdownPreview },
             .{ .id = "markdown.togglePreview", .label = "Toggle Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandToggleMarkdownPreview },
             .{ .id = "markdown.preview.refresh", .label = "Refresh Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandRefreshMarkdownPreview },
@@ -4255,9 +4261,9 @@ pub const Workbench = struct {
         if (self.layout_model.isMainEditorCentered()) self.recomputeCenteredEditorLayout();
         const rect = self.editorLayoutRect();
         for (self.part.group_views.items) |pane| {
-            const terminal_editor_active = if (pane.activeTab()) |tab| tab.terminal_input != null else false;
+            const suppress_breadcrumbs = if (pane.activeTab()) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
             pane.setBreadcrumbsVisible(self.breadcrumbsEnabled());
-            pane.breadcrumbs_suppressed = terminal_editor_active;
+            pane.breadcrumbs_suppressed = suppress_breadcrumbs;
             pane.setTabsVisible(self.tabsVisibleFor(pane.tabs.items.len));
         }
         self.part.layout(rect);
@@ -6172,7 +6178,7 @@ pub const Workbench = struct {
                 if (tab.markdown_preview == null) continue;
                 const previous = tab.markdown_preview.?.options;
                 tab.setMarkdownPreviewConfig(config);
-                if (!MarkdownPreviewConfig.eql(previous, config) and tab.markdown_preview_visible) {
+                if (!MarkdownPreviewConfig.eql(previous, config)) {
                     tab.refreshMarkdownPreview(true);
                 }
             }
@@ -6181,57 +6187,119 @@ pub const Workbench = struct {
 
     pub fn toggleMarkdownPreview(self: *Workbench, pane: *GroupPane) !void {
         const tab = pane.activeTab() orelse return;
+        if (tab.markdown_panel != null) return;
         if (!tab.isMarkdown()) {
             tab.editor.setMessage("Markdown preview is available for Markdown files only.", .{});
             return;
         }
-        if (tab.markdown_preview_visible) {
-            try tab.setMarkdownPreviewVisible(false);
-            pane.layout();
-            self.refreshStatus();
-            return;
-        }
-
-        const start_line = topmost_line_monitor.getVisibleLine(tab.editor);
-        if (try tab.ensureMarkdownPreview()) |preview| {
-            preview.mermaid.io = self.async_io;
-            preview.math.io = self.async_io;
-        }
-        tab.setMarkdownPreviewConfig(self.markdownPreviewConfig());
-        try tab.setMarkdownPreviewVisible(true);
+        tab.setImageRuntime(&self.images);
+        tab.setAsyncIo(self.async_io);
+        try tab.toggleMarkdownEditor(self.markdownPreviewConfig(), self.theme_palette);
         pane.layout();
-        if (tab.markdown_preview) |preview| {
-            if (self.theme_palette) |palette| preview.setThemeColors(palette);
-            preview.open(start_line) catch |err| {
-                tab.editor.setMessage("markdown preview: {s}", .{@errorName(err)});
-            };
-        }
         self.focusEditor();
         self.refreshStatus();
     }
 
     pub fn showMarkdownPreviewToSide(self: *Workbench) !void {
+        return self.openMarkdownPanel(true);
+    }
+
+    fn onActiveMarkdownEditor(active_input: ?*EditorInput, self: *Workbench) anyerror!void {
+        const input = active_input orelse return;
+        if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) return;
+        const source: *FileEditorInput = @ptrCast(@alignCast(input.impl orelse return));
+        if (!Tab.isMarkdownLanguage(source.editor.languageId())) return;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.markdown_panel != null) try tab.updateMarkdownPanel(source);
+            }
+        }
+    }
+
+    fn openMarkdownPanel(self: *Workbench, beside: bool) !void {
         const pane = self.activePane() orelse return;
         const tab = pane.activeTab() orelse return;
-        if (!tab.isMarkdown()) {
-            tab.editor.setMessage("Markdown preview is available for Markdown files only.", .{});
+        if (!tab.isMarkdown() or tab.markdown_preview != null) return;
+        const source = tab.file_input orelse return;
+        const direction = self.preferredSideBySideDirection();
+        self.expanded_pane = null;
+        const adjacent = if (beside) self.findAdjacentPane(direction, false) else pane;
+        const target = adjacent orelse try self.part.splitGroup(pane, if (direction == .DOWN) .vertical else .horizontal, false);
+        errdefer if (adjacent == null and target.isEmpty()) self.collapseEmptyPane(target);
+        // An unlocked dynamic preview matches by destination group. Repeated
+        // opens reveal the same panel even when the Markdown resource changes.
+        for (target.tabs.items) |existing| {
+            if (existing.markdown_panel == null) continue;
+            try existing.updateMarkdownPanel(source);
+            try target.activateTab(existing);
+            try self.focusPane(target);
             return;
         }
-        if (!tab.markdown_preview_visible) try self.toggleMarkdownPreview(pane);
+        const preview = try Tab.initMarkdownPanel(self.allocator, source, pane.group, self.markdownPreviewConfig(), self.theme_palette, &self.images, self.async_io);
+        {
+            errdefer preview.deinit();
+            try target.tabs.ensureUnusedCapacity(1);
+            _ = try target.group.model.openEditor(preview.input, .{ .pinned = true, .active = true });
+            try target.addTab(preview);
+        }
+        try self.focusPane(target);
+        self.refreshStatus();
+    }
+
+    pub fn showMarkdownSource(self: *Workbench) !void {
+        const active = self.activeTab() orelse return;
+        const panel = active.markdown_panel orelse {
+            if (active.markdown_preview != null) try self.toggleMarkdownPreview(self.activePane().?);
+            return;
+        };
+        const target = if (self.service.getGroup(panel.source_group)) |group| self.paneForGroup(group).? else self.activePane().?;
+        if (target.group.model.findEditor(&panel.source.base, .{})) |match| {
+            const source = target.tabForInput(match.editor) orelse return error.EditorNotFound;
+            try target.activateTab(source);
+            if (source.markdown_preview != null) try self.toggleMarkdownPreview(target);
+        } else {
+            // showTextDocument may reopen a source whose tab was closed.
+            // Reuse the live document, including its unsaved text and undo.
+            const input = try panel.source.copyInput();
+            const source = Tab.initFromInput(self.allocator, input) catch |err| {
+                input.deinit();
+                return err;
+            };
+            errdefer source.deinit();
+            try target.tabs.ensureUnusedCapacity(1);
+            _ = try target.group.model.openEditor(&input.base, .{ .active = true, .pinned = true });
+            errdefer _ = target.group.model.closeEditor(&input.base, .UNKNOWN, true) catch {};
+            try self.finishCopiedTab(target, source);
+        }
+        try self.focusPane(target);
     }
 
     pub fn refreshMarkdownPreview(self: *Workbench) void {
-        if (self.activeTab()) |tab| tab.refreshMarkdownPreview(true);
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| tab.refreshMarkdownPreview(true);
+        }
     }
 
     pub fn markdownPreviewTick(self: *Workbench, now_ms: i64) bool {
-        if (self.activeTab()) |tab| return tab.onMarkdownPreviewTick(now_ms);
-        return false;
+        var changed = false;
+        for (self.part.group_views.items) |pane| {
+            if (self.expanded_pane != null and self.expanded_pane != pane) continue;
+            if (pane.activeTab()) |tab| {
+                if (tab.onMarkdownPreviewTick(now_ms)) changed = true;
+            }
+        }
+        return changed;
     }
 
     pub fn markdownPreviewTimeout(self: *Workbench, now_ms: i64) ?u32 {
-        if (self.activeTab()) |tab| return tab.markdownPreviewTimeout(now_ms);
-        return null;
+        var earliest: ?u32 = null;
+        for (self.part.group_views.items) |pane| {
+            if (self.expanded_pane != null and self.expanded_pane != pane) continue;
+            if (pane.activeTab()) |tab| {
+                if (tab.markdownPreviewTimeout(now_ms)) |timeout| earliest = @min(earliest orelse timeout, timeout);
+            }
+        }
+        return earliest;
     }
 
     pub fn setSidebarViewStorage(self: *Workbench, user_data_dir: []const u8) !void {
@@ -8578,6 +8646,8 @@ pub const Workbench = struct {
         errdefer service.deinit();
         self.context_key_handles = .{
             .editor_focus = try service.createKey("editorFocus", .{ .boolean = false }),
+            .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
+            .active_custom_editor_id = try service.createKey("activeCustomEditorId", .{ .string = "" }),
             .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
             .input_focus = try service.createKey("inputFocus", .{ .boolean = false }),
             .list_focus = try service.createKey("listFocus", .{ .boolean = false }),
@@ -8619,8 +8689,13 @@ pub const Workbench = struct {
         const search_results_focused = if (self.search_view) |view| view.results_focused else false;
         const editor_focused = self.focus == .editor;
         keys.editor_focus.set(.{ .boolean = editor_focused });
-        const terminal_editor_active = if (self.activeTab()) |tab| tab.terminal_input != null else false;
-        keys.editor_text_focus.set(.{ .boolean = editor_focused and !terminal_editor_active and self.dialog == null and !self.quick_access.isOpen() });
+        const active = self.activeTab();
+        const terminal_editor_active = if (active) |tab| tab.terminal_input != null else false;
+        const markdown_preview = if (active) |tab| tab.markdown_preview != null else false;
+        const custom_preview = if (active) |tab| markdown_preview and tab.file_input != null else false;
+        keys.editor_lang_id.set(.{ .string = if (active) |tab| (if (tab.file_input != null and !markdown_preview) tab.editor.languageId() else "") else "" });
+        keys.active_custom_editor_id.set(.{ .string = if (custom_preview) "vscode.markdown.preview.editor" else "" });
+        keys.editor_text_focus.set(.{ .boolean = editor_focused and !terminal_editor_active and !markdown_preview and self.dialog == null and !self.quick_access.isOpen() });
         keys.side_bar_focus.set(.{ .boolean = sidebar_focused });
         keys.list_focus.set(.{ .boolean = sidebar_focused and (!search_active or search_results_focused) });
         keys.input_focus.set(.{ .boolean = sidebar_focused and search_active and !search_results_focused });
@@ -10980,7 +11055,9 @@ pub const Workbench = struct {
                                 return true;
                             }
                         }
-                        self.toggleMarkdownPreview(pane) catch {};
+                        if (pane.activeTab()) |tab| {
+                            if (tab.markdown_preview != null) self.showMarkdownSource() catch {} else self.openMarkdownPanel(!event.mods.alt) catch {};
+                        }
                         self.focusEditor();
                         return true;
                     }
@@ -11256,7 +11333,7 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             const visible = self.expanded_pane == null or self.expanded_pane == pane;
             const active = pane.activeTab();
-            const suppress_breadcrumbs = if (active) |tab| tab.terminal_input != null or tab.search_editor_input != null else false;
+            const suppress_breadcrumbs = if (active) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
             if (pane.breadcrumbs_suppressed != suppress_breadcrumbs) {
                 pane.breadcrumbs_suppressed = suppress_breadcrumbs;
                 pane.layout();
@@ -11304,7 +11381,7 @@ pub const Workbench = struct {
                 if (pane != active_pane or self.focus != .editor or self.quick_access.isOpen()) watermark.blur();
             }
             for (pane.tabs.items) |tab| {
-                const desired = tab.terminal_input == null and self.focus == .editor and
+                const desired = tab.terminal_input == null and tab.markdown_preview == null and self.focus == .editor and
                     pane == active_pane and pane.activeTab() == tab and
                     (tab.search_editor_input == null or !tab.search_editor_input.?.search_editor.query_focused);
                 if (tab.view.isFocused() != desired) _ = tab.view.setFocused(desired);
@@ -11355,7 +11432,7 @@ pub const Workbench = struct {
                 return;
             }
         }
-        const target = if (self.activeTab()) |tab| (if (tab.terminal_input == null) tab.editor.statusTarget() else null) else null;
+        const target = if (self.activeTab()) |tab| (if (tab.terminal_input == null and tab.markdown_preview == null) tab.editor.statusTarget() else null) else null;
         if (self.editor_status) |status| {
             status.update(target) catch {};
         }
@@ -11672,6 +11749,10 @@ pub const Workbench = struct {
                 infos[index].icon = .{ .glyph = 0xf002, .color = self.themeColor("tab.activeForeground", .{ 110, 164, 118 }) };
                 continue;
             }
+            if (tab.markdown_panel != null) {
+                infos[index].file_name = "";
+                continue;
+            }
             if (tab.terminal_input != null) {
                 infos[index].file_name = "";
                 infos[index].icon = .{ .glyph = '❯', .color = .{ .r = 204, .g = 204, .b = 204 } };
@@ -11717,9 +11798,9 @@ pub const Workbench = struct {
                 .glyphs = "↻",
                 .hovered = self.hovered_title_action_pane == pane,
             };
+            if (tab.markdown_preview != null) break :blk .{ .glyphs = "<>", .hovered = self.hovered_title_action_pane == pane };
             if (!tab.isMarkdown()) break :blk null;
             break :blk .{
-                .active = tab.markdownPreviewVisible(),
                 .hovered = self.hovered_title_action_pane == pane,
             };
         } else null;
@@ -14034,6 +14115,16 @@ fn commandReopenClosedEditor(context: *anyopaque) anyerror!void {
     _ = self.reopenLastClosedEditor();
 }
 
+fn commandShowMarkdownSource(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.showMarkdownSource();
+}
+
+fn commandOpenMarkdownPreview(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.openMarkdownPanel(false);
+}
+
 fn commandShowMarkdownPreview(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.showMarkdownPreviewToSide();
@@ -15834,7 +15925,7 @@ test "Workbench: opening a new file rebuilds its view once" {
     try std.testing.expectEqual(@as(usize, 1), tab.view.renderCount());
 }
 
-test "Workbench: markdown preview icon and split render the document" {
+test "Workbench: markdown preview toggle changes the current editor in place" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
@@ -15860,14 +15951,14 @@ test "Workbench: markdown preview icon and split render the document" {
     try std.testing.expectEqual(@as(u32, 0x2315), grid.cluster[grid.index(hit.start + 1, row)]);
 
     try workbench.toggleMarkdownPreview(pane);
-    try std.testing.expect(tab.markdown_preview_visible);
     try std.testing.expect(tab.markdown_preview != null);
+    try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
 
     var close_key = ui.KeyEvent{ .key = .{ .char = 'v' }, .mods = .{ .ctrl = true, .shift = true } };
     try std.testing.expect(try workbench.handleGlobalKey(&close_key));
-    try std.testing.expect(!tab.markdown_preview_visible);
+    try std.testing.expect(tab.markdown_preview == null);
     try std.testing.expect(try workbench.handleGlobalKey(&close_key));
-    try std.testing.expect(tab.markdown_preview_visible);
+    try std.testing.expect(tab.markdown_preview != null);
     try workbench.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "Title") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "world") != null);
@@ -15884,6 +15975,108 @@ test "Workbench: markdown preview icon and split render the document" {
     }
     try std.testing.expect(saw_title);
     try std.testing.expect(saw_world);
+}
+
+test "Workbench: markdown preview to the side uses an ordinary editor group and sash" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "source.md", "# First");
+    defer allocator.free(path);
+    const other = try seedFile(allocator, io, &tmp, "other.md", "# Second");
+    defer allocator.free(other);
+
+    for ([_]bool{ false, true }) |borders| {
+        const wb = try Workbench.init(allocator, io, &.{path}, 100, 22);
+        defer wb.deinit();
+        wb.setCellBorders(borders);
+        const source_group = wb.activePane().?;
+        const source = source_group.activeTab().?;
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        try wb.render(&out.writer);
+        const action = source_group.title_action_hit.?;
+        var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = action.start, .y = ui.cell.snap(source_group.rect.y) };
+        try std.testing.expect(wb.handleTabMouse(&click));
+        try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
+        const target = wb.activePane().?;
+        const preview = target.activeTab().?;
+        try std.testing.expect(target != source_group and preview != source);
+        try std.testing.expectEqualStrings("Preview source.md", preview.input.getName());
+        try std.testing.expectEqualStrings("markdown.preview", preview.input.editor_id.?);
+        try std.testing.expect(source.markdown_preview == null);
+        try std.testing.expectEqual(source.editor, preview.markdown_preview.?.editor);
+        const boundary = ui.cell.snap(source_group.rect.right());
+        const y = ui.cell.snap(source_group.rect.y) + source_group.chromeHeight() + 1;
+        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .down, .button = .left, .x = boundary, .y = y }));
+        try std.testing.expect(wb.part.active_sash == wb.part.root);
+        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .move, .x = boundary + 6, .y = y }));
+        try std.testing.expect(wb.handleSashMouse(&.{ .kind = .up, .x = boundary + 6, .y = y }));
+        try std.testing.expectEqual(boundary + 6, ui.cell.snap(source_group.rect.right()));
+        try wb.render(&out.writer);
+        try std.testing.expectEqual(ui.cell.snap(target.rect.w), preview.markdown_preview.?.width);
+
+        try wb.showMarkdownSource();
+        try std.testing.expectEqual(source_group, wb.activePane().?);
+        try source.editor.insertText("LiveEdit");
+        _ = wb.markdownPreviewTick(time_compat.milliTimestamp() + 350);
+        try wb.render(&out.writer);
+        const rendered = try preview.markdown_preview.?.surface.?.grid().rowText(allocator, 0);
+        defer allocator.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "LiveEdit") != null);
+        try wb.openPath(other);
+        try std.testing.expectEqualStrings("Preview other.md", preview.input.getName());
+        try wb.showMarkdownPreviewToSide();
+        try std.testing.expectEqual(preview, wb.activeTab().?);
+        try std.testing.expectEqual(@as(usize, 1), target.count());
+        // Closing the active source retargets the unlocked panel to the
+        // remaining Markdown tab, just like selecting it explicitly.
+        try wb.showMarkdownSource();
+        _ = try wb.closeActive();
+        try wb.focusPane(target);
+        try std.testing.expectEqualStrings("Preview source.md", preview.input.getName());
+        try wb.showMarkdownSource();
+        try std.testing.expect(wb.activeTab().?.file_input != null);
+        try wb.focusPane(target);
+        _ = try wb.closeActive();
+        try std.testing.expectEqual(@as(usize, 1), wb.groupCount());
+        try std.testing.expect(wb.activeTab().?.isMarkdown());
+    }
+}
+
+test "Workbench: markdown side preview reuses a group below and survives closing its only source" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "persist.md", "# Heading");
+    defer allocator.free(path);
+    const wb = try Workbench.init(allocator, io, &.{path}, 100, 32);
+    defer wb.deinit();
+    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{\"workbench.editor.openSideBySideDirection\":\"down\"}");
+    defer allocator.free(settings);
+    try wb.setUserSettingsPaths(&.{settings});
+    wb.ensureConfigurationReady();
+    const source_group = wb.activePane().?;
+    const below = try wb.newEmptyGroup(.DOWN);
+    try wb.focusPane(source_group);
+    const ctrl_k = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
+    const v = ui.KeyEvent{ .key = .{ .char = 'v' } };
+    try std.testing.expect(try wb.handleGlobalKey(&ctrl_k));
+    try std.testing.expect(try wb.handleGlobalKey(&v));
+    try std.testing.expectEqual(below, wb.activePane().?);
+    try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
+    const preview = wb.activeTab().?;
+    try wb.showMarkdownSource();
+    const document = wb.activeTab().?.editor.model;
+    _ = try wb.closeActive();
+    try std.testing.expectEqual(@as(usize, 1), wb.groupCount());
+    try std.testing.expectEqual(preview, wb.activeTab().?);
+    try std.testing.expectEqual(document, preview.markdown_preview.?.editor.model);
+    try wb.showMarkdownSource();
+    try std.testing.expect(wb.activeTab().?.isMarkdown());
+    try std.testing.expectEqual(document, wb.activeTab().?.editor.model);
 }
 
 test "Workbench: markdown preview title action is absent for plain text" {
@@ -15903,7 +16096,7 @@ test "Workbench: markdown preview title action is absent for plain text" {
     try workbench.render(&out.writer);
     try std.testing.expect(pane.title_action_hit == null);
     try workbench.toggleMarkdownPreview(pane);
-    try std.testing.expect(!pane.activeTab().?.markdown_preview_visible);
+    try std.testing.expect(pane.activeTab().?.markdown_preview == null);
 }
 
 test "Workbench: markdown preview follows editor scroll and can reveal the editor" {
@@ -15925,23 +16118,24 @@ test "Workbench: markdown preview follows editor scroll and can reveal the edito
     defer workbench.deinit();
     const pane = workbench.activePane().?;
     const tab = pane.activeTab().?;
-    try workbench.toggleMarkdownPreview(pane);
-    try std.testing.expect(tab.markdown_preview_visible);
+    try workbench.showMarkdownPreviewToSide();
+    const preview_tab = workbench.activeTab().?;
+    try std.testing.expect(preview_tab.markdown_preview != null);
 
     _ = tab.editor.setTopViewLine(30);
     const now = @import("../../base/common/timeCompat.zig").milliTimestamp();
-    _ = tab.onMarkdownPreviewTick(now + 60);
-    try std.testing.expect(tab.markdown_preview.?.scroll > 0);
-    _ = tab.onMarkdownPreviewTick(now + 120);
+    _ = workbench.markdownPreviewTick(now + 60);
+    try std.testing.expect(preview_tab.markdown_preview.?.scroll > 0);
+    _ = workbench.markdownPreviewTick(now + 120);
 
     const before = tab.editor.topViewLine();
     var wheel = ui.MouseEvent{
         .kind = .wheel,
-        .x = ui.cell.snap(tab.preview_rect.?.x) + 2,
+        .x = 2,
         .y = 1,
         .delta_y = 20,
     };
-    _ = tab.handleMarkdownPreviewMouse(&wheel, now + 100);
+    _ = preview_tab.markdown_preview.?.handleMouse(&wheel, now + 100);
     try std.testing.expect(tab.editor.topViewLine() != before);
 }
 
@@ -19963,6 +20157,10 @@ const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
 };
 
 const terminal_focus_when = context_key_mod.Expr{ .Defined = "terminalFocus" };
+const Expr = context_key_mod.Expr;
+const markdown_language_when = Expr{ .Regex = .{ .key = "editorLangId", .source = "^(markdown|prompt|instructions|chatagent|skill)$", .flags = "" } };
+const markdown_source_when = Expr{ .And = @constCast(&[_]*const Expr{ &.{ .Defined = "editorFocus" }, &markdown_language_when }) };
+const markdown_toggle_when = Expr{ .Or = @constCast(&[_]*const Expr{ &markdown_source_when, &.{ .Equals = .{ .key = "activeCustomEditorId", .value = .{ .string = "vscode.markdown.preview.editor" } } } }) };
 const zen_mode_when = context_key_mod.Expr{ .Defined = "inZenMode" };
 
 const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
@@ -19988,7 +20186,8 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "breadcrumbs.focusAndSelect", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Period) } },
     .{ .id = "breadcrumbs.focus", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Semicolon) } },
     .{ .id = "workbench.action.terminal.toggleTerminal", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyT) } },
-    .{ .id = "markdown.togglePreview", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyV) } },
+    .{ .id = "markdown.showPreviewToSide", .weight = 200, .when = &markdown_source_when, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), @backingInt(key_codes.KeyCode.KeyV)) } },
+    .{ .id = "markdown.togglePreview", .weight = 200, .when = &markdown_toggle_when, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyV) } },
     .{ .id = "workbench.action.terminal.new", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyN) } },
     .{ .id = "workbench.action.terminal.kill", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyW) } },
     .{ .id = "workbench.action.terminal.resizeUp", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.Alt | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.UpArrow) } },
@@ -22391,7 +22590,7 @@ test "Workbench: markdown preview shows displayable images" {
     const pane = workbench.activePane().?;
     const tab = pane.activeTab().?;
     try workbench.toggleMarkdownPreview(pane);
-    try std.testing.expect(tab.markdown_preview_visible);
+    try std.testing.expect(tab.markdown_preview != null);
 
     // Without placeholder support the alt text is preserved and no image is
     // loaded into the document.
@@ -22413,7 +22612,13 @@ test "Workbench: markdown preview shows displayable images" {
     workbench.setCellPixelSize(8, 16);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    // The workbench loads preview images on its background I/O pool.
+    for (0..2000) |_| {
+        _ = workbench.markdownPreviewTick(time_compat.milliTimestamp());
+        try workbench.render(&out.writer);
+        if (std.mem.indexOf(u8, out.written(), "\u{10EEEE}") != null) break;
+        io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\u{10EEEE}") != null);
 
     const preview = tab.markdown_preview.?;
