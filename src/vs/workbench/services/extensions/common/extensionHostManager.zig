@@ -428,6 +428,14 @@ pub const HostManager = struct {
     /// Upstream awaits the returned promise; the terminal workbench fires it
     /// and lets the host queue the activation, exactly like a workbench that
     /// does not block the UI on extension activation.
+    pub fn executeContributedCommand(self: *HostManager, id: []const u8, values: []const std.json.Value) !void {
+        const args = try self.allocator.alloc(rpcProtocol.Arg, values.len + 1);
+        defer self.allocator.free(args);
+        args[0] = .{ .json = .{ .string = id } };
+        for (values, args[1..]) |value, *arg| arg.* = .{ .json = value };
+        try self.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", args);
+    }
+
     pub fn activateByEvent(self: *HostManager, activation_event: []const u8, activation_kind: u32) !void {
         var args = [_]rpcProtocol.Arg{
             .{ .json = .{ .string = activation_event } },
@@ -534,8 +542,10 @@ pub fn buildInitData(
     var my_extensions = std.json.Array.init(arena);
 
     for (options.extensions) |extension| {
+        // Init-only metadata belongs to the handshake arena. Keep the parsed
+        // manifest available to the command and configuration registries.
         var description = switch (extension.manifest) {
-            .object => |object| object,
+            .object => |object| try object.clone(arena),
             else => return error.InvalidManifest,
         };
         try description.put(arena, "id", .{ .string = try arena.dupe(u8, extension.identifier) });

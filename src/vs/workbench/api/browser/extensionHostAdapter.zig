@@ -264,7 +264,7 @@ pub const Extensions = struct {
         self.commands_actor = try MainThreadCommands.init(allocator, self.host, .{
             .context = self,
             .execute = executeHostCommand,
-        });
+        }, &workbench.commands, self.descriptions);
         self.configuration_actor = MainThreadConfiguration.init(
             allocator,
             .{ .context = self, .data = configurationDataHost },
@@ -885,16 +885,7 @@ pub const Extensions = struct {
     }
 
     fn executeCommand(self: *Extensions, command: []const u8, command_args: []const std.json.Value) void {
-        var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena_instance.deinit();
-        const arena = arena_instance.allocator();
-        var args_array = std.json.Array.init(arena);
-        for (command_args) |value| args_array.append(value) catch return;
-        var args = [_]rpc.Arg{
-            .{ .json = .{ .string = command } },
-            .{ .json = .{ .array = args_array } },
-        };
-        _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &args, null, manager.noop_callback) catch {};
+        self.host.executeContributedCommand(command, command_args) catch {};
     }
 
     fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {

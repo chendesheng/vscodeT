@@ -25,6 +25,15 @@ async function bundleExtension(name, client, resources = []) {
     for (const resource of ['package.nls.json', ...resources]) {
         await cp(path.join(root, resource), path.join(target, resource), { recursive: true });
     }
+    const labels = JSON.parse(await readFile(path.join(target, 'package.nls.json'), 'utf8'));
+    for (const command of manifest.contributes?.commands ?? []) {
+        for (const key of ['title', 'category']) {
+            const value = command[key];
+            if (typeof value === 'string' && value.startsWith('%') && value.endsWith('%')) {
+                command[key] = labels[value.slice(1, -1)] ?? value;
+            }
+        }
+    }
     manifest.main = './' + client;
     await writeFile(path.join(target, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
 }
