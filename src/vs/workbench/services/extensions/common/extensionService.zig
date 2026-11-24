@@ -65,14 +65,15 @@ pub const ActivationTracker = struct {
     pub fn activateLanguage(self: *ActivationTracker, host: *manager.HostManager, language_id: []const u8) void {
         if (language_id.len == 0) return;
         if (self.activated_languages.contains(language_id)) return;
+        const event = std.fmt.allocPrint(self.allocator, "onLanguage:{s}", .{language_id}) catch return;
+        defer self.allocator.free(event);
+        host.activateByEvent(event, 0) catch return;
+        if (self.activated_languages.count() == 0) host.activateByEvent("onLanguage", 0) catch return;
         const owned = self.allocator.dupe(u8, language_id) catch return;
         self.activated_languages.put(owned, {}) catch {
             self.allocator.free(owned);
             return;
         };
-        var buffer: [128]u8 = undefined;
-        const event = std.fmt.bufPrint(&buffer, "onLanguage:{s}", .{language_id}) catch return;
-        host.activateByEvent(event, 0) catch {};
     }
 };
 

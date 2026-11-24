@@ -589,12 +589,21 @@ pub fn buildInitData(
     return .{ .object = root };
 }
 
+fn appendActivation(events: *std.array_list.Managed([]const u8), prefix: []const u8, value: []const u8) !void {
+    if (value.len == 0) return;
+    for (events.items) |event| {
+        if (std.mem.startsWith(u8, event, prefix) and std.mem.eql(u8, event[prefix.len..], value)) return;
+    }
+    try events.ensureUnusedCapacity(1);
+    events.appendAssumeCapacity(try std.mem.concat(events.allocator, u8, &.{ prefix, value }));
+}
+
 pub fn readExtensionDescription(allocator: Allocator, extension_path: []const u8) !ExtensionDescription {
     const manifest_path = try std.fs.path.join(allocator, &.{ extension_path, "package.json" });
     defer allocator.free(manifest_path);
     const text = try std.Io.Dir.cwd().readFileAlloc(time_compat.io, manifest_path, allocator, .unlimited);
     defer allocator.free(text);
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{ .allocate = .alloc_always });
     errdefer parsed.deinit();
     const value = parsed.value;
 
@@ -606,24 +615,54 @@ pub fn readExtensionDescription(allocator: Allocator, extension_path: []const u8
     const name = if (object.get("name")) |v| if (v == .string) v.string else "" else "";
     const identifier = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ publisher, name });
 
+    errdefer allocator.free(identifier);
     var events: std.array_list.Managed([]const u8) = .init(allocator);
     defer events.deinit();
-    if (object.get("activationEvents")) |activation_value| {
-        if (activation_value == .array) {
-            for (activation_value.array.items) |item| {
-                if (item == .string) try events.append(try allocator.dupe(u8, item.string));
+    errdefer for (events.items) |event| allocator.free(event);
+    if (object.get("activationEvents")) |explicit| {
+        if (explicit == .array) for (explicit.array.items) |event| {
+            if (event == .string) try appendActivation(&events, "", event.string);
+        };
+    }
+    if (object.get("contributes")) |points| {
+        if (points == .object) {
+            if (points.object.get("languages")) |languages| {
+                if (languages == .array) for (languages.array.items) |language| {
+                    if (language != .object or !language.object.contains("configuration")) continue;
+                    const id = language.object.get("id") orelse continue;
+                    if (id == .string) try appendActivation(&events, "onLanguage:", id.string);
+                };
+            }
+            if (points.object.get("commands")) |commands| {
+                if (commands == .array) for (commands.array.items) |command| {
+                    if (command != .object) continue;
+                    const id = command.object.get("command") orelse continue;
+                    if (id == .string) try appendActivation(&events, "onCommand:", id.string);
+                };
             }
         }
     }
-    if (events.items.len == 0) {
-        // VS Code synthesizes `*` for extensions without explicit events.
-        try events.append(try allocator.dupe(u8, "*"));
-    }
+    const path_copy = try allocator.dupe(u8, extension_path);
+    errdefer allocator.free(path_copy);
     return .{
-        .path = try allocator.dupe(u8, extension_path),
+        .path = path_copy,
         .parsed = parsed,
         .manifest = value,
         .identifier = identifier,
         .activation_events = try events.toOwnedSlice(),
     };
+}
+
+test "activation events include implicit commands without eager activation" {
+    const allocator = std.testing.allocator;
+    var description = try readExtensionDescription(allocator, "vscode/extensions/emmet");
+    defer description.deinit(allocator);
+    var language = false;
+    var command = false;
+    for (description.activation_events) |event| {
+        try std.testing.expect(!std.mem.eql(u8, event, "*"));
+        if (std.mem.eql(u8, event, "onLanguage")) language = true;
+        if (std.mem.eql(u8, event, "onCommand:editor.emmet.action.wrapWithAbbreviation")) command = true;
+    }
+    try std.testing.expect(language and command);
 }
