@@ -1293,7 +1293,8 @@ console API for raw mode, sizing and input polling.
   `ui.MouseEvent`s, `Surface.elementFromPoint` hit-tests the box tree, and a
   press focuses the element under the cell. In the editor, left-click places the
   caret, Shift-click extends, dragging selects (a selecting drag is not a
-  click), the wheel scrolls three view lines without moving the caret, and the
+  click), the wheel scrolls three view lines in the pane under the pointer
+  without moving the caret or changing keyboard focus, and the
   right-edge overview-ruler/scrollbar column accepts click and thumb drags.
   Idle motion drives hover in the find bar: the option toggles and `All`
   highlight, clicking them runs the action without stealing input focus, and

@@ -717,33 +717,26 @@ pub const DiffEditorWidget = struct {
         }
 
         if (self.sideBySide()) {
-            if (event.x < widths.original) {
-                self.setFocus(.original);
-                var adjusted = event.*;
-                adjusted.x = event.x;
-                const handled = try self.original_view.dispatchMouse(&adjusted);
-                _ = self.syncFromPanes();
-                return handled;
-            }
-            self.setFocus(.modified);
+            const side: Side = if (event.x < widths.original) .original else .modified;
+            if (event.kind == .down) self.setFocus(side);
+            const view = if (side == .original) self.original_view else self.modified_view;
             var adjusted = event.*;
-            adjusted.x = event.x -| (widths.original + widths.gutter);
-            const handled = try self.modified_view.dispatchMouse(&adjusted);
-            _ = self.syncFromPanes();
+            if (side == .modified) adjusted.x -|= widths.original + widths.gutter;
+            const handled = try view.dispatchMouse(&adjusted);
+            self.syncScrollFromPane(side);
             return handled;
         }
-        self.setFocus(.modified);
+        if (event.kind == .down) self.setFocus(.modified);
         const handled = try self.modified_view.dispatchMouse(event);
-        _ = self.syncFromPanes();
+        self.syncScrollFromPane(.modified);
         return handled;
     }
 
-    fn syncFromPanes(self: *DiffEditorWidget) bool {
-        const focused_top = self.focusedEditor().topViewLine();
-        const other = if (self.focused == .original) self.modified_editor else self.original_editor;
-        if (other.topViewLine() == focused_top) return false;
-        _ = other.setTopViewLine(focused_top);
-        return true;
+    fn syncScrollFromPane(self: *DiffEditorWidget, side: Side) void {
+        const source = if (side == .original) self.original_editor else self.modified_editor;
+        const other = if (side == .original) self.modified_editor else self.original_editor;
+        const top = source.topViewLine();
+        if (other.topViewLine() != top) _ = other.setTopViewLine(top);
     }
 
     pub fn originalModel(self: *DiffEditorWidget) *@import("../../../common/model/textModel.zig").TextModel {
@@ -1147,6 +1140,36 @@ test "diffEditorWidget: mouse drag resizes the split ratio" {
     var up = ui.MouseEvent{ .kind = .up, .x = 60, .y = 3, .button = .left };
     _ = try widget.dispatchMouse(&up);
     try testing.expect(!widget.dragging_split);
+}
+
+test "diffEditorWidget: wheel keeps the focused side while syncing both panes" {
+    const common = "2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n";
+    const widget = try DiffEditorWidget.create(
+        testing.allocator,
+        Io.Threaded.global_single_threaded.io(),
+        "/tmp/original.txt",
+        "/tmp/modified.txt",
+        "old\n" ++ common,
+        "new\n" ++ common,
+        "",
+        "HEAD",
+        80,
+        8,
+        .{},
+    );
+    defer widget.destroy();
+    try testing.expect(widget.sideBySide());
+    try testing.expectEqual(widget.modified_editor, widget.focusedEditor());
+    const before = widget.original_editor.topViewLine();
+
+    var move = ui.MouseEvent{ .kind = .move, .x = 3, .y = 1 };
+    _ = try widget.dispatchMouse(&move);
+    var wheel = ui.MouseEvent{ .kind = .wheel, .x = 3, .y = 1, .delta_y = 3 };
+    _ = try widget.dispatchMouse(&wheel);
+
+    try testing.expectEqual(before + 3, widget.original_editor.topViewLine());
+    try testing.expectEqual(before + 3, widget.modified_editor.topViewLine());
+    try testing.expectEqual(widget.modified_editor, widget.focusedEditor());
 }
 
 test "diffEditorWidget: moved blocks create model decorations" {

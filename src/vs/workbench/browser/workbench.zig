@@ -10140,21 +10140,21 @@ pub const Workbench = struct {
         if (self.breadcrumbs_control) |control| control.clearHover();
     }
 
-    /// Converts a terminal mouse position inside a pane into editor-relative
-    /// coordinates, or null when the event belongs to a tab row.
-    pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?ui.MouseEvent {
+    /// Resolves a pane body and translates the event into that tab's coordinates.
+    /// Wheel events target the pane under the pointer independently of focus.
+    pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?struct { tab: *Tab, event: ui.MouseEvent } {
         if (event.x < self.editorAreaX()) return null;
         const pane = self.paneAt(event.x, event.y) orelse return null;
-        if (pane.group != self.service.activeGroup()) return null;
+        if (event.kind != .wheel and pane.group != self.service.activeGroup()) return null;
         const y = ui.cell.snap(pane.rect.y);
         const chrome = pane.chromeHeight();
         if (event.y >= y and event.y < y + chrome) return null;
-        if (pane.activeTab() == null) return null;
+        const tab = pane.activeTab() orelse return null;
 
         var adjusted = event;
         adjusted.x -|= ui.cell.snap(pane.rect.x);
         adjusted.y -|= y + chrome;
-        return adjusted;
+        return .{ .tab = tab, .event = adjusted };
     }
 
     /// Publishes the search result count as the Search activity badge. This
@@ -14404,6 +14404,53 @@ test "Workbench: split copy shares rendered edits after changing focus" {
     }
 }
 
+test "Workbench: editor group focus stays put when wheeling over another pane" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(
+        allocator,
+        io,
+        &tmp,
+        "wheel.txt",
+        "first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth\n" ++
+            "ninth\ntenth\neleventh\ntwelfth\nthirteenth\nfourteenth\nfifteenth\n",
+    );
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    const left = workbench.activePane().?;
+    try workbench.splitActive(.horizontal);
+    const right = workbench.activePane().?;
+    const left_tab = left.activeTab().?;
+    const right_tab = right.activeTab().?;
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    try std.testing.expect(right_tab.view.isFocused());
+    const x = ui.cell.snap(left.rect.x) + left_tab.editor.gutterWidth();
+    const y = ui.cell.snap(left.rect.y) + left.chromeHeight();
+    const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 3 };
+    try std.testing.expect(!workbench.handleTabMouse(&wheel));
+    var target = workbench.editorMouseEvent(wheel) orelse return error.TestExpectedWheelTarget;
+    try std.testing.expectEqual(left_tab, target.tab);
+    _ = try target.tab.view.dispatchMouse(&target.event);
+    try workbench.render(&out.writer);
+
+    try std.testing.expectEqual(@as(usize, 4), left_tab.editor.topViewLine());
+    try std.testing.expectEqual(@as(usize, 1), right_tab.editor.topViewLine());
+    try std.testing.expectEqual(right_tab, workbench.activeTab().?);
+    try std.testing.expect(right_tab.view.isFocused());
+    try std.testing.expect(!left_tab.view.isFocused());
+    const grid = &workbench.frame.prev;
+    try std.testing.expectEqual(@as(u32, 'f'), grid.cluster[grid.index(x, y)]);
+    try std.testing.expectEqual(@as(u32, 'o'), grid.cluster[grid.index(x + 1, y)]);
+}
+
 test "Workbench: clicking a pane body focuses its group" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -14445,9 +14492,10 @@ test "Workbench: clicking a pane body focuses its group" {
     try std.testing.expect(!workbench.handleTabMouse(&click));
     try std.testing.expect(workbench.activePane().? == first);
     try std.testing.expect(workbench.activeTab() == first.activeTab());
-    var adjusted = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), adjusted.x);
-    try std.testing.expectEqual(@as(usize, 1), adjusted.y);
+    var target = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(first.activeTab().?, target.tab);
+    try std.testing.expectEqual(@as(usize, 2), target.event.x);
+    try std.testing.expectEqual(@as(usize, 1), target.event.y);
 
     // `workbench.editor.showTabs: single` hides a one-tab strip; the body press
     // must still focus the group (the regression this guards).
@@ -14465,9 +14513,10 @@ test "Workbench: clicking a pane body focuses its group" {
     try std.testing.expect(!workbench.handleTabMouse(&click));
     try std.testing.expect(workbench.activePane().? == second);
     try std.testing.expect(workbench.activeTab() == second.activeTab());
-    adjusted = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 2), adjusted.x);
-    try std.testing.expectEqual(@as(usize, 1), adjusted.y);
+    target = workbench.editorMouseEvent(click) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(second.activeTab().?, target.tab);
+    try std.testing.expectEqual(@as(usize, 2), target.event.x);
+    try std.testing.expectEqual(@as(usize, 1), target.event.y);
 }
 
 test "Workbench: editor group focus, new group and close group commands" {

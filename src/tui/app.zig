@@ -942,12 +942,13 @@ pub fn main(init: std.process.Init) !void {
                     // The editor pane resolves text/pointer/resize shapes from
                     // the surface's style tree before the event is routed.
                     workbench.updateMousePointer(event.*);
-                    var adjusted = workbench.editorMouseEvent(event.*) orelse continue;
-                    const current = workbench.activeTab() orelse continue;
+                    var target = workbench.editorMouseEvent(event.*) orelse continue;
+                    const current = target.tab;
+                    const adjusted = &target.event;
                     if (current.isImage()) {
                         const focus_gained = workbench.focus != .editor;
                         if (event.kind == .down) workbench.focusEditor();
-                        switch (current.handleImageMouse(&adjusted, focus_gained)) {
+                        switch (current.handleImageMouse(adjusted, focus_gained)) {
                             .changed => {
                                 workbench.refreshStatus();
                                 needs_render = true;
@@ -965,13 +966,13 @@ pub fn main(init: std.process.Init) !void {
                         const modal_host = helix_runtime.host orelse vim_runtime.host;
                         if (modal_host) |host| host.resetKeyInput();
                     }
-                    if (!current.isDiff() and current.handleMarkdownPreviewMouse(&adjusted, now_ms)) {
+                    if (!current.isDiff() and current.handleMarkdownPreviewMouse(adjusted, now_ms)) {
                         if (event.kind == .move) workbench.leaveEditorHover();
                         needs_render = true;
                         continue;
                     }
                     if (current.isDiff()) {
-                        _ = current.handleDiffMouse(&adjusted) catch false;
+                        _ = current.handleDiffMouse(adjusted) catch false;
                         if (event.kind == .down) needs_render = true;
                         continue;
                     }
@@ -985,7 +986,7 @@ pub fn main(init: std.process.Init) !void {
                         tab_controllers.find,
                         tab_controllers.suggest,
                         current.editor,
-                        &adjusted,
+                        adjusted,
                     ) catch |err| {
                         current.editor.setMessage("mouse failed: {s}", .{@errorName(err)});
                     };
