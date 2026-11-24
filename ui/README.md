@@ -47,6 +47,12 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   and detail, up to three focusable buttons, keyboard wrapping and mouse
   press/release activation. It composites into a host `CellGrid` and dims the
   cells behind it.
+- A host-composited native `ContextMenu`: the VS Code native context-menu item
+  model (`label`, `type`, `accelerator`, `enabled`, `visible`, `checked`,
+  `click`, `submenu`), rounded bordered popup levels, check/radio marks,
+  separators, accelerators, submenus, keyboard navigation and mouse
+  press/release handling. It is not a DOM node: the host renders it over its
+  frame and routes input to it while open.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
 - Kitty graphics support in `ui/image.zig`: capability probe, PNG/RGBA
   transmission, virtual placements, image deletion and Unicode-placeholder
@@ -96,6 +102,7 @@ zig build example-focus    # interactive: Tab/Shift-Tab, Enter, activeElement
 zig build example-mouse    # interactive: hover/click/drag a list, wheel scrolling
 zig build example-mouse-events # interactive: hover/down/move/up/click/wheel log
 zig build example-todo     # interactive: TodoMVC input, wrapped list, filters and buttons
+zig build example-context-menu # interactive: native context menu, checks, submenu, keyboard
 zig build examples         # fullscreen gallery with a side navigation menu
 ```
 
@@ -118,6 +125,9 @@ standalone TodoMVC scene with its own input loop: add todos through
 `ui.InputBox`, toggle rows, edit a
 focused row, filter All/Active/Completed, clear completed and toggle all.
 The subtitle and long todo text wrap, and the list window scrolls in row cells.
+`example-context-menu` demonstrates a native popup: click the `...` button or
+press `m`, navigate with the arrows, open `View & Sort` with Right/Enter, and
+dismiss with Escape or a click outside.
 
 `zig build examples` opens the fullscreen gallery instead of running all
 examples in sequence: a side navigation menu on the left and the selected
@@ -647,6 +657,98 @@ the icon and blank separators. `render` sets `layout` and the `buttonRect`
 rectangles for hosts/tests that need the active geometry. Colors and the
 warning glyph are terminal defaults; the host supplies the text and labels, so
 the same widget serves VS Code-style save confirmations and other messages.
+
+## Native context menus
+
+`ui.ContextMenu` is a host-composited popup modeled on VS Code's native
+context-menu API (`base/parts/contextmenu/common/contextmenu.ts` and
+`NativeContextMenuService`), not on the browser `Menu` widget. It is not a DOM
+node and does not participate in `Document` focus or event dispatch. The host
+renders it after the rest of the frame and routes key/mouse events to it while
+it is open, exactly like `Dialog`.
+
+```zig
+const submenu = [_]ui.ContextMenuItem{
+    .{ .label = "View as List", .type = .checkbox, .checked = true },
+    .{ .label = "View as Tree" },
+    .{ .type = .separator },
+    .{ .label = "Sort by Name" },
+};
+const items = [_]ui.ContextMenuItem{
+    .{ .label = "View as Tree" },
+    .{ .label = "View & Sort", .type = .submenu, .submenu = &submenu },
+    .{ .type = .separator },
+    .{
+        .label = "Pull",
+        .accelerator = "Ctrl+P",
+        .click = .{ .context = self, .callback = onPull },
+    },
+};
+
+const menu = try ui.contextmenu.popup(allocator, &items, .{
+    .x = button_x,
+    .y = button_y + 1,
+    .positioning_item = null,
+}, .{ .context = self, .callback = onHide });
+defer menu.deinit();
+
+// Per frame, after the scene:
+menu.renderWithBorderCapabilities(&frame.next, cell_border_caps);
+
+// While `menu.isOpen()`, route every key/mouse event to it and do not
+// dispatch to the UI underneath.
+_ = menu.handleKey(&key_event);
+_ = menu.handleMouse(&mouse_event);
+```
+
+The API mirrors the native fields:
+
+| VS Code | `ui` |
+|---|---|
+| `label?` | `label` |
+| `type?: normal \| separator \| submenu \| checkbox \| radio` | `type = .normal/.separator/.submenu/.checkbox/.radio` |
+| `accelerator?` | `accelerator` (display only) |
+| `enabled?`, `visible?` | `enabled`, `visible` (default `true`) |
+| `checked?` | `checked` |
+| `click?: (event) => void` | `click: ?ClickHandler { context, callback }` |
+| `submenu?` | `submenu: []const ContextMenuItem` |
+| `IPopupOptions.x/y/positioningItem` | `x`, `y`, `positioning_item` |
+| `popup(items, options?, onHide?)` | `contextmenu.popup(allocator, items, options, onHide)` |
+
+`ClickHandler` and `OnHide` are the Zig stand-ins for JavaScript closures:
+they carry the captured `context` pointer. The returned `*ContextMenu` is the
+terminal substitute for the native menu window.
+
+Normalization removes `visible == false` items, trims/collapses separators and
+drops empty submenus; a menu with no surviving root rows returns
+`error.EmptyContextMenu`. `x`/`y` are terminal cells (null anchors at 0,0)
+and `positioning_item` indexes the cleaned root rows. Direction keys skip
+separators and disabled items and
+wrap; Home/End and PageUp/PageDown move within the window; Right/Enter opens a
+submenu; Left/Escape closes one level; Escape at the root dismisses. Hover
+focuses rows and opens submenus, a press followed by a release on the same item
+activates it, a click outside dismisses, and the wheel scrolls a tall menu.
+Rounded borders, a check/radio gutter, right-aligned accelerators, dim
+disabled entries and a selected-row background are painted into the host grid.
+Activation closes the menu, runs `on_hide`, then calls the item's `click` with
+the modifier event.
+
+`on_hide` also runs for Escape and outside-click dismissal; `deinit` does
+not fire it, so call `close` first when the host needs the callback. The menu
+does not toggle checks automatically and accelerators are not registered as
+keys. OS
+mnemonics/type-ahead, native animations/shadows, accessibility and the submenu
+delay timer are omitted; a hover submenu opens immediately.
+
+For examples and other `Surface` hosts, `Surface.renderWithOverlay` paints the
+menu after the tree and before ANSI encoding:
+
+```zig
+try surface.renderWithOverlay(writer, .{}, .{
+    .context = menu,
+    .paint = paintMenu,
+});
+```
 
 ## Benchmarks and stress tests
 

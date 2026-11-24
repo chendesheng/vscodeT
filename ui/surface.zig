@@ -35,6 +35,14 @@ pub const RenderOptions = struct {
     synchronized: bool = true,
 };
 
+/// A host overlay painted after the tree and before ANSI encoding. Native
+/// overlays such as `ContextMenu` use this hook so their cells take part in
+/// the normal frame diff and clipping.
+pub const Overlay = struct {
+    context: ?*anyopaque = null,
+    paint: *const fn (context: ?*anyopaque, grid: *cell.CellGrid) void,
+};
+
 pub const Surface = struct {
     allocator: std.mem.Allocator,
     doc: dom.Document,
@@ -186,6 +194,18 @@ pub const Surface = struct {
     /// Lays out the current tree, paints it, diffs it against the previous
     /// frame and writes the ANSI delta. An unchanged frame writes nothing.
     pub fn render(self: *Surface, writer: *std.Io.Writer, options: RenderOptions) !void {
+        return self.renderWithOverlay(writer, options, null);
+    }
+
+    /// Like `render`, but lets a host paint a native overlay into the frame
+    /// after the tree and before the ANSI diff. The overlay participates in
+    /// the same double-buffered frame, so the next frame clears its cells.
+    pub fn renderWithOverlay(
+        self: *Surface,
+        writer: *std.Io.Writer,
+        options: RenderOptions,
+        overlay: ?Overlay,
+    ) !void {
         if (self.first_frame) {
             try writer.writeAll("\x1b[2J\x1b[H");
             self.first_frame = false;
@@ -197,6 +217,7 @@ pub const Surface = struct {
         self.resolveHover();
         self.frame.begin();
         paint.paintTreeWithBorderCapabilities(self.box_tree, &self.doc, &self.frame.next, self.border_capabilities);
+        if (overlay) |value| value.paint(value.context, &self.frame.next);
 
         const encoded = try ansi.encode(
             self.allocator,
@@ -356,6 +377,45 @@ test "Surface: text, diff and resize-free redraw" {
     defer second.deinit();
     try surface.render(&second.writer, .{});
     try std.testing.expectEqual(@as(usize, 0), second.written().len);
+}
+
+test "Surface: host overlay paints into the frame and clears on the next render" {
+    const allocator = std.testing.allocator;
+    var surface = try Surface.init(allocator, .{ .cols = 8, .rows = 2 });
+    defer surface.deinit();
+
+    const doc = surface.document();
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .percent = 100 },
+        .height = .{ .percent = 100 },
+    });
+    doc.setRoot(root);
+    _ = try root.appendChild(try doc.createText("base"));
+
+    const OverlayPaint = struct {
+        fn paint(_: ?*anyopaque, grid: *cell.CellGrid) void {
+            grid.putCodepoint(0, 1, 'o', 1, .{});
+            grid.putCodepoint(1, 1, 'v', 1, .{});
+        }
+    };
+
+    var first: std.Io.Writer.Allocating = .init(allocator);
+    defer first.deinit();
+    try surface.renderWithOverlay(&first.writer, .{}, .{ .paint = OverlayPaint.paint });
+
+    const with_overlay = try surface.grid().rowText(allocator, 1);
+    defer allocator.free(with_overlay);
+    try std.testing.expectEqualStrings("ov", with_overlay);
+
+    var second: std.Io.Writer.Allocating = .init(allocator);
+    defer second.deinit();
+    try surface.render(&second.writer, .{});
+
+    const without_overlay = try surface.grid().rowText(allocator, 1);
+    defer allocator.free(without_overlay);
+    try std.testing.expectEqualStrings("", without_overlay);
 }
 
 test "Surface: text and style mutations repaint" {

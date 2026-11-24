@@ -639,7 +639,11 @@ console API for raw mode, sizing and input polling.
   fragments and inline-element fragments paint per line. On startup the TUI
   probes the draft cell-border protocol. The sidebar, the entire editor area
   and each modal dialog have their own outline, with rounded corners when the
-  terminal supports them. Editor groups share straight, draggable dividers.
+  terminal supports them. Native context menus are host-composited popups
+  (`ui/contextmenu.zig`) modeled on VS Code's `IContextMenuItem` API: rounded
+  framed levels, check/radio marks, separators, accelerators and nested
+  submenus, with the host routing keys and mouse events while the menu is open.
+  Editor groups share straight, draggable dividers.
   The editor frame remains visible for a single editor with the sidebar hidden.
   The glyph fallback uses rounded box-drawing outlines and single-cell dividers
   with T-junctions. The library does not import editor code.
@@ -1348,7 +1352,7 @@ console API for raw mode, sizing and input polling.
   surface and scene when the terminal viewport changes. `cd ui && zig build examples` opens the gallery with a
   side navigation menu; individual steps (`example-hello`, `example-list`,
   `example-overflow`, `example-focus`, `example-mouse`, `example-mouse-events`,
-  `example-todo`) still run one scene directly.
+  `example-todo`, `example-context-menu`) still run one scene directly.
 
 Tokenizer status:
 

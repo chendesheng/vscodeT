@@ -31,6 +31,7 @@ const focus = @import("focus.zig");
 const mouse = @import("mouse.zig");
 const mouse_events = @import("mouse_events.zig");
 const todo = @import("todo.zig");
+const context_menu = @import("context_menu.zig");
 
 const sidebar_width = 16;
 const items_top = 2;
@@ -64,6 +65,7 @@ const entries = [_]Entry{
     .{ .title = "mouse", .open = mouse.mouseExample },
     .{ .title = "mouse events", .open = mouse_events.mouseEventsExample },
     .{ .title = "todo", .open = todo.todoGalleryExample },
+    .{ .title = "context menu", .open = context_menu.contextMenuExample },
 };
 
 const sidebar_background = common.rgb(22, 22, 30);
@@ -303,6 +305,15 @@ const Gallery = struct {
             return false;
         }
 
+        // Native overlays (the context menu) own input while they are open.
+        if (self.scene) |scene| {
+            if (scene.overlay) |overlay| {
+                if (overlay.key_down) |handler| {
+                    if (handler(overlay.context, event)) return true;
+                }
+            }
+        }
+
         // Scenes with their own keyboard focus (currently TodoMVC) receive the
         // key before the gallery's scene navigation. Alt+Up/Down still switches
         // scenes so the keyboard is not trapped by a text input.
@@ -351,6 +362,13 @@ const Gallery = struct {
     }
 
     fn handleMouse(self: *Gallery, event: *ui.MouseEvent) !bool {
+        if (self.scene) |scene| {
+            if (scene.overlay) |overlay| {
+                if (overlay.mouse) |handler| {
+                    if (handler(overlay.context, event)) return true;
+                }
+            }
+        }
         if (event.x < self.sidebarCells()) {
             switch (event.kind) {
                 .move => {
@@ -386,6 +404,16 @@ const Gallery = struct {
         return true;
     }
 
+    fn presentFrame(self: *Gallery, out: *std.Io.Writer) !void {
+        var overlay: ?ui.Overlay = null;
+        if (self.scene) |scene| {
+            if (scene.overlay) |value| {
+                overlay = .{ .context = value.context, .paint = value.paint };
+            }
+        }
+        try self.surface.renderWithOverlay(out, .{}, overlay);
+    }
+
     fn present(self: *Gallery) !void {
         const io = std.Io.Threaded.global_single_threaded.io();
         var buffer: [16384]u8 = undefined;
@@ -403,7 +431,7 @@ const Gallery = struct {
             if (orig_termios) |orig| common.disableRawMode(orig) catch {};
         }
 
-        try self.surface.render(out, .{});
+        try self.presentFrame(out);
         try out.flush();
 
         const resize_fd = try common.resizeWatcherFd();
@@ -421,7 +449,7 @@ const Gallery = struct {
                 if (try self.resizeIfNeeded()) {
                     self.hovered = null;
                     self.router = .{};
-                    try self.surface.render(out, .{});
+                    try self.presentFrame(out);
                     try out.flush();
                 }
             }
@@ -444,7 +472,7 @@ const Gallery = struct {
                 if (self.quit) return;
             }
 
-            try self.surface.render(out, .{});
+            try self.presentFrame(out);
             try out.flush();
         }
     }

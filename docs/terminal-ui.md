@@ -731,6 +731,53 @@ Enter/Space and cancels with Escape. The hardware caret is hidden while it is
 open. The browser dialog's action-bar close button, custom body/footer,
 checkbox, inputs, dropdown and shadow are not ported.
 
+### Native context menus
+
+`ui/contextmenu.zig` is the reusable native context menu. It mirrors the item
+and popup model from `src/vs/base/parts/contextmenu/common/contextmenu.ts` and
+the `NativeContextMenuService` path, not the browser `Menu` widget:
+`label`, `type` (`normal`/`separator`/`submenu`/`checkbox`/`radio`),
+`accelerator`, `enabled`, `visible`, `checked`, `click`, `submenu`, plus
+`x`/`y`/`positioning_item` popup options. Zig cannot express JavaScript
+closures, so `ClickHandler` and `OnHide` carry an explicit context pointer next
+to the callback. `popup(allocator, items, options, on_hide)` returns a
+`*ContextMenu` because the terminal has no OS menu window for the host to
+drive.
+
+The menu is deliberately not part of the DOM: it does not enter
+`Document.activeElement`, node listeners or tab order. It paints into a host
+`CellGrid` after the normal UI and the host routes every key/mouse event to it
+while it is open, like `Dialog`. `Surface.renderWithOverlay` is the standalone
+`Surface` hook for that compositing step; the workbench path is the same
+`renderWithBorderCapabilities(&frame.next, caps)` call used for dialogs and
+other native overlays.
+
+Popup levels use one reserved border cell (rounded glyphs or native cell-border
+rounding), a check/radio gutter, a right-aligned accelerator, a submenu arrow,
+and a selected-row background. Items are copied at popup time, invisible items
+are removed, separators are trimmed/collapsed and empty submenus disappear; an
+empty root returns `error.EmptyContextMenu`. Tall menus window their rows and scroll with the wheel; `positioning_item`
+shifts the popup so that row sits at `y`, then the menu clamps to the viewport.
+Submenus prefer the right of their parent item and flip left when needed.
+
+Keyboard behavior follows the native menu conventions: Up/Down wrap over
+enabled non-separator rows, Home/End and PageUp/PageDown move within the
+window, Right/Enter opens a submenu, Left/Escape closes one level, Escape at the
+root dismisses, and Enter/Space activates. Hover focuses a row and opens
+submenus immediately, a press/release on the same row activates, a click
+outside dismisses, and every event is swallowed while the menu is open.
+Activation closes the popup, fires `on_hide` once, then calls the item's
+`click` with the modifier event.
+
+Accelerators are display-only and checked state is not toggled automatically;
+`deinit` does not fire `on_hide`, so a host that needs the close callback calls
+`close` first.
+The OS-native menu window, animations, shadows, accessibility,
+mnemonics/type-ahead and the submenu delay timer are omitted; a hover submenu
+opens immediately. The standalone `example-context-menu` scene is the reference
+host implementation, including gallery overlay routing through
+`common.Example.overlay`.
+
 `Ctrl-Q` is the terminal equivalent of the window close button and follows
 upstream `AbstractCloseAllAction` plus `doCloseAll`: it collects every dirty
 tab, reveals one dirty editor per group, and shows one save confirmation for

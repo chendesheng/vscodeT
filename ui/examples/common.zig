@@ -26,6 +26,16 @@ pub fn fullscreenSurface(allocator: std.mem.Allocator) !ui.Surface {
     return ui.Surface.init(allocator, .{ .cols = size.width, .rows = size.height });
 }
 
+/// A host-level overlay painted after the scene. Native widgets such as
+/// `ContextMenu` are not part of the document; they paint their own cells and
+/// receive input before the document does.
+pub const Overlay = struct {
+    context: ?*anyopaque = null,
+    paint: *const fn (context: ?*anyopaque, grid: *ui.CellGrid) void,
+    key_down: ?*const fn (context: ?*anyopaque, event: *ui.KeyEvent) bool = null,
+    mouse: ?*const fn (context: ?*anyopaque, event: *ui.MouseEvent) bool = null,
+};
+
 /// One gallery scene. `context` owns whatever state the scene needs; `build`
 /// may be called repeatedly and must recreate its nodes and listeners.
 pub const Example = struct {
@@ -44,6 +54,9 @@ pub const Example = struct {
     /// Rebuild the gallery after each handled key or mouse action, for scenes
     /// whose listeners mutate state instead of updating node styles in place.
     rebuild_after_event: bool = false,
+    /// Optional native overlay painted after the scene and answered before the
+    /// document gets the event.
+    overlay: ?Overlay = null,
 };
 
 /// Hit-tests a pointer event, dispatches it to the document and synthesizes a
@@ -177,6 +190,15 @@ const Runner = struct {
         self.surface.deinit();
     }
 
+    /// Renders the scene and, when the example has one, its native overlay.
+    fn present(self: *Runner, out: *std.Io.Writer) !void {
+        const overlay = if (self.example.overlay) |value|
+            ui.Overlay{ .context = value.context, .paint = value.paint }
+        else
+            null;
+        try self.surface.renderWithOverlay(out, .{}, overlay);
+    }
+
     fn rebuildScene(self: *Runner) !void {
         const doc = self.surface.document();
         doc.clear();
@@ -234,7 +256,7 @@ const Runner = struct {
             if (orig_termios) |orig| disableRawMode(orig) catch {};
         }
 
-        try self.surface.render(out, .{});
+        try self.present(out);
         try out.flush();
 
         const resize_fd = try resizeWatcherFd();
@@ -250,7 +272,7 @@ const Runner = struct {
             if ((fds[1].revents & std.posix.POLL.IN) != 0) {
                 drainResizeWatcher(resize_fd);
                 if (try self.resizeIfNeeded()) {
-                    try self.surface.render(out, .{});
+                    try self.present(out);
                     try out.flush();
                 }
             }
@@ -297,7 +319,7 @@ const Runner = struct {
             if (orig_termios) |orig| disableRawMode(orig) catch {};
         }
 
-        try self.surface.render(out, .{});
+        try self.present(out);
         try out.flush();
 
         var router = MouseRouter{};
@@ -315,7 +337,7 @@ const Runner = struct {
                 drainResizeWatcher(resize_fd);
                 if (try self.resizeIfNeeded()) {
                     router = .{};
-                    try self.surface.render(out, .{});
+                    try self.present(out);
                     try out.flush();
                 }
             }
@@ -335,9 +357,19 @@ const Runner = struct {
                     .focus => {},
                     .key => |*key| {
                         if (isQuitKey(key.*)) return;
+                        if (self.example.overlay) |overlay| {
+                            if (overlay.key_down) |handler| {
+                                if (handler(overlay.context, key)) continue;
+                            }
+                        }
                         _ = doc.dispatchKey(key.key, key.mods);
                     },
                     .mouse => |*mouse| {
+                        if (self.example.overlay) |overlay| {
+                            if (overlay.mouse) |handler| {
+                                if (handler(overlay.context, mouse)) continue;
+                            }
+                        }
                         if (mouse.kind == .move) {
                             if (try self.surface.pointerAt(mouse.x, mouse.y)) |shape| {
                                 _ = self.surface.setPointer(shape);
@@ -348,7 +380,7 @@ const Runner = struct {
                 }
             }
 
-            try self.surface.render(out, .{});
+            try self.present(out);
             try out.flush();
         }
     }
