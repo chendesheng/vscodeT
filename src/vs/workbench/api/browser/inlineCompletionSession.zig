@@ -25,6 +25,7 @@ pub const Session = struct {
     position: Position = .{ .lineNumber = 1, .column = 1 },
     due: ?i64 = null,
     pending: ?u32 = null,
+    remaining: []const features.InlineProvider = &.{},
     handle: u32 = 0,
     supports_events: bool = false,
     sent_at: i64 = 0,
@@ -34,12 +35,14 @@ pub const Session = struct {
     changed: bool = false,
 
     pub fn deinit(self: *Session) void {
-        if (self.pending) |id| self.host.rpc.cancel(id);
         self.dismiss();
         self.arena.deinit();
     }
 
     pub fn dismiss(self: *Session) void {
+        if (self.pending) |id| self.host.rpc.cancel(id);
+        self.pending = null;
+        self.remaining = &.{};
         self.stale = true;
         self.due = null;
         if (self.editor) |editor| {
@@ -92,16 +95,23 @@ pub const Session = struct {
             self.host.rpc.cancel(request);
             self.pending = null;
         }
-        if (self.due == null or self.due.? > now) return self.changed;
-        self.due = null;
-        if (self.workbench.configuration) |cfg| {
-            if (!cfg.getBool("editor.inlineSuggest.enabled", true)) return self.changed;
-        }
         const a = self.arena.allocator();
-        const providers = try actor.inline_providers.ordered(a, editor.model, false);
-        if (providers.len == 0) return self.changed;
-        self.handle = providers[0].handle;
-        self.supports_events = providers[0].supports_events;
+        if (self.due) |due| {
+            if (due > now) return self.changed;
+            self.due = null;
+            self.remaining = try actor.inline_providers.ordered(a, editor.model, false);
+        }
+        if (self.remaining.len == 0) return self.changed;
+        if (self.workbench.configuration) |cfg| {
+            if (!cfg.getBool("editor.inlineSuggest.enabled", true)) {
+                self.remaining = &.{};
+                return self.changed;
+            }
+        }
+        const provider = self.remaining[0];
+        self.remaining = self.remaining[1..];
+        self.handle = provider.handle;
+        self.supports_events = provider.supports_events;
         self.sent_at = now;
         var uuid: [16]u8 = undefined;
         self.workbench.io.random(&uuid);
@@ -147,6 +157,7 @@ pub const Session = struct {
             const p = self.position;
             const range = if (item.object.get("range")) |raw| features.rangeFromJson(editor.model, raw) orelse continue else Range.init(p.lineNumber, p.column, p.lineNumber, p.column);
             if (!(tab.view.ghost_text.show(range, text.string) catch false)) continue;
+            self.remaining = &.{};
             self.list_id = id.integer;
             if (self.supports_events) {
                 if (item.object.get("idx")) |index| self.host.notify(endpoint, "$handleInlineCompletionDidShow", &.{

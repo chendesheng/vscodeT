@@ -7,6 +7,10 @@ function activate(context) {
       return [new vscode.InlineCompletionItem(line + ' inline result', new vscode.Range(position.line, 0, position.line, position.character))];
     }
   }));
+  // A more specific provider may decline, as Emmet does outside abbreviations.
+  context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ scheme: 'file', language: 'json' }, {
+    provideInlineCompletionItems() { return []; }
+  }));
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
     provideHover() {
       return { contents: ['fixture hover'] };
