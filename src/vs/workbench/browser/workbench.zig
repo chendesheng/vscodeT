@@ -96,6 +96,7 @@ const workspace_context = @import("../services/workspaces/common/workspaceContex
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
 const configuration_mod = @import("../services/configuration/browser/configurationService.zig");
 const workbench_configuration = @import("./workbenchConfiguration.zig");
+const zen_mode_contribution = @import("./workbench.zenMode.contribution.zig");
 
 const ConfigurationService = configuration_mod.ConfigurationService;
 const file_watcher_service_mod = @import("../../platform/files/node/watcher/fileWatcherService.zig");
@@ -293,6 +294,8 @@ const ContextKeyHandles = struct {
     tree_find_open: context_key_mod.IContextKey,
     resource_scheme: context_key_mod.IContextKey,
     editor_read_only: context_key_mod.IContextKey,
+    in_zen_mode: context_key_mod.IContextKey,
+    is_centered_layout: context_key_mod.IContextKey,
 };
 
 /// Terminal host color scheme. The terminal has no portable OS color-scheme
@@ -523,6 +526,18 @@ pub const Workbench = struct {
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
     layout_model: LayoutModel,
+    /// Zen mode's temporary `editor.lineNumbers: off` override. Upstream
+    /// applies `updateOptions({ lineNumbers })` to every visible editor and
+    /// resets it from configuration when zen mode exits. The terminal applies
+    /// the override through `applyEditorSettingsToTab`, which is also the path
+    /// used for editors created while zen mode is active.
+    zen_hide_line_numbers: bool = false,
+    /// Last zen-mode configuration applied while active. The terminal learns
+    /// about settings changes through the settings watcher, which does not pass
+    /// the upstream `IConfigurationChangeEvent`; comparing the previous zen
+    /// configuration lets `applyZenModeConfigurationChange` apply the same
+    /// per-setting decisions as upstream's affected-configuration checks.
+    zen_applied_config: ?zen_mode_contribution.ZenModeConfiguration = null,
     activity_bar_part: ActivityBarPart,
     sidebar_part: SidebarPart,
     panel_part: PanelPart,
@@ -1266,6 +1281,8 @@ pub const Workbench = struct {
         self.marker_listener = null;
         self.markers_status = null;
         self.range_highlights = null;
+        self.zen_hide_line_numbers = false;
+        self.zen_applied_config = null;
         self.layout_model = LayoutModel.init(self.allocator);
         errdefer self.layout_model.deinit();
         self.activity_bar_part = ActivityBarPart.init(self.allocator);
@@ -1628,6 +1645,36 @@ pub const Workbench = struct {
             .{ .id = markers_common.Markers.SHOW_MARKERS_VIEW_ACTION_ID, .label = "View: Show Problems", .category = "View", .context = self, .run = commandShowProblems },
             .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .label = "View: Toggle Problems", .category = "View", .context = self, .run = commandToggleProblems },
             .{ .id = "workbench.action.togglePanel", .label = "View: Toggle Panel Visibility", .category = "View", .context = self, .run = commandTogglePanel },
+            .{ .id = zen_mode_contribution.toggle_zen_mode_id, .label = zen_mode_contribution.toggle_zen_mode_label, .category = zen_mode_contribution.category, .context = self, .run = commandToggleZenMode },
+            .{ .id = zen_mode_contribution.exit_zen_mode_id, .label = zen_mode_contribution.exit_zen_mode_label, .category = zen_mode_contribution.category, .show_in_palette = false, .context = self, .run = commandExitZenMode },
+            .{ .id = "workbench.action.toggleCenteredLayout", .label = "Toggle Centered Layout", .category = zen_mode_contribution.category, .context = self, .run = commandToggleCenteredLayout },
+            .{
+                .id = zen_mode_contribution.zen_hide_editor_tabs_id,
+                .label = zen_mode_contribution.zen_hide_editor_tabs_label,
+                .category = zen_mode_contribution.category,
+                .description = zen_mode_contribution.zen_hide_editor_tabs_description,
+                .precondition = zenTabsHideAvailable,
+                .context = self,
+                .run = commandZenHideEditorTabs,
+            },
+            .{
+                .id = zen_mode_contribution.zen_show_multiple_editor_tabs_id,
+                .label = zen_mode_contribution.zen_show_multiple_editor_tabs_label,
+                .category = zen_mode_contribution.category,
+                .description = zen_mode_contribution.zen_show_multiple_editor_tabs_description,
+                .precondition = zenTabsMultipleAvailable,
+                .context = self,
+                .run = commandZenShowMultipleEditorTabs,
+            },
+            .{
+                .id = zen_mode_contribution.zen_show_single_editor_tab_id,
+                .label = zen_mode_contribution.zen_show_single_editor_tab_label,
+                .category = zen_mode_contribution.category,
+                .description = zen_mode_contribution.zen_show_single_editor_tab_description,
+                .precondition = zenTabsSingleAvailable,
+                .context = self,
+                .run = commandZenShowSingleEditorTab,
+            },
             .{ .id = "workbench.action.focusPanel", .label = "View: Focus Panel", .category = "View", .context = self, .run = commandFocusPanel },
             .{ .id = "workbench.action.previousPanelView", .label = "View: Previous Panel View", .category = "View", .context = self, .run = commandPreviousPanelView },
             .{ .id = "workbench.action.nextPanelView", .label = "View: Next Panel View", .category = "View", .context = self, .run = commandNextPanelView },
@@ -2346,6 +2393,7 @@ pub const Workbench = struct {
             configuration.deinit();
             self.configuration = null;
             try self.ensureConfiguration();
+            self.applyZenModeConfigurationChange();
             self.applyEditorSettingsToAllTabs();
             self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
             self.disposeBreadcrumbs();
@@ -2382,6 +2430,7 @@ pub const Workbench = struct {
                     terminal_configuration.defaults_json,
                     theme_configuration_mod.defaults_json,
                     workbench_configuration.defaults_json,
+                    zen_mode_contribution.defaults_json,
                 },
             },
         );
@@ -2399,6 +2448,7 @@ pub const Workbench = struct {
     fn onSettingsReloaded(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyLayoutSettings();
+        self.applyZenModeConfigurationChange();
         self.applyConfiguredLanguageAssociationsToAllEditors();
         self.applyEditorSettingsToAllTabs();
         self.requestKeybindingsReload();
@@ -2420,12 +2470,22 @@ pub const Workbench = struct {
     }
 
     fn applyEditorSettingsToTab(self: *Workbench, tab: *Tab) void {
-        if (tab.isDiff()) return;
+        if (tab.isDiff()) {
+            if (self.zen_hide_line_numbers) self.applyLineNumbersOverrideToTab(tab, .Off);
+            return;
+        }
         const reader = self.editorSettingsReader();
         const language_id = tab.editor.languageId();
         const resource = tab.editor.path;
         _ = tab.editor.applyEditorSettings(reader, language_id, resource) catch false;
         _ = tab.view.applyEditorSettings(reader, language_id, resource) catch false;
+        // Zen mode's temporary line-number override, matching upstream
+        // `updateOptions({ lineNumbers: 'off' })`. The next
+        // `applyEditorSettings` after the override is cleared restores the
+        // configured value.
+        if (self.zen_hide_line_numbers and !tab.isImage()) {
+            tab.view.applyLineNumbersOverride(.Off) catch {};
+        }
         if (self.theme_palette) |palette| tab.view.setThemeColors(palette);
         if (self.theme_palette) |palette| {
             if (tab.image_preview) |pane| pane.setThemeColors(palette);
@@ -2436,6 +2496,40 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| self.applyEditorSettingsToTab(tab);
         }
+    }
+
+    /// Port of the `setLineNumbers()` restore path in `toggleZenMode`: read
+    /// `editor.lineNumbers` per editor (the configured value, or upstream's
+    /// `on` default) and write it back after the zen override is cleared.
+    /// `applyEditorSettings` leaves the option untouched when the setting is
+    /// absent, so the temporary `off` value would otherwise survive.
+    fn restoreLineNumbersFromConfiguration(self: *Workbench) void {
+        const reader = self.editorSettingsReader();
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.isImage()) continue;
+                const render_type = terminal_editor_config.lineNumbersSetting(
+                    reader,
+                    tab.editor.languageId(),
+                    tab.editor.path,
+                ) orelse .On;
+                self.applyLineNumbersOverrideToTab(tab, render_type);
+            }
+        }
+    }
+
+    /// Applies a line-number option to a tab's editor view(s). A diff tab has
+    /// the original and modified views; upstream's `visibleTextEditorControls`
+    /// includes both code editor widgets.
+    fn applyLineNumbersOverrideToTab(self: *Workbench, tab: *Tab, render_type: editor_options.RenderLineNumbersType) void {
+        _ = self;
+        if (tab.diff) |diff| {
+            diff.widget.original_view.applyLineNumbersOverride(render_type) catch {};
+            diff.widget.modified_view.applyLineNumbersOverride(render_type) catch {};
+            return;
+        }
+        if (tab.isImage()) return;
+        tab.view.applyLineNumbersOverride(render_type) catch {};
     }
 
     /// Applies `files.associations` from the current configuration to `editor`.
@@ -3738,10 +3832,68 @@ pub const Workbench = struct {
         };
     }
 
+    /// Port of `CenteredViewLayout`'s proportional split view: the editor part
+    /// occupies the centered width and the margins use the configured
+    /// `editorPane.background`.
+    const centered_layout_margin_ratio: f64 = 0.1909;
+    const centered_layout_min_width: usize = 20;
+
+    fn editorLayoutRect(self: *const Workbench) ui.Rect {
+        const base = self.editorAreaRect();
+        if (!self.layout_model.isMainEditorCenteredEffective()) return base;
+        const width = ui.cell.snap(base.w);
+        const margin = @as(usize, @intFromFloat(@floor(@as(f64, @floatFromInt(width)) * centered_layout_margin_ratio)));
+        if (width <= margin * 2 + centered_layout_min_width) return base;
+        return .{
+            .x = base.x + @as(f64, @floatFromInt(margin)),
+            .y = base.y,
+            .w = base.w - @as(f64, @floatFromInt(margin * 2)),
+            .h = base.h,
+        };
+    }
+
+    fn renderCenteredLayoutMargins(self: *Workbench) void {
+        if (!self.layout_model.isMainEditorCenteredEffective()) return;
+        const area = self.editorAreaRect();
+        const centered = self.editorLayoutRect();
+        if (centered.x <= area.x and centered.w >= area.w) return;
+        const editor_background = self.themeColor("editor.background", .{ 30, 30, 33 });
+        const background = if (self.theme_palette) |palette|
+            palette.colorOr("editorPane.background", editor_background)
+        else
+            editor_background;
+        const style = ui.cell.PaintStyle{ .bg = ui.cell.packColor(background) };
+        const centered_left = ui.cell.snap(centered.x);
+        const area_left = ui.cell.snap(area.x);
+        const area_width = ui.cell.snap(area.w);
+        const centered_width = ui.cell.snap(centered.w);
+        if (centered_left > area_left) {
+            self.frame.next.fillRect(
+                @floatFromInt(area_left),
+                area.y,
+                @floatFromInt(centered_left - area_left),
+                area.h,
+                style,
+            );
+        }
+        const right_start = centered_left + centered_width;
+        const area_right = area_left + area_width;
+        if (area_right > right_start) {
+            self.frame.next.fillRect(
+                @floatFromInt(right_start),
+                area.y,
+                @floatFromInt(area_right - right_start),
+                area.h,
+                style,
+            );
+        }
+    }
+
     fn layoutAll(self: *Workbench) void {
         self.hovered_sash = null;
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
-        const rect = self.editorAreaRect();
+        if (self.layout_model.isMainEditorCentered()) self.recomputeCenteredEditorLayout();
+        const rect = self.editorLayoutRect();
         for (self.part.group_views.items) |pane| {
             const terminal_editor_active = if (pane.activeTab()) |tab| tab.terminal_input != null else false;
             pane.setBreadcrumbsVisible(self.breadcrumbsEnabled());
@@ -5270,7 +5422,7 @@ pub const Workbench = struct {
         return diff_widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced;
     }
 
-    const ShowTabs = enum { none, single, multiple };
+    const ShowTabs = layout_service_mod.EditorTabsMode;
 
     fn findAddExtraSpaceOnTop(self: *Workbench) bool {
         return self.findBoolSetting("editor.find.addExtraSpaceOnTop", true);
@@ -5335,15 +5487,17 @@ pub const Workbench = struct {
     }
 
     fn editorShowTabs(self: *Workbench) ShowTabs {
+        // Port of `enforcePartOptions({ showTabs })` for zen mode: while zen
+        // mode is active the zen configuration supplies the tab mode and the
+        // regular `workbench.editor.showTabs` value is restored on exit.
+        if (self.layout_model.isZenModeActive()) {
+            if (self.zen_applied_config) |config| return config.show_tabs;
+            return self.zenModeConfiguration().show_tabs;
+        }
         const configuration = self.configuration orelse return .multiple;
-        const value = configuration.getValue("workbench.editor.showTabs", .{}) orelse return .multiple;
+        const value = configuration.getValue(layout_service_mod.LayoutSettings.editor_tabs_mode, .{}) orelse return .multiple;
         return switch (value.*) {
-            .string => |text| if (std.mem.eql(u8, text, "none"))
-                .none
-            else if (std.mem.eql(u8, text, "single"))
-                .single
-            else
-                .multiple,
+            .string => layout_service_mod.editorTabsMode(value.*, .multiple),
             else => .multiple,
         };
     }
@@ -7830,6 +7984,8 @@ pub const Workbench = struct {
             .tree_find_open = try service.createKey("treeFindOpen", .{ .boolean = false }),
             .resource_scheme = try service.createKey("resourceScheme", .{ .string = "file" }),
             .editor_read_only = try service.createKey("editorReadOnly", .{ .boolean = false }),
+            .in_zen_mode = try service.createKey("inZenMode", .{ .boolean = false }),
+            .is_centered_layout = try service.createKey("isCenteredLayout", .{ .boolean = false }),
         };
         self.context_keys = service;
         self.updateContextKeys();
@@ -7872,6 +8028,8 @@ pub const Workbench = struct {
         keys.tree_find_open.set(.{ .boolean = false });
         keys.resource_scheme.set(.{ .string = if (terminal_editor_active) "vscode-terminal" else "file" });
         keys.editor_read_only.set(.{ .boolean = if (self.activeTab()) |tab| tab.editor.read_only else false });
+        keys.in_zen_mode.set(.{ .boolean = self.layout_model.isZenModeActive() });
+        keys.is_centered_layout.set(.{ .boolean = self.layout_model.isMainEditorCentered() });
     }
 
     fn themeColor(self: *const Workbench, id: []const u8, fallback: [3]u8) ui.Color {
@@ -9320,6 +9478,9 @@ pub const Workbench = struct {
             .home => _ = part.focusFirstEntry(),
             .end => _ = part.focusLastEntry(),
             .escape => {
+                // Keep upstream's Escape Escape exit chord reachable when the
+                // terminal status bar owns focus in zen mode.
+                if (self.layout_model.isZenModeActive()) return false;
                 if (part.focusedHandle() != null) {
                     part.clearFocus();
                 } else {
@@ -9390,6 +9551,9 @@ pub const Workbench = struct {
         if (self.focus != .sidebar or !self.sidebarShown()) return false;
 
         if (event.key == .escape) {
+            // Let the global Escape Escape chord exit zen mode when the side
+            // bar was reopened while zen mode is active.
+            if (self.layout_model.isZenModeActive()) return false;
             // A focused sticky-scroll widget is the innermost focus target;
             // Escape leaves it before leaving the side bar (upstream leaves it
             // with Tab, which is the same terminal focus-traversal key).
@@ -9737,6 +9901,9 @@ pub const Workbench = struct {
         if (self.focus != .problems) return false;
         if (!std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) return false;
         if (event.key == .escape) {
+            // Let the global Escape Escape chord exit zen mode when the panel
+            // was reopened while zen mode is active.
+            if (self.layout_model.isZenModeActive()) return false;
             self.focusEditor();
             if (self.activeTab()) |tab| tab.focusEditor();
             return true;
@@ -10178,6 +10345,7 @@ pub const Workbench = struct {
             self.renderSidebarFrame();
         }
 
+        self.renderCenteredLayoutMargins();
         if (self.expanded_pane) |expanded| {
             if (self.paneExists(expanded)) {
                 try self.renderPane(expanded);
@@ -10708,11 +10876,242 @@ pub const Workbench = struct {
     }
 
     /// Port of `SidebarPart.onDidChangeActivityBarLocation`: the rail is shown
-    /// while the side bar does not host the composite bar.
+    /// while the side bar does not host the composite bar. Zen mode hides the
+    /// rail independently of the configured location.
     fn syncActivityBarVisibility(self: *Workbench) !void {
-        const show = self.sidebar_part.shouldShowActivityBar();
+        const hidden_by_zen = self.layout_model.isZenModeActive() and self.zenModeConfiguration().hide_activity_bar;
+        const show = !hidden_by_zen and self.sidebar_part.shouldShowActivityBar();
         try self.activity_bar_part.setVisible(show);
         try self.layout_model.setVisible(.activitybar, show);
+    }
+
+    /// Port of `getZenModeConfiguration` in `layout.ts`.
+    fn zenModeConfiguration(self: *Workbench) zen_mode_contribution.ZenModeConfiguration {
+        return zen_mode_contribution.load(self.configuration, self.workspaceRoot());
+    }
+
+    /// Port of `toggleZenMode` in `layout.ts`, adapted to the terminal parts.
+    ///
+    /// Upstream hides the panel, auxiliary bar and side bar, then applies the
+    /// zen-mode activity-bar/status-bar/line-number/tab/centered-layout
+    /// configuration. Leaving zen restores only the parts that were visible
+    /// before the transition. The terminal has no auxiliary bar and no host
+    /// full-screen service; those branches are documented omissions.
+    pub fn toggleZenMode(self: *Workbench, skip_layout: bool, restoring: bool) !void {
+        const focused_before = self.focus;
+        const active = !self.layout_model.isZenModeActive();
+        self.layout_model.setZenModeActive(active);
+
+        const config = self.zenModeConfiguration();
+        var exit_info = self.layout_model.zenModeExitInfo();
+
+        if (active) {
+            if (!restoring) {
+                exit_info = .{
+                    .transitioned_to_centered_editor_layout = !self.layout_model.isMainEditorCentered() and config.center_layout,
+                    // No terminal equivalent for `hostService.toggleFullScreen`.
+                    .transitioned_to_full_screen = false,
+                    // The terminal workbench has no notification filters.
+                    .handle_notifications_do_not_disturb_mode = false,
+                    .was_visible = .{
+                        .side_bar = self.layout_model.isVisible(.sidebar),
+                        .panel = self.panel_part.isVisible(),
+                        // No auxiliary bar part in the terminal workbench.
+                        .auxiliary_bar = false,
+                        .status_bar = self.layout_model.isVisible(.statusbar),
+                    },
+                };
+            }
+            self.layout_model.setZenModeExitInfo(exit_info);
+
+            // `setPanelHidden(true, true)` / `setAuxiliaryBarHidden(true, true)`
+            // / `setSideBarHidden(true)`.
+            try self.panel_part.setVisible(false);
+            try self.setSidebarVisible(false);
+
+            if (config.hide_activity_bar) {
+                try self.activity_bar_part.setVisible(false);
+                try self.layout_model.setVisible(.activitybar, false);
+            }
+
+            if (config.hide_status_bar) {
+                try self.layout_model.setVisible(.statusbar, false);
+            }
+
+            // Upstream `setLineNumbers('off')`; the visible-editor listener is
+            // covered by applying the override to every tab (including tabs
+            // opened later) through `applyEditorSettingsToTab`.
+            self.zen_hide_line_numbers = config.hide_line_numbers;
+            if (config.hide_line_numbers) self.applyEditorSettingsToAllTabs();
+
+            // `enforcePartOptions({ showTabs })` is represented by
+            // `editorShowTabs` reading the zen configuration while active.
+
+            if (config.center_layout) self.centerMainEditorLayout(true, true);
+            self.zen_applied_config = config;
+        } else {
+            if (exit_info.was_visible.panel) {
+                try self.panel_part.setVisible(true);
+            }
+            if (exit_info.was_visible.side_bar) {
+                try self.setSidebarVisible(true);
+            }
+            // Upstream falls back to the configured activity-bar location.
+            try self.syncActivityBarVisibility();
+            if (exit_info.was_visible.status_bar) {
+                try self.layout_model.setVisible(.statusbar, true);
+            }
+
+            const had_line_numbers_override = self.zen_hide_line_numbers;
+            self.zen_hide_line_numbers = false;
+            if (had_line_numbers_override) {
+                self.applyEditorSettingsToAllTabs();
+                self.restoreLineNumbersFromConfiguration();
+            }
+
+            if (exit_info.transitioned_to_centered_editor_layout) {
+                self.centerMainEditorLayout(false, true);
+            }
+            self.zen_applied_config = null;
+        }
+
+        if (!skip_layout) self.layoutAll();
+
+        // Restore focus if the previously focused part is still visible,
+        // otherwise fall back to the editor.
+        self.restoreFocusAfterZen(focused_before);
+
+        // The terminal context key is set directly (upstream binds it to the
+        // layout-service event); update it before notifying listeners.
+        self.updateContextKeys();
+        try self.layout_model.fireZenModeChanged();
+    }
+
+    /// Port of the zen-mode branch of the `onDidChangeConfiguration` listener
+    /// inside `toggleZenMode`. The terminal edits configuration through the
+    /// settings watcher, so `onSettingsReloaded` runs the same decisions.
+    fn applyZenModeConfigurationChange(self: *Workbench) void {
+        if (!self.layout_model.isZenModeActive()) return;
+        const config = self.zenModeConfiguration();
+        const previous = self.zen_applied_config orelse {
+            self.zen_applied_config = config;
+            return;
+        };
+
+        // Upstream applies each branch only when the matching setting is
+        // affected by the configuration change.
+        if (previous.hide_activity_bar != config.hide_activity_bar) {
+            if (config.hide_activity_bar) {
+                self.activity_bar_part.setVisible(false) catch {};
+                self.layout_model.setVisible(.activitybar, false) catch {};
+            } else {
+                self.syncActivityBarVisibility() catch {};
+            }
+        }
+
+        if (previous.hide_status_bar != config.hide_status_bar) {
+            self.layout_model.setVisible(.statusbar, !config.hide_status_bar) catch {};
+        }
+
+        if (previous.center_layout != config.center_layout) {
+            self.centerMainEditorLayout(config.center_layout, true);
+        }
+
+        if (previous.hide_line_numbers != config.hide_line_numbers) {
+            self.zen_hide_line_numbers = config.hide_line_numbers;
+            self.applyEditorSettingsToAllTabs();
+            if (!self.zen_hide_line_numbers) self.restoreLineNumbersFromConfiguration();
+        }
+
+        self.zen_applied_config = config;
+        // `showTabs` and the updated part visibility feed the next layout.
+        self.layoutAll();
+    }
+
+    /// Restores the focused part after a zen-mode transition when it is still
+    /// visible. Upstream maps focused parts to `focusPart`; the terminal has
+    /// terminal/problems as its two panel focus targets.
+    fn restoreFocusAfterZen(self: *Workbench, previous: Focus) void {
+        switch (previous) {
+            .sidebar => {
+                if (self.sidebarShown()) self.focusSidebar() else self.focusEditor();
+            },
+            .terminal => {
+                if (self.panelShown() and std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID)) {
+                    self.focus = .terminal;
+                    self.statusbar.main_part.clearFocus();
+                    if (self.search_view) |view| view.blur();
+                } else {
+                    self.focusEditor();
+                }
+            },
+            .problems => {
+                if (self.problemsVisible()) {
+                    self.focus = .problems;
+                    self.statusbar.main_part.clearFocus();
+                    if (self.search_view) |view| view.blur();
+                    self.updateProblemsHighlight();
+                } else {
+                    self.focusEditor();
+                }
+            },
+            .statusbar => {
+                if (self.statusBarVisible()) self.focusStatusBar() else self.focusEditor();
+            },
+            .breadcrumbs, .editor => self.focusEditor(),
+        }
+    }
+
+    /// Port of `centerMainEditorLayout`. The requested state (the layout
+    /// service runtime value) is kept separately from the effective centered
+    /// layout, which is disabled when `centeredLayoutAutoResize` is on and the
+    /// workbench has multiple groups or a complex editor.
+    pub fn centerMainEditorLayout(self: *Workbench, active: bool, skip_layout: bool) void {
+        self.layout_model.setMainEditorCentered(active);
+        self.recomputeCenteredEditorLayout();
+        if (!skip_layout) self.layoutAll();
+        self.updateContextKeys();
+        self.layout_model.fireMainEditorCenteredChanged() catch {};
+    }
+
+    pub fn toggleCenteredLayout(self: *Workbench) void {
+        self.centerMainEditorLayout(!self.layout_model.isMainEditorCentered(), false);
+        if (self.activeTab()) |tab| tab.focusEditor();
+    }
+
+    fn recomputeCenteredEditorLayout(self: *Workbench) void {
+        var effective = self.layout_model.isMainEditorCentered();
+        if (effective) {
+            const auto_resize = self.configurationBool(
+                layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize,
+                true,
+            );
+            if (auto_resize and self.hasComplexEditor()) effective = false;
+            if (auto_resize and self.groupCount() > 1 and self.expanded_pane == null) effective = false;
+        }
+        self.layout_model.setMainEditorCenteredEffective(effective);
+    }
+
+    /// Upstream `mainVisibleEditors.some(editor => isEditorComplex(editor))`:
+    /// a side-by-side diff editor carries `MultipleEditors`. The terminal has
+    /// no split-in-group editors, so the diff editor is the only complex one.
+    fn hasComplexEditor(self: *Workbench) bool {
+        const side_by_side = self.configurationBool("diffEditor.renderSideBySide", true);
+        if (!side_by_side) return false;
+        for (self.part.group_views.items) |pane| {
+            const tab = pane.activeTab() orelse continue;
+            if (tab.isDiff()) return true;
+        }
+        return false;
+    }
+
+    fn configurationBool(self: *const Workbench, key: []const u8, default: bool) bool {
+        const configuration = self.configuration orelse return default;
+        const value = configuration.getValue(key, .{}) orelse return default;
+        return switch (value.*) {
+            .bool => |enabled| enabled,
+            else => default,
+        };
     }
 
     fn applyBreadcrumbsSettings(self: *Workbench) void {
@@ -11867,6 +12266,58 @@ fn commandTogglePanel(context: *anyopaque) anyerror!void {
     }
     const id = self.defaultPanelContainerId() orelse return;
     _ = try self.openPanelContainer(id);
+}
+
+fn commandToggleZenMode(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.toggleZenMode(false, false);
+}
+
+fn commandExitZenMode(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.layout_model.isZenModeActive()) try self.toggleZenMode(false, false);
+}
+
+fn commandToggleCenteredLayout(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.toggleCenteredLayout();
+}
+
+fn zenTabsHideAvailable(context: *anyopaque) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.layout_model.isZenModeActive() and self.zenModeConfiguration().show_tabs != .none;
+}
+
+fn zenTabsMultipleAvailable(context: *anyopaque) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.layout_model.isZenModeActive() and self.zenModeConfiguration().show_tabs != .multiple;
+}
+
+fn zenTabsSingleAvailable(context: *anyopaque) bool {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.layout_model.isZenModeActive() and self.zenModeConfiguration().show_tabs != .single;
+}
+
+fn commandZenSetEditorTabs(context: *anyopaque, mode: layout_service_mod.EditorTabsMode) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.setUserConfigurationValue(
+        layout_service_mod.ZenModeSettings.show_tabs,
+        .{ .string = zen_mode_contribution.showTabsValue(mode) },
+    );
+    self.applyZenModeConfigurationChange();
+    self.layoutAll();
+}
+
+fn commandZenHideEditorTabs(context: *anyopaque) anyerror!void {
+    try commandZenSetEditorTabs(context, .none);
+}
+
+fn commandZenShowMultipleEditorTabs(context: *anyopaque) anyerror!void {
+    try commandZenSetEditorTabs(context, .multiple);
+}
+
+fn commandZenShowSingleEditorTab(context: *anyopaque) anyerror!void {
+    try commandZenSetEditorTabs(context, .single);
 }
 
 fn commandFocusPanel(context: *anyopaque) anyerror!void {
@@ -15627,6 +16078,259 @@ test "Workbench: activity bar switches view containers" {
     try std.testing.expectEqual(@as(usize, 0), workbench.activeActivity());
 }
 
+test "Workbench: zen mode hides chrome, line numbers and tabs and restores them" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "zen.txt", "alpha\nbeta\n");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    var settings_file = try tmp.dir.createFile(io, "zen-settings.json", .{});
+    try settings_file.writeStreamingAll(io, "{}");
+    settings_file.close(io);
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/zen-settings.json", .{buffer[0..root_len]});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    _ = try workbench.showActivityById("explorer");
+    _ = try workbench.panel_part.pane.openPaneComposite(PROBLEMS_CONTAINER_ID, false);
+    try workbench.panel_part.setVisible(true);
+    workbench.layoutAll();
+
+    const pane = workbench.activePane().?;
+    const tab = workbench.activeTab().?;
+    try std.testing.expect(workbench.layout_model.isVisible(.sidebar));
+    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.activity_bar_part.visible);
+    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.On, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.editorShowTabs());
+    try std.testing.expect(!workbench.layout_model.isMainEditorCentered());
+
+    var zen_events: usize = 0;
+    try workbench.layout_model.on_did_change_zen_mode.event(&zen_events, struct {
+        fn callback(_: bool, context: *usize) !void {
+            context.* += 1;
+        }
+    }.callback);
+
+    try workbench.commands.execute(zen_mode_contribution.toggle_zen_mode_id);
+    try std.testing.expect(workbench.layout_model.isZenModeActive());
+    try std.testing.expectEqual(@as(usize, 1), zen_events);
+    try std.testing.expect(!workbench.layout_model.isVisible(.sidebar));
+    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.activity_bar_part.visible);
+    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    // The default `zenMode.centerLayout` centers the single editor group.
+    try std.testing.expect(workbench.layout_model.isMainEditorCentered());
+    try std.testing.expect(workbench.layout_model.isMainEditorCenteredEffective());
+    try std.testing.expect(workbench.editorLayoutRect().w < workbench.editorAreaRect().w);
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try workbench.render(&rendered.writer);
+
+    // The zen tab actions write `zenMode.showTabs` and take effect while zen
+    // mode is active, without touching `workbench.editor.showTabs`.
+    try workbench.commands.execute(zen_mode_contribution.zen_hide_editor_tabs_id);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.none, workbench.editorShowTabs());
+    try std.testing.expect(!pane.tabs_visible);
+    try workbench.commands.execute(zen_mode_contribution.zen_show_single_editor_tab_id);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.single, workbench.editorShowTabs());
+    try workbench.commands.execute(zen_mode_contribution.zen_show_multiple_editor_tabs_id);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.editorShowTabs());
+
+    try workbench.commands.execute(zen_mode_contribution.exit_zen_mode_id);
+    try std.testing.expect(!workbench.layout_model.isZenModeActive());
+    try std.testing.expectEqual(@as(usize, 2), zen_events);
+    try std.testing.expect(workbench.layout_model.isVisible(.sidebar));
+    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.activity_bar_part.visible);
+    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.On, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.editorShowTabs());
+    try std.testing.expect(!workbench.layout_model.isMainEditorCentered());
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+}
+
+test "Workbench: zen mode restores a status bar that was hidden before" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "zen_status.txt", "alpha\n");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
+    defer workbench.deinit();
+    try workbench.layout_model.setVisible(.statusbar, false);
+    try std.testing.expect(!workbench.statusBarVisible());
+
+    try workbench.toggleZenMode(false, false);
+    try std.testing.expect(!workbench.statusBarVisible());
+    try workbench.toggleZenMode(false, false);
+    try std.testing.expect(!workbench.layout_model.isZenModeActive());
+    try std.testing.expect(!workbench.statusBarVisible());
+}
+
+test "Workbench: zen tab actions are only available in zen mode" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var settings_file = try tmp.dir.createFile(io, "zen-action-settings.json", .{});
+    try settings_file.writeStreamingAll(io, "{}");
+    settings_file.close(io);
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/zen-action-settings.json", .{buffer[0..root_len]});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    workbench.ensureConfigurationReady();
+
+    const hide = workbench.commands.get(zen_mode_contribution.zen_hide_editor_tabs_id).?;
+    const multiple = workbench.commands.get(zen_mode_contribution.zen_show_multiple_editor_tabs_id).?;
+    const single = workbench.commands.get(zen_mode_contribution.zen_show_single_editor_tab_id).?;
+    try std.testing.expect(!hide.precondition.?(hide.context));
+    try std.testing.expect(!multiple.precondition.?(multiple.context));
+    try std.testing.expect(!single.precondition.?(single.context));
+
+    try workbench.toggleZenMode(false, false);
+    try std.testing.expect(hide.precondition.?(hide.context));
+    try std.testing.expect(!multiple.precondition.?(multiple.context));
+    try std.testing.expect(single.precondition.?(single.context));
+
+    try workbench.commands.execute(zen_mode_contribution.zen_hide_editor_tabs_id);
+    try std.testing.expect(!hide.precondition.?(hide.context));
+    try std.testing.expect(multiple.precondition.?(multiple.context));
+    try std.testing.expect(single.precondition.?(single.context));
+
+    try workbench.commands.execute(zen_mode_contribution.zen_show_single_editor_tab_id);
+    try std.testing.expect(hide.precondition.?(hide.context));
+    try std.testing.expect(multiple.precondition.?(multiple.context));
+    try std.testing.expect(!single.precondition.?(single.context));
+}
+
+test "Workbench: zen mode applies configuration changes while active" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "zen_config.txt", "alpha\nbeta\n");
+    defer allocator.free(path);
+
+    var settings_file = try tmp.dir.createFile(io, "zen-live-settings.json", .{});
+    try settings_file.writeStreamingAll(io, "{}");
+    settings_file.close(io);
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &buffer);
+    const settings_path = try std.fmt.allocPrint(allocator, "{s}/zen-live-settings.json", .{buffer[0..root_len]});
+    defer allocator.free(settings_path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings_path});
+    try workbench.setUserConfigurationValue("editor.lineNumbers", .{ .string = "relative" });
+    workbench.applyEditorSettingsToAllTabs();
+
+    const tab = workbench.activeTab().?;
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+
+    try workbench.toggleZenMode(false, false);
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    try std.testing.expect(workbench.layout_model.isMainEditorCentered());
+    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expect(!workbench.activity_bar_part.visible);
+
+    try workbench.setUserConfigurationValue("zenMode.hideLineNumbers", .{ .bool = false });
+    workbench.applyZenModeConfigurationChange();
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+
+    try workbench.setUserConfigurationValue("zenMode.hideStatusBar", .{ .bool = false });
+    workbench.applyZenModeConfigurationChange();
+    try std.testing.expect(workbench.statusBarVisible());
+
+    try workbench.setUserConfigurationValue("zenMode.hideActivityBar", .{ .bool = false });
+    workbench.applyZenModeConfigurationChange();
+    try std.testing.expect(workbench.activity_bar_part.visible);
+
+    try workbench.setUserConfigurationValue("zenMode.centerLayout", .{ .bool = false });
+    workbench.applyZenModeConfigurationChange();
+    try std.testing.expect(!workbench.layout_model.isMainEditorCenteredEffective());
+
+    try workbench.toggleZenMode(false, false);
+    try std.testing.expect(!workbench.layout_model.isZenModeActive());
+    try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
+    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expect(workbench.activity_bar_part.visible);
+}
+
+test "Workbench: zen mode keybindings toggle and exit" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
+    defer workbench.deinit();
+
+    const ctrl_k = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&ctrl_k));
+    const z = ui.KeyEvent{ .key = .{ .char = 'z' } };
+    try std.testing.expect(try workbench.handleGlobalKey(&z));
+    try std.testing.expect(workbench.layout_model.isZenModeActive());
+
+    const escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(try workbench.handleGlobalKey(&escape));
+    try std.testing.expect(try workbench.handleGlobalKey(&escape));
+    try std.testing.expect(!workbench.layout_model.isZenModeActive());
+}
+
+test "Workbench: centered layout narrows and centers the editor part" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try seedFile(allocator, io, &tmp, "centered.txt", "alpha\n");
+    defer allocator.free(path);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
+    defer workbench.deinit();
+
+    const area = workbench.editorAreaRect();
+    try workbench.commands.execute("workbench.action.toggleCenteredLayout");
+    try std.testing.expect(workbench.layout_model.isMainEditorCentered());
+    try std.testing.expect(workbench.layout_model.isMainEditorCenteredEffective());
+    const centered = workbench.editorLayoutRect();
+    try std.testing.expect(centered.w < area.w);
+    try std.testing.expect(centered.x > area.x);
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try workbench.render(&rendered.writer);
+    const pane_rect = workbench.activePane().?.rect;
+    try std.testing.expect(pane_rect.x >= centered.x);
+    try std.testing.expect(pane_rect.x + pane_rect.w <= centered.x + centered.w);
+
+    try workbench.commands.execute("workbench.action.toggleCenteredLayout");
+    try std.testing.expect(!workbench.layout_model.isMainEditorCentered());
+    try std.testing.expectEqual(area.w, workbench.editorLayoutRect().w);
+}
+
 test "Workbench: side bar part paints the title and runs its actions" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -17011,9 +17715,14 @@ const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
 };
 
 const terminal_focus_when = context_key_mod.Expr{ .Defined = "terminalFocus" };
+const zen_mode_when = context_key_mod.Expr{ .Defined = "inZenMode" };
 
 const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.splitEditor", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash) } },
+    .{ .id = zen_mode_contribution.toggle_zen_mode_id, .weight = 200, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), @backingInt(key_codes.KeyCode.KeyZ)) } },
+    // Upstream registers Escape Escape with `EditorContrib - 1000` so editor
+    // bindings keep precedence; only the zen-mode context makes it reachable.
+    .{ .id = zen_mode_contribution.exit_zen_mode_id, .weight = @backingInt(keybinding_registry.KeybindingWeight.EditorContrib) - 1000, .when = &zen_mode_when, .bindings = .{ .primary = key_codes.KeyChord(@backingInt(key_codes.KeyCode.Escape), @backingInt(key_codes.KeyCode.Escape)) } },
     .{ .id = terminal_common.TerminalCommandId.split, .weight = 201, .when = &terminal_focus_when, .bindings = .{
         .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash),
         .secondary = &.{key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Digit5)},

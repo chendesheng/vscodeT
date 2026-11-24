@@ -334,6 +334,18 @@ pub const TerminalViewHost = struct {
         return any;
     }
 
+    /// Port of `CodeEditorWidget.updateOptions({ lineNumbers })`: writes the
+    /// computed option and refreshes the gutter without consulting the
+    /// configuration service. Zen mode uses this for its temporary
+    /// `editor.lineNumbers: off` override; `applyEditorSettings` restores the
+    /// configured value when zen mode exits.
+    pub fn setLineNumbersOption(self: *TerminalViewHost, render_type: editor_options.RenderLineNumbersType) bool {
+        if (self.options.get(.lineNumbers).render_type == render_type) return false;
+        self.options.set(.lineNumbers, .{ .render_type = render_type, .render_fn = null });
+        self.syncGutterOptions();
+        return true;
+    }
+
     /// Maps the gutter-related editor options to the cell layout owned by the
     /// editor. Upstream computes the same widths in `EditorLayoutInfoComputer`.
     fn syncGutterOptions(self: *TerminalViewHost) void {

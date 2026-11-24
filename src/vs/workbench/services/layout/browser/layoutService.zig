@@ -46,6 +46,24 @@ pub const LayoutSettings = struct {
     pub const activity_bar_location = "workbench.activityBar.location";
     pub const activity_bar_auto_hide = "workbench.activityBar.autoHide";
     pub const activity_bar_compact = "workbench.activityBar.compact";
+    pub const editor_tabs_mode = "workbench.editor.showTabs";
+    pub const editor_centered_layout_auto_resize = "workbench.editor.centeredLayoutAutoResize";
+};
+
+/// Upstream `EditorTabsMode` (`workbench.editor.showTabs` and
+/// `zenMode.showTabs`).
+pub const EditorTabsMode = enum { multiple, single, none };
+
+/// Upstream `ZenModeSettings` ids.
+pub const ZenModeSettings = struct {
+    pub const show_tabs = "zenMode.showTabs";
+    pub const hide_line_numbers = "zenMode.hideLineNumbers";
+    pub const hide_status_bar = "zenMode.hideStatusBar";
+    pub const hide_activity_bar = "zenMode.hideActivityBar";
+    pub const center_layout = "zenMode.centerLayout";
+    pub const full_screen = "zenMode.fullScreen";
+    pub const restore = "zenMode.restore";
+    pub const silent_notifications = "zenMode.silentNotifications";
 };
 
 /// The layout settings the terminal shell reads, with upstream defaults.
@@ -86,6 +104,14 @@ pub fn activityBarPosition(value: std.json.Value, fallback: ActivityBarPosition)
     return fallback;
 }
 
+pub fn editorTabsMode(value: std.json.Value, fallback: EditorTabsMode) EditorTabsMode {
+    if (value != .string) return fallback;
+    if (std.mem.eql(u8, value.string, "multiple")) return .multiple;
+    if (std.mem.eql(u8, value.string, "single")) return .single;
+    if (std.mem.eql(u8, value.string, "none")) return .none;
+    return fallback;
+}
+
 test "layoutService: activity bar position values and defaults" {
     var values = LayoutSettingsValues{};
     try std.testing.expectEqual(ActivityBarPosition.default, values.activity_bar_location);
@@ -100,4 +126,12 @@ test "layoutService: activity bar position values and defaults" {
     try std.testing.expectEqual(ActivityBarPosition.hidden, activityBarPosition(.{ .string = "hidden" }, .default));
     try std.testing.expectEqual(ActivityBarPosition.default, activityBarPosition(.{ .string = "sideways" }, .default));
     try std.testing.expectEqual(ActivityBarPosition.top, activityBarPosition(.{ .integer = 1 }, .top));
+}
+
+test "layoutService: editor tabs mode values and defaults" {
+    try std.testing.expectEqual(EditorTabsMode.multiple, editorTabsMode(.{ .string = "multiple" }, .none));
+    try std.testing.expectEqual(EditorTabsMode.single, editorTabsMode(.{ .string = "single" }, .multiple));
+    try std.testing.expectEqual(EditorTabsMode.none, editorTabsMode(.{ .string = "none" }, .multiple));
+    try std.testing.expectEqual(EditorTabsMode.multiple, editorTabsMode(.{ .string = "bogus" }, .multiple));
+    try std.testing.expectEqual(EditorTabsMode.none, editorTabsMode(.{ .bool = true }, .none));
 }

@@ -119,6 +119,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/git/browser/gitService.zig");
     _ = @import("./vs/workbench/contrib/git/test/common/gitService.test.zig");
     _ = @import("./vs/workbench/browser/workbench.zig");
+    _ = @import("./vs/workbench/browser/workbench.zenMode.contribution.zig");
     _ = @import("./vs/workbench/browser/parts/editor/editorSession.zig");
     _ = @import("./vs/editor/contrib/hover/browser/terminalHoverProvider.zig");
     _ = @import("./vs/base/common/cache.zig");

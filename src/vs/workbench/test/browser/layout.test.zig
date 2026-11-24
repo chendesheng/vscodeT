@@ -52,3 +52,39 @@ test "LayoutModel: sizes and sidebar position fire changes" {
     try std.testing.expectEqual(Position.right, layout.sidebarPosition());
     try std.testing.expectEqual(@as(usize, 2), changes);
 }
+
+test "LayoutModel: zen mode and centered layout state fire their events" {
+    var layout = LayoutModel.init(std.testing.allocator);
+    defer layout.deinit();
+
+    var zen_changes: usize = 0;
+    try layout.on_did_change_zen_mode.event(&zen_changes, struct {
+        fn callback(_: bool, context: *usize) !void {
+            context.* += 1;
+        }
+    }.callback);
+    var centered_changes: usize = 0;
+    try layout.on_did_change_main_editor_centered.event(&centered_changes, struct {
+        fn callback(_: bool, context: *usize) !void {
+            context.* += 1;
+        }
+    }.callback);
+
+    try std.testing.expect(!layout.isZenModeActive());
+    layout.setZenModeActive(true);
+    try layout.fireZenModeChanged();
+    try std.testing.expect(layout.isZenModeActive());
+    try std.testing.expectEqual(@as(usize, 1), zen_changes);
+    layout.setZenModeActive(false);
+    try layout.fireZenModeChanged();
+    try std.testing.expectEqual(@as(usize, 2), zen_changes);
+
+    try std.testing.expect(!layout.isMainEditorCentered());
+    try std.testing.expect(!layout.isMainEditorCenteredEffective());
+    layout.setMainEditorCentered(true);
+    layout.setMainEditorCenteredEffective(true);
+    try layout.fireMainEditorCenteredChanged();
+    try std.testing.expect(layout.isMainEditorCentered());
+    try std.testing.expect(layout.isMainEditorCenteredEffective());
+    try std.testing.expectEqual(@as(usize, 1), centered_changes);
+}

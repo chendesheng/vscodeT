@@ -1393,6 +1393,26 @@ pub const View = struct {
         return true;
     }
 
+    /// Port of `CodeEditorWidget.updateOptions({ lineNumbers })` for the zen
+    /// mode transition. Unlike `applyEditorSettings`, this touches only the
+    /// line-number option and dispatches the same
+    /// `ViewConfigurationChangedEvent` so `ViewLines` and the gutter update
+    /// immediately. The configured value is restored by the next
+    /// `applyEditorSettings`.
+    pub fn applyLineNumbersOverride(self: *View, render_type: editor_options.RenderLineNumbersType) !void {
+        if (!self.terminal_view_host.setLineNumbersOption(render_type)) return;
+        var changed: terminal_editor_config.ChangeSet = undefined;
+        @memset(changed[0..], false);
+        changed[@backingInt(editor_options.EditorOption.lineNumbers)] = true;
+        const event = view_events.ViewConfigurationChangedEvent.init(
+            editor_options.ConfigurationChangedEvent.init(&changed),
+        );
+        self.editor.emitViewEvent(.{ .ViewConfigurationChanged = event });
+        for (self.configuration_listeners.items) |listener| listener.notify(listener.context);
+        self.document_ready = false;
+        self.invalidate();
+    }
+
     /// Content background for the current-line highlight. `gutter` and `none`
     /// leave the content background untouched. The focus-only variant follows
     /// the forwarded View focus state.

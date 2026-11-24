@@ -70,6 +70,18 @@ fn readString(reader: Reader, key: []const u8, language_id: ?[]const u8, resourc
     };
 }
 
+/// Resolves `editor.lineNumbers` for one editor. Zen mode calls this after
+/// clearing its temporary override to restore the configured value, matching
+/// upstream `setLineNumbers()` reading the setting per visible editor.
+pub fn lineNumbersSetting(
+    reader: Reader,
+    language_id: ?[]const u8,
+    resource: ?[]const u8,
+) ?RenderLineNumbersType {
+    const text = readString(reader, "editor.lineNumbers", language_id, resource) orelse return null;
+    return parseLineNumbers(text);
+}
+
 fn mark(changed: *ChangeSet, comptime option: EditorOption, is_changed: bool) void {
     if (is_changed) changed[@backingInt(option)] = true;
 }
