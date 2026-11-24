@@ -105,6 +105,10 @@ pub const QuickInputService = struct {
         self.allow_free_input = options.allow_free_input;
         self.cleanup = options.cleanup;
         self.cleanup_context = options.cleanup_context;
+        errdefer {
+            self.cleanup = null;
+            self.cleanup_context = null;
+        }
         self.no_results = if (options.no_results_label) |label|
             .{ .item = .{ .label = label } }
         else
@@ -115,6 +119,8 @@ pub const QuickInputService = struct {
         if (options.active_id) |id| self.selectItem(id);
         self.picker.show();
         self.presenter.show(self.presenter.context, &self.picker) catch |err| {
+            self.cleanup = null;
+            self.cleanup_context = null;
             self.picker.hide();
             return err;
         };
@@ -154,6 +160,15 @@ pub const QuickInputService = struct {
         const self: *QuickInputService = @ptrCast(@alignCast(context));
         const handler = self.handler orelse return;
         const handler_context = self.handler_context orelse return;
+        // Hiding the picker must leave the accepted item's data available
+        // until the command finishes using it.
+        const cleanup = self.cleanup;
+        const cleanup_context = self.cleanup_context;
+        self.cleanup = null;
+        self.cleanup_context = null;
+        defer if (cleanup) |callback| {
+            if (cleanup_context) |value| callback(value);
+        };
         if (self.picker.visible) self.hide();
         handler(handler_context, &self.picker) catch |err| self.report(err);
     }
@@ -206,6 +221,7 @@ test "QuickInputService: one-shot picker filters, scrolls and accepts" {
         accepted: usize = 0,
         accepted_id: [16]u8 = std.mem.zeroes([16]u8),
         accepted_len: usize = 0,
+        cleaned_after_accept: bool = false,
         fn show(_: *anyopaque, _: *QuickPick) anyerror!void {}
         fn hide(context: *anyopaque) void {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -219,6 +235,10 @@ test "QuickInputService: one-shot picker filters, scrolls and accepts" {
                 @memcpy(self.accepted_id[0..length], item.id[0..length]);
                 self.accepted_len = length;
             }
+        }
+        fn clean(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.cleaned_after_accept = self.accepted == 1;
         }
     };
 
@@ -234,7 +254,11 @@ test "QuickInputService: one-shot picker filters, scrolls and accepts" {
         .{ .item = .{ .id = "spaces", .label = "Indent Using Spaces" } },
         .{ .item = .{ .id = "tabs", .label = "Indent Using Tabs" } },
     };
-    try service.showPick(&items, .{ .placeholder = "Select Action" }, State.accept, &state);
+    try service.showPick(&items, .{
+        .placeholder = "Select Action",
+        .cleanup = State.clean,
+        .cleanup_context = &state,
+    }, State.accept, &state);
     try std.testing.expect(service.isVisible());
     try std.testing.expectEqualStrings("Indent Using Spaces", service.picker.activeItem().?.label);
 
@@ -247,4 +271,5 @@ test "QuickInputService: one-shot picker filters, scrolls and accepts" {
     try std.testing.expectEqual(@as(usize, 1), state.accepted);
     try std.testing.expectEqualStrings("tabs", state.accepted_id[0..state.accepted_len]);
     try std.testing.expectEqual(@as(usize, 1), state.hidden);
+    try std.testing.expect(state.cleaned_after_accept);
 }
