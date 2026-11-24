@@ -4711,36 +4711,18 @@ pub const Workbench = struct {
         left_ref: DiffRef,
         right_ref: DiffRef,
     ) !void {
-        const provider = self.repository orelse return error.NoRepository;
+        if (self.repository == null) return error.NoRepository;
         const root = self.git_root orelse return error.NoRepository;
-        _ = provider;
         const relative = relativeToRoot(path, root) orelse return error.OutsideRepository;
         const git = self.git orelse return error.NoGit;
 
         const left_label = diffRefLabel(left_ref);
         const right_label = diffRefLabel(right_ref);
 
-        if (self.findDiffTab(path, left_label, right_label)) |tab| {
-            const pane = self.activePane();
-            const dims = if (pane) |value| editorDimensions(self, value) else Dimensions{ .width = self.cols, .height = self.editorRows() };
-            const text = try self.resolveDiffTexts(git, path, relative, left_ref, right_ref);
-            defer self.allocator.free(text.original);
-            defer self.allocator.free(text.modified);
-            try tab.diff.?.replace(text.original, text.modified, dims.width, dims.height, self.diffEditorOptions());
-            tab.syncDiffViews();
-            if (pane) |value| {
-                try value.activateTab(tab);
-                tab.layoutCells(dims.width, dims.height);
-            }
-            tab.focusEditor();
-            self.refreshStatus();
-            return;
-        }
-
         const text = try self.resolveDiffTexts(git, path, relative, left_ref, right_ref);
         defer self.allocator.free(text.original);
         defer self.allocator.free(text.modified);
-        if (text.original.len == 0 and text.modified.len == 0) {
+        if (text.original.len == 0 and text.modified.len == 0 and self.findDiffTab(path, left_label, right_label) == null) {
             const file_exists = if (std.Io.Dir.cwd().access(self.io, path, .{})) |_| true else |_| false;
             if (file_exists) {
                 if (self.status_hint_accessor) |hint| {
@@ -4750,60 +4732,7 @@ pub const Workbench = struct {
             }
         }
 
-        const pane = self.activePane();
-        const dims = if (pane) |value| editorDimensions(self, value) else Dimensions{ .width = self.cols, .height = self.editorRows() };
-
-        const view = try text_diff_editor_mod.DiffView.create(
-            self.allocator,
-            self.io,
-            .{
-                .original_path = path,
-                .modified_path = path,
-                .original_text = text.original,
-                .modified_text = text.modified,
-                .original_label = left_label,
-                .modified_label = right_label,
-            },
-            dims.width,
-            dims.height,
-            self.diffEditorOptions(),
-        );
-        var view_owned = true;
-        errdefer if (view_owned) view.destroy();
-
-        const opened = try self.service.openEditor(
-            view.input(),
-            null,
-            .{ .open = .{ .pinned = true, .active = true } },
-        );
-        const group_pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
-        if (!opened.result.is_new) {
-            view.destroy();
-            if (group_pane.tabForInput(view.input()) == null) {
-                // The matching tab owns its own view; activate it.
-                for (group_pane.tabs.items) |candidate| {
-                    if (candidate.diff != null and candidate.input.matches(.{ .input = view.input() })) {
-                        try group_pane.activateTab(candidate);
-                        self.focusEditor();
-                        return;
-                    }
-                }
-            }
-            return;
-        }
-
-        const tab = try Tab.initDiff(self.allocator, view);
-        // The tab owns the view from here on; its deinit frees the editors and
-        // inputs. Defuse the view errdefer so an addTab failure does not free
-        // the same widget twice.
-        view_owned = false;
-        errdefer tab.deinit();
-        try group_pane.addTab(tab);
-        try group_pane.activateTab(tab);
-        tab.layoutCells(dims.width, dims.height);
-        tab.focusEditor();
-        self.focusEditor();
-        self.refreshStatus();
+        try self.openSnapshotDiff(path, text.original, text.modified, left_label, right_label);
     }
 
     /// Opens a read-only diff between the parent revision and a history item.
@@ -4854,65 +4783,64 @@ pub const Workbench = struct {
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
-        if (self.findDiffTab(path, left_label, right_label)) |tab| {
-            const pane = self.activePane();
-            const dims = if (pane) |value| editorDimensions(self, value) else Dimensions{ .width = self.cols, .height = self.editorRows() };
+        if (self.findDiffTab(path, left_label, right_label)) |existing| {
+            const tab = existing.tab;
+            const dims = editorDimensions(self, existing.pane);
             try tab.diff.?.replace(original_text, modified_text, dims.width, dims.height, self.diffEditorOptions());
             tab.syncDiffViews();
-            if (pane) |value| {
-                try value.activateTab(tab);
-                tab.layoutCells(dims.width, dims.height);
-            }
+            try existing.pane.activateTab(tab);
+            self.service.activateGroup(existing.pane.group);
+            tab.layoutCells(dims.width, dims.height);
             tab.focusEditor();
+            self.focusEditor();
             self.refreshStatus();
             return;
         }
 
-        const pane = self.activePane();
-        const dims = if (pane) |value| editorDimensions(self, value) else Dimensions{ .width = self.cols, .height = self.editorRows() };
-        const view = try text_diff_editor_mod.DiffView.create(
-            self.allocator,
-            self.io,
-            .{
-                .original_path = path,
-                .modified_path = path,
-                .original_text = original_text,
-                .modified_text = modified_text,
-                .original_label = left_label,
-                .modified_label = right_label,
-            },
-            dims.width,
-            dims.height,
-            self.diffEditorOptions(),
-        );
-        var view_owned = true;
-        errdefer if (view_owned) view.destroy();
+        const pane = self.activePane() orelse return error.GroupPaneMissing;
+        const dims = editorDimensions(self, pane);
+        const tab = blk: {
+            const view = try text_diff_editor_mod.DiffView.create(
+                self.allocator,
+                self.io,
+                .{
+                    .original_path = path,
+                    .modified_path = path,
+                    .original_label = left_label,
+                    .modified_label = right_label,
+                },
+                original_text,
+                modified_text,
+                dims.width,
+                dims.height,
+                self.diffEditorOptions(),
+            );
+            errdefer view.destroy();
+            break :blk try Tab.initDiff(self.allocator, view);
+        };
+        var registered = false;
+        defer if (!registered) tab.deinit();
 
+        try pane.tabs.ensureUnusedCapacity(1);
+        errdefer if (pane.group.model.indexOfExact(tab.input) != null) {
+            _ = pane.group.model.closeEditor(tab.input, .UNKNOWN, true) catch {};
+            pane.syncActivePane();
+        };
         const opened = try self.service.openEditor(
-            view.input(),
-            null,
+            tab.input,
+            pane.group,
             .{ .open = .{ .pinned = true, .active = true } },
         );
-        const group_pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
         if (!opened.result.is_new) {
-            view.destroy();
-            if (group_pane.tabForInput(view.input()) == null) {
-                for (group_pane.tabs.items) |candidate| {
-                    if (candidate.diff != null and candidate.input.matches(.{ .input = view.input() })) {
-                        try group_pane.activateTab(candidate);
-                        self.focusEditor();
-                        return;
-                    }
-                }
-            }
+            pane.syncActivePane();
+            if (pane.tabForInput(opened.result.editor)) |existing| existing.focusEditor();
+            self.focusEditor();
+            self.refreshStatus();
             return;
         }
 
-        const tab = try Tab.initDiff(self.allocator, view);
-        view_owned = false;
-        errdefer tab.deinit();
-        try group_pane.addTab(tab);
-        try group_pane.activateTab(tab);
+        try pane.addTab(tab);
+        registered = true;
         tab.layoutCells(dims.width, dims.height);
         tab.focusEditor();
         self.focusEditor();
@@ -4963,11 +4891,11 @@ pub const Workbench = struct {
         return self.allocator.dupe(u8, "");
     }
 
-    fn findDiffTab(self: *Workbench, path: []const u8, left_label: []const u8, right_label: []const u8) ?*Tab {
+    fn findDiffTab(self: *Workbench, path: []const u8, left_label: []const u8, right_label: []const u8) ?struct { pane: *GroupPane, tab: *Tab } {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 const diff = tab.diff orelse continue;
-                if (diff.matches(path, left_label, right_label)) return tab;
+                if (diff.matches(path, left_label, right_label)) return .{ .pane = pane, .tab = tab };
             }
         }
         return null;
@@ -19697,12 +19625,16 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(workbench.git_status_accessor != null);
     try std.testing.expectEqual(@as(usize, provider.count()), workbench.git_badge_count);
 
-    // HEAD <-> working tree diff for the modified file.
-    try workbench.openDiff(path, .head, .working);
+    // Open the working-tree diff from SCM, which owns the resource path only
+    // until the next refresh.
+    const working_resource = provider.groups[2].resources.items[0];
+    try std.testing.expectEqualStrings("a.txt", working_resource.relative_path);
+    try Workbench.scmViewOpen(workbench, &working_resource.iface);
     var tab = workbench.activeTab() orelse return error.TestExpectedTab;
     try std.testing.expect(tab.isDiff());
     try std.testing.expectEqual(@as(usize, 2), tab.diff.?.widget.changeCount());
     try std.testing.expect(tab.editor.isReadOnly());
+    try std.testing.expect(tab.diff.?.model.modified_path.ptr != working_resource.absolute_path.ptr);
 
     // The diff tab composites both panes, the center gutter and its title.
     var diff_frame: std.Io.Writer.Allocating = .init(allocator);
@@ -19746,8 +19678,12 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(untracked_tab.isDiff());
     try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
 
-    // A second open of the same ref pair refreshes the existing tab.
-    try workbench.openDiff(path, .head, .working);
+    // Reopening from the rebuilt SCM rows refreshes and activates the same tab.
+    workbench.refreshGitStatus();
+    const refreshed_resource = provider.groups[2].resources.items[0];
+    try std.testing.expectEqualStrings("a.txt", refreshed_resource.relative_path);
+    try Workbench.scmViewOpen(workbench, &refreshed_resource.iface);
+    try std.testing.expectEqual(tab, workbench.activeTab().?);
     try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
 
     // Opening a changed file from the Graph uses the parent/commit snapshot

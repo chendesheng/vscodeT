@@ -2,8 +2,8 @@
 // `src/vs/workbench/browser/parts/editor/textDiffEditor.ts`.
 //
 // Terminal adaptations:
-// - `DiffEditorModel` carries the two snapshot texts and labels instead of a
-//   pair of text models; the diff widget builds aligned display snapshots.
+// - `DiffEditorModel` owns the paths and labels of the snapshots. The diff
+//   widget builds aligned display snapshots from the supplied text.
 // - `SnapshotEditorInput` is a terminal workbench input with no upstream
 //   counterpart. It gives `HEAD`/index/working variants distinct resource keys
 //   so they do not collide in the editor group, and it can never save or
@@ -93,8 +93,6 @@ pub const SnapshotEditorInput = struct {
 pub const DiffEditorModel = struct {
     original_path: []const u8,
     modified_path: []const u8,
-    original_text: []const u8,
-    modified_text: []const u8,
     original_label: []const u8,
     modified_label: []const u8,
 };
@@ -108,13 +106,13 @@ pub const DiffView = struct {
     original_input: *SnapshotEditorInput,
     modified_input: *SnapshotEditorInput,
     diff_input: *diff_editor_input.DiffEditorInput,
-    owned_original_text: ?[]u8 = null,
-    owned_modified_text: ?[]u8 = null,
 
     pub fn create(
         allocator: Allocator,
         io: Io,
         model: DiffEditorModel,
+        original_text: []const u8,
+        modified_text: []const u8,
         width: usize,
         height: usize,
         options: Options,
@@ -122,13 +120,24 @@ pub const DiffView = struct {
         const self = try allocator.create(DiffView);
         errdefer allocator.destroy(self);
 
+        // SCM refreshes and history updates can discard the source strings
+        // while the diff tab and its input are still open.
+        const original_path = try allocator.dupe(u8, model.original_path);
+        errdefer allocator.free(original_path);
+        const modified_path = try allocator.dupe(u8, model.modified_path);
+        errdefer allocator.free(modified_path);
+        const original_label = try allocator.dupe(u8, model.original_label);
+        errdefer allocator.free(original_label);
+        const modified_label = try allocator.dupe(u8, model.modified_label);
+        errdefer allocator.free(modified_label);
+
         const widget = try DiffEditorWidget.create(
             allocator,
             io,
             model.original_path,
             model.modified_path,
-            model.original_text,
-            model.modified_text,
+            original_text,
+            modified_text,
             model.original_label,
             model.modified_label,
             width,
@@ -150,9 +159,9 @@ pub const DiffView = struct {
         );
         defer allocator.free(modified_key);
 
-        const original_input = try SnapshotEditorInput.init(allocator, model.original_path, model.original_label, original_key);
+        const original_input = try SnapshotEditorInput.init(allocator, original_path, original_label, original_key);
         errdefer original_input.destroy();
-        const modified_input = try SnapshotEditorInput.init(allocator, model.modified_path, model.modified_label, modified_key);
+        const modified_input = try SnapshotEditorInput.init(allocator, modified_path, modified_label, modified_key);
         errdefer modified_input.destroy();
 
         const basename = std.fs.path.basename(model.modified_path);
@@ -174,7 +183,12 @@ pub const DiffView = struct {
         self.* = .{
             .allocator = allocator,
             .io = io,
-            .model = model,
+            .model = .{
+                .original_path = original_path,
+                .modified_path = modified_path,
+                .original_label = original_label,
+                .modified_label = modified_label,
+            },
             .widget = widget,
             .original_input = original_input,
             .modified_input = modified_input,
@@ -189,40 +203,31 @@ pub const DiffView = struct {
         self.original_input.destroy();
         self.modified_input.destroy();
         self.widget.destroy();
-        if (self.owned_original_text) |text| allocator.free(text);
-        if (self.owned_modified_text) |text| allocator.free(text);
+        allocator.free(self.model.original_path);
+        allocator.free(self.model.modified_path);
+        allocator.free(self.model.original_label);
+        allocator.free(self.model.modified_label);
         allocator.destroy(self);
     }
 
     /// Replaces the snapshot texts in place, recreating the diff widget with
     /// the new content while keeping the input identity/tab.
     pub fn replace(self: *DiffView, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options) !void {
-        const original_copy = try self.allocator.dupe(u8, original_text);
-        errdefer self.allocator.free(original_copy);
-        const modified_copy = try self.allocator.dupe(u8, modified_text);
-        errdefer self.allocator.free(modified_copy);
-
         const widget = try DiffEditorWidget.create(
             self.allocator,
             self.io,
             self.model.original_path,
             self.model.modified_path,
-            original_copy,
-            modified_copy,
+            original_text,
+            modified_text,
             self.model.original_label,
             self.model.modified_label,
             width,
             height,
             options,
         );
-        errdefer widget.destroy();
-
         self.widget.destroy();
         self.widget = widget;
-        if (self.owned_original_text) |text| self.allocator.free(text);
-        if (self.owned_modified_text) |text| self.allocator.free(text);
-        self.owned_original_text = original_copy;
-        self.owned_modified_text = modified_copy;
     }
 
     pub fn paint(self: *DiffView, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
@@ -307,11 +312,11 @@ test "DiffView: opens a diff tab input with distinct snapshot keys" {
         .{
             .original_path = "/repo/a.zig",
             .modified_path = "/repo/a.zig",
-            .original_text = "a\nb",
-            .modified_text = "a\nB",
             .original_label = "HEAD",
             .modified_label = "Working Tree",
         },
+        "a\nb",
+        "a\nB",
         80,
         10,
         .{},
