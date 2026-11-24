@@ -254,6 +254,7 @@ comptime {
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/beforeEditPositionMapper.test.zig");
     _ = @import("./vs/editor/test/common/model/bracketPairColorizer/astTests.zig");
     _ = @import("./vs/editor/common/model/tokens/textMateTokenizer.zig");
+    _ = @import("./vs/workbench/services/textMate/browser/tokenizationSupport/tokenizationSupportWithLineLimit.zig");
     _ = @import("./vs/editor/standalone/browser/standaloneThemeService.zig");
     _ = @import("./vs/editor/test/common/languages/languageSupportTests.zig");
     _ = @import("./vs/editor/common/model/utils.zig");
@@ -274,6 +275,7 @@ comptime {
     _ = @import("./vs/editor/common/cursor/cursorTypeEditOperations.zig");
     _ = @import("./vs/editor/test/common/cursor/cursorTests.zig");
     _ = @import("./vs/editor/common/viewModel/monospaceLineBreaksComputer.zig");
+    _ = @import("./vs/editor/test/common/viewModel/monospaceLineBreaksComputer.test.zig");
     _ = @import("./vs/editor/common/viewModel/modelLineProjection.zig");
     _ = @import("./vs/editor/common/viewModel/viewModelLines.zig");
     _ = @import("./vs/editor/common/viewModel/glyphLanesModel.zig");

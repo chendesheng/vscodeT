@@ -510,6 +510,7 @@ pub const StickyScrollWidget = struct {
 
         const line_options = host.view_line_options(ctx);
         var line = ViewLine.init(allocator, host.view_context(ctx), line_options);
+        defer line.deinit(allocator);
         _ = line.renderLine(view_line, 0, 1, &viewport, null);
         if (line.getRenderedViewLine() == null) return null;
 

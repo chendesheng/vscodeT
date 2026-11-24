@@ -54,7 +54,7 @@ fn readBool(reader: Reader, key: []const u8, language_id: ?[]const u8, resource:
     };
 }
 
-fn readInt(reader: Reader, key: []const u8, language_id: ?[]const u8, resource: ?[]const u8) ?i64 {
+pub fn readInt(reader: Reader, key: []const u8, language_id: ?[]const u8, resource: ?[]const u8) ?i64 {
     const value = reader.get_value(reader.context, key, language_id, resource) orelse return null;
     return switch (value.*) {
         .integer => |inner| inner,

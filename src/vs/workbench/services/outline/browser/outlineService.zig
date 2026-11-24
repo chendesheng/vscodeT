@@ -1,10 +1,8 @@
 // Port of the registry behavior of
 // `src/vs/workbench/services/outline/browser/outlineService.ts`.
 //
-// Terminal adaptation: `createOutline` is synchronous because the terminal has
-// no language server/extension host. A future asynchronous provider can create
-// its outline first and fire `IOutline.on_did_change`; the breadcrumbs model
-// subscribes to that event.
+// The terminal returns a disposable outline handle immediately. Asynchronous
+// provider results are delivered through IOutline.on_did_change.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

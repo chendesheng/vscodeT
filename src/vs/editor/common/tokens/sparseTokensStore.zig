@@ -215,9 +215,9 @@ pub const SparseTokensStore = struct {
         }
 
         var input = aTokens;
-        const text = input._text;
         input._tokens.deinit();
-        return LineTokens.init(result, text, self._languageIdCodec);
+        input._tokens = result;
+        return input;
     }
 
     fn _findFirstPieceWithLine(pieces: []const SparseMultilineTokens, lineNumber: usize) usize {

@@ -2,7 +2,7 @@
 // `src/vs/editor/contrib/stickyScroll/browser/stickyScrollProvider.ts`.
 //
 // Terminal adaptations:
-// - `update` is synchronous; there is no token/cancellation plumbing;
+// - a disposable request represents each asynchronous outline computation;
 // - candidate slices are owned by the caller and freed with the provider's
 //   allocator;
 // - hidden ranges come from the terminal projected view model.
@@ -18,6 +18,7 @@ const StickyRange = sticky_element.StickyRange;
 const StickyModel = sticky_element.StickyModel;
 const sticky_model_provider = @import("./stickyScrollModelProvider.zig");
 const StickyModelProvider = sticky_model_provider.StickyModelProvider;
+const outline_mod = @import("../../documentSymbols/browser/outlineModel.zig");
 const ModelProvider = sticky_model_provider.ModelProvider;
 
 /// Port of `StickyLineCandidate`.
@@ -53,6 +54,8 @@ pub const StickyLineCandidateProvider = struct {
     editor: *Editor,
     model_provider: StickyModelProvider,
     model: ?*StickyModel = null,
+    pending: ?*outline_mod.OutlineRequest = null,
+    version: u32 = 0,
     default_model: ModelProvider = .outline_model,
     on_did_change: Emitter(void),
 
@@ -66,6 +69,7 @@ pub const StickyLineCandidateProvider = struct {
     }
 
     pub fn dispose(self: *StickyLineCandidateProvider) void {
+        if (self.pending) |request| request.cancel();
         self.clearModel();
         self.on_did_change.deinit();
     }
@@ -109,19 +113,42 @@ pub const StickyLineCandidateProvider = struct {
         return if (self.model) |model| model.version else null;
     }
 
-    /// Rebuild the sticky model. The upstream async cancellation is replaced by
-    /// synchronous replacement of the cached model.
+    /// Cancel the previous update and publish the completed sticky model.
     pub fn update(self: *StickyLineCandidateProvider) !void {
+        if (self.pending) |request| request.cancel();
+        self.pending = null;
         if (self.editor.model.isTooLargeForTokenization()) {
             self.clearModel();
             try self.on_did_change.fire({});
             return;
         }
 
+        if (self.default_model == .outline_model) {
+            if (self.editor.language_features) |features| {
+                const providers = try features.document_symbol_provider.ordered(self.allocator, self.editor.model, false);
+                defer self.allocator.free(providers);
+                self.version = self.editor.model.getVersionId();
+                self.pending = try outline_mod.OutlineRequest.start(self.allocator, self.editor.model, providers, self, outlineReady);
+                return;
+            }
+        }
         const next = try self.model_provider.update(self.default_model);
         self.clearModel();
         self.model = next;
         try self.on_did_change.fire({});
+    }
+
+    fn outlineReady(context: *anyopaque, outline: *outline_mod.OutlineModel) void {
+        const self: *StickyLineCandidateProvider = @ptrCast(@alignCast(context));
+        self.pending = null;
+        defer outline.deinit();
+        if (self.version != self.editor.model.getVersionId()) return;
+        const preferred = if (self.model) |previous| previous.outline_provider_id else null;
+        const next = (self.model_provider.fromOutline(outline, preferred) catch null) orelse
+            (self.model_provider.modelFromIndentation(self.editor.model) catch null);
+        self.clearModel();
+        self.model = next;
+        self.on_did_change.fire({}) catch {};
     }
 
     fn clearModel(self: *StickyLineCandidateProvider) void {

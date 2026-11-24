@@ -4,6 +4,7 @@
 // rather than a flat `Uint32Array`; `IViewLineTokens` is a tagged union of
 // `LineTokens`/`SliceLineTokens`; and `withInserted` returns a deep copy
 // because Zig values do not have reference identity.
+const LineContent = @import("../model/pieceTreeTextBuffer/pieceTreeBase.zig").LineContent;
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
@@ -31,6 +32,7 @@ pub const TokenPacked = packed struct(u64) {
 pub const LineTokens = struct {
     _tokens: ArrayList(TokenPacked),
     _text: ArrayList(u8),
+    shared_text: ?*LineContent = null,
     languageIdCodec: *LanguageIdCodec,
 
     pub fn initTokenPacked(offset: usize, metadata: TokenMetadata) TokenPacked {
@@ -55,6 +57,7 @@ pub const LineTokens = struct {
     pub fn deinit(self: *LineTokens) void {
         self._tokens.deinit();
         self._text.deinit();
+        if (self.shared_text) |line| line.release();
     }
 
     /// Deep copy of the tokens and the text, allocated with `allocator`.
@@ -65,9 +68,17 @@ pub const LineTokens = struct {
 
         var text = ArrayList(u8).init(allocator);
         errdefer text.deinit();
-        try text.appendSlice(self._text.items);
+        try text.appendSlice(self.getLineContent());
 
         return LineTokens.init(tokens, text, self.languageIdCodec);
+    }
+
+    /// A retained ViewLine owns a reference to the same immutable model line.
+    pub fn retainForView(self: *const LineTokens, allocator: Allocator) !LineTokens {
+        const shared = self.shared_text orelse return self.clone(allocator);
+        var tokens = ArrayList(TokenPacked).init(allocator);
+        try tokens.appendSlice(self._tokens.items);
+        return .{ ._text = .init(allocator), .shared_text = shared.retain(), ._tokens = tokens, .languageIdCodec = self.languageIdCodec };
     }
 
     pub fn createEmpty(allocator: Allocator, lineContent: ArrayList(u8), decoder: *LanguageIdCodec) !LineTokens {
@@ -121,7 +132,7 @@ pub const LineTokens = struct {
     }
 
     pub fn getTextLength(self: *const LineTokens) usize {
-        return self._text.items.len;
+        return self.getLineContent().len;
     }
 
     pub fn equals(self: *const LineTokens, other: *const LineTokens) bool {
@@ -132,7 +143,7 @@ pub const LineTokens = struct {
         // Upstream compares the whole text and token count first; `===` on
         // strings is reference identity there, while the port compares the
         // text content.
-        if (!std.mem.eql(u8, self._text.items, other._text.items)) return false;
+        if ((self.shared_text == null or self.shared_text != other.shared_text) and !std.mem.eql(u8, self.getLineContent(), other.getLineContent())) return false;
         if (self._tokens.items.len != other._tokens.items.len) return false;
         if (sliceFromTokenIndex > self._tokens.items.len) return false;
         if (sliceTokenCount > self._tokens.items.len - sliceFromTokenIndex) return false;
@@ -145,7 +156,7 @@ pub const LineTokens = struct {
     }
 
     pub fn getLineContent(self: *const LineTokens) []const u8 {
-        return self._text.items;
+        return if (self.shared_text) |line| line.text.items else self._text.items;
     }
 
     pub fn getCount(self: *const LineTokens) usize {
@@ -207,11 +218,7 @@ pub const LineTokens = struct {
 
     pub fn withInserted(self: *const LineTokens, insertTokens: []const struct { offset: usize, text: []const u8, tokenMetadata: TokenMetadata }) !LineTokens {
         if (insertTokens.len == 0) {
-            return .{
-                ._tokens = try self._tokens.clone(),
-                ._text = try self._text.clone(),
-                .languageIdCodec = self.languageIdCodec,
-            };
+            return self.clone(self._text.allocator);
         }
 
         var nextOriginalTokenIdx: usize = 0;
@@ -227,14 +234,14 @@ pub const LineTokens = struct {
             const nextInsertToken: ?@TypeOf(insertTokens[0]) = if (nextInsertTokenIdx < insertTokens.len) insertTokens[nextInsertTokenIdx] else null;
 
             if (nextOriginalTokenEndOffset != null and (nextInsertToken == null or nextOriginalTokenEndOffset.? <= nextInsertToken.?.offset)) {
-                try text.appendSlice(self._text.items[originalEndOffset..nextOriginalTokenEndOffset.?]);
+                try text.appendSlice(self.getLineContent()[originalEndOffset..nextOriginalTokenEndOffset.?]);
                 const metadata = self.getMetadata(nextOriginalTokenIdx);
                 try newTokens.append(initTokenPacked(text.items.len, metadata));
                 nextOriginalTokenIdx += 1;
                 originalEndOffset = nextOriginalTokenEndOffset.?;
             } else if (nextInsertToken) |insertToken| {
                 if (insertToken.offset > originalEndOffset) {
-                    try text.appendSlice(self._text.items[originalEndOffset..insertToken.offset]);
+                    try text.appendSlice(self.getLineContent()[originalEndOffset..insertToken.offset]);
                     const metadata = self.getMetadata(nextOriginalTokenIdx);
                     try newTokens.append(initTokenPacked(text.items.len, metadata));
                     originalEndOffset = insertToken.offset;
@@ -269,7 +276,7 @@ pub const LineTokens = struct {
     }
 
     pub fn getTokenText(self: *const LineTokens, tokenIndex: usize) []const u8 {
-        return self._text.items[self.getStartOffset(tokenIndex)..self.getEndOffset(tokenIndex)];
+        return self.getLineContent()[self.getStartOffset(tokenIndex)..self.getEndOffset(tokenIndex)];
     }
 
     pub fn forEach(self: *const LineTokens, context: anytype, callback: fn (tokenIndex: usize, ctx: @TypeOf(context)) void) void {

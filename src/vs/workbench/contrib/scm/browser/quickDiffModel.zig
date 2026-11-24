@@ -4,8 +4,8 @@
 // - There is no text-file-model service, chat editing, progress service or
 //   observables. Original content comes synchronously from the quick-diff
 //   provider as `Original { content, ref_label }`; the model diffs line arrays
-//   with the ported `LineDiffProvider`.
-// - The 200 ms `ThrottledDelayer` becomes `triggerDiff(now)` + `poll(now)`,
+//   with the ported `LineDiffProvider` on a worker using an owned input.
+// - The 200 ms `ThrottledDelayer` becomes `triggerDiff(now)` + `runScheduledDiff(now)`,
 //   driven by the workbench main loop.
 // - `getDiffEditorModel` returns the original content/ref label instead of two
 //   text models; diff snapshots are built by the workbench.
@@ -16,6 +16,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const worker_service = @import("../../../../editor/browser/services/editorWorkerService.zig");
 const quick_diff = @import("../common/quickDiff.zig");
 const quick_diff_service_mod = @import("../common/quickDiffService.zig");
 const doc_diff = @import("../../../../editor/common/diff/documentDiffProvider.zig");
@@ -62,13 +63,72 @@ pub const QuickDiffChange = struct {
     }
 };
 
+// The terminal equivalent of editorWorkerService.computeDiff. Workers own
+// their input and never access the editor, provider registry or decorations.
+const DiffRequest = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    originals: []QuickDiff,
+    modified: std.array_list.Managed(u8),
+    original_lines: [][][]const u8 = &.{},
+    diffs: []?doc_diff.IDocumentDiff = &.{},
+    options: QuickDiffModelOptions,
+    ignore_trim_whitespace: bool,
+    version: u32,
+    message: worker_service.Request = .{ .compute = run, .reply = onReply },
+    // Only the UI thread accesses this reference. Disposal detaches the reply.
+    owner: ?*QuickDiffModel,
+    succeeded: bool = false,
+
+    fn run(message: *worker_service.Request) void {
+        const self: *DiffRequest = @fieldParentPtr("message", message);
+        self.compute() catch return;
+        self.succeeded = true;
+    }
+
+    fn onReply(message: *worker_service.Request) bool {
+        const self: *DiffRequest = @fieldParentPtr("message", message);
+        defer self.destroy();
+        const owner = self.owner orelse return false;
+        owner.pending = null;
+        if (!self.succeeded) return false;
+        owner.applyDiff(self) catch return false;
+        return true;
+    }
+
+    fn compute(self: *DiffRequest) !void {
+        const arena = self.arena.allocator();
+        const modified = try splitLines(arena, self.modified.items);
+        self.original_lines = try arena.alloc([][]const u8, self.originals.len);
+        self.diffs = try arena.alloc(?doc_diff.IDocumentDiff, self.originals.len);
+        @memset(self.diffs, null);
+        var provider = doc_diff.LineDiffProvider.init(self.options.algorithm);
+        for (self.originals, 0..) |quick, i| {
+            self.original_lines[i] = try splitLines(arena, quick.original.content);
+            self.diffs[i] = provider.computeDiffFromLines(self.allocator, self.original_lines[i], modified, .{
+                .ignoreTrimWhitespace = self.ignore_trim_whitespace,
+                .maxComputationTimeMs = self.options.max_computation_time_ms orelse std.math.maxInt(i64),
+                .computeMoves = false,
+            }) catch null;
+        }
+    }
+
+    fn destroy(self: *DiffRequest) void {
+        for (self.diffs) |*result| if (result.*) |*diff| doc_diff.deinitDiff(self.allocator, diff);
+        self.modified.deinit();
+        freeQuickDiffsArray(self.allocator, self.originals);
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
 pub const QuickDiffModel = struct {
     allocator: Allocator,
     model: *TextModel,
     path: []const u8,
     service: *QuickDiffService,
     options: QuickDiffModelOptions,
-    provider: doc_diff.LineDiffProvider,
+    pending: ?*DiffRequest = null,
     ignore_trim_whitespace: bool = true,
 
     quick_diffs: []QuickDiff = &.{},
@@ -94,7 +154,6 @@ pub const QuickDiffModel = struct {
             .path = path,
             .service = service,
             .options = options,
-            .provider = doc_diff.LineDiffProvider.init(options.algorithm),
             .all_changes = std.array_list.Managed(QuickDiffChange).init(allocator),
             .changes = std.array_list.Managed(QuickDiffChange).init(allocator),
             .quick_diff_changes = std.StringHashMap(std.array_list.Managed(usize)).init(allocator),
@@ -107,6 +166,7 @@ pub const QuickDiffModel = struct {
 
     pub fn deinit(self: *QuickDiffModel) void {
         self.disposed = true;
+        if (self.pending) |request| request.owner = null;
         self.clearChanges();
         self.all_changes.deinit();
         self.changes.deinit();
@@ -130,14 +190,19 @@ pub const QuickDiffModel = struct {
         self.due_at = now_ms + 200;
     }
 
-    /// Recomputes when the debounce expires. Returns true when the changes were
-    /// replaced and the decorations should be refreshed.
-    pub fn poll(self: *QuickDiffModel, now_ms: i64) bool {
+    pub fn runScheduledDiff(self: *QuickDiffModel, worker: *worker_service.EditorWorkerService, now_ms: i64) bool {
         const due = self.due_at orelse return false;
-        if (now_ms < due) return false;
+        if (now_ms < due or self.pending != null) return false;
         self.due_at = null;
-        self.recompute() catch return false;
-        return true;
+        const request = self.prepareDiff() catch return false;
+        if (request.originals.len == 0) {
+            defer request.destroy();
+            self.applyDiff(request) catch return false;
+            return true;
+        }
+        self.pending = request;
+        worker.computeDiff(&request.message, now_ms);
+        return false;
     }
 
     pub fn quickDiffs(self: *const QuickDiffModel) []const QuickDiff {
@@ -242,45 +307,35 @@ pub const QuickDiffModel = struct {
         self.quick_diffs = &.{};
     }
 
-    /// Synchronous replacement of the upstream async `diff()`.
+    fn prepareDiff(self: *QuickDiffModel) !*DiffRequest {
+        const originals: []QuickDiff = if (self.model.isTooLargeForSyncing()) &.{} else try self.service.getQuickDiffs(self.allocator, self.path, self.model.getLanguageId(), true);
+        errdefer freeQuickDiffsArray(self.allocator, originals);
+        const request = try self.allocator.create(DiffRequest);
+        errdefer self.allocator.destroy(request);
+        request.* = .{
+            .allocator = self.allocator,
+            .owner = self,
+            .arena = std.heap.ArenaAllocator.init(self.allocator),
+            .originals = originals,
+            .modified = if (originals.len == 0) std.array_list.Managed(u8).init(self.allocator) else try self.model.getValue(.LF, false),
+            .options = self.options,
+            .ignore_trim_whitespace = self.ignore_trim_whitespace,
+            .version = self.model.getVersionId(),
+        };
+        return request;
+    }
+
+    /// Synchronous entry point for callers that explicitly await the result.
     pub fn recompute(self: *QuickDiffModel) !void {
         if (self.disposed) return;
-        const version_id = self.model.getVersionId();
+        const request = try self.prepareDiff();
+        defer request.destroy();
+        try request.compute();
+        try self.applyDiff(request);
+    }
 
-        const new_quick_diffs = try self.service.getQuickDiffs(
-            self.allocator,
-            self.path,
-            self.model.getLanguageId(),
-            true,
-        );
-        var new_quick_diffs_owned = true;
-        errdefer if (new_quick_diffs_owned) freeQuickDiffsArray(self.allocator, new_quick_diffs);
-
-        if (new_quick_diffs.len == 0) {
-            self.replaceState(new_quick_diffs, &.{}, &.{}, version_id);
-            new_quick_diffs_owned = false;
-            return;
-        }
-
-        var modified_lines = try self.model.getLinesContent();
-        defer {
-            for (modified_lines.items) |*line| line.deinit();
-            modified_lines.deinit();
-        }
-        const modified_views = try self.allocator.alloc([]const u8, modified_lines.items.len);
-        defer self.allocator.free(modified_views);
-        for (modified_lines.items, 0..) |line, index| modified_views[index] = line.items;
-
-        // Per-provider original lines, used for the secondary overlap check.
-        const original_lines = try self.allocator.alloc([][]const u8, new_quick_diffs.len);
-        defer {
-            for (original_lines) |lines| self.allocator.free(lines);
-            self.allocator.free(original_lines);
-        }
-        for (new_quick_diffs, 0..) |quick, index| {
-            original_lines[index] = try splitLines(self.allocator, quick.original.content);
-        }
-
+    fn applyDiff(self: *QuickDiffModel, request: *DiffRequest) !void {
+        const new_quick_diffs = request.originals;
         var all_changes = std.array_list.Managed(QuickDiffChange).init(self.allocator);
         errdefer {
             for (all_changes.items) |*change| change.deinit(self.allocator);
@@ -293,38 +348,15 @@ pub const QuickDiffModel = struct {
         }
 
         for (new_quick_diffs, 0..) |quick, quick_index| {
-            var diff = self.provider.computeDiffFromLines(
-                self.allocator,
-                original_lines[quick_index],
-                modified_views,
-                .{
-                    .ignoreTrimWhitespace = self.ignore_trim_whitespace,
-                    .maxComputationTimeMs = self.options.max_computation_time_ms orelse std.math.maxInt(i64),
-                    .computeMoves = false,
-                },
-            ) catch continue;
-            defer doc_diff.deinitDiff(self.allocator, &diff);
+            const diff = request.diffs[quick_index] orelse continue;
 
             for (diff.changes) |mapping| {
-                const change = try self.convertMapping(quick, mapping);
-                errdefer {
-                    var owned = change;
-                    owned.deinit(self.allocator);
-                }
-                var owned = change;
-                const suppress = quick.kind == .secondary and
-                    self.overlapsPrimary(visible_changes.items, new_quick_diffs, original_lines, quick_index, mapping);
-                if (suppress) {
-                    // API-visible but not painted.
-                    owned.deinit(self.allocator);
-                    owned = try self.convertMapping(quick, mapping);
-                    try all_changes.append(owned);
-                    continue;
-                }
-                try all_changes.append(owned);
-                var visible = try self.convertMapping(quick, mapping);
-                errdefer visible.deinit(self.allocator);
-                try visible_changes.append(visible);
+                try all_changes.ensureUnusedCapacity(1);
+                all_changes.appendAssumeCapacity(try self.convertMapping(quick, mapping));
+                if (quick.kind == .secondary and
+                    self.overlapsPrimary(visible_changes.items, new_quick_diffs, request.original_lines, quick_index, mapping)) continue;
+                try visible_changes.ensureUnusedCapacity(1);
+                visible_changes.appendAssumeCapacity(try self.convertMapping(quick, mapping));
             }
         }
 
@@ -332,36 +364,30 @@ pub const QuickDiffModel = struct {
         std.mem.sort(QuickDiffChange, all_changes.items, {}, changeLessThan);
         std.mem.sort(QuickDiffChange, visible_changes.items, {}, changeLessThan);
 
-        self.replaceState(new_quick_diffs, all_changes.items, visible_changes.items, version_id);
-        new_quick_diffs_owned = false;
-        // Ownership moved into the model; release only the temporary lists.
-        all_changes.deinit();
-        visible_changes.deinit();
-    }
-
-    fn replaceState(
-        self: *QuickDiffModel,
-        new_quick_diffs: []QuickDiff,
-        new_all_changes: []const QuickDiffChange,
-        new_visible_changes: []const QuickDiffChange,
-        version_id: u32,
-    ) void {
-        self.clearChanges();
-        self.freeQuickDiffs();
-
-        self.quick_diffs = new_quick_diffs;
-        for (new_all_changes) |change| self.all_changes.append(change) catch {};
-        for (new_visible_changes) |change| self.changes.append(change) catch {};
-
-        for (self.changes.items, 0..) |change, index| {
-            const entry = self.quick_diff_changes.getOrPut(change.provider_id) catch continue;
-            if (!entry.found_existing) {
-                entry.value_ptr.* = std.array_list.Managed(usize).init(self.allocator);
-            }
-            entry.value_ptr.append(index) catch {};
+        var by_provider = std.StringHashMap(std.array_list.Managed(usize)).init(self.allocator);
+        errdefer {
+            var indices = by_provider.valueIterator();
+            while (indices.next()) |list| list.deinit();
+            by_provider.deinit();
+        }
+        for (visible_changes.items, 0..) |change, index| {
+            const entry = try by_provider.getOrPut(change.provider_id);
+            if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed(usize).init(self.allocator);
+            try entry.value_ptr.append(index);
         }
 
-        self.changes_version_id = version_id;
+        // Publish the complete result atomically after all allocations succeed.
+        self.clearChanges();
+        self.freeQuickDiffs();
+        self.all_changes.deinit();
+        self.changes.deinit();
+        self.quick_diff_changes.deinit();
+        self.quick_diffs = new_quick_diffs;
+        request.originals = &.{};
+        self.all_changes = all_changes;
+        self.changes = visible_changes;
+        self.quick_diff_changes = by_provider;
+        self.changes_version_id = request.version;
         self.on_did_change.fire({}) catch {};
     }
 

@@ -1,9 +1,6 @@
 // Port of `src/vs/editor/contrib/documentSymbols/test/browser/outlineModel.test.ts`.
 //
-// The browser test suite's cache/cancellation cases use `OutlineModelService`,
-// which the terminal port does not have. The portable tree, duplicate-id and
-// marker rollup cases are ported here; the terminal outline pane owns the
-// debounce and rebuild lifecycle instead.
+// Callback-backed providers exercise the upstream promise and cancellation cases.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -204,4 +201,107 @@ fn fakeSymbol(range: Range) languages.DocumentSymbol {
         .range = range,
         .selection_range = range,
     };
+}
+
+const ServiceProvider = struct {
+    count: usize = 0,
+    cancelled: bool = false,
+    callback: ?languages.DocumentSymbolCallback = null,
+
+    fn provide(ctx: *anyopaque, _: Allocator, _: *TextModel, _: CancellationToken) ![]const languages.DocumentSymbol {
+        const self: *ServiceProvider = @ptrCast(@alignCast(ctx));
+        self.count += 1;
+        return &.{};
+    }
+    fn request(ctx: *anyopaque, _: Allocator, _: *TextModel, callback: languages.DocumentSymbolCallback) !?@import("../../../../../base/common/lifecycle.zig").IDisposable {
+        const self: *ServiceProvider = @ptrCast(@alignCast(ctx));
+        self.count += 1;
+        self.callback = callback;
+        return .{ .context = self, .disposeFn = cancel };
+    }
+    fn cancel(ctx: *anyopaque) void {
+        const self: *ServiceProvider = @ptrCast(@alignCast(ctx));
+        self.cancelled = true;
+        self.callback = null;
+    }
+    fn accept(ctx: *anyopaque, result: *OutlineModel) void {
+        const received: *usize = @ptrCast(@alignCast(ctx));
+        received.* += 1;
+        result.deinit();
+    }
+};
+
+test "OutlineModel#create, cached" {
+    const allocator = std.testing.allocator;
+    var service = outline_model.OutlineModelService.init(allocator);
+    defer service.deinit();
+    const editor = try @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(allocator, std.Io.Threaded.global_single_threaded.io(), "foo", "path.foo", 60, 10);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var provider = ServiceProvider{};
+    const providers = [_]languages.DocumentSymbolProvider{.{ .context = &provider, .provide_document_symbols = ServiceProvider.provide }};
+    var received: usize = 0;
+    _ = try service.getOrCreate(editor.model, &providers, &received, ServiceProvider.accept);
+    try std.testing.expectEqual(1, provider.count);
+    _ = try service.getOrCreate(editor.model, &providers, &received, ServiceProvider.accept);
+    try std.testing.expectEqual(1, provider.count);
+    try editor.insertText("XXX");
+    _ = try service.getOrCreate(editor.model, &providers, &received, ServiceProvider.accept);
+    try std.testing.expectEqual(2, provider.count);
+    try std.testing.expectEqual(3, received);
+}
+
+test "OutlineModel#create, cached/cancel" {
+    const allocator = std.testing.allocator;
+    var service = outline_model.OutlineModelService.init(allocator);
+    defer service.deinit();
+    const editor = try @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(allocator, std.Io.Threaded.global_single_threaded.io(), "foo", "path.foo", 60, 10);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var provider = ServiceProvider{};
+    const providers = [_]languages.DocumentSymbolProvider{.{ .context = &provider, .provide_document_symbols = ServiceProvider.provide, .request_document_symbols = ServiceProvider.request }};
+    var received: usize = 0;
+    try std.testing.expect(!provider.cancelled);
+    const first = (try service.getOrCreate(editor.model, &providers, &received, ServiceProvider.accept)).?;
+    const second = (try service.getOrCreate(editor.model, &providers, &received, ServiceProvider.accept)).?;
+    first.dispose();
+    try std.testing.expect(!provider.cancelled);
+    second.dispose();
+    try std.testing.expect(provider.cancelled);
+    try std.testing.expectEqual(1, provider.count);
+    try std.testing.expectEqual(0, received);
+
+    _ = try service.getOrCreate(editor.model, &providers, &received, ServiceProvider.accept);
+    _ = try service.getOrCreate(editor.model, &providers, &received, ServiceProvider.accept);
+    const response = provider.callback.?;
+    response.complete(response.context, &.{});
+    try std.testing.expectEqual(2, received);
+    try std.testing.expectEqual(2, provider.count);
+}
+
+test "OutlineElement - updateMarker/multiple groups" {
+    const a = std.testing.allocator;
+    var c1 = OutlineElement{ .id = "c1", .symbol = fakeSymbol(Range.init(1, 1, 11, 1)) };
+    var r1 = [_]*OutlineElement{&c1};
+    var g1 = OutlineGroup{ .id = "g1", .children = &r1 };
+    var x = OutlineElement{ .id = "c2.1", .symbol = fakeSymbol(Range.init(1, 3, 2, 19)) };
+    var y = OutlineElement{ .id = "c2.2", .symbol = fakeSymbol(Range.init(4, 1, 6, 10)) };
+    var children = [_]*OutlineElement{ &x, &y };
+    var c2 = OutlineElement{ .id = "c2", .symbol = fakeSymbol(Range.init(1, 1, 7, 1)), .children = &children };
+    var r2 = [_]*OutlineElement{&c2};
+    var g2 = OutlineGroup{ .id = "g2", .children = &r2 };
+    var groups = [_]*OutlineGroup{ &g1, &g2 };
+    var model = OutlineModel{ .allocator = a, .arena = std.heap.ArenaAllocator.init(a), .groups = &groups };
+    defer model.arena.deinit();
+    try model.updateMarker(&.{
+        .{ .range = Range.init(1, 1, 2, 8), .severity = MarkerSeverity.Error },
+        .{ .range = Range.init(6, 1, 6, 98), .severity = MarkerSeverity.Error },
+    });
+    try std.testing.expectEqual(2, c1.marker.?.count);
+    try std.testing.expectEqual(1, x.marker.?.count);
+    try std.testing.expectEqual(1, y.marker.?.count);
 }

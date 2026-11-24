@@ -40,6 +40,67 @@ const view_events = @import("../viewEvents.zig");
 const ViewEventHandler = @import("../viewEventHandler.zig").ViewEventHandler;
 const ViewModelEventDispatcher = @import("../viewModelEventDispatcher.zig").ViewModelEventDispatcher;
 
+pub fn getAllOverviewRulerDecorations(model: *text_model.TextModel, converter: ICoordinatesConverter, allocator: Allocator) ![]view_model.OverviewDecoration {
+    const model_decorations = try model.getOverviewRulerDecorations(0, false);
+    defer model.getAllocator().free(model_decorations);
+
+    // Upstream OverviewRulerDecorations.accept. Sort the small set of color
+    // groups and preserve the order of the ranges within each group.
+    const Group = struct {
+        color: [3]u8,
+        z_index: i32,
+        ranges: std.ArrayList(view_model.OverviewDecoration) = .empty,
+
+        fn lessThan(_: void, a: @This(), b: @This()) bool {
+            if (a.z_index != b.z_index) return a.z_index < b.z_index;
+            return std.mem.order(u8, &a.color, &b.color) == .lt;
+        }
+    };
+    var groups: std.ArrayList(Group) = .empty;
+    defer {
+        for (groups.items) |*group| group.ranges.deinit(allocator);
+        groups.deinit(allocator);
+    }
+    var indices = std.AutoHashMap([3]u8, usize).init(allocator);
+    defer indices.deinit();
+    for (model_decorations) |decoration| {
+        const ruler = decoration.options.overviewRuler orelse continue;
+        const color = ruler.color orelse continue;
+        const lane = overviewRulerLaneFromModel(ruler.position);
+        const range = decoration.range;
+        const start = converter.getViewLineNumberOfModelPosition(converter.context, range.startLineNumber, range.startColumn);
+        const end = converter.getViewLineNumberOfModelPosition(converter.context, range.endLineNumber, range.endColumn);
+        const entry = try indices.getOrPut(color);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = groups.items.len;
+            try groups.append(allocator, .{ .color = color, .z_index = @intCast(decoration.options.zIndex orelse 0) });
+        }
+        const group = &groups.items[entry.value_ptr.*];
+        if (group.ranges.items.len > 0) {
+            const previous = &group.ranges.items[group.ranges.items.len - 1];
+            if (previous.lane == lane and previous.end_line_number + 1 >= start) {
+                previous.end_line_number = @max(previous.end_line_number, end);
+                continue;
+            }
+        }
+        try group.ranges.append(allocator, .{ .start_line_number = start, .end_line_number = @max(start, end), .color = color, .lane = lane, .z_index = group.z_index });
+    }
+    std.mem.sort(Group, groups.items, {}, Group.lessThan);
+    var result: std.ArrayList(view_model.OverviewDecoration) = .empty;
+    defer result.deinit(allocator);
+    for (groups.items) |group| try result.appendSlice(allocator, group.ranges.items);
+    return result.toOwnedSlice(allocator);
+}
+
+fn overviewRulerLaneFromModel(lane: @import("../model.zig").OverviewRulerLane) view_model.OverviewLane {
+    return switch (lane) {
+        .Left => .left,
+        .Center => .center,
+        .Right => .right,
+        .Full => .full,
+    };
+}
+
 pub const ViewModel = struct {
     allocator: Allocator,
     model: *text_model.TextModel,
@@ -223,11 +284,17 @@ pub const ViewModel = struct {
         self.allocator.destroy(self);
     }
 
+    fn overviewDecorations(context: *anyopaque, allocator: Allocator) ![]view_model.OverviewDecoration {
+        const self: *ViewModel = @ptrCast(@alignCast(context));
+        return getAllOverviewRulerDecorations(self.model, self.converter.interface(), allocator);
+    }
+
     pub fn interface(self: *ViewModel) IViewModel {
         return .{
             .context = self,
             .view_layout = self.layout.interface(),
             .coordinates_converter = self.converter.interface(),
+            .get_all_overview_ruler_decorations = overviewDecorations,
             .add_view_event_handler = addViewEventHandlerFn,
             .remove_view_event_handler = removeViewEventHandlerFn,
             .get_selections = getSelectionsFn,

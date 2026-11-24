@@ -271,6 +271,8 @@ pub const TerminalViewHost = struct {
         self.context = ViewContext.init(&self.configuration, self.theme.interface(), self.modelInterface());
         self.glyph_lanes = try GlyphMarginLanesModel.init(allocator, editor.model.getLineCount());
         self.view.init(allocator, &self.context);
+        self.view.scrollbar.overview.attach(allocator, &self.context);
+        try self.view.addViewPart(&self.view.scrollbar.overview.base);
         self.scratch_text = try StringBuilder.init(allocator, 256);
         self.line_numbers.init(allocator, &self.context);
         self.indent_guides.init(allocator, &self.context);
@@ -467,7 +469,14 @@ pub const TerminalViewHost = struct {
         // overlays, renders `ViewLines`, collects dirty parts and clears
         // their dirty bits.
         self.scratch_text.reset();
+        const ruler = &self.view.scrollbar.overview;
+        ruler.setHeight(if (self.editor.scrollbar_width > 0) self.editor.textHeight() else 0);
         try self.view.renderText(&viewport, &self.scratch_text);
+        if (ruler.render_error) |err| {
+            ruler.render_error = null;
+            ruler.base.handler.forceShouldRender();
+            return err;
+        }
 
         var rendering = RenderingContext.init(self.context.view_layout, &viewport, self.view.getViewLines().interface());
         self.view_cursors.prepareRender(&rendering);
@@ -714,12 +723,12 @@ pub const TerminalViewHost = struct {
         const data = try editor.viewLineData(view_line);
         const model_line = editor.modelLineNumber(view_line);
         const output_index = editor.outputLineIndex(view_line);
-        var model_content = try editor.model.getLineContent(model_line);
-        defer model_content.deinit();
+        const model_content = try editor.model.acquireLineContent(model_line);
+        defer model_content.release();
         markSecondaryCursors(
             args.states,
             view_line,
-            model_content.items,
+            model_content.text.items,
             args.tab_size,
             data.startVisibleColumn,
             data.minColumn - 1,
@@ -872,11 +881,17 @@ pub const TerminalViewHost = struct {
         return ViewLineOptions.init(&self.configuration, self.theme.scheme);
     }
 
+    fn overviewDecorations(context: *anyopaque, allocator: Allocator) ![]@import("../../../common/viewModel.zig").OverviewDecoration {
+        const self: *TerminalViewHost = @ptrCast(@alignCast(context));
+        return @import("../../../common/viewModel/viewModelImpl.zig").getAllOverviewRulerDecorations(self.editor.model, self.editor.converter.interface(), allocator);
+    }
+
     fn modelInterface(self: *TerminalViewHost) IViewModel {
         return .{
             .context = self,
             .view_layout = self.layoutInterface(),
             .coordinates_converter = self.editor.converter.interface(),
+            .get_all_overview_ruler_decorations = overviewDecorations,
             .add_view_event_handler = addViewEventHandler,
             .remove_view_event_handler = removeViewEventHandler,
             .get_selections = getSelections,
@@ -1314,4 +1329,38 @@ test "terminal view host exposes marker range cell decorations" {
     const range = line[0].cell_range.?;
     try std.testing.expectEqual(@as(usize, 1), range.start);
     try std.testing.expectEqual(@as(usize, 3), range.end);
+}
+
+test "overview ruler ignores unrelated view events and updates on ruler decorations" {
+    const allocator = std.testing.allocator;
+    const editor = try Editor.createFromTextWithOptions(allocator, std.Io.Threaded.global_single_threaded.io(), "one\ntwo\nthree\nfour\nfive\nsix", "ruler.txt", 40, 4, .{ .reserve_scrollbar = true });
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+    try host.renderViewport();
+    const ruler = &host.view.scrollbar.overview;
+    try std.testing.expect(!ruler.base.handler.shouldRender());
+    _ = editor.scrollViewLines(1);
+    try std.testing.expect(!ruler.base.handler.shouldRender());
+
+    const model = @import("../../../common/model.zig");
+    var plain = model.ModelDecorationOptions.init("inline", .AlwaysGrowsWhenTypingAtEdges);
+    plain.inlineClassName = "test";
+    const plain_ids = try editor.model.deltaDecorations(&.{}, &.{.{ .range = Range.init(1, 1, 1, 2), .options = &plain }}, 0);
+    defer allocator.free(plain_ids);
+    try std.testing.expect(!ruler.base.handler.shouldRender());
+    var highlighted = model.ModelDecorationOptions.init("ruler", .AlwaysGrowsWhenTypingAtEdges);
+    highlighted.overviewRuler = .{ .position = .Right, .color = .{ 25, 40, 80 } };
+    const ids = try editor.model.deltaDecorations(&.{}, &.{.{ .range = Range.init(5, 1, 5, 2), .options = &highlighted }}, 0);
+    defer allocator.free(ids);
+    try std.testing.expect(ruler.base.handler.shouldRender());
+    try host.renderViewport();
+    try std.testing.expectEqual(@as(usize, 1), ruler.decorations.len);
+    for (ruler.rows) |row| {
+        if (row) |marker| if (std.meta.eql(marker.color, [3]u8{ 25, 40, 80 })) return;
+    }
+    return error.MissingOverviewMarker;
 }

@@ -79,6 +79,12 @@ Regular face is downloaded/cached in CI rather than checked in.
 The TUI targets a reasonable default **Debug** build; no ReleaseFast step is
 required for the measurements below.
 
+TextMate uses the upstream `editor.maxTokenizationLineLength` default of
+20,000 UTF-16 units in the foreground and background worker. At the limit it
+returns an unstyled token and carries the previous grammar state forward.
+Wrapped rows share the piece tree’s last visited model line. A retained row
+keeps its immutable text while edits invalidate the tree’s reference.
+
 - Workspace watching starts in the `AfterRestored` phase, after the first
   frame, and `fileService.watch` is asynchronous. On macOS the recursive side
   uses FSEvents (constant-time subscribe); Linux and non-FSEvents macOS builds
@@ -106,10 +112,15 @@ required for the measurements below.
   configuration/theme/text-file reload flows. Startup scans and extension-host
   `openPath` calls still use the synchronous path; Explorer single clicks use
   the async preview open.
-- Opening a file performs one view render and one full wrapping pass. The
-  workbench reserves the overview-ruler/scrollbar columns before that pass, and
-  a path that is already open reuses its existing tab/editor instead of
-  re-reading and constructing a new one.
+- Startup opens files after the sidebar and active editor pane have their
+  dimensions. Wrapping uses that pane width on its first pass, and a later
+  width-only resize reuses previous break positions. Wrapping reads the model’s cached
+  last-visited line. The first-frame log
+  includes the active editor's full wrapping pass count.
+- The overview ruler is a view part. Changes to its markers, cursor, or geometry
+  update its retained rows. Scrolling moves the thumb over those rows.
+  JSON/JSONC document synchronization follows model events, so opening a
+  different language with the JSON server running leaves the idle UI asleep.
 - Edits apply the model's raw changes through
   `ProjectedViewModelLines.applyRawChanges` instead of re-wrapping the whole
   file, matching upstream's incremental view-model update. A keystroke lets
@@ -541,7 +552,13 @@ comes from the same server. Without the server bundle the editor keeps the
 bundled grammar and reports no diagnostics. Hover, formatting and document
 symbols are forwarded to the same server, and the `json.schemas` setting is
 passed through so configured schemas drive validation, completion and hover.
-JSON document symbols feed breadcrumbs/outline and `Go to Symbol in Editor`.
+The client sends incremental edits in pre-edit UTF-16 coordinates. Breadcrumbs
+and the Outline pane share a cancellable outline request for a document version.
+Sticky Scroll requests ordered provider groups asynchronously. The terminal
+dispatches completed JSON diagnostics and outlines on its event loop.
+The server receives the configured `json.maxItemsComputed` limit plus one,
+matching the extension’s default of 5,000 items and its overflow check.
+`Go to Symbol in Editor` opens the picker while awaiting the same shared outline.
 The pinned JSON server does not advertise definition or references, so those
 navigation actions stay unavailable for JSON. Indentation does not come from the
 language server: `json-language-features` contributes only the client/server,
@@ -1180,8 +1197,10 @@ console API for raw mode, sizing and input polling.
   one-cell gutter marker (`+`/`~`/`-`, primary/secondary/pattern variants
   dimmed) and overview-ruler entries. `src/tui/quickDiffController.zig`
   attaches a `QuickDiffModel`/`QuickDiffDecorator` per file editor, skips diff
-  tabs, recomputes on model version change (200 ms debounce driven by the main
-  loop) and on git status changes, and honors `scm.diffDecorations`,
+  tabs, and schedules worker diffs after model content events or Git status
+  changes with the upstream 200 ms debounce. Open files share a native editor
+  worker. It receives owned text snapshots and delivers versioned results to
+  the decoration listener. It honors `scm.diffDecorations`,
   `scm.diffDecorationsIgnoreTrimWhitespace` (including `inherit`) and
   `scm.diffDecorationsGutterPattern`. `Alt-Down`/`Alt-Up` navigate changes
   (TUI-specific because a normal terminal cannot deliver F5/F7).

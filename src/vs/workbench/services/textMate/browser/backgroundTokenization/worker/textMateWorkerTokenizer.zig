@@ -266,7 +266,7 @@ pub const Tokenizer = struct {
     ) ?EncodedTokenizationResult {
         const support = self.support orelse return null;
         var result: ?EncodedTokenizationResult = null;
-        if (self.max_tokenization_line_length != 0 and self.max_tokenization_line_length != std.math.maxInt(usize) and line.len >= self.max_tokenization_line_length) {
+        if (@import("../../tokenizationSupport/tokenizationSupportWithLineLimit.zig").atLimit(line, self.max_tokenization_line_length)) {
             result = nullTokenizeEncoded(scratch, @fromBackingInt(@intCast(self.encoded_language_id)), state) catch null;
         } else if (self.tokenizer != null) {
             result = support.tokenizeEncoded(scratch, line, true, state) catch null;

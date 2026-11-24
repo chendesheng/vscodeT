@@ -239,35 +239,39 @@ pub const Tokenizer = struct {
                         tokenIndex += 1;
                     }
                 }
-                const tokenLanguage = if (hasTokens) lineTokens.getLanguageId(tokenIndex) else self.fallbackLanguage;
-                const language = if (self.languageService.getLanguageConfiguration(tokenLanguage) != null) tokenLanguage else self.fallbackLanguage;
-                const tokenType = if (hasTokens) lineTokens.getStandardTokenType(tokenIndex) else .Other;
-                const balanced = if (hasTokens) lineTokens.getMetadata(tokenIndex).balancedBrackets else false;
-                const defs = try self.getBrackets(language);
-                if (tokenType != .Other or !balanced or defs.defs.items.len == 0) {
-                    pos += utf8Len(text[pos..]);
-                    continue;
-                }
                 const token_end = if (hasTokens) @min(lineTokens.getEndOffset(tokenIndex), text.len) else text.len;
-
-                if (matchAt(text, pos, token_end, defs, true)) |open| {
-                    if (matchAt(text, pos, token_end, defs, false)) |close| {
-                        if (close.len >= open.len and close.len >= open.len) {
-                            try self.emitBracket(lineNumber, pos, close, false, language);
-                            pos += close.len;
-                            continue;
+                if (token_end <= pos) break;
+                if (!hasTokens or lineTokens.getStandardTokenType(tokenIndex) != .Other or !lineTokens.getMetadata(tokenIndex).balancedBrackets) {
+                    pos = token_end;
+                    continue;
+                }
+                const tokenLanguage = lineTokens.getLanguageId(tokenIndex);
+                const language = if (self.languageService.getLanguageConfiguration(tokenLanguage) != null) tokenLanguage else self.fallbackLanguage;
+                const defs = try self.getBrackets(language);
+                if (defs.defs.items.len == 0) {
+                    pos = token_end;
+                    continue;
+                }
+                while (pos < token_end) {
+                    if (matchAt(text, pos, token_end, defs, true)) |open| {
+                        if (matchAt(text, pos, token_end, defs, false)) |close| {
+                            if (close.len >= open.len) {
+                                try self.emitBracket(lineNumber, pos, close, false, language);
+                                pos += close.len;
+                                continue;
+                            }
                         }
+                        try self.emitBracket(lineNumber, pos, open, true, language);
+                        pos += open.len;
+                        continue;
                     }
-                    try self.emitBracket(lineNumber, pos, open, true, language);
-                    pos += open.len;
-                    continue;
+                    if (matchAt(text, pos, token_end, defs, false)) |close| {
+                        try self.emitBracket(lineNumber, pos, close, false, language);
+                        pos += close.len;
+                        continue;
+                    }
+                    pos += utf8Len(text[pos..]);
                 }
-                if (matchAt(text, pos, token_end, defs, false)) |close| {
-                    try self.emitBracket(lineNumber, pos, close, false, language);
-                    pos += close.len;
-                    continue;
-                }
-                pos += utf8Len(text[pos..]);
             }
         }
 

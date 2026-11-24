@@ -56,6 +56,14 @@ pub const ContiguousTokensStore = struct {
     /// Takes ownership of `lineText`.
     pub fn getTokens(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, lineText: ArrayList(u8)) !LineTokens {
         errdefer lineText.deinit();
+        return LineTokens.init(try self.tokensForLine(topLevelLanguageId, lineIndex, lineText.items.len), lineText, self._languageIdCodec);
+    }
+
+    pub fn getTokensForView(self: *ContiguousTokensStore, language: []const u8, index: usize, line: *@import("../model/pieceTreeTextBuffer/pieceTreeBase.zig").LineContent) !LineTokens {
+        return .{ ._tokens = try self.tokensForLine(language, index, line.text.items.len), ._text = .init(self._lineTokens.allocator), .shared_text = line.retain(), .languageIdCodec = self._languageIdCodec };
+    }
+
+    fn tokensForLine(self: *ContiguousTokensStore, topLevelLanguageId: []const u8, lineIndex: usize, length: usize) !ArrayList(TokenPacked) {
         var tokens = ArrayList(TokenPacked).init(self._lineTokens.allocator);
         errdefer tokens.deinit();
 
@@ -63,17 +71,17 @@ pub const ContiguousTokensStore = struct {
             if (self._lineTokens.items[lineIndex]) |cached| {
                 if (cached.items.len > 0) {
                     try tokens.appendSlice(cached.items);
-                    return LineTokens.init(tokens, lineText, self._languageIdCodec);
+                    return tokens;
                 }
             }
         }
 
         const encodedLanguageId = try self._languageIdCodec.encodeLanguageId(topLevelLanguageId);
         try tokens.append(.{
-            .endOffset = @intCast(lineText.items.len),
+            .endOffset = @intCast(length),
             .metadata = getDefaultMetadata(encodedLanguageId),
         });
-        return LineTokens.init(tokens, lineText, self._languageIdCodec);
+        return tokens;
     }
 
     fn _massageTokens(allocator: Allocator, topLevelLanguageId: LanguageId, lineTextLength: usize, maybeTokens: ?[]const TokenPacked) !ArrayList(TokenPacked) {

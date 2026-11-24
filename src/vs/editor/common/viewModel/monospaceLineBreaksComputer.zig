@@ -74,6 +74,7 @@ const Decoded = struct { code_point: u21, len: usize };
 
 fn decodeAt(text: []const u8, offset: usize) Decoded {
     if (offset >= text.len) return .{ .code_point = 0, .len = 0 };
+    if (text[offset] < 0x80) return .{ .code_point = text[offset], .len = 1 };
     const len = std.unicode.utf8ByteSequenceLength(text[offset]) catch return .{ .code_point = text[offset], .len = 1 };
     if (offset + len > text.len) return .{ .code_point = text[offset], .len = 1 };
     const code_point = std.unicode.utf8Decode(text[offset .. offset + len]) catch return .{ .code_point = text[offset], .len = 1 };
@@ -118,6 +119,99 @@ fn canBreak(prev_code_point: u21, prev_class: CharacterClass, code_point: u21, c
             (prev_class != .break_before and class == .break_before) or
             (!keep_all and prev_class == .break_ideographic and class != .break_after) or
             (!keep_all and class == .break_ideographic and prev_class != .break_before));
+}
+
+const Break = struct { offset: usize, column: usize };
+
+/// The offsets here are byte offsets. Walk one decoded code point backwards,
+/// including when an invalid input byte was consumed individually by decodeAt.
+fn previousOffset(text: []const u8, end: usize) usize {
+    var start = end - 1;
+    while (start > 0 and end - start < 4 and text[start] & 0xc0 == 0x80) start -= 1;
+    return if (start + decodeAt(text, start).len == end) start else end - 1;
+}
+
+fn isBreakAt(classifier: *const WrappingCharacterClassifier, text: []const u8, offset: usize, keep_all: bool) bool {
+    const before = decodeAt(text, previousOffset(text, offset)).code_point;
+    const after = decodeAt(text, offset).code_point;
+    return canBreak(before, classifier.get(before), after, classifier.get(after), keep_all);
+}
+
+/// Port of createLineBreaksFromPreviousLineBreaks. Start from a known byte
+/// offset and visible column near each new break. A backwards scan that
+/// encounters a tab must resume forwards from a known column.
+pub fn computeLineBreaksWithPrevious(
+    previous: ?ModelLineProjectionData,
+    allocator: Allocator,
+    classifier: *const WrappingCharacterClassifier,
+    text: []const u8,
+    tab_size: usize,
+    width: usize,
+    indent: WrappingIndent,
+    word_break: WordBreak,
+) !?ModelLineProjectionData {
+    const old = previous orelse return computeLineBreaks(allocator, classifier, text, tab_size, width, indent, word_break);
+    if (old.injectionOptions != null or old.breakOffsetsVisibleColumn.len == 0)
+        return computeLineBreaks(allocator, classifier, text, tab_size, width, indent, word_break);
+    const total = old.breakOffsetsVisibleColumn[old.breakOffsetsVisibleColumn.len - 1];
+    if (width == 0 or width >= total) return null;
+    const padding = computeWrappedTextIndentLength(text, tab_size, width, indent);
+    const continuation = width - padding;
+    var offsets = ArrayList(usize).init(allocator);
+    defer offsets.deinit();
+    var columns = ArrayList(usize).init(allocator);
+    defer columns.deinit();
+    var start = Break{ .offset = 0, .column = 0 };
+    var target = width;
+    var index: usize = 0;
+    while (target < total) {
+        var anchor = start;
+        while (index < old.breakOffsets.len and old.breakOffsetsVisibleColumn[index] <= target) : (index += 1) {}
+        if (index > 0 and old.breakOffsets[index - 1] > start.offset)
+            anchor = .{ .offset = old.breakOffsets[index - 1], .column = old.breakOffsetsVisibleColumn[index - 1] };
+
+        const next = findBreak(classifier, text, tab_size, start, anchor, target, continuation, word_break == .keepAll);
+        if (next.offset >= text.len) break;
+        try offsets.append(next.offset);
+        try columns.append(next.column);
+        start = next;
+        target = start.column + continuation;
+    }
+    if (offsets.items.len == 0) return null;
+    try offsets.append(text.len);
+    try columns.append(total);
+    const owned_offsets = try offsets.toOwnedSlice();
+    errdefer allocator.free(owned_offsets);
+    return ModelLineProjectionData.init(null, null, owned_offsets, try columns.toOwnedSlice(), padding);
+}
+
+fn findBreak(classifier: *const WrappingCharacterClassifier, text: []const u8, tab_size: usize, start: Break, checkpoint: Break, target: usize, continuation: usize, keep_all: bool) Break {
+    var anchor = checkpoint;
+    while (true) {
+        var pos = anchor;
+        var candidate: ?Break = null;
+        var next_column = pos.column;
+        while (pos.offset < text.len) {
+            const ch = decodeAt(text, pos.offset);
+            if (pos.offset > start.offset and isBreakAt(classifier, text, pos.offset, keep_all)) candidate = pos;
+            next_column = pos.column + charWidth(ch.code_point, pos.column, tab_size);
+            if (next_column > target) {
+                if (pos.offset == start.offset) return .{ .offset = pos.offset + ch.len, .column = next_column };
+                break;
+            }
+            pos = .{ .offset = pos.offset + ch.len, .column = next_column };
+        }
+        if (candidate) |soft| return if (next_column - soft.column <= continuation) soft else pos;
+        var back = anchor;
+        while (back.offset > start.offset and next_column - back.column <= continuation) {
+            if (isBreakAt(classifier, text, back.offset, keep_all)) return back;
+            back.offset = previousOffset(text, back.offset);
+            const cp = decodeAt(text, back.offset).code_point;
+            if (cp == '\t') break;
+            back.column -= charWidth(cp, 0, tab_size);
+        } else return pos;
+        anchor = start;
+    }
 }
 
 /// Computes the wrapping of a single line. Returns null when the line fits and
@@ -198,10 +292,12 @@ pub fn computeLineBreaks(
     try breaking_offsets.append(line_text.len);
     try breaking_offsets_visible_column.append(visible_column);
 
+    const owned_offsets = try breaking_offsets.toOwnedSlice();
+    errdefer allocator.free(owned_offsets);
     return ModelLineProjectionData.init(
         null,
         null,
-        try breaking_offsets.toOwnedSlice(),
+        owned_offsets,
         try breaking_offsets_visible_column.toOwnedSlice(),
         wrapped_text_indent_length,
     );
@@ -258,4 +354,26 @@ test "monospace line breaks: tab width" {
         std.testing.allocator.free(data.breakOffsetsVisibleColumn);
     }
     try std.testing.expectEqualSlices(usize, &.{ 2, 4, 5 }, data.breakOffsets);
+}
+
+test "width-only rewrapping matches fresh byte offsets and visible columns" {
+    const allocator = std.testing.allocator;
+    var classifier = try WrappingCharacterClassifier.init(allocator, default_break_before_characters, default_break_after_characters);
+    defer classifier.deinit();
+    const Projection = @import("./modelLineProjection.zig").ModelLineProjection;
+    for ([_][]const u8{ "    abc de(f ghi jkl", "a\tb中\t词/abc", "😀😀 x  中/a\tb", "wordwithoutanybreaks", "\t\t", "a\tb " }) |text| {
+        for ([_]WrappingIndent{ .None, .Indent, .Same }) |indent| {
+            for (1..15) |old_width| {
+                var old = Projection.init(allocator, try computeLineBreaks(allocator, &classifier, text, 4, old_width, indent, .normal));
+                defer old.deinit();
+                for (0..18) |width| {
+                    var fresh = Projection.init(allocator, try computeLineBreaks(allocator, &classifier, text, 4, width, indent, .normal));
+                    defer fresh.deinit();
+                    var reused = Projection.init(allocator, try computeLineBreaksWithPrevious(old.data, allocator, &classifier, text, 4, width, indent, .normal));
+                    defer reused.deinit();
+                    try std.testing.expectEqualDeep(fresh.data, reused.data);
+                }
+            }
+        }
+    }
 }

@@ -2,15 +2,12 @@
 // `src/vs/editor/contrib/stickyScroll/browser/stickyScrollModelProvider.ts`.
 //
 // Terminal adaptations:
-// - model providers are synchronous; there are no cancelable promises or a
-//   `Delayer` here (the controller owns the debounce);
+// - the candidate provider owns the pending outline request and the controller
+//   supplies the debounce timer;
 // - the syntax folding provider is absent because this port has no folding
 //   range provider registry, so `foldingProviderModel` falls through to the
 //   indentation provider;
-// - upstream groups document-symbol providers in an `OutlineModel` and chooses
-//   the group with the largest range sum. The terminal builds one sticky tree
-//   per ordered provider and keeps the largest one, which is the same selection
-//   for the single-provider case exercised by the upstream tests.
+// - provider groups preserve upstream preference and total-range selection.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -90,42 +87,39 @@ pub const StickyModelProvider = struct {
         defer self.allocator.free(providers);
         if (providers.len == 0) return null;
 
-        var best: ?*StickyModel = null;
-        errdefer if (best) |value| value.deinit();
-        var best_sum: isize = -1;
-
-        for (providers) |provider| {
-            var scratch = std.heap.ArenaAllocator.init(self.allocator);
-            defer scratch.deinit();
-            const outline = OutlineModel.create(scratch.allocator(), model, provider) catch continue;
-            if (outline.roots.len == 0) continue;
-
-            const sum = sumOfOutlineRanges(outline.roots);
-            if (sum <= best_sum) continue;
-
-            const candidate = try StickyModel.init(
-                self.allocator,
-                model.uri(),
-                model.getVersionId(),
-                if (provider.display_name.len > 0) provider.display_name else null,
-            );
-            errdefer candidate.deinit();
-            const arena = candidate.arenaAllocator();
-            const root = try stickyModelFromOutlineModel(arena, outline.roots);
-            if (root.children.len == 0) {
-                candidate.deinit();
-                continue;
-            }
-            candidate.element = root;
-
-            if (best) |old| old.deinit();
-            best = candidate;
-            best_sum = sum;
-        }
-        return best;
+        const outline = try OutlineModel.createWithProviders(self.allocator, model, providers);
+        defer outline.deinit();
+        return self.fromOutline(outline, null);
     }
 
-    fn modelFromIndentation(self: *StickyModelProvider, model: *TextModel) !?*StickyModel {
+    pub fn fromOutline(self: *StickyModelProvider, outline: *OutlineModel, preferred: ?[]const u8) !?*StickyModel {
+        if (outline.roots.len == 0) return null;
+        var elements = outline.roots;
+        var provider_id = preferred;
+        if (outline.groups.len > 1) {
+            var best_sum: isize = -1;
+            for (outline.groups) |group| {
+                if (preferred) |id| if (std.mem.eql(u8, group.id, id)) {
+                    elements = group.children;
+                    provider_id = group.id;
+                    break;
+                };
+                const sum = sumOfOutlineRanges(group.children);
+                if (sum > best_sum) {
+                    best_sum = sum;
+                    elements = group.children;
+                    provider_id = group.id;
+                }
+            }
+        }
+        const model = self.editor.model;
+        const candidate = try StickyModel.init(self.allocator, model.uri(), model.getVersionId(), provider_id);
+        errdefer candidate.deinit();
+        candidate.element = try stickyModelFromOutlineModel(candidate.arenaAllocator(), elements);
+        return candidate;
+    }
+
+    pub fn modelFromIndentation(self: *StickyModelProvider, model: *TextModel) !?*StickyModel {
         var reporter = indent_range_provider.FoldingLimitReporter{
             .limit = indent_range_provider.MAX_FOLDING_REGIONS_FOR_INDENT_DEFAULT,
         };

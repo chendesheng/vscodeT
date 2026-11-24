@@ -334,6 +334,7 @@ pub const OutlinePicker = struct {
     host: OutlineHost,
     tree: *OutlineTree,
     outline: ?*outline_mod.IOutline = null,
+    owned_input: ?*outline_mod.IOutline = null,
     anchor: Anchor = .{ .start = 0, .end = 0 },
     anchor_y: usize = 0,
     rect: ui.Rect = .{},
@@ -365,6 +366,7 @@ pub const OutlinePicker = struct {
 
     pub fn deinit(self: *OutlinePicker) void {
         self.tree.deinit();
+        if (self.owned_input) |input| input.dispose();
         self.allocator.destroy(self);
     }
 
@@ -376,7 +378,12 @@ pub const OutlinePicker = struct {
         return self.visible;
     }
 
-    pub fn show(self: *OutlinePicker, outline: *outline_mod.IOutline, element: *anyopaque) !void {
+    pub fn show(self: *OutlinePicker, live_outline: *outline_mod.IOutline, element: *anyopaque) !void {
+        const owned_input = if (live_outline.retain_picker_input) |retain| try retain(live_outline.context) else null;
+        const outline = owned_input orelse live_outline;
+        const previous = self.owned_input;
+        defer if (previous) |input| input.dispose();
+        self.owned_input = owned_input;
         self.outline = outline;
         _ = try self.tree.setInput(outline);
         const source = outline.config.tree_data_source orelse {

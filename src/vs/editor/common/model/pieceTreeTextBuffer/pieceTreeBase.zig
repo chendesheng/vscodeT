@@ -3,6 +3,8 @@
 // The port uses UTF-8 byte offsets/columns instead of UTF-16 code units.
 // `getCharCode` returns the byte at the offset; the codepoint helpers are the
 // UTF-8-aware replacements used by the text model.
+// A synchronous line reader can borrow a single piece's substring. Only a
+// line spanning pieces needs scratch storage, as in getLineRawContent upstream.
 const std = @import("std");
 const Io = std.Io;
 const rbt = @import("./rbTreeBase.zig");
@@ -367,30 +369,39 @@ const PieceTreeSearchCache = struct {
     }
 };
 
-const LastVisitedLine = struct {
-    lineNumber: usize,
-    value: ArrayList(u8),
-
-    fn init(allocator: Allocator) LastVisitedLine {
-        return .{
-            .lineNumber = 0,
-            .value = ArrayList(u8).init(allocator),
-        };
+/// Zig ownership of the immutable string returned by upstream getLineContent.
+/// The piece tree and retained view lines may refer to different generations.
+pub const LineContent = struct {
+    text: ArrayList(u8),
+    refs: usize = 1,
+    pub fn retain(self: *LineContent) *LineContent {
+        self.refs += 1;
+        return self;
     }
+    pub fn release(self: *LineContent) void {
+        self.refs -= 1;
+        if (self.refs == 0) {
+            const allocator = self.text.allocator;
+            self.text.deinit();
+            allocator.destroy(self);
+        }
+    }
+};
+
+const LastVisitedLine = struct {
+    lineNumber: usize = 0,
+    bytes: []const u8 = "",
+    joined: ?ArrayList(u8) = null,
+    retained: ?*LineContent = null,
 
     fn deinit(self: *const LastVisitedLine) void {
-        self.value.deinit();
+        if (self.retained) |value| value.release();
+        if (self.joined) |joined| joined.deinit();
     }
 
-    fn reset(self: *LastVisitedLine) !void {
-        self.lineNumber = 0;
-        try self.value.resize(0);
-    }
-
-    fn copyValue(self: *LastVisitedLine) !ArrayList(u8) {
-        var ret = ArrayList(u8).init(self.value.allocator);
-        try ret.appendSlice(self.value.items);
-        return ret;
+    fn reset(self: *LastVisitedLine) void {
+        self.deinit();
+        self.* = .{};
     }
 };
 
@@ -421,7 +432,7 @@ pub const PieceTreeBase = struct {
             ._EOLLength = if (eol == .CRLF) 2 else 1,
             ._lastChangeBufferPos = .{ .line = 0, .column = 0 },
             ._searchCache = PieceTreeSearchCache.init(allocator, 1),
-            ._lastVisitedLine = LastVisitedLine.init(allocator),
+            ._lastVisitedLine = .{},
             ._logger = logger,
         };
 
@@ -518,7 +529,7 @@ pub const PieceTreeBase = struct {
         self._EOLNormalized = true;
         self._EOLLength = if (eol == .CRLF) 2 else 1;
         try self._searchCache.reset();
-        try self._lastVisitedLine.reset();
+        self._lastVisitedLine.reset();
         // Upstream `create()` starts from a fresh tree state; without this the
         // next insert uses a cursor from the previous document.
         self._lastChangeBufferPos = .{ .line = 0, .column = 0 };
@@ -813,22 +824,48 @@ pub const PieceTreeBase = struct {
     }
 
     pub fn getLineContent(self: *PieceTreeBase, lineNumber: usize) !ArrayList(u8) {
-        self.log("getLineContent({d})\n", .{lineNumber});
+        const bytes = try self.borrowLineContent(lineNumber);
+        var copy = try ArrayList(u8).initCapacity(self.allocator, bytes.len);
+        copy.appendSliceAssumeCapacity(bytes);
+        return copy;
+    }
 
-        // The upstream cache is only safe while the tree is immutable. Edits
-        // and undo/redo can shift lines between calls, so always read the
-        // current tree here.
-        if (lineNumber == self._lineCnt) {
-            return try self.getLineRawContent(lineNumber, 0);
-        } else if (self._EOLNormalized) {
-            return try self.getLineRawContent(lineNumber, self._EOLLength);
+    pub fn acquireLineContent(self: *PieceTreeBase, lineNumber: usize) !*LineContent {
+        const bytes = try self.borrowLineContent(lineNumber);
+        const line = &self._lastVisitedLine;
+        if (line.retained) |value| return value.retain();
+        const value = try self.allocator.create(LineContent);
+        errdefer self.allocator.destroy(value);
+        if (line.joined) |joined| {
+            value.* = .{ .text = joined };
+            value.text.shrinkRetainingCapacity(bytes.len);
+            line.joined = null;
+        } else {
+            value.* = .{ .text = try ArrayList(u8).initCapacity(self.allocator, bytes.len) };
+            value.text.appendSliceAssumeCapacity(bytes);
         }
+        line.bytes = value.text.items;
+        line.retained = value;
+        return value.retain();
+    }
 
-        var ret = try self.getLineRawContent(lineNumber, 0);
-        for (0..getEOLLength(ret.items)) |_| {
-            _ = ret.pop();
-        }
-        return ret;
+    /// Common implementation of upstream getLineContent. Synchronous readers
+    /// borrow the last visited line until the next line read or model edit.
+    pub fn borrowLineContent(self: *PieceTreeBase, lineNumber: usize) ![]const u8 {
+        const line = &self._lastVisitedLine;
+        if (line.lineNumber == lineNumber) return line.bytes;
+
+        var joined = ArrayList(u8).init(self.allocator);
+        errdefer joined.deinit();
+        const endOffset = if (self._EOLNormalized and lineNumber != self._lineCnt) self._EOLLength else 0;
+        const raw = try self.getLineRawContent(lineNumber, endOffset, &joined);
+        const bytes = if (!self._EOLNormalized and lineNumber != self._lineCnt)
+            raw[0 .. raw.len - getEOLLength(raw)]
+        else
+            raw;
+        line.reset();
+        line.* = .{ .lineNumber = lineNumber, .bytes = bytes, .joined = if (joined.capacity > 0) joined else null };
+        return bytes;
     }
 
     const BufferIndexOffset = struct {
@@ -1134,7 +1171,7 @@ pub const PieceTreeBase = struct {
         }
 
         self._EOLNormalized = self._EOLNormalized and eolNormalized;
-        try self._lastVisitedLine.reset();
+        self._lastVisitedLine.reset();
         // Search-cache entries hold raw node pointers. Unlike the upstream
         // garbage-collected port, deleting a node frees it, so invalidate the
         // cache around every structural edit.
@@ -1269,7 +1306,7 @@ pub const PieceTreeBase = struct {
     pub fn delete(self: *PieceTreeBase, offset: usize, cnt: usize) !void {
         self.log("delete({d}, {d})\n", .{ offset, cnt });
 
-        try self._lastVisitedLine.reset();
+        self._lastVisitedLine.reset();
         try self._searchCache.reset();
         defer self._searchCache.reset() catch {};
 
@@ -1592,10 +1629,9 @@ pub const PieceTreeBase = struct {
         return try self.getContentOfSubTree(self.root);
     }
 
-    fn getLineRawContent(self: *PieceTreeBase, lineNumber: usize, endOffset: usize) !ArrayList(u8) {
+    fn getLineRawContent(self: *PieceTreeBase, lineNumber: usize, endOffset: usize, scratch: *ArrayList(u8)) ![]const u8 {
         var x = self.root;
 
-        var ret = ArrayList(u8).init(self.allocator);
         const cache_ = self._searchCache.get2(lineNumber);
         if (cache_ != null) {
             const cache = cache_.?;
@@ -1606,12 +1642,10 @@ pub const PieceTreeBase = struct {
             const buffer = self._buffers.items[piece.bufferIndex];
             const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
             if (nodeStartLineNumber + piece.lineFeedCnt == lineNumber) {
-                try ret.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + piece.length));
+                try scratch.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + piece.length));
             } else {
                 const accumulatedValue = if (lineNumber < nodeStartLineNumber) 0 else self.getAccumulatedValue(x, lineNumber - nodeStartLineNumber);
-                try ret.resize(0);
-                try ret.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + accumulatedValue - endOffset));
-                return ret;
+                return buffer.substring(startOffset + prevAccumulatedValue, startOffset + accumulatedValue - endOffset);
             }
         } else {
             var nodeStartOffset: usize = 0;
@@ -1633,16 +1667,13 @@ pub const PieceTreeBase = struct {
                         .nodeStartLineNumber = originalLineNumber - (line - 1 - x.lf_left),
                     });
 
-                    try ret.resize(0);
-                    try ret.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + accumulatedValue - endOffset));
-                    return ret;
+                    return buffer.substring(startOffset + prevAccumulatedValue, startOffset + accumulatedValue - endOffset);
                 } else if (x.lf_left + piece.lineFeedCnt == line - 1) {
                     const prevAccumulatedValue = if (line < x.lf_left + 2) 0 else self.getAccumulatedValue(x, line - x.lf_left - 2);
                     const buffer = self._buffers.items[piece.bufferIndex];
                     const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
 
-                    try ret.resize(0);
-                    try ret.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + piece.length));
+                    try scratch.appendSlice(buffer.substring(startOffset + prevAccumulatedValue, startOffset + piece.length));
                     break;
                 } else {
                     line -= x.lf_left + piece.lineFeedCnt;
@@ -1662,17 +1693,17 @@ pub const PieceTreeBase = struct {
                 const accumulatedValue = self.getAccumulatedValue(x, 0);
                 const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
 
-                try ret.appendSlice(buffer.substring(startOffset, startOffset + accumulatedValue - endOffset));
-                return ret;
+                try scratch.appendSlice(buffer.substring(startOffset, startOffset + accumulatedValue - endOffset));
+                return scratch.items;
             } else {
                 const startOffset = self.offsetInBuffer(piece.bufferIndex, piece.start);
-                try ret.appendSlice(buffer.substr(startOffset, piece.length));
+                try scratch.appendSlice(buffer.substr(startOffset, piece.length));
             }
 
             x = x.next();
         }
 
-        return ret;
+        return scratch.items;
     }
 
     fn computeBufferMetadata(self: *PieceTreeBase) void {
@@ -2856,6 +2887,23 @@ test "StringBuffer.substring clamps and swaps like JS" {
     try std.testing.expectEqualStrings("abc", buffer.substring(3, 0));
     try std.testing.expectEqualStrings("", buffer.substr(10, 5));
     try std.testing.expectEqualStrings("bc", buffer.substr(1, 2));
+}
+
+test "wrapping can borrow contiguous lines and join edited pieces across mixed EOLs" {
+    const allocator = std.testing.allocator;
+    var buffers = [_]StringBuffer{try StringBuffer.init(allocator, "alpha\r\nbravo\nlast")};
+    var tree = try PieceTreeBase.init(allocator, null, &buffers, .LF, false);
+    defer tree.deinit();
+    const first = try tree.borrowLineContent(1);
+    try std.testing.expectEqualStrings("alpha", first);
+    try std.testing.expect(tree._lastVisitedLine.joined == null);
+    try std.testing.expectEqual(first.ptr, (try tree.borrowLineContent(1)).ptr);
+    try tree.insert(9, "XX", false);
+    try std.testing.expectEqualStrings("brXXavo", try tree.borrowLineContent(2));
+    const retained = try tree.acquireLineContent(2);
+    defer retained.release();
+    try std.testing.expectEqualStrings("last", try tree.borrowLineContent(3));
+    try std.testing.expectEqualStrings("brXXavo", retained.text.items);
 }
 
 test "piece tree: out-of-range offsets are safe" {

@@ -556,9 +556,17 @@ pub const DocumentSymbol = struct {
     children: []const DocumentSymbol = &.{},
 };
 
+/// Terminal continuation for a provider Promise. Results live in the
+/// request allocator. Disposing the pending request prevents delivery.
+pub const DocumentSymbolCallback = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, []const DocumentSymbol) void,
+};
+
 pub const DocumentSymbolProvider = struct {
     context: *anyopaque,
     display_name: []const u8 = "",
+    request_document_symbols: ?*const fn (*anyopaque, Allocator, *TextModel, DocumentSymbolCallback) anyerror!?@import("../../base/common/lifecycle.zig").IDisposable = null,
     provide_document_symbols: *const fn (
         context: *anyopaque,
         allocator: Allocator,

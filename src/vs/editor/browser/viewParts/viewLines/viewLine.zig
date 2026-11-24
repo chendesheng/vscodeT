@@ -35,8 +35,8 @@ fn cloneLineTokens(allocator: Allocator, tokens: IViewLineTokens) !*LineTokens {
     const owned = try allocator.create(LineTokens);
     errdefer allocator.destroy(owned);
     switch (tokens) {
-        .tokens => |line| owned.* = try line.clone(allocator),
-        .slice => |slice| owned.* = try slice._source.clone(allocator),
+        .tokens => |line| owned.* = try line.retainForView(allocator),
+        .slice => |slice| owned.* = try slice._source.retainForView(allocator),
     }
     return owned;
 }

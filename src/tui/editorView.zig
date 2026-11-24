@@ -98,7 +98,6 @@ const mouse_target = @import("../vs/editor/browser/controller/mouseTarget.zig");
 const mouse_handler_mod = @import("../vs/editor/browser/controller/mouseHandler.zig");
 const TerminalMouseHandler = mouse_handler_mod.TerminalMouseHandler;
 const content_widgets_mod = @import("../vs/editor/browser/viewParts/contentWidgets/contentWidgets.zig");
-const editor_scrollbar_mod = @import("../vs/editor/browser/viewParts/editorScrollbar/editorScrollbar.zig");
 const margin_mod = @import("../vs/editor/browser/viewParts/margin/margin.zig");
 const view_line_mod = @import("../vs/editor/browser/viewParts/viewLines/viewLine.zig");
 const ViewLine = view_line_mod.ViewLine;
@@ -2282,7 +2281,6 @@ pub const View = struct {
             .content_widgets_root = content_widgets_root,
             .host = chrome_host_ptr,
             .editor = editor,
-            .states = states,
             .cols = cols,
             .text_height = text_height,
             .text_right = text_right,
@@ -2394,7 +2392,10 @@ pub const View = struct {
         self: *View,
         markers: *std.array_list.Managed(decorationsOverviewRuler.Decoration),
     ) !void {
-        try editor_scrollbar_mod.appendOverviewMarkers(markers, self.editor, self.allocator);
+        const model = self.terminal_view_host.context.view_model;
+        const ranges = try model.get_all_overview_ruler_decorations.?(model.context, self.allocator);
+        defer self.allocator.free(ranges);
+        try markers.appendSlice(ranges);
     }
 };
 
@@ -4763,9 +4764,10 @@ test "View: overview markers follow wrapped view lines" {
         .{ .range = Range.init(1, 7, 1, 9), .kind = .find_match },
     });
     try view.appendOverviewMarkers(&markers);
-    try std.testing.expectEqual(@as(usize, 2), markers.items.len);
+    // Adjacent wrapped lines of the same lane and color form one range.
+    try std.testing.expectEqual(@as(usize, 1), markers.items.len);
     try std.testing.expectEqual(@as(usize, 1), markers.items[0].start_line_number);
-    try std.testing.expectEqual(@as(usize, 2), markers.items[1].start_line_number);
+    try std.testing.expectEqual(@as(usize, 2), markers.items[0].end_line_number);
 }
 
 test "View: three overview lanes use half-cell glyphs" {

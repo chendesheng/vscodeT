@@ -10,8 +10,8 @@
 // - `ILabelService` and `IUriIdentityService` are not ported. Home-relative
 //   paths use a single `~` root segment instead of upstream's per-component
 //   home labels; workspace-relative and absolute paths are otherwise used.
-// - The outline is created synchronously by `OutlineService`; provider updates
-//   arrive through `IOutline.onDidChange`.
+// - The terminal outline handle subscribes to asynchronous provider completions
+//   through `IOutline.onDidChange`. Disposing the handle cancels its subscription.
 // - The model emits `on_did_update` after the element list or workspace root
 //   changes, matching upstream's `onDidUpdate`.
 

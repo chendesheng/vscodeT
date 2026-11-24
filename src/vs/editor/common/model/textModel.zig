@@ -166,6 +166,7 @@ pub const TextModel = struct {
     const LARGE_FILE_LINE_COUNT_THRESHOLD = 300 * 1000; // 300K lines
     const LARGE_FILE_HEAP_OPERATION_THRESHOLD = 256 * 1024 * 1024; // 256M characters, usually ~> 512MB memory usage
 
+    max_tokenization_line_length: usize = @import("../../../workbench/services/textMate/browser/tokenizationSupport/tokenizationSupportWithLineLimit.zig").default_limit,
     id: []const u8,
     isForSimpleWidget: bool,
     _associatedResource: Uri,
@@ -777,6 +778,16 @@ pub const TextModel = struct {
 
     pub fn getLineCount(self: *const TextModel) usize {
         return self._buffer.getLineCount();
+    }
+
+    pub fn acquireLineContent(self: *TextModel, lineNumber: usize) !*@import("pieceTreeTextBuffer/pieceTreeBase.zig").LineContent {
+        if (lineNumber < 1 or lineNumber > self.getLineCount()) return error.IllegalValueForLineNumber;
+        return self._buffer._pieceTree.acquireLineContent(lineNumber);
+    }
+
+    pub fn borrowLineContent(self: *TextModel, lineNumber: usize) ![]const u8 {
+        if (lineNumber < 1 or lineNumber > self.getLineCount()) return error.IllegalValueForLineNumber;
+        return self._buffer._pieceTree.borrowLineContent(lineNumber);
     }
 
     pub fn getLineContent(self: *TextModel, lineNumber: usize) !ArrayList(u8) {

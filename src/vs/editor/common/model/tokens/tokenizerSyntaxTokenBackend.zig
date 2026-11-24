@@ -34,7 +34,10 @@ const TokenizationSupportChangedEvent = @import("../../languages.zig").Tokenizat
 const clamp = @import("../../../../base/common/utils.zig").clamp;
 const LineRangeSet = @import("../../core/ranges/lineRange.zig").LineRangeSet;
 
+const line_limit = @import("../../../../workbench/services/textMate/browser/tokenizationSupport/tokenizationSupportWithLineLimit.zig");
+
 pub const TokenizerSyntaxTokenBackend = struct {
+    limited_support: line_limit.TokenizationSupportWithLineLimit = undefined,
     super: AbstractSyntaxTokenBackend,
 
     _tokenizer: ?*TokenizerWithStateStoreAndTextModel = null,
@@ -160,7 +163,15 @@ pub const TokenizerSyntaxTokenBackend = struct {
         if (tokenizationSupport) |support| {
             const tokenizer = self._allocator.create(TokenizerWithStateStoreAndTextModel) catch null;
             if (tokenizer) |t| {
-                t.* = TokenizerWithStateStoreAndTextModel.init(self.textModel().getLineCount(), support, self.textModel(), self.super._languageIdCodec) catch {
+                const foreground = if (@import("textMateTokenizer.zig").isTextMate(support)) blk: {
+                    self.limited_support = .{
+                        .actual = support,
+                        .encoded_language_id = @fromBackingInt(@intCast(self.super._languageIdCodec.encodeLanguageId(self._languageId) catch 0)),
+                        .limit = self.textModel().max_tokenization_line_length,
+                    };
+                    break :blk self.limited_support.interface();
+                } else support;
+                t.* = TokenizerWithStateStoreAndTextModel.init(self.textModel().getLineCount(), foreground, self.textModel(), self.super._languageIdCodec) catch {
                     self._allocator.destroy(t);
                     return;
                 };
@@ -431,9 +442,13 @@ pub const TokenizerSyntaxTokenBackend = struct {
     }
 
     pub fn getLineTokens(self: *TokenizerSyntaxTokenBackend, lineNumber: usize) !LineTokens {
-        var lineText = try self.textModel().getLineContent(lineNumber);
-        errdefer lineText.deinit();
-        const result = try self._tokens.getTokens(self.textModel().getLanguageId(), lineNumber - 1, lineText);
+        const line = try self.textModel().acquireLineContent(lineNumber);
+        defer line.release();
+        const result = try self._tokens.getTokensForView(self.textModel().getLanguageId(), lineNumber - 1, line);
+        errdefer {
+            var owned = result;
+            owned.deinit();
+        }
 
         if (self._debugBackgroundTokens != null and self._debugBackgroundStates != null and self._tokenizer != null) {
             const debugStates = &self._debugBackgroundStates.?;

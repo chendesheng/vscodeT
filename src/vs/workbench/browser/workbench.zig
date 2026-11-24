@@ -719,6 +719,7 @@ pub const Workbench = struct {
     theme_palette: ?*theme_colors_mod.ThemeColors,
     quick_access: *QuickAccessService,
     outline_service: OutlineService,
+    outline_models: @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModelService,
     /// Terminal Outline side panel (`outline` view container).
     outline_view: ?*OutlinePane = null,
     breadcrumbs_service: BreadcrumbsService,
@@ -737,6 +738,11 @@ pub const Workbench = struct {
     navigation_arena: std.heap.ArenaAllocator,
     reference_history: @import("../../../extensions/references-view/referencesView.zig").History = .{},
     pending_references: ?*ReferencesModel = null,
+    symbol_picker: ?struct {
+        tab: *Tab,
+        subscription: ?IDisposable = null,
+        outline: ?*OutlineModel = null,
+    } = null,
     pending_symbols: ?[]goto_symbol_quick_access.Entry = null,
     symbol_action_contexts: [go_to_commands.actions.len]SymbolActionContext = undefined,
     breadcrumbs_dirty: bool = false,
@@ -887,6 +893,8 @@ pub const Workbench = struct {
         self.search_service = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
+        self.outline_models = .init(allocator);
+        errdefer self.outline_models.deinit();
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
         self.breadcrumbs_service = BreadcrumbsService.init(allocator);
@@ -898,6 +906,7 @@ pub const Workbench = struct {
         self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.navigation_arena.deinit();
         self.pending_references = null;
+        self.symbol_picker = null;
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_inactive = .empty;
@@ -1054,6 +1063,8 @@ pub const Workbench = struct {
         self.search_service = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
+        self.outline_models = .init(allocator);
+        errdefer self.outline_models.deinit();
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
         self.breadcrumbs_service = BreadcrumbsService.init(allocator);
@@ -1065,6 +1076,7 @@ pub const Workbench = struct {
         self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.navigation_arena.deinit();
         self.pending_references = null;
+        self.symbol_picker = null;
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_inactive = .empty;
@@ -1254,6 +1266,8 @@ pub const Workbench = struct {
         self.search_service = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
+        self.outline_models = .init(allocator);
+        errdefer self.outline_models.deinit();
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
         self.breadcrumbs_service = BreadcrumbsService.init(allocator);
@@ -1265,6 +1279,7 @@ pub const Workbench = struct {
         self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.navigation_arena.deinit();
         self.pending_references = null;
+        self.symbol_picker = null;
         self.pending_symbols = null;
         self.breadcrumbs_control = null;
         self.breadcrumbs_inactive = .empty;
@@ -2191,6 +2206,8 @@ pub const Workbench = struct {
             self.outline_view = null;
         }
         self.outline_service.deinit();
+        self.closeSymbolPicker();
+        self.outline_models.deinit();
         if (self.media_status) |status| {
             status.deinit();
             self.media_status = null;
@@ -2676,6 +2693,7 @@ pub const Workbench = struct {
             configuration.deinit();
             self.configuration = null;
             try self.ensureConfiguration();
+            self.configureJsonLanguage();
             self.applyZenModeConfigurationChange();
             self.applyEditorSettingsToAllTabs();
             self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
@@ -4528,6 +4546,21 @@ pub const Workbench = struct {
         return config.getConfigurationData(arena);
     }
 
+    pub fn configureJsonLanguage(self: *Workbench) void {
+        const client = self.json_client orelse return;
+        const config = self.configuration orelse return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const schemas = self.jsonSchemasValue();
+        const setting = config.getValue("json.maxItemsComputed", .{});
+        const limit = if (setting) |value| switch (value.*) {
+            .integer => value.integer,
+            .float => if (value.float > 0 and value.float < @as(f64, @floatFromInt(std.math.maxInt(i64)))) @as(i64, @intFromFloat(value.float)) else 5000,
+            else => 5000,
+        } else 5000;
+        client.configureWithLimit(arena.allocator(), if (schemas) |value| value.* else null, limit) catch {};
+    }
+
     /// Raw `json.schemas` setting used by the JSON language server.
     pub fn jsonSchemasValue(self: *Workbench) ?*const std.json.Value {
         const config = self.configuration orelse return null;
@@ -4541,13 +4574,6 @@ pub const Workbench = struct {
                 tab.editor.setJsonLanguageClient(client);
             }
         }
-    }
-
-    /// Polls JSON diagnostics for the active editor. Returns true when the
-    /// editor status changed and the frame should be repainted.
-    pub fn pollJsonLanguage(self: *Workbench) bool {
-        const tab = self.activeTab() orelse return false;
-        return tab.editor.pollJsonLanguage();
     }
 
     /// Applies completed worker deltas for every open editor. Called on every
@@ -4775,6 +4801,7 @@ pub const Workbench = struct {
 
         const controller = try self.allocator.create(quick_diff_controller_mod.Controller);
         controller.* = quick_diff_controller_mod.Controller.init(self.allocator, quick_service);
+        controller.resources_changed = provider.interface().on_did_change_resources;
         self.quick_diff_controller = controller;
         if (self.configuration != null) {
             controller.setIgnoreTrimWhitespace(self.resolvedIgnoreTrimWhitespace());
@@ -4991,7 +5018,6 @@ pub const Workbench = struct {
         if (provider.refreshHistoryRefs(true)) {
             if (self.scm_history_view) |view| view.onHistoryItemRefsChanged(true);
         }
-        if (self.quick_diff_controller) |controller| _ = controller.refreshAll();
         self.syncGitStatus();
         self.syncGitActivity();
     }
@@ -6718,7 +6744,8 @@ pub const Workbench = struct {
         if (self.findOpenInput(path)) |existing| {
             return self.openExistingInput(path, existing, options);
         }
-        const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, self.cols, self.editorContentHeight(), self.declarative, self.json_client, .{ .reserve_scrollbar = true });
+        const size = self.editorDimensions(self.activePane() orelse return error.GroupPaneMissing);
+        const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative, self.json_client, .{ .reserve_scrollbar = true });
         errdefer {
             editor.deinit();
             self.allocator.destroy(editor);
@@ -6921,13 +6948,14 @@ pub const Workbench = struct {
     }
 
     fn openLoadedTextEditor(self: *Workbench, path: []const u8, loaded: *const editor_widget.LoadedText, options: OpenOptions) !void {
+        const size = self.editorDimensions(self.activePane() orelse return error.GroupPaneMissing);
         const editor = try Editor.createWithExtensionsFromLoadedText(
             self.allocator,
             self.io,
             loaded,
             path,
-            self.cols,
-            self.editorContentHeight(),
+            size.width,
+            size.height,
             self.declarative,
             self.json_client,
             .{ .reserve_scrollbar = true },
@@ -7321,7 +7349,6 @@ pub const Workbench = struct {
         self.pending_references = null;
         self.pending_symbols = null;
         _ = self.navigation_arena.reset(.retain_capacity);
-        const arena = self.navigation_arena.allocator();
 
         const providers = try features.document_symbol_provider.ordered(self.allocator, tab.editor.model, false);
         defer self.allocator.free(providers);
@@ -7329,17 +7356,62 @@ pub const Workbench = struct {
             tab.editor.setMessage("{s}", .{goto_symbol_quick_access.no_provider_message});
             return false;
         }
-        const outline = OutlineModel.create(arena, tab.editor.model, providers[0]) catch |err| {
-            tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
-            return false;
+        const input = self.quick_access.inputService();
+        try input.showPick(&.{}, .{
+            .placeholder = goto_symbol_quick_access.placeholder,
+            .no_results_label = goto_symbol_quick_access.no_matching_message,
+            .cleanup = cleanupSymbolPicker,
+            .cleanup_context = self,
+        }, onSymbolPick, self);
+        input.pickerRef().setBusy(true);
+        self.symbol_picker = .{ .tab = tab };
+        errdefer input.hide();
+        const subscription = try self.outline_models.getOrCreate(tab.editor.model, providers, self, symbolPickerReady);
+        if (self.symbol_picker) |*picker| picker.subscription = subscription;
+        return self.symbol_picker != null;
+    }
+
+    fn cleanupSymbolPicker(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.closeSymbolPicker();
+    }
+
+    fn closeSymbolPicker(self: *Workbench) void {
+        if (self.symbol_picker) |picker| {
+            if (picker.subscription) |handle| handle.dispose();
+            if (picker.outline) |outline| outline.deinit();
+        }
+        self.symbol_picker = null;
+        self.pending_symbols = null;
+    }
+
+    fn symbolPickerReady(context: *anyopaque, outline: *OutlineModel) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const tab = if (self.symbol_picker) |picker| picker.tab else {
+            outline.deinit();
+            return;
         };
-        const entries = goto_symbol_quick_access.collect(arena, outline) catch |err| {
+        self.symbol_picker.?.subscription = null;
+        self.symbol_picker.?.outline = outline;
+        const input = self.quick_access.inputService();
+        if (self.activeTab() != tab) {
+            input.hide();
+            return;
+        }
+        input.pickerRef().setBusy(false);
+        self.setSymbolItems(tab, outline) catch |err| {
             tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
-            return false;
+            input.hide();
         };
+    }
+
+    fn setSymbolItems(self: *Workbench, tab: *Tab, outline: *OutlineModel) !void {
+        const arena = self.navigation_arena.allocator();
+        const entries = try goto_symbol_quick_access.collect(arena, outline);
         if (entries.len == 0) {
             tab.editor.setMessage("{s}", .{goto_symbol_quick_access.no_symbols_message});
-            return false;
+            self.quick_access.inputService().hide();
+            return;
         }
 
         const active_index = goto_symbol_quick_access.activeIndex(entries, tab.editor.modelCursorPosition());
@@ -7356,21 +7428,7 @@ pub const Workbench = struct {
         const active_id = if (active_index) |index| try std.fmt.allocPrint(arena, "sym:{d}", .{index}) else null;
 
         self.pending_symbols = entries;
-        self.quick_access.inputService().showPick(
-            items.items,
-            .{
-                .placeholder = goto_symbol_quick_access.placeholder,
-                .active_id = active_id,
-                .no_results_label = goto_symbol_quick_access.no_matching_message,
-            },
-            onSymbolPick,
-            self,
-        ) catch |err| {
-            self.pending_symbols = null;
-            tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
-            return false;
-        };
-        return true;
+        try self.quick_access.inputService().setPickItems(items.items, active_id);
     }
 
     /// Delivers a keydown to the editor contributions before the built-in
@@ -13051,24 +13109,33 @@ fn outlineCreate(context: *anyopaque, editor: OutlineEditor, target: outline_mod
     const self: *Workbench = @ptrCast(@alignCast(context));
     const tab: *Tab = @ptrCast(@alignCast(editor.context));
     const features = self.language_features orelse return null;
-    const providers = try features.document_symbol_provider.ordered(self.allocator, tab.editor.model, false);
-    defer self.allocator.free(providers);
-    if (providers.len == 0) return null;
-    const model = try OutlineModel.create(self.allocator, tab.editor.model, providers[0]);
-    try outlineApplyMarkers(self, model, tab);
-    const outline = try DocumentSymbolsOutline.create(self.allocator, model, .{
+    if (!features.document_symbol_provider.has(tab.editor.model)) return null;
+    const model = try OutlineModel.empty(self.allocator);
+    const outline = DocumentSymbolsOutline.create(self.allocator, model, .{
         .context = tab,
         .current_position = outlineCurrentPosition,
         .reveal_range = outlineRevealRange,
         .request_render = outlineRequestRender,
+        .apply_markers = applyDocumentOutlineMarkers,
         .symbol_filter = .{
             .context = self,
             .is_visible = if (target == .Breadcrumbs) breadcrumbSymbolVisible else outlineSymbolVisible,
         },
-    });
+    }) catch |err| {
+        model.deinit();
+        return err;
+    };
+    errdefer outline.interfacePtr().dispose();
+    try outline.bind(&self.outline_models, tab.editor.model, features);
     const result = outline.interfacePtr();
     result.config.collapse_by_default = target == .OutlinePane and outlineCollapseByDefault(self);
     return result;
+}
+
+fn applyDocumentOutlineMarkers(context: *anyopaque, model: *OutlineModel, editor: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab: *Tab = @ptrCast(@alignCast(editor));
+    outlineApplyMarkers(self, model, tab) catch {};
 }
 
 /// Port of `_applyMarkersToOutline`: roll the model's error/warning markers up
@@ -13392,6 +13459,7 @@ fn onSymbolPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
     const index = itemIndex(item.id, "sym:") orelse return;
     if (index >= entries.len) return;
     const tab = self.activeTab() orelse return;
+    if (self.symbol_picker == null or self.symbol_picker.?.tab != tab) return;
     tab.editor.setSelection(entries[index].symbol.symbol.selection_range) catch |err| {
         tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
         return;
@@ -23272,4 +23340,17 @@ test "Workbench: the find bar reserves a view-zone row" {
     tab.view.invalidate();
     try workbench.render(&out.writer);
     try std.testing.expectEqual(@as(usize, 0), tab.top_view_zone_rows);
+}
+
+test "startup opens files at the laid-out pane width with one wrapping pass" {
+    const allocator = std.testing.allocator;
+    const wb = try Workbench.init(allocator, time_compat.io, &.{}, 140, 44);
+    defer wb.deinit();
+    try wb.initSidebarFromWorkspace();
+    try wb.openPath("src/vs/workbench/browser/workbench.zig");
+    const editor = wb.activeTab().?.editor;
+    const pane = wb.activePane().?;
+    try std.testing.expectEqual(pane.panes.page_position.?.width, editor.screen_width);
+    try std.testing.expect(editor.screen_width < wb.cols);
+    try std.testing.expectEqual(@as(usize, 1), editor.view_lines.rebuildAllCount());
 }

@@ -33,7 +33,6 @@ const Editor = @import("./widget/codeEditor/codeEditorWidgetTerminal.zig").Edito
 const LineNumbersOverlay = @import("./viewParts/lineNumbers/lineNumbers.zig").LineNumbersOverlay;
 const LinesDecorationsOverlay = @import("./viewParts/linesDecorations/linesDecorations.zig").LinesDecorationsOverlay;
 const FoldingDecorationProvider = @import("../contrib/folding/browser/foldingDecorations.zig").FoldingDecorationProvider;
-const CursorState = @import("../common/cursorCommon.zig").CursorState;
 const PositionAffinity = @import("../common/model.zig").PositionAffinity;
 
 const RenderingContext = render_ctx.RenderingContext;
@@ -173,7 +172,6 @@ pub const View = struct {
         /// rebuild is pending and the boxes are rebuilt from the DOM instead.
         host: ?*RetainedViewPartHost,
         editor: *Editor,
-        states: []const CursorState,
         cols: usize,
         text_height: usize,
         text_right: usize,
@@ -209,7 +207,6 @@ pub const View = struct {
             options.doc,
             options.scrollbar_root,
             options.editor,
-            options.states,
             options.text_height,
             options.cols,
             options.scrollbar_width,

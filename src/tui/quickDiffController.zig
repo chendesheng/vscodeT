@@ -3,10 +3,13 @@
 // debounce from the workbench main loop, and applies the quick-diff gutter
 // width to the editor.
 //
-// There is no observable/autorun system in the port; the workbench calls
-// `poll`/`refreshAll` from `Workbench.pollGit` and on git status changes.
+// Content, provider and repository resource events schedule the diff. The
+// workbench dispatches its timer and completed worker result on the UI thread.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const time = @import("../vs/base/common/timeCompat.zig");
+const EditorWorkerService = @import("../vs/editor/browser/services/editorWorkerService.zig").EditorWorkerService;
+const ResourceEvent = @import("../vs/base/common/event.zig").Emitter(void);
 
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const quick_diff_service = @import("../vs/workbench/contrib/scm/common/quickDiffService.zig");
@@ -28,13 +31,30 @@ pub const Entry = struct {
     path: []u8,
     model: QuickDiffModel,
     decorator: QuickDiffDecorator,
-    last_version: u32,
+    content_listener: usize = undefined,
+    provider_listener: usize = undefined,
+    diff_listener: usize = undefined,
+    resource_listener: ?usize = null,
+
+    fn onDiffChanged(_: void, self: *Entry) !void {
+        try self.decorator.update();
+    }
+
+    fn onContent(_: @import("../vs/editor/common/textModelEvents.zig").InternalModelContentChangeEvent, self: *Entry) !void {
+        self.model.triggerDiff(time.milliTimestamp());
+    }
+
+    fn onResources(_: void, self: *Entry) !void {
+        self.model.triggerDiff(time.milliTimestamp());
+    }
 };
 
 pub const Controller = struct {
     allocator: Allocator,
     service: *QuickDiffService,
+    worker: EditorWorkerService,
     entries: std.array_list.Managed(*Entry),
+    resources_changed: ?*ResourceEvent = null,
     config: Config = .{},
     ignore_trim_whitespace: bool = true,
     enabled: bool = true,
@@ -43,6 +63,7 @@ pub const Controller = struct {
         return .{
             .allocator = allocator,
             .service = service,
+            .worker = EditorWorkerService.init(),
             .entries = std.array_list.Managed(*Entry).init(allocator),
         };
     }
@@ -50,6 +71,7 @@ pub const Controller = struct {
     pub fn deinit(self: *Controller) void {
         for (self.entries.items) |entry| self.destroyEntry(entry);
         self.entries.deinit();
+        self.worker.deinit();
         self.* = undefined;
     }
 
@@ -85,11 +107,16 @@ pub const Controller = struct {
                 .{ .algorithm = .advanced, .max_computation_time_ms = 1000 },
             ),
             .decorator = undefined,
-            .last_version = editor.model.getVersionId(),
         };
         errdefer entry.model.deinit();
         entry.model.setIgnoreTrimWhitespace(self.ignore_trim_whitespace);
-        entry.model.recompute() catch {};
+        entry.model.triggerDiff(time.milliTimestamp());
+        entry.content_listener = try editor.model.onDidChangeContentWithContextId(entry, Entry.onContent);
+        errdefer editor.model.removeDidChangeContentListener(entry.content_listener);
+        entry.provider_listener = try self.service.on_did_change_providers.listen(entry, Entry.onResources);
+        errdefer self.service.on_did_change_providers.unlisten(entry.provider_listener);
+        if (self.resources_changed) |source| entry.resource_listener = try source.listen(entry, Entry.onResources);
+        errdefer if (entry.resource_listener) |id| self.resources_changed.?.unlisten(id);
         entry.decorator = QuickDiffDecorator.init(
             self.allocator,
             editor.model,
@@ -99,7 +126,9 @@ pub const Controller = struct {
             decoration_owner,
         );
         errdefer entry.decorator.deinit();
-        entry.decorator.update() catch {};
+        entry.diff_listener = try entry.model.on_did_change.listen(entry, Entry.onDiffChanged);
+        errdefer entry.model.on_did_change.unlisten(entry.diff_listener);
+        try entry.decorator.update();
 
         try self.entries.append(entry);
         self.applyEditorState(entry);
@@ -110,37 +139,17 @@ pub const Controller = struct {
             if (entry.editor != editor) continue;
             _ = self.entries.orderedRemove(index);
             self.destroyEntry(entry);
+            if (self.entries.items.len == 0) self.worker.stopWorker();
             return;
         }
     }
 
-    /// Recomputes every entry immediately (git status/provider change).
-    pub fn refreshAll(self: *Controller) bool {
-        var changed = false;
-        for (self.entries.items) |entry| {
-            entry.model.recompute() catch continue;
-            entry.decorator.update() catch {};
-            entry.last_version = entry.editor.model.getVersionId();
-            self.applyEditorState(entry);
-            changed = true;
-        }
-        return changed;
-    }
-
-    /// Polls the per-editor debounce and returns true when decorations changed.
     pub fn poll(self: *Controller, now_ms: i64) bool {
-        var changed = false;
+        var changed = self.worker.dispatchReplies();
         for (self.entries.items) |entry| {
-            const version = entry.editor.model.getVersionId();
-            if (version != entry.last_version) {
-                entry.model.triggerDiff(now_ms);
-                entry.last_version = version;
-            }
-            if (!entry.model.poll(now_ms)) continue;
-            entry.decorator.update() catch {};
-            self.applyEditorState(entry);
-            changed = true;
+            if (entry.model.runScheduledDiff(&self.worker, now_ms)) changed = true;
         }
+        self.worker.checkStopIdleWorker(now_ms);
         return changed;
     }
 
@@ -154,11 +163,11 @@ pub const Controller = struct {
     }
 
     pub fn setIgnoreTrimWhitespace(self: *Controller, ignore: bool) void {
+        if (self.ignore_trim_whitespace == ignore) return;
         self.ignore_trim_whitespace = ignore;
         for (self.entries.items) |entry| {
             entry.model.setIgnoreTrimWhitespace(ignore);
-            entry.model.recompute() catch continue;
-            entry.decorator.update() catch {};
+            entry.model.triggerDiff(time.milliTimestamp());
         }
     }
 
@@ -169,6 +178,10 @@ pub const Controller = struct {
     }
 
     fn destroyEntry(self: *Controller, entry: *Entry) void {
+        entry.editor.model.removeDidChangeContentListener(entry.content_listener);
+        self.service.on_did_change_providers.unlisten(entry.provider_listener);
+        if (entry.resource_listener) |id| self.resources_changed.?.unlisten(id);
+        entry.model.on_did_change.unlisten(entry.diff_listener);
         entry.decorator.deinit();
         entry.model.deinit();
         entry.editor.setLineDecorationsWidth(0);
@@ -204,15 +217,27 @@ test "quickDiffController: attach, apply gutter width and detach" {
         allocator.destroy(editor);
     }
 
+    var resources = ResourceEvent.init(allocator);
+    defer resources.deinit();
     var controller = Controller.init(allocator, &service);
+    controller.resources_changed = &resources;
     defer controller.deinit();
 
     try controller.attach(editor, "/repo/test.zig");
     try testing.expectEqual(@as(usize, 1), controller.count());
     try testing.expectEqual(@as(usize, 1), editor.lineDecorationsWidth());
+    const then = time.milliTimestamp() + 201;
+    try testing.expect(!controller.poll(then));
+    try testing.expect(controller.entries.items[0].model.pending != null);
+    controller.worker.waitForReply();
+    try testing.expect(controller.poll(then));
     try testing.expect(editor.decorationGeneration() > 0);
+    try testing.expect(controller.entries.items[0].model.due_at == null);
+    try resources.fire({});
+    try testing.expect(controller.entries.items[0].model.due_at != null);
 
     controller.detach(editor);
+    try testing.expect(!resources.hasListeners());
     try testing.expectEqual(@as(usize, 0), controller.count());
     try testing.expectEqual(@as(usize, 0), editor.lineDecorationsWidth());
 }
@@ -240,8 +265,12 @@ test "quickDiffController: poll updates after an edit and config disables decora
     try controller.attach(editor, "/repo/test.zig");
 
     try editor.typeCharacter("x");
-    try testing.expect(!controller.poll(100));
-    try testing.expect(controller.poll(5000));
+    const due = controller.entries.items[0].model.due_at orelse return error.ExpectedContentEvent;
+    try testing.expect(!controller.poll(due - 1));
+    try testing.expect(!controller.poll(due));
+    try testing.expect(controller.entries.items[0].model.pending != null);
+    controller.worker.waitForReply();
+    try testing.expect(controller.poll(due));
 
     controller.setConfig(.{ .decorations = .none });
     try testing.expectEqual(@as(usize, 0), editor.lineDecorationsWidth());

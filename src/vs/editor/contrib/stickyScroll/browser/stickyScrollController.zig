@@ -2,7 +2,7 @@
 // `src/vs/editor/contrib/stickyScroll/browser/stickyScrollController.ts`.
 //
 // Terminal adaptations:
-// - candidate-model rebuilds are synchronous and debounced with the existing
+// - candidate-model requests are debounced with the existing
 //   polled scheduler from `base/common/async.zig`;
 // - the widget is always registered as a top-left overlay and hides itself by
 //   reporting zero height, instead of being added/removed from the editor;

@@ -341,7 +341,7 @@ pub fn main(init: std.process.Init) !void {
             editor.deinit();
             allocator.destroy(editor);
         }
-        try runPreview(allocator, io, out, editor, size);
+        try runPreview(allocator, io, out, editor, size, json_client);
         return;
     }
 
@@ -467,7 +467,7 @@ pub fn main(init: std.process.Init) !void {
             report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
-        workbench = try Workbench.init(allocator, io, files.items, size.width, size.height);
+        workbench = try Workbench.init(allocator, io, &.{}, size.width, size.height);
     }
     infoLog(log_service, "startup: workbench-init={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
@@ -492,6 +492,14 @@ pub fn main(init: std.process.Init) !void {
             defer allocator.free(history_path);
             workbench.setHistoryStatePath(history_path) catch {};
         } else |_| {}
+    }
+
+    if (folders.items.len > 0) {
+        try workbench.setWorkspaceFolders(folders.items);
+    }
+    try workbench.initSidebarFromWorkspace();
+    if (!restored) {
+        for (files.items) |path| try workbench.openPath(path);
     }
 
     // Native Vim and Helix are compiled-in modal built-ins. Their runtimes
@@ -554,13 +562,7 @@ pub fn main(init: std.process.Init) !void {
     infoLog(log_service, "startup: themes={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
-    if (json_client) |client| {
-        if (workbench.jsonSchemasValue()) |schemas| {
-            var arena = std.heap.ArenaAllocator.init(allocator);
-            defer arena.deinit();
-            client.configure(arena.allocator(), schemas.*) catch {};
-        }
-    }
+    workbench.configureJsonLanguage();
 
     if (args.session) |session_path| {
         defer {
@@ -578,10 +580,6 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    if (folders.items.len > 0) {
-        try workbench.setWorkspaceFolders(folders.items);
-    }
-    try workbench.initSidebarFromWorkspace();
     workbench.initGit() catch {};
     if (profile.user_data_dir) |user_data| workbench.setSidebarViewStorage(user_data) catch {};
     if (workbench.activeTab()) |active| {
@@ -647,8 +645,9 @@ pub fn main(init: std.process.Init) !void {
     try workbench.render(out);
     try workbench.syncCursor(out);
     try out.flush();
-    infoLog(log_service, "startup: first-frame={d}ms", .{
+    infoLog(log_service, "startup: first-frame={d}ms active-editor-wraps={d}", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
+        if (workbench.activeTab()) |active| active.editor.view_lines.rebuildAllCount() else 0,
     });
 
     // Match upstream's `WorkbenchPhase.AfterRestored`: the workspace watcher
@@ -673,11 +672,13 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.pollBreadcrumbs()) needs_render = true;
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         if (workbench.pollSearch(now_ms)) needs_render = true;
-        if (workbench.pollJsonLanguage()) needs_render = true;
         if (workbench.pollGit(now_ms)) needs_render = true;
         if (workbench.markdownPreviewTick(now_ms)) needs_render = true;
         if (workbench.tickEditorDrag(now_ms)) needs_render = true;
         if (workbench.pollAsyncReads()) needs_render = true;
+        if (json_client) |client| {
+            if (client.dispatchResponses(false)) needs_render = true;
+        }
         if (extension_host) |ext| {
             if (ext.pump()) needs_render = true;
         }
@@ -707,6 +708,7 @@ pub fn main(init: std.process.Init) !void {
             }
             if (needs_render) timeout = 0;
         }
+        timeout = workbench.outline_models.dispatchTimers(now_ms, timeout);
         if (workbench.editorDragTimeout(now_ms)) |drag_timeout| timeout = @min(timeout, drag_timeout);
         if (workbench.gitWantsTick()) timeout = @min(timeout, 200);
         if (workbench.markdownPreviewTimeout(now_ms)) |preview_timeout| {
@@ -1235,7 +1237,7 @@ fn syncCursor(out: *Io.Writer, view: *View) !void {
     }
 }
 
-fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Editor, initial_size: tui.Size) !void {
+fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Editor, initial_size: tui.Size, json_client: ?*json_language.Client) !void {
     var size = initial_size;
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
@@ -1256,6 +1258,13 @@ fn runPreview(allocator: std.mem.Allocator, io: Io, out: *Io.Writer, editor: *Ed
 
     while (true) {
         const ready = try tui.pollInput(250);
+        if (json_client) |client| {
+            if (client.dispatchResponses(false)) {
+                try setPreviewStatus(editor, view);
+                try view.renderAnsi(out);
+                try out.flush();
+            }
+        }
 
         if (try tui.resizedSize()) |new_size| {
             size = new_size;

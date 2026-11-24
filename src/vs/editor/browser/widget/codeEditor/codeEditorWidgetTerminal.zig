@@ -99,6 +99,8 @@ const extensions_registry = @import("../../../../workbench/services/extensions/c
 const language_config_point = @import("../../../../workbench/services/language/common/languageConfigurationExtensionPoint.zig");
 const text_mate_tokenizer = @import("../../../common/model/tokens/textMateTokenizer.zig");
 const AttachedView = @import("../../../common/model/tokens/abstractSyntaxTokenBackend.zig").AttachedView;
+const MirrorTextModel = @import("../../../common/model/mirrorTextModel.zig").MirrorTextModel;
+const JsonContentChange = json_language.Client.ContentChange;
 const json_language = @import("../../../../workbench/services/language/common/jsonLanguageClient.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 const async_mod = @import("../../../../base/common/async.zig");
@@ -131,7 +133,24 @@ const markers = @import("../../../../platform/markers/common/markers.zig");
 const std_uri = @import("../../../../base/common/stdUri.zig");
 const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 
-fn convertJsonDocumentSymbol(allocator: Allocator, model: *TextModel, symbol: json_language.JsonDocumentSymbol) !languages.DocumentSymbol {
+const SymbolPositions = struct {
+    arena: Allocator,
+    mirror: *const MirrorTextModel,
+    lines: std.AutoHashMapUnmanaged(u32, position_converter.LineIndex) = .empty,
+
+    fn column(self: *SymbolPositions, line: u32, character: u32) !usize {
+        if (line >= self.mirror.getLineCount()) return @as(usize, character) + 1;
+        const slot = try self.lines.getOrPut(self.arena, line);
+        if (!slot.found_existing) slot.value_ptr.* = try position_converter.LineIndex.init(self.arena, self.mirror.getLineContent(@as(usize, line) + 1));
+        return slot.value_ptr.column(character);
+    }
+
+    fn range(self: *SymbolPositions, r: json_language.LspRange) !Range {
+        return Range.init(@as(usize, r.start_line) + 1, try self.column(r.start_line, r.start_character), @as(usize, r.end_line) + 1, try self.column(r.end_line, r.end_character));
+    }
+};
+
+fn convertJsonDocumentSymbol(allocator: Allocator, positions: *SymbolPositions, symbol: json_language.JsonDocumentSymbol) !languages.DocumentSymbol {
     const name = try allocator.dupe(u8, symbol.name);
     errdefer allocator.free(name);
     const detail = try allocator.dupe(u8, symbol.detail);
@@ -150,7 +169,7 @@ fn convertJsonDocumentSymbol(allocator: Allocator, model: *TextModel, symbol: js
         allocator.free(children);
     }
     for (symbol.children, 0..) |child, index| {
-        children[index] = try convertJsonDocumentSymbol(allocator, model, child);
+        children[index] = try convertJsonDocumentSymbol(allocator, positions, child);
         converted += 1;
     }
 
@@ -160,8 +179,8 @@ fn convertJsonDocumentSymbol(allocator: Allocator, model: *TextModel, symbol: js
         .kind = symbol.kind,
         .tags = tags,
         .container_name = container_name,
-        .range = jsonRangeToEditorRange(model, symbol.range),
-        .selection_range = jsonRangeToEditorRange(model, symbol.selection_range),
+        .range = try positions.range(symbol.range),
+        .selection_range = try positions.range(symbol.selection_range),
         .children = children,
     };
 }
@@ -177,17 +196,6 @@ fn freeJsonDocumentSymbolContents(allocator: Allocator, symbol: languages.Docume
     allocator.free(symbol.tags);
     if (symbol.container_name) |name| allocator.free(name);
     freeJsonDocumentSymbols(allocator, symbol.children);
-}
-
-fn jsonRangeToEditorRange(model: *TextModel, range: json_language.LspRange) Range {
-    const start_line = @as(usize, range.start_line) + 1;
-    const end_line = @as(usize, range.end_line) + 1;
-    return Range.init(
-        start_line,
-        jsonColumnToEditorColumn(model, start_line, range.start_character),
-        end_line,
-        jsonColumnToEditorColumn(model, end_line, range.end_character),
-    );
 }
 
 fn jsonColumnToEditorColumn(model: *TextModel, line_number: usize, character: u32) usize {
@@ -350,6 +358,13 @@ pub const EditorDocument = struct {
     saved_version: u32,
     /// True when the file changed on disk while it had unsaved edits.
     conflict: bool = false,
+    json: json_language.Document = .{},
+    json_version: u32 = 0,
+    json_mirror: ?MirrorTextModel = null,
+    diagnostic_request: ?u32 = null,
+    json_document_symbol_registration: ?IDisposable = null,
+    json_error_count: usize = 0,
+    json_warning_count: usize = 0,
     refs: usize,
     editors: std.array_list.Managed(*Editor),
 
@@ -447,7 +462,21 @@ pub const EditorDocument = struct {
             .refs = 1,
             .editors = std.array_list.Managed(*Editor).init(allocator),
         };
+        try model.onDidChangeLanguage(self, languageChanged);
+        try model.onDidChangeContentWithContext(self, contentChanged);
         return self;
+    }
+
+    fn languageChanged(_: @import("../../../common/textModelEvents.zig").ModelLanguageChangedEvent, self: *EditorDocument) anyerror!void {
+        if (self.json.client == null or self.editors.items.len == 0) return;
+        self.editors.items[0].detachJsonLanguage();
+        self.editors.items[0].attachJsonLanguage() catch |err| self.editors.items[0].setMessage("JSON attach failed: {s}", .{@errorName(err)});
+        for (self.editors.items) |editor| editor.updateJsonProviders();
+    }
+
+    fn contentChanged(event: InternalModelContentChangeEvent, self: *EditorDocument) anyerror!void {
+        if (self.json.uri == null or self.editors.items.len == 0) return;
+        self.editors.items[0].changeJsonDocument(&event.contentChangedEvent) catch |err| self.editors.items[0].setMessage("JSON sync failed: {s}", .{@errorName(err)});
     }
 
     pub fn retain(self: *EditorDocument) void {
@@ -667,13 +696,6 @@ pub const Editor = struct {
     /// view owner. The editor forwards portable ranges; only the sink knows
     /// class names and colors.
     search_highlight_sink: ?editorBrowser.DecorationSink = null,
-    json_client: ?*json_language.Client = null,
-    json_uri: ?[]u8 = null,
-    json_version: u32 = 0,
-    json_attached: bool = false,
-    json_error_count: usize = 0,
-    json_warning_count: usize = 0,
-    json_message: ?[]u8 = null,
     language_features: ?*LanguageFeaturesService = null,
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
@@ -681,7 +703,6 @@ pub const Editor = struct {
     /// feature attachment must not inflate the shared-model refcount.
     marker_model_registered: bool = false,
     json_completion_registration: ?IDisposable = null,
-    json_document_symbol_registration: ?IDisposable = null,
 
     /// Terminal host options. `reserve_scrollbar` makes the first wrapping
     /// pass use the final text width, avoiding a second full-file wrap when
@@ -756,8 +777,7 @@ pub const Editor = struct {
         options: CreateOptions,
     ) !*Editor {
         const editor = try createInternal(allocator, io, path, width, height, null, declarative, options, null);
-        editor.json_client = json_client;
-        editor.attachJsonLanguage() catch {};
+        editor.setJsonLanguageClient(json_client);
         return editor;
     }
 
@@ -796,8 +816,7 @@ pub const Editor = struct {
         options: CreateOptions,
     ) !*Editor {
         const editor = try createInternal(allocator, io, path, width, height, null, declarative, options, loaded);
-        editor.json_client = json_client;
-        editor.attachJsonLanguage() catch {};
+        editor.setJsonLanguageClient(json_client);
         return editor;
     }
 
@@ -924,7 +943,6 @@ pub const Editor = struct {
             .shortcut_commands = CommandRegistry.init(allocator),
             .find_context = null,
             .find_start_fn = null,
-            .json_client = null,
         };
         errdefer editor.view_event_dispatcher.deinit();
         editor.folding_delayer = async_mod.ThrottledDelayer.init(editor, foldingDue, folding_debounce_min_ms);
@@ -984,7 +1002,6 @@ pub const Editor = struct {
         editor.gutter_line_numbers_min_chars = source.gutter_line_numbers_min_chars;
         editor.gutter_folding = source.gutter_folding;
         editor.line_decorations_width = source.line_decorations_width;
-        if (source.json_client) |client| editor.setJsonLanguageClient(client);
         if (source.language_features) |features| {
             editor.attachLanguageServices(features, source.marker_service, source.marker_decorations);
         }
@@ -1123,92 +1140,153 @@ pub const Editor = struct {
     /// Attaches a shared JSON language server to this editor and opens its
     /// document. Only JSON/JSONC editors are attached.
     pub fn setJsonLanguageClient(self: *Editor, client: ?*json_language.Client) void {
-        if (self.json_document_symbol_registration) |registration| registration.dispose();
-        self.json_document_symbol_registration = null;
-        self.json_client = client;
+        if (self.document.json.client == client) return;
+        self.detachJsonLanguage();
+        self.document.json.client = client;
         self.attachJsonLanguage() catch |err| self.setMessage("JSON attach failed: {s}", .{@errorName(err)});
+        for (self.document.editors.items) |editor| editor.updateJsonProviders();
+    }
+
+    fn updateJsonProviders(self: *Editor) void {
+        if (self.json_completion_registration) |registration| registration.dispose();
+        self.json_completion_registration = null;
         self.registerJsonCompletion();
         self.registerJsonDocumentSymbols();
     }
 
-    pub fn pollJsonLanguage(self: *Editor) bool {
-        if (self.json_client == null) return false;
-        if (!self.json_attached) {
-            self.attachJsonLanguage() catch |err| {
-                self.setMessage("JSON attach failed: {s}", .{@errorName(err)});
-                return true;
-            };
-            return true;
+    fn detachJsonLanguage(self: *Editor) void {
+        const uri = self.document.json.uri orelse return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        self.document.json.client.?.didClose(arena.allocator(), uri) catch |err| std.log.warn("JSON close failed: {s}", .{@errorName(err)});
+        if (self.document.diagnostic_request) |id| self.document.json.client.?.cancel(id);
+        self.document.diagnostic_request = null;
+        if (self.document.json_mirror) |*mirror| mirror.deinit();
+        self.document.json_mirror = null;
+        self.publishJsonDiagnostics(&.{});
+        self.document.json.uri = null;
+        if (self.document.json_document_symbol_registration) |registration| registration.dispose();
+        self.document.json_document_symbol_registration = null;
+        self.allocator.free(uri);
+        self.document.json_error_count = 0;
+        self.document.json_warning_count = 0;
+        for (self.document.editors.items) |editor| {
+            if (std.mem.startsWith(u8, editor.message(), "JSON ")) editor.clearMessage();
         }
-        const version = self.model.getVersionId();
-        if (version == self.json_version) return false;
-        self.syncJsonDocument() catch return false;
-        return true;
     }
 
     fn attachJsonLanguage(self: *Editor) !void {
-        const client = self.json_client orelse return;
+        const client = self.document.json.client orelse return;
         const language_id = self.languageId();
         if (!std.mem.eql(u8, language_id, "json") and !std.mem.eql(u8, language_id, "jsonc")) return;
-        if (self.json_uri != null) return;
+        if (self.document.json.uri != null) return;
         const uri = try std_uri.resourceKey(self.allocator, self.model.uri());
         errdefer self.allocator.free(uri);
-        const text = try self.model.getValue(.LF, false);
+        const text = try self.model.getValue(.TextDefined, false);
         defer text.deinit();
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        try client.didOpen(arena.allocator(), uri, language_id, text.items);
-        self.json_uri = uri;
-        self.json_attached = true;
-        self.json_version = self.model.getVersionId();
+        var mirror = try self.createJsonMirror(uri, text.items);
+        errdefer mirror.deinit();
+        try client.didOpenVersion(arena.allocator(), uri, language_id, self.model.getVersionId(), text.items);
+        self.document.json_mirror = mirror;
+        self.document.json.uri = uri;
+        self.document.json_version = self.model.getVersionId();
+        self.pullJsonDiagnostics() catch |err| self.setMessage("JSON diagnostics failed: {s}", .{@errorName(err)});
+    }
+
+    fn createJsonMirror(self: *Editor, uri: []const u8, text: []const u8) !MirrorTextModel {
+        var lines = try @import("../../../../base/common/strings.zig").splitLines(self.allocator, text);
+        defer lines.deinit();
+        return MirrorTextModel.init(self.allocator, uri, lines.items, self.model.getEOL(), self.model.getVersionId());
+    }
+
+    fn changeJsonDocument(self: *Editor, event: *const @import("../../../common/textModelEvents.zig").ModelContentChangedEvent) !void {
+        const doc = self.document;
+        if (event.isEolChange or event.isFlush or doc.json_mirror == null or doc.json_version != doc.json_mirror.?.version()) return self.syncJsonDocument();
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        var edits = std.array_list.Managed(JsonContentChange).init(arena.allocator());
+        // A failed allocation or write invalidates the mirror until resync.
+        errdefer {
+            doc.json_mirror.?.deinit();
+            doc.json_mirror = null;
+        }
+        try doc.json_mirror.?.onEventsWithContext(event, &edits, struct {
+            fn before(list: *std.array_list.Managed(JsonContentChange), mirror: *const MirrorTextModel, change: *const @import("../../../common/textModelEvents.zig").ModelContentChange) !void {
+                const r = change.range;
+                try list.append(.{ .range = .{
+                    .start_line = @intCast(r.startLineNumber - 1),
+                    .start_character = @intCast(position_converter.utf16OffsetForColumn(mirror.getLineContent(r.startLineNumber), r.startColumn) - 1),
+                    .end_line = @intCast(r.endLineNumber - 1),
+                    .end_character = @intCast(position_converter.utf16OffsetForColumn(mirror.getLineContent(r.endLineNumber), r.endColumn) - 1),
+                }, .text = change.text.items() });
+            }
+        }.before);
+        try doc.json.client.?.didChangeContent(arena.allocator(), doc.json.uri.?, self.model.getVersionId(), edits.items);
+        doc.json_version = self.model.getVersionId();
         try self.pullJsonDiagnostics();
     }
 
     fn syncJsonDocument(self: *Editor) !void {
-        const client = self.json_client orelse return;
-        const uri = self.json_uri orelse return;
-        const text = try self.model.getValue(.LF, false);
+        const client = self.document.json.client orelse return;
+        const uri = self.document.json.uri orelse return;
+        const text = try self.model.getValue(.TextDefined, false);
         defer text.deinit();
         const version = self.model.getVersionId();
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
+        var mirror = try self.createJsonMirror(uri, text.items);
+        errdefer mirror.deinit();
         try client.didChange(arena.allocator(), uri, version, text.items);
-        self.json_version = version;
-        try self.pullJsonDiagnostics();
+        if (self.document.json_mirror) |*previous| previous.deinit();
+        self.document.json_mirror = mirror;
+        self.document.json_version = version;
+        self.pullJsonDiagnostics() catch |err| self.setMessage("JSON diagnostics failed: {s}", .{@errorName(err)});
     }
 
     fn pullJsonDiagnostics(self: *Editor) !void {
-        const client = self.json_client orelse return;
-        const uri = self.json_uri orelse return;
+        const client = self.document.json.client orelse return;
+        const uri = self.document.json.uri orelse return;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const diagnostics = try client.pullDiagnostics(arena.allocator(), uri);
-        self.json_error_count = 0;
-        self.json_warning_count = 0;
+        if (self.document.diagnostic_request) |id| client.cancel(id);
+        self.document.diagnostic_request = null;
+        self.document.diagnostic_request = try client.requestDocument(arena.allocator(), "textDocument/diagnostic", uri, .{
+            .context = self.document,
+            .complete = diagnosticsReady,
+        });
+    }
+
+    fn diagnosticsReady(context: *anyopaque, result: std.json.Value) void {
+        const doc: *EditorDocument = @ptrCast(@alignCast(context));
+        doc.diagnostic_request = null;
+        if (doc.editors.items.len == 0 or doc.json_version != doc.model.getVersionId() or result == .null) return;
+        const self = doc.editors.items[0];
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const diagnostics = json_language.Client.parseDiagnostics(arena.allocator(), result) catch return;
+        self.document.json_error_count = 0;
+        self.document.json_warning_count = 0;
         var first_message: ?[]const u8 = null;
         for (diagnostics) |diagnostic| {
             if (diagnostic.severity == 1) {
-                self.json_error_count += 1;
+                self.document.json_error_count += 1;
                 if (first_message == null) first_message = diagnostic.message;
             } else if (diagnostic.severity == 2) {
-                self.json_warning_count += 1;
+                self.document.json_warning_count += 1;
                 if (first_message == null) first_message = diagnostic.message;
             }
         }
         self.publishJsonDiagnostics(diagnostics);
-        if (self.json_message) |old_message| {
-            self.allocator.free(old_message);
-            self.json_message = null;
-        }
-        if (first_message) |diagnostic_message| {
-            self.json_message = try self.allocator.dupe(u8, diagnostic_message);
-            self.setMessage("JSON {d} error(s), {d} warning(s): {s}", .{
-                self.json_error_count,
-                self.json_warning_count,
-                self.json_message.?,
-            });
-        } else if (std.mem.startsWith(u8, self.message(), "JSON ")) {
-            self.clearMessage();
+        for (self.document.editors.items) |editor| {
+            if (first_message) |message_text| {
+                editor.setMessage("JSON {d} error(s), {d} warning(s): {s}", .{
+                    self.document.json_error_count, self.document.json_warning_count, message_text,
+                });
+            } else if (std.mem.startsWith(u8, editor.message(), "JSON ")) {
+                editor.clearMessage();
+            }
         }
     }
 
@@ -1217,7 +1295,7 @@ pub const Editor = struct {
     /// 0-based UTF-16; markers store 1-based UTF-8 editor columns.
     fn publishJsonDiagnostics(self: *Editor, diagnostics: []const json_language.Diagnostic) void {
         const service = self.marker_service orelse return;
-        const uri_text = self.json_uri orelse return;
+        const uri_text = self.document.json.uri orelse return;
         const uri = std.Uri.parse(uri_text) catch return;
         var resource = markers.Resource.fromUri(self.allocator, uri) catch return;
         defer resource.deinit(self.allocator);
@@ -1251,20 +1329,20 @@ pub const Editor = struct {
 
     pub fn formatJson(self: *Editor) !void {
         if (self.read_only) return error.ReadOnly;
-        const client = self.json_client orelse {
+        const client = self.document.json.client orelse {
             self.setMessage("No JSON language server", .{});
             return;
         };
-        if (self.json_uri == null) {
+        if (self.document.json.uri == null) {
             self.setMessage("Not a JSON document", .{});
             return;
         }
-        if (self.model.getVersionId() != self.json_version) self.syncJsonDocument() catch {};
+        if (self.model.getVersionId() != self.document.json_version) self.syncJsonDocument() catch {};
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const edits = try client.formatting(
             arena.allocator(),
-            self.json_uri.?,
+            self.document.json.uri.?,
             @intCast(self.cursor_config.tabSize),
             self.cursor_config.insertSpaces,
         );
@@ -1309,9 +1387,9 @@ pub const Editor = struct {
         allocator: Allocator,
         position: Position,
     ) !completion.CompletionList {
-        const client = self.json_client orelse return .{};
-        const uri = self.json_uri orelse return .{};
-        if (self.model.getVersionId() != self.json_version) {
+        const client = self.document.json.client orelse return .{};
+        const uri = self.document.json.uri orelse return .{};
+        if (self.model.getVersionId() != self.document.json_version) {
             self.syncJsonDocument() catch {};
         }
         const items = try client.completion(
@@ -1353,7 +1431,7 @@ pub const Editor = struct {
         // Tabs created before `enableLanguageFeatures` have already pulled
         // their JSON diagnostics; republish them now that the marker service
         // exists.
-        if (!had_marker_service and marker_service != null and self.json_attached) {
+        if (!had_marker_service and marker_service != null and self.document.json.uri != null) {
             self.pullJsonDiagnostics() catch {};
         }
         self.registerJsonCompletion();
@@ -1363,7 +1441,7 @@ pub const Editor = struct {
     fn registerJsonCompletion(self: *Editor) void {
         if (self.json_completion_registration != null) return;
         const features = self.language_features orelse return;
-        if (self.json_client == null) return;
+        if (self.document.json.client == null) return;
         self.json_completion_registration = features.completion_provider.register(.{ .list = &.{
             .{ .filter = .{ .language = "json" } },
             .{ .filter = .{ .language = "jsonc" } },
@@ -1375,19 +1453,67 @@ pub const Editor = struct {
     }
 
     fn registerJsonDocumentSymbols(self: *Editor) void {
-        if (self.json_document_symbol_registration != null) return;
+        if (self.document.json_document_symbol_registration != null) return;
         const features = self.language_features orelse return;
-        if (self.json_client == null or self.json_uri == null) return;
+        if (self.document.json.client == null or self.document.json.uri == null) return;
         const language_id = self.languageId();
         if (!std.mem.eql(u8, language_id, "json") and !std.mem.eql(u8, language_id, "jsonc")) return;
-        self.json_document_symbol_registration = features.document_symbol_provider.register(.{ .list = &.{
+        self.document.json_document_symbol_registration = features.document_symbol_provider.register(.{ .list = &.{
             .{ .filter = .{ .language = "json" } },
             .{ .filter = .{ .language = "jsonc" } },
         } }, .{
-            .context = self,
+            .context = self.document,
             .display_name = "JSON",
             .provide_document_symbols = jsonProvideDocumentSymbols,
+            .request_document_symbols = requestJsonSymbols,
         }) catch null;
+    }
+
+    const JsonSymbolRequest = struct {
+        allocator: Allocator,
+        document: *EditorDocument,
+        client: *json_language.Client,
+        version: u32,
+        id: u32,
+        callback: languages.DocumentSymbolCallback,
+
+        fn cancel(context: *anyopaque) void {
+            const self: *JsonSymbolRequest = @ptrCast(@alignCast(context));
+            self.client.cancel(self.id);
+            self.document.release();
+        }
+
+        fn ready(context: *anyopaque, result: std.json.Value) void {
+            const self: *JsonSymbolRequest = @ptrCast(@alignCast(context));
+            const doc = self.document;
+            defer doc.release();
+            var scratch = std.heap.ArenaAllocator.init(doc.allocator);
+            defer scratch.deinit();
+            const symbols = if (doc.json_mirror != null and doc.json.client == self.client and doc.model.getVersionId() == self.version)
+                json_language.parseDocumentSymbols(scratch.allocator(), result) catch &.{}
+            else
+                &.{};
+            var positions = SymbolPositions{ .arena = scratch.allocator(), .mirror = if (doc.json_mirror) |*m| m else {
+                self.callback.complete(self.callback.context, &.{});
+                return;
+            } };
+            const converted = convertJsonSymbols(self.allocator, &positions, symbols) catch &.{};
+            self.callback.complete(self.callback.context, converted);
+        }
+    };
+
+    fn requestJsonSymbols(context: *anyopaque, arena: Allocator, model: *TextModel, callback: languages.DocumentSymbolCallback) !?IDisposable {
+        const doc: *EditorDocument = @ptrCast(@alignCast(context));
+        if (doc.model != model or doc.editors.items.len == 0) return null;
+        const editor = doc.editors.items[0];
+        const client = doc.json.client orelse return null;
+        const uri = doc.json.uri orelse return null;
+        if (doc.json_version != model.getVersionId()) try editor.syncJsonDocument();
+        const request = try arena.create(JsonSymbolRequest);
+        request.* = .{ .allocator = arena, .document = doc, .client = client, .id = undefined, .version = model.getVersionId(), .callback = callback };
+        request.id = try client.requestDocument(arena, "textDocument/documentSymbol", uri, .{ .context = request, .complete = JsonSymbolRequest.ready });
+        doc.retain();
+        return .{ .context = request, .disposeFn = JsonSymbolRequest.cancel };
     }
 
     pub fn jsonProvideDocumentSymbols(
@@ -1397,15 +1523,22 @@ pub const Editor = struct {
         token: CancellationToken,
     ) anyerror![]languages.DocumentSymbol {
         _ = token;
-        const self: *Editor = @ptrCast(@alignCast(context));
-        if (model != self.model) return &.{};
-        const client = self.json_client orelse return &.{};
-        const uri = self.json_uri orelse return &.{};
-        if (self.model.getVersionId() != self.json_version) self.syncJsonDocument() catch {};
+        const doc: *EditorDocument = @ptrCast(@alignCast(context));
+        if (doc.model != model or doc.editors.items.len == 0) return &.{};
+        const self = doc.editors.items[0];
+        const client = self.document.json.client orelse return &.{};
+        const uri = self.document.json.uri orelse return &.{};
+        if (self.model.getVersionId() != self.document.json_version) self.syncJsonDocument() catch {};
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const symbols = client.documentSymbols(arena.allocator(), uri) catch return &.{};
+        const mirror = if (doc.json_mirror) |*value| value else return &.{};
+        var positions = SymbolPositions{ .arena = arena.allocator(), .mirror = mirror };
+        return convertJsonSymbols(allocator, &positions, symbols);
+    }
+
+    fn convertJsonSymbols(allocator: Allocator, positions: *SymbolPositions, symbols: []const json_language.JsonDocumentSymbol) ![]languages.DocumentSymbol {
         const result = try allocator.alloc(languages.DocumentSymbol, symbols.len);
         var converted: usize = 0;
         errdefer {
@@ -1413,7 +1546,7 @@ pub const Editor = struct {
             allocator.free(result);
         }
         for (symbols, 0..) |symbol, index| {
-            result[index] = try convertJsonDocumentSymbol(allocator, self.model, symbol);
+            result[index] = try convertJsonDocumentSymbol(allocator, positions, symbol);
             converted += 1;
         }
         return result;
@@ -1568,12 +1701,12 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        if (self.document.editors.items.len == 1) self.detachJsonLanguage();
         // Unregister the shared-model listeners first: the model may outlive
         // this view while a split copy stays open.
         self.model.removeDidChangeContentListener(self.content_listener_id);
         self.model.removeDidChangeDecorationsListener(self.decorations_listener_id);
         if (self.json_completion_registration) |registration| registration.dispose();
-        if (self.json_document_symbol_registration) |registration| registration.dispose();
         if (self.marker_decorations) |service| {
             if (self.marker_model_registered) {
                 service.unregisterModel(self.model);
@@ -1598,8 +1731,7 @@ pub const Editor = struct {
         self.model_adapter.deinit();
         self.bracket_matching.deinit();
         self.smart_select.deinit();
-        if (self.json_uri) |uri| self.allocator.free(uri);
-        if (self.json_message) |json_message| self.allocator.free(json_message);
+
         if (self.multicursor_session) |*session| session.deinit();
         self.word_separators.deinit();
         if (self.cursor_event_view_selections.len > 0) self.allocator.free(self.cursor_event_view_selections);
@@ -1630,9 +1762,9 @@ pub const Editor = struct {
         editor.onModelContentChanged(event);
     }
 
-    fn decorationChangedCallback(_: @import("../../../common/textModelEvents.zig").ModelDecorationsChangedEvent, editor: *Editor) anyerror!void {
+    fn decorationChangedCallback(event: @import("../../../common/textModelEvents.zig").ModelDecorationsChangedEvent, editor: *Editor) anyerror!void {
         editor.decoration_generation +%= 1;
-        editor.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(null) });
+        editor.emitViewEvent(.{ .ViewDecorationsChanged = view_events.ViewDecorationsChangedEvent.init(event) });
     }
 
     fn emitModelContentChangedEvents(self: *Editor) void {
@@ -3999,7 +4131,14 @@ pub const Editor = struct {
         language_id: ?[]const u8,
         resource: ?[]const u8,
     ) !bool {
-        if (!terminal_editor_config.applyModelSettings(self.model, reader, language_id, resource)) return false;
+        const value = terminal_editor_config.readInt(reader, "editor.maxTokenizationLineLength", language_id, resource) orelse @as(i64, @import("../../../../workbench/services/textMate/browser/tokenizationSupport/tokenizationSupportWithLineLimit.zig").default_limit);
+        const limit: usize = @intCast(@max(value, 0));
+        const changed = self.model.max_tokenization_line_length != limit;
+        if (changed) {
+            self.model.max_tokenization_line_length = limit;
+            self.model.tokenization().resetTokenization();
+        }
+        if (!terminal_editor_config.applyModelSettings(self.model, reader, language_id, resource)) return changed;
         self.refreshCursorOptions();
         _ = try self.view_lines.setTabSize(self.model.getOptions().tabSize);
         try self.refreshLayout();
@@ -6657,7 +6796,8 @@ test "Editor: JSON language features populate diagnostics and completion" {
     }
     editor.attachLanguageServices(null, &marker_service, null);
     try std.testing.expectEqualStrings("json", editor.languageId());
-    try std.testing.expect(editor.json_error_count > 0);
+    try std.testing.expect(client.dispatchResponses(true));
+    try std.testing.expect(editor.document.json_error_count > 0);
     try std.testing.expect(std.mem.startsWith(u8, editor.message(), "JSON "));
     try std.testing.expect(marker_service.getStatistics().errors > 0);
 }
@@ -7170,4 +7310,109 @@ test "Editor: logical-line selection carries the desired column" {
     const selection = editor.modelSelection();
     try std.testing.expectEqual(Position.init(1, 6), selection.getStartPosition());
     try std.testing.expectEqual(Position.init(2, 3), selection.getEndPosition());
+}
+
+test "JSON synchronizes once per shared document and follows its language" {
+    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const client = try json_language.Client.start(allocator, "node", "host/dist/jsonServer.mjs");
+    defer client.deinit();
+    const editor = try Editor.createFromText(allocator, time_compat.io, "{}", "events.zig", 40, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.setJsonLanguageClient(client);
+    try std.testing.expect(editor.document.json.uri == null);
+    try editor.insertText(" ");
+    try std.testing.expectEqual(@as(u32, 0), editor.document.json_version);
+
+    try editor.setLanguage("json");
+    const uri = editor.document.json.uri.?;
+    try std.testing.expectEqual(editor.model.getVersionId(), editor.document.json_version);
+    {
+        const split = try Editor.createViewFromEditor(editor, 40, 8);
+        defer {
+            split.deinit();
+            allocator.destroy(split);
+        }
+        split.setJsonLanguageClient(client);
+        try std.testing.expect(uri.ptr == split.document.json.uri.?.ptr);
+        try split.insertText(" ");
+        try std.testing.expectEqual(split.model.getVersionId(), editor.document.json_version);
+    }
+    try std.testing.expect(editor.document.json.uri.?.ptr == uri.ptr);
+    try editor.setLanguage("jsonc");
+    try std.testing.expect(editor.document.json.uri != null);
+    try editor.setLanguage("zig");
+    try std.testing.expect(editor.document.json.uri == null);
+    const last_json_version = editor.document.json_version;
+    try editor.insertText(" ");
+    try std.testing.expectEqual(last_json_version, editor.document.json_version);
+}
+
+test "JSON incremental edits use pre-edit UTF-16 ranges and discard cancelled outline replies" {
+    std.Io.Dir.cwd().access(time_compat.io, "host/dist/jsonServer.mjs", .{}) catch return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const client = try json_language.Client.start(a, "node", "host/dist/jsonServer.mjs");
+    defer client.deinit();
+    const editor = try Editor.createFromText(a, time_compat.io, "{\"😀key\":1,\"é\":2}", "ranges.json", 80, 12);
+    defer {
+        editor.deinit();
+        a.destroy(editor);
+    }
+    editor.setJsonLanguageClient(client);
+    const Sink = struct {
+        calls: usize = 0,
+        correct: bool = false,
+        fn ready(ctx: *anyopaque, symbols: []const languages.DocumentSymbol) void {
+            const sink: *@This() = @ptrCast(@alignCast(ctx));
+            sink.calls += 1;
+            sink.correct = symbols.len == 2 and std.mem.eql(u8, symbols[0].name, "A") and std.mem.eql(u8, symbols[1].name, "猫");
+        }
+    };
+    var scratch = std.heap.ArenaAllocator.init(a);
+    defer scratch.deinit();
+    var sink = Sink{};
+    const callback = languages.DocumentSymbolCallback{ .context = &sink, .complete = Sink.ready };
+    const stale = (try Editor.requestJsonSymbols(editor.document, scratch.allocator(), editor.model, callback)).?;
+    stale.dispose();
+    const edits = [_]TextEdit{
+        .{ .range = Range.init(1, 3, 1, 10), .text = "A" },
+        .{ .range = Range.init(1, 15, 1, 17), .text = "猫" },
+    };
+    try editor.applyTextEdits(&edits, &.{});
+    const handle = try Editor.requestJsonSymbols(editor.document, scratch.allocator(), editor.model, callback);
+    try std.testing.expect(handle != null);
+    try std.testing.expectEqual(0, sink.calls);
+    while (sink.calls == 0) try std.testing.expect(client.dispatchResponses(true));
+    try std.testing.expect(sink.correct);
+    try std.testing.expectEqual(1, sink.calls);
+}
+
+test "wrapped view lines retain immutable text through edits and undo" {
+    const a = std.testing.allocator;
+    const editor = try Editor.createFromText(a, time_compat.io, "abcdef0123456789\nsecond", "cached.txt", 10, 10);
+    defer {
+        editor.deinit();
+        a.destroy(editor);
+    }
+    const before = try editor.model.acquireLineContent(1);
+    defer before.release();
+    var tokens = try editor.model.tokenization().getLineTokens(1);
+    defer tokens.deinit();
+    var retained = try tokens.retainForView(a);
+    defer retained.deinit();
+    try std.testing.expect(retained.shared_text == before);
+    try editor.insertText("X");
+    const after = try editor.model.acquireLineContent(1);
+    defer after.release();
+    try std.testing.expect(after != before);
+    try std.testing.expectEqualStrings("abcdef0123456789", retained.getLineContent());
+    try std.testing.expectEqualStrings("Xabcdef0123456789", after.text.items);
+    try editor.undo();
+    const undone = try editor.model.acquireLineContent(1);
+    defer undone.release();
+    try std.testing.expectEqualStrings(before.text.items, undone.text.items);
+    try std.testing.expectEqualStrings("Xabcdef0123456789", after.text.items);
 }

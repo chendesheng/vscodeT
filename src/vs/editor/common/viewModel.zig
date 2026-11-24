@@ -242,7 +242,18 @@ pub const ILineHeightChangeAccessor = struct {
 
 /// The subset of upstream `IViewModel` that the modules ported so far need. It
 /// grows as more consumers are ported; the full interface is much larger.
+/// Ruler data grouped by resolved color and lane, in view-line coordinates.
+pub const OverviewLane = enum { left, center, right, full };
+pub const OverviewDecoration = struct {
+    start_line_number: usize,
+    end_line_number: usize,
+    color: [3]u8,
+    lane: OverviewLane = .center,
+    z_index: i32 = 0,
+};
+
 pub const IViewModel = struct {
+    get_all_overview_ruler_decorations: ?*const fn (*anyopaque, std.mem.Allocator) anyerror![]OverviewDecoration = null,
     context: *anyopaque,
     /// Upstream `IViewModel.viewLayout`.
     view_layout: IViewLayout,

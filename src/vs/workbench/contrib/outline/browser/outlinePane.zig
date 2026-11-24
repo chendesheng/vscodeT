@@ -64,6 +64,7 @@ pub const OutlinePane = struct {
     outline_service: *OutlineService,
     view_state: OutlineViewState,
     outline: ?*IOutline = null,
+    outline_listener: ?usize = null,
     tree: *OutlineTree,
     /// Synthetic root passed to the data tree. The rendered tree starts at
     /// `root.children`, matching upstream's outline input.
@@ -185,7 +186,7 @@ pub const OutlinePane = struct {
     }
 
     /// Recreates the outline for the current editor, matching upstream's
-    /// `createOutline` hand-off. The terminal service is synchronous.
+    /// `createOutline` hand-off; provider results arrive through onDidChange.
     pub fn refresh(self: *OutlinePane) !void {
         self.disposeOutline();
         self.message = null;
@@ -209,6 +210,18 @@ pub const OutlinePane = struct {
             return;
         }
         self.outline = outline;
+        if (outline.?.on_did_change) |emitter| self.outline_listener = try emitter.listen(self, onOutlineChanged);
+        try self.updateOutline();
+    }
+
+    fn onOutlineChanged(_: outline_mod.OutlineChangeEvent, self: *OutlinePane) !void {
+        try self.updateOutline();
+        self.host.request_render(self.host.context);
+    }
+
+    fn updateOutline(self: *OutlinePane) !void {
+        const outline = self.outline;
+        self.message = null;
         try self.rebuildInput();
         if (outline.?.is_empty) {
             self.message = "No symbols found in the active document.";
@@ -220,6 +233,8 @@ pub const OutlinePane = struct {
     fn disposeOutline(self: *OutlinePane) void {
         if (self.outline) |outline| {
             self.tree.setInput(null) catch {};
+            if (self.outline_listener) |id| outline.on_did_change.?.unlisten(id);
+            self.outline_listener = null;
             outline.dispose();
             self.outline = null;
         }
@@ -255,6 +270,7 @@ pub const OutlinePane = struct {
     /// workbench polling loop.
     fn rebuildNow(context: *anyopaque) bool {
         const self: *OutlinePane = @ptrCast(@alignCast(context));
+        if (self.outline_listener != null) return false;
         self.refresh() catch {
             self.message = "The outline could not be created.";
         };

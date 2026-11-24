@@ -1,11 +1,8 @@
 // Port of `src/vs/editor/contrib/documentSymbols/browser/outlineModel.ts`.
 //
-// The portable tree, provider groups, duplicate-id handling, marker rollup,
-// position lookup and breadcrumb chain are ported. The browser file's
-// `OutlineModelService` LRU cache, cancellation plumbing and debounce
-// information are not part of this module; the terminal outline pane debounces
-// rebuilds through the main loop and the breadcrumbs create their outline
-// synchronously (documented in `README.md` and `docs/terminal-ui.md`).
+// Provider promises complete through callbacks on the terminal event loop.
+// Consumers share versioned models via OutlineModelService; intrusive references
+// keep evicted or replaced models alive while a view still owns them.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -50,6 +47,7 @@ pub const OutlineGroup = struct {
 };
 
 pub const OutlineModel = struct {
+    refs: usize = 1,
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
     /// Provider groups. A single non-empty provider is compacted, exactly like
@@ -66,15 +64,8 @@ pub const OutlineModel = struct {
         model: *TextModel,
         providers: []const languages.DocumentSymbolProvider,
     ) !*OutlineModel {
-        const self = try allocator.create(OutlineModel);
-        self.* = .{
-            .allocator = allocator,
-            .arena = std.heap.ArenaAllocator.init(allocator),
-        };
-        errdefer {
-            self.arena.deinit();
-            allocator.destroy(self);
-        }
+        const self = try empty(allocator);
+        errdefer self.deinit();
         const arena = self.arena.allocator();
         var groups = std.array_list.Managed(*OutlineGroup).init(arena);
 
@@ -91,15 +82,26 @@ pub const OutlineModel = struct {
                 model,
                 CancellationToken.None,
             ) catch &.{};
-            var children = std.array_list.Managed(*OutlineElement).init(arena);
-            for (symbols) |symbol| {
-                try children.append(try buildElement(arena, group.id, symbol, children.items, null));
-            }
-            group.children = try children.toOwnedSlice();
+            group.children = try buildChildren(arena, group.id, symbols, null);
             if (group.children.len > 0) try groups.append(group);
         }
 
         self.groups = try groups.toOwnedSlice();
+        try self.compact();
+        return self;
+    }
+
+    pub fn empty(allocator: Allocator) !*OutlineModel {
+        const self = try allocator.create(OutlineModel);
+        self.* = .{
+            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+        };
+        return self;
+    }
+
+    fn compact(self: *OutlineModel) !void {
+        const arena = self.arena.allocator();
         if (self.groups.len == 1) {
             self.roots = self.groups[0].children;
         } else if (self.groups.len > 1) {
@@ -109,28 +111,42 @@ pub const OutlineModel = struct {
             for (self.groups) |group| try roots.appendSlice(group.children);
             self.roots = try roots.toOwnedSlice();
         }
-        return self;
+    }
+
+    fn buildChildren(arena: Allocator, parent_id: []const u8, symbols: []const languages.DocumentSymbol, parent: ?*OutlineElement) Allocator.Error![]*OutlineElement {
+        const children = try arena.alloc(*OutlineElement, symbols.len);
+        // Upstream TreeElement.children is an insertion-ordered Map keyed by id.
+        var ids: std.StringHashMapUnmanaged(void) = .empty;
+        defer ids.deinit(arena);
+        try ids.ensureTotalCapacity(arena, @intCast(symbols.len));
+        for (symbols, children) |symbol, *child| {
+            child.* = try buildElement(arena, parent_id, symbol, ids, parent);
+            ids.putAssumeCapacity(child.*.id, {});
+        }
+        return children;
     }
 
     fn buildElement(
         arena: Allocator,
         parent_id: []const u8,
         symbol: languages.DocumentSymbol,
-        siblings: []*OutlineElement,
+        siblings: std.StringHashMapUnmanaged(void),
         parent: ?*OutlineElement,
     ) !*OutlineElement {
         const element = try arena.create(OutlineElement);
         element.* = .{ .symbol = symbol, .parent = parent };
         element.id = try findId(arena, parent_id, symbol, siblings);
-        var children = std.array_list.Managed(*OutlineElement).init(arena);
-        for (symbol.children) |child| {
-            try children.append(try buildElement(arena, element.id, child, children.items, element));
-        }
-        element.children = try children.toOwnedSlice();
+        element.children = try buildChildren(arena, element.id, symbol.children, element);
         return element;
     }
 
+    pub fn retain(self: *OutlineModel) void {
+        self.refs += 1;
+    }
+
     pub fn deinit(self: *OutlineModel) void {
+        self.refs -= 1;
+        if (self.refs != 0) return;
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -333,10 +349,10 @@ fn findId(
     arena: Allocator,
     parent_id: []const u8,
     symbol: languages.DocumentSymbol,
-    siblings: []*OutlineElement,
+    siblings: std.StringHashMapUnmanaged(void),
 ) ![]const u8 {
     var candidate = try std.fmt.allocPrint(arena, "{s}/{s}", .{ parent_id, symbol.name });
-    if (hasChildId(siblings, candidate)) {
+    if (siblings.contains(candidate)) {
         candidate = try std.fmt.allocPrint(arena, "{s}/{s}_{d}_{d}", .{
             parent_id,
             symbol.name,
@@ -346,15 +362,271 @@ fn findId(
     }
     var attempt: usize = 0;
     var id = candidate;
-    while (hasChildId(siblings, id)) : (attempt += 1) {
+    while (siblings.contains(id)) : (attempt += 1) {
         id = try std.fmt.allocPrint(arena, "{s}_{d}", .{ candidate, attempt });
     }
     return id;
 }
 
-fn hasChildId(siblings: []*OutlineElement, id: []const u8) bool {
-    for (siblings) |sibling| {
-        if (std.mem.eql(u8, sibling.id, id)) return true;
+/// OutlineModel.create's Promise.all. Each ordered provider owns one group.
+/// Destroying the consumer cancels its outstanding provider requests.
+pub const OutlineRequest = struct {
+    model: *OutlineModel,
+    slots: []Slot,
+    remaining: usize = 0,
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, *OutlineModel) void,
+
+    const Slot = struct {
+        owner: *OutlineRequest,
+        group: *OutlineGroup,
+        pending: ?@import("../../../../base/common/lifecycle.zig").IDisposable = null,
+
+        fn ready(context: *anyopaque, symbols: []const languages.DocumentSymbol) void {
+            const slot: *Slot = @ptrCast(@alignCast(context));
+            const self = slot.owner;
+            slot.pending = null;
+            slot.group.children = OutlineModel.buildChildren(self.model.arena.allocator(), slot.group.id, symbols, null) catch &.{};
+            self.remaining -= 1;
+            if (self.remaining == 0) self.finish();
+        }
+    };
+
+    pub fn start(allocator: Allocator, text_model: *TextModel, providers: []const languages.DocumentSymbolProvider, context: *anyopaque, complete: *const fn (*anyopaque, *OutlineModel) void) !?*OutlineRequest {
+        const model = try OutlineModel.empty(allocator);
+        const arena = model.arena.allocator();
+        errdefer model.deinit();
+        const self = try arena.create(OutlineRequest);
+        self.* = .{ .model = model, .slots = try arena.alloc(Slot, providers.len), .context = context, .complete = complete };
+        model.groups = try arena.alloc(*OutlineGroup, providers.len);
+        for (providers, self.slots, 0..) |provider, *slot, index| {
+            const group = try arena.create(OutlineGroup);
+            group.* = .{ .id = try std.fmt.allocPrint(arena, "root/provider_{d}", .{index}), .label = try arena.dupe(u8, provider.display_name), .order = index };
+            slot.* = .{ .owner = self, .group = group };
+            model.groups[index] = group;
+        }
+        errdefer self.cancelProviders();
+        for (providers, self.slots) |provider, *slot| {
+            if (provider.request_document_symbols) |request| {
+                slot.pending = request(provider.context, arena, text_model, .{ .context = slot, .complete = Slot.ready }) catch null;
+                if (slot.pending != null) self.remaining += 1;
+            } else {
+                const symbols = provider.provide_document_symbols(provider.context, arena, text_model, CancellationToken.None) catch &.{};
+                slot.group.children = try OutlineModel.buildChildren(arena, slot.group.id, symbols, null);
+            }
+        }
+        if (self.remaining != 0) return self;
+        self.finish();
+        return null;
     }
-    return false;
-}
+
+    fn finish(self: *OutlineRequest) void {
+        const model = self.model;
+        var n: usize = 0;
+        for (model.groups) |group| {
+            if (group.children.len == 0) continue;
+            model.groups[n] = group;
+            n += 1;
+        }
+        model.groups = model.groups[0..n];
+        model.compact() catch {};
+        self.complete(self.context, model);
+    }
+
+    fn cancelProviders(self: *OutlineRequest) void {
+        for (self.slots) |slot| if (slot.pending) |pending| pending.dispose();
+    }
+
+    pub fn cancel(self: *OutlineRequest) void {
+        self.cancelProviders();
+        self.model.deinit();
+    }
+};
+
+/// Upstream OutlineModelService.getOrCreate. A pending promise can outlive
+/// its cache entry. Subscribers share the result and only the last cancelled
+/// subscriber cancels the provider.
+pub const OutlineModelService = struct {
+    const Disposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+    const debounce_mod = @import("../../../common/services/languageFeatureDebounce.zig");
+    const now = @import("../../../../base/common/async.zig").nowMs;
+    const Provider = languages.DocumentSymbolProvider;
+    const Callback = *const fn (*anyopaque, *OutlineModel) void;
+
+    allocator: Allocator,
+    entries: std.ArrayList(*Entry) = .empty,
+    debounce: debounce_mod.LanguageFeatureDebounceService,
+    timers: std.ArrayList(Timer) = .empty,
+    const Timer = struct { context: *anyopaque, deadline: i64, run: *const fn (*anyopaque) void };
+
+    pub fn init(allocator: Allocator) OutlineModelService {
+        return .{ .allocator = allocator, .debounce = .init(allocator, false) };
+    }
+    pub fn deinit(self: *OutlineModelService) void {
+        while (self.entries.items.len != 0) self.remove(self.entries.items[0]);
+        self.entries.deinit(self.allocator);
+        self.debounce.deinit();
+        self.timers.deinit(self.allocator);
+    }
+
+    // Terminal event loop adapter for TimeoutTimer.cancelAndSet.
+    pub fn cancelTimer(self: *OutlineModelService, context: *anyopaque) void {
+        for (self.timers.items, 0..) |timer, i| if (timer.context == context) {
+            _ = self.timers.orderedRemove(i);
+            return;
+        };
+    }
+    pub fn schedule(self: *OutlineModelService, context: *anyopaque, delay: i64, run: *const fn (*anyopaque) void) !void {
+        self.cancelTimer(context);
+        const deadline = now() + delay;
+        var i: usize = 0;
+        while (i < self.timers.items.len and self.timers.items[i].deadline <= deadline) i += 1;
+        try self.timers.insert(self.allocator, i, .{ .context = context, .deadline = deadline, .run = run });
+    }
+    pub fn dispatchTimers(self: *OutlineModelService, time: i64, timeout: i32) i32 {
+        while (self.timers.items.len != 0) {
+            const delay = self.timers.items[0].deadline - time;
+            if (delay > 0) return @intCast(@min(delay, timeout));
+            const timer = self.timers.orderedRemove(0);
+            timer.run(timer.context);
+        }
+        return timeout;
+    }
+
+    const Entry = struct {
+        service: *OutlineModelService,
+        model: *TextModel,
+        version: u32,
+        providers: []Provider,
+        hashes: []u32,
+        start: i64,
+        remove_listener: ?usize = null,
+        request: ?*OutlineRequest = null,
+        result: ?*OutlineModel = null,
+        subscribers: std.ArrayList(*Subscription) = .empty,
+        refs: usize = 1,
+
+        fn release(self: *Entry) void {
+            self.refs -= 1;
+            if (self.refs != 0) return;
+            const a = self.service.allocator;
+            if (self.request) |request| request.cancel();
+            if (self.result) |result| result.deinit();
+            self.subscribers.deinit(a);
+            a.free(self.providers);
+            a.free(self.hashes);
+            a.destroy(self);
+        }
+        fn removed(_: void, self: *Entry) !void {
+            self.service.remove(self);
+        }
+        fn ready(context: *anyopaque, result: *OutlineModel) void {
+            const self: *Entry = @ptrCast(@alignCast(context));
+            self.refs += 1;
+            defer self.release();
+            self.request = null;
+            self.result = result;
+            const info = self.service.debounce.for_(1, "DocumentSymbols", .{ .min = 350 }) catch null;
+            if (info) |d| _ = d.update(.{ .id = @intFromPtr(self.model), .feature_hashes = self.hashes }, @floatFromInt(now() - self.start)) catch {};
+            while (self.subscribers.pop()) |sub| {
+                result.retain();
+                sub.complete(sub.context, result);
+                self.service.allocator.destroy(sub);
+                self.release();
+            }
+        }
+    };
+    const Subscription = struct {
+        entry: *Entry,
+        context: *anyopaque,
+        complete: Callback,
+        fn cancel(context: *anyopaque) void {
+            const self: *Subscription = @ptrCast(@alignCast(context));
+            const entry = self.entry;
+            for (entry.subscribers.items, 0..) |sub, i| if (sub == self) {
+                _ = entry.subscribers.orderedRemove(i);
+                break;
+            };
+            entry.service.allocator.destroy(self);
+            if (entry.subscribers.items.len == 0) entry.service.remove(entry);
+            entry.release();
+        }
+    };
+
+    fn remove(self: *OutlineModelService, entry: *Entry) void {
+        for (self.entries.items, 0..) |e, i| if (e == entry) {
+            _ = self.entries.orderedRemove(i);
+            if (e.remove_listener) |id| e.model._onWillDispose.unlisten(id);
+            e.remove_listener = null;
+            e.release();
+            break;
+        };
+    }
+    pub fn getDebounceValue(self: *OutlineModelService, model: *TextModel) i64 {
+        const info = self.debounce.for_(1, "DocumentSymbols", .{ .min = 350 }) catch return 525;
+        for (self.entries.items) |e| if (e.model == model) return @intFromFloat(info.get(.{ .id = @intFromPtr(model), .feature_hashes = e.hashes }));
+        return @intFromFloat(info.default());
+    }
+
+    pub fn getOrCreate(self: *OutlineModelService, model: *TextModel, providers: []const Provider, context: *anyopaque, complete: Callback) !?Disposable {
+        for (self.entries.items, 0..) |e, i| {
+            if (e.model != model) continue;
+            if (e.version != model.getVersionId() or !sameProviders(e.providers, providers)) {
+                self.remove(e);
+                break;
+            }
+            _ = self.entries.orderedRemove(i);
+            self.entries.appendAssumeCapacity(e);
+            if (e.result) |result| {
+                result.retain();
+                complete(context, result);
+                return null;
+            }
+            return try self.subscribe(e, context, complete);
+        }
+
+        const entry = try self.makeEntry(model, providers);
+        // Immediate completions can release the cache entry from a callback.
+        entry.refs += 1;
+        defer entry.release();
+        errdefer self.remove(entry);
+        const handle = try self.subscribe(entry, context, complete);
+        entry.request = OutlineRequest.start(self.allocator, model, providers, entry, Entry.ready) catch |err| {
+            // Drop the subscriber before releasing the cache reference.
+            const sub = entry.subscribers.pop().?;
+            self.allocator.destroy(sub);
+            entry.release();
+            return err;
+        };
+        return if (entry.result != null) null else handle;
+    }
+    fn makeEntry(self: *OutlineModelService, model: *TextModel, providers: []const Provider) !*Entry {
+        const a = self.allocator;
+        const e = try a.create(Entry);
+        errdefer a.destroy(e);
+        const copy = try a.dupe(Provider, providers);
+        errdefer a.free(copy);
+        const hashes = try a.alloc(u32, providers.len);
+        errdefer a.free(hashes);
+        for (providers, hashes) |provider, *hash| hash.* = @truncate(@intFromPtr(provider.context));
+        e.* = .{ .service = self, .model = model, .version = model.getVersionId(), .providers = copy, .hashes = hashes, .start = now() };
+        try self.entries.ensureUnusedCapacity(a, 1);
+        e.remove_listener = try model._onWillDispose.listen(e, Entry.removed);
+        self.entries.appendAssumeCapacity(e);
+        if (self.entries.items.len > 15) while (self.entries.items.len > 11) self.remove(self.entries.items[0]);
+        return e;
+    }
+    fn subscribe(self: *OutlineModelService, entry: *Entry, context: *anyopaque, complete: Callback) !Disposable {
+        const sub = try self.allocator.create(Subscription);
+        errdefer self.allocator.destroy(sub);
+        sub.* = .{ .entry = entry, .context = context, .complete = complete };
+        try entry.subscribers.append(self.allocator, sub);
+        entry.refs += 1;
+        return .{ .context = sub, .disposeFn = Subscription.cancel };
+    }
+    fn sameProviders(a: []const Provider, b: []const Provider) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |x, y| if (x.context != y.context or x.provide_document_symbols != y.provide_document_symbols or x.request_document_symbols != y.request_document_symbols) return false;
+        return true;
+    }
+};

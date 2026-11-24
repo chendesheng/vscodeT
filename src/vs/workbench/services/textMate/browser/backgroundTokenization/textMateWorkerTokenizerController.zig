@@ -108,8 +108,8 @@ pub const Controller = struct {
             .text = owned_text,
             .eol = model.getEOL(),
             .language_id = language_id,
-            .encoded_language_id = 0,
-            .max_tokenization_line_length = std.math.maxInt(usize),
+            .encoded_language_id = @intCast(try model.tokenization().tokens.super._languageIdCodec.encodeLanguageId(language_id)),
+            .max_tokenization_line_length = model.max_tokenization_line_length,
         } });
         return self;
     }

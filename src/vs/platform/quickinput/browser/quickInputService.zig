@@ -126,6 +126,15 @@ pub const QuickInputService = struct {
         };
     }
 
+    /// Complete an asynchronous pick source, retaining the filter typed while pending.
+    pub fn setPickItems(self: *QuickInputService, items: []const QuickPickItem, active_id: ?[]const u8) !void {
+        try self.master.ensureTotalCapacity(items.len);
+        self.master.clearRetainingCapacity();
+        self.master.appendSliceAssumeCapacity(items);
+        try self.refresh();
+        if (active_id) |id| self.selectItem(id);
+    }
+
     pub fn hide(self: *QuickInputService) void {
         if (!self.picker.visible) return;
         self.picker.hide();

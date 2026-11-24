@@ -26,8 +26,7 @@ pub const TuiHoverProvider = struct {
     allocator: Allocator,
     scratch: std.heap.ArenaAllocator,
     contents: [1]IMarkdownString = undefined,
-    json_client: ?*json_language.Client = null,
-    json_uri: ?[]const u8 = null,
+    json_document: ?*const json_language.Document = null,
     model: ?*TextModel = null,
 
     pub fn init(allocator: Allocator) TuiHoverProvider {
@@ -43,11 +42,6 @@ pub const TuiHoverProvider = struct {
 
     pub fn interface(self: *TuiHoverProvider) HoverProvider {
         return .{ .context = self, .provide_hover = provideHover };
-    }
-
-    pub fn setJsonDocument(self: *TuiHoverProvider, client: ?*json_language.Client, uri: ?[]const u8) void {
-        self.json_client = client;
-        self.json_uri = uri;
     }
 
     pub fn setModel(self: *TuiHoverProvider, model: *TextModel) void {
@@ -68,8 +62,9 @@ pub const TuiHoverProvider = struct {
         _ = self.scratch.reset(.retain_capacity);
         const allocator = self.scratch.allocator();
 
-        if (self.json_client) |client| {
-            if (self.json_uri) |uri| {
+        if (self.json_document) |document| {
+            if (document.uri) |uri| {
+                const client = document.client.?;
                 if (client.hover(allocator, uri, @intCast(position.lineNumber - 1), @intCast(position.column - 1)) catch null) |json_hover| {
                     if (json_hover.text.len > 0) {
                         self.contents[0] = .{ .value = json_hover.text };
@@ -167,7 +162,8 @@ test "tui hover provider: forwards JSON hover from a local schema" {
 
     var provider = TuiHoverProvider.init(allocator);
     defer provider.deinit();
-    provider.setJsonDocument(client, uri);
+    const document = json_language.Document{ .client = client, .uri = uri };
+    provider.json_document = &document;
 
     const hover = try TuiHoverProvider.provideHover(&provider, ctx.model, Position.init(3, 4), .None, null);
     try testing.expect(hover != null);

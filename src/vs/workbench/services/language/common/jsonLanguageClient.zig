@@ -1,9 +1,9 @@
 // TUI adaptation of the JSON client/server contract from
 // `vscode/extensions/json-language-features/client/src/jsonClient.ts`.
 //
-// Minimal synchronous LSP client for the bundled VS Code JSON language
-// server. It is deliberately not a general language-client implementation:
-// the TUI owns one local Node process and drives it from the main thread.
+// The reader owns framing and JSON decoding. Provider promises complete on the
+// terminal event loop. Explicit commands can also await their own response
+// without running unrelated provider callbacks inside the calling command.
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
@@ -89,6 +89,25 @@ pub const Error = error{
     RequestFailed,
 };
 
+pub const Document = struct {
+    client: ?*Client = null,
+    uri: ?[]const u8 = null,
+};
+
+const Message = struct {
+    arena: std.heap.ArenaAllocator,
+    value: std.json.Value,
+
+    fn result(self: *const Message) std.json.Value {
+        return self.value.object.get("result") orelse .null;
+    }
+};
+
+pub const ResponseHandler = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, std.json.Value) void,
+};
+
 pub const Client = struct {
     allocator: Allocator,
     io_state: std.Io.Threaded,
@@ -98,6 +117,12 @@ pub const Client = struct {
     buffer: std.array_list.Managed(u8),
     root_uri: []u8,
     initialized: bool = false,
+    reader: ?std.Thread = null,
+    queue: std.ArrayList(Message) = .empty,
+    lock: std.Io.Mutex = .init,
+    available: std.Io.Condition = .init,
+    eof: bool = false,
+    handlers: std.AutoHashMapUnmanaged(u32, ResponseHandler) = .empty,
 
     pub fn start(allocator: Allocator, node_path: []const u8, server_script: []const u8) !*Client {
         const self = try allocator.create(Client);
@@ -114,14 +139,17 @@ pub const Client = struct {
         self.io_state = std.Io.Threaded.init(std.heap.page_allocator, .{ .environ = processEnviron() });
         self.io = self.io_state.io();
 
+        errdefer self.io_state.deinit();
         self.child = std.process.spawn(self.io, .{
             .argv = &.{ node_path, server_script, "--stdio" },
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,
         }) catch return Error.ServerUnavailable;
+        errdefer self.stopTransport();
         if (self.child.stdin == null or self.child.stdout == null) return Error.ServerUnavailable;
 
+        self.reader = try std.Thread.spawn(.{}, readerLoop, .{ self, self.child.stdout.? });
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var params: std.json.ObjectMap = .empty;
@@ -151,7 +179,9 @@ pub const Client = struct {
         var init_options: std.json.ObjectMap = .empty;
         try init_options.put(arena.allocator(), "provideFormatter", .{ .bool = true });
         try params.put(arena.allocator(), "initializationOptions", .{ .object = init_options });
-        const result = try self.request(arena.allocator(), "initialize", .{ .object = params });
+        var response = try self.request(arena.allocator(), "initialize", .{ .object = params });
+        defer response.arena.deinit();
+        const result = response.result();
         if (result != .object or result.object.get("capabilities") == null) return Error.InvalidMessage;
         self.notify(arena.allocator(), "initialized", .{ .object = .empty }) catch {};
 
@@ -163,7 +193,12 @@ pub const Client = struct {
     /// Sends the settings the JSON server consumes. `schemas` is the raw
     /// `json.schemas` setting value, borrowed only for this call.
     pub fn configure(self: *Client, arena: Allocator, schemas: ?std.json.Value) !void {
+        return self.configureWithLimit(arena, schemas, 5000);
+    }
+
+    pub fn configureWithLimit(self: *Client, arena: Allocator, schemas: ?std.json.Value, limit: i64) !void {
         var json_settings: std.json.ObjectMap = .empty;
+        try json_settings.put(arena, "resultLimit", .{ .integer = (if (limit > 0) limit else @as(i64, 5000)) +| 1 });
         var validate: std.json.ObjectMap = .empty;
         try validate.put(arena, "enable", .{ .bool = true });
         try json_settings.put(arena, "validate", .{ .object = validate });
@@ -181,32 +216,61 @@ pub const Client = struct {
             defer arena.deinit();
             self.notify(arena.allocator(), "shutdown", .null) catch {};
             self.notify(arena.allocator(), "exit", .null) catch {};
-            self.child.kill(self.io);
         }
-        self.buffer.deinit();
+        self.stopTransport();
+        self.io_state.deinit();
         self.allocator.free(self.root_uri);
         self.allocator.destroy(self);
     }
 
     pub fn didOpen(self: *Client, arena: Allocator, uri: []const u8, language_id: []const u8, text: []const u8) !void {
+        try self.didOpenVersion(arena, uri, language_id, 1, text);
+    }
+
+    pub fn didOpenVersion(self: *Client, arena: Allocator, uri: []const u8, language_id: []const u8, version: u32, text: []const u8) !void {
         var doc: std.json.ObjectMap = .empty;
         try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
         try doc.put(arena, "languageId", .{ .string = try arena.dupe(u8, language_id) });
-        try doc.put(arena, "version", .{ .integer = 1 });
+        try doc.put(arena, "version", .{ .integer = version });
         try doc.put(arena, "text", .{ .string = try arena.dupe(u8, text) });
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
         try self.notify(arena, "textDocument/didOpen", .{ .object = params });
     }
 
-    pub fn didChange(self: *Client, arena: Allocator, uri: []const u8, version: u32, text: []const u8) !void {
+    pub fn didClose(self: *Client, arena: Allocator, uri: []const u8) !void {
         var doc: std.json.ObjectMap = .empty;
-        try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
-        try doc.put(arena, "version", .{ .integer = @intCast(version) });
-        var change: std.json.ObjectMap = .empty;
-        try change.put(arena, "text", .{ .string = try arena.dupe(u8, text) });
+        try doc.put(arena, "uri", .{ .string = uri });
+        var params: std.json.ObjectMap = .empty;
+        try params.put(arena, "textDocument", .{ .object = doc });
+        try self.notify(arena, "textDocument/didClose", .{ .object = params });
+    }
+
+    pub fn didChange(self: *Client, arena: Allocator, uri: []const u8, version: u32, text: []const u8) !void {
+        return self.didChangeContent(arena, uri, version, &.{.{ .text = text }});
+    }
+
+    pub const ContentChange = struct {
+        range: ?LspRange = null,
+        text: []const u8,
+    };
+
+    pub fn didChangeContent(self: *Client, arena: Allocator, uri: []const u8, version: u32, edits: []const ContentChange) !void {
+        var doc: std.json.ObjectMap = .empty;
+        try doc.put(arena, "uri", .{ .string = uri });
+        try doc.put(arena, "version", .{ .integer = version });
         var changes = std.json.Array.init(arena);
-        try changes.append(.{ .object = change });
+        for (edits) |edit| {
+            var change: std.json.ObjectMap = .empty;
+            if (edit.range) |r| {
+                var range: std.json.ObjectMap = .empty;
+                try range.put(arena, "start", try lspPosition(arena, r.start_line, r.start_character));
+                try range.put(arena, "end", try lspPosition(arena, r.end_line, r.end_character));
+                try change.put(arena, "range", .{ .object = range });
+            }
+            try change.put(arena, "text", .{ .string = edit.text });
+            try changes.append(.{ .object = change });
+        }
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
         try params.put(arena, "contentChanges", .{ .array = changes });
@@ -218,7 +282,13 @@ pub const Client = struct {
         try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
-        const result = try self.request(arena, "textDocument/diagnostic", .{ .object = params });
+        var response = try self.request(arena, "textDocument/diagnostic", .{ .object = params });
+        defer response.arena.deinit();
+        const result = response.result();
+        return parseDiagnostics(arena, result);
+    }
+
+    pub fn parseDiagnostics(arena: Allocator, result: std.json.Value) ![]Diagnostic {
         if (result != .object) return &.{};
         const items_value = result.object.get("items") orelse return &.{};
         if (items_value != .array) return &.{};
@@ -255,7 +325,9 @@ pub const Client = struct {
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
         try params.put(arena, "position", .{ .object = position });
-        const result = try self.request(arena, "textDocument/completion", .{ .object = params });
+        var response = try self.request(arena, "textDocument/completion", .{ .object = params });
+        defer response.arena.deinit();
+        const result = response.result();
         const items_value = if (result == .array)
             result
         else if (result == .object and result.object.get("items") != null)
@@ -289,7 +361,9 @@ pub const Client = struct {
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
         try params.put(arena, "position", .{ .object = position });
-        const result = try self.request(arena, "textDocument/hover", .{ .object = params });
+        var response = try self.request(arena, "textDocument/hover", .{ .object = params });
+        defer response.arena.deinit();
+        const result = response.result();
         if (result != .object) return null;
         const contents = result.object.get("contents") orelse return null;
         const text = try hoverText(arena, contents);
@@ -301,7 +375,9 @@ pub const Client = struct {
         try doc.put(arena, "uri", .{ .string = try arena.dupe(u8, uri) });
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
-        const result = try self.request(arena, "textDocument/documentSymbol", .{ .object = params });
+        var response = try self.request(arena, "textDocument/documentSymbol", .{ .object = params });
+        defer response.arena.deinit();
+        const result = response.result();
         return parseDocumentSymbols(arena, result);
     }
 
@@ -314,7 +390,9 @@ pub const Client = struct {
         var params: std.json.ObjectMap = .empty;
         try params.put(arena, "textDocument", .{ .object = doc });
         try params.put(arena, "options", .{ .object = options });
-        const result = try self.request(arena, "textDocument/formatting", .{ .object = params });
+        var response = try self.request(arena, "textDocument/formatting", .{ .object = params });
+        defer response.arena.deinit();
+        const result = response.result();
         if (result != .array) return &.{};
         var edits = std.array_list.Managed(FormattingEdit).init(arena);
         for (result.array.items) |item| {
@@ -345,7 +423,7 @@ pub const Client = struct {
         try self.writeMessage(arena, .{ .object = object });
     }
 
-    fn request(self: *Client, arena: Allocator, method: []const u8, params: std.json.Value) !std.json.Value {
+    fn sendRequest(self: *Client, arena: Allocator, method: []const u8, params: std.json.Value) !u32 {
         const id = self.next_id;
         self.next_id +%= 1;
         var object: std.json.ObjectMap = .empty;
@@ -355,18 +433,130 @@ pub const Client = struct {
         try object.put(arena, "params", params);
         try self.writeMessage(arena, .{ .object = object });
 
+        return id;
+    }
+
+    pub fn requestDocument(self: *Client, arena: Allocator, method: []const u8, uri: []const u8, handler: ResponseHandler) !u32 {
+        var doc: std.json.ObjectMap = .empty;
+        try doc.put(arena, "uri", .{ .string = uri });
+        var params: std.json.ObjectMap = .empty;
+        try params.put(arena, "textDocument", .{ .object = doc });
+        try self.handlers.ensureUnusedCapacity(self.allocator, 1);
+        const id = try self.sendRequest(arena, method, .{ .object = params });
+        self.handlers.putAssumeCapacity(id, handler);
+        return id;
+    }
+
+    pub fn cancel(self: *Client, id: u32) void {
+        if (!self.handlers.remove(id)) return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        var params: std.json.ObjectMap = .empty;
+        params.put(arena.allocator(), "id", .{ .integer = id }) catch return;
+        self.notify(arena.allocator(), "$/cancelRequest", .{ .object = params }) catch {};
+    }
+
+    fn stopTransport(self: *Client) void {
+        // Closing the server releases a blocked pipe read. The reader uses
+        // its own file value and never accesses the mutable Child.
+        if (self.child.id != null) self.child.kill(self.io);
+        if (self.reader) |thread| thread.join();
+        for (self.queue.items) |*message| message.arena.deinit();
+        self.queue.deinit(self.allocator);
+        self.handlers.deinit(self.allocator);
+        self.buffer.deinit();
+    }
+
+    fn readerLoop(self: *Client, file: std.Io.File) void {
+        defer {
+            self.lock.lockUncancelable(self.io);
+            self.eof = true;
+            self.available.broadcast(self.io);
+            self.lock.unlock(self.io);
+        }
         while (true) {
-            const message = self.readMessage(arena) catch return Error.ServerUnavailable;
-            if (message != .object) continue;
-            if (message.object.get("id")) |response_id| {
-                if (response_id == .integer and response_id.integer == id) {
-                    if (message.object.get("error") != null) return Error.RequestFailed;
-                    return message.object.get("result") orelse .null;
-                }
-                if (message.object.get("method")) |server_method| {
-                    try self.answerServerRequest(arena, message.object, response_id, server_method);
-                }
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            const message = self.readMessage(arena.allocator(), file) catch {
+                arena.deinit();
+                return;
+            };
+            if (message != .object) {
+                arena.deinit();
+                continue;
             }
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+            self.queue.append(self.allocator, .{ .arena = arena, .value = message }) catch {
+                arena.deinit();
+                return;
+            };
+            self.available.signal(self.io);
+        }
+    }
+
+    fn nextMessage(self: *Client, id: ?u32, wait: bool) !?Message {
+        self.lock.lockUncancelable(self.io);
+        defer self.lock.unlock(self.io);
+        while (true) {
+            for (self.queue.items, 0..) |*message, i| {
+                if (id) |target| {
+                    const obj = message.value.object;
+                    if (!obj.contains("method")) {
+                        const response_id = obj.get("id") orelse continue;
+                        if (response_id != .integer or response_id.integer != target) continue;
+                    }
+                }
+                return self.queue.orderedRemove(i);
+            }
+            if (self.eof) return Error.ServerUnavailable;
+            if (!wait) return null;
+            self.available.waitUncancelable(self.io, &self.lock);
+        }
+    }
+
+    fn handleMethod(self: *Client, message: *Message) !bool {
+        const object = message.value.object;
+        const method = object.get("method") orelse return false;
+        if (object.get("id")) |id| try self.answerServerRequest(message.arena.allocator(), object, id, method);
+        return true;
+    }
+
+    // Dispatch actual incoming messages, including server-initiated requests.
+    pub fn dispatchResponses(self: *Client, wait: bool) bool {
+        var completed = false;
+        while (true) {
+            var message = (self.nextMessage(null, wait and !completed and self.handlers.count() != 0) catch {
+                while (self.handlers.count() != 0) {
+                    var keys = self.handlers.keyIterator();
+                    const key = keys.next().?.*;
+                    const removed = self.handlers.fetchRemove(key).?;
+                    removed.value.complete(removed.value.context, .null);
+                    completed = true;
+                }
+                return completed;
+            }) orelse return completed;
+            defer message.arena.deinit();
+            if (self.handleMethod(&message) catch true) continue;
+            const id = message.value.object.get("id") orelse continue;
+            if (id != .integer) continue;
+            const key = std.math.cast(u32, id.integer) orelse continue;
+            const pending = self.handlers.fetchRemove(key) orelse continue;
+            pending.value.complete(pending.value.context, message.result());
+            completed = true;
+        }
+    }
+
+    fn request(self: *Client, arena: Allocator, method: []const u8, params: std.json.Value) !Message {
+        const id = try self.sendRequest(arena, method, params);
+        while (true) {
+            var message = (try self.nextMessage(id, true)).?;
+            errdefer message.arena.deinit();
+            if (try self.handleMethod(&message)) {
+                message.arena.deinit();
+                continue;
+            }
+            if (message.value.object.contains("error")) return Error.RequestFailed;
+            return message;
         }
     }
 
@@ -408,7 +598,7 @@ pub const Client = struct {
         try file.writeStreamingAll(self.io, body);
     }
 
-    fn readMessage(self: *Client, arena: Allocator) !std.json.Value {
+    fn readMessage(self: *Client, arena: Allocator, file: std.Io.File) !std.json.Value {
         while (true) {
             if (std.mem.indexOf(u8, self.buffer.items, "\r\n\r\n")) |header_end| {
                 const header = self.buffer.items[0..header_end];
@@ -416,15 +606,14 @@ pub const Client = struct {
                 const total = header_end + 4 + length;
                 if (self.buffer.items.len >= total) {
                     const body = self.buffer.items[header_end + 4 .. total];
-                    const value = try std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{});
+                    const value = try std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{ .allocate = .alloc_always });
                     const consumed = total;
                     std.mem.copyForwards(u8, self.buffer.items[0 .. self.buffer.items.len - consumed], self.buffer.items[consumed..]);
                     self.buffer.shrinkRetainingCapacity(self.buffer.items.len - consumed);
                     return value;
                 }
             }
-            var chunk: [4096]u8 = undefined;
-            const file = self.child.stdout orelse return Error.ServerUnavailable;
+            var chunk: [64 * 1024]u8 = undefined;
             const count = file.readStreaming(self.io, &.{&chunk}) catch return Error.ServerUnavailable;
             if (count == 0) return Error.ServerUnavailable;
             try self.buffer.appendSlice(chunk[0..count]);
@@ -432,7 +621,7 @@ pub const Client = struct {
     }
 };
 
-fn parseDocumentSymbols(arena: Allocator, result: std.json.Value) ![]JsonDocumentSymbol {
+pub fn parseDocumentSymbols(arena: Allocator, result: std.json.Value) ![]JsonDocumentSymbol {
     if (result != .array) return &.{};
     var symbols = std.array_list.Managed(JsonDocumentSymbol).init(arena);
     for (result.array.items) |item| {
@@ -441,6 +630,13 @@ fn parseDocumentSymbols(arena: Allocator, result: std.json.Value) ![]JsonDocumen
         if (symbol) |value| try symbols.append(value);
     }
     return symbols.toOwnedSlice();
+}
+
+fn lspPosition(arena: Allocator, line: u32, character: u32) !std.json.Value {
+    var pos: std.json.ObjectMap = .empty;
+    try pos.put(arena, "line", .{ .integer = line });
+    try pos.put(arena, "character", .{ .integer = character });
+    return .{ .object = pos };
 }
 
 fn parseDocumentSymbol(arena: Allocator, object: std.json.ObjectMap) !?JsonDocumentSymbol {

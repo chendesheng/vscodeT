@@ -23,15 +23,10 @@ const ui = @import("ui");
 const editorBrowser = @import("../../editorBrowser.zig");
 const RetainedViewPartHost = editorBrowser.RetainedViewPartHost;
 const Editor = @import("../../widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const CursorState = @import("../../../common/cursorCommon.zig").CursorState;
-const Position = @import("../../../common/core/position.zig").Position;
 const decorationsOverviewRuler = @import("../overviewRuler/decorationsOverviewRuler.zig");
 const scrollbar_state = @import("../../../../base/browser/ui/scrollbar/scrollbarState.zig");
 
 const scrollbar_thumb_color = [3]u8{ 108, 108, 108 };
-const overview_cursor_color = [3]u8{ 200, 200, 200 };
-const overview_secondary_cursor_color = [3]u8{ 86, 70, 26 };
-
 pub const TerminalScrollbar = struct {
     allocator: Allocator,
     width: usize,
@@ -43,6 +38,7 @@ pub const TerminalScrollbar = struct {
     /// Terminal retention: the ruler column and one cell per screen row are
     /// kept across frames; a repaint only rewrites the cells whose thumb or
     /// marker paint changed.
+    overview: decorationsOverviewRuler.DecorationsOverviewRuler = .{},
     column: ?*ui.Node = null,
     cells: std.array_list.Managed(Cell),
     column_left: usize = 0,
@@ -69,6 +65,7 @@ pub const TerminalScrollbar = struct {
 
     pub fn deinit(self: *TerminalScrollbar) void {
         self.drag = null;
+        self.overview.deinit(self.allocator);
         self.cells.deinit();
     }
 
@@ -178,7 +175,6 @@ pub const TerminalScrollbar = struct {
         doc: *ui.Document,
         root: *ui.Node,
         editor: *Editor,
-        states: []const CursorState,
         text_height: usize,
         cols: usize,
         column_width: usize,
@@ -191,41 +187,7 @@ pub const TerminalScrollbar = struct {
         const left = cols -| column_width;
         if (left >= cols) return;
 
-        var markers = std.array_list.Managed(decorationsOverviewRuler.Decoration).init(self.allocator);
-        defer markers.deinit();
-        try appendOverviewMarkers(&markers, editor, self.allocator);
-
-        var cursors = std.array_list.Managed(decorationsOverviewRuler.Cursor).init(self.allocator);
-        defer cursors.deinit();
-        const multiple_cursors = states.len > 1;
-        for (states, 0..) |cursor_state, index| {
-            const cursor_color = if (multiple_cursors and index > 0)
-                overview_secondary_cursor_color
-            else
-                overview_cursor_color;
-            try cursors.append(.{
-                .line_number = cursor_state.viewState.position.lineNumber,
-                .color = cursor_color,
-                .lane = .full,
-            });
-        }
-        std.mem.sort(decorationsOverviewRuler.Cursor, cursors.items, {}, cursorLessThan);
-
-        const row_markers = try decorationsOverviewRuler.render(
-            self.allocator,
-            markers.items,
-            cursors.items,
-            .{
-                .line_height = 1,
-                .canvas_height = text_height,
-                .outer_height = editor.scrollHeight(),
-                .overview_ruler_lanes = 3,
-                .hide_cursor = false,
-                .min_decoration_height = 1,
-            },
-        );
-        defer self.allocator.free(row_markers);
-
+        const row_markers = self.overview.rows;
         const scroll_state = self.state(editor);
         const halves = if (scroll_state.isNeeded())
             thumbHalfGeometry(scroll_state, text_height)
@@ -388,44 +350,6 @@ fn paintCell(cell: *TerminalScrollbar.Cell, glyph: []const u8, cell_color: ui.Co
     return true;
 }
 
-pub fn appendOverviewMarkers(
-    markers: *std.array_list.Managed(decorationsOverviewRuler.Decoration),
-    editor: *Editor,
-    allocator: Allocator,
-) !void {
-    const model_decorations = try editor.model.getOverviewRulerDecorations(0, false);
-    defer allocator.free(model_decorations);
-
-    for (model_decorations) |decoration| {
-        const ruler = decoration.options.overviewRuler orelse continue;
-        const marker_color = ruler.color orelse continue;
-        const start = editor.viewPositionOfModelPosition(Position.init(
-            decoration.range.startLineNumber,
-            decoration.range.startColumn,
-        ));
-        const end = editor.viewPositionOfModelPosition(Position.init(
-            decoration.range.endLineNumber,
-            decoration.range.endColumn,
-        ));
-        try markers.append(.{
-            .start_line_number = start.lineNumber,
-            .end_line_number = @max(start.lineNumber, end.lineNumber),
-            .color = marker_color,
-            .lane = overviewRulerLaneFromModel(ruler.position),
-            .z_index = @intCast(decoration.options.zIndex orelse 0),
-        });
-    }
-}
-
-fn overviewRulerLaneFromModel(lane: @import("../../../common/model.zig").OverviewRulerLane) decorationsOverviewRuler.Lane {
-    return switch (lane) {
-        .Left => .left,
-        .Center => .center,
-        .Right => .right,
-        .Full => .full,
-    };
-}
-
 fn markerGlyph(lane: decorationsOverviewRuler.Lane, vertical: decorationsOverviewRuler.Vertical) []const u8 {
     return switch (vertical) {
         .full => switch (lane) {
@@ -447,10 +371,6 @@ fn markerGlyph(lane: decorationsOverviewRuler.Lane, vertical: decorationsOvervie
             .full => "▗▄",
         },
     };
-}
-
-fn cursorLessThan(_: void, a: decorationsOverviewRuler.Cursor, b: decorationsOverviewRuler.Cursor) bool {
-    return a.line_number < b.line_number;
 }
 
 const ThumbHalves = struct {
@@ -617,7 +537,7 @@ test "editorScrollbar: unchanged thumb rows keep their glyphs when the viewport 
 
     for ([_]usize{ 12, 32 }) |height| {
         editor.setViewport(40, height);
-        try scrollbar.render(&doc, root, editor, &.{}, editor.textHeight(), 40, 2, null);
+        try scrollbar.render(&doc, root, editor, editor.textHeight(), 40, 2, null);
         for (scrollbar.cells.items[0..2]) |cell| {
             try std.testing.expectEqualStrings("▐█", cell.node.first_child.?.asText().data);
         }

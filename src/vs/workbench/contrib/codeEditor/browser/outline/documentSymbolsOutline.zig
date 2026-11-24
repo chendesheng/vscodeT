@@ -10,7 +10,7 @@
 // breadcrumb popup lists siblings through `getParent`.
 //
 // Terminal adaptations: the tree snapshot is rebuilt when the outline model is
-// replaced (the terminal service creates outlines synchronously), markers are
+// replaced after provider completion, markers are
 // rolled up into `OutlineElement.marker` before the snapshot is built, and
 // browser-only drag/drop, accessibility labels and quick-pick source are not
 // ported.
@@ -35,11 +35,18 @@ const SymbolElement = outline_model_mod.OutlineElement;
 /// Upstream `SymbolTag.Deprecated`.
 const deprecated_tag: u32 = 2;
 
+const Service = @import("../../../../../editor/contrib/documentSymbols/browser/outlineModel.zig").OutlineModelService;
+const TextModel = @import("../../../../../editor/common/model/textModel.zig").TextModel;
+const ContentEvent = @import("../../../../../editor/common/textModelEvents.zig").InternalModelContentChangeEvent;
+const Features = @import("../../../../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const Disposable = @import("../../../../../base/common/lifecycle.zig").IDisposable;
+
 pub const Host = struct {
     context: *anyopaque,
     current_position: *const fn (context: *anyopaque) ?Position,
     reveal_range: *const fn (context: *anyopaque, range: Range) anyerror!void,
     request_render: *const fn (context: *anyopaque) void,
+    apply_markers: ?*const fn (*anyopaque, *OutlineModel, *anyopaque) void = null,
     /// The terminal adapter for `DocumentSymbolFilter` and breadcrumb kind
     /// filtering. As in upstream, the settings lookup has its own context,
     /// separate from the editor used for selection and reveal.
@@ -53,6 +60,14 @@ pub const DocumentSymbolsOutline = struct {
     allocator: Allocator,
     model: *OutlineModel,
     host: Host,
+    service: ?*Service = null,
+    buffer: ?*TextModel = null,
+    features: ?*Features = null,
+    content_listener: ?usize = null,
+    pending: ?Disposable = null,
+    pending_model: ?*OutlineModel = null,
+    version: u32 = 0,
+    removed_length: ?usize = null,
     emitter: Emitter(OutlineChangeEvent),
     elements: std.array_list.Managed(BreadcrumbsOutlineElement),
     tree_arena: std.heap.ArenaAllocator,
@@ -110,13 +125,93 @@ pub const DocumentSymbolsOutline = struct {
             .on_did_change = &self.emitter,
             .active_element_fn = activeElement,
             .parent_fn = getParent,
+            .retain_picker_input = retainPickerInput,
             .revealFn = reveal,
             .disposeFn = dispose,
         };
     }
 
+    pub fn bind(self: *DocumentSymbolsOutline, service: *Service, buffer: *TextModel, features: *Features) !void {
+        self.service = service;
+        self.buffer = buffer;
+        self.features = features;
+        self.content_listener = try buffer.onDidChangeContentWithContextId(self, onContent);
+        try self.createOutline();
+    }
+
+    fn onContent(event: ContentEvent, self: *DocumentSymbolsOutline) !void {
+        var length: usize = 0;
+        for (event.contentChangedEvent.changes.items) |change| length += change.rangeLength;
+        self.removed_length = length;
+        try self.service.?.schedule(self, self.service.?.getDebounceValue(self.buffer.?), refresh);
+    }
+
+    fn refresh(context: *anyopaque) void {
+        const self: *DocumentSymbolsOutline = @ptrCast(@alignCast(context));
+        self.createOutline() catch {};
+    }
+
+    fn createOutline(self: *DocumentSymbolsOutline) !void {
+        self.cancelRequest();
+        const buffer = self.buffer.?;
+        self.version = buffer.getVersionId();
+        const providers = try self.features.?.document_symbol_provider.ordered(self.allocator, buffer, false);
+        defer self.allocator.free(providers);
+        self.pending = try self.service.?.getOrCreate(buffer, providers, self, ready);
+    }
+    fn cancelRequest(self: *DocumentSymbolsOutline) void {
+        if (self.pending) |pending| pending.dispose();
+        self.pending = null;
+        if (self.pending_model) |model| model.deinit();
+        self.pending_model = null;
+    }
+    fn ready(context: *anyopaque, model: *OutlineModel) void {
+        const self: *DocumentSymbolsOutline = @ptrCast(@alignCast(context));
+        self.pending = null;
+        const buffer = self.buffer.?;
+        if (self.version != buffer.getVersionId()) {
+            model.deinit();
+            return;
+        }
+        self.pending_model = model;
+        if (self.removed_length) |removed| {
+            if (!model.isEmpty() and !self.model.isEmpty() and buffer.getLineCount() >= 25) {
+                const length: f64 = @floatFromInt(buffer.getValueLength(.TextDefined, false));
+                const ratio = @as(f64, @floatFromInt(model.size())) / length;
+                const old_ratio = @as(f64, @floatFromInt(self.model.size())) / (length - @as(f64, @floatFromInt(removed)));
+                if (ratio <= old_ratio * 0.5 or ratio >= old_ratio * 1.5) {
+                    self.service.?.schedule(self, 2000, publish) catch publish(self);
+                    return;
+                }
+            }
+        }
+        publish(self);
+    }
+
+    fn publish(context: *anyopaque) void {
+        const self: *DocumentSymbolsOutline = @ptrCast(@alignCast(context));
+        const model = self.pending_model orelse return;
+        self.pending_model = null;
+        if (self.version != self.buffer.?.getVersionId()) {
+            model.deinit();
+            return;
+        }
+        if (self.host.apply_markers) |apply| if (self.host.symbol_filter) |filter| apply(filter.context, model, self.host.context);
+        if (self.model == model) model.deinit();
+        self.setModel(model);
+        self.host.request_render(self.host.context);
+    }
+
     pub fn interfacePtr(self: *DocumentSymbolsOutline) *IOutline {
         return &self.interface_value;
+    }
+
+    fn retainPickerInput(context: *anyopaque) !*IOutline {
+        const self: *DocumentSymbolsOutline = @ptrCast(@alignCast(context));
+        self.model.retain();
+        errdefer self.model.deinit();
+        const input = try create(self.allocator, self.model, self.host);
+        return input.interfacePtr();
     }
 
     /// Replaces the outline model after a provider/content change and emits
@@ -251,6 +346,9 @@ pub const DocumentSymbolsOutline = struct {
 
     fn dispose(context: *anyopaque) void {
         const self: *DocumentSymbolsOutline = @ptrCast(@alignCast(context));
+        if (self.service) |service| service.cancelTimer(self);
+        self.cancelRequest();
+        if (self.content_listener) |id| self.buffer.?.removeDidChangeContentListener(id);
         self.elements.deinit();
         self.tree_arena.deinit();
         self.emitter.deinit();
@@ -277,7 +375,6 @@ fn hasTag(symbol: @import("../../../../../editor/common/languages.zig").Document
 test "DocumentSymbolsOutline: tree snapshot, active element and comparator" {
     const allocator = std.testing.allocator;
     const languages = @import("../../../../../editor/common/languages.zig");
-    const TextModel = @import("../../../../../editor/common/model/textModel.zig").TextModel;
     const io = std.Io.Threaded.global_single_threaded.io();
     const editor = try @import("../../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor.createFromText(
         allocator,
@@ -345,4 +442,13 @@ test "DocumentSymbolsOutline: tree snapshot, active element and comparator" {
     const child = &roots[0].children[0];
     const parent = outline_view.interface_value.getParent(child.element).?;
     try std.testing.expectEqualStrings("A", @as(*SymbolElement, @ptrCast(@alignCast(parent))).symbol.name);
+
+    const input = try outline_view.interface_value.retain_picker_input.?(outline_view);
+    defer input.dispose();
+    const source = input.config.tree_data_source.?;
+    const selected = &source.get_roots(source.context)[0].children[0];
+    outline_view.setModel(try OutlineModel.empty(allocator));
+    try std.testing.expectEqualStrings("method", selected.label);
+    try std.testing.expectEqual(active, selected.element);
+    try input.reveal(selected.element, .{});
 }

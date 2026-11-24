@@ -90,6 +90,14 @@ pub const MirrorTextModel = struct {
     }
 
     pub fn onEvents(self: *MirrorTextModel, e: *const ModelContentChangedEvent) !void {
+        return self.onEventsWithContext(e, {}, struct {
+            fn before(_: void, _: *const MirrorTextModel, _: *const ModelContentChange) !void {}
+        }.before);
+    }
+
+    /// The UTF-8 terminal bridge needs each pre-edit range in UTF-16 before
+    /// applying it, including successive edits in a deferred model event.
+    pub fn onEventsWithContext(self: *MirrorTextModel, e: *const ModelContentChangedEvent, context: anytype, comptime before: anytype) !void {
         if (e.eol != self._eol) {
             self._eol = e.eol;
             if (self._lineStarts) |*line_starts| {
@@ -99,6 +107,7 @@ pub const MirrorTextModel = struct {
         }
 
         for (e.changes.items) |*change| {
+            try before(context, self, change);
             try self._acceptDeleteRange(change.range);
             try self._acceptInsertText(Position.init(change.range.startLineNumber, change.range.startColumn), change.text.items());
         }

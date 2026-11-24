@@ -134,13 +134,13 @@ pub const ProjectedViewModelLines = struct {
         self.view_line_tokens = null;
     }
 
-    fn computeProjection(self: *ProjectedViewModelLines, line_number: usize) !ModelLineProjection {
-        const line = try self.model.getLineContent(line_number);
-        defer line.deinit();
-        const data = try monospace.computeLineBreaks(
+    fn computeProjection(self: *ProjectedViewModelLines, line_number: usize, previous: ?ModelLineProjectionData) !ModelLineProjection {
+        const line = try self.model.borrowLineContent(line_number);
+        const data = try monospace.computeLineBreaksWithPrevious(
+            previous,
             self.allocator,
             &self.classifier,
-            line.items,
+            line,
             self.tab_size,
             self.wrapping_column,
             self.wrapping_indent,
@@ -206,6 +206,10 @@ pub const ProjectedViewModelLines = struct {
     }
 
     pub fn rebuildAll(self: *ProjectedViewModelLines) !void {
+        try self.constructLines(false);
+    }
+
+    fn constructLines(self: *ProjectedViewModelLines, only_wrapping_column_changed: bool) !void {
         self.rebuild_all_count += 1;
         var new_projections = ArrayList(ModelLineProjection).init(self.allocator);
         var projections_owned = true;
@@ -218,9 +222,12 @@ pub const ProjectedViewModelLines = struct {
         defer counts.deinit();
 
         const line_count = self.model.getLineCount();
+        try new_projections.ensureTotalCapacityPrecise(line_count);
+        try counts.ensureTotalCapacityPrecise(line_count);
         var line_number: usize = 1;
         while (line_number <= line_count) : (line_number += 1) {
-            var projection = try self.computeProjection(line_number);
+            const previous = if (only_wrapping_column_changed) self.projections.items[line_number - 1].data else null;
+            var projection = try self.computeProjection(line_number, previous);
             const view_line_count = projection.getViewLineCount();
             new_projections.append(projection) catch |err| {
                 projection.deinit();
@@ -247,9 +254,15 @@ pub const ProjectedViewModelLines = struct {
     /// indentation together. Rebuilds only when either value changes.
     pub fn setWrappingOptions(self: *ProjectedViewModelLines, column: usize, indent: WrappingIndent) !bool {
         if (self.wrapping_column == column and self.wrapping_indent == indent) return false;
+        const old_column = self.wrapping_column;
+        const old_indent = self.wrapping_indent;
         self.wrapping_column = column;
         self.wrapping_indent = indent;
-        try self.rebuildAll();
+        errdefer {
+            self.wrapping_column = old_column;
+            self.wrapping_indent = old_indent;
+        }
+        try self.constructLines(old_indent == indent);
         return true;
     }
 
@@ -301,7 +314,7 @@ pub const ProjectedViewModelLines = struct {
 
         var line_number = from_line;
         while (line_number <= to_line) : (line_number += 1) {
-            var projection = try self.computeProjection(line_number);
+            var projection = try self.computeProjection(line_number, null);
             const view_line_count = projection.getViewLineCount();
             new_projections.append(projection) catch |err| {
                 projection.deinit();
@@ -317,7 +330,7 @@ pub const ProjectedViewModelLines = struct {
     }
 
     pub fn replaceLine(self: *ProjectedViewModelLines, line_number: usize) !void {
-        var projection = try self.computeProjection(line_number);
+        var projection = try self.computeProjection(line_number, null);
         errdefer projection.deinit();
         const index = line_number - 1;
         self.projections.items[index].deinit();

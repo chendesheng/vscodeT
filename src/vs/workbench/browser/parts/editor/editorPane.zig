@@ -900,7 +900,7 @@ pub const Controllers = struct {
         self.word_sink = .{ .model = editor.model, .owner = 3 };
 
         self.hover_provider = TuiHoverProvider.init(allocator);
-        self.hover_provider.setJsonDocument(editor.json_client, editor.json_uri);
+        self.hover_provider.json_document = &editor.document.json;
         self.hover_provider.setModel(editor.model);
         errdefer self.hover_provider.deinit();
         self.hover_providers = .{self.hover_provider.interface()};
@@ -952,7 +952,7 @@ pub const Controllers = struct {
         self.word_provider = WordBasedCompletionProvider.init();
         self.completion_providers[0] = self.word_provider.interface();
         self.completion_count = 1;
-        if (editor.json_client != null) {
+        if (editor.document.json.client != null) {
             self.completion_providers[1] = .{
                 .context = editor,
                 .provide_completion_items = Editor.jsonProvideCompletion,

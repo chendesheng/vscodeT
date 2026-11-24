@@ -125,6 +125,9 @@ pub const IOutline = struct {
     /// The parent of an element, used by the breadcrumb outline picker to list
     /// siblings. Upstream gets it from the tree element's `parent`.
     parent_fn: ?*const fn (context: *anyopaque, element: *anyopaque) ?*anyopaque = null,
+    /// Keeps tree elements alive while a terminal picker holds their addresses
+    /// across provider refreshes. The picker owns the returned outline.
+    retain_picker_input: ?*const fn (*anyopaque) anyerror!*IOutline = null,
     revealFn: *const fn (context: *anyopaque, element: *anyopaque, options: RevealOptions) anyerror!void,
     disposeFn: *const fn (context: *anyopaque) void,
 

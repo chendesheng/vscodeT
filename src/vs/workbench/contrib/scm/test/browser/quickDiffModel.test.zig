@@ -8,6 +8,7 @@ const quick_diff = @import("../../common/quickDiff.zig");
 const quick_diff_service = @import("../../common/quickDiffService.zig");
 const TestModel = @import("../../../../../editor/test/common/port/testSupport.zig").TestModel;
 
+const EditorWorkerService = @import("../../../../../editor/browser/services/editorWorkerService.zig").EditorWorkerService;
 const QuickDiffModel = model_mod.QuickDiffModel;
 const QuickDiffModelOptions = model_mod.QuickDiffModelOptions;
 const QuickDiffProvider = quick_diff.QuickDiffProvider;
@@ -182,16 +183,77 @@ test "quickDiffModel: version tracking updates after a model edit" {
     try std.testing.expectEqual(@as(usize, 1), harness.quick_model.changes.items.len);
 }
 
-test "quickDiffModel: debounce trigger and poll" {
+test "quickDiffModel publishes the captured version before running a queued diff on the same worker" {
     var harness: Harness = undefined;
     try harness.init("a", "zig");
     defer harness.deinit();
     _ = try harness.addProvider("git.primary", .primary, "b");
 
+    var worker = EditorWorkerService.init();
+    defer worker.deinit();
     harness.quick_model.triggerDiff(1000);
-    try std.testing.expect(!harness.quick_model.poll(1100));
-    try std.testing.expect(harness.quick_model.poll(1200));
+    try std.testing.expect(!harness.quick_model.runScheduledDiff(&worker, 1100));
+    try std.testing.expect(harness.quick_model.pending == null);
+    try std.testing.expect(!harness.quick_model.runScheduledDiff(&worker, 1200));
+    try std.testing.expect(harness.quick_model.pending != null);
+    const first_thread = worker.thread.?.getHandle();
+    const first_version = harness.model.model.getVersionId();
+    try harness.model.applyEdit(@import("../../../../../editor/common/core/range.zig").Range.init(1, 1, 1, 2), "b");
+    harness.quick_model.triggerDiff(1250);
+    worker.waitForReply();
+    try std.testing.expect(worker.dispatchReplies());
+    try std.testing.expectEqual(first_version, harness.quick_model.changes_version_id);
     try std.testing.expectEqual(@as(usize, 1), harness.quick_model.changes.items.len);
+    try std.testing.expect(!harness.quick_model.runScheduledDiff(&worker, 1449));
+    try std.testing.expect(harness.quick_model.pending == null);
+    try std.testing.expect(!harness.quick_model.runScheduledDiff(&worker, 1450));
+    try std.testing.expect(harness.quick_model.pending != null);
+    try std.testing.expectEqual(first_thread, worker.thread.?.getHandle());
+    worker.waitForReply();
+    try std.testing.expect(worker.dispatchReplies());
+    try std.testing.expectEqual(harness.model.model.getVersionId(), harness.quick_model.changes_version_id);
+    try std.testing.expectEqual(@as(usize, 0), harness.quick_model.changes.items.len);
+}
+
+test "quickDiffModel publishes an empty result without starting the editor worker" {
+    var harness: Harness = undefined;
+    try harness.init("a", "zig");
+    defer harness.deinit();
+    var worker = EditorWorkerService.init();
+    defer worker.deinit();
+    try std.testing.expect(harness.quick_model.runScheduledDiff(&worker, 200));
+    try std.testing.expect(worker.thread == null);
+    try std.testing.expect(harness.quick_model.pending == null);
+    try std.testing.expectEqual(harness.model.model.getVersionId(), harness.quick_model.changes_version_id);
+}
+
+test "quickDiffModel detaches the reply for a closed file while the shared worker serves another file" {
+    var worker = EditorWorkerService.init();
+    defer worker.deinit();
+    var open: Harness = undefined;
+    try open.init("x", "zig");
+    defer open.deinit();
+    _ = try open.addProvider("git.primary", .primary, "y");
+
+    {
+        var closing: Harness = undefined;
+        try closing.init("a", "zig");
+        defer closing.deinit();
+        _ = try closing.addProvider("git.primary", .primary, "b");
+        try std.testing.expect(!closing.quick_model.runScheduledDiff(&worker, 200));
+        const thread = worker.thread.?.getHandle();
+        try std.testing.expect(!open.quick_model.runScheduledDiff(&worker, 200));
+        try std.testing.expectEqual(thread, worker.thread.?.getHandle());
+    }
+
+    // The replies may arrive together or in separate UI turns.
+    while (open.quick_model.pending != null) {
+        worker.waitForReply();
+        _ = worker.dispatchReplies();
+    }
+    try std.testing.expectEqual(@as(usize, 1), open.quick_model.changes.items.len);
+    worker.checkStopIdleWorker(200 + 5 * 60 * 1000 + 1);
+    try std.testing.expect(worker.thread == null);
 }
 
 test "quickDiffModel: primary/secondary overlap suppression" {

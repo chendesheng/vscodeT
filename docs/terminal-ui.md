@@ -809,6 +809,15 @@ navigation in the bar is `Left`/`Right`, `Enter`/`Down` opens the tree,
 `Space` reveals and `Escape` returns to the editor. `Ctrl+Shift+.` and
 `Ctrl+Shift+;` focus the bar; some terminals do not deliver those combinations.
 
+Breadcrumbs can paint the file path while JSON document symbols are pending.
+The Outline pane and breadcrumbs subscribe to the shared outline model for the
+current model version and provider list. Sticky Scroll makes its own cancellable
+provider request as in VS Code. The JSON reader decodes responses off the UI
+thread and the main event loop delivers them to the requesting view. Closing
+a view releases its subscription. JSON symbol ranges use a per-response index
+to convert UTF-16 columns to terminal UTF-8 byte offsets. The breadcrumb picker
+retains its tree input so an asynchronous refresh keeps existing rows selectable.
+
 Symbol segments require an `IOutlineCreator` registered with the ported
 `OutlineService`. The built-in TypeScript extension and the JSON language
 client register document-symbol providers; other languages show the file path
@@ -828,10 +837,8 @@ fold/unfold from the tree, symbol glyphs, marker counts/rollup bubbles,
 selection/hover/focus colors, wheel scrolling and Enter-to-reveal. The title
 toolbar shows Collapse All or Expand All and More Actions. More Actions opens
 the picker for Follow Cursor, Filter on Type, and the three Sort By commands.
-Follow Cursor selects the symbol enclosing the cursor. Content changes rebuild
-from the editor's `ViewLinesChanged` event. The
-terminal has no `TimeoutTimer`, so this is direct rather than debounced and is
-never driven by a workbench polling loop.
+Follow Cursor selects the symbol enclosing the cursor. Model content changes reschedule the outline debounce timer. The completed
+outline updates the tree and breadcrumbs through `IOutline.onDidChange`.
 The view lives in the Explorer view container, stacked under the file tree with
 its own collapsible section header, matching upstream `outline.contribution.ts`;
 `outline.focus` expands the section and focuses it. Terminal adaptations: tree
@@ -1492,6 +1499,8 @@ Library constraints:
   `scrollRight` commands scroll it, the caret and reveal paths keep the cursor
   visible, and cursor/mouse/content-widget coordinates subtract the offset.
   There is still no horizontal scrollbar.
+  The line-break computer reads the model's last-visited line. The terminal
+  dispatches each decoded sidebar mouse move to the sash in input order.
 - The old `src/tui/screen.zig`/`render.zig` path is gone.
 - Multi-file editing keeps one `View` per tab. The workbench mounts the visible
   editor instances in a single editor document. The portable
@@ -1896,7 +1905,13 @@ service/provider/resource subset and the quick-diff service, and
 `src/extensions/git/src/repository.zig` maps the repository state to the upstream
 `Merge Changes`/`Staged Changes`/`Changes` groups, maps porcelain `XY` statuses
 to the upstream file decoration letters, status texts and theme colors, and
-provides the primary/secondary quick-diff providers.
+provides the primary/secondary quick-diff providers. Model edits and repository
+refreshes schedule the same 200 ms quick-diff delay. A lazily started native editor worker
+serves all file editors. It receives owned original and modified text because the terminal provider supplies file
+contents and the worker has no synchronized URI-backed models. The UI thread
+delivers replies in order. Each live model publishes the completed result with
+its captured version and the decorator receives the model's change event.
+Closing a model detaches its outstanding reply.
 
 The Source Control Changes view (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`)
 keeps the upstream `SCMTreeDataSource`/`SCMTreeSorter`/`SCMTreeFilter` behavior
@@ -1978,10 +1993,8 @@ Terminal substitutions and their reasons:
   a content edit. `TerminalViewHost.renderRange` dispatches
   `ViewDecorationsChanged` when `Editor.decorationGeneration()` changes, so the
   line-decorations and whole-line overlays re-prepare instead of staying stale.
-- **Synchronous recompute.** `IObservable`/`autorun` and the 200 ms
-  `ThrottledDelayer` are replaced by `triggerDiff(now)`/`poll(now)` from the
-  main loop; the diff provider is synchronous and the app poll timeout is
-  shortened while git is active.
+- The main loop drives the quick-diff delay and dispatches completed worker
+  results. The native worker receives owned text snapshots.
 
 Limitations are documented in `README.md`: read-only snapshots, no staging or
 commit, no inline diff/hidden-unchanged/moved blocks/peek/multi-diff/accessible

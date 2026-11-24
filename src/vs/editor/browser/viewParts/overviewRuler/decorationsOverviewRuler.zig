@@ -19,21 +19,150 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// Horizontal half-cell lane inside the terminal ruler strip.
-pub const Lane = enum { left, center, right, full };
+const events = @import("../../../common/viewEvents.zig");
+const ViewContext = @import("../../../common/viewModel/viewContext.zig").ViewContext;
+const view_model = @import("../../../common/viewModel.zig");
+const ViewPart = @import("../../view/viewPart.zig").ViewPart;
+const rendering = @import("../../view/renderingContext.zig");
+const overview_cursor_color = [3]u8{ 200, 200, 200 };
+const overview_secondary_cursor_color = [3]u8{ 86, 70, 26 };
+
+/// Upstream overview-ruler view part. The terminal scrollbar composites these
+/// retained rows with its thumb during the document-part render pass.
+pub const DecorationsOverviewRuler = struct {
+    base: ViewPart = undefined,
+    attached: bool = false,
+    allocator: Allocator = undefined,
+    height: usize = 0,
+    render_error: ?anyerror = null,
+    rows: []?Marker = &.{},
+    decorations: []Decoration = &.{},
+    cursors: []Cursor = &.{},
+    needed: bool = true,
+
+    pub fn attach(self: *DecorationsOverviewRuler, allocator: Allocator, context: *ViewContext) void {
+        self.allocator = allocator;
+        self.attached = true;
+        self.base.initWithHandlerContext(context, self, .{
+            .onCursorStateChanged = onCursor,
+            .onDecorationsChanged = onDecorations,
+            .onScrollChanged = onScroll,
+            .onConfigurationChanged = onConfiguration,
+            .onThemeChanged = onTheme,
+            .onFlushed = onFlush,
+            .onLineMappingChanged = onMapping,
+            .onZonesChanged = onZones,
+        }, prepareRender, renderPart);
+    }
+
+    pub fn deinit(self: *DecorationsOverviewRuler, allocator: Allocator) void {
+        if (self.attached) self.base.deinit();
+        allocator.free(self.rows);
+        allocator.free(self.decorations);
+        allocator.free(self.cursors);
+    }
+
+    fn require(ctx: *anyopaque) bool {
+        const self: *DecorationsOverviewRuler = @ptrCast(@alignCast(ctx));
+        self.needed = true;
+        return true;
+    }
+    fn onCursor(_: *anyopaque, _: *const events.ViewCursorStateChangedEvent) bool {
+        return true;
+    }
+    fn onDecorations(_: *anyopaque, event: *const events.ViewDecorationsChangedEvent) bool {
+        return event.affectsOverviewRuler;
+    }
+    fn onScroll(ctx: *anyopaque, event: *const events.ViewScrollChangedEvent) bool {
+        return event.scrollHeightChanged and require(ctx);
+    }
+    fn onConfiguration(ctx: *anyopaque, event: *const events.ViewConfigurationChangedEvent) bool {
+        return (event.hasChanged(.layoutInfo) or event.hasChanged(.overviewRulerLanes)) and require(ctx);
+    }
+    fn onTheme(ctx: *anyopaque, _: *const events.ViewThemeChangedEvent) bool {
+        return require(ctx);
+    }
+    fn onFlush(ctx: *anyopaque, _: *const events.ViewFlushedEvent) bool {
+        return require(ctx);
+    }
+    fn onMapping(ctx: *anyopaque, _: *const events.ViewLineMappingChangedEvent) bool {
+        return require(ctx);
+    }
+    fn onZones(ctx: *anyopaque, _: *const events.ViewZonesChangedEvent) bool {
+        return require(ctx);
+    }
+
+    pub fn setHeight(self: *DecorationsOverviewRuler, height: usize) void {
+        if (self.height == height) return;
+        self.height = height;
+        self.needed = true;
+        self.base.handler.forceShouldRender();
+    }
+
+    fn prepareRender(_: *ViewPart, _: *rendering.RenderingContext) void {}
+
+    fn renderPart(part: *ViewPart, ctx: *rendering.RestrictedRenderingContext) void {
+        const self: *DecorationsOverviewRuler = @fieldParentPtr("base", part);
+        self.renderOverview(ctx) catch |err| {
+            self.render_error = err;
+        };
+    }
+
+    fn renderOverview(self: *DecorationsOverviewRuler, ctx: *rendering.RestrictedRenderingContext) !void {
+        if (self.height == 0) return;
+        const model = self.base.context.view_model;
+        const get = model.get_all_overview_ruler_decorations orelse return;
+        const markers = try get(model.context, self.allocator);
+        defer self.allocator.free(markers);
+        const selections = ctx.viewportData.selections;
+        const cursors = try self.allocator.alloc(Cursor, selections.len);
+        defer self.allocator.free(cursors);
+        for (selections, cursors, 0..) |selection, *cursor, index| {
+            cursor.* = .{
+                .line_number = selection.getPosition().lineNumber,
+                .color = if (index == 0) overview_cursor_color else overview_secondary_cursor_color,
+            };
+        }
+        std.mem.sort(Cursor, cursors, {}, cursorLessThan);
+        try self.renderMarkers(self.allocator, markers, cursors, .{
+            .canvas_height = self.height,
+            .outer_height = @intFromFloat(ctx.scrollHeight),
+        });
+    }
+
+    pub fn renderMarkers(self: *DecorationsOverviewRuler, allocator: Allocator, markers: []const Decoration, cursors: []const Cursor, settings: Settings) !void {
+        if (self.needed or self.rows.len != settings.canvas_height or
+            !sameItems(Decoration, self.decorations, markers) or !sameItems(Cursor, self.cursors, cursors))
+        {
+            const next_markers = try allocator.dupe(Decoration, markers);
+            errdefer allocator.free(next_markers);
+            const next_cursors = try allocator.dupe(Cursor, cursors);
+            errdefer allocator.free(next_cursors);
+            const rows = try renderSorted(allocator, markers, cursors, settings);
+            allocator.free(self.rows);
+            allocator.free(self.decorations);
+            allocator.free(self.cursors);
+            self.rows = rows;
+            self.decorations = next_markers;
+            self.cursors = next_cursors;
+        }
+        self.needed = false;
+    }
+
+    fn sameItems(comptime T: type, a: []const T, b: []const T) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |left, right| if (!std.meta.eql(left, right)) return false;
+        return true;
+    }
+};
+
+pub const Lane = view_model.OverviewLane;
 
 /// Vertical extent of a marker inside its terminal row. A marker edge can sit
 /// on the upper or lower half of a row because the projection uses half-cells.
 pub const Vertical = enum { full, upper, lower };
 
-/// One overview-ruler decoration, already converted to view lines and color.
-pub const Decoration = struct {
-    start_line_number: usize,
-    end_line_number: usize,
-    color: [3]u8,
-    lane: Lane = .center,
-    z_index: i32 = 0,
-};
+pub const Decoration = view_model.OverviewDecoration;
 
 /// A cursor tick. Cursors are painted after all decorations, like upstream.
 pub const Cursor = struct {
@@ -73,6 +202,14 @@ pub fn render(
     cursors: []const Cursor,
     settings: Settings,
 ) ![]?Marker {
+    const sorted = try allocator.dupe(Decoration, decorations);
+    defer allocator.free(sorted);
+    std.mem.sort(Decoration, sorted, {}, lessThan);
+
+    return renderSorted(allocator, sorted, cursors, settings);
+}
+
+fn renderSorted(allocator: Allocator, sorted: []const Decoration, cursors: []const Cursor, settings: Settings) ![]?Marker {
     const rows = try allocator.alloc(?Marker, settings.canvas_height);
     errdefer allocator.free(rows);
     for (rows) |*row| row.* = null;
@@ -92,10 +229,6 @@ pub fn render(
     const height_ratio = canvas_halves_f / outer_height;
     const min_height: f64 = @floatFromInt(@max(settings.min_decoration_height, 1));
     const leading_halves = @floor(min_height / 2);
-
-    const sorted = try allocator.dupe(Decoration, decorations);
-    defer allocator.free(sorted);
-    std.mem.sort(Decoration, sorted, {}, lessThan);
 
     for (sorted) |decoration| {
         const start = @max(decoration.start_line_number, 1);
@@ -399,4 +532,7 @@ test "decorationsOverviewRuler: many decorations in one row collapse" {
         if (row != null) count += 1;
     }
     try testing.expectEqual(@as(usize, 1), count);
+}
+fn cursorLessThan(_: void, a: Cursor, b: Cursor) bool {
+    return a.line_number < b.line_number;
 }

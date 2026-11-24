@@ -288,6 +288,10 @@ fn defaultMetadata() TokenMetadata {
     return metadata;
 }
 
+pub fn isTextMate(support: ITokenizationSupport) bool {
+    return support.vtable == &TextMateSupport.vtable;
+}
+
 pub fn create(allocator: Allocator, languageId: []const u8) !?ITokenizationSupport {
     const scope = grammarScope(languageId) orelse return null;
     try ensureInitialized();
