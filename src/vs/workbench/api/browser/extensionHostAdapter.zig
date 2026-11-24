@@ -266,7 +266,7 @@ pub const Extensions = struct {
         self.commands_actor = try MainThreadCommands.init(allocator, self.host, .{
             .context = self,
             .execute = executeHostCommand,
-        }, &workbench.commands, self.descriptions);
+        }, &workbench.commands, self.descriptions, try workbench.ensureContextKeys());
         self.configuration_actor = MainThreadConfiguration.init(
             allocator,
             .{ .context = self, .data = configurationDataHost },
@@ -713,6 +713,7 @@ pub const Extensions = struct {
 
         try self.syncActiveDocument();
         self.activateActiveLanguage();
+        try self.host.activateByEvent("onStartupFinished", 0);
     }
 
     /// Calls a host method and waits for its reply. A rejected reply becomes
@@ -2355,4 +2356,37 @@ test "Extensions: settings authoring suggests languages from declarative extensi
 
 test "Extensions: manifest authoring suggests a language override snippet" {
     try checkBuiltinCompletion("extension-editing", "package.json", "{\"contributes\": {\"configurationDefaults\": ", "language");
+}
+
+test "Extensions: accept incoming merge conflict in the workbench" {
+    if (!build_options.e2e) return error.SkipZigTest;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "conflict.txt", .data = "<<<<<<< HEAD\ncurrent\n=======\nincoming\n>>>>>>> branch\n" });
+    const path = try tmp.dir.realPathFileAlloc(io, "conflict.txt", allocator);
+    defer allocator.free(path);
+    var workbench = try Workbench.init(allocator, io, &.{path}, 80, 25);
+    defer workbench.deinit();
+    var host = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
+    defer host.deinit();
+    const command = "merge-conflict.accept.all-incoming";
+    const deadline = time_compat.milliTimestamp() + 10_000;
+    while (workbench.commands.get(command) == null and time_compat.milliTimestamp() < deadline) {
+        _ = host.pump();
+        time_compat.sleepMillis(10);
+    }
+    const action = workbench.commands.get(command) orelse return error.MissingMergeCommand;
+    try std.testing.expect(action.show_in_palette and action.precondition.?(action.context));
+    try workbench.commands.execute(command);
+    while (time_compat.milliTimestamp() < deadline) {
+        _ = host.pump();
+        var value = try workbench.activeTab().?.editor.model.getValue(null, false);
+        defer value.deinit();
+        if (std.mem.eql(u8, value.items, "incoming\n")) return;
+        time_compat.sleepMillis(10);
+    }
+    return error.MissingMergeEdit;
 }

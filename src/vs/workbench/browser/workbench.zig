@@ -8496,7 +8496,7 @@ pub const Workbench = struct {
         self.breadcrumbs_dirty = true;
     }
 
-    fn ensureContextKeys(self: *Workbench) !*context_key_mod.ContextKeyService {
+    pub fn ensureContextKeys(self: *Workbench) !*context_key_mod.ContextKeyService {
         if (self.context_keys) |service| return service;
         const service = try self.allocator.create(context_key_mod.ContextKeyService);
         errdefer self.allocator.destroy(service);

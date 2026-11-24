@@ -65,6 +65,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     await cp(path.join(upstream, '../product.json'), path.join(here, 'dist/product.json'));
     await bundleExtension('configuration-editing', 'dist/configurationEditingMain.js');
     await bundleExtension('extension-editing', 'dist/extensionEditingMain.js');
+    await bundleExtension('merge-conflict', 'dist/mergeConflictMain.js');
     await bundleExtension('git-base', 'dist/extension.js');
     await bundleExtension('php-language-features', 'dist/phpMain.js');
     await bundleExtension('search-result', 'dist/extension.js');

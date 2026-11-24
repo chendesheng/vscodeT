@@ -11,11 +11,22 @@ const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
 const protocol = @import("../common/extHost.protocol.zig");
 const manager = @import("../../services/extensions/common/extensionHostManager.zig");
 
+const keys = @import("../../../platform/contextkey/common/contextkey.zig");
 const CommandRegistry = @import("../../browser/commands.zig").CommandRegistry;
 
 const ContributedCommand = struct {
     host: *manager.HostManager,
     id: []const u8,
+    arena: std.heap.ArenaAllocator,
+    keys: ?*keys.ContextKeyService,
+    enablement: ?*const keys.Expr = null,
+
+    fn enabled(context: *anyopaque) bool {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        const condition = self.enablement orelse return true;
+        const service = self.keys orelse return false;
+        return service.contextMatchesRules(condition);
+    }
 
     fn run(context: *anyopaque) !void {
         const self: *@This() = @ptrCast(@alignCast(context));
@@ -40,6 +51,7 @@ pub const MainThreadCommands = struct {
     command_host: CommandHost,
     registry: *CommandRegistry,
     extensions: []const manager.ExtensionDescription,
+    context_keys: ?*keys.ContextKeyService,
     registrations: std.StringHashMap(?*ContributedCommand),
 
     pub fn init(
@@ -48,6 +60,7 @@ pub const MainThreadCommands = struct {
         command_host: CommandHost,
         registry: *CommandRegistry,
         extensions: []const manager.ExtensionDescription,
+        context_keys: ?*keys.ContextKeyService,
     ) !MainThreadCommands {
         return .{
             .allocator = allocator,
@@ -55,6 +68,7 @@ pub const MainThreadCommands = struct {
             .command_host = command_host,
             .registry = registry,
             .extensions = extensions,
+            .context_keys = context_keys,
             .registrations = .init(allocator),
         };
     }
@@ -73,6 +87,7 @@ pub const MainThreadCommands = struct {
         if (self.registry.get(cmd.id)) |info| {
             if (info.context == @as(*anyopaque, @ptrCast(cmd))) self.registry.unregister(cmd.id);
         }
+        cmd.arena.deinit();
         self.allocator.destroy(cmd);
     }
 
@@ -91,13 +106,23 @@ pub const MainThreadCommands = struct {
                 if (title != .string) continue;
                 const binding = try self.allocator.create(ContributedCommand);
                 errdefer self.allocator.destroy(binding);
-                binding.* = .{ .host = self.host, .id = id };
+                binding.* = .{ .host = self.host, .id = id, .keys = self.context_keys, .arena = .init(self.allocator) };
+                errdefer binding.arena.deinit();
+                var valid = true;
+                if (item.object.get("enablement")) |rule| {
+                    if (rule == .string) {
+                        var parser = keys.Parser.init(binding.arena.allocator(), .{});
+                        defer parser.deinit();
+                        binding.enablement = try parser.parse(rule.string);
+                        valid = binding.enablement != null;
+                    }
+                }
                 const category = item.object.get("category");
                 // Conditional menu items remain callable from other extensions.
                 // The picker can expose them once it evaluates their when clause.
-                const visible = !item.object.contains("enablement") and !hasPaletteCondition(points.object, id);
+                const visible = valid and !hasPaletteCondition(points.object, id);
                 errdefer self.registry.unregister(id);
-                try self.registry.register(.{ .id = id, .label = title.string, .category = if (category != null and category.? == .string) category.?.string else "", .context = binding, .run = ContributedCommand.run, .show_in_palette = visible });
+                try self.registry.register(.{ .id = id, .label = title.string, .category = if (category != null and category.? == .string) category.?.string else "", .context = binding, .run = ContributedCommand.run, .precondition = ContributedCommand.enabled, .show_in_palette = visible });
                 return binding;
             }
         }
@@ -185,7 +210,7 @@ test "MainThreadCommands: tracks registrations and dispatches" {
     defer registry.deinit();
     var description = try manager.readExtensionDescription(allocator, "host/test-fixtures/language-features");
     defer description.deinit(allocator);
-    var actor = try MainThreadCommands.init(allocator, undefined, .{ .context = undefined, .execute = Fake.execute }, &registry, &.{description});
+    var actor = try MainThreadCommands.init(allocator, undefined, .{ .context = undefined, .execute = Fake.execute }, &registry, &.{description}, null);
     defer actor.deinit();
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
