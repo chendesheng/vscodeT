@@ -1,4 +1,4 @@
-// A terminal content widget for insertion-style inline completions. The
+// A terminal content widget for inline completions at the cursor. The
 // document changes only on acceptance, through the normal editor undo stack.
 const std = @import("std");
 const ui = @import("ui");
@@ -14,6 +14,7 @@ pub const GhostText = struct {
     version: u32 = 0,
     replacement_end: usize = 1,
     ghost_length: usize = 0,
+    removed_length: usize = 0,
     trailing: ?[]u8 = null,
     editor_foreground: ui.Color = .{ .r = 212, .g = 212, .b = 212 },
     foreground: ui.Color = .{ .r = 128, .g = 128, .b = 128 },
@@ -44,10 +45,16 @@ pub const GhostText = struct {
         const after = line.items[pos.column - 1 .. range.endColumn - 1];
         if (!std.mem.startsWith(u8, proposed, before)) return false;
         const replacement = proposed[before.len..];
-        if (!std.mem.endsWith(u8, replacement, after) or replacement.len == after.len) return false;
+        if (std.mem.eql(u8, replacement, after)) return false;
+        var common: usize = 0;
+        while (common < @min(replacement.len, after.len) and
+            replacement[replacement.len - common - 1] == after[after.len - common - 1]) common += 1;
+        // Equal trailing bytes may begin partway through different UTF-8 characters.
+        while (common > 0 and (after[after.len - common] & 0xc0) == 0x80) common -= 1;
         self.text = try self.editor.allocator.dupe(u8, replacement);
         errdefer self.clear();
-        self.ghost_length = replacement.len - after.len;
+        self.ghost_length = replacement.len - common;
+        self.removed_length = after.len - common;
         self.replacement_end = range.endColumn;
         if (pos.column <= line.items.len) self.trailing = try self.editor.allocator.dupe(u8, line.items[pos.column - 1 ..]);
         self.version = self.editor.model.getVersionId();
@@ -86,13 +93,19 @@ pub const GhostText = struct {
         // The TUI displays the first line. Acceptance inserts the full text.
         const ghost = self.text.?[0..self.ghost_length];
         const first = ghost[0 .. std.mem.indexOfAny(u8, ghost, "\r\n") orelse ghost.len];
+        if (self.removed_length != 0) {
+            const removed = try doc.createElement(.span);
+            removed.setStyle(.{ .strikethrough = true });
+            _ = try removed.appendChild(try doc.createText(self.trailing.?[0..self.removed_length]));
+            _ = try node.appendChild(removed);
+        }
         _ = try node.appendChild(try doc.createText(first));
         if (first.len != ghost.len) {
             _ = try node.appendChild(try doc.createText(" ↵"));
         } else if (self.trailing) |tail| {
             const suffix = try doc.createElement(.span);
             suffix.setStyle(.{ .color = self.editor_foreground, .white_space = .pre });
-            _ = try suffix.appendChild(try doc.createText(tail));
+            _ = try suffix.appendChild(try doc.createText(tail[self.removed_length..]));
             _ = try node.appendChild(suffix);
         }
         return node;

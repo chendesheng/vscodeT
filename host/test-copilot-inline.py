@@ -68,6 +68,12 @@ def run(root):
         wait_for(lambda: source.read_text() == "+ 2 + value")
         os.write(master, b"\x1a\x13")
         wait_for(lambda: source.read_text() == "+value")
+        os.write(master, b"\x1b[H~")
+        wait_for(lambda: "shown ~result" in events.read_text())
+        os.write(master, b"\t\x13")
+        wait_for(lambda: source.read_text() == "~result")
+        os.write(master, b"\x1a\x13")
+        wait_for(lambda: source.read_text() == "~+value")
         os.write(master, b"\x11")
         process.wait(timeout=5)
         assert process.returncode == 0
