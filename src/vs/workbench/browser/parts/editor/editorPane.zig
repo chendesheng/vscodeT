@@ -260,7 +260,7 @@ pub const Tab = struct {
         controllers.word_highlighter.onEditorChanged(time_compat.milliTimestamp());
     }
 
-    pub fn handleEditorKey(self: *Tab, event: *ui.KeyEvent, is_pasting: *bool, now_ms: i64) !bool {
+    pub fn handleEditorKey(self: *Tab, event: *ui.KeyEvent, is_pasting: *bool, now_ms: i64, fallback: ?ui.KeyEvent) !bool {
         try self.ensureControllers();
         const controllers = self.controllers orelse return false;
         return editor_input_dispatch.handleKeyEvent(
@@ -273,6 +273,7 @@ pub const Tab = struct {
             event,
             is_pasting,
             now_ms,
+            fallback,
         );
     }
 

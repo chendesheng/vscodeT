@@ -38,7 +38,7 @@ pub const ITextEditor = struct {
     /// dispatches editor contributions and editing commands directly.
     keyboard_input: struct {
         context: *anyopaque,
-        dispatch: *const fn (context: *anyopaque, event: *const KeyInputEvent) void,
+        dispatch: *const fn (context: *anyopaque, event: *const KeyInputEvent, fallback: ?KeyInputEvent) void,
         cancel_suggestions: ?*const fn (context: *anyopaque) void = null,
     },
 
@@ -107,7 +107,11 @@ pub const ITextEditor = struct {
         return self.insert_text_fn(self.context, text);
     }
     pub fn dispatchEditorKey(self: ITextEditor, event: *const KeyInputEvent) void {
-        self.keyboard_input.dispatch(self.keyboard_input.context, event);
+        self.keyboard_input.dispatch(self.keyboard_input.context, event, null);
+    }
+    /// Editor contributions see the original key before the fallback runs.
+    pub fn dispatchEditorKeyWithFallback(self: ITextEditor, event: *const KeyInputEvent, fallback: KeyInputEvent) void {
+        self.keyboard_input.dispatch(self.keyboard_input.context, event, fallback);
     }
     pub fn cancelEditorSuggestions(self: ITextEditor) void {
         if (self.keyboard_input.cancel_suggestions) |cancel| cancel(self.keyboard_input.context);

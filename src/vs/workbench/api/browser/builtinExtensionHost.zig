@@ -179,16 +179,16 @@ fn editorFrom(context: *anyopaque) *Editor {
     return @ptrCast(@alignCast(context));
 }
 
-fn editorDispatchKey(context: *anyopaque, event: *const key_input.KeyInputEvent) void {
+fn editorDispatchKey(context: *anyopaque, event: *const key_input.KeyInputEvent, fallback: ?key_input.KeyInputEvent) void {
     var is_pasting = false;
-    _ = editor_input_dispatch.dispatch(editorFrom(context), event.*, &is_pasting);
+    _ = editor_input_dispatch.dispatch(editorFrom(context), fallback orelse event.*, &is_pasting);
 }
 
-fn tabDispatchEditorKey(context: *anyopaque, event: *const key_input.KeyInputEvent) void {
+fn tabDispatchEditorKey(context: *anyopaque, event: *const key_input.KeyInputEvent, fallback: ?key_input.KeyInputEvent) void {
     const tab: *Tab = @ptrCast(@alignCast(context));
     var key = event.*;
     var is_pasting = false;
-    _ = tab.handleEditorKey(&key, &is_pasting, time_compat.milliTimestamp()) catch |err| {
+    _ = tab.handleEditorKey(&key, &is_pasting, time_compat.milliTimestamp(), fallback) catch |err| {
         tab.editor.setMessage("edit failed: {s}", .{@errorName(err)});
     };
 }

@@ -11,6 +11,7 @@ const ArrayList = std.array_list.Managed;
 const Position = @import("../../../common/core/position.zig").Position;
 const Range = @import("../../../common/core/range.zig").Range;
 const Selection = @import("../../../common/core/selection.zig").Selection;
+const InternalModelContentChangeEvent = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
 const extension_api = @import("../../../../workbench/api/common/extensionApi.zig");
 const ui = @import("ui");
 
@@ -169,6 +170,7 @@ pub const HelixEngine = struct {
     last_selections: ArrayList(Selection),
     last_insert_text: ArrayList(u8),
     insert_buffer: ArrayList(u8),
+    insert_segment: ?InsertSegment = null,
     insert_group: bool = false,
     registers: *Registers,
     owns_registers: bool = false,
@@ -177,6 +179,11 @@ pub const HelixEngine = struct {
     macro_depth: usize = 0,
     replaying: bool = false,
     status_buf: [256]u8 = undefined,
+
+    const InsertSegment = struct {
+        model_start: usize,
+        buffer_start: usize,
+    };
 
     pub fn init(
         allocator: Allocator,
@@ -846,8 +853,13 @@ pub const HelixEngine = struct {
                 var view = std.unicode.Utf8View.init(text) catch return false;
                 var iterator = view.iterator();
                 var consumed = false;
-                while (iterator.nextCodepoint()) |codepoint| {
-                    var single = KeyInputEvent{ .key = .{ .char = codepoint }, .mods = event.mods };
+                while (iterator.i < text.len) {
+                    if (self.mode == .insert) {
+                        var remaining = event.*;
+                        remaining.key = .{ .text = text[iterator.i..] };
+                        return (try self.handleInsert(&remaining)) or consumed;
+                    }
+                    var single = KeyInputEvent{ .key = .{ .char = iterator.nextCodepoint().? }, .mods = event.mods };
                     consumed = (try self.handleNormalKey(&single)) or consumed;
                 }
                 return consumed;
@@ -1470,7 +1482,7 @@ pub const HelixEngine = struct {
         if (edits.items.len > 0) try self.applyEditBatch(edits.items, .cursor_start);
         self.mode = .insert;
         self.insert_group = true;
-        self.insert_buffer.clearRetainingCapacity();
+        self.resetInsertRecording();
         self.resetPending();
         keep = true;
     }
@@ -1711,7 +1723,7 @@ pub const HelixEngine = struct {
         try self.setSelections(empty);
         self.mode = .insert;
         self.insert_group = true;
-        self.insert_buffer.clearRetainingCapacity();
+        self.resetInsertRecording();
         self.resetPending();
     }
 
@@ -1749,11 +1761,12 @@ pub const HelixEngine = struct {
         }
         self.mode = .insert;
         self.insert_group = true;
-        self.insert_buffer.clearRetainingCapacity();
+        self.resetInsertRecording();
         self.resetPending();
     }
 
     fn finishInsert(self: *HelixEngine) !void {
+        self.editor.cancelEditorSuggestions();
         if (self.insert_group) {
             self.endUndoGroup();
             self.insert_group = false;
@@ -1762,7 +1775,7 @@ pub const HelixEngine = struct {
             self.last_insert_text.clearRetainingCapacity();
             try self.last_insert_text.appendSlice(self.insert_buffer.items);
         }
-        self.insert_buffer.clearRetainingCapacity();
+        self.resetInsertRecording();
         self.mode = .normal;
         self.minor_select = false;
         self.resetPending();
@@ -1781,6 +1794,53 @@ pub const HelixEngine = struct {
     }
 
     fn handleInsert(self: *HelixEngine, event: *const KeyInputEvent) !bool {
+        const model = self.editor.model;
+        const offset = model.getOffsetAt(self.editor.cursorPosition());
+        const next_segment = InsertSegment{
+            .model_start = offset,
+            .buffer_start = self.insert_buffer.items.len,
+        };
+        const segment = self.insert_segment orelse next_segment;
+        const length = self.insert_buffer.items.len - segment.buffer_start;
+        self.insert_segment = if (offset >= segment.model_start and offset <= segment.model_start + length)
+            segment
+        else
+            next_segment;
+
+        const listener = try model.onDidChangeContentWithContextId(self, recordInsertChanges);
+        defer model.removeDidChangeContentListener(listener);
+        return self.dispatchInsertKey(event);
+    }
+
+    // Keep the primary insertion in document order, including auto-closed
+    // pairs and completion replacements. Edits before it shift the segment
+    // without adding text from secondary cursors or completion imports.
+    fn recordInsertChanges(event: InternalModelContentChangeEvent, self: *HelixEngine) !void {
+        var segment = self.insert_segment orelse return;
+        defer self.insert_segment = segment;
+        for (event.contentChangedEvent.changes.items) |change| {
+            const start = change.rangeOffset;
+            const end = start + change.rangeLength;
+            const text = change.text.items();
+            if (end < segment.model_start) {
+                segment.model_start = segment.model_start - change.rangeLength + text.len;
+                continue;
+            }
+            const length = self.insert_buffer.items.len - segment.buffer_start;
+            if (start > segment.model_start + length) continue;
+            const first = start -| segment.model_start;
+            const last = @min(end -| segment.model_start, length);
+            try self.insert_buffer.replaceRange(segment.buffer_start + first, last - first, text);
+            segment.model_start = @min(segment.model_start, start);
+        }
+    }
+
+    fn resetInsertRecording(self: *HelixEngine) void {
+        self.insert_buffer.clearRetainingCapacity();
+        self.insert_segment = null;
+    }
+
+    fn dispatchInsertKey(self: *HelixEngine, event: *const KeyInputEvent) !bool {
         if (self.pending_insert_register) {
             self.pending_insert_register = false;
             switch (event.key) {
@@ -1796,90 +1856,31 @@ pub const HelixEngine = struct {
             }
         }
         switch (event.key) {
-            .text => |text| {
-                try self.editor.insertText(text);
-                try self.insert_buffer.appendSlice(text);
-                return true;
-            },
             .char => |char| {
-                if (event.mods.ctrl) return self.handleInsertCtrl(char);
+                if (event.mods.ctrl and char != ' ' and char != '@') return self.handleInsertCtrl(char);
                 if (event.mods.alt) return self.handleInsertAlt(char);
-                var buffer: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(char, &buffer) catch return false;
-                try self.editor.insertText(buffer[0..len]);
-                try self.insert_buffer.appendSlice(buffer[0..len]);
-                return true;
             },
             .escape => {
                 try self.finishInsert();
                 return true;
             },
-            .enter => {
-                try self.editor.newline();
-                try self.insert_buffer.append('\n');
-                return true;
-            },
-            .tab => {
-                try self.editor.insertTab();
-                try self.insert_buffer.append('\t');
-                return true;
-            },
             .backtab => {
-                try self.editor.insertText("\t");
-                try self.insert_buffer.append('\t');
+                self.editor.dispatchEditorKeyWithFallback(event, .{ .key = .{ .text = "\t" } });
                 return true;
             },
-            .backspace => {
-                if (event.mods.alt) {
-                    try self.deleteWordBefore();
-                } else {
-                    try self.editor.deleteLeft();
-                    removeLastCodepoint(&self.insert_buffer);
-                }
+            .backspace => if (event.mods.alt) {
+                try self.deleteWordBefore();
                 return true;
             },
-            .delete => {
-                if (event.mods.alt) {
-                    try self.deleteWordForward();
-                } else {
-                    try self.editor.deleteRight();
-                }
-                return true;
-            },
-            .up => {
-                try self.editor.moveLogicalLine(false, false, 1);
-                return true;
-            },
-            .down => {
-                try self.editor.moveLogicalLine(true, false, 1);
-                return true;
-            },
-            .left => {
-                try self.moveChar(false, false, 1);
-                return true;
-            },
-            .right => {
-                try self.moveChar(true, false, 1);
-                return true;
-            },
-            .home => {
-                try self.editor.setCursor(Position.init(self.primaryHead().lineNumber, 1));
-                return true;
-            },
-            .end => {
-                try self.editor.setCursor(self.lineEndPosition(self.primaryHead().lineNumber));
-                return true;
-            },
-            .page_up => {
-                _ = self.editor.scrollViewLines(-@as(isize, @intCast(self.editor.textHeight())));
-                return true;
-            },
-            .page_down => {
-                _ = self.editor.scrollViewLines(@intCast(self.editor.textHeight()));
+            .delete => if (event.mods.alt) {
+                try self.deleteWordForward();
                 return true;
             },
             .insert, .f12, .paste_start, .paste_end => return false,
+            else => {},
         }
+        self.editor.dispatchEditorKey(event);
+        return true;
     }
 
     fn handleInsertCtrl(self: *HelixEngine, char: u21) !bool {
@@ -1889,17 +1890,11 @@ pub const HelixEngine = struct {
             'k' => try self.deleteToLineEnd(),
             'r' => self.pending_insert_register = true,
             's' => try self.commitUndoCheckpoint(),
-            'd' => try self.editor.deleteRight(),
-            'h' => {
-                try self.editor.deleteLeft();
-                removeLastCodepoint(&self.insert_buffer);
-            },
-            'j' => {
-                try self.editor.newline();
-                try self.insert_buffer.append('\n');
-            },
+            'd' => self.editor.dispatchEditorKey(&.{ .key = .delete }),
+            'h' => self.editor.dispatchEditorKey(&.{ .key = .backspace }),
+            'j' => self.editor.dispatchEditorKey(&.{ .key = .enter }),
             'c' => try self.finishInsert(),
-            else => {},
+            else => return false,
         }
         return true;
     }
@@ -1908,7 +1903,7 @@ pub const HelixEngine = struct {
         switch (char) {
             'd' => try self.deleteWordForward(),
             '`' => {},
-            else => {},
+            else => return false,
         }
         return true;
     }
@@ -1938,7 +1933,6 @@ pub const HelixEngine = struct {
         }
         if (edits.items.len == 0) return;
         try self.applyEditBatch(edits.items, .cursor_start);
-        self.removeLastWordFromBuffer();
     }
 
     fn deleteWordForward(self: *HelixEngine) !void {
@@ -1977,7 +1971,6 @@ pub const HelixEngine = struct {
         }
         if (edits.items.len == 0) return;
         try self.applyEditBatch(edits.items, .cursor_start);
-        self.insert_buffer.clearRetainingCapacity();
     }
 
     fn deleteToLineEnd(self: *HelixEngine) !void {
@@ -2007,7 +2000,6 @@ pub const HelixEngine = struct {
             try text.appendSlice(entry.text);
         }
         try self.editor.insertText(text.items);
-        try self.insert_buffer.appendSlice(text.items);
     }
 
     fn repeatInsert(self: *HelixEngine, count: usize) !void {
@@ -3718,10 +3710,6 @@ pub const HelixEngine = struct {
         self.minor_select = false;
         self.resetPending();
         self.mode = .normal;
-    }
-
-    fn removeLastWordFromBuffer(self: *HelixEngine) void {
-        removeLastWord(&self.insert_buffer);
     }
 };
 

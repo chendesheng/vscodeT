@@ -1665,6 +1665,10 @@ pub const TextModel = struct {
             }
 
             var changes = ArrayList(ModelContentChange).init(allocator);
+            errdefer {
+                for (changes.items) |*change| change.deinit();
+                changes.deinit();
+            }
             try changes.ensureTotalCapacity(contentChanges.len);
             for (contentChanges) |*change| {
                 var copy = change.modelContentChange;
@@ -1672,6 +1676,7 @@ pub const TextModel = struct {
                 // the event, so the text must not stay borrowed from the
                 // `ApplyEditsResult` that lives only for this call.
                 copy.text = change.modelContentChange.text.move();
+                try copy.text.ensureOwned(allocator);
                 changes.appendAssumeCapacity(copy);
             }
 

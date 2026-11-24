@@ -47,8 +47,8 @@ Everything else belongs to the editor:
   vertical movement remembers the desired column, so crossing a shorter line
   and moving on restores the original column instead of staying clamped. At the
   first and last line the motion is a no-op and keeps the remembered column.
-- Insert-mode text goes through `Editor.insertText`/`newline`, so auto-closing
-  and auto-indent continue to work.
+- Insert mode uses the regular editor key dispatch for suggestions, snippet
+  navigation, auto-closing pairs, and auto-indent.
 - Search uses the model's regular-expression matcher. `/` and `?` preview
   matches while the prompt is edited: the selection moves to the match (or,
   in select mode, is extended with it) and every match is highlighted with the
@@ -140,6 +140,9 @@ Changes:
 
 - Text/UTF-8 character input, Enter/Ctrl-j, Tab (smart tab), Shift-Tab,
   Backspace/Ctrl-h, Delete/Ctrl-d, arrows, Home/End, PageUp/PageDown.
+- `Ctrl-Space` opens suggestions. Tab or Enter accepts the selected item,
+  and Tab and Shift-Tab navigate snippet placeholders. Shift-Tab inserts a
+  literal tab outside snippets.
 - `Ctrl-w`/`Alt-Backspace` and `Alt-d`/`Alt-Delete` delete a word backward or
   forward; `Ctrl-u` deletes to line start; `Ctrl-k` deletes to line end.
 - `Ctrl-r` inserts a register; `Ctrl-s` commits an undo checkpoint; Escape or
@@ -148,7 +151,8 @@ Changes:
   to the left, matching Helix's one-character normal cursor.
 - `i` inserts before the selection, `a` after it, `I` at the first non-blank,
   `A` at the line end, and `o`/`O` open a line below/above.
-- `.` repeats the last inserted text at the current selections.
+- `.` repeats the last inserted text at the current selections, including
+  accepted completions and automatically inserted closing characters.
 
 ### Command line and prompts
 

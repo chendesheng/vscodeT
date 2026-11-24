@@ -444,7 +444,9 @@ goto/match/view/window/space minor modes, linewise, surround and text-object
 operations (`mi`/`ma`), and the `:` commands (`:w`, `:q`, `:q!`, `:wq`, `:e`,
 `:reload`, `:bn`, `:bp`, `:bd`, `:sp`, `:vsp`, `:noh`, `:set`) are implemented
 in Zig. Vim and Helix are mutually exclusive: enabling one disables and
-persists the other off. See `docs/helix.md` for the supported surface and
+persists the other off. Helix Insert mode uses the regular editor key dispatch
+for suggestions, snippets, auto-closing pairs, and indentation.
+See `docs/helix.md` for the supported surface and
 deliberate gaps.
 
 Declarative built-ins are scanned from `vscode/extensions/theme-defaults`

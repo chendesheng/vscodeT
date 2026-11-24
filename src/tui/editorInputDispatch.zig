@@ -166,6 +166,7 @@ pub fn handleKeyEvent(
     event: *input.KeyEvent,
     is_pasting: *bool,
     now_ms: i64,
+    fallback: ?input.KeyEvent,
 ) !bool {
     if (suggest) |controller| {
         if (try controller.handleKey(event, now_ms)) return false;
@@ -195,7 +196,7 @@ pub fn handleKeyEvent(
             else => {},
         }
     }
-    if (dispatch(editor, event.*, is_pasting)) return true;
+    if (dispatch(editor, fallback orelse event.*, is_pasting)) return true;
     if (suggest) |controller| {
         if (printableChar(event.*)) |ch| {
             _ = try controller.onTypedCharacter(ch, now_ms);

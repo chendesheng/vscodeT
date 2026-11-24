@@ -915,7 +915,7 @@ pub fn main(init: std.process.Init) !void {
                         if (current.handleDiffKey(event)) needs_render = true;
                         continue;
                     }
-                    if (try current.handleEditorKey(event, &workbench.is_pasting, now_ms)) return;
+                    if (try current.handleEditorKey(event, &workbench.is_pasting, now_ms, null)) return;
                 },
                 .mouse => |*event| {
                     // Only motion re-resolves the whole workbench: a press or
@@ -1505,7 +1505,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var open_events = try ui.input.decodeKeys(allocator, "\x06");
     defer open_events.deinit(allocator);
     for (open_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, null, editor, event, &pasting, 0));
+        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, null, editor, event, &pasting, 0, null));
     }
 
     try std.testing.expect(find.isOpen());
@@ -1525,7 +1525,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var close_events = try ui.input.decodeKeys(allocator, "\x1b");
     defer close_events.deinit(allocator);
     for (close_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, null, editor, event, &pasting, 0));
+        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, null, editor, event, &pasting, 0, null));
     }
     try std.testing.expect(!find.isOpen());
 
