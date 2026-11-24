@@ -1752,7 +1752,8 @@ Explorer and Source Control share the ViewPane section header and vertical
 split layout. Shift+Tab from the body focuses its heading. Up and Down move
 between headings, Left and Right collapse and expand, and Enter or Space
 toggles the section. Tab reaches the header toolbar and then the body. The
-header context menu opens in the workbench picker. Drag headers to reorder
+header context menu opens at the pointer. Keyboard activation of a toolbar
+menu opens it below the focused button. Drag headers to reorder
 them. The highlighted half of the destination pane shows where the view will
 land. Drop a header on either container's activity icon to move the view.
 The workspace restores view order, visibility, expansion and divider sizes
@@ -1896,7 +1897,9 @@ and view-mode switches.
 
 The SCM stylesheet gives the message input and split action button the same
 inset and uses terminal border strokes in place of CSS pixel borders. Commit
-and overflow menus use the workbench picker. The Changes and Graph pane
+and toolbar overflow actions open native menus. Changes groups the view modes
+and sort keys under View & Sort. Graph and Outline mark the selected mode.
+Sidebar header menus show view visibility and disable hiding the last visible view. The Changes and Graph pane
 divider resizes in whole rows. The Graph uses cell glyphs for the upstream
 commit circles and connectors and reserves space on the right for ref badges.
 

@@ -496,6 +496,16 @@ fn runReloadJob(job: *ReloadJob) ReloadOutcome {
 /// Terminal adapter for the workbench context menu service. Action arguments
 /// belong to the popup until dismissal, including while its action executes.
 const WorkbenchMenu = struct {
+    const Anchor = struct {
+        x: usize,
+        y: usize,
+        opening_press: bool = false,
+
+        fn mouse(event: *const ui.MouseEvent) Anchor {
+            return .{ .x = event.x, .y = event.y, .opening_press = event.kind == .down };
+        }
+    };
+
     const Handler = *const fn (*Workbench, *WorkbenchMenu, []const u8) anyerror!void;
     const Action = struct {
         owner: *WorkbenchMenu,
@@ -514,7 +524,9 @@ const WorkbenchMenu = struct {
     selected: ?[]const u8 = null,
     group_id: ?editor_mod.GroupIdentifier = null,
     tabs: []const *Tab = &.{},
-    opening_press: bool = true,
+    opening_press: bool = false,
+    container_id: ?[]const u8 = null,
+    view_id: ?[]const u8 = null,
 
     fn init(allocator: std.mem.Allocator, handler: Handler) !*WorkbenchMenu {
         const menu = try allocator.create(WorkbenchMenu);
@@ -543,7 +555,18 @@ const WorkbenchMenu = struct {
     }
 
     fn show(self: *WorkbenchMenu, workbench: *Workbench, event: *const ui.MouseEvent) !void {
-        var options = ui.ContextMenuOptions{ .x = event.x, .y = event.y };
+        return self.showAt(workbench, Anchor.mouse(event));
+    }
+
+    fn groupAsSubmenu(self: *WorkbenchMenu, label: []const u8) !void {
+        const arena = self.arena.allocator();
+        const children = try self.items.toOwnedSlice(arena);
+        try self.items.append(arena, .{ .type = .submenu, .label = label, .submenu = children });
+    }
+
+    fn showAt(self: *WorkbenchMenu, workbench: *Workbench, anchor: Anchor) !void {
+        self.opening_press = anchor.opening_press;
+        var options = ui.ContextMenuOptions{ .x = anchor.x, .y = anchor.y };
         if (workbench.theme_palette) |palette| {
             options.theme.background = palette.color("menu.background", .{ 37, 37, 38 });
             options.theme.foreground = palette.color("menu.foreground", .{ 204, 204, 204 });
@@ -667,7 +690,7 @@ pub const Workbench = struct {
     history_navigating: bool = false,
     history_state_path: ?[]u8 = null,
     view_state_storage: ?[]u8 = null,
-    sidebar_view_to_move: ?[]const u8 = null,
+    sidebar_action_anchor: ?WorkbenchMenu.Anchor = null,
     history_tab: ?*Tab = null,
     history_selection_listener: ?Tab.SelectionListener = null,
     history_content_listener: ?editor_widget.ChangeListener = null,
@@ -1575,7 +1598,7 @@ pub const Workbench = struct {
     fn initQuickAccess(self: *Workbench) !void {
         self.history_state_path = null;
         self.view_state_storage = null;
-        self.sidebar_view_to_move = null;
+        self.sidebar_action_anchor = null;
         self.history_navigating = false;
         self.history_tab = null;
         self.history_selection_listener = null;
@@ -2404,7 +2427,17 @@ pub const Workbench = struct {
                 value.mergedTitleActions(self.allocator) catch null
             else
                 null;
-            self.sidebar_part.pane.setTitleActions(merged orelse &.{}, &.{
+            // The container overflow includes a merged pane's secondary actions.
+            // Keep only its primary buttons in the shared title toolbar.
+            var primary = merged orelse &.{};
+            if (primary.len > 0) {
+                const last = primary[primary.len - 1].id;
+                if (std.mem.eql(u8, last, scm_view_mod.CHANGES_MENU_ACTION_ID) or
+                    std.mem.eql(u8, last, scm_history_view_mod.GRAPH_MENU_ACTION_ID) or
+                    std.mem.eql(u8, last, OutlinePane.more_actions_id))
+                    primary = primary[0 .. primary.len - 1];
+            }
+            self.sidebar_part.pane.setTitleActions(primary, &.{
                 .{ .id = "workbench.scm.action.showMenu", .label = "More Actions", .glyph = '…' },
             }) catch {};
         } else if (std.mem.eql(u8, container, "explorer")) {
@@ -2415,7 +2448,19 @@ pub const Workbench = struct {
         }
     }
 
-    fn runSidebarTitleAction(self: *Workbench, id: []const u8) void {
+    fn sidebarMenuAnchor(self: *Workbench, id: []const u8) WorkbenchMenu.Anchor {
+        if (self.sidebar_action_anchor) |anchor| return anchor;
+        if (self.activeSidebarViewContainer()) |container| {
+            if (container.titleActionRect(id)) |rect| return .{ .x = ui.cell.snap(rect.x), .y = ui.cell.snap(rect.bottom()) };
+        }
+        const rect = self.sidebarRect();
+        return .{ .x = ui.cell.snap(rect.right()) -| 1, .y = ui.cell.snap(rect.y) + 1 };
+    }
+
+    fn runSidebarTitleAction(self: *Workbench, id: []const u8, event: ?*const ui.MouseEvent) void {
+        const previous = self.sidebar_action_anchor;
+        defer self.sidebar_action_anchor = previous;
+        self.sidebar_action_anchor = if (event) |e| WorkbenchMenu.Anchor.mouse(e) else null;
         self.commands.execute(id) catch {};
     }
 
@@ -5249,21 +5294,20 @@ pub const Workbench = struct {
         self.setStatusHint("{s}", .{message});
     }
 
-    fn scmCommitMenu(context: *anyopaque) void {
+    fn scmCommitMenu(context: *anyopaque, event: *const ui.MouseEvent) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        self.quick_access.inputService().showPick(&.{
-            .{ .item = .{ .id = "commit", .label = "Commit" } },
-            .{ .item = .{ .id = "amend", .label = "Commit (Amend)" } },
-            .{ .separator = .{ .label = "Post-Commit Actions" } },
-            .{ .item = .{ .id = "push", .label = "Commit & Push" } },
-            .{ .item = .{ .id = "sync", .label = "Commit & Sync" } },
-        }, .{ .placeholder = "Select Commit Action" }, scmCommitPick, self) catch {};
+        const menu = try WorkbenchMenu.init(self.allocator, runScmCommitAction);
+        errdefer menu.deinit();
+        try menu.add("commit", .{ .label = "Commit" });
+        try menu.add("amend", .{ .label = "Commit (Amend)" });
+        try menu.separator();
+        try menu.add("push", .{ .label = "Commit & Push" });
+        try menu.add("sync", .{ .label = "Commit & Sync" });
+        try menu.show(self, event);
     }
 
-    fn scmCommitPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
-        const action = std.meta.stringToEnum(scm_view_mod.CommitAction, item.id) orelse return;
+    fn runScmCommitAction(self: *Workbench, _: *WorkbenchMenu, id: []const u8) anyerror!void {
+        const action = std.meta.stringToEnum(scm_view_mod.CommitAction, id) orelse return;
         if (self.scm_view) |view| _ = view.commitInputWithAction(action);
     }
 
@@ -10217,8 +10261,8 @@ pub const Workbench = struct {
         }
         switch (outcome) {
             .handled => self.pointer = if (container.dragging_header) .grabbing else .pointer,
-            .action => |id| self.runSidebarTitleAction(id),
-            .context_menu => |id| self.showSidebarViewMenu(container, id) catch {},
+            .action => |id| self.runSidebarTitleAction(id, event),
+            .context_menu => |id| self.showSidebarViewMenu(container, .header, id, WorkbenchMenu.Anchor.mouse(event)) catch {},
         }
         return true;
     }
@@ -10226,55 +10270,91 @@ pub const Workbench = struct {
     fn showSidebarViewMenu(
         self: *Workbench,
         container: *view_pane_container_mod.ViewPaneContainer,
+        source: enum { header, container, overflow },
         header_id: ?[]const u8,
+        anchor: WorkbenchMenu.Anchor,
     ) !void {
-        var items: std.ArrayList(QuickPickItem) = .empty;
-        defer items.deinit(self.allocator);
         const model = container.model;
-        const visible = try model.visibleViews(self.allocator);
-        defer self.allocator.free(visible);
-        self.sidebar_view_to_move = null;
-        const selected_id = header_id orelse if (visible.len == 1) visible[0].id else null;
+        const menu = try WorkbenchMenu.init(self.allocator, runSidebarViewAction);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
+        menu.container_id = try arena.dupe(u8, model.container.id);
+        const visible = try model.visibleViews(arena);
+        const selected_id = header_id orelse if (visible.len == 1 and source != .overflow) visible[0].id else null;
         if (selected_id) |id| {
             for (visible) |view| {
                 if (!std.mem.eql(u8, view.id, id)) continue;
-                if (view.can_move) {
-                    const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
-                    if (other) |destination| {
-                        self.sidebar_view_to_move = view.id;
-                        try items.append(self.allocator, .{ .item = .{ .id = "moveView", .label = "Move View", .description = destination.model.container.title } });
-                    }
+                menu.view_id = try arena.dupe(u8, view.id);
+                const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
+                if (other != null and model.canMoveTo(view.id, other.?.model)) {
+                    try menu.add("moveView", .{ .label = try std.fmt.allocPrint(arena, "Move View to {s}", .{other.?.model.container.title}) });
                 }
-                if (header_id != null and view.can_toggle_visibility and visible.len > 1) {
-                    try items.append(self.allocator, .{ .item = .{ .id = view.id, .label = "Hide View", .description = view.name } });
+                if (source == .header) {
+                    try menu.add("hideView", .{
+                        .label = try std.fmt.allocPrint(arena, "Hide '{s}'", .{view.name}),
+                        .enabled = view.can_toggle_visibility and visible.len > 1,
+                    });
                 }
-                if (items.items.len != 0) try items.append(self.allocator, .{ .separator = .{} });
+                if (menu.items.items.len != 0) try menu.separator();
                 break;
             }
         }
         for (model.views.items) |view| {
-            if (!view.in_container or !view.available or !view.can_toggle_visibility or (view.visible and visible.len <= 1)) continue;
-            try items.append(self.allocator, .{ .item = .{
-                .id = view.id,
+            if (!view.in_container or !view.available) continue;
+            try menu.add(try arena.dupe(u8, view.id), .{
                 .label = view.name,
-                .description = if (view.visible) "✓" else "",
-            } });
+                .type = .checkbox,
+                .checked = view.visible,
+                .enabled = view.can_toggle_visibility and (!view.visible or visible.len > 1),
+            });
         }
-        if (items.items.len == 0) return;
-        try self.quick_access.inputService().showPick(items.items, .{ .placeholder = "Views" }, onSidebarViewPick, self);
-    }
-
-    fn onSidebarViewPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
-        const container = self.activeSidebarViewContainer() orelse return;
-        if (std.mem.eql(u8, item.id, "moveView")) {
-            const id = self.sidebar_view_to_move orelse return;
-            const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
-            if (other) |destination| _ = self.moveSidebarView(container, id, destination);
+        if (source == .overflow) {
+            // PaneComposite.getSecondaryActions flattens Views when it is the
+            // only group, and combines it with a merged pane's secondary actions.
+            const has_enabled = for (menu.items.items) |item| {
+                if (item.enabled) break true;
+            } else false;
+            if (!has_enabled) menu.items.clearRetainingCapacity();
+            if (visible.len == 1 and container.merge_view_with_container_when_single_view) {
+                const pane_id = visible[0].id;
+                const views = menu.items;
+                menu.items = .empty;
+                if (std.mem.eql(u8, pane_id, "changes")) {
+                    if (self.scm_view) |view| try addChangesMenuActions(menu, view);
+                } else if (std.mem.eql(u8, pane_id, "graph")) {
+                    if (self.scm_history_view) |view| try addGraphMenuActions(menu, view);
+                } else if (std.mem.eql(u8, pane_id, "outline")) {
+                    if (self.outline_view) |view| try addOutlineMenuActions(menu, view);
+                }
+                if (menu.items.items.len == 0) {
+                    menu.items = views;
+                } else if (views.items.len > 0) {
+                    try menu.items.insertSlice(arena, 0, &.{
+                        .{ .type = .submenu, .label = "Views", .submenu = views.items },
+                        .{ .type = .separator },
+                    });
+                }
+            }
+        }
+        if (menu.items.items.len == 0) {
+            menu.deinit();
             return;
         }
-        container.model.toggleVisibility(item.id);
+        try menu.showAt(self, anchor);
+    }
+
+    fn runSidebarViewAction(self: *Workbench, menu: *WorkbenchMenu, id: []const u8) anyerror!void {
+        const container = self.sidebarViewContainer(menu.container_id.?) orelse return;
+        if (std.mem.eql(u8, id, "moveView")) {
+            const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
+            if (other) |destination| _ = self.moveSidebarView(container, menu.view_id.?, destination);
+            return;
+        }
+        if (std.mem.eql(u8, id, "hideView")) {
+            if (container.model.isVisible(menu.view_id.?)) container.model.toggleVisibility(menu.view_id.?);
+        } else if (container.model.contains(id)) {
+            container.model.toggleVisibility(id);
+        } else return self.commands.execute(id);
         self.updateSidebarTitleActions();
     }
 
@@ -10328,7 +10408,7 @@ pub const Workbench = struct {
             event.y >= content_top + content_height;
         if (in_chrome) {
             if (event.kind == .down and event.button == .right) {
-                if (self.activeSidebarViewContainer()) |container| self.showSidebarViewMenu(container, null) catch {};
+                if (self.activeSidebarViewContainer()) |container| self.showSidebarViewMenu(container, .container, null, WorkbenchMenu.Anchor.mouse(event)) catch {};
                 return true;
             }
             if (event.kind == .move) {
@@ -10341,7 +10421,7 @@ pub const Workbench = struct {
             if (sidebar_part_mod.hitTest(&self.sidebar_part, rect, event.x, event.y)) |hit| {
                 self.pointer = .pointer;
                 if (event.kind == .down) switch (hit) {
-                    .action => |id| self.runSidebarTitleAction(id),
+                    .action => |id| self.runSidebarTitleAction(id, event),
                     .composite => |id| {
                         _ = self.showActivityById(id) catch {};
                     },
@@ -12558,7 +12638,7 @@ fn explorerPaneHandleMouse(context: *anyopaque, event: *const ui.MouseEvent, rec
 
 fn runPaneTitleAction(context: *anyopaque, id: []const u8) void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    self.runSidebarTitleAction(id);
+    self.runSidebarTitleAction(id, null);
 }
 
 fn explorerPaneTitleActions(_: *anyopaque) []const views_mod.TitleAction {
@@ -13334,39 +13414,46 @@ fn commandGitCommit(context: *anyopaque) anyerror!void {
 fn commandScmMenu(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const container = self.scm_container orelse return;
-    try self.showSidebarViewMenu(container, null);
+    try self.showSidebarViewMenu(container, .overflow, null, self.sidebarMenuAnchor("workbench.scm.action.showMenu"));
 }
 
 fn commandScmChangesMenu(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const view = self.scm_view orelse return;
-    try self.quick_access.inputService().showPick(&.{
-        if (view.viewMode() == .list)
-            .{ .item = .{ .id = scm_view_mod.SET_TREE_VIEW_MODE_ACTION_ID, .label = "View as Tree" } }
-        else
-            .{ .item = .{ .id = scm_view_mod.SET_LIST_VIEW_MODE_ACTION_ID, .label = "View as List" } },
-        .{ .item = .{ .id = scm_view_mod.SET_SORT_BY_NAME_ACTION_ID, .label = "Sort by Name" } },
-        .{ .item = .{ .id = scm_view_mod.SET_SORT_BY_PATH_ACTION_ID, .label = "Sort by Path" } },
-        .{ .item = .{ .id = scm_view_mod.SET_SORT_BY_STATUS_ACTION_ID, .label = "Sort by Status" } },
-    }, .{ .placeholder = "Changes Actions" }, onTitleCommandPick, self);
+    const menu = try WorkbenchMenu.init(self.allocator, runTitleMenuAction);
+    errdefer menu.deinit();
+    try addChangesMenuActions(menu, view);
+    try menu.showAt(self, self.sidebarMenuAnchor(scm_view_mod.CHANGES_MENU_ACTION_ID));
+}
+
+fn addChangesMenuActions(menu: *WorkbenchMenu, view: *scm_view_mod.SCMViewPane) !void {
+    const list = view.viewMode() == .list;
+    try menu.add(scm_view_mod.SET_LIST_VIEW_MODE_ACTION_ID, .{ .label = "View as List", .type = .radio, .checked = list });
+    try menu.add(scm_view_mod.SET_TREE_VIEW_MODE_ACTION_ID, .{ .label = "View as Tree", .type = .radio, .checked = !list });
+    try menu.separator();
+    const sort = if (list) view.viewSortKey() else .path;
+    try menu.add(scm_view_mod.SET_SORT_BY_NAME_ACTION_ID, .{ .label = "Sort Changes by Name", .type = .radio, .checked = sort == .name, .enabled = list });
+    try menu.add(scm_view_mod.SET_SORT_BY_PATH_ACTION_ID, .{ .label = "Sort Changes by Path", .type = .radio, .checked = sort == .path, .enabled = list });
+    try menu.add(scm_view_mod.SET_SORT_BY_STATUS_ACTION_ID, .{ .label = "Sort Changes by Status", .type = .radio, .checked = sort == .status, .enabled = list });
+    try menu.groupAsSubmenu("View & Sort");
 }
 
 fn commandScmGraphMenu(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const view = self.scm_history_view orelse return;
-    try self.quick_access.inputService().showPick(&.{
-        if (view.viewMode() == .list)
-            .{ .item = .{ .id = scm_history_view_mod.SET_TREE_VIEW_MODE_ACTION_ID, .label = "View as Tree" } }
-        else
-            .{ .item = .{ .id = scm_history_view_mod.SET_LIST_VIEW_MODE_ACTION_ID, .label = "View as List" } },
-        .{ .item = .{ .id = scm_history_view_mod.REFRESH_GRAPH_ACTION_ID, .label = "Refresh" } },
-    }, .{ .placeholder = "Graph Actions" }, onTitleCommandPick, self);
+    const menu = try WorkbenchMenu.init(self.allocator, runTitleMenuAction);
+    errdefer menu.deinit();
+    try addGraphMenuActions(menu, view);
+    try menu.showAt(self, self.sidebarMenuAnchor(scm_history_view_mod.GRAPH_MENU_ACTION_ID));
 }
 
-fn onTitleCommandPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const item = picker.selectedItem() orelse picker.activeItem() orelse return;
-    try self.commands.execute(item.id);
+fn addGraphMenuActions(menu: *WorkbenchMenu, view: *scm_history_view_mod.SCMHistoryViewPane) !void {
+    try menu.add(scm_history_view_mod.SET_LIST_VIEW_MODE_ACTION_ID, .{ .label = "View as List", .type = .radio, .checked = view.viewMode() == .list });
+    try menu.add(scm_history_view_mod.SET_TREE_VIEW_MODE_ACTION_ID, .{ .label = "View as Tree", .type = .radio, .checked = view.viewMode() == .tree });
+}
+
+fn runTitleMenuAction(self: *Workbench, _: *WorkbenchMenu, id: []const u8) anyerror!void {
+    try self.commands.execute(id);
 }
 
 fn commandGitFetch(context: *anyopaque) anyerror!void {
@@ -13568,15 +13655,21 @@ fn commandFocusOutline(context: *anyopaque) anyerror!void {
 
 fn commandOutlineMoreActions(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    const state = &(self.outline_view orelse return).view_state;
-    try self.quick_access.inputService().showPick(&.{
-        .{ .item = .{ .id = "outline.followCursor", .label = "Follow Cursor", .description = if (state.follow_cursor) "✓" else "" } },
-        .{ .item = .{ .id = "outline.filterOnType", .label = "Filter on Type", .description = if (state.filter_on_type) "✓" else "" } },
-        .{ .separator = .{} },
-        .{ .item = .{ .id = "outline.sortByPosition", .label = "Sort By: Position", .description = if (state.sort_by == .ByPosition) "✓" else "" } },
-        .{ .item = .{ .id = "outline.sortByName", .label = "Sort By: Name", .description = if (state.sort_by == .ByName) "✓" else "" } },
-        .{ .item = .{ .id = "outline.sortByKind", .label = "Sort By: Category", .description = if (state.sort_by == .ByKind) "✓" else "" } },
-    }, .{ .placeholder = "Outline Actions" }, onTitleCommandPick, self);
+    const view = self.outline_view orelse return;
+    const menu = try WorkbenchMenu.init(self.allocator, runTitleMenuAction);
+    errdefer menu.deinit();
+    try addOutlineMenuActions(menu, view);
+    try menu.showAt(self, self.sidebarMenuAnchor(OutlinePane.more_actions_id));
+}
+
+fn addOutlineMenuActions(menu: *WorkbenchMenu, view: *OutlinePane) !void {
+    const state = &view.view_state;
+    try menu.add("outline.followCursor", .{ .label = "Follow Cursor", .type = .checkbox, .checked = state.follow_cursor });
+    try menu.add("outline.filterOnType", .{ .label = "Filter on Type", .type = .checkbox, .checked = state.filter_on_type });
+    try menu.separator();
+    try menu.add("outline.sortByPosition", .{ .label = "Sort By: Position", .type = .radio, .checked = state.sort_by == .ByPosition });
+    try menu.add("outline.sortByName", .{ .label = "Sort By: Name", .type = .radio, .checked = state.sort_by == .ByName });
+    try menu.add("outline.sortByKind", .{ .label = "Sort By: Category", .type = .radio, .checked = state.sort_by == .ByKind });
 }
 
 fn commandOutlineCollapse(context: *anyopaque) anyerror!void {
@@ -20209,9 +20302,13 @@ test "Workbench: outline side panel shows provider symbols" {
     try std.testing.expectEqual(@as(u21, 0xeac5), actions[0].glyph);
     try std.testing.expectEqualStrings(OutlinePane.more_actions_id, actions[1].id);
     try workbench.commands.execute(OutlinePane.more_actions_id);
-    const picker = workbench.quick_access.inputService().pickerRef();
-    try std.testing.expect(picker.visible);
-    workbench.quick_access.inputService().hide();
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    const popup = workbench.context_menu.?.popup.?;
+    try std.testing.expect(popup.items[0].checked);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expect(!view.view_state.follow_cursor);
+    try std.testing.expect(workbench.context_menu == null);
 }
 
 test "Workbench: closing the active tab detaches the outline editor handler" {
@@ -21005,6 +21102,8 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     pumpSidebarForTests(workbench);
     try workbench.initGit();
     _ = try workbench.showActivityById("scm");
+    try workbench.setSidebarWidth(40);
+    workbench.layoutAll();
 
     const view = workbench.scm_history_view orelse return error.TestExpectedHistoryView;
     view.setConfig(.{ .page_size = 2, .page_on_scroll = false });
@@ -21037,7 +21136,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     while (scan > header_start) {
         scan -= 1;
         const hit = container.hitTest(header, scan, graph_header_y) orelse continue;
-        if (std.meta.activeTag(hit) == .action) {
+        if (hit == .action and std.mem.eql(u8, hit.action.action, scm_history_view_mod.GRAPH_MENU_ACTION_ID)) {
             action_x = scan;
             break;
         }
@@ -21055,6 +21154,39 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
         if (entry.id.len != 0 and entry.node == hovered.?) on_action = true;
     }
     try std.testing.expect(on_action);
+
+    const graph_press = ui.MouseEvent{ .kind = .down, .button = .left, .x = action_x.?, .y = graph_header_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&graph_press));
+    try std.testing.expect(workbench.context_menu != null);
+    const graph_menu = workbench.context_menu.?.popup.?;
+    try std.testing.expect(!workbench.isQuickAccessOpen());
+    try std.testing.expectEqual(graph_press.x, graph_menu.options.x.?);
+    try std.testing.expectEqual(graph_press.y, graph_menu.options.y.?);
+    try std.testing.expectEqualStrings("View as List", graph_menu.items[0].label);
+    try std.testing.expectEqual(mode_before == .list, graph_menu.items[0].checked);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .end }));
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expectEqual(.tree, view.viewMode());
+    view.setViewMode(mode_before);
+
+    const changes = workbench.scm_view.?;
+    changes.setViewMode(.tree);
+    try workbench.commands.execute(scm_view_mod.CHANGES_MENU_ACTION_ID);
+    const changes_menu = workbench.context_menu.?.popup.?;
+    try std.testing.expectEqualStrings("View & Sort", changes_menu.items[0].label);
+    try std.testing.expect(changes_menu.items[0].submenu[1].checked);
+    try std.testing.expect(!changes_menu.items[0].submenu[3].enabled);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .right }));
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expectEqual(.list, changes.viewMode());
+
+    const header_context = ui.MouseEvent{ .kind = .down, .button = .right, .x = header_start + 1, .y = graph_header_y };
+    try std.testing.expect(workbench.handleSidebarMouse(&header_context));
+    const view_items = workbench.context_menu.?.popup.?.items;
+    try std.testing.expectEqualStrings("Graph", view_items[view_items.len - 1].label);
+    try std.testing.expect(view_items[view_items.len - 1].checked);
+    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .escape }));
 
     // Moving back over the title clears the action hover.
     try std.testing.expect(workbench.handleSidebarMouse(&over_title));

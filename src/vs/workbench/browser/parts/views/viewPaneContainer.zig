@@ -392,6 +392,22 @@ pub const ViewPaneContainer = struct {
         return null;
     }
 
+    /// Screen-space bounds of the rendered toolbar button for keyboard invocation.
+    pub fn titleActionRect(self: *const ViewPaneContainer, id: []const u8) ?ui.Rect {
+        for (self.sections.items) |section| {
+            if (section.header_rect.h == 0) continue;
+            const index = self.paneIndex(section.id) orelse continue;
+            const header = &self.headers.items[index];
+            const surface = header.surface orelse continue;
+            for (header.nodes.items) |entry| {
+                if (entry.toggle or !std.mem.eql(u8, entry.id, id)) continue;
+                const box = surface.box_tree.find(entry.node) orelse continue;
+                return .{ .x = section.header_rect.x + box.rect.x, .y = section.header_rect.y, .w = box.rect.w, .h = section.header_rect.h };
+            }
+        }
+        return null;
+    }
+
     pub fn hitTest(self: *ViewPaneContainer, content: ui.Rect, x: usize, y: usize) ?Hit {
         _ = content;
         for (self.sections.items) |section| {

@@ -16,7 +16,7 @@
 //
 // Terminal adaptations:
 // - The commit message uses a single-line InputBox and scrolls with the Git
-//   action button and resource rows. Named branches have a split commit picker.
+//   action button and resource rows. Named branches have a split commit menu.
 // - The host commits the index when it has staged changes. With an empty
 //   index it uses the terminal smart-commit behavior and stages the selected
 //   working/untracked changes before committing.
@@ -111,7 +111,7 @@ pub const Host = struct {
     /// substitutes Git's smart-commit prompt by staging changed files when the
     /// index is empty) and reports failures through `status`.
     commit: *const fn (context: *anyopaque, message: []const u8, action: CommitAction) anyerror!void,
-    commit_menu: ?*const fn (context: *anyopaque) void = null,
+    commit_menu: ?*const fn (context: *anyopaque, event: *const ui.MouseEvent) anyerror!void = null,
     branch_action: ?*const fn (context: *anyopaque, action: BranchAction) void = null,
     /// Shows a one-line status hint, used for an empty commit message.
     status: *const fn (context: *anyopaque, message: []const u8) void,
@@ -942,7 +942,7 @@ pub const SCMViewPane = struct {
             local.x = col;
             local.y = row;
             self.clearHover();
-            return self.handleInputMouse(&local, list_width);
+            return self.handleInputMouse(&local, list_width, event);
         }
         // A wheel scroll moves the viewport without changing keyboard focus.
         self.hovered_input_action = null;
@@ -1081,7 +1081,8 @@ pub const SCMViewPane = struct {
         self: *SCMViewPane,
         local: *ui.MouseEvent,
         width: usize,
-    ) bool {
+        event: *const ui.MouseEvent,
+    ) !bool {
         const action = self.actionAt(local.x, local.y, width);
         const over_input = self.inputVisible() and local.y == 0 and
             local.x >= css.gutter and local.x < width -| css.right_inset;
@@ -1102,7 +1103,7 @@ pub const SCMViewPane = struct {
                                 _ = self.commitInput();
                             }
                         },
-                        .dropdown => if (self.host.commit_menu) |menu| menu(self.host.context),
+                        .dropdown => if (self.host.commit_menu) |menu| try menu(self.host.context, event),
                     }
                 } else {
                     const enabled = if (self.activeInput()) |input| input.enabled() else false;

@@ -973,13 +973,15 @@ console API for raw mode, sizing and input polling.
   through a `Surface`) exactly like the panel title, and the view pane
   containers render below it without their own section headers. The Search
   title toolbar runs `Clear Search Results` (`x`) and `Toggle Search Details`
-  (`…`); the Source Control overflow manages the Changes and Graph views.
+  (`…`); the Source Control overflow manages the Changes and Graph views. Right-click a
+  pane header for view visibility and movement. The Commit dropdown and the
+  Changes, Graph and Outline overflow buttons open anchored native menus.
   The Explorer's New File/New Folder/Refresh/Collapse All actions
   are not ported as commands. `Ctrl-0` focuses the side bar,
   `workbench.action.closeSidebar` closes it,
   `workbench.action.toggleSidebarVisibility` toggles it and
   `workbench.action.previousSideBarView`/`nextSideBarView` cycle the visible
-  containers. Gaps include generic view title context and overflow menus,
+  containers. Gaps include extension-contributed view title menu items,
   `focusActivityBar` (the rail has no keyboard
   focus model), `workbench.activityBar.iconClickBehavior`,
   the toggle-activity-bar-visibility action (the configuration service has no
@@ -1107,8 +1109,8 @@ console API for raw mode, sizing and input polling.
   single-select instead of upstream's multi-select; one repository per
   workspace so the repository picker is hidden; hover is plain text without
   avatars/markdown/command links; page fetches are capped at 20 per call.
-  Staging, discarding, the commit dropdown actions (amend/sign/push),
-  multi-repository selection and artifacts remain unported.
+  The commit dropdown offers Commit, Commit (Amend), Commit & Push and
+  Commit & Sync. Multi-repository selection and artifacts remain unported.
 - Quick diff is applied as `TextModel` decorations with the upstream
   `dirty-diff-*` classes: whole-line added/modified/deleted ranges, the
   one-cell gutter marker (`+`/`~`/`-`, primary/secondary/pattern variants
