@@ -139,6 +139,7 @@ Rules:
   | `splitview.css` | `0x0060` | split-view-view, hidden view |
   | `editorgroupview.css` | `0x0070` | editor-group-container, title, editor-instance, empty editor container, grid-view-container |
   | `editor.css` (viewport) | `0x0080` | monaco-editor, overflow-guard |
+  | `searchview.css` | `0x0090` | search-view, search-widgets-container, search-widget, search/replace containers, query details and file types |
 
 - The editor registers every sheet once in `View.init` through
   `editorCss.register(document)`. `Document.clear()` preserves them.
@@ -154,7 +155,7 @@ Rules:
   it; classes can still contribute the CSS declaration and are overridden by the
   inline style.
 
-The first ports attach classes in the terminal view:
+The ports attach classes in the terminal view:
 
 - `View.block_root` and each block node (`blockDecorations_css`),
 - the line-scroll content and each `ViewLine` DOM node (`viewLines_css`),
@@ -162,7 +163,12 @@ The first ports attach classes in the terminal view:
 - the find widget's resize handle (`sash_css`),
 - each gutter fold cell (`folding_css`); the margin root carries its
   `HoverStyle`, which reveals the hidden expanded icons while the gutter is
-  hovered.
+  hovered;
+- the Search sidebar form attaches the `searchview_css` classes. Its windowed
+  result rows use the stylesheet's spacing and match/replacement paint rules.
+  Rounded input outlines use negotiated cell borders and fall back to a themed
+  background. Browser textarea mirrors, font metrics, and high-contrast
+  dashed borders have no direct terminal equivalent.
 
 The sidebar, editor splits, diff gutter and terminal splitters use the sash
 cursor declarations with their cell hit tests. The find widget attaches the

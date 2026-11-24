@@ -1609,8 +1609,18 @@ Library constraints:
   row labels and accessibility labels; `searchCompare.zig` and
   `searchActions*.zig` port the comparers and action helpers.
   `src/vs/workbench/contrib/search/browser/searchWidget.zig` renders the input/replace/details rows on a
-  `ui.Surface`; `src/vs/workbench/contrib/search/browser/searchViewTerminal.zig` is the terminal adapter that owns
-  focus, mouse routing, flattened row painting and the replace/open callbacks.
+  `ui.Surface` with the hand-ported `media/searchview_css.zig` classes.
+  Input boxes use one text row, and rounded outlines use native cell borders
+  when the terminal supports them. The replace-all request uses the workbench
+  modal dialog. `src/vs/workbench/contrib/search/browser/searchViewTerminal.zig`
+  owns focus routing and paints the upstream row parts into the result window.
+  Tree guides align with each ancestor chevron. They use centered cell
+  strokes or vertical glyphs and follow the tree guide setting. The renderer
+  maps text overflow to cell-width ellipses.
+  **Open in editor** serializes the current matches and opens them in a pinned,
+  read-only tab with highlighted matches.
+  After an individual replacement, the workspace provider refreshes positions
+  for the remaining matches, including matches in closed files.
   Completed match selections write a `rangeHighlight` model decoration through
   `View.setSearchHighlights`. Remaining gaps are the browser tree's
   compression/virtualization, multi-selection, drag/drop, context menus,

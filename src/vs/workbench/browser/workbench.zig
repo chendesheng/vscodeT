@@ -172,6 +172,8 @@ const ViewDescriptorService = view_descriptor_service_mod.ViewDescriptorService;
 const range_highlight_mod = @import("./codeeditor.zig");
 const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 
+const search_editor_serialization = @import("../contrib/searchEditor/browser/searchEditorSerialization.zig");
+const SearchEditorInput = @import("../contrib/searchEditor/browser/searchEditorInput.zig").SearchEditorInput;
 const search_view_mod = @import("../contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
 const search_widget_mod = @import("../contrib/search/browser/searchWidget.zig");
@@ -250,17 +252,6 @@ const storage_mod = @import("../../platform/storage/common/storage.zig");
 const TerminalService = terminal_service_mod.TerminalService;
 
 const search_command_ids = @import("../contrib/search/common/constants.zig").SearchCommandIds;
-
-/// Side bar title toolbar actions of the Search view container, matching the
-/// `MenuId.ViewTitle` actions upstream. The terminal workbench supplies only
-/// the actions it can run; the Explorer's file actions are not ported as
-/// commands, while the SCM view supplies refresh and list/tree itself.
-const search_title_actions = [_]pane_composite_mod.TitleAction{
-    .{ .id = search_command_ids.clear_search_results, .label = "Clear Search Results", .glyph = 'x' },
-};
-const search_title_secondary_actions = [_]pane_composite_mod.TitleAction{
-    .{ .id = search_command_ids.toggle_query_details, .label = "Toggle Search Details", .glyph = 0x2026 },
-};
 
 pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
@@ -377,13 +368,11 @@ const CloseTabRequest = struct {
     tab: *Tab,
 };
 
-/// What a modal save confirmation resolves to. Closing one tab and quitting
-/// share the same Save / Don't Save / Cancel wording but act on different
-/// editor sets, matching upstream `doHandleCloseConfirmation` and
-/// `AbstractCloseAllAction`.
+/// The workbench operation waiting for the modal dialog result.
 const DialogRequest = union(enum) {
     close_tab: CloseTabRequest,
     quit,
+    replace_all,
 };
 
 const editor_mod = @import("../common/editor.zig");
@@ -1744,6 +1733,12 @@ pub const Workbench = struct {
             .{ .id = "search.action.replaceAllInFile", .label = "Replace All in File", .category = "Search", .context = self, .run = commandSearchReplace },
             .{ .id = "search.action.replaceAllInFolder", .label = "Replace All in Folder", .category = "Search", .context = self, .run = commandSearchReplace },
             .{ .id = "search.action.clearSearchResults", .label = "Clear Search Results", .category = "Search", .context = self, .run = commandSearchClear },
+            .{ .id = search_command_ids.open_in_editor, .label = "Open Results in Editor", .category = "Search", .context = self, .run = commandSearchOpenInEditor },
+            .{ .id = search_command_ids.refresh_search_results, .label = "Refresh Search Results", .category = "Search", .context = self, .run = commandSearchRefresh },
+            .{ .id = search_command_ids.view_as_tree, .label = "View as Tree", .category = "Search", .context = self, .run = commandSearchViewAsTree },
+            .{ .id = search_command_ids.view_as_list, .label = "View as List", .category = "Search", .context = self, .run = commandSearchViewAsList },
+            .{ .id = search_command_ids.collapse_search_results, .label = "Collapse Search Results", .category = "Search", .context = self, .run = commandSearchCollapse },
+            .{ .id = search_command_ids.expand_search_results, .label = "Expand Search Results", .category = "Search", .context = self, .run = commandSearchExpand },
             .{ .id = "workbench.action.search.toggleQueryDetails", .label = "Toggle Search Details", .category = "Search", .context = self, .run = commandSearchDetails },
             .{ .id = "actions.find", .label = "Find", .context = self, .requires_editor = true, .run = commandFind },
             .{ .id = "editor.action.startFindReplaceAction", .label = "Replace", .context = self, .requires_editor = true, .run = commandReplace },
@@ -2218,7 +2213,24 @@ pub const Workbench = struct {
     fn updateSidebarTitleActions(self: *Workbench) void {
         const container = self.sidebar_part.pane.active_id orelse "";
         if (std.mem.eql(u8, container, "search")) {
-            self.sidebar_part.pane.setTitleActions(&search_title_actions, &search_title_secondary_actions) catch {};
+            const view = self.search_view orelse return;
+            const tree_mode = view.controller.viewMode() == .tree;
+            const expanded = view.hasExpandedResults();
+            const has_results = view.matchCount() != 0;
+            self.sidebar_part.pane.setTitleActions(&.{
+                .{ .id = search_command_ids.refresh_search_results, .label = "Refresh", .glyph = '↻', .enabled = view.widget.value(.search).len != 0 },
+                .{ .id = search_command_ids.clear_search_results, .label = "Clear Search Results", .glyph = '×', .enabled = has_results },
+                // Codicon.listFlat/listTree fit one cell. U+2637 (☷) is a
+                // wide character and displaces later glyphs and frame strokes.
+                if (tree_mode)
+                    .{ .id = search_command_ids.view_as_list, .label = "View as List", .glyph = 0xeb84 }
+                else
+                    .{ .id = search_command_ids.view_as_tree, .label = "View as Tree", .glyph = 0xeb86 },
+                if (expanded or !has_results)
+                    .{ .id = search_command_ids.collapse_search_results, .label = "Collapse All", .glyph = '⊟', .enabled = has_results }
+                else
+                    .{ .id = search_command_ids.expand_search_results, .label = "Expand All", .glyph = '⊞' },
+            }, &.{}) catch {};
         } else if (std.mem.eql(u8, container, "scm")) {
             const merged = if (self.scm_container) |value|
                 value.mergedTitleActions(self.allocator) catch null
@@ -2776,6 +2788,7 @@ pub const Workbench = struct {
             .{
                 .context = self,
                 .open_match = searchOpenMatch,
+                .open_results = searchOpenResults,
                 .highlight_range = searchHighlightRange,
                 .read_file = searchReadFile,
                 .extra_files = searchExtraFiles,
@@ -2784,6 +2797,7 @@ pub const Workbench = struct {
                 .save_file = searchSaveFile,
                 .active_selection_text = searchActiveSelectionText,
                 .active_editor = searchActiveEditorInfo,
+                .confirm_replace_all = searchConfirmReplaceAll,
             },
         );
         errdefer view.deinit();
@@ -7697,6 +7711,9 @@ pub const Workbench = struct {
         switch (pending) {
             .close_tab => |close| self.resolveCloseTab(close, result) catch |err| self.reportDialogError(err),
             .quit => self.resolveQuit(result) catch |err| self.reportDialogError(err),
+            .replace_all => if (self.search_view) |view| {
+                if (result == .SAVE) view.confirmReplaceAll() else view.clearReplaceConfirmation();
+            },
         }
     }
 
@@ -9570,6 +9587,7 @@ pub const Workbench = struct {
     /// pointer motion leaves the view content for the chrome or another part.
     fn clearSidebarViewHover(self: *Workbench) void {
         if (self.sidebar) |sidebar| sidebar.clearHover();
+        if (self.search_view) |view| view.clearHover();
         if (self.scm_container) |container| container.clearHover();
         if (self.scm_history_view) |view| view.clearHover();
         if (self.outline_view) |view| view.clearHover();
@@ -9597,10 +9615,10 @@ pub const Workbench = struct {
 
         if (self.focus != .sidebar or !self.sidebarShown()) return false;
 
-        if (event.key == .escape) {
-            // Let the global Escape Escape chord exit zen mode when the side
-            // bar was reopened while zen mode is active.
-            if (self.layout_model.isZenModeActive()) return false;
+        // Let the global Escape Escape chord exit zen mode when the side bar
+        // was reopened while zen mode is active.
+        if (event.key == .escape and self.layout_model.isZenModeActive()) return false;
+        if (event.key == .escape and !std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) {
             // A focused sticky-scroll widget is the innermost focus target;
             // Escape leaves it before leaving the side bar (upstream leaves it
             // with Tab, which is the same terminal focus-traversal key).
@@ -9803,7 +9821,10 @@ pub const Workbench = struct {
             return true;
         }
         if (std.mem.eql(u8, active_id, "search")) {
-            if (self.search_view) |view| _ = view.handleMouse(event);
+            if (self.search_view) |view| {
+                _ = view.handleMouse(event);
+                if (event.kind == .move) self.pointer = view.pointerAt(event.x, event.y);
+            }
             return true;
         }
         if (!std.mem.eql(u8, active_id, "explorer")) return true;
@@ -10418,6 +10439,7 @@ pub const Workbench = struct {
             // The side bar part paints its own title chrome and background;
             // the active view pane container renders into the content area
             // below the title, like upstream.
+            if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) self.updateSidebarTitleActions();
             var badge_texts: [8][24]u8 = undefined;
             var badges: [8]pane_composite_mod.Badge = undefined;
             try sidebar_part_mod.render(
@@ -10444,7 +10466,11 @@ pub const Workbench = struct {
             } else if (std.mem.eql(u8, active_id, "search")) {
                 if (self.search_view) |view| {
                     if (self.theme_palette) |palette| view.setThemeColors(palette);
-                    try view.render(&self.frame.next, content, .{ .show_header = false });
+                    try view.render(&self.frame.next, content, .{
+                        .show_header = false,
+                        .cell_borders = self.part.cell_borders,
+                        .border_capabilities = self.part.cell_border_capabilities,
+                    });
                 } else {
                     self.renderPlaceholder(content, focused);
                 }
@@ -13781,6 +13807,34 @@ fn commandWordHighlightPrevious(context: *anyopaque) anyerror!void {
     tab.controllers.?.word_highlighter.moveBack();
 }
 
+fn searchOpenResults(context: *anyopaque, query: []const u8, snapshot: search_editor_serialization.Snapshot) !void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const pane = self.activePane() orelse return error.GroupPaneMissing;
+    const dims = self.editorDimensions(pane);
+    const input = try SearchEditorInput.init(self.allocator, self.io, query, snapshot.text, dims.width, dims.height);
+    const tab = Tab.initSearchEditor(self.allocator, input) catch |err| {
+        input.deinit();
+        return err;
+    };
+    errdefer tab.deinit();
+    try tab.view.setStatusBarVisible(false);
+
+    const decorations = try self.allocator.alloc(editorBrowser.Decoration, snapshot.match_ranges.len);
+    defer self.allocator.free(decorations);
+    for (decorations, snapshot.match_ranges) |*decoration, range| {
+        decoration.* = .{ .range = range, .kind = .find_match, .show_in_overview_ruler = false };
+    }
+    try tab.view.setSearchEditorHighlights(decorations);
+    try pane.tabs.ensureUnusedCapacity(1);
+    _ = try pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
+    try pane.addTab(tab);
+    self.applyEditorSettingsToTab(tab);
+    self.layoutAll();
+    self.focusEditor();
+    tab.focusEditor();
+    self.refreshStatus();
+}
+
 fn searchOpenMatch(context: *anyopaque, path: []const u8, range: ?Range) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.openPath(path);
@@ -13828,6 +13882,7 @@ fn searchOpenFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
     }
     for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
+            if (tab.search_editor_input != null) continue;
             var duplicate = false;
             for (paths.items) |existing| {
                 if (std.mem.eql(u8, existing, tab.editor.path)) {
@@ -13850,6 +13905,7 @@ fn searchExtraFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
     }
     for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
+            if (tab.search_editor_input != null) continue;
             if (self.workspace.isInsideWorkspace(tab.editor.path)) continue;
             var duplicate = false;
             for (paths.items) |existing| {
@@ -13974,6 +14030,16 @@ fn searchActiveSelectionText(context: *anyopaque, allocator: Allocator) anyerror
     return null;
 }
 
+fn searchConfirmReplaceAll(context: *anyopaque, message: []const u8) !void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.dialog != null) return error.DialogAlreadyOpen;
+    const dialog = try ui.Dialog.init(self.allocator, message, "", &.{ "Replace", dialogs.cancel_label });
+    dialog.theme = self.dialogTheme();
+    self.dialog = dialog;
+    self.pending_dialog = .replace_all;
+    self.pointer = .default;
+}
+
 fn searchActiveEditorInfo(context: *anyopaque) ?search_view_mod.EditorInfo {
     const self: *Workbench = @ptrCast(@alignCast(context));
     return self.activeEditorInfo();
@@ -14033,6 +14099,36 @@ fn commandSearchRemove(context: *anyopaque) anyerror!void {
 fn commandSearchReplace(context: *anyopaque) anyerror!void {
     const view = try ensureSearch(context);
     view.commandReplace();
+}
+
+fn commandSearchOpenInEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.search_view) |view| try view.openInEditor();
+}
+
+fn commandSearchRefresh(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    try view.commandRefresh();
+}
+
+fn commandSearchViewAsTree(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandViewAsTree(true);
+}
+
+fn commandSearchViewAsList(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandViewAsTree(false);
+}
+
+fn commandSearchCollapse(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandSetExpanded(false);
+}
+
+fn commandSearchExpand(context: *anyopaque) anyerror!void {
+    const view = try ensureSearch(context);
+    view.commandSetExpanded(true);
 }
 
 fn commandSearchClear(context: *anyopaque) anyerror!void {
@@ -16250,7 +16346,7 @@ test "Workbench: opening a search result from another file does not restart the 
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
 }
 
-test "Workbench: search replace all updates an open editor" {
+test "Workbench: search chevron and replace all confirmation update an open editor" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
@@ -16268,6 +16364,21 @@ test "Workbench: search replace all updates an open editor" {
 
     try workbench.findInFiles();
     const view = workbench.search_view.?;
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const x = ui.cell.snap(view.last_rect.x);
+    const y = ui.cell.snap(view.last_rect.y) + view.header_rows;
+    const control = view.widget.controlRect(.toggle_replace).?;
+    const down = ui.MouseEvent{
+        .kind = .down,
+        .button = .left,
+        .x = x + ui.cell.snap(control.x),
+        .y = y + ui.cell.snap(control.y),
+    };
+    try std.testing.expect(!view.widget.replace_visible);
+    try std.testing.expect(workbench.handleSidebarMouse(&down));
+    try std.testing.expect(view.widget.replace_visible);
     try view.widget.setValue(.search, "alpha");
     try view.widget.setValue(.replace, "omega");
     view.model.setReplaceString("omega") catch {};
@@ -16277,7 +16388,23 @@ test "Workbench: search replace all updates an open editor" {
         _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
     }
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
-    view.commandReplaceAll();
+    try workbench.render(&out.writer);
+    const replace_all = view.widget.controlRect(.replace_all).?;
+    const click = ui.MouseEvent{
+        .kind = .down,
+        .button = .left,
+        .x = x + ui.cell.snap(replace_all.x),
+        .y = y + ui.cell.snap(replace_all.y),
+    };
+    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    try std.testing.expect(view.replace_confirmation != null);
+    try std.testing.expectEqual(@as(usize, 2), view.matchCount());
+    var escape = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(workbench.handleDialogKey(&escape));
+    try std.testing.expect(view.replace_confirmation == null);
+    try std.testing.expect(workbench.handleSidebarMouse(&click));
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(workbench.handleDialogKey(&enter));
 
     const tab = workbench.activeTab().?;
     var content = try tab.editor.model.getValue(null, false);
@@ -16654,16 +16781,33 @@ test "Workbench: side bar part paints the title and runs its actions" {
     defer allocator.free(search_title);
     try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
 
-    // The title toolbar hosts the active view's actions and runs them.
-    const x0 = workbench.activityBarWidth();
-    const width = workbench.sidebarWidth();
-    const clear_click = ui.MouseEvent{ .kind = .down, .x = x0 + width - 5, .y = 0 };
+    // Find the title action through the same hit testing as a mouse press.
+    const sidebar_rect = workbench.sidebarRect();
+    const title_y = ui.cell.snap(sidebar_rect.y);
+    var clear_x: ?usize = null;
+    for (ui.cell.snap(sidebar_rect.x)..ui.cell.snap(sidebar_rect.right())) |x| {
+        if (sidebar_part_mod.hitTest(&workbench.sidebar_part, sidebar_rect, x, title_y)) |hit| {
+            if (hit == .action and std.mem.eql(u8, hit.action, search_command_ids.clear_search_results)) {
+                clear_x = x;
+                break;
+            }
+        }
+    }
+    const clear_click = ui.MouseEvent{ .kind = .down, .button = .left, .x = clear_x.?, .y = title_y };
     try std.testing.expect(workbench.handleSidebarMouse(&clear_click));
     try std.testing.expectEqual(@as(usize, 0), view.rows.items.len);
 
-    const details_click = ui.MouseEvent{ .kind = .down, .x = x0 + width - 2, .y = 0 };
+    const details = view.widget.controlRect(.more).?;
+    const details_click = ui.MouseEvent{
+        .kind = .down,
+        .button = .left,
+        .x = ui.cell.snap(view.last_rect.x + details.x),
+        .y = ui.cell.snap(view.last_rect.y + details.y),
+    };
+    try std.testing.expect(details_click.y > title_y);
     try std.testing.expect(workbench.handleSidebarMouse(&details_click));
     try std.testing.expectEqual(!details_before, view.widget.details_visible);
+    try std.testing.expectEqual(search_widget_mod.Field.includes, view.widget.focus_field);
 }
 
 test "Workbench: activity bar top moves the composite bar into the side bar" {
@@ -17434,7 +17578,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path = try seedFile(allocator, io, &tmp, "settings_search.txt", "alpha beta\n");
+    const path = try seedFile(allocator, io, &tmp, "settings_search.txt", "prefix alpha beta\n");
     defer allocator.free(path);
     var settings_file = try tmp.dir.createFile(io, "search-settings.json", .{});
     try settings_file.writeStreamingAll(io, "{\"search.showLineNumbers\": true}");
@@ -17475,7 +17619,162 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
     try workbench.render(&rendered.writer);
-    try std.testing.expect(std.mem.indexOf(u8, rendered.written(), "1: ") != null);
+    const grid = workbench.frame.present();
+    const y = ui.cell.snap(view.last_rect.y) + view.results_y + 1;
+    const row = try grid.rowText(allocator, y);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "1: prefix alpha beta") != null);
+    const col = ui.cell.snap(view.last_rect.x) + @import("../contrib/search/browser/searchResultsView.zig").matchIndentCells(1) + 3;
+    const before = y * grid.cols + col;
+    const match = before + "prefix ".len;
+    const after = match + "alpha ".len;
+    try std.testing.expectEqual(grid.fg[before], grid.fg[after]);
+    try std.testing.expectEqual(grid.bg[before], grid.bg[after]);
+    try std.testing.expect(grid.bg[before] != grid.bg[match]);
+}
+
+test "Workbench: search guides, preview ellipses and the Open in editor link" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = "prefix words before a significant amount of extra context alpha and more trailing words after the match alpha";
+    const path = try seedFile(allocator, io, &tmp, "preview.txt", source);
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 20);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    try workbench.setSidebarWidth(45);
+    pumpSidebarForTests(workbench);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expectEqual(@as(usize, 2), view.matchCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const x = ui.cell.snap(view.last_rect.x);
+    const y = ui.cell.snap(view.last_rect.y) + view.results_y + 1;
+    const end = ui.cell.snap(view.last_rect.right());
+    const grid = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[grid.index(x, y)]);
+    const snippet = try grid.rowText(allocator, y);
+    defer allocator.free(snippet);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, snippet, "…"));
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "alpha") != null);
+
+    const move = ui.MouseEvent{ .kind = .move, .x = x + 4, .y = y };
+    try std.testing.expect(workbench.handleSidebarMouse(&move));
+    try workbench.render(&out.writer);
+    const hovered = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, '│'), hovered.cluster[hovered.index(x, y)]);
+    try std.testing.expect(hovered.cluster[hovered.index(end - 2, y)] != '│');
+
+    const link = view.open_in_editor_rect;
+    try std.testing.expectEqual(@as(f64, "Open in editor".len), link.w);
+    const link_x = ui.cell.snap(link.x);
+    const link_y = ui.cell.snap(link.y);
+    const status = try hovered.rowText(allocator, link_y);
+    defer allocator.free(status);
+    try std.testing.expect(std.mem.indexOf(u8, status, "2 results in 1 file - Open in editor") != null);
+    try std.testing.expect(workbench.handleSidebarMouse(&.{ .kind = .move, .x = link_x, .y = link_y }));
+    try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointer);
+    try workbench.render(&out.writer);
+    const after_hover = workbench.frame.present();
+    try std.testing.expectEqual(@as(u32, ' '), after_hover.cluster[after_hover.index(x, y)]);
+
+    try std.testing.expect(workbench.handleSidebarMouse(&.{ .kind = .down, .button = .left, .x = link_x, .y = link_y }));
+    const snapshot = workbench.activeTab().?;
+    try std.testing.expectEqualStrings("Search: alpha", snapshot.input.getName());
+    try std.testing.expect(snapshot.editor.read_only);
+    var contents = try snapshot.editor.model.getValue(null, false);
+    defer contents.deinit();
+    const expected = try std.fmt.allocPrint(allocator, "2 results - 1 file\n\npreview.txt:\n  1: {s}\n", .{source});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, contents.items);
+    const decorations = try snapshot.editor.model.getAllDecorations(0, false);
+    defer allocator.free(decorations);
+    var match_line = try snapshot.editor.model.getLineContent(4);
+    defer match_line.deinit();
+    var matches: usize = 0;
+    for (decorations) |decoration| {
+        if (decoration.range.startLineNumber == 4 and
+            decoration.range.endColumn - decoration.range.startColumn == "alpha".len)
+        {
+            const range = decoration.range;
+            try std.testing.expectEqualStrings("alpha", match_line.items[range.startColumn - 1 .. range.endColumn - 1]);
+            matches += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), matches);
+}
+
+test "Workbench: search aligns nested guides and keeps the link inline at the result limit" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "nested/results.txt", "alpha one\nalpha two\nalpha three\n");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json",
+        \\{"search.maxResults":2,"workbench.activityBar.location":"top"}
+    );
+    defer allocator.free(settings);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 20);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings});
+    try workbench.initSidebar(root);
+    try workbench.setSidebarWidth(45);
+    pumpSidebarForTests(workbench);
+    const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,round,outside,radius\x1b\\").?;
+    workbench.setCellBorderCapabilities(caps);
+    try workbench.findInFiles();
+    const view = workbench.search_view.?;
+    view.commandViewAsTree(true);
+    try view.widget.setValue(.search, "alpha");
+    try view.startSearch();
+    var guard: usize = 0;
+    while (view.wantsTick() and guard < 100) : (guard += 1) {
+        _ = view.tick(@import("../../base/common/timeCompat.zig").milliTimestamp());
+    }
+    try std.testing.expect(view.model.limitHit());
+    try std.testing.expectEqual(@as(usize, 2), view.matchCount());
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try workbench.render(&out.writer);
+    const x = ui.cell.snap(view.last_rect.x);
+    const y = ui.cell.snap(view.last_rect.y) + view.results_y;
+    const grid = workbench.frame.present();
+    const status = try grid.rowText(allocator, y - 1);
+    defer allocator.free(status);
+    try std.testing.expect(std.mem.indexOf(u8, status, "2 results in 1 file - Open in editor") != null);
+
+    // The file is the folder's child, and the match is the file's child.
+    const folder_col = x;
+    const file_col = x + 2;
+    try std.testing.expectEqual(@as(u32, '⌄'), grid.cluster[grid.index(folder_col, y)]);
+    try std.testing.expectEqual(@as(u32, '⌄'), grid.cluster[grid.index(file_col, y + 1)]);
+    const move = ui.MouseEvent{ .kind = .move, .x = x + 5, .y = y + 2 };
+    try std.testing.expect(workbench.handleSidebarMouse(&move));
+    try workbench.render(&out.writer);
+    const hovered = workbench.frame.present();
+    try std.testing.expect(hovered.borderSetAt(folder_col, y + 1).strokeAt(ui.cell_border.Segment.v_top) != null);
+    try std.testing.expect(hovered.borderSetAt(folder_col, y + 2).strokeAt(ui.cell_border.Segment.v_top) != null);
+    try std.testing.expect(hovered.borderSetAt(file_col, y + 2).strokeAt(ui.cell_border.Segment.v_top) != null);
+    try std.testing.expect(hovered.borderSetAt(file_col + 1, y + 2).strokeAt(ui.cell_border.Segment.v_top) == null);
 }
 
 test "Workbench: typing a search query restarts results without stale collapse keys" {
@@ -17571,7 +17870,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     const selected_before = view.selected;
     const scroll_before = view.scroll;
     const x = ui.cell.snap(view.last_rect.x) + 2;
-    const y = ui.cell.snap(view.last_rect.y) + 1 + view.widget.layout.height + 2;
+    const y = ui.cell.snap(view.last_rect.y) + view.results_y + 1;
     const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 1 };
     try std.testing.expect(workbench.handleSidebarMouse(&wheel));
     try std.testing.expect(view.scroll > scroll_before);
@@ -17613,7 +17912,7 @@ test "Workbench: search input focus follows presses, not hover" {
     // Idle mode-1003 motion over the search row is hover only: the replace
     // field keeps the caret and panel focus does not change.
     const x = ui.cell.snap(view.last_rect.x) + 2;
-    const y = ui.cell.snap(view.last_rect.y) + view.header_rows;
+    const y = ui.cell.snap(view.last_rect.y) + view.header_rows + view.widget.layout.search_y;
     var hover = ui.MouseEvent{ .kind = .move, .x = x, .y = y };
     try std.testing.expect(workbench.handleSidebarMouse(&hover));
     try std.testing.expect(view.panel_focused);

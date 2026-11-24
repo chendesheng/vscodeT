@@ -11,15 +11,25 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
+const css = @import("media/searchview_css.zig");
+const editor_css = @import("../../../../editor/browser/editorCss.zig");
 
 pub const Field = enum { search, replace, includes, excludes };
 pub const Option = enum { match_case, whole_word, regex, preserve_case };
 
-const background = ui.Color{ .r = 30, .g = 30, .b = 33 };
-const foreground = ui.Color{ .r = 220, .g = 220, .b = 220 };
-const dim = ui.Color{ .r = 140, .g = 140, .b = 148 };
-const active_background = ui.Color{ .r = 62, .g = 72, .b = 94 };
-const active_foreground = ui.Color{ .r = 245, .g = 245, .b = 245 };
+pub const Colors = struct {
+    background: ui.Color = .{ .r = 30, .g = 30, .b = 33 },
+    foreground: ui.Color = .{ .r = 220, .g = 220, .b = 220 },
+    input_background: ui.Color = .{ .r = 43, .g = 43, .b = 45 },
+    input_foreground: ui.Color = .{ .r = 220, .g = 220, .b = 220 },
+    placeholder: ui.Color = .{ .r = 140, .g = 140, .b = 148 },
+    border: ui.Color = .{ .r = 70, .g = 70, .b = 75 },
+    focus_border: ui.Color = .{ .r = 80, .g = 130, .b = 180 },
+    hover: ui.Color = .{ .r = 60, .g = 60, .b = 64 },
+    option_active: ui.Color = .{ .r = 62, .g = 72, .b = 94 },
+    option_foreground: ui.Color = .{ .r = 245, .g = 245, .b = 245 },
+    disabled: ui.Color = .{ .r = 140, .g = 140, .b = 148 },
+};
 
 pub const Callbacks = struct {
     context: *anyopaque,
@@ -27,24 +37,22 @@ pub const Callbacks = struct {
     on_submit: ?*const fn (context: *anyopaque, field: Field) void = null,
     on_escape: ?*const fn (context: *anyopaque, field: Field) void = null,
     on_toggle: ?*const fn (context: *anyopaque, option: Option) void = null,
+    on_toggle_replace: ?*const fn (context: *anyopaque) void = null,
+    on_toggle_details: ?*const fn (context: *anyopaque) void = null,
+    on_use_excludes: ?*const fn (context: *anyopaque) void = null,
     on_replace_all: ?*const fn (context: *anyopaque) void = null,
 };
 
 pub const Layout = struct {
     height: usize = 0,
-    search_y: usize = 0,
+    search_y: usize = css.widgets_padding_top,
     replace_y: ?usize = null,
+    more_y: usize = 0,
     includes_y: ?usize = null,
     excludes_y: ?usize = null,
-    use_excludes_y: ?usize = null,
 };
 
-const ToggleHit = struct {
-    x: usize,
-    width: usize,
-    y: usize,
-    option: Option,
-};
+pub const Control = enum { toggle_replace, match_case, whole_word, regex, preserve_case, replace_all, more, use_excludes };
 
 const FieldContext = struct {
     widget: *SearchWidget,
@@ -60,6 +68,7 @@ pub const SearchWidget = struct {
     contexts: [4]FieldContext,
     callbacks: ?Callbacks = null,
     focus_field: Field = .search,
+    focus_control: ?Control = null,
     /// Whether the search view (not just the pointer) owns input focus. The
     /// Search view sets this from its panel/results focus state; a row hover
     /// must never change it.
@@ -72,12 +81,11 @@ pub const SearchWidget = struct {
     preserve_case: bool = false,
     use_excludes: bool = true,
     surface: ?ui.Surface = null,
-    surface_width: usize = 0,
-    surface_height: usize = 0,
     layout: Layout = .{},
-    toggle_hits: [4]ToggleHit = undefined,
-    toggle_count: usize = 0,
-    last_width: usize = 0,
+    colors: Colors = .{},
+    cell_borders: bool = false,
+    replace_all_enabled: bool = false,
+    controls: [std.enums.values(Control).len]?*ui.Node = @splat(null),
     nodes: [4]?*ui.Node = @splat(null),
 
     pub fn init(allocator: Allocator) !*SearchWidget {
@@ -96,8 +104,8 @@ pub const SearchWidget = struct {
         }
         self.configureInput(&self.search, &self.contexts[0], "Search");
         self.configureInput(&self.replace, &self.contexts[1], "Replace");
-        self.configureInput(&self.includes, &self.contexts[2], "files to include");
-        self.configureInput(&self.excludes, &self.contexts[3], "files to exclude");
+        self.configureInput(&self.includes, &self.contexts[2], "e.g. *.ts, src/**/include");
+        self.configureInput(&self.excludes, &self.contexts[3], "e.g. *.ts, src/**/exclude");
         return self;
     }
 
@@ -105,8 +113,6 @@ pub const SearchWidget = struct {
         _ = self;
         box.placeholder = placeholder_text;
         box.placeholder_when_focused = true;
-        box.color = foreground;
-        box.placeholder_color = dim;
         box.callback_context = context;
         box.on_change = onInputChange;
         box.on_enter = onInputEnter;
@@ -139,147 +145,132 @@ pub const SearchWidget = struct {
         try self.input(field).setValue(text);
     }
 
-    pub fn toggleReplace(self: *SearchWidget) void {
-        self.replace_visible = !self.replace_visible;
-        if (!self.replace_visible and self.focus_field == .replace) self.focus_field = .search;
+    pub fn setReplaceVisible(self: *SearchWidget, visible: bool) void {
+        self.replace_visible = visible;
+        if (!visible) {
+            if (self.focus_field == .replace) self.focusField(.search);
+            if (self.focus_control == .preserve_case or self.focus_control == .replace_all) self.focus_control = null;
+        }
     }
 
-    pub fn toggleDetails(self: *SearchWidget) void {
-        self.details_visible = !self.details_visible;
+    pub fn setDetailsVisible(self: *SearchWidget, visible: bool) void {
+        self.details_visible = visible;
         if (!self.details_visible and (self.focus_field == .includes or self.focus_field == .excludes)) {
-            self.focus_field = .search;
+            self.focusField(.search);
         }
     }
 
-    pub fn visibleFields(self: *const SearchWidget, out: *[4]Field) usize {
-        var count: usize = 0;
-        out[count] = .search;
-        count += 1;
-        if (self.replace_visible) {
-            out[count] = .replace;
-            count += 1;
-        }
-        if (self.details_visible) {
-            out[count] = .includes;
-            count += 1;
-            out[count] = .excludes;
-            count += 1;
-        }
-        return count;
+    pub fn focusField(self: *SearchWidget, field: Field) void {
+        self.focus_field = field;
+        self.focus_control = null;
     }
+
+    const FocusTarget = union(enum) {
+        field: Field,
+        control: Control,
+    };
 
     pub fn cycleFocus(self: *SearchWidget, backwards: bool) void {
-        var fields: [4]Field = undefined;
-        const count = self.visibleFields(&fields);
+        const order = [_]FocusTarget{
+            .{ .control = .toggle_replace },
+            .{ .field = .search },
+            .{ .field = .replace },
+            .{ .control = .match_case },
+            .{ .control = .whole_word },
+            .{ .control = .regex },
+            .{ .control = .preserve_case },
+            .{ .control = .replace_all },
+            .{ .control = .more },
+            .{ .field = .includes },
+            .{ .field = .excludes },
+            .{ .control = .use_excludes },
+        };
+        var targets: [order.len]FocusTarget = undefined;
+        var count: usize = 0;
         var index: usize = 0;
-        while (index < count) : (index += 1) {
-            if (fields[index] == self.focus_field) break;
+        for (order) |target| {
+            switch (target) {
+                .field => |field| {
+                    if (field == .replace and !self.replace_visible) continue;
+                    if ((field == .includes or field == .excludes) and !self.details_visible) continue;
+                    if (self.focus_control == null and self.focus_field == field) index = count;
+                },
+                .control => |control| {
+                    if (self.controlRect(control) == null) continue;
+                    if (control == .replace_all and !self.replace_all_enabled) continue;
+                    if (self.focus_control == control) index = count;
+                },
+            }
+            targets[count] = target;
+            count += 1;
         }
-        if (index >= count) index = 0;
-        if (backwards) {
-            index = (index + count - 1) % count;
-        } else {
-            index = (index + 1) % count;
+        const next = if (backwards) (index + count - 1) % count else (index + 1) % count;
+        switch (targets[next]) {
+            .field => |field| self.focusField(field),
+            .control => |control| self.focus_control = control,
         }
-        self.focus_field = fields[index];
     }
 
-    pub fn fieldAt(self: *const SearchWidget, local_y: usize) ?Field {
-        if (local_y == self.layout.search_y) return .search;
-        if (self.layout.replace_y) |row| if (local_y == row) return .replace;
-        if (self.layout.includes_y) |row| if (local_y == row) return .includes;
-        if (self.layout.excludes_y) |row| if (local_y == row) return .excludes;
-        return null;
+    fn computeLayout(self: *const SearchWidget) Layout {
+        const search_y: usize = css.widgets_padding_top;
+        const more_y = search_y + 1 + @intFromBool(self.replace_visible);
+        return .{
+            .height = more_y + @as(usize, if (self.details_visible) 4 else 1),
+            .search_y = search_y,
+            .replace_y = if (self.replace_visible) search_y + 1 else null,
+            .more_y = more_y,
+            .includes_y = if (self.details_visible) more_y + 1 else null,
+            .excludes_y = if (self.details_visible) more_y + 3 else null,
+        };
     }
 
-    pub fn computeLayout(self: *SearchWidget, width: usize) Layout {
-        _ = width;
-        var row: usize = 0;
-        self.layout.search_y = row;
-        row += 1;
-        self.layout.replace_y = null;
-        self.layout.includes_y = null;
-        self.layout.excludes_y = null;
-        self.layout.use_excludes_y = null;
-        if (self.replace_visible) {
-            self.layout.replace_y = row;
-            row += 1;
-        }
-        if (self.details_visible) {
-            self.layout.includes_y = row;
-            row += 1;
-            self.layout.excludes_y = row;
-            row += 1;
-            self.layout.use_excludes_y = row;
-            row += 1;
-        }
-        self.layout.height = row;
-        return self.layout;
-    }
-
-    /// Builds the input surface for `width` cells. The caller blits it at the
-    /// panel origin; row zero is the search row.
     pub fn render(self: *SearchWidget, width: usize) !void {
-        self.last_width = width;
-        const layout = self.computeLayout(width);
-        if (self.surface == null or self.surface_width != width or self.surface_height != layout.height) {
-            if (self.surface) |*surface| surface.deinit();
-            self.surface = try ui.Surface.init(self.allocator, .{ .cols = width, .rows = layout.height });
-            self.surface_width = width;
-            self.surface_height = layout.height;
+        const layout = self.computeLayout();
+        self.layout = layout;
+        if (self.surface == null) {
+            var surface = try ui.Surface.init(self.allocator, .{ .cols = width, .rows = layout.height });
+            errdefer surface.deinit();
+            try editor_css.registerSearchView(surface.document());
+            self.surface = surface;
         }
         const surface = &self.surface.?;
+        try surface.resize(width, layout.height);
+        surface.setCellBorders(self.cell_borders);
         const doc = surface.document();
         doc.clear();
-        self.toggle_count = 0;
+        self.search.focused = false;
+        self.replace.focused = false;
+        self.includes.focused = false;
+        self.excludes.focused = false;
         self.nodes = @splat(null);
+        self.controls = @splat(null);
 
-        const root = try doc.createElement(.div);
-        root.setStyle(.{
-            .position = .absolute,
-            .left = .{ .cells = 0 },
-            .top = .{ .cells = 0 },
-            .width = .{ .percent = 100 },
-            .height = .{ .cells = @floatFromInt(layout.height) },
-            .overflow = .hidden,
-            .background = background,
-            .color = foreground,
+        const root = try appendElement(doc, null, .search_view, .{
+            .background = self.colors.background,
+            .color = self.colors.foreground,
         });
+        const widgets = try appendElement(doc, root, .search_widgets_container, .{
+            .padding = .{ .top = css.widgets_padding_top },
+            .height = cells(layout.more_y - layout.search_y),
+        });
+        const widget = try appendElement(doc, widgets, .search_widget, .{
+            .height = cells(layout.more_y - layout.search_y),
+        });
+        try self.renderSearchInput(doc, widget, width);
+        try self.renderReplaceInput(doc, widget, width);
 
-        self.search.focused = self.focused and self.focus_field == .search;
-        self.replace.focused = self.focused and self.focus_field == .replace;
-        self.includes.focused = self.focused and self.focus_field == .includes;
-        self.excludes.focused = self.focused and self.focus_field == .excludes;
+        const toggle = try appendElement(doc, widget, .toggle_replace_button, .{});
+        try self.renderButton(doc, toggle, .toggle_replace, if (self.replace_visible) "⌄" else "›", false, true);
 
-        const search_width = @max(@as(usize, 1), width -| 9);
-        self.nodes[0] = try self.appendInput(doc, root, &self.search, 0, layout.search_y, search_width);
-        self.appendToggle(doc, root, width -| 9, layout.search_y, "Aa", self.match_case, .match_case);
-        self.appendToggle(doc, root, width -| 6, layout.search_y, "ab", self.whole_word, .whole_word);
-        self.appendToggle(doc, root, width -| 3, layout.search_y, ".*", self.regex, .regex);
-
-        if (layout.replace_y) |row| {
-            const input_width = @max(@as(usize, 1), width -| 6);
-            self.nodes[1] = try self.appendInput(doc, root, &self.replace, 0, row, input_width);
-            const pc_x = width -| 6;
-            self.appendToggle(doc, root, pc_x, row, "PC", self.preserve_case, .preserve_case);
-            try appendTextAt(doc, root, width -| 3, row, "All", .{ .color = dim });
-        }
-
-        if (layout.includes_y) |row| {
-            try appendTextAt(doc, root, 0, row, "In", .{ .color = dim });
-            self.nodes[2] = try self.appendInput(doc, root, &self.includes, 3, row, @max(@as(usize, 1), width -| 3));
-        }
-        if (layout.excludes_y) |row| {
-            try appendTextAt(doc, root, 0, row, "Ex", .{ .color = dim });
-            self.nodes[3] = try self.appendInput(doc, root, &self.excludes, 3, row, @max(@as(usize, 1), width -| 3));
-        }
-        if (layout.use_excludes_y) |row| {
-            const label = if (self.use_excludes)
-                "[x] use exclude settings & ignore files"
-            else
-                "[ ] use exclude settings & ignore files";
-            try appendTextAt(doc, root, 0, row, label[0..@min(label.len, width)], .{ .color = dim });
-        }
+        const details = try appendElement(doc, root, .query_details, .{
+            .height = cells(layout.height - layout.more_y),
+        });
+        const more = try appendElement(doc, details, .more, .{
+            .top = cells(0),
+            .left = cells(width -| (css.widgets_right + css.more_width)),
+        });
+        try self.renderButton(doc, more, .more, "…", false, true);
+        if (self.details_visible) try self.renderQueryDetails(doc, details, width);
 
         doc.setRoot(root);
         try surface.paintFrame();
@@ -289,114 +280,190 @@ pub const SearchWidget = struct {
         return self.surface.?.grid();
     }
 
-    fn appendInput(
-        self: *SearchWidget,
-        doc: *ui.Document,
-        parent: *ui.Node,
-        box: *ui.InputBox,
-        x: usize,
-        y: usize,
-        width: usize,
-    ) !*ui.Node {
-        _ = self;
-        const container = try doc.createElement(.div);
-        container.setStyle(.{
+    fn renderSearchInput(self: *SearchWidget, doc: *ui.Document, widget: *ui.Node, width: usize) !void {
+        const row_width = width -| (css.input_indent + css.widgets_right);
+        const row = try appendElement(doc, widget, .search_container, self.inputStyle(.search, 0, row_width));
+        const options = [_]struct { control: Control, icon: []const u8, checked: bool }{
+            .{ .control = .match_case, .icon = "Aa", .checked = self.match_case },
+            .{ .control = .whole_word, .icon = "ab", .checked = self.whole_word },
+            .{ .control = .regex, .icon = ".*", .checked = self.regex },
+        };
+        const option_stride: usize = if (row_width >= 16) 3 else 2;
+        const option_count: usize = @min(options.len, (row_width -| 2) / option_stride);
+        const input_width = row_width -| (option_count * option_stride);
+        try self.appendInput(doc, row, .search, input_width);
+        for (options[0..option_count], 0..) |option, index| {
+            try self.appendOption(doc, row, input_width + index * option_stride, option.control, option.icon, option.checked);
+        }
+    }
+
+    fn renderReplaceInput(self: *SearchWidget, doc: *ui.Document, widget: *ui.Node, width: usize) !void {
+        const row_width = width -| (css.input_indent + css.widgets_right);
+        const row = try appendElement(doc, widget, .replace_container, .{ .top = cells(1), .width = cells(row_width) });
+        if (!self.replace_visible) {
+            try row.addClass(css.Class.disabled);
+            return;
+        }
+        const action_width = @min(2, row_width -| 1);
+        const box_width = row_width - action_width;
+        const box = try appendElement(doc, row, .replace_input, self.inputStyle(.replace, 0, box_width));
+        const option_width: usize = if (box_width >= 4) 2 else 0;
+        try self.appendInput(doc, box, .replace, box_width - option_width);
+        if (option_width != 0) try self.appendOption(doc, box, box_width - option_width, .preserve_case, "AB", self.preserve_case);
+        if (action_width == 0) return;
+        const action = try appendElement(doc, row, .replace_action_bar, .{
+            .top = cells(0),
+            .left = cells(box_width),
+            .right = cells(0),
+            .width = cells(action_width),
+        });
+        try self.renderButton(doc, action, .replace_all, "⇄", false, self.replace_all_enabled);
+    }
+
+    fn renderQueryDetails(self: *SearchWidget, doc: *ui.Document, details: *ui.Node, width: usize) !void {
+        const row_width = width -| (css.input_indent + css.widgets_right);
+        for ([_]Field{ .includes, .excludes }, 0..) |field, index| {
+            const y = index * 2;
+            const heading = try appendElement(doc, details, .file_types_heading, .{
+                .top = cells(y),
+                .width = cells(if (index == 0) row_width -| css.more_width else row_width),
+            });
+            _ = try heading.appendChild(try doc.createText(if (field == .includes) "files to include" else "files to exclude"));
+            const row = try appendElement(doc, details, .file_types, self.inputStyle(field, y + 1, row_width));
+            const option_width: usize = if (field == .excludes and row_width >= 4) 2 else 0;
+            try self.appendInput(doc, row, field, row_width - option_width);
+            if (option_width != 0) try self.appendOption(doc, row, row_width - option_width, .use_excludes, "⚙", self.use_excludes);
+        }
+    }
+
+    fn inputStyle(self: *const SearchWidget, field: Field, y: usize, width: usize) ui.Style {
+        return .{
+            .top = cells(y),
+            .width = cells(width),
+            .background = self.colors.input_background,
+            .border = if (self.cell_borders) ui.EdgeDecl.all(1) else null,
+            .border_style = .rounded,
+            .border_color = if (self.focused and self.focus_field == field) self.colors.focus_border else self.colors.border,
+        };
+    }
+
+    fn appendInput(self: *SearchWidget, doc: *ui.Document, parent: *ui.Node, field: Field, width: usize) !void {
+        if (width == 0) return;
+        const box = self.input(field);
+        box.focused = self.focused and self.focus_control == null and self.focus_field == field;
+        box.color = self.colors.input_foreground;
+        box.placeholder_color = self.colors.placeholder;
+        const holder = try appendElement(doc, parent, null, .{
             .position = .absolute,
-            .left = .{ .cells = @floatFromInt(x) },
-            .top = .{ .cells = @floatFromInt(y) },
-            .width = .{ .cells = @floatFromInt(width) },
-            .height = .{ .cells = 1 },
-            .white_space = .pre,
+            .left = cells(0),
+            .top = cells(0),
+            .width = cells(width),
+            .height = cells(1),
             .overflow = .hidden,
         });
         const node = try box.build(doc, width);
-        _ = try container.appendChild(node);
-        _ = try parent.appendChild(container);
-        return node;
+        _ = try holder.appendChild(node);
+        self.nodes[@backingInt(field)] = node;
     }
 
-    fn appendToggle(
-        self: *SearchWidget,
-        doc: *ui.Document,
-        parent: *ui.Node,
-        x: usize,
-        y: usize,
-        text: []const u8,
-        active: bool,
-        option: Option,
-    ) void {
-        const node = doc.createText(text) catch return;
-        node.setStyle(.{
-            .color = if (active) active_foreground else dim,
-            .background = if (active) active_background else background,
-            .bold = active,
-        });
-        const holder = doc.createElement(.div) catch return;
-        holder.setStyle(.{
+    fn appendOption(self: *SearchWidget, doc: *ui.Document, parent: *ui.Node, x: usize, control: Control, icon: []const u8, checked: bool) !void {
+        const button = try appendElement(doc, parent, null, .{
             .position = .absolute,
-            .left = .{ .cells = @floatFromInt(x) },
-            .top = .{ .cells = @floatFromInt(y) },
-            .width = .{ .cells = @floatFromInt(text.len) },
-            .height = .{ .cells = 1 },
-            .white_space = .pre,
+            .left = cells(x),
+            .top = cells(0),
+            .width = cells(2),
+            .height = cells(1),
+            .underline = control == .whole_word,
         });
-        _ = holder.appendChild(node) catch return;
-        _ = parent.appendChild(holder) catch return;
-        self.addHitRect(x, y, text.len, option);
+        try self.renderButton(doc, button, control, icon, checked, true);
     }
 
-    fn addHitRect(self: *SearchWidget, x: usize, y: usize, width: usize, option: Option) void {
-        if (self.toggle_count >= self.toggle_hits.len) return;
-        self.toggle_hits[self.toggle_count] = .{ .x = x, .width = width, .y = y, .option = option };
-        self.toggle_count += 1;
+    fn renderButton(self: *SearchWidget, doc: *ui.Document, button: *ui.Node, control: Control, icon: []const u8, checked: bool, enabled: bool) !void {
+        var style = button.asElement().style;
+        style.display = .flex;
+        style.align_items = .center;
+        style.justify_content = .center;
+        style.pointer = if (enabled) .pointer else .default;
+        style.color = if (!enabled) self.colors.disabled else if (checked) self.colors.option_foreground else self.colors.foreground;
+        style.background = if (self.focused and self.focus_control == control)
+            self.colors.focus_border
+        else if (checked)
+            self.colors.option_active
+        else
+            null;
+        button.setStyle(style);
+        if (enabled) button.setHoverStyle(.{ .background = self.colors.hover });
+        _ = try button.appendChild(try doc.createText(icon));
+        self.controls[@backingInt(control)] = button;
+    }
+
+    pub fn controlRect(self: *const SearchWidget, control: Control) ?ui.Rect {
+        const node = self.controls[@backingInt(control)] orelse return null;
+        const rect = node.asElement().rect;
+        return if (rect.w > 0 and rect.h > 0) rect else null;
+    }
+
+    pub fn clearHover(self: *SearchWidget) void {
+        if (self.surface) |*surface| _ = surface.clearHover();
+    }
+
+    pub fn pointerAt(self: *SearchWidget, x: usize, y: usize) ui.Pointer {
+        const surface = if (self.surface) |*present| present else return .default;
+        return (surface.pointerAt(x, y) catch null) orelse .default;
     }
 
     pub fn handleMouse(self: *SearchWidget, x: usize, y: usize, event: *ui.MouseEvent) bool {
-        for (self.toggle_hits[0..self.toggle_count]) |hit| {
-            if (y == hit.y and x >= hit.x and x < hit.x + hit.width) {
-                if (event.kind == .down or event.kind == .click) {
-                    if (self.callbacks) |callbacks| {
-                        if (callbacks.on_toggle) |callback| callback(callbacks.context, hit.option);
-                    }
-                }
-                return true;
-            }
-        }
-        if (self.replace_visible and self.layout.replace_y != null and
-            y == self.layout.replace_y.? and x >= self.last_width -| 3)
-        {
-            if (event.kind == .down or event.kind == .click) {
-                if (self.callbacks) |callbacks| {
-                    if (callbacks.on_replace_all) |callback| callback(callbacks.context);
-                }
-            }
+        const surface = if (self.surface) |*present| present else return false;
+        _ = surface.updateHoverAt(x, y) catch false;
+        const activating = (event.kind == .down or event.kind == .click) and event.button != .right and event.button != .middle;
+        for (self.controls, 0..) |optional, index| {
+            const node = optional orelse continue;
+            if (!contains(node, x, y)) continue;
+            if (activating) self.activate(@fromBackingInt(@intCast(index)));
             return true;
         }
-        if (self.layout.use_excludes_y) |row| {
-            if (y == row) {
-                if (event.kind == .down or event.kind == .click) {
-                    self.use_excludes = !self.use_excludes;
-                    if (self.callbacks) |callbacks| {
-                        if (callbacks.on_change) |callback| callback(callbacks.context, .excludes, self.excludes.getValue());
-                    }
-                }
-                return true;
-            }
+        for (self.nodes, 0..) |optional, index| {
+            const node = optional orelse continue;
+            if (!contains(node, x, y)) continue;
+            const field: Field = @fromBackingInt(@intCast(index));
+            if (activating) self.focusField(field);
+            if (event.kind == .move and field != self.focus_field) return true;
+            _ = self.input(field).handleMouse(event);
+            return true;
         }
-        const field = self.fieldAt(y) orelse return false;
-        const activating = event.kind == .down or event.kind == .click;
-        // Idle motion is hover, not activation. Only a press changes which
-        // input owns the caret (and therefore the keyboard).
-        if (activating) self.focus_field = field;
-        if (event.kind == .move and field != self.focus_field) return true;
-        var local = event.*;
-        local.y = y;
-        local.x = x;
-        _ = self.input(field).handleMouse(&local);
-        return true;
+        return false;
+    }
+
+    fn activate(self: *SearchWidget, control: Control) void {
+        const callbacks = self.callbacks orelse return;
+        switch (control) {
+            .toggle_replace => if (callbacks.on_toggle_replace) |callback| callback(callbacks.context),
+            .more => if (callbacks.on_toggle_details) |callback| callback(callbacks.context),
+            .replace_all => if (self.replace_all_enabled) {
+                if (callbacks.on_replace_all) |callback| callback(callbacks.context);
+            },
+            .use_excludes => {
+                self.use_excludes = !self.use_excludes;
+                if (callbacks.on_use_excludes) |callback| callback(callbacks.context);
+            },
+            .match_case, .whole_word, .regex, .preserve_case => {
+                if (control != .preserve_case) self.focusField(.search);
+                if (callbacks.on_toggle) |callback| callback(callbacks.context, switch (control) {
+                    .match_case => .match_case,
+                    .whole_word => .whole_word,
+                    .regex => .regex,
+                    .preserve_case => .preserve_case,
+                    else => unreachable,
+                });
+            },
+        }
     }
 
     pub fn handleKey(self: *SearchWidget, event: *ui.KeyEvent) bool {
+        if (self.focus_control) |control| {
+            if (event.key == .enter or (event.key == .char and event.key.char == ' ')) self.activate(control);
+            return event.key != .up and event.key != .down;
+        }
         return self.input(self.focus_field).handleKey(event);
     }
 
@@ -423,20 +490,22 @@ pub const SearchWidget = struct {
     }
 };
 
-fn appendTextAt(doc: *ui.Document, parent: *ui.Node, x: usize, y: usize, text: []const u8, style: ui.Style) !void {
-    const node = try doc.createText(text);
+fn cells(value: usize) ui.Dimension {
+    return .{ .cells = @floatFromInt(value) };
+}
+
+fn appendElement(doc: *ui.Document, parent: ?*ui.Node, class: ?css.Class, style: ui.Style) !*ui.Node {
+    const node = try doc.createElement(.div);
+    if (class) |value| try node.addClass(value);
     node.setStyle(style);
-    const holder = try doc.createElement(.div);
-    holder.setStyle(.{
-        .position = .absolute,
-        .left = .{ .cells = @floatFromInt(x) },
-        .top = .{ .cells = @floatFromInt(y) },
-        .width = .{ .cells = @floatFromInt(text.len) },
-        .height = .{ .cells = 1 },
-        .white_space = .pre,
-    });
-    _ = try holder.appendChild(node);
-    _ = try parent.appendChild(holder);
+    if (parent) |container| _ = try container.appendChild(node);
+    return node;
+}
+
+fn contains(node: *ui.Node, x: usize, y: usize) bool {
+    const rect = node.asElement().rect;
+    return x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right()) and
+        y >= ui.cell.snap(rect.y) and y < ui.cell.snap(rect.bottom());
 }
 
 test "SearchWidget: renders search row and toggle controls" {
@@ -445,19 +514,27 @@ test "SearchWidget: renders search row and toggle controls" {
     defer widget.deinit();
 
     try widget.render(28);
-    const row = try widget.grid().rowText(allocator, 0);
+    const row = try widget.grid().rowText(allocator, widget.layout.search_y);
     defer allocator.free(row);
     try std.testing.expect(std.mem.indexOf(u8, row, "Search") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "Aa") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, ".*") != null);
 
-    try std.testing.expectEqual(@as(usize, 1), widget.layout.height);
+    try std.testing.expectEqual(widget.layout.search_y + 1, widget.layout.more_y);
+    const more = try widget.grid().rowText(allocator, widget.layout.more_y);
+    defer allocator.free(more);
+    try std.testing.expect(std.mem.indexOf(u8, more, "…") != null);
+    try std.testing.expect(widget.controls[@backingInt(Control.more)].?.hasClass(css.Class.more));
+    try std.testing.expect(widget.controlRect(.replace_all) == null);
 
     widget.replace_visible = true;
     try widget.render(28);
-    const replace_row = try widget.grid().rowText(allocator, 1);
+    const replace_row = try widget.grid().rowText(allocator, widget.layout.replace_y.?);
     defer allocator.free(replace_row);
-    try std.testing.expect(std.mem.indexOf(u8, replace_row, "All") != null);
+    try std.testing.expect(std.mem.indexOf(u8, replace_row, "Replace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, replace_row, "AB") != null);
+    try std.testing.expect(std.mem.indexOf(u8, replace_row, "⇄") != null);
+    try std.testing.expectEqual(widget.layout.replace_y.? + 1, widget.layout.more_y);
 }
 
 test "SearchWidget: mouse clicks toggle options and place the caret" {
@@ -474,8 +551,9 @@ test "SearchWidget: mouse clicks toggle options and place the caret" {
         }
     }.callback };
     try widget.render(28);
-    var event = ui.MouseEvent{ .kind = .down, .x = 25, .y = 0 };
-    try std.testing.expect(widget.handleMouse(25, 0, &event));
+    const rect = widget.controlRect(.regex).?;
+    var event = ui.MouseEvent{ .kind = .down, .x = ui.cell.snap(rect.x), .y = ui.cell.snap(rect.y), .button = .left };
+    try std.testing.expect(widget.handleMouse(event.x, event.y, &event));
     try std.testing.expectEqual(Option.regex, state.option.?);
 }
 
@@ -492,16 +570,16 @@ test "SearchWidget: hover does not move input focus, press does" {
     try std.testing.expect(widget.replace.focused);
 
     // Idle motion over the search row is hover only.
-    var move = ui.MouseEvent{ .kind = .move, .x = 2, .y = 0 };
-    try std.testing.expect(widget.handleMouse(2, 0, &move));
+    var move = ui.MouseEvent{ .kind = .move, .x = 3, .y = widget.layout.search_y };
+    try std.testing.expect(widget.handleMouse(move.x, move.y, &move));
     try std.testing.expectEqual(Field.replace, widget.focus_field);
     try widget.render(28);
     try std.testing.expect(!widget.search.focused);
     try std.testing.expect(widget.replace.focused);
 
     // A press moves the caret and the keyboard to the search field.
-    var down = ui.MouseEvent{ .kind = .down, .x = 2, .y = 0, .button = .left };
-    try std.testing.expect(widget.handleMouse(2, 0, &down));
+    var down = ui.MouseEvent{ .kind = .down, .x = 3, .y = widget.layout.search_y, .button = .left };
+    try std.testing.expect(widget.handleMouse(down.x, down.y, &down));
     try std.testing.expectEqual(Field.search, widget.focus_field);
     try widget.render(28);
     try std.testing.expect(widget.search.focused);

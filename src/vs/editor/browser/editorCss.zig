@@ -16,6 +16,7 @@ const folding_css = @import("../contrib/folding/browser/folding_css.zig");
 pub const gridview = @import("../../base/browser/ui/grid/gridview_css.zig");
 pub const splitview = @import("../../base/browser/ui/splitview/splitview_css.zig");
 pub const editor_group = @import("../../workbench/browser/parts/editor/media/editorgroupview_css.zig");
+pub const search_view = @import("../../workbench/contrib/search/browser/media/searchview_css.zig");
 pub const code_editor = @import("widget/codeEditor/editor_css.zig");
 
 pub const block_decorations = block_decorations_css;
@@ -40,6 +41,11 @@ pub fn registerWorkbench(doc: *ui.Document) !void {
     _ = try doc.registerSheet(gridview.sheet);
     _ = try doc.registerSheet(splitview.sheet);
     _ = try doc.registerSheet(editor_group.sheet);
+    try registerSearchView(doc);
+}
+
+pub fn registerSearchView(doc: *ui.Document) !void {
+    _ = try doc.registerSheet(search_view.sheet);
 }
 
 test "editor css: sheets register into disjoint class ranges" {
@@ -92,6 +98,8 @@ test "editor css: workbench editor and split layout rules register together" {
     try std.testing.expectEqual(ui.Display.none, hidden.display.?);
     const instance = doc.classStyle(@backingInt(editor_group.Class.editor_instance)).?;
     try std.testing.expectEqual(ui.Dimension{ .percent = 100 }, instance.height.?);
+    const more = doc.classStyle(@backingInt(search_view.Class.more)).?;
+    try std.testing.expectEqual(ui.Pointer.pointer, more.pointer.?);
     const guard = doc.classStyle(@backingInt(code_editor.Class.overflow_guard)).?;
     try std.testing.expectEqual(ui.Overflow.hidden, guard.overflow.?);
 }

@@ -1142,21 +1142,29 @@ console API for raw mode, sizing and input polling.
   `searchActionsBase.zig`, `searchActionsNav.zig`, `searchActionsTopBar.zig`
   and `searchActionsRemoveReplace.zig` hold the action helpers/runners; and
   `src/vs/workbench/services/search/common/queryBuilder.zig` builds the text
-  query. `Alt-F` opens the panel (Ctrl-Shift-F is indistinguishable from Ctrl-F
-  in a normal terminal), `Ctrl-R` toggles the replace row (hidden by
-  default, as upstream), `Alt-D` toggles the files-to-include/exclude rows, and `Tab`/`Ctrl-Down`/`Ctrl-Up` cycle inputs.
+  query. `Alt-F` opens the panel. Click the chevron or press `Ctrl-R` to
+  toggle Replace. The ellipsis below the inputs opens the include/exclude
+  fields (`Alt-D`). `Tab` moves through the fields and controls, and
+  `Ctrl-Down` / `Ctrl-Up` move between inputs.
   Matching options are `Alt-C` (case), `Alt-W` (whole word), `Alt-R` (regex)
-  and `Alt-P` (preserve case). `Enter` opens a match or toggles a folder/file;
-  `Left`/`Right` collapse/expand; `Delete` dismisses; `Alt-Enter` replaces the
-  selection; `Ctrl-Alt-Enter` shows the upstream replace-all confirmation and a
-  second invocation performs it; `Escape` cancels an active search before
-  leaving the panel. Results stream incrementally and follow
+  and `Alt-P` (preserve case). Results show file icons, directory descriptions,
+  right-aligned count badges and inline replace/dismiss actions on hover or
+  focus. The result tree follows `workbench.tree.renderIndentGuides` and
+  marks shortened previews and labels with ellipses. **Open in editor** copies
+  the current matches and their highlights to a pinned, read-only tab.
+  `Enter` opens a match or toggles a folder/file. `Left` / `Right`
+  collapse or expand, `Delete` dismisses, and `Alt-Enter` replaces the
+  selection while Replace is active. The Replace All icon and `Ctrl-Alt-Enter`
+  open a Replace/Cancel dialog. Match highlights and the struck-through
+  original text and inserted replacement use theme colors from the port of
+  `searchview.css`. The terminal uses one-line input boxes and cell-sized
+  spacing. Results stream incrementally and follow
   `search.defaultViewMode` (list by default), `search.sortOrder` (`modified`
   falls back to path order because the terminal search service does not collect
   file stats), `search.collapseResults` and `search.showLineNumbers`; a single
   workspace root is transparent and list mode flattens files, matching
-  upstream. The
-  result count and empty/limit messages use upstream grammar.
+  upstream. **Open in editor** sits beside the count when space permits.
+  A capped result snapshot preserves the limit notice in the editor.
   `files.exclude` and `search.exclude` are honored through
   `src/vs/workbench/services/search/common/search.zig` and the ported glob
   expression, including `false` entries, `!` exceptions and `{ when: ... }`
@@ -1174,7 +1182,7 @@ console API for raw mode, sizing and input polling.
   data rather than separate tree rows). `.gitignore`/`.ignore`, binary files,
   oversized files and symlinks are left to ripgrep (plus the same 10 MB guard
   for open buffers). Not ported: explicit `files.encoding` conversion,
-  extension-provider/remote text search, AI/notebook/search-editor results,
+  extension-provider/remote text search, AI/notebook results, interactive Search Editor queries,
   only-open-editors and SCM changed-files modes, multi-selection, context
   menus, drag/drop, clipboard actions, search history and view-state
   persistence, compressed folder chains, and `./`/absolute search-path

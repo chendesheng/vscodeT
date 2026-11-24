@@ -483,13 +483,6 @@ pub const SearchView = struct {
         } else if (final and self.state == .idle) {
             self.setNoResultsMessage();
         }
-
-        if (self.model.limitHit()) {
-            self.appendMessage(
-                "The result set only contains a subset of all matches. Be more specific in your search to narrow down the results.",
-                .warning,
-            );
-        }
     }
 
     fn setNoResultsMessage(self: *SearchView) void {
@@ -646,6 +639,14 @@ pub const SearchView = struct {
         self.viewer.refreshView();
     }
 
+    pub fn reportOpenInEditorError(self: *SearchView) void {
+        self.setSingleMessage("Could not open search results in an editor.", .err);
+    }
+
+    pub fn reportReplaceError(self: *SearchView) void {
+        self.setSingleMessage("Could not replace all requested occurrences.", .err);
+    }
+
     /// Replaces one match/file/folder and removes it from the result tree.
     pub fn replaceElement(self: *SearchView, element: Node) !void {
         const pattern = self.model.replacePattern() orelse return;
@@ -798,7 +799,7 @@ pub const SearchView = struct {
             .replace_input_focused = self.focus == .replace,
             .includes_focused = self.focus == .includes,
             .excludes_focused = self.focus == .excludes,
-            .replace_active = self.widget.replace_visible(self.widget.context),
+            .replace_active = self.model.isReplaceActive(),
             .has_results = self.hasSearchResults(),
             .tree_view = self.view_mode == .tree,
             .has_search_pattern = self.widget.value(self.widget.context, .search).len > 0,

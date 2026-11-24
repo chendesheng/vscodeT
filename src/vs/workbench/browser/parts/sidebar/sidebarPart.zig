@@ -469,7 +469,7 @@ pub fn renderTitle(
     const label = try doc.createElement(.span);
     label.setStyle(.{
         .padding = .{ .left = 1 },
-        .flex_shrink = 0,
+        .min_width = .{ .cells = 0 },
         .overflow = .hidden,
     });
     var title_buf: [96]u8 = undefined;
@@ -480,8 +480,15 @@ pub fn renderTitle(
     spacer.setStyle(.{ .flex_grow = 1 });
     _ = try root.appendChild(spacer);
 
+    // Leave the last cell as title background so a hovered action cannot
+    // paint into the inside stroke of the sidebar frame or the sash.
+    const action_count = part.pane.primary_actions.items.len + part.pane.secondary_actions.items.len;
+    const action_padding: f64 = if (action_count * 3 + 8 <= width) 1 else 0;
+    var remaining = width -| 1;
     for ([_][]const pane.TitleAction{ part.pane.primary_actions.items, part.pane.secondary_actions.items }) |actions| {
         for (actions) |action| {
+            if (remaining == 0) break;
+            remaining -= 1;
             const hovered = part.hovered_action_id != null and
                 std.mem.eql(u8, part.hovered_action_id.?, action.id);
             const button = try doc.createElement(.div);
@@ -490,7 +497,7 @@ pub fn renderTitle(
                 .align_items = .center,
                 .height = .{ .percent = 100 },
                 .flex_shrink = 0,
-                .padding = .{ .left = 1, .right = 1 },
+                .padding = .{ .left = action_padding, .right = action_padding },
                 .background = if (hovered) colors.hover_background else null,
                 .color = if (action.enabled) colors.title_foreground else null,
                 .dim = !action.enabled,
@@ -502,6 +509,10 @@ pub fn renderTitle(
             try part.title_nodes.append(.{ .id = action.id, .node = button });
         }
     }
+
+    const inset = try doc.createElement(.span);
+    inset.setStyle(.{ .width = .{ .cells = 1 }, .flex_shrink = 0 });
+    _ = try root.appendChild(inset);
 
     doc.setRoot(root);
     try surface.paintFrame();
@@ -791,10 +802,16 @@ test "sidebarPart: title label, actions and hit testing" {
     try std.testing.expect(std.mem.indexOf(u8, row, "\u{2026}") != null);
 
     const title = layout(&part, rect).title;
-    // The actions are right-aligned: the primary action occupies cells 24-26
-    // and the secondary action 27-29.
+    // The actions are right-aligned with an inset at the frame edge.
     try std.testing.expectEqualStrings("search.action.clearSearchResults", hitTest(&part, rect, 25, 0).?.action);
     try std.testing.expectEqualStrings("workbench.action.search.toggleQueryDetails", hitTest(&part, rect, 28, 0).?.action);
+    const edge = grid.index(29, 0);
+    const background = grid.bg[edge];
+    setHovered(&part, hitTest(&part, rect, 28, 0));
+    try renderTitle(&part, &grid, title, null);
+    try std.testing.expect(hitTest(&part, rect, 29, 0) == null);
+    try std.testing.expectEqual(background, grid.bg[edge]);
+    try std.testing.expect(grid.bg[grid.index(28, 0)] != background);
     try std.testing.expect(hitTest(&part, rect, 2, 0) == null);
     try std.testing.expect(hitTest(&part, rect, 2, 1) == null);
     try std.testing.expectEqual(@as(usize, 1), title.h);

@@ -19,6 +19,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ui = @import("ui");
+const IndentGuides = @import("../../../../base/browser/ui/tree/abstractTree.zig").RenderIndentGuides;
+const search_editor = @import("../../searchEditor/browser/searchEditorSerialization.zig");
 const theme_colors_mod = @import("../../../browser/themeColors.zig");
 const keybinding_service = @import("../../../services/keybinding/browser/keybindingService.zig");
 const resolved_keybinding_item = @import("../../../../platform/keybinding/common/resolvedKeybindingItem.zig");
@@ -32,6 +34,7 @@ const Controller = controller_mod.SearchView;
 const ControllerField = controller_mod.Field;
 const ControllerOption = controller_mod.Option;
 const results_view = @import("./searchResultsView.zig");
+const top_bar = @import("./searchActionsTopBar.zig");
 const actions_base = @import("./searchActionsBase.zig");
 const remove_replace = @import("./searchActionsRemoveReplace.zig");
 const configuration_mod = @import("../../../services/configuration/browser/configurationService.zig");
@@ -44,9 +47,12 @@ const Match = tree.Match;
 const ChangeEvent = tree.ChangeEvent;
 const replace_service = @import("./replaceService.zig");
 const Edit = replace_service.Edit;
-const SearchWidget = @import("./searchWidget.zig").SearchWidget;
-const Field = @import("./searchWidget.zig").Field;
-const Option = @import("./searchWidget.zig").Option;
+const css = @import("media/searchview_css.zig");
+const file_icon = @import("../../../browser/fileIcon.zig");
+const widget_mod = @import("./searchWidget.zig");
+const SearchWidget = widget_mod.SearchWidget;
+const Field = widget_mod.Field;
+const Option = widget_mod.Option;
 const Range = @import("../../../../editor/common/core/range.zig").Range;
 const workspace_context = @import("../../../services/workspaces/common/workspaceContextService.zig");
 const WorkspaceContextService = workspace_context.WorkspaceContextService;
@@ -56,9 +62,12 @@ const base_foreground = ui.Color{ .r = 210, .g = 210, .b = 210 };
 const base_dim = ui.Color{ .r = 135, .g = 135, .b = 142 };
 const base_header_background = ui.Color{ .r = 38, .g = 38, .b = 42 };
 const base_selected_background = ui.Color{ .r = 55, .g = 65, .b = 80 };
-const base_folder_color = ui.Color{ .r = 170, .g = 190, .b = 210 };
-const base_match_color = ui.Color{ .r = 240, .g = 190, .b = 90 };
-const base_replace_color = ui.Color{ .r = 120, .g = 210, .b = 120 };
+
+const base_match_background = ui.Color{ .r = 88, .g = 71, .b = 47 };
+const base_replace_background = ui.Color{ .r = 50, .g = 79, .b = 49 };
+const base_removed_background = ui.Color{ .r = 92, .g = 50, .b = 52 };
+const base_badge_background = ui.Color{ .r = 74, .g = 74, .b = 80 };
+const base_hover_background = ui.Color{ .r = 42, .g = 42, .b = 46 };
 const base_scrollbar_track_color = ui.Color{ .r = 30, .g = 32, .b = 40 };
 const base_scrollbar_thumb_color = ui.Color{ .r = 105, .g = 108, .b = 122 };
 
@@ -73,6 +82,7 @@ pub const EditorInfo = struct {
 /// workbench; the terminal shell implements these callbacks.
 pub const Host = struct {
     context: *anyopaque,
+    open_results: *const fn (context: *anyopaque, query: []const u8, snapshot: search_editor.Snapshot) anyerror!void,
     open_match: *const fn (context: *anyopaque, path: []const u8, range: ?Range) anyerror!void,
     highlight_range: *const fn (context: *anyopaque, path: []const u8, range: ?Range) void,
     read_file: *const fn (context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?[]u8,
@@ -82,6 +92,7 @@ pub const Host = struct {
     save_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
     active_selection_text: *const fn (context: *anyopaque, allocator: Allocator) anyerror!?[]u8,
     active_editor: *const fn (context: *anyopaque) ?EditorInfo,
+    confirm_replace_all: *const fn (context: *anyopaque, message: []const u8) anyerror!void,
 };
 
 pub const Row = tree.Node;
@@ -132,6 +143,8 @@ const OwnedStringSet = struct {
 /// workbench renders the content without the view's own section header.
 pub const RenderOptions = struct {
     show_header: bool = true,
+    cell_borders: bool = false,
+    border_capabilities: ui.cell_border.Capabilities = .{},
 };
 
 pub const SearchView = struct {
@@ -147,6 +160,11 @@ pub const SearchView = struct {
     collapsed: OwnedStringSet,
     collapse_seen: OwnedStringSet,
     selected: usize = 0,
+    hovered_row: ?usize = null,
+    results_hovered: bool = false,
+    results_y: usize = 0,
+    open_in_editor_rect: ui.Rect = .{},
+    open_in_editor_hovered: bool = false,
     scroll: usize = 0,
     visible_rows: usize = 0,
     scrollbar_drag: bool = false,
@@ -233,6 +251,9 @@ pub const SearchView = struct {
             .on_submit = onWidgetSubmit,
             .on_escape = onWidgetEscape,
             .on_toggle = onWidgetToggle,
+            .on_toggle_replace = onWidgetToggleReplace,
+            .on_toggle_details = onWidgetToggleDetails,
+            .on_use_excludes = onWidgetUseExcludes,
             .on_replace_all = onWidgetReplaceAll,
         };
         try self.setWidgetValueFromSelection();
@@ -241,11 +262,7 @@ pub const SearchView = struct {
 
     pub fn deinit(self: *SearchView) void {
         self.clearHighlight();
-        if (self.replace_confirmation) |*request| {
-            self.allocator.free(request.confirmation);
-            self.allocator.free(request.after);
-            self.replace_confirmation = null;
-        }
+        self.clearReplaceConfirmation();
         self.controller.deinit();
         self.widget.deinit();
         self.rows.deinit();
@@ -266,7 +283,7 @@ pub const SearchView = struct {
         self.panel_focused = true;
         self.results_focused = false;
         self.focus_field = .search;
-        self.widget.focus_field = .search;
+        self.widget.focusField(.search);
         self.widget.focused = true;
         self.controller.setPanelFocused(true);
         self.controller.focus = .search;
@@ -276,8 +293,8 @@ pub const SearchView = struct {
     pub fn focusReplace(self: *SearchView) void {
         self.panel_focused = true;
         self.results_focused = false;
-        self.widget.replace_visible = true;
-        self.widget.focus_field = .replace;
+        self.setReplaceVisible(true);
+        self.widget.focusField(.replace);
         self.widget.focused = true;
         self.focus_field = .replace;
         self.controller.setPanelFocused(true);
@@ -329,18 +346,17 @@ pub const SearchView = struct {
     fn onWidgetChange(context: ?*anyopaque, field: Field, value: []const u8) void {
         _ = value;
         const self: *SearchView = @ptrCast(@alignCast(context orelse return));
+        if (field == .search) self.setReplaceAllActionState(false);
         self.controller.onQueryInputChanged(controllerField(field));
     }
 
     fn onWidgetSubmit(context: ?*anyopaque, field: Field) void {
         const self: *SearchView = @ptrCast(@alignCast(context orelse return));
         switch (field) {
-            .search, .includes, .excludes => {
-                self.controller.submitQuery() catch {};
-                self.rebuildRows();
-            },
+            .search, .includes, .excludes => self.controller.submitQuery() catch {},
             .replace => {
-                self.model.setReplaceString(self.widget.value(.replace)) catch {};
+                self.controller.debounce_at = null;
+                self.controller.triggerQueryChange(true, false) catch {};
             },
         }
     }
@@ -348,8 +364,8 @@ pub const SearchView = struct {
     fn onWidgetEscape(context: ?*anyopaque, field: Field) void {
         _ = field;
         const self: *SearchView = @ptrCast(@alignCast(context orelse return));
-        if (self.widget.replace_visible and self.focus_field == .replace) {
-            self.widget.toggleReplace();
+        if (self.widget.replace_visible and self.focus_field == .replace and self.widget.focus_control == null) {
+            self.setReplaceVisible(!self.widget.replace_visible);
             self.focus_field = .search;
             self.setControllerFocusFromField();
             return;
@@ -363,9 +379,41 @@ pub const SearchView = struct {
         self.toggleOption(option);
     }
 
+    fn onWidgetToggleReplace(context: *anyopaque) void {
+        const self: *SearchView = @ptrCast(@alignCast(context));
+        self.setReplaceVisible(!self.widget.replace_visible);
+    }
+
+    fn onWidgetToggleDetails(context: *anyopaque) void {
+        const self: *SearchView = @ptrCast(@alignCast(context));
+        self.commandToggleDetails();
+    }
+
+    fn onWidgetUseExcludes(context: *anyopaque) void {
+        const self: *SearchView = @ptrCast(@alignCast(context));
+        self.controller.debounce_at = null;
+        self.controller.triggerQueryChange(true, false) catch {};
+    }
+
+    fn setReplaceVisible(self: *SearchView, visible: bool) void {
+        self.widget.setReplaceVisible(visible);
+        self.updateReplaceAllActionState();
+    }
+
+    fn updateReplaceAllActionState(self: *SearchView) void {
+        const query = self.model.query orelse return self.setReplaceAllActionState(false);
+        self.setReplaceAllActionState(self.model.result.count() > 0 and self.model.replacePattern() != null and
+            std.mem.eql(u8, query.pattern, std.mem.trim(u8, self.widget.value(.search), " \t\r\n")));
+    }
+
+    fn setReplaceAllActionState(self: *SearchView, enabled: bool) void {
+        self.widget.replace_all_enabled = enabled;
+        self.model.replace_active = self.widget.replace_visible and enabled;
+    }
+
     fn onWidgetReplaceAll(context: ?*anyopaque) void {
         const self: *SearchView = @ptrCast(@alignCast(context orelse return));
-        self.replaceAll();
+        self.commandReplaceAll();
     }
 
     fn ensureKeybindings(self: *SearchView) !void {
@@ -398,8 +446,9 @@ pub const SearchView = struct {
 
     fn runSearchCommand(self: *SearchView, command: []const u8) ?Action {
         if (std.mem.eql(u8, command, "search.action.toggleReplace")) {
-            self.widget.toggleReplace();
+            self.setReplaceVisible(!self.widget.replace_visible);
             self.focus_field = if (self.widget.replace_visible) .replace else .search;
+            self.widget.focusField(self.focus_field);
             self.setControllerFocusFromField();
             return .handled;
         }
@@ -420,19 +469,19 @@ pub const SearchView = struct {
             return .handled;
         }
         if (std.mem.eql(u8, command, "workbench.action.search.toggleQueryDetails")) {
-            self.controller.toggleQueryDetails(null);
+            self.commandToggleDetails();
             return .handled;
         }
         if (std.mem.eql(u8, command, "search.action.replace")) {
-            self.replaceSelected();
+            if (self.results_focused and self.model.isReplaceActive()) {
+                self.replaceSelected();
+            } else {
+                self.openInEditor() catch self.controller.reportOpenInEditorError();
+            }
             return .handled;
         }
         if (std.mem.eql(u8, command, "search.action.replaceAll")) {
-            if (self.replace_confirmation != null) {
-                self.confirmReplaceAll();
-            } else if (self.controller.requestReplaceAll() catch null) |request| {
-                self.replace_confirmation = request;
-            }
+            self.commandReplaceAll();
             return .handled;
         }
         return null;
@@ -443,6 +492,7 @@ pub const SearchView = struct {
     }
 
     pub fn startSearch(self: *SearchView) !void {
+        self.clearReplaceConfirmation();
         // Enter submits the current value; it must cancel a pending
         // search-on-type debounce instead of letting it start a second query.
         self.controller.debounce_at = null;
@@ -473,6 +523,7 @@ pub const SearchView = struct {
     }
 
     fn setControllerFocusFromField(self: *SearchView) void {
+        self.widget.focus_field = self.focus_field;
         self.controller.focus = switch (self.focus_field) {
             .search => .search,
             .replace => .replace,
@@ -491,7 +542,7 @@ pub const SearchView = struct {
             .excludes => .excludes,
             .results => .search,
         };
-        self.widget.focus_field = self.focus_field;
+        self.widget.focusField(self.focus_field);
         self.results_focused = self.controller.focus == .results;
         if (self.results_focused) {
             self.panel_focused = true;
@@ -522,6 +573,7 @@ pub const SearchView = struct {
     }
 
     fn rebuildRows(self: *SearchView) void {
+        self.updateReplaceAllActionState();
         self.rows.clearRetainingCapacity();
         self.depths.clearRetainingCapacity();
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -677,25 +729,39 @@ pub const SearchView = struct {
     }
 
     fn replaceSelected(self: *SearchView) void {
+        if (!self.model.isReplaceActive()) return;
         const row = self.selectedRow() orelse return;
         self.suppress_refresh = true;
         defer self.suppress_refresh = false;
-        self.controller.replaceElement(row) catch {};
+        self.controller.replaceElement(row) catch {
+            self.controller.reportReplaceError();
+            self.rebuildRows();
+            return;
+        };
+        // VS Code recomputes matches after a line replacement. Refresh via the
+        // workspace provider here, which also handles closed files and matches
+        // spanning multiple lines.
+        if (row == .match) self.controller.triggerQueryChange(true, false) catch self.controller.reportReplaceError();
         self.rebuildRows();
     }
 
-    fn replaceAll(self: *SearchView) void {
-        self.commandReplaceAll();
+    pub fn clearReplaceConfirmation(self: *SearchView) void {
+        const request = self.replace_confirmation orelse return;
+        self.allocator.free(request.confirmation);
+        self.allocator.free(request.after);
+        self.replace_confirmation = null;
     }
 
     pub fn confirmReplaceAll(self: *SearchView) void {
-        if (self.replace_confirmation) |*request| {
-            self.allocator.free(request.confirmation);
-            self.allocator.free(request.after);
-            self.replace_confirmation = null;
-            self.controller.executeReplaceAll() catch {};
-            self.rebuildRows();
+        const request = self.replace_confirmation orelse return;
+        const current = request.occurrences == self.model.result.count() and request.file_count == self.model.result.fileCount();
+        self.clearReplaceConfirmation();
+        if (!current) {
+            self.commandReplaceAll();
+            return;
         }
+        self.controller.executeReplaceAll() catch self.controller.reportReplaceError();
+        self.rebuildRows();
     }
 
     pub fn handleKey(self: *SearchView, event: *const ui.KeyEvent) Action {
@@ -711,14 +777,8 @@ pub const SearchView = struct {
         }
 
         if (event.key == .escape) {
-            if (self.replace_confirmation) |*request| {
-                self.allocator.free(request.confirmation);
-                self.allocator.free(request.after);
-                self.replace_confirmation = null;
-                return .handled;
-            }
-            if (self.widget.replace_visible and self.focus_field == .replace) {
-                self.widget.toggleReplace();
+            if (self.widget.replace_visible and self.focus_field == .replace and self.widget.focus_control == null) {
+                self.setReplaceVisible(!self.widget.replace_visible);
                 self.focus_field = .search;
                 self.setControllerFocusFromField();
                 return .handled;
@@ -756,8 +816,9 @@ pub const SearchView = struct {
             if (event.key == .char) {
                 const ch = event.key.char;
                 if (ch == 'r' or ch == 'R') {
-                    self.widget.toggleReplace();
+                    self.setReplaceVisible(!self.widget.replace_visible);
                     self.focus_field = if (self.widget.replace_visible) .replace else .search;
+                    self.widget.focusField(self.focus_field);
                     self.setControllerFocusFromField();
                     return .handled;
                 }
@@ -782,7 +843,7 @@ pub const SearchView = struct {
                     return .handled;
                 },
                 'd', 'D' => {
-                    self.controller.toggleQueryDetails(null);
+                    self.commandToggleDetails();
                     return .handled;
                 },
                 else => {},
@@ -790,15 +851,15 @@ pub const SearchView = struct {
         }
 
         if (event.mods.alt and event.key == .enter and !event.mods.ctrl) {
-            self.replaceSelected();
+            if (self.results_focused and self.model.isReplaceActive()) {
+                self.replaceSelected();
+            } else {
+                self.openInEditor() catch self.controller.reportOpenInEditorError();
+            }
             return .handled;
         }
         if (event.mods.alt and event.mods.ctrl and event.key == .enter) {
-            if (self.replace_confirmation != null) {
-                self.confirmReplaceAll();
-            } else if (self.controller.requestReplaceAll() catch null) |request| {
-                self.replace_confirmation = request;
-            }
+            self.commandReplaceAll();
             return .handled;
         }
 
@@ -887,39 +948,38 @@ pub const SearchView = struct {
         if (event.x < x0 or event.x >= x0 + width or event.y < y0 or event.y >= y0 + height) return false;
         const local_x = event.x - x0;
         const local_y = event.y - y0;
-        if (self.header_rows == 1 and local_y == 0) {
-            if (event.kind == .down and local_x >= width -| 3) {
-                self.controller.toggleQueryDetails(null);
-                return true;
-            }
-            return true;
-        }
+        if (self.replace_confirmation != null) return true;
+        if (local_y < self.header_rows) return true;
 
         const input_top = self.header_rows;
         const input_bottom = input_top + self.widget.layout.height;
-        if (local_y >= input_top and local_y < input_bottom) {
-            // Pointer motion only hovers a field; press/click moves input
-            // focus. Treating motion as activation made the caret jump rows.
-            const activating = event.kind == .down or event.kind == .click;
-            if (activating) {
-                self.panel_focused = true;
-                self.results_focused = false;
-                self.widget.focused = true;
-            }
+        self.open_in_editor_hovered = pointInRect(self.open_in_editor_rect, event.x, event.y);
+        self.results_hovered = local_y >= self.results_y;
+        if (local_y < input_bottom) {
+            self.hovered_row = null;
+            const activating = (event.kind == .down or event.kind == .click) and event.button != .right and event.button != .middle;
             var local = event.*;
             local.x = local_x;
             local.y = local_y - input_top;
-            if (self.widget.handleMouse(local_x, local_y - input_top, &local)) {
-                if (activating) {
-                    self.focus_field = self.widget.focus_field;
-                    self.setControllerFocusFromField();
-                }
+            if (self.widget.handleMouse(local.x, local.y, &local) and activating) {
+                self.panel_focused = true;
+                self.results_focused = false;
+                self.widget.focused = true;
+                self.focus_field = self.widget.focus_field;
+                self.setControllerFocusFromField();
             }
             return true;
         }
 
-        const results_top = input_bottom + 1;
-        if (local_y < results_top) return true;
+        self.widget.clearHover();
+        const results_top = self.results_y;
+        if (local_y < results_top) {
+            self.hovered_row = null;
+            if (self.open_in_editor_hovered and (event.kind == .down or event.kind == .click) and event.button == .left) {
+                self.openInEditor() catch self.controller.reportOpenInEditorError();
+            }
+            return true;
+        }
         const has_scrollbar = width > 1 and self.rows.items.len > self.visible_rows and self.visible_rows > 0;
         if (has_scrollbar and local_x == width - 1) {
             switch (event.kind) {
@@ -957,23 +1017,51 @@ pub const SearchView = struct {
             return true;
         }
         const row = local_y - results_top + self.scroll;
-        if (row >= self.rows.items.len) return true;
+        if (row >= self.rows.items.len) {
+            self.hovered_row = null;
+            return true;
+        }
+        if (event.kind == .up or event.button == .right or event.button == .middle) return true;
+        const action = if (self.showRowActions(row)) self.rowAction(row, local_x, width) else null;
+        self.hovered_row = row;
         if (event.kind == .move) return true;
-        self.panel_focused = true;
-        self.results_focused = true;
-        self.controller.setPanelFocused(true);
-        self.controller.focus = .results;
-        self.controller.last_focus_input = false;
+        self.focusResults();
         self.selectRow(row);
         if (event.kind == .click or event.kind == .down) {
+            if (action) |value| {
+                switch (value) {
+                    .replace => self.replaceSelected(),
+                    .remove => self.dismissSelected(),
+                }
+                return true;
+            }
             switch (self.rows.items[row]) {
-                .folder => self.toggleRow(self.rows.items[row]),
-                .file => self.toggleRow(self.rows.items[row]),
+                .folder, .file, .heading => self.toggleRow(self.rows.items[row]),
                 .match => self.activateSelected(),
-                .heading => self.toggleRow(self.rows.items[row]),
             }
         }
         return true;
+    }
+
+    pub fn clearHover(self: *SearchView) void {
+        self.hovered_row = null;
+        self.results_hovered = false;
+        self.open_in_editor_hovered = false;
+        self.widget.clearHover();
+    }
+
+    pub fn pointerAt(self: *SearchView, x: usize, y: usize) ui.Pointer {
+        if (pointInRect(self.open_in_editor_rect, x, y)) return .pointer;
+        const local_x = x -| ui.cell.snap(self.last_rect.x);
+        const local_y = y -| ui.cell.snap(self.last_rect.y);
+        const input_end = self.header_rows + self.widget.layout.height;
+        if (local_y >= self.header_rows and local_y < input_end) {
+            return self.widget.pointerAt(local_x, local_y - self.header_rows);
+        }
+        if (self.hovered_row) |row| {
+            if (self.rowAction(row, local_x, ui.cell.snap(self.last_rect.w)) != null) return .pointer;
+        }
+        return .default;
     }
 
     pub fn setThemeColors(self: *SearchView, palette: ?*const theme_colors_mod.ThemeColors) void {
@@ -982,6 +1070,7 @@ pub const SearchView = struct {
 
     pub fn render(self: *SearchView, grid: *ui.CellGrid, rect: ui.Rect, options: RenderOptions) !void {
         self.last_rect = rect;
+        self.open_in_editor_rect = .{};
         const x = ui.cell.snap(rect.x);
         const y = ui.cell.snap(rect.y);
         const width = ui.cell.snap(rect.w);
@@ -992,9 +1081,6 @@ pub const SearchView = struct {
         var dim = base_dim;
         var header_background = base_header_background;
         var selected_background = base_selected_background;
-        var folder_color = base_folder_color;
-        var match_color = base_match_color;
-        var replace_color = base_replace_color;
         var scrollbar_track_color = base_scrollbar_track_color;
         var scrollbar_thumb_color = base_scrollbar_thumb_color;
         if (self.theme) |palette| {
@@ -1003,9 +1089,6 @@ pub const SearchView = struct {
             dim = palette.colorOr("descriptionForeground", base_dim);
             header_background = palette.colorOr("sideBarSectionHeader.background", base_header_background);
             selected_background = palette.colorOr("list.activeSelectionBackground", base_selected_background);
-            folder_color = palette.colorOr("symbolIcon.folderForeground", base_folder_color);
-            match_color = palette.colorOr("search.matchHighlightForeground", base_match_color);
-            replace_color = palette.colorOr("gitDecoration.addedResourceForeground", base_replace_color);
             scrollbar_track_color = palette.colorOr("sideBar.background", base_scrollbar_track_color);
             scrollbar_thumb_color = palette.colorOr("scrollbarSlider.background", base_scrollbar_thumb_color);
         }
@@ -1021,18 +1104,18 @@ pub const SearchView = struct {
             const header_style = ui.cell.PaintStyle{ .fg = ui.cell.packColor(foreground), .bg = ui.cell.packColor(header_background) };
             grid.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, header_style);
             _ = drawText(grid, x + 1, y, width -| 1, if (self.panel_focused) " SEARCH " else " Search ", header_style);
-            _ = drawText(grid, x + width -| 3, y, 3, "...", .{ .fg = ui.cell.packColor(dim), .bg = ui.cell.packColor(header_background) });
         }
 
         // The caret belongs to the field only while the view owns input focus;
         // results navigation and leaving the side bar both hide it.
         self.widget.focused = self.panel_focused and !self.results_focused;
+        self.widget.cell_borders = options.cell_borders;
+        self.widget.colors = resolveWidgetColors(self.theme, background, foreground);
         try self.widget.render(width);
-        try grid.blit(self.widget.grid(), x, y + self.header_rows, width, self.widget.layout.height);
+        try grid.blit(self.widget.grid(), x, y + self.header_rows, width, @min(self.widget.layout.height, height -| self.header_rows));
         const status_y = y + self.header_rows + self.widget.layout.height;
         var status_buffer: [240]u8 = undefined;
         var status = self.controller.messageText(&status_buffer);
-        if (self.replace_confirmation) |request| status = request.confirmation;
         if (status.len == 0) {
             if (self.controller.wantsTick()) {
                 status = "Searching...";
@@ -1051,30 +1134,76 @@ pub const SearchView = struct {
             .fg = ui.cell.packColor(if (is_error) ui.Color{ .r = 240, .g = 120, .b = 120 } else dim),
             .bg = ui.cell.packColor(background),
         };
+        var top = status_y + 1;
+        const message_width = width -| 2;
         if (status_y < y + height) {
-            _ = drawText(grid, x + 1, status_y, width -| 2, status, status_style);
+            _ = drawTextEllipsis(grid, x + 1, status_y, message_width, &.{.{ .text = status, .style = status_style }}, status_style);
+            if (self.matchCount() > 0 and !is_error and message_width > 0) {
+                const link = "Open in editor";
+                const status_width = textWidth(status);
+                const inline_link = status_width + " - ".len + link.len <= message_width;
+                const link_y = status_y + @intFromBool(!inline_link);
+                if (link_y < y + height) {
+                    var link_x = x + 1;
+                    if (inline_link) {
+                        link_x += status_width;
+                        link_x += drawText(grid, link_x, link_y, " - ".len, " - ", status_style);
+                    }
+                    const link_style: ui.cell.PaintStyle = .{
+                        .fg = ui.cell.packColor(self.color(if (self.open_in_editor_hovered) "textLink.activeForeground" else "textLink.foreground", .{ .r = 83, .g = 168, .b = 215 })),
+                        .bg = status_style.bg,
+                        .attrs = if (self.open_in_editor_hovered) ui.cell.Attr.underline else 0,
+                    };
+                    const link_width = @min(link.len, x + width -| 1 -| link_x);
+                    _ = drawTextEllipsis(grid, link_x, link_y, link_width, &.{.{ .text = link, .style = link_style }}, link_style);
+                    self.open_in_editor_rect = .{
+                        .x = @floatFromInt(link_x),
+                        .y = @floatFromInt(link_y),
+                        .w = @floatFromInt(link_width),
+                        .h = 1,
+                    };
+                    top = link_y + 1;
+                }
+            }
         }
-
-        const top = status_y + 1;
+        self.results_y = top - y;
         const rows = if (top < y + height) y + height - top else 0;
         self.visible_rows = rows;
         self.clampScroll();
         if (rows == 0) return;
+
+        const guide_setting = self.configuration.getValue("workbench.tree.renderIndentGuides", .{});
+        const guides = if (guide_setting) |setting| switch (setting.*) {
+            .string => |value| IndentGuides.fromString(value),
+            else => IndentGuides.on_hover,
+        } else IndentGuides.on_hover;
+        const show_inactive = guides == .always or (guides == .on_hover and self.results_hovered);
+        const active_guide = if (guides != .none and self.results_focused) self.activeGuide() else null;
+        const native_center = options.cell_borders and options.border_capabilities.has(.center);
 
         var visible: usize = 0;
         while (visible < rows) : (visible += 1) {
             const index = self.scroll + visible;
             if (index >= self.rows.items.len) break;
             const row_y = top + visible;
-            const selected = index == self.selected;
-            const row_bg = if (selected) selected_background else background;
-            if (selected) {
+            const selected = self.results_focused and index == self.selected;
+            const hovered = index == self.hovered_row;
+            const row_bg = if (selected)
+                selected_background
+            else if (hovered)
+                self.color("list.hoverBackground", base_hover_background)
+            else
+                background;
+            const row_fg = if (selected) self.color("list.activeSelectionForeground", foreground) else foreground;
+            if (selected or hovered) {
                 grid.fillRect(@floatFromInt(x), @floatFromInt(row_y), @floatFromInt(width), 1, .{
-                    .fg = ui.cell.packColor(foreground),
+                    .fg = ui.cell.packColor(row_fg),
                     .bg = ui.cell.packColor(row_bg),
                 });
             }
-            self.renderRow(grid, x, row_y, width, self.rows.items[index], self.depths.items[index], row_bg);
+            const row_width = width - @intFromBool(width > 1 and self.rows.items.len > self.visible_rows);
+            self.renderRow(grid, x, row_y, row_width, index, row_fg, row_bg);
+            self.renderIndentGuides(grid, x, row_y, row_width, index, row_bg, show_inactive, active_guide, native_center);
         }
 
         if (width > 1 and self.rows.items.len > self.visible_rows and self.visible_rows > 0) {
@@ -1097,76 +1226,190 @@ pub const SearchView = struct {
         }
     }
 
-    fn renderRow(self: *SearchView, grid: *ui.CellGrid, x: usize, y: usize, width: usize, row: Row, depth: usize, row_bg: ui.Color) void {
-        const palette = self.theme;
-        const base_fg = ui.cell.packColor(if (palette) |colors| colors.colorOr("sideBar.foreground", base_foreground) else base_foreground);
-        const dim_fg = ui.cell.packColor(if (palette) |colors| colors.colorOr("descriptionForeground", base_dim) else base_dim);
-        const folder_fg = if (palette) |colors| colors.colorOr("symbolIcon.folderForeground", base_folder_color) else base_folder_color;
-        const match_fg = if (palette) |colors| colors.colorOr("search.matchHighlightForeground", base_match_color) else base_match_color;
-        const replace_fg = if (palette) |colors| colors.colorOr("gitDecoration.addedResourceForeground", base_replace_color) else base_replace_color;
-        const bg = ui.cell.packColor(row_bg);
+    const ActiveGuide = struct { depth: usize, first: usize, end: usize };
+
+    fn activeGuide(self: *const SearchView) ?ActiveGuide {
+        const row = self.selectedRow() orelse return null;
+        var parent = self.selected;
+        if (row == .match or !self.rowExpanded(row) or
+            parent + 1 >= self.depths.items.len or self.depths.items[parent + 1] <= self.depths.items[parent])
+        {
+            const depth = self.depths.items[parent];
+            if (depth == 0) return null;
+            while (parent > 0 and self.depths.items[parent] >= depth) parent -= 1;
+        }
+
+        const depth = self.depths.items[parent];
+        var end = parent + 1;
+        while (end < self.depths.items.len and self.depths.items[end] > depth) : (end += 1) {}
+        return .{ .depth = depth, .first = parent + 1, .end = end };
+    }
+
+    fn renderIndentGuides(
+        self: *const SearchView,
+        grid: *ui.CellGrid,
+        x: usize,
+        y: usize,
+        width: usize,
+        index: usize,
+        bg: ui.Color,
+        show_inactive: bool,
+        active: ?ActiveGuide,
+        native_center: bool,
+    ) void {
+        for (0..self.depths.items[index]) |level| {
+            // The guide belongs to the ancestor's twistie column.
+            const col = results_view.indentCells(level);
+            if (col >= width) break;
+            const is_active = if (active) |guide|
+                guide.depth == level and index >= guide.first and index < guide.end
+            else
+                false;
+            if (!show_inactive and !is_active) continue;
+            const stroke = if (is_active)
+                self.color("tree.indentGuidesStroke", .{ .r = 88, .g = 88, .b = 88 })
+            else
+                self.color("tree.inactiveIndentGuidesStroke", .{ .r = 57, .g = 57, .b = 57 });
+            if (native_center) {
+                grid.addBorder(x + col, y, ui.cell_border.Segment.vertical, .{ .width = 16, .color = .{ .rgb = stroke } });
+            } else {
+                grid.putCodepoint(x + col, y, '│', 1, .{ .fg = ui.cell.packColor(stroke), .bg = ui.cell.packColor(bg) });
+            }
+        }
+    }
+
+    const RowAction = enum { replace, remove };
+
+    fn showRowActions(self: *const SearchView, index: usize) bool {
+        return index == self.hovered_row or (self.results_focused and index == self.selected);
+    }
+
+    fn rowAction(self: *const SearchView, index: usize, x: usize, width: usize) ?RowAction {
+        if (index >= self.rows.items.len or self.rows.items[index] == .heading) return null;
+        const row_width = width -| @intFromBool(width > 1 and self.rows.items.len > self.visible_rows);
+        const end = row_width -| css.action_bar_padding_right;
+        const remove_x = end -| css.action_bar_item_spacing;
+        if (x >= remove_x and x < end and end > 0) return .remove;
+        const replace_x = remove_x -| css.action_bar_item_spacing;
+        if (self.model.isReplaceActive() and x >= replace_x and x < remove_x) return .replace;
+        return null;
+    }
+
+    fn color(self: *const SearchView, id: []const u8, fallback: ui.Color) ui.Color {
+        return if (self.theme) |theme| theme.colorOr(id, fallback) else fallback;
+    }
+
+    fn renderRow(
+        self: *SearchView,
+        grid: *ui.CellGrid,
+        x: usize,
+        y: usize,
+        width: usize,
+        index: usize,
+        fg: ui.Color,
+        bg: ui.Color,
+    ) void {
+        const row = self.rows.items[index];
+        const depth = self.depths.items[index];
+        const base = ui.cell.PaintStyle{ .fg = ui.cell.packColor(fg), .bg = ui.cell.packColor(bg) };
+        const dim = ui.cell.PaintStyle{
+            .fg = ui.cell.packColor(self.color("descriptionForeground", base_dim)),
+            .bg = base.bg,
+        };
+        const data = results_view.rowData(row, .{
+            .mode = self.controller.viewMode(),
+            .show_line_numbers = self.controller.showLineNumbers(),
+        });
+        const actions = self.showRowActions(index) and row != .heading;
+        const end = if (actions) blk: {
+            const right = width -| css.action_bar_padding_right;
+            const remove = right -| css.action_bar_item_spacing;
+            if (right > 0) _ = drawText(grid, x + remove, y, right - remove, "×", base);
+            const replace = remove -| css.action_bar_item_spacing;
+            if (self.model.isReplaceActive()) {
+                _ = drawText(grid, x + replace, y, remove - replace, if (row == .match) "→" else "⇄", base);
+                break :blk x + replace;
+            }
+            break :blk x + remove;
+        } else x + (width -| css.count_badge_margin_right);
+
         switch (row) {
-            .heading => {
-                _ = drawText(grid, x + 1, y, width -| 2, "Text Results", .{ .fg = base_fg, .bg = bg, .attrs = ui.cell.Attr.bold });
-            },
-            .folder => |folder| {
+            .heading => _ = drawText(grid, x + 1, y, end -| (x + 1), data.label, .{ .fg = base.fg, .bg = base.bg, .attrs = ui.cell.Attr.bold }),
+            .folder, .file => {
                 const expanded = self.rowExpanded(row);
-                var buffer: [160]u8 = undefined;
-                const text = std.fmt.bufPrint(&buffer, "{s} {s} ({d})", .{
-                    if (expanded) "▾" else "▸",
-                    folder.name,
-                    folder.recursiveMatchCount(),
-                }) catch folder.name;
-                const indent = results_view.indentCells(depth);
-                _ = drawText(grid, x + indent, y, width -| indent, text, .{ .fg = ui.cell.packColor(folder_fg), .bg = bg });
-            },
-            .file => |file| {
-                const expanded = self.rowExpanded(row);
-                var buffer: [200]u8 = undefined;
-                const text = std.fmt.bufPrint(&buffer, "{s} {s} ({d})", .{
-                    if (expanded) "▾" else "▸",
-                    file.name,
-                    file.count(),
-                }) catch file.name;
                 const indent = results_view.indentCells(depth);
                 var col = x + indent;
-                col += drawText(grid, col, y, width -| (col - x), text, .{ .fg = base_fg, .bg = bg });
-                const details = results_view.rowData(row, .{
-                    .mode = self.controller.viewMode(),
-                    .show_line_numbers = self.controller.showLineNumbers(),
-                });
-                if (details.description.len > 0 and !std.mem.eql(u8, details.description, file.name)) {
-                    col += drawText(grid, col + 1, y, width -| (col + 1 - x), details.description, .{ .fg = dim_fg, .bg = bg });
+                if (data.collapsible) _ = drawText(grid, col, y, end -| col, if (expanded) "⌄" else "›", base);
+                col += 2;
+                const icon = switch (row) {
+                    .folder => file_icon.folder(expanded),
+                    .file => file_icon.file(data.label),
+                    else => unreachable,
+                };
+                if (col < end) grid.putCodepoint(col, y, icon.glyph, 1, .{ .fg = ui.cell.packColor(icon.color), .bg = base.bg });
+                col += 2;
+
+                var count_buf: [32]u8 = undefined;
+                const count = std.fmt.bufPrint(&count_buf, " {d} ", .{data.count}) catch "";
+                var label_end = end;
+                if (!actions and end -| col > count.len) {
+                    label_end = end - count.len - 1;
+                    _ = drawText(grid, end - count.len, y, count.len, count, .{
+                        .fg = ui.cell.packColor(self.color("badge.foreground", fg)),
+                        .bg = ui.cell.packColor(self.color("badge.background", base_badge_background)),
+                    });
                 }
+                const label_runs = [_]TextRun{
+                    .{ .text = data.label, .style = base },
+                    .{ .text = if (data.description.len > 0) " " else "", .style = base },
+                    .{ .text = data.description, .style = dim },
+                };
+                _ = drawTextEllipsis(grid, col, y, label_end -| col, &label_runs, base);
             },
             .match => |match| {
-                const preview = match.preview();
                 var replacement: ?[]u8 = null;
                 defer if (replacement) |value| self.allocator.free(value);
-                if (self.widget.replace_visible and self.model.replaceString().len > 0) {
+                if (self.model.isReplaceActive() and self.model.replaceString().len > 0) {
                     if (self.model.replacePattern()) |pattern| {
                         replacement = match.replaceString(self.allocator, pattern, self.model.preserve_case) catch null;
                     }
                 }
-                const inside = replacement orelse preview.inside;
-                const inside_color = if (replacement != null) replace_fg else match_fg;
-                const row_data = results_view.rowData(.{ .match = match }, .{
-                    .mode = self.controller.viewMode(),
-                    .show_line_numbers = self.controller.showLineNumbers(),
-                });
-                var line_buffer: [24]u8 = undefined;
-                const line = if (row_data.line_number > 0)
-                    std.fmt.bufPrint(&line_buffer, "{d}: ", .{row_data.line_number}) catch ""
+                const removed = replacement != null;
+                var match_paint = css.findInFileMatch(ui.cell.packColor(if (removed)
+                    self.color("diffEditor.removedTextBackground", base_removed_background)
                 else
-                    "";
-                const indent = results_view.matchIndentCells(depth);
-                var col = x + indent;
-                col += drawText(grid, col, y, width -| (col - x), line, .{ .fg = dim_fg, .bg = bg });
-                col += drawText(grid, col, y, width -| (col - x), preview.before, .{ .fg = base_fg, .bg = bg });
-                col += drawText(grid, col, y, width -| (col - x), inside, .{ .fg = ui.cell.packColor(inside_color), .bg = bg, .attrs = ui.cell.Attr.bold });
-                _ = drawText(grid, col, y, width -| (col - x), preview.after, .{ .fg = dim_fg, .bg = bg });
+                    self.color("editor.findMatchHighlightBackground", base_match_background)), removed);
+                match_paint.fg = base.fg;
+                var replace_paint = css.replaceMatch(ui.cell.packColor(self.color("diffEditor.insertedTextBackground", base_replace_background)));
+                replace_paint.fg = base.fg;
+
+                var col = x + results_view.matchIndentCells(depth);
+                var line_buffer: [48]u8 = undefined;
+                const line = data.lineLabel(&line_buffer);
+                if (line.len > 0) col += drawText(grid, col, y, end -| col, line, dim) + 1;
+                const room = end -| col;
+                const prefix_room = room -| @min(textWidth(data.inside) + @intFromBool(data.after.len != 0), room);
+                const before_width = textWidth(data.before);
+                const leading = (data.before_truncated or before_width > prefix_room) and prefix_room > 0;
+                const before = trimLeftToFit(data.before, prefix_room -| @intFromBool(leading));
+                const runs = [_]TextRun{
+                    .{ .text = if (leading) "…" else "", .style = base },
+                    .{ .text = before, .style = base },
+                    .{ .text = data.inside, .style = match_paint },
+                    .{ .text = replacement orelse "", .style = replace_paint },
+                    .{ .text = data.after, .style = base },
+                };
+                _ = drawTextEllipsis(grid, col, y, room, &runs, base);
             },
         }
+    }
+
+    pub fn openInEditor(self: *SearchView) !void {
+        const query = self.model.query orelse return;
+        if (self.matchCount() == 0) return;
+        const snapshot = try search_editor.serializeSearchResultForEditor(self.allocator, self.model.result, self.controller.sortOrder(), self.model.current_limit_hit);
+        defer snapshot.deinit(self.allocator);
+        try self.host.open_results(self.host.context, query.pattern, snapshot);
     }
 
     pub fn commandToggle(self: *SearchView, option: Option) void {
@@ -1192,16 +1435,35 @@ pub const SearchView = struct {
     }
 
     pub fn commandReplaceAll(self: *SearchView) void {
-        if (self.controller.requestReplaceAll() catch null) |request| {
-            self.allocator.free(request.confirmation);
-            self.allocator.free(request.after);
+        if (!self.model.isReplaceActive() or self.replace_confirmation != null) return;
+        const request = (self.controller.requestReplaceAll() catch null) orelse return;
+        self.replace_confirmation = request;
+        self.host.confirm_replace_all(self.host.context, request.confirmation) catch self.clearReplaceConfirmation();
+    }
+
+    pub fn commandRefresh(self: *SearchView) !void {
+        try top_bar.refreshSearch(self.controller);
+    }
+
+    pub fn commandViewAsTree(self: *SearchView, tree_view: bool) void {
+        self.controller.setTreeView(tree_view);
+    }
+
+    pub fn hasExpandedResults(self: *SearchView) bool {
+        for (self.rows.items) |row| {
+            if (row != .match and self.rowExpanded(row)) return true;
         }
-        self.controller.executeReplaceAll() catch {};
-        self.rebuildRows();
+        return false;
+    }
+
+    pub fn commandSetExpanded(self: *SearchView, expanded: bool) void {
+        if (expanded) top_bar.expandAll(viewerInterface(self)) else top_bar.collapseAll(viewerInterface(self));
     }
 
     pub fn commandClear(self: *SearchView) void {
+        self.clearReplaceConfirmation();
         self.controller.clearResults(true);
+        self.updateReplaceAllActionState();
         self.rows.clearRetainingCapacity();
         self.depths.clearRetainingCapacity();
         self.selected = 0;
@@ -1211,6 +1473,12 @@ pub const SearchView = struct {
 
     pub fn commandToggleDetails(self: *SearchView) void {
         self.controller.toggleQueryDetails(null);
+        self.widget.focusField(if (self.widget.details_visible) .includes else .search);
+        self.focus_field = self.widget.focus_field;
+        self.widget.input(self.focus_field).selectAll();
+        self.results_focused = false;
+        self.panel_focused = true;
+        self.setControllerFocusFromField();
     }
 
     pub fn activeEditorInfo(self: *SearchView) ?EditorInfo {
@@ -1218,6 +1486,22 @@ pub const SearchView = struct {
         return null;
     }
 };
+
+fn resolveWidgetColors(palette: ?*const theme_colors_mod.ThemeColors, background: ui.Color, foreground: ui.Color) widget_mod.Colors {
+    var colors: widget_mod.Colors = .{ .background = background, .foreground = foreground };
+    if (palette) |theme| {
+        colors.input_background = theme.colorOr("input.background", colors.input_background);
+        colors.input_foreground = theme.colorOr("input.foreground", foreground);
+        colors.placeholder = theme.colorOr("input.placeholderForeground", colors.placeholder);
+        colors.border = theme.colorOr("input.border", colors.border);
+        colors.focus_border = theme.colorOr("focusBorder", colors.focus_border);
+        colors.hover = theme.colorOr("toolbar.hoverBackground", colors.hover);
+        colors.option_active = theme.colorOr("inputOption.activeBackground", colors.option_active);
+        colors.option_foreground = theme.colorOr("inputOption.activeForeground", foreground);
+        colors.disabled = theme.colorOr("disabledForeground", colors.disabled);
+    }
+    return colors;
+}
 
 fn controllerField(field: Field) ControllerField {
     return switch (field) {
@@ -1288,8 +1572,7 @@ fn widgetReplaceVisible(context: *anyopaque) bool {
 
 fn widgetSetReplaceVisible(context: *anyopaque, visible: bool) void {
     const self: *SearchView = @ptrCast(@alignCast(context));
-    self.widget.replace_visible = visible;
-    if (!visible and self.widget.focus_field == .replace) self.widget.focus_field = .search;
+    self.setReplaceVisible(visible);
 }
 
 fn widgetDetailsVisible(context: *anyopaque) bool {
@@ -1299,7 +1582,7 @@ fn widgetDetailsVisible(context: *anyopaque) bool {
 
 fn widgetSetDetailsVisible(context: *anyopaque, visible: bool) void {
     const self: *SearchView = @ptrCast(@alignCast(context));
-    self.widget.details_visible = visible;
+    self.widget.setDetailsVisible(visible);
 }
 
 fn widgetUseExcludes(context: *anyopaque) bool {
@@ -1309,7 +1592,7 @@ fn widgetUseExcludes(context: *anyopaque) bool {
 
 fn widgetFocus(context: *anyopaque, field: ControllerField) void {
     const self: *SearchView = @ptrCast(@alignCast(context));
-    self.widget.focus_field = tuiField(field);
+    self.widget.focusField(tuiField(field));
 }
 
 fn widgetCycleFocus(context: *anyopaque, backwards: bool) void {
@@ -1467,6 +1750,51 @@ fn hostActiveEditor(context: *anyopaque) ?controller_mod.EditorInfo {
     return .{ .path = info.path, .version = info.version };
 }
 
+fn pointInRect(rect: ui.Rect, x: usize, y: usize) bool {
+    return x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right()) and
+        y >= ui.cell.snap(rect.y) and y < ui.cell.snap(rect.bottom());
+}
+
+const TextRun = struct { text: []const u8, style: ui.cell.PaintStyle };
+
+fn drawTextEllipsis(grid: *ui.CellGrid, x: usize, y: usize, width: usize, runs: []const TextRun, style: ui.cell.PaintStyle) usize {
+    if (width == 0) return 0;
+    var total: usize = 0;
+    for (runs) |run| total += textWidth(run.text);
+    const truncated = total > width;
+    const end = x + width - @intFromBool(truncated);
+    var col = x;
+    for (runs) |run| {
+        const used = drawText(grid, col, y, end - col, run.text, run.style);
+        col += used;
+        if (used < textWidth(run.text)) break;
+    }
+    if (truncated) col += drawText(grid, col, y, 1, "…", style);
+    return col - x;
+}
+
+fn textWidth(text: []const u8) usize {
+    var width: usize = 0;
+    var offset: usize = 0;
+    while (offset < text.len) {
+        const decoded = ui.dom.decodeAt(text, offset);
+        width += ui.dom.defaultMeasureWidth(decoded.cp);
+        offset += decoded.len;
+    }
+    return width;
+}
+
+fn trimLeftToFit(text: []const u8, width: usize) []const u8 {
+    var remaining = textWidth(text);
+    var offset: usize = 0;
+    while (remaining > width and offset < text.len) {
+        const decoded = ui.dom.decodeAt(text, offset);
+        remaining -= ui.dom.defaultMeasureWidth(decoded.cp);
+        offset += decoded.len;
+    }
+    return text[offset..];
+}
+
 fn drawText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []const u8, style: ui.cell.PaintStyle) usize {
     var col = x;
     var offset: usize = 0;
@@ -1474,6 +1802,10 @@ fn drawText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []co
         const decoded = ui.dom.decodeAt(text, offset);
         if (decoded.len == 0) break;
         const width = ui.dom.defaultMeasureWidth(decoded.cp);
+        if (width == 0) {
+            offset += decoded.len;
+            continue;
+        }
         if (col + width > x + max_width) break;
         grid.putCodepoint(col, y, decoded.cp, width, style);
         col += width;
