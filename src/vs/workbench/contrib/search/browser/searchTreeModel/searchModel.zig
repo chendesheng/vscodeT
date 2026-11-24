@@ -124,24 +124,23 @@ pub const SearchModel = struct {
     pub fn poll(self: *SearchModel, max_files: usize) !bool {
         const job = self.current_job orelse return false;
         const step: SearchStep = try job.step(job.context, self.allocator, max_files);
+        var transferred: usize = 0;
         defer {
             for (step.results) |*file| file.deinit();
             self.allocator.free(step.results);
-            for (step.messages) |message| self.allocator.free(message.text);
+            for (step.messages[transferred..]) |message| self.allocator.free(message.text);
             if (step.messages.len > 0) self.allocator.free(step.messages);
         }
         if (step.results.len > 0) {
             try self.result.add(step.results, false);
         }
-        var failed = false;
-        for (step.messages, 0..) |message, index| {
+        if (step.messages.len > 0) {
             if (self.pending_message) |old| self.allocator.free(old.text);
-            self.pending_message = null;
-            if (index == 0) {
-                self.pending_message = message;
-            } else {
-                self.allocator.free(message.text);
-            }
+            self.pending_message = step.messages[0];
+            transferred = 1;
+        }
+        var failed = false;
+        for (step.messages) |message| {
             if (message.kind == .err) failed = true;
         }
         if (failed) {
