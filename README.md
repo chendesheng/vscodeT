@@ -1150,8 +1150,11 @@ console API for raw mode, sizing and input polling.
   and `Alt-P` (preserve case). Results show file icons, directory descriptions,
   right-aligned count badges and inline replace/dismiss actions on hover or
   focus. The result tree follows `workbench.tree.renderIndentGuides` and
-  marks shortened previews and labels with ellipses. **Open in editor** copies
-  the current matches and their highlights to a pinned, read-only tab.
+  marks shortened previews and labels with ellipses. **Open in editor** opens
+  a pinned Search Editor with its own query, case/word/regex options, context
+  line count, and include/exclude filters. Enter or the title action runs the
+  query in place. The generated results show source syntax and match
+  highlights. Enter or double-click opens a result at its source location.
   `Enter` opens a match or toggles a folder/file. `Left` / `Right`
   collapse or expand, `Delete` dismisses, and `Alt-Enter` replaces the
   selection while Replace is active. The Replace All icon and `Ctrl-Alt-Enter`
@@ -1182,7 +1185,7 @@ console API for raw mode, sizing and input polling.
   data rather than separate tree rows). `.gitignore`/`.ignore`, binary files,
   oversized files and symlinks are left to ripgrep (plus the same 10 MB guard
   for open buffers). Not ported: explicit `files.encoding` conversion,
-  extension-provider/remote text search, AI/notebook results, interactive Search Editor queries,
+  extension-provider/remote text search, AI/notebook results, Search Editor file persistence and peek,
   only-open-editors and SCM changed-files modes, multi-selection, context
   menus, drag/drop, clipboard actions, search history and view-state
   persistence, compressed folder chains, and `./`/absolute search-path

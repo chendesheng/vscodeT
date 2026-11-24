@@ -1617,8 +1617,13 @@ Library constraints:
   Tree guides align with each ancestor chevron. They use centered cell
   strokes or vertical glyphs and follow the tree guide setting. The renderer
   maps text overflow to cell-width ellipses.
-  **Open in editor** serializes the current matches and opens them in a pinned,
-  read-only tab with highlighted matches.
+  **Open in editor** opens a pinned Search Editor. Its query controls share the
+  Search widget, including context lines and file filters. The pane runs an
+  independent search and updates the generated, read-only result model using
+  the bundled Search Result TextMate grammar. Opening a result uses the file
+  path and source line from the serialization. The result editor uses the
+  terminal scrollbar. The browser minimap and saved Search Editor backing
+  files are outside this port.
   After an individual replacement, the workspace provider refreshes positions
   for the remaining matches, including matches in closed files.
   Completed match selections write a `rangeHighlight` model decoration through
