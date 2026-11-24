@@ -7,8 +7,8 @@ Implementation and local verification on 2026-11-24 and 2026-11-25, against VS C
 | Status | Packages | Meaning |
 | --- | ---: | --- |
 | Verified | 0 | All scoped workflows passed in the installed TUI on the target platforms, with recorded evidence. |
-| Partial | 74 | An identifiable portion is wired. The row gives the working path and the remaining integration or verification. |
-| Planned | 13 | The package is in scope and a required integration is missing. |
+| Partial | 78 | An identifiable portion is wired. The row gives the working path and the remaining integration or verification. |
+| Planned | 9 | The package is in scope and a required integration is missing. |
 | Unverified | 0 | Evidence is insufficient to classify current behavior. |
 | Deferred | 7 | The entire package is outside the current scope. |
 
@@ -96,12 +96,12 @@ Each row lists the language IDs from the installed manifest and the remaining ed
 | [`vscode.git-base`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/git-base/package.json) | Git file languages and remote-source API | Partial | The real Git Base module is bundled and the catalog registers commit, rebase and ignore modes. Verify the remote-source API with a dependent extension. |
 | [`vscode.github`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/github/package.json) | GitHub repository workflows | Planned | Connect Git and authentication, then verify publishing a repository. |
 | [`vscode.github-authentication`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/github-authentication/package.json) | GitHub sign-in and sessions | Planned | Provide a session to a requesting extension and verify sign-out. |
-| [`vscode.grunt`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/grunt/package.json) | Grunt task discovery | Planned | Discover a Gruntfile task and run it from the task picker. |
-| [`vscode.gulp`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/gulp/package.json) | Gulp task discovery | Planned | Discover a gulpfile task and run it from the task picker. |
-| [`vscode.jake`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/jake/package.json) | Jake task discovery | Planned | Discover a Jakefile task and run it from the task picker. |
+| [`vscode.grunt`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/grunt/package.json) | Grunt task discovery | Partial | The installed editor discovered and ran a grunt task through **Tasks: Run Task**. Verify configured tasks with additional arguments. |
+| [`vscode.gulp`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/gulp/package.json) | Gulp task discovery | Partial | The installed editor discovered and ran a gulp task through **Tasks: Run Task**. Verify nested gulpfiles and task resolution. |
+| [`vscode.jake`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/jake/package.json) | Jake task discovery | Partial | The installed editor discovered and ran a jake task through **Tasks: Run Task**. Verify configured task resolution. |
 | [`vscode.merge-conflict`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/merge-conflict/package.json) | Conflict markers and resolution commands | Partial | The real extension resolves an incoming conflict through the workbench command and updates the document. Verify per-conflict actions and decorations. |
 | [`vscode.microsoft-authentication`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/microsoft-authentication/package.json) | Microsoft account sign-in and sessions | Planned | Provide a Microsoft account session to a requesting extension. |
-| [`vscode.npm`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/npm/package.json) | Package scripts and npm tasks | Planned | Discover and run a `package.json` script. Script debugging is deferred. |
+| [`vscode.npm`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/npm/package.json) | Package scripts and npm tasks | Partial | The installed editor discovered and ran a npm task through **Tasks: Run Task**. The script explorer and extension-initiated task execution are pending. Script debugging is deferred. |
 | [`vscode.simple-browser`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/simple-browser/package.json) | Open a URL in an editor tab | Partial | Simple Browser opens a Lynx editor tab. The installed TUI opened a local URL, followed a link and navigated back. Graphical rendering and JavaScript pages remain outside the text browser’s capabilities. [Navigation test](../host/test-simple-browser.py) · [Upstream command][browser] |
 | [`vscode.terminal-suggest`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/terminal-suggest/package.json) | Command-line completions in the terminal | Planned | Connect shell completion providers and accept a suggested argument. |
 | [`vscode.tunnel-forwarding`](https://github.com/microsoft/vscode/blob/e31c2e52f563620846caab877103f630ea361b9c/extensions/tunnel-forwarding/package.json) | Forward a local port through a tunnel | Planned | Connect the tunnel provider and verify opening and closing a forwarded port. |
@@ -143,6 +143,7 @@ Select an installed color theme by name with `workbench.colorTheme`. [Theme load
 - Launched the installed binary outside the checkout with a fresh profile. Opened a Lua file, expanded the Java region snippet and saved the accepted PHP and HTML completions described above.
 - With Copilot adapter `7eb54689`, the installed editor received a suggestion from a deterministic local server, reported it shown, accepted it with Tab, notified the server and restored the original line with Undo. The official server 1.574.1 separately completed LSP initialization and shutdown using an isolated signed-out profile. [Installed-editor test](../host/test-copilot-inline.py)
 - The authoring and merge checks at `fe50d1a0` and `d8f593f9` use real extensions and files. At `ca02254f`, the editor detected an extensionless Python script by its shebang and retained the language after association reload. At `b08ff045`, the installed Simple Browser passed link and back navigation with Lynx 2.9.3.
+- At `5145facc`, the installed editor ran the same named task from four temporary npm, Grunt, Gulp and Jake projects. Each used the upstream provider and a real runner, and each wrote the expected file. [Task test](../host/test-builtin-tasks.py)
 - Run `zig build host` followed by `zig build test-e2e` for the isolated executable-provider checks. [Host tests][ts-tests]
 
 ## Updating this tracker

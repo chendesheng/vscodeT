@@ -388,10 +388,10 @@ zig build test-e2e                        # boots the Node host and runs TypeScr
 ```
 
 The native binary resolves executable extensions from its install prefix.
-`zig build host` builds the launcher and eleven upstream extensions from the pinned
+`zig build host` builds the launcher and fifteen upstream extensions from the pinned
 checkout. These provide TypeScript/JavaScript, HTML, CSS/Less/SCSS, Emmet,
 PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict
-and Simple Browser. The build installs their bundles, language
+Simple Browser and the npm, Grunt, Gulp and Jake task providers. The build installs their bundles, language
 servers and TypeScript SDK under `lib/vscode-textbuffer` in the same prefix
 as `zig build` (including `--prefix`). The ordinary native build requires
 no Node installation. Only executable packages present in both the installed
@@ -401,6 +401,14 @@ runtime and the built-in catalog are passed to the extension host.
 The intermediate bundles under `host/dist` are also used by the repository's
 interop tests. The host transport currently supports macOS and Linux.
 Windows requires a local IPC transport and a native launcher.
+
+#### Extension tasks
+
+Run **Tasks: Run Task** in the command palette. Select the provider, then a
+detected task. Its process starts in the integrated terminal using the working
+directory supplied by the extension. For Grunt, Gulp and Jake, enable the
+corresponding `grunt.autoDetect`, `gulp.autoDetect` or `jake.autoDetect`
+setting with the value `"on"` and install the project’s task runner.
 
 #### Simple Browser
 
