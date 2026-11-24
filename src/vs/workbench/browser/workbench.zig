@@ -1938,6 +1938,7 @@ pub const Workbench = struct {
         };
         for (commands) |command| try self.commands.register(command);
 
+        try @import("../../../extensions/tunnel-forwarding/portForwarding.zig").register(self);
         try @import("../../../extensions/references-view/referencesView.zig").register(self);
         for (go_to_commands.actions, 0..) |_, index| {
             const action = &go_to_commands.actions[index];
@@ -3440,11 +3441,16 @@ pub const Workbench = struct {
     }
 
     pub fn runTaskInTerminal(self: *Workbench, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !void {
+        _ = try self.launchTerminalProcess(name, executable, args, cwd);
+    }
+
+    pub fn launchTerminalProcess(self: *Workbench, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !*terminal_service_mod.TerminalInstance {
         const service = try self.ensureTerminalService();
-        _ = try service.createForTask(.{ .path = executable, .args = args, .profile_name = name }, cwd);
+        const instance = try service.createForTask(.{ .path = executable, .args = args, .profile_name = name }, cwd);
         self.terminal_tabbed_view.tab_list.focused = false;
         _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
         self.revealActiveTerminalTab();
+        return instance;
     }
 
     fn newPanelTerminal(self: *Workbench) !void {
@@ -6981,7 +6987,7 @@ pub const Workbench = struct {
         return false;
     }
 
-    fn setStatusHint(self: *Workbench, comptime fmt: []const u8, args: anytype) void {
+    pub fn setStatusHint(self: *Workbench, comptime fmt: []const u8, args: anytype) void {
         const accessor = self.status_hint_accessor orelse return;
         const text = std.fmt.bufPrint(&self.status_hint_buf, fmt, args) catch return;
         accessor.update(.{ .name = "Source Control", .text = text });
