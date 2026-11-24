@@ -180,6 +180,7 @@ pub const Extensions = struct {
     storage_actor: ?MainThreadStorage = null,
     statusbar_actor: ?MainThreadStatusBar = null,
     terminal_completions: ?@import("terminalCompletionSession.zig").Session = null,
+    accounts: @import("mainThreadAuthentication.zig").Accounts = undefined,
     task_actor: @import("mainThreadTask.zig").MainThreadTask = undefined,
     commands_actor: ?MainThreadCommands = null,
     configuration_actor: ?MainThreadConfiguration = null,
@@ -300,6 +301,8 @@ pub const Extensions = struct {
             .on_did_activate = extensionServiceActivatedHost,
             .as_browser_uri = extensionServiceBrowserUriHost,
         } };
+        try self.accounts.init(workbench, self.host, self.descriptions);
+        errdefer self.accounts.deinit();
         try self.task_actor.init(workbench, self.host, self.descriptions);
         errdefer self.task_actor.deinit();
         for (self.descriptions) |extension| {
@@ -320,6 +323,7 @@ pub const Extensions = struct {
 
     pub fn deinit(self: *Extensions) void {
         if (self.terminal_completions) |*session| session.deinit();
+        self.accounts.deinit();
         self.task_actor.deinit();
         self.inline_completions.deinit();
         self.setScrollListener(null);
@@ -353,7 +357,9 @@ pub const Extensions = struct {
         var nid: u8 = 1;
         while (nid <= protocol.max_nid) : (nid += 1) {
             const entry = protocol.identifier(nid).?;
-            if (nid == 26) {
+            if (nid == @backingInt(protocol.MainContext.MainThreadAuthentication)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeAuthentication });
+            } else if (nid == 26) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeLanguageFeatures });
             } else if (nid == 16) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeDiagnostics });
@@ -464,6 +470,11 @@ pub const Extensions = struct {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.commands_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
+    }
+
+    fn invokeAuthentication(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        return self.accounts.invoke(method, args, arena);
     }
 
     fn invokeConfiguration(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
