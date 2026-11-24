@@ -31,6 +31,7 @@ const Entry = struct {
 };
 
 const table = [_]Entry{
+    .{ .extension = "hs", .glyph = 0xE61F, .color = .{ .r = 0xAA, .g = 0x77, .b = 0xCC } },
     .{ .extension = "zig", .glyph = 0xE6A9, .color = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D } },
     .{ .extension = "js", .glyph = 0xE781, .color = .{ .r = 0xF1, .g = 0xE0, .b = 0x5A } },
     .{ .extension = "mjs", .glyph = 0xE781, .color = .{ .r = 0xF1, .g = 0xE0, .b = 0x5A } },

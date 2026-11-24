@@ -8,7 +8,7 @@
 //
 // Not ported because the TUI has no corresponding service: TF-IDF/AI command
 // suggestions, suggested-command separators, telemetry, dialog error boxes,
-// keybinding labels, command aliases and the remove-from-history button. The
+// and command aliases. The
 // command history is in-memory for the session (no storage service).
 
 const std = @import("std");
@@ -30,7 +30,10 @@ pub const CommandPick = struct {
     description: []const u8 = "",
 };
 
+pub const LookupKeycaps = *const fn (*anyopaque, Allocator, []const u8) anyerror![]const []const u8;
+
 pub const CommandExecutor = struct {
+    lookup_keycaps: ?LookupKeycaps = null,
     context: *anyopaque,
     execute: *const fn (context: *anyopaque, command_id: []const u8) anyerror!void,
     on_error: ?*const fn (context: *anyopaque, message: []const u8) void = null,
@@ -253,6 +256,8 @@ pub const CommandsQuickAccessProvider = struct {
             accept_state.* = .{ .provider = self, .command_id = command.command_id };
             try items.append(.{ .item = .{
                 .id = command.command_id,
+                .actions = if (has_history) &.{ .configure_keybinding, .remove_history } else &.{.configure_keybinding},
+                .keycaps = if (self.executor.lookup_keycaps) |lookup| try lookup(self.executor.context, arena, command.command_id) else &.{},
                 .label = command.label,
                 .description = command.description,
                 .highlights = .{ .label = highlight },

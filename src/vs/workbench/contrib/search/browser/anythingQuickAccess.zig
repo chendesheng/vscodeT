@@ -7,8 +7,8 @@
 //
 // Not ported because the corresponding services are absent in the TUI:
 // workspace symbols (`@`), go-to-line (`:`), link handling, help picks,
-// AI-related picks, absolute/relative path resolution, open-to-side and
-// background accept, history-removal buttons and configuration
+// AI-related picks, absolute/relative path resolution,
+// background accept and configuration
 // (`includeHistory`, `preserveInput`). File results arrive asynchronously from
 // `FileSearchWorker`; recent-editor scoring still uses the smaller
 // `filters.fuzzyScore` helper. Both paths produce label/description highlight
@@ -175,7 +175,7 @@ pub const AnythingQuickAccessProvider = struct {
                     .path = entry.path,
                     .label = entry.label,
                     .description = entry.description,
-                });
+                }, true);
             }
             return try items.toOwnedSlice();
         }
@@ -187,7 +187,7 @@ pub const AnythingQuickAccessProvider = struct {
         const recent_matches = try self.getRecentMatches(arena, filter, recent);
         if (recent_matches.len > 0) {
             try items.append(.{ .separator = .{ .label = "recently opened" } });
-            for (recent_matches) |match| try self.appendItem(arena, &items, match);
+            for (recent_matches) |match| try self.appendItem(arena, &items, match, true);
         }
 
         const files = try self.source.search(
@@ -198,7 +198,7 @@ pub const AnythingQuickAccessProvider = struct {
         );
         if (files.len > 0) {
             try items.append(.{ .separator = .{ .label = "file results" } });
-            for (files) |file| try self.appendItem(arena, &items, file);
+            for (files) |file| try self.appendItem(arena, &items, file, false);
         }
 
         return try items.toOwnedSlice();
@@ -209,11 +209,14 @@ pub const AnythingQuickAccessProvider = struct {
         arena: Allocator,
         items: *std.array_list.Managed(QuickPickItem),
         file: FileMatch,
+        recent: bool,
     ) !void {
         const accept_state = try arena.create(AcceptState);
         accept_state.* = .{ .provider = self, .path = file.path };
         try items.append(.{ .item = .{
             .id = file.path,
+            .file_icon = true,
+            .actions = if (recent) &.{ .open_side, .remove_history } else &.{.open_side},
             .label = file.label,
             .description = file.description,
             .highlights = .{

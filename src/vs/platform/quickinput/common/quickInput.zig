@@ -2,8 +2,7 @@
 //
 // Only the quick-pick data model used by quick access is ported: pick items,
 // separators, activation modes and the options that affect pick ownership.
-// Input boxes, quick trees, quick widgets, buttons, checkboxes and keybinding
-// labels are not used by the TUI selectors.
+// Items can also carry row actions and resolved shortcut keycaps.
 
 const std = @import("std");
 
@@ -14,7 +13,12 @@ pub const Highlights = struct {
     description: []const @import("../../../base/common/filters.zig").Match = &.{},
 };
 
+pub const ItemAction = enum { open_side, configure_keybinding, remove_history };
+
 pub const Item = struct {
+    actions: []const ItemAction = &.{},
+    file_icon: bool = false,
+    keycaps: []const []const u8 = &.{},
     id: []const u8 = "",
     label: []const u8,
     description: []const u8 = "",

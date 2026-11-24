@@ -1089,6 +1089,11 @@ pub const Editor = struct {
         set(sink.context, decorations.items);
     }
 
+    pub fn lookupShortcut(self: *Editor, id: []const u8) !?@import("../../../../base/common/keybindings.zig").ResolvedKeybinding {
+        try self.ensureShortcutKeybindings();
+        return self.keybindings.?.service.lookupKeybinding(self.allocator, id, false);
+    }
+
     fn ensureShortcutKeybindings(self: *Editor) !void {
         if (self.keybindings != null) return;
 

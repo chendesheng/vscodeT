@@ -5,7 +5,7 @@
 // to merge editor action picks with global menu actions. The TUI command
 // registry already contains both editor and workbench commands, so this
 // provider simply wraps the shared command picker with the `>` prefix.
-// Menus, actions, keybinding labels and AI/TF-IDF suggestions are not ported.
+// The workbench supplies keybinding labels and handles command row actions.
 
 const std = @import("std");
 const platform = @import("../../../../platform/quickinput/browser/commandsQuickAccess.zig");
