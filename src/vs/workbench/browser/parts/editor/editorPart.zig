@@ -79,6 +79,12 @@ pub fn EditorPart(comptime GroupView: type) type {
                 allocator.destroy(first);
             }
             self.root = try grid.initNode(*GroupView, allocator, first);
+            errdefer grid.deinitRoot(*GroupView, allocator, self.root);
+            errdefer for (self.group_views.items[1..]) |view| {
+                view.deinit();
+                allocator.destroy(view);
+            };
+            try self.restoreGroups();
             return self;
         }
 
@@ -116,7 +122,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         /// Upstream restores every serialized group into the grid. The TUI
         /// restores the groups as equal horizontal splits, because the split
         /// grid itself is not serialized yet.
-        pub fn restoreGroups(self: *Self) !void {
+        fn restoreGroups(self: *Self) !void {
             var index: usize = 1;
             while (index < self.service.groups.items.len) : (index += 1) {
                 const view = try self.createView(self.service.groups.items[index]);

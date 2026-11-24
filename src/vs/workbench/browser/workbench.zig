@@ -801,168 +801,14 @@ pub const Workbench = struct {
         cols: usize,
         rows: usize,
     ) !*Workbench {
-        const self = try allocator.create(Workbench);
-        errdefer allocator.destroy(self);
-
-        self.* = undefined;
-        self.allocator = allocator;
-        self.io = io;
-        self.async_io_state = Io.Threaded.init(allocator, .{
-            .async_limit = .unlimited,
-            .environ = asyncEnviron(),
-        });
-        errdefer self.async_io_state.deinit();
-        self.async_io = self.async_io_state.io();
-        self.pending_open = null;
-        self.open_generation = 0;
-        self.reload_jobs = std.array_list.Managed(*ReloadJob).init(allocator);
-        self.theme_job = null;
-        self.theme_candidates = .{ null, null, null };
-        self.theme_candidate_index = 0;
-        self.keybindings_job = null;
-        self.keybindings_reload_pending = false;
-        self.cols = @max(cols, 1);
-        self.tab_service = null;
-        self.global_service = null;
-        self.statusbar_service = null;
-        self.context_keys = null;
-        self.context_key_handles = null;
-        self.user_keybindings = null;
-        self.global_user_overrides = &.{};
-        self.theme_colors = null;
-        self.theme_service = null;
-        self.syntax_theme = .{};
-        self.syntax_theme_ready = false;
-        self.textmate_background = null;
-        self.theme_scheme_host = .{};
-        self.theme_palette = null;
-        self.rows = @max(rows, 1);
-        self.is_pasting = false;
-        self.terminal_service = null;
-        self.terminal_input = .{};
-        self.terminal_tabbed_view = .{};
-        self.terminal_rename_id = null;
-        self.suppress_global_command = false;
-        self.git = null;
-        self.git_delegate = null;
-        self.git_service = null;
-        self.scm_service = null;
-        self.scm_interface = null;
-        self.quick_diff_storage = null;
-        self.quick_diff_service = null;
-        self.quick_diff_controller = null;
-        self.scm_view = null;
-        self.scm_history_view = null;
-        self.scm_view_model = null;
-        self.scm_container = null;
-        self.scm_hover_surface = null;
-        self.repository = null;
-        self.git_root = null;
-        self.git_status_accessor = null;
-        self.git_badge_count = 0;
-        self.next_git_refresh = 0;
-        self.git_status_dirty = true;
-        self.quit_requested = false;
-        self.dialog = null;
-        self.pending_dialog = null;
-        self.images = ui.image.Runtime.init(allocator);
-        self.pointer = .default;
-        self.pointer_state = .{};
-        self.pointer_shapes = false;
-        self.media_status = null;
-        self.files_changed = false;
-        self.editor_drag = .{};
-        self.drag_target = null;
-        self.drag_tab_drop = null;
-        self.drag_hover = null;
-        self.tab_selection_anchor = null;
-        self.focus = .editor;
-        self.sidebar = null;
-        self.hovered_sash = null;
-        self.explorer_container = null;
-        self.explorer_view_model = null;
-        self.explorer_panes = null;
-        self.search_view = null;
-        self.search_service = null;
-        try self.initShellModels();
-        errdefer self.deinitShellModels();
-        self.outline_models = .init(allocator);
-        errdefer self.outline_models.deinit();
-        self.outline_service = OutlineService.init(allocator);
-        errdefer self.outline_service.deinit();
-        self.breadcrumbs_service = BreadcrumbsService.init(allocator);
-        errdefer self.breadcrumbs_service.deinit();
-        self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
-        self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer self.breadcrumbs_arena.deinit();
-        self.reference_history = .{};
-        self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer self.navigation_arena.deinit();
-        self.pending_references = null;
-        self.symbol_picker = null;
-        self.pending_symbols = null;
-        self.breadcrumbs_control = null;
-        self.breadcrumbs_inactive = .empty;
-        self.home_path = readHomePath(allocator);
-        self.breadcrumbs_registration = null;
-        self.breadcrumbs_group = null;
-        self.breadcrumbs_pane = null;
-        self.breadcrumbs_input = null;
-        self.breadcrumbs_dirty = false;
-        self.breadcrumb_popup = null;
-        self.context_menu = null;
-        self.hovered_tab = null;
-        self.hovered_pane = null;
-        self.last_tab_click = null;
-        self.expanded_pane = null;
-        self.declarative = null;
-        self.json_client = null;
-        self.language_features = null;
-        self.marker_service = null;
-        self.marker_decorations = null;
-        self.snippet_provider = SnippetCompletionProvider.init(allocator, io);
-        self.snippet_registration = null;
-        self.word_completion_provider = null;
-        self.word_completion_registration = null;
-        self.outline_registration = null;
-        self.document_symbol_listener = null;
-        self.outline_view = null;
-        self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
-        self.configuration = null;
-        self.settings_watcher = null;
-        self.file_watcher_service = null;
-        self.workspace_watcher = null;
-        self.contributions = contributions_mod.WorkbenchContributions.init(allocator);
-        self.after_restored_ran = false;
-        errdefer self.contributions.deinit();
-        try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
-        self.user_settings_paths = &.{};
-        self.keybindings_paths = &.{};
-
-        self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
-        errdefer self.service.deinit();
-        self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
-        errdefer self.part.deinit();
-        _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
-
-        self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
-        errdefer self.frame.deinit();
-
-        try self.initQuickAccess();
-        errdefer self.history.deinit();
-        errdefer self.commands.deinit();
-        errdefer self.quick_access.deinit();
+        const self = try initWorkbench(allocator, io, cols, rows, null);
+        errdefer self.deinit();
         self.layoutAll();
-
-        for (paths) |path| {
-            try self.openPath(path);
-        }
-
+        for (paths) |path| try self.openPath(path);
         return self;
     }
 
-    /// Restores a single serialized group. Multi-group session serialization is
-    /// a follow-up; the group model/serializer already support it.
+    /// Accept legacy sessions containing a single group.
     pub fn initFromSerialized(
         allocator: Allocator,
         io: Io,
@@ -971,201 +817,10 @@ pub const Workbench = struct {
         cols: usize,
         rows: usize,
     ) !*Workbench {
-        const self = try allocator.create(Workbench);
-        errdefer allocator.destroy(self);
-
-        self.* = undefined;
-        self.allocator = allocator;
-        self.io = io;
-        self.async_io_state = Io.Threaded.init(allocator, .{
-            .async_limit = .unlimited,
-            .environ = asyncEnviron(),
-        });
-        errdefer self.async_io_state.deinit();
-        self.async_io = self.async_io_state.io();
-        self.pending_open = null;
-        self.open_generation = 0;
-        self.reload_jobs = std.array_list.Managed(*ReloadJob).init(allocator);
-        self.theme_job = null;
-        self.theme_candidates = .{ null, null, null };
-        self.theme_candidate_index = 0;
-        self.keybindings_job = null;
-        self.keybindings_reload_pending = false;
-        self.cols = @max(cols, 1);
-        self.tab_service = null;
-        self.global_service = null;
-        self.statusbar_service = null;
-        self.context_keys = null;
-        self.context_key_handles = null;
-        self.user_keybindings = null;
-        self.global_user_overrides = &.{};
-        self.theme_colors = null;
-        self.theme_service = null;
-        self.syntax_theme = .{};
-        self.syntax_theme_ready = false;
-        self.textmate_background = null;
-        self.theme_scheme_host = .{};
-        self.theme_palette = null;
-        self.rows = @max(rows, 1);
-        self.is_pasting = false;
-        self.terminal_service = null;
-        self.terminal_input = .{};
-        self.terminal_tabbed_view = .{};
-        self.terminal_rename_id = null;
-        self.suppress_global_command = false;
-        self.git = null;
-        self.git_delegate = null;
-        self.git_service = null;
-        self.scm_service = null;
-        self.scm_interface = null;
-        self.quick_diff_storage = null;
-        self.quick_diff_service = null;
-        self.quick_diff_controller = null;
-        self.scm_view = null;
-        self.scm_history_view = null;
-        self.scm_view_model = null;
-        self.scm_container = null;
-        self.scm_hover_surface = null;
-        self.repository = null;
-        self.git_root = null;
-        self.git_status_accessor = null;
-        self.git_badge_count = 0;
-        self.next_git_refresh = 0;
-        self.git_status_dirty = true;
-        self.quit_requested = false;
-        self.dialog = null;
-        self.pending_dialog = null;
-        self.images = ui.image.Runtime.init(allocator);
-        self.pointer = .default;
-        self.pointer_state = .{};
-        self.pointer_shapes = false;
-        self.media_status = null;
-        self.files_changed = false;
-        self.editor_drag = .{};
-        self.drag_target = null;
-        self.drag_tab_drop = null;
-        self.drag_hover = null;
-        self.tab_selection_anchor = null;
-        self.focus = .editor;
-        self.sidebar = null;
-        self.hovered_sash = null;
-        self.explorer_container = null;
-        self.explorer_view_model = null;
-        self.explorer_panes = null;
-        self.search_view = null;
-        self.search_service = null;
-        try self.initShellModels();
-        errdefer self.deinitShellModels();
-        self.outline_models = .init(allocator);
-        errdefer self.outline_models.deinit();
-        self.outline_service = OutlineService.init(allocator);
-        errdefer self.outline_service.deinit();
-        self.breadcrumbs_service = BreadcrumbsService.init(allocator);
-        errdefer self.breadcrumbs_service.deinit();
-        self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
-        self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer self.breadcrumbs_arena.deinit();
-        self.reference_history = .{};
-        self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer self.navigation_arena.deinit();
-        self.pending_references = null;
-        self.symbol_picker = null;
-        self.pending_symbols = null;
-        self.breadcrumbs_control = null;
-        self.breadcrumbs_inactive = .empty;
-        self.home_path = readHomePath(allocator);
-        self.breadcrumbs_registration = null;
-        self.breadcrumbs_group = null;
-        self.breadcrumbs_pane = null;
-        self.breadcrumbs_input = null;
-        self.breadcrumbs_dirty = false;
-        self.breadcrumb_popup = null;
-        self.context_menu = null;
-        self.hovered_tab = null;
-        self.hovered_pane = null;
-        self.last_tab_click = null;
-        self.expanded_pane = null;
-        self.declarative = null;
-        self.json_client = null;
-        self.language_features = null;
-        self.marker_service = null;
-        self.marker_decorations = null;
-        self.snippet_provider = SnippetCompletionProvider.init(allocator, io);
-        self.snippet_registration = null;
-        self.word_completion_provider = null;
-        self.word_completion_registration = null;
-        self.outline_registration = null;
-        self.document_symbol_listener = null;
-        self.outline_view = null;
-        self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
-        self.configuration = null;
-        self.settings_watcher = null;
-        self.file_watcher_service = null;
-        self.workspace_watcher = null;
-        self.contributions = contributions_mod.WorkbenchContributions.init(allocator);
-        self.after_restored_ran = false;
-        errdefer self.contributions.deinit();
-        try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
-        self.user_settings_paths = &.{};
-        self.keybindings_paths = &.{};
-
-        self.service = try editor_groups.EditorGroupsService.init(allocator, .{});
-        errdefer self.service.deinit();
-
-        const group = self.service.activeGroup();
-        group.model.deinit();
-        group.model = try group_mod.EditorGroupModel.initFromSerialized(allocator, .{}, data, registry);
-        group.id = group.model.id;
-
-        self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
-        errdefer self.part.deinit();
-        _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
-
-        self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
-        errdefer self.frame.deinit();
-
-        try self.initQuickAccess();
-        errdefer self.history.deinit();
-        errdefer self.commands.deinit();
-        errdefer self.quick_access.deinit();
-        self.layoutAll();
-
-        const pane = self.part.group_views.items[0];
-        const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
-        defer allocator.free(editors);
-        for (editors) |input| {
-            if (std.mem.eql(u8, input.type_id, ImagePreviewEditorInput.ID)) {
-                const image_input: *ImagePreviewEditorInput = @ptrCast(@alignCast(input.impl.?));
-                const tab = try Tab.initImageFromInput(
-                    allocator,
-                    self.io,
-                    image_input,
-                    self.cols,
-                    @max(self.rows -| 2, 1),
-                    &self.images,
-                    null,
-                );
-                try tab.view.setStatusBarVisible(false);
-                try pane.addTab(tab);
-                try self.history.add(image_input.path);
-                continue;
-            }
-            if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
-            const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
-            const tab = try Tab.initFromInput(allocator, file_input);
-            tab.setImageRuntime(&self.images);
-            if (tab.file_input != null) try tab.view.setStatusBarVisible(false);
-            try pane.addTab(tab);
-            self.registerWorkingCopy(tab);
-            try self.history.add(file_input.editor.path);
-        }
-
-        return self;
+        var groups = [_]group_mod.SerializedEditorGroupModel{data};
+        return initFromSerializedPart(allocator, io, .{ .groups = &groups, .active_group = 0 }, registry, cols, rows);
     }
 
-    /// Restores every serialized group and rebuilds the terminal split tree.
-    /// Upstream also persists the split grid; the TUI currently restores the
-    /// groups as equal horizontal splits.
     pub fn initFromSerializedPart(
         allocator: Allocator,
         io: Io,
@@ -1174,6 +829,19 @@ pub const Workbench = struct {
         cols: usize,
         rows: usize,
     ) !*Workbench {
+        const self = try initWorkbench(allocator, io, cols, rows, .{ .data = data, .registry = registry });
+        errdefer self.deinit();
+        try self.restoreEditors();
+        self.layoutAll();
+        return self;
+    }
+
+    const PreviousState = struct {
+        data: editor_groups.SerializedEditorPart,
+        registry: *editor_factory.EditorFactoryRegistry,
+    };
+
+    fn initWorkbench(allocator: Allocator, io: Io, cols: usize, rows: usize, state: ?PreviousState) !*Workbench {
         const self = try allocator.create(Workbench);
         errdefer allocator.destroy(self);
 
@@ -1277,6 +945,7 @@ pub const Workbench = struct {
         self.breadcrumbs_control = null;
         self.breadcrumbs_inactive = .empty;
         self.home_path = readHomePath(allocator);
+        errdefer if (self.home_path) |path| allocator.free(path);
         self.breadcrumbs_registration = null;
         self.breadcrumbs_group = null;
         self.breadcrumbs_pane = null;
@@ -1301,6 +970,7 @@ pub const Workbench = struct {
         self.document_symbol_listener = null;
         self.outline_view = null;
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
+        errdefer self.workspace.deinit();
         self.configuration = null;
         self.settings_watcher = null;
         self.file_watcher_service = null;
@@ -1312,25 +982,28 @@ pub const Workbench = struct {
         self.user_settings_paths = &.{};
         self.keybindings_paths = &.{};
 
-        self.service = try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, data, registry, .{});
+        self.service = if (state) |previous|
+            try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, previous.data, previous.registry, .{})
+        else
+            try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
         self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
         errdefer self.part.deinit();
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
-        try self.part.restoreGroups();
-
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
-
         try self.initQuickAccess();
-        errdefer self.history.deinit();
-        errdefer self.commands.deinit();
-        errdefer self.quick_access.deinit();
+        return self;
+    }
+
+    fn restoreEditors(self: *Workbench) !void {
+        const allocator = self.allocator;
         for (self.service.groups.items, 0..) |group, index| {
             const pane = self.part.group_views.items[index];
 
             const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
             defer allocator.free(editors);
+            try pane.tabs.ensureUnusedCapacity(editors.len);
             for (editors) |input| {
                 if (std.mem.eql(u8, input.type_id, ImagePreviewEditorInput.ID)) {
                     const image_input: *ImagePreviewEditorInput = @ptrCast(@alignCast(input.impl.?));
@@ -1343,8 +1016,8 @@ pub const Workbench = struct {
                         &self.images,
                         null,
                     );
-                    try tab.view.setStatusBarVisible(false);
                     try pane.addTab(tab);
+                    try tab.view.setStatusBarVisible(false);
                     try self.history.add(image_input.path);
                     continue;
                 }
@@ -1352,15 +1025,12 @@ pub const Workbench = struct {
                 const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
                 const tab = try Tab.initFromInput(allocator, file_input);
                 tab.setImageRuntime(&self.images);
-                if (tab.file_input != null) try tab.view.setStatusBarVisible(false);
                 try pane.addTab(tab);
+                try tab.view.setStatusBarVisible(false);
                 self.registerWorkingCopy(tab);
                 try self.history.add(file_input.editor.path);
             }
         }
-
-        self.layoutAll();
-        return self;
     }
 
     /// Serializes every group and the active group index.
@@ -17519,6 +17189,19 @@ test "Workbench: serialize and restore a group" {
     try restored.render(&out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "restore_a.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "restore_b.txt") != null);
+
+    const Observer = struct {
+        active: ?*EditorInput = null,
+
+        fn changed(active: ?*EditorInput, state: *@This()) !void {
+            state.active = active;
+        }
+    };
+    var observer = Observer{};
+    const listener = try restored.service.on_did_active_editor_change.listen(&observer, Observer.changed);
+    defer restored.service.on_did_active_editor_change.unlisten(listener);
+    try restored.activateIndex(0);
+    try std.testing.expect(observer.active == restored.activeTab().?.input);
 }
 
 test "Workbench: serialize and restore multiple groups" {

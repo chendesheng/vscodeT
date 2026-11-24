@@ -265,18 +265,11 @@ pub const EditorGroupsService = struct {
         const self = try EditorGroupsService.init(allocator, config);
         errdefer self.deinit();
 
-        const first = self.groups.items[0];
-        first.model.deinit();
-        first.model = try group_mod.EditorGroupModel.initFromSerialized(allocator, config, data.groups[0], registry);
-        _ = try first.model.on_did_model_change.listen(first, onGroupModelChange);
-        first.id = first.model.id;
-
-        var index: usize = 1;
-        while (index < data.groups.len) : (index += 1) {
-            const group = try self.addGroup(null, .RIGHT);
-            group.model.deinit();
-            group.model = try group_mod.EditorGroupModel.initFromSerialized(allocator, config, data.groups[index], registry);
-            _ = try group.model.on_did_model_change.listen(group, onGroupModelChange);
+        // EditorGroupModel's input listeners retain its address. Deserialize on
+        // the group's final model, preserving its active-editor subscription.
+        for (data.groups, 0..) |serialized, index| {
+            const group = if (index == 0) self.activeGroup() else try self.createGroup(config);
+            try group.model.deserialize(serialized, registry);
             group.id = group.model.id;
         }
 
