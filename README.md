@@ -602,6 +602,7 @@ console API for raw mode, sizing and input polling.
 - [Extension system](docs/extensions.md) — reuse VS Code's Node extension host
   unmodified, port the workbench side (RPC codec, `MainThread*` actors,
   scanner, contribution points, TUI wiring) to Zig.
+- [VS Code built-in extension status](docs/vscode-builtin-extension-status.md) — shipped extension IDs, current TUI support, and workflows still to verify.
 - [Built-in extensions](docs/builtin-extensions.md) — the compiled-in extension
   contract, raw key-input contribution point and lifecycle.
 - [Native Vim](docs/vim.md) — editor-state ownership, supported Vim surface and
