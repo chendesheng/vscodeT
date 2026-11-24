@@ -2194,6 +2194,9 @@ pub const TextModel = struct {
     }
 
     fn _setLanguage(self: *TextModel, languageId: []const u8) void {
+        // A contributed filename association can first resolve after the
+        // model opens. Install its tokenizer before resetting the token store.
+        @import("./tokens/textMateTokenizer.zig").ensureTokenizer(languageId);
         self._tokenizationTextModelPart.setLanguageId(languageId, "TextModel.setLanguage");
         self._bracketPairs.handleDidChangeLanguage();
         self._languageService.requestRichLanguageFeatures(languageId);

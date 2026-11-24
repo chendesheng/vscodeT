@@ -23,8 +23,9 @@ pub const LanguageIdCodec = struct {
             ._languageIdToLanguage = ArrayList([]const u8).init(allocator),
             ._languageToLanguageId = std.StringHashMap(u8).init(allocator),
         };
-        try codec._languageIdToLanguage.append(NULL_LANGUAGE_ID);
-        try codec._languageToLanguageId.put(NULL_LANGUAGE_ID, 0);
+        errdefer codec.deinit();
+        try codec._register(NULL_LANGUAGE_ID, @backingInt(LanguageId.Null));
+        try codec._register("plaintext", @backingInt(LanguageId.PlainText));
         return codec;
     }
 
@@ -35,6 +36,7 @@ pub const LanguageIdCodec = struct {
 
     fn _register(self: *LanguageIdCodec, language: []const u8, languageId: u8) !void {
         try self._languageIdToLanguage.append(language);
+        errdefer _ = self._languageIdToLanguage.pop();
         try self._languageToLanguageId.put(language, languageId);
     }
 
