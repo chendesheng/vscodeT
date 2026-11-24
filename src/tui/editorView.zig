@@ -1232,8 +1232,10 @@ pub const View = struct {
     /// the view line is the first output line of a model line with a region.
     fn foldControlAt(self: *const View, x: usize, y: usize) ?usize {
         if (!self.editor.hasFoldControl() or x != self.editor.foldCellColumn()) return null;
-        if (y >= self.editor.textHeight()) return null;
-        const view_line = self.editor.topViewLine() + y;
+        if (y < self.top_inset_rows) return null;
+        const content_y = y - self.top_inset_rows;
+        if (content_y >= self.editor.textHeight()) return null;
+        const view_line = self.editor.topViewLine() + content_y;
         if (view_line > self.editor.viewLineCount()) return null;
         if (self.editor.outputLineIndex(view_line) != 0) return null;
         return view_line;
@@ -2359,7 +2361,7 @@ pub const View = struct {
                 try @import("ui").layout.layoutSubtree(tree, doc, box);
                 self.perf.line_rebuilt += 1;
             } else {
-                const origin_y: f64 = if (self.mount) |mount| @floatFromInt(mount.y) else 0;
+                const origin_y: f64 = @floatFromInt(self.top_inset_rows + if (self.mount) |mount| mount.y else 0);
                 const dy = origin_y + line.paintedTop() - existing.?.rect.y;
                 _ = tree.translateSubtree(node, 0, dy);
                 self.perf.line_translated += 1;
