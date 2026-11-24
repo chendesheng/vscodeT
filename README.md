@@ -391,7 +391,8 @@ The native binary resolves executable extensions from its install prefix.
 `zig build host` builds the launcher and executable extensions from the pinned
 checkout. These provide TypeScript/JavaScript, HTML, CSS/Less/SCSS, Emmet,
 PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict,
-Simple Browser, Terminal Suggest and the npm, Grunt, Gulp and Jake task providers. The build installs their bundles, language
+Simple Browser, Terminal Suggest, GitHub and Microsoft authentication, and the
+npm, Grunt, Gulp and Jake task providers. The build installs their bundles, language
 servers and TypeScript SDK under `lib/vscode-textbuffer` in the same prefix
 as `zig build` (including `--prefix`). The ordinary native build requires
 no Node installation. Only executable packages present in both the installed
@@ -417,6 +418,16 @@ local port and runs the Microsoft Dev Tunnels CLI in an integrated terminal.
 The temporary tunnel uses private access. Stop it from the Ports commands or
 with Ctrl+C in that terminal. These commands require `gh` and `devtunnel`,
 respectively, on PATH. [Dev Tunnels CLI](https://learn.microsoft.com/azure/developer/dev-tunnels/cli-commands)
+
+#### Extension accounts
+
+Open **Accounts: Manage Accounts** and choose GitHub or Microsoft to list
+accounts, start sign-in or sign out of a selected account. When an extension
+requests a session, the editor shows its ID, provider and requested scopes for
+approval. The native secret store and grants last for the current editor
+session. GitHub device-code sign-in can be selected with
+`"github-authentication.preferDeviceCodeFlow": true`. Terminals that support
+OSC 52 can copy the displayed code. Copilot uses its own sign-in command below.
 
 #### Extension tasks
 
