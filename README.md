@@ -403,6 +403,11 @@ The intermediate bundles under `host/dist` are also used by the repository's
 interop tests. The host transport currently supports macOS and Linux.
 Windows requires a local IPC transport and a native launcher.
 
+Markdown preview uses KaTeX from the optional host to render Greek symbols,
+roots, fractions and scripts in inline, display and fenced math. Unsupported
+expressions keep their TeX source. Set `markdown.math.enabled` to `false` to
+turn off equation rendering.
+
 Markdown preview uses the optional host’s Mermaid renderer for supported
 fenced diagrams. It lays them out in the background and keeps the original
 fence visible if parsing fails. [Terminal Mermaid renderer](https://github.com/lukilabs/beautiful-mermaid)
@@ -461,8 +466,9 @@ VSCODE_TEXTBUFFER_COPILOT_SERVER=copilot-language-server zig-out/bin/zig example
 
 Open the command palette and run **GitHub Copilot: Sign In**. The status bar
 shows a device code. Run the same command again to open GitHub and enter the
-code. After signing in, type in a supported file. Insertion suggestions can appear at
-the end of a line or before existing text. Tab accepts the suggestion,
+code. After signing in, type in a supported file. Inline suggestions can insert
+text at the cursor or replace text that follows it. Strikethrough marks the
+characters a suggestion would remove. Tab accepts the suggestion,
 Escape dismisses it, and Undo restores the previous text. Multiline suggestions
 show their first line with a return marker and insert the full text on acceptance.
 Use **GitHub Copilot: Sign Out** to end the session. The adapter honors
