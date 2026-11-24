@@ -125,6 +125,7 @@ fn loadMarkdownRemoteImage(preview: *MarkdownPreview, url: []const u8) MarkdownI
 }
 
 pub const MarkdownPreview = struct {
+    mermaid: @import("mermaidPreview.zig").Renderer,
     allocator: Allocator,
     editor: *Editor,
     runtime: ?*ui.image.Runtime = null,
@@ -181,6 +182,7 @@ pub const MarkdownPreview = struct {
             .editor = editor,
             .image_entries = std.StringHashMap(*ImageEntry).init(allocator),
             .image_specs = std.array_list.Managed(preview_doc.ImageSpec).init(allocator),
+            .mermaid = .{ .allocator = allocator },
             .image_loading = std.StringHashMap(*MarkdownImageJob).init(allocator),
             .image_jobs = std.array_list.Managed(*MarkdownImageJob).init(allocator),
             .image_failed = std.StringHashMap(void).init(allocator),
@@ -216,6 +218,7 @@ pub const MarkdownPreview = struct {
     pub fn setAsyncIo(self: *MarkdownPreview, io: Io) void {
         if (self.async_io != null) return;
         self.async_io = io;
+        self.mermaid.io = io;
         self.request_service = RequestService.init(self.allocator, io);
     }
 
@@ -225,6 +228,7 @@ pub const MarkdownPreview = struct {
     }
 
     pub fn deinit(self: *MarkdownPreview) void {
+        self.mermaid.deinit();
         self.cancelImageJobs();
         if (self.request_service) |*service| service.deinit();
         self.request_service = null;
@@ -361,6 +365,12 @@ pub const MarkdownPreview = struct {
 
     pub fn onTick(self: *MarkdownPreview, now_ms: i64) bool {
         var changed = false;
+        if (self.mermaid.poll()) {
+            self.updatePreview(false) catch |err| {
+                self.last_error = err;
+            };
+            changed = true;
+        }
         if (self.pollImageJobs()) changed = true;
         changed = self.refresh_timer.tick(now_ms) or changed;
         changed = self.scrolling_timer.tick(now_ms) or changed;
@@ -376,7 +386,7 @@ pub const MarkdownPreview = struct {
     }
 
     pub fn nextTimeout(self: *const MarkdownPreview, now_ms: i64) ?u32 {
-        var result: ?u32 = null;
+        var result: ?u32 = if (self.mermaid.job != null) 20 else null;
         const timers = [_]*const DeadlineTimer{
             &self.refresh_timer,
             &self.scrolling_timer,
@@ -457,7 +467,9 @@ pub const MarkdownPreview = struct {
         var value = try self.editor.model.getValue(.TextDefined, false);
         defer value.deinit();
 
+        self.mermaid.reset(self.editor.model.getVersionId());
         var content = try markdown.parseDocument(self.allocator, value.items, .{
+            .mermaid = .{ .context = &self.mermaid, .lookup = @import("mermaidPreview.zig").Renderer.lookup },
             .preview_breaks = self.options.preview_breaks,
         });
         errdefer content.deinit();

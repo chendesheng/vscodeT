@@ -174,7 +174,13 @@ const ParseState = struct {
     slugs: slugify.SlugBuilder,
 };
 
+pub const DiagramRenderer = struct {
+    context: *anyopaque,
+    lookup: *const fn (*anyopaque, []const u8) ?[]const u8,
+};
+
 const Context = struct {
+    mermaid: ?DiagramRenderer = null,
     prefix: []const u8 = "",
     prefix_style: ui.Style = .{},
     /// Language used for a fenced code block without an info string.
@@ -209,6 +215,7 @@ const Context = struct {
 };
 
 pub const ParseOptions = struct {
+    mermaid: ?DiagramRenderer = null,
     /// Upstream falls back to the editor's language when a fence has no info
     /// string. The participant supplies the model language here.
     code_fence_fallback_language: []const u8 = "plaintext",
@@ -252,6 +259,7 @@ pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOpt
     var state = ParseState{ .slugs = slugify.SlugBuilder.init(allocator) };
     var lines = std.array_list.Managed(Line).init(allocator);
     try renderBlocks(allocator, &lines, &definitions, root, .{
+        .mermaid = options.mermaid,
         .code_fence_fallback_language = options.code_fence_fallback_language,
         .code_background = options.code_background,
         .mode = options.mode,
@@ -516,6 +524,15 @@ fn renderCode(
     const block_ctx = ctx.withBlock(block);
 
     const language = resolveCodeFenceLanguage(code.lang, ctx.code_fence_fallback_language);
+    if (ctx.mode == .document and std.ascii.eqlIgnoreCase(code.lang orelse "", "mermaid")) {
+        if (ctx.mermaid) |renderer| {
+            if (renderer.lookup(renderer.context, value)) |diagram| {
+                var rows = std.mem.splitScalar(u8, std.mem.trimEnd(u8, diagram, "\r\n"), '\n');
+                while (rows.next()) |row| try appendPlainCodeLine(allocator, out, block_ctx, row);
+                return;
+            }
+        }
+    }
     const support_opt = textMateTokenizer.create(allocator, language) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => null,
@@ -1667,4 +1684,18 @@ test "markdown: document mode keeps image URLs for the preview layout" {
     }
     try std.testing.expect(saw_direct);
     try std.testing.expect(saw_reference);
+}
+
+test "document preview replaces only Mermaid fences and retains their source block" {
+    const renderer = struct {
+        fn lookup(_: *anyopaque, text: []const u8) ?[]const u8 {
+            return if (std.mem.eql(u8, text, "A --> B")) "A → B" else null;
+        }
+    };
+    var document = try parseDocument(std.testing.allocator, "```mermaid\nA --> B\n```\n\n```text\nA --> B\n```", .{
+        .mermaid = .{ .context = undefined, .lookup = renderer.lookup },
+    });
+    defer document.deinit();
+    try std.testing.expect(findTextLine(std.testing.allocator, &document, "A → B") != null);
+    try std.testing.expect(findTextLine(std.testing.allocator, &document, "A --> B") != null);
 }
