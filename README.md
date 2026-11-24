@@ -466,9 +466,12 @@ for suggestions, snippets, auto-closing pairs, and indentation.
 See `docs/helix.md` for the supported surface and
 deliberate gaps.
 
-Declarative built-ins are scanned from `vscode/extensions/theme-defaults`
-and `vscode/extensions/markdown-basics`: their themes, languages, grammars
-and language configurations are loaded at startup. The markdown language
+The native build installs the pinned built-in manifests and declarative assets
+under `share/vscode-textbuffer/extensions` beside the `bin` directory.
+Startup scans this catalog for languages, grammars, snippets and color themes.
+Keep both directories together when moving the editor. `zig build builtin-extensions`
+installs the catalog on its own. See the [extension tracker](docs/vscode-builtin-extension-status.md)
+for the contributions currently connected to the editor. The markdown language
 therefore gets its upstream `<!-- -->` comment rule, bracket pairs, auto-closing
 pairs and off-side folding even when the built-in grammar was already bundled.
 

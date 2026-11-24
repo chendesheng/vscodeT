@@ -75,7 +75,13 @@ pub fn build(b: *std.Build) void {
         // This *creates* a Run step in the build graph, to be executed when another
         // step is evaluated that depends on it. The next line below will establish
         // such a dependency.
-        const run_cmd = b.addRunArtifact(exe);
+        const run_cmd = b.addRunFile(b.graph.path(.install_bin, exe.out_filename));
+        const catalog_step = b.step("builtin-extensions", "Install the pinned built-in extension manifests and declarative assets");
+        installBuiltinExtensions(b, catalog_step) catch |err| {
+            std.debug.panic("Could not stage built-in extensions: {s}", .{@errorName(err)});
+        };
+        b.getInstallStep().dependOn(catalog_step);
+        run_cmd.step.dependOn(b.getInstallStep());
         run_cmd.addPassthruArgs();
 
         // This creates a build step. It will be visible in the `zig build --help` menu,
@@ -92,6 +98,72 @@ pub fn build(b: *std.Build) void {
 
     setupWatcherTests(b, target, optimize);
     setupExtensionHost(b);
+}
+
+const catalog_path = "share/vscode-textbuffer/extensions";
+
+/// Install only data consumed by the workbench. Executable bundles use the
+/// separate host build and are never loaded from this manifest directory.
+fn installBuiltinExtensions(b: *std.Build, step: *std.Build.Step) !void {
+    const io = b.graph.io;
+    const source = try b.root.joinString(b.allocator, "vscode/extensions");
+    b.dependOnDirectoryContents(b.path("vscode/extensions"));
+    var root = std.Io.Dir.cwd().openDir(io, source, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return, // Editor builds without the optional submodule retain embedded fallbacks.
+        else => return err,
+    };
+    defer root.close(io);
+    var entries = root.iterate();
+    while (try entries.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        if (isDeferredOrTestExtension(entry.name)) continue;
+        const src = b.pathJoin(&.{ source, entry.name });
+        const dest = b.pathJoin(&.{ catalog_path, entry.name });
+        const manifest = b.pathJoin(&.{ src, "package.json" });
+        if (!fileExists(b, manifest)) continue;
+        // node_modules and helper directories are not extension packages.
+        b.dependOnFileContents(b.path(b.pathJoin(&.{ "vscode/extensions", entry.name, "package.json" })));
+        const raw = try std.Io.Dir.cwd().readFileAlloc(io, manifest, b.allocator, .unlimited);
+        defer b.allocator.free(raw);
+        const data = try std.json.parseFromSlice(std.json.Value, b.allocator, raw, .{});
+        defer data.deinit();
+        const engines = data.value.object.get("engines") orelse continue;
+        if (engines != .object or !engines.object.contains("vscode")) continue;
+        var dir = try root.openDir(io, entry.name, .{ .iterate = true });
+        defer dir.close(io);
+        b.dependOnDirectoryContents(b.path(b.pathJoin(&.{ "vscode/extensions", entry.name })));
+        var resources = dir.iterate();
+        while (try resources.next(io)) |resource| {
+            const from = b.path(b.pathJoin(&.{ "vscode/extensions", entry.name, resource.name }));
+            const to = b.pathJoin(&.{ dest, resource.name });
+            switch (resource.kind) {
+                .file => {
+                    if (std.mem.eql(u8, resource.name, "package.json") or
+                        std.mem.eql(u8, resource.name, "package.nls.json") or
+                        std.mem.endsWith(u8, resource.name, "configuration.json"))
+                        step.dependOn(&b.addInstallFile(from, to).step);
+                },
+                .directory => {
+                    for ([_][]const u8{ "languages", "syntaxes", "snippets", "themes", "icons", "fileicons" }) |name| {
+                        if (std.mem.eql(u8, resource.name, name)) {
+                            step.dependOn(&b.addInstallDirectory(.{ .source_dir = from, .install_dir = .prefix, .install_subdir = to }).step);
+                            break;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+}
+
+fn isDeferredOrTestExtension(name: []const u8) bool {
+    const excluded = [_][]const u8{
+        "debug-auto-launch", "debug-server-ready",    "ipynb",                      "notebook-renderers",
+        "vscode-api-tests",  "vscode-colorize-tests", "vscode-colorize-perf-tests", "vscode-test-resolver",
+    };
+    for (excluded) |entry| if (std.mem.eql(u8, name, entry)) return true;
+    return false;
 }
 
 /// The Node extension host is a runtime asset, not a Zig artifact: bundling it

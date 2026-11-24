@@ -275,10 +275,14 @@ pub fn main(init: std.process.Init) !void {
         paths.items.len,
     });
 
-    var declarative: ?extensions_registry.Registry = extensions_registry.scan(allocator, &.{
-        "vscode/extensions/theme-defaults",
-        "vscode/extensions/markdown-basics",
-    }) catch null;
+    const executable_dir = try std.process.executableDirPathAlloc(io, allocator);
+    defer allocator.free(executable_dir);
+    const installed_extensions = try std.fs.path.resolveAlloc(allocator, &.{ executable_dir, "../share/vscode-textbuffer/extensions" });
+    defer allocator.free(installed_extensions);
+    var declarative: ?extensions_registry.Registry = extensions_registry.scan(allocator, &.{installed_extensions}) catch |err| blk: {
+        report(log_service, "built-in extension scan failed: {s}", .{@errorName(err)});
+        break :blk null;
+    };
     defer if (declarative) |*registry| registry.deinit();
 
     var json_client: ?*json_language.Client = null;

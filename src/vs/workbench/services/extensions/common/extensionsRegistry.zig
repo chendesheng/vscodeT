@@ -168,9 +168,13 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
     defer allocator.free(manifest_path);
     const text = std.Io.Dir.cwd().readFileAlloc(time_compat.io, manifest_path, allocator, .unlimited) catch return false;
     defer allocator.free(text);
-    const sanitized = configuration_models.stripJsonc(allocator, text) catch return true;
-    defer allocator.free(sanitized);
-    const value = std.json.parseFromSliceLeaky(std.json.Value, scratch, sanitized, .{}) catch return true;
+    // Only the extracted contributions survive startup. Release each parsed
+    // manifest (including large command/configuration sections) after scanning.
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const temporary = parse_arena.allocator();
+    const sanitized = configuration_models.stripJsonc(temporary, text) catch return true;
+    const value = std.json.parseFromSliceLeaky(std.json.Value, temporary, sanitized, .{}) catch return true;
     if (value != .object) return true;
     const object = value.object;
 
@@ -191,9 +195,8 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
     var nls: ?std.json.ObjectMap = null;
     const nls_path = try std.fs.path.join(allocator, &.{ absolute, "package.nls.json" });
     defer allocator.free(nls_path);
-    if (std.Io.Dir.cwd().readFileAlloc(time_compat.io, nls_path, allocator, .unlimited)) |nls_text| {
-        defer allocator.free(nls_text);
-        if (std.json.parseFromSliceLeaky(std.json.Value, scratch, nls_text, .{})) |nls_value| {
+    if (std.Io.Dir.cwd().readFileAlloc(time_compat.io, nls_path, temporary, .unlimited)) |nls_text| {
+        if (std.json.parseFromSliceLeaky(std.json.Value, temporary, nls_text, .{})) |nls_value| {
             if (nls_value == .object) nls = nls_value.object;
         } else |_| {}
     } else |_| {}
