@@ -222,7 +222,9 @@ pub const Extensions = struct {
             workbench.registerExtensionConfiguration(description.manifest, description.identifier);
         }
 
-        const data = try allocator.dupe(u8, user_data_dir);
+        const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(cwd);
+        const data = try std.fs.path.resolve(allocator, &.{ cwd, user_data_dir });
         errdefer allocator.free(data);
 
         self.* = .{
@@ -242,7 +244,7 @@ pub const Extensions = struct {
         // Fail before spawning node: without the bundle the host can never
         // connect, and the manager would otherwise wait for its socket timeout.
         std.Io.Dir.cwd().access(io, host_script, .{}) catch return error.ExtensionHostBundleMissing;
-        const workspace_path = try std.fs.path.resolve(allocator, &.{workbench.workspaceFolderPath() orelse "."});
+        const workspace_path = try std.fs.path.resolve(allocator, &.{ cwd, workbench.workspaceFolderPath() orelse "." });
         defer allocator.free(workspace_path);
         self.host = try manager.HostManager.start(allocator, .{
             .host_script = host_script,
@@ -645,14 +647,15 @@ pub const Extensions = struct {
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
-        const workspace = try std.fs.path.resolve(arena, &.{self.workbench.workspaceFolderPath() orelse "."});
+        const cwd = try std.Io.Dir.cwd().realPathFileAlloc(self.io, ".", arena);
+        const workspace = try std.fs.path.resolve(arena, &.{ cwd, self.workbench.workspaceFolderPath() orelse "." });
         const init_data = try manager.buildInitData(arena, .{
             .host_script = "",
             .extensions = self.extension_ptrs,
             .workspace_path = workspace,
             .workspace_name = "workspace",
             .user_data_dir = self.user_data_dir,
-            .app_root = runtime_dir,
+            .app_root = try std.fs.path.resolve(arena, &.{ cwd, runtime_dir }),
             .parent_pid = @intCast(manager.currentProcessId()),
         });
         try self.host.sendInitData(init_data);
@@ -797,6 +800,11 @@ pub const Extensions = struct {
         errdefer self.allocator.free(uri);
         const language = try self.allocator.dupe(u8, tab.editor.languageId());
         errdefer self.allocator.free(language);
+
+        const language_ids = try tab.editor.language_service.getRegisteredLanguageIds(arena);
+        var ids = std.json.Array.init(arena);
+        for (language_ids) |id| try ids.append(.{ .string = id });
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostLanguages), "$acceptLanguageIds", &.{.{ .json = .{ .array = ids } }});
 
         const selections = try tab.editor.getSelections();
         defer tab.editor.allocator.free(selections);
@@ -2292,7 +2300,10 @@ test "extension host document mirror keeps UTF-16 deletion ranges valid" {
 fn checkBuiltinCompletion(comptime name: []const u8, filename: []const u8, source: []const u8, expected: []const u8) !void {
     if (!build_options.e2e) return error.SkipZigTest;
     const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
     const allocator = std.testing.allocator;
+    var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{ "vscode/extensions/configuration-editing", "vscode/extensions/lua" });
+    defer catalog.deinit();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = source });
@@ -2300,6 +2311,7 @@ fn checkBuiltinCompletion(comptime name: []const u8, filename: []const u8, sourc
     const len = try tmp.dir.realPathFile(io, filename, &buf);
     var workbench = try Workbench.init(allocator, io, &.{buf[0..len]}, 100, 30);
     defer workbench.deinit();
+    workbench.setDeclarativeExtensions(&catalog);
     try workbench.enableLanguageFeatures();
     var extensions = try Extensions.init(allocator, io, workbench, &.{.{
         .path = "host/dist/extensions/" ++ name,
@@ -2335,4 +2347,12 @@ test "Extensions: HTML server suggests textarea" {
 
 test "Extensions: Emmet expands a nested abbreviation" {
     try checkBuiltinCompletion("emmet", "index.html", "ul>li", "<li>");
+}
+
+test "Extensions: settings authoring suggests languages from declarative extensions" {
+    try checkBuiltinCompletion("configuration-editing", "settings.json", "{\"files.defaultLanguage\": ", "lua");
+}
+
+test "Extensions: manifest authoring suggests a language override snippet" {
+    try checkBuiltinCompletion("extension-editing", "package.json", "{\"contributes\": {\"configurationDefaults\": ", "language");
 }

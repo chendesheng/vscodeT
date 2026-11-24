@@ -13,7 +13,7 @@ const options = {
     platform: 'node', target: 'node24', bundle: true, format: 'cjs',
     // Prefer the ESM entries. Older jsonc-parser UMD builds resolve sibling
     // files with a factory-local require that a bundler cannot rewrite.
-    mainFields: ['module', 'main'], external: ['vscode'], nodePaths: [modules]
+    mainFields: ['module', 'main'], external: ['vscode', '@vscode/internal-github'], nodePaths: [modules]
 };
 
 async function bundleExtension(name, client, resources = []) {
@@ -62,6 +62,9 @@ export async function bundleTypeScript() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    await cp(path.join(upstream, '../product.json'), path.join(here, 'dist/product.json'));
+    await bundleExtension('configuration-editing', 'dist/configurationEditingMain.js');
+    await bundleExtension('extension-editing', 'dist/extensionEditingMain.js');
     await bundleExtension('git-base', 'dist/extension.js');
     await bundleExtension('php-language-features', 'dist/phpMain.js');
     await bundleExtension('search-result', 'dist/extension.js');

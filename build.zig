@@ -180,6 +180,8 @@ fn setupExtensionHost(b: *std.Build) void {
     const install_host = b.addInstallFile(b.path("host/dist/extensionHost.mjs"), runtime_dir ++ "/extensionHost.mjs");
     install_host.step.dependOn(&host_build.step);
     host_step.dependOn(&install_host.step);
+    const product = b.addInstallFile(b.path("vscode/product.json"), runtime_dir ++ "/product.json");
+    host_step.dependOn(&product.step);
     const install_extensions = b.addInstallDirectory(.{
         .source_dir = b.path("host/dist/extensions"),
         .install_dir = .prefix,
