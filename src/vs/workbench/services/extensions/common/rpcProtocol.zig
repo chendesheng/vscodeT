@@ -48,7 +48,13 @@ pub const HandlerError = struct {
     no_telemetry: bool = false,
 };
 
+pub const DeferredReply = struct {
+    context: *anyopaque,
+    start: *const fn (*anyopaque, *RpcProtocol, u32) void,
+};
+
 pub const HandlerReply = union(enum) {
+    deferred: DeferredReply,
     json: std.json.Value,
     empty,
     buffer: []const u8,
@@ -427,7 +433,9 @@ pub const RpcProtocol = struct {
         }
 
         self.sendControl(.acknowledged, request_id);
-        self.sendReply(request_id, reply);
+        if (reply == .deferred) {
+            reply.deferred.start(reply.deferred.context, self, request_id);
+        } else self.sendReply(request_id, reply);
     }
 
     fn decodeRequestArgs(payload: []const u8, offset: *usize, arena: Allocator, mixed: bool) ![]const Arg {
@@ -483,10 +491,12 @@ pub const RpcProtocol = struct {
         return args.toOwnedSlice();
     }
 
-    fn sendReply(self: *RpcProtocol, request_id: u32, reply: HandlerReply) void {
+    pub fn sendReply(self: *RpcProtocol, request_id: u32, reply: HandlerReply) void {
+        if (self.disposed) return;
         var message: std.array_list.Managed(u8) = .init(self.allocator);
         defer message.deinit();
         switch (reply) {
+            .deferred => unreachable,
             .empty => {
                 writeHeader(&message, .reply_ok_empty, request_id) catch return;
             },
