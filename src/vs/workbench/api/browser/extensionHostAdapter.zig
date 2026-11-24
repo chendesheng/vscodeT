@@ -899,8 +899,10 @@ pub const Extensions = struct {
 
     fn invoke(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {
         _ = token;
-        _ = args;
-        _ = context;
+        if (std.mem.eql(u8, method, "$startFileSearch")) {
+            const self: *Extensions = @ptrCast(@alignCast(context));
+            return .{ .json = try @import("mainThreadWorkspace.zig").findFiles(self.io, self.allocator, arena, self.workbench.workspaceFolderPath(), args) };
+        }
         if (std.mem.eql(u8, method, "$getTools")) {
             return .{ .json = .{ .array = std.json.Array.init(arena) } };
         }
