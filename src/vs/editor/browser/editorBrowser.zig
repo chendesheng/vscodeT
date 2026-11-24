@@ -8,6 +8,11 @@
 //! The document is rebuilt on every frame, so `build` is called each time and
 //! must recreate its listeners. State (value, cursor, focus) belongs to the
 //! widget's own struct, not to the nodes.
+//!
+//! `RetainedViewPartHost` is the terminal adaptation for views that keep their
+//! nodes across frames: it reports only the DOM deltas. `rebuildSubtree` relies
+//! on `BoxTree.rebuildSubtree` to refresh the element style and inherited
+//! pointer, so the host does not issue a zero-delta translation afterwards.
 
 const ui = @import("ui");
 const Position = @import("../common/core/position.zig").Position;
@@ -135,13 +140,14 @@ pub const RetainedViewPartHost = struct {
     }
 
     /// Rebuilds a retained node's box children from its current DOM, refreshes
-    /// the element style (the box copies it at build time) and lays it out.
+    /// the element style and inherited pointer (the box copies both at build
+    /// time) and lays it out. `rebuildSubtree` performs the refresh itself, so
+    /// no zero-delta translation is needed here (terminal adapter cleanup).
     pub fn rebuildSubtree(self: *RetainedViewPartHost, node: *ui.Node) !void {
         const box = (try self.tree.rebuildSubtree(node)) orelse {
             self.failed = true;
             return;
         };
-        _ = self.tree.translateSubtree(node, 0, 0);
         self.ops.rebuilt += 1;
         try ui.layout.layoutSubtree(self.tree, self.doc, box);
     }

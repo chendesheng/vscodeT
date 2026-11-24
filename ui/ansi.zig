@@ -33,19 +33,35 @@ pub fn encode(
     var body: std.ArrayList(u8) = .empty;
     errdefer body.deinit(allocator);
 
+    // The synchronized start marker is appended lazily with the first changed
+    // row: an unchanged frame must allocate nothing at all.
+    var started = false;
+    var wrote_content = false;
     var row: usize = 0;
     while (row < next.rows) : (row += 1) {
-        if (!rowChanged(prev, next, row)) continue;
+        // One pass yields both the diff decision and whether the new row has
+        // anything to draw, instead of scanning the row twice.
+        const scan = scanRow(prev, next, row);
+        if (!scan.changed) continue;
+
+        if (!started) {
+            if (options.synchronized) try body.appendSlice(allocator, "\x1b[?2026h");
+            // One cursor/erase prefix per changed row plus glyph/style
+            // headroom, instead of growing from zero.
+            const estimate = 64 + next.rows * 24 + next.cols * 8;
+            try body.ensureTotalCapacity(allocator, @min(estimate, 64 * 1024));
+            started = true;
+        }
 
         // Reset first: erase-to-end uses the terminal's current background
         // with background-color erase. A stale marker background from a
         // previous row/frame must not paint the cells beyond the grid.
         try appendPrint(&body, allocator, "\x1b[0m\x1b[{d};1H\x1b[K", .{row + 1});
 
-        if (!next.rowHasContent(row)) continue;
+        if (!scan.content) continue;
         try encodeRow(allocator, next, row, &body, options.color_depth);
         try encodeRoundedJoints(allocator, next, row, &body);
-        try body.appendSlice(allocator, "\x1b[0m");
+        wrote_content = true;
     }
 
     if (body.items.len == 0) {
@@ -53,17 +69,55 @@ pub fn encode(
         return allocator.alloc(u8, 0);
     }
 
-    if (!options.synchronized) {
-        return body.toOwnedSlice(allocator);
-    }
+    // One trailing reset for the whole frame instead of one per row: every
+    // emitted row already begins with SGR 0, so the next row's erase never
+    // depends on the previous row's final rendition state.
+    if (wrote_content) try body.appendSlice(allocator, "\x1b[0m");
+    if (options.synchronized) try body.appendSlice(allocator, "\x1b[?2026l");
+    return body.toOwnedSlice(allocator);
+}
 
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-    try result.appendSlice(allocator, "\x1b[?2026h");
-    try result.appendSlice(allocator, body.items);
-    try result.appendSlice(allocator, "\x1b[?2026l");
-    body.deinit(allocator);
-    return result.toOwnedSlice(allocator);
+const RowScan = struct {
+    changed: bool,
+    content: bool,
+};
+
+/// One pass over a row that answers both questions the encoder asks: does it
+/// differ from `prev`, and does `next` have any content to draw. Without a
+/// previous frame a row is repainted exactly when it has content, matching the
+/// old `rowChanged` result.
+fn scanRow(prev: ?*const CellGrid, next: *const CellGrid, row: usize) RowScan {
+    const start = row * next.cols;
+    const end = start + next.cols;
+    const before = prev orelse {
+        var content = false;
+        var i = start;
+        while (i < end) : (i += 1) {
+            if (next.cluster[i] != 0 or next.grapheme[i] != 0 or next.border[i] != 0) {
+                content = true;
+                break;
+            }
+        }
+        return .{ .changed = content, .content = content };
+    };
+
+    // Unchanged rows are the common idle-frame case: only compare cells and
+    // stop at the first difference. The content scan is needed only after a
+    // row is known to be dirty (the same split the old rowChanged/rowHasContent
+    // pair had, without a second function call).
+    var i = start;
+    while (i < end) : (i += 1) {
+        if (!CellGrid.sameCell(before, i, next, i)) break;
+    }
+    if (i == end) return .{ .changed = false, .content = false };
+
+    i = start;
+    while (i < end) : (i += 1) {
+        if (next.cluster[i] != 0 or next.grapheme[i] != 0 or next.border[i] != 0) {
+            return .{ .changed = true, .content = true };
+        }
+    }
+    return .{ .changed = true, .content = false };
 }
 
 fn encodeRoundedJoints(allocator: std.mem.Allocator, grid: *const CellGrid, row: usize, out: *std.ArrayList(u8)) !void {
@@ -76,17 +130,6 @@ fn encodeRoundedJoints(allocator: std.mem.Allocator, grid: *const CellGrid, row:
         try appendPrint(out, allocator, "\x1b[{d};{d}H", .{ row + 1, col + 1 });
         try cell_border.appendRoundCell(out, allocator, set, continuation);
     }
-}
-
-fn rowChanged(prev: ?*const CellGrid, next: *const CellGrid, row: usize) bool {
-    const before = prev orelse return next.rowHasContent(row);
-    const start = row * next.cols;
-    const end = start + next.cols;
-    var i = start;
-    while (i < end) : (i += 1) {
-        if (!CellGrid.sameCell(before, i, next, i)) return true;
-    }
-    return false;
 }
 
 fn encodeRow(
@@ -378,6 +421,47 @@ test "ansi: a border change repaints an otherwise identical row" {
     defer allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "040506") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "x") != null);
+}
+
+test "ansi: unchanged and synchronized empty frames encode zero bytes" {
+    const allocator = std.testing.allocator;
+    var prev = try CellGrid.init(allocator, 3, 2);
+    defer prev.deinit();
+    var next = try CellGrid.init(allocator, 3, 2);
+    defer next.deinit();
+
+    // Two blank grids: nothing to emit and no synchronized start/end markers.
+    const blank = try encode(allocator, &prev, &next, .{ .synchronized = true });
+    defer allocator.free(blank);
+    try std.testing.expectEqual(@as(usize, 0), blank.len);
+
+    // Same content in both buffers is also zero bytes, even when rows have
+    // content: the merged scan reports them unchanged.
+    prev.putCodepoint(0, 0, 'a', 1, .{});
+    next.putCodepoint(0, 0, 'a', 1, .{});
+    prev.putCodepoint(2, 1, 'b', 1, .{});
+    next.putCodepoint(2, 1, 'b', 1, .{});
+    const unchanged = try encode(allocator, &prev, &next, .{ .synchronized = true });
+    defer allocator.free(unchanged);
+    try std.testing.expectEqual(@as(usize, 0), unchanged.len);
+}
+
+test "ansi: one trailing reset per frame in synchronized output" {
+    const allocator = std.testing.allocator;
+    var next = try CellGrid.init(allocator, 2, 2);
+    defer next.deinit();
+    next.putCodepoint(0, 0, 'a', 1, .{});
+    next.putCodepoint(0, 1, 'b', 1, .{});
+
+    const out = try encode(allocator, null, &next, .{ .synchronized = true });
+    defer allocator.free(out);
+    try std.testing.expect(std.mem.startsWith(u8, out, "\x1b[?2026h"));
+    try std.testing.expect(std.mem.endsWith(u8, out, "\x1b[0m\x1b[?2026l"));
+    // Two row prefixes each carry a reset; the frame adds exactly one more and
+    // not one per row.
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, out, "\x1b[0m"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "b") != null);
 }
 
 test "ansi: synchronized output wraps only non-empty frames" {

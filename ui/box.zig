@@ -101,6 +101,13 @@ pub const LayoutBox = struct {
     /// pass solves the whole tree but clears the bits at the end, so the flag
     /// is ready for the incremental pass.
     needs_layout: bool = true,
+    /// Cached max-content width of the box's flow content. `-1` means "not
+    /// computed for the current intrinsic epoch". The value is independent of
+    /// the containing block (percentages resolve as auto), so it survives
+    /// solves and resizes and only changes when this box or an ancestor's
+    /// style/text/structure changes.
+    max_content_width: f64 = -1,
+    max_content_epoch: u32 = 0,
 
     pub fn displayInline(self: *const LayoutBox) bool {
         return switch (self.kind) {
@@ -110,6 +117,8 @@ pub const LayoutBox = struct {
         };
     }
 };
+
+pub const default_layout_scratch_limit: usize = 32 * 1024 * 1024;
 
 pub const BoxTree = struct {
     allocator: std.mem.Allocator,
@@ -125,6 +134,17 @@ pub const BoxTree = struct {
     /// The rebuilt boxes need the layout solved. Per-box `needs_layout` records
     /// which subtrees are dirty; the current pass still solves all.
     needs_layout: bool = true,
+    /// Epoch for cached max-content widths. It only changes when the
+    /// document's measurement callback or tab size changes, so ordinary solves
+    /// and retained subtree solves reuse previous measurements.
+    intrinsic_epoch: u32 = 1,
+    intrinsic_measure_width: ?*const fn (u21) u2 = null,
+    intrinsic_tab_size: ?usize = null,
+    /// Budget for the per-solve scratch arena on the incremental
+    /// `layoutSubtree` path. Crossing it marks the tree for a full rebuild,
+    /// which resets scratch; `layoutTree` never marks itself, so a legitimate
+    /// one-shot solve of a huge scene cannot loop.
+    layout_scratch_limit: usize = default_layout_scratch_limit,
     /// The terminal implements the cell-border protocol. Borders paint as cell
     /// attributes on the box edge and do not reserve cells, so `width`,
     /// `height`, padding and content geometry ignore the border widths.
@@ -204,9 +224,53 @@ pub const BoxTree = struct {
         return null;
     }
 
+    /// Capacity of the per-solve scratch arena. Retained hosts use this to
+    /// bound incremental text-fragment growth, which cannot be reclaimed by
+    /// `layoutSubtree` because clean boxes still point into the arena.
+    pub fn layoutScratchBytes(self: *const BoxTree) usize {
+        return self.scratch.queryCapacity();
+    }
+
+    /// Sets the per-solve scratch budget used by `layoutSubtree`. Tests use a
+    /// tiny value to exercise the fallback without allocating 32 MB.
+    pub fn setLayoutScratchLimit(self: *BoxTree, bytes: usize) void {
+        self.layout_scratch_limit = @max(bytes, 1);
+    }
+
+    /// Called after an incremental subtree solve. If scratch has grown past the
+    /// budget, mark the tree for a full rebuild; the next `ensureLayout` uses
+    /// `rebuild` + `layoutTree`, which replaces and resets scratch. This keeps
+    /// the memory bound in the UI library and out of retained-view hosts.
+    pub fn checkLayoutScratchBudget(self: *BoxTree) void {
+        if (self.scratch.queryCapacity() <= self.layout_scratch_limit) return;
+        self.needs_rebuild = true;
+        self.needs_layout = true;
+    }
+
     pub fn clearNeedsLayout(self: *BoxTree) void {
-        clearBoxNeedsLayout(self.root);
+        // Per-box bits are cleared by the layout pass's `copyRects` walk. The
+        // tree flag is the only one observed by `Surface.ensureLayout`.
         self.needs_layout = false;
+    }
+
+    /// Refreshes the measurement-settings epoch when the document's width
+    /// callback or tab size changes. A change only bumps the epoch; boxes keep
+    /// their stale values until the next ask and then recompute.
+    pub fn syncIntrinsicSettings(self: *BoxTree, doc: *const dom.Document) void {
+        if (self.intrinsic_measure_width == doc.measure_width and
+            self.intrinsic_tab_size == doc.tab_size)
+        {
+            return;
+        }
+        self.intrinsic_measure_width = doc.measure_width;
+        self.intrinsic_tab_size = doc.tab_size;
+        self.intrinsic_epoch +%= 1;
+        if (self.intrinsic_epoch == 0) self.intrinsic_epoch = 1;
+    }
+
+    fn invalidateIntrinsicAncestors(start: ?*LayoutBox) void {
+        var current = start;
+        while (current) |box| : (current = box.parent) box.max_content_epoch = 0;
     }
 
     /// Switches automatic mutation invalidation. The retained editor view
@@ -250,6 +314,7 @@ pub const BoxTree = struct {
         } else {
             parent_box.needs_layout = true;
         }
+        invalidateIntrinsicAncestors(parent_box);
         return box;
     }
 
@@ -264,6 +329,7 @@ pub const BoxTree = struct {
                     break;
                 }
             }
+            invalidateIntrinsicAncestors(parent);
         }
         removeBoxMappings(self, box);
     }
@@ -278,6 +344,7 @@ pub const BoxTree = struct {
         if (node.kind == .element) {
             const inherited = if (box.parent) |parent| parent.style else style_mod.ComputedStyle{};
             const computed = elementStyle(inherited, node, node.asElement());
+            if (computed.pointer != box.pointer) resolvePointers(box, computed.pointer);
             box.style = computed;
             box.text_style = style_mod.TextStyle.fromComputed(computed);
             box.pointer = computed.pointer;
@@ -288,6 +355,8 @@ pub const BoxTree = struct {
             var run: std.ArrayList(*LayoutBox) = .empty;
             try collectChildren(self, box, node, &run, computed, box.paint_delta, true);
         }
+        box.max_content_epoch = 0;
+        invalidateIntrinsicAncestors(box.parent);
         box.needs_layout = true;
         return box;
     }
@@ -299,16 +368,22 @@ pub const BoxTree = struct {
         if (node.kind == .element) {
             const inherited = if (box.parent) |parent| parent.style else style_mod.ComputedStyle{};
             const computed = elementStyle(inherited, node, node.asElement());
-            box.style = computed;
-            box.text_style = style_mod.TextStyle.fromComputed(computed);
-            if (self.cell_borders) {
-                box.cell_border = style_mod.borderWidths(computed);
-                box.style.border = .{};
+            if (!std.meta.eql(computed, box.style)) {
+                // The cached intrinsic size runs through the changed style and
+                // this subtree's inherited text properties.
+                box.style = computed;
+                box.text_style = style_mod.TextStyle.fromComputed(computed);
+                if (self.cell_borders) {
+                    box.cell_border = style_mod.borderWidths(computed);
+                    box.style.border = .{};
+                }
+                invalidateIntrinsicSubtree(box);
+                invalidateIntrinsicAncestors(box.parent);
             }
             if (computed.pointer != box.pointer) resolvePointers(box, computed.pointer);
         }
+        if (dx == 0 and dy == 0) return true;
         shiftBox(box, dx, dy);
-        copyBoxRects(box);
         return true;
     }
 
@@ -481,14 +556,9 @@ fn removeBoxMappings(tree: *BoxTree, box: *LayoutBox) void {
     for (box.children.items) |child| removeBoxMappings(tree, child);
 }
 
-fn copyBoxRects(box: *LayoutBox) void {
-    if (box.owner) |owner| {
-        switch (owner.kind) {
-            .element => |*element| element.rect = box.rect,
-            .text => |*text| text.rect = box.rect,
-        }
-    }
-    for (box.children.items) |child| copyBoxRects(child);
+fn invalidateIntrinsicSubtree(box: *LayoutBox) void {
+    box.max_content_epoch = 0;
+    for (box.children.items) |child| invalidateIntrinsicSubtree(child);
 }
 
 fn shiftBox(box: *LayoutBox, dx: f64, dy: f64) void {
@@ -505,6 +575,15 @@ fn shiftBox(box: *LayoutBox, dx: f64, dy: f64) void {
     for (box.inline_fragments) |*fragment| {
         fragment.x += dx;
         fragment.y += dy;
+    }
+    // Keep the measurement-boundary DOM rects in step in the same walk; a
+    // separate copyBoxRects pass made every retained scroll touch the tree
+    // twice.
+    if (box.owner) |owner| {
+        switch (owner.kind) {
+            .element => |*element| element.rect = box.rect,
+            .text => |*text| text.rect = box.rect,
+        }
     }
     for (box.children.items) |child| shiftBox(child, dx, dy);
 }
@@ -702,11 +781,6 @@ fn flushRun(
     for (box.children.items) |child| child.parent = box;
     try parent.children.append(allocator, box);
     run.clearRetainingCapacity();
-}
-
-fn clearBoxNeedsLayout(box: *LayoutBox) void {
-    box.needs_layout = false;
-    for (box.children.items) |child| clearBoxNeedsLayout(child);
 }
 
 fn onMutation(context: *anyopaque, _: *dom.Node, kind: dom.MutationKind) void {

@@ -523,7 +523,10 @@ number of lines. Wrapped continuation lines are aligned independently by
 `text_align`, trailing spaces hang, and tabs expand to the document tab size.
 Text fragments and inline-element fragments are allocated in the box tree's
 per-solve scratch arena, so they stay valid through paint and hit testing and
-are released on the next solve.
+are released on the next solve. Incremental `layoutSubtree` calls keep that
+scratch alive for clean boxes; if it crosses the 32 MB budget, the box tree
+marks itself for a full rebuild, which replaces and resets the arena. The limit
+is adjustable for tests with `BoxTree.setLayoutScratchLimit`.
 
 The editor view keeps its own VS Code view-model soft wrapping; its line boxes
 use `white_space = .pre` so the already-wrapped code text preserves spaces and
@@ -644,6 +647,55 @@ the icon and blank separators. `render` sets `layout` and the `buttonRect`
 rectangles for hosts/tests that need the active geometry. Colors and the
 warning glyph are terminal defaults; the host supplies the text and labels, so
 the same widget serves VS Code-style save confirmations and other messages.
+
+## Benchmarks and stress tests
+
+```sh
+cd ui
+zig build test
+zig build stress                     # filtered stress-only run
+zig build bench -Dbench-args="--runs 5 --iterations 20 --markdown"
+zig build bench -Doptimize=ReleaseFast -Dbench-args="--runs 5 --markdown"
+zig build bench -Doptimize=ReleaseFast -Dbench-args="--allocated --runs 3 --markdown"
+zig build bench -Dbench-args="--only scroll,editor --profile editor --seconds 10 --iterations 200000"
+zig build bench -Doptimize=ReleaseFast \
+  -Dbench-args="--runs 5 --iterations 20 --markdown --report /tmp/ui-bench-report.md"
+# From the repository root: filtered stress tests + timing/allocation report.
+scripts/ui-stress-report.sh /tmp/ui-stress-report
+```
+
+The scenario shape follows TermDOM's `bench/` suite (scenarios, medians, an
+allocation mode and a markdown table), adapted to native Zig. TermDOM warms up
+because V8 runs interpreted/optimizing tiers; Zig has no equivalent, so **no
+iteration is discarded and there is no `--warmup` option**. Every sample is
+reported; the runner prints the first iteration separately from the
+min/p50/p90/p99/max distribution. The `UI stress + report` CI job runs this
+report script and publishes the assembled markdown as a job-summary and
+artifact.
+
+Scenarios cover startup/first paint, DOM/box derivation of 5k spans, class
+toggle rebuilds, retained one-row scroll, retained editor line edits, wrapped
+paragraphs (including CJK/emoji), nested flex cards, cell-border frames, ANSI
+encode/diff at each colour depth, and focus/hover/hit-test interaction. Each
+scenario does a cheap correctness check after every step, so a broken fast path
+cannot look fast.
+
+- `--runs N` repeats each scenario; `--iterations N` is the step count per run.
+- `--only` selects scenarios; `--markdown`/`--json` choose the output.
+- `--allocated` swaps in a counting allocator and reports bytes requested per
+  step, independent of the timing samples.
+- `--write-baseline FILE` and `--baseline FILE` store/compare JSONL medians.
+- `--report FILE` writes the same benchmark table as a self-contained markdown
+  report, including build/host metadata and the no-warmup policy. CI uses this
+  for the `UI stress + report` job's summary and artifact.
+- `--profile NAME --seconds N` keeps one scenario running for an external
+  profiler. It prints the PID; use `sample <pid> N` on macOS or
+  `perf record -g` on Linux.
+
+`ui/stress.zig` adds bounded stress cases to `zig build test`: large document
+solve/paint, a retained scroll window, deep nesting, a many-line wrapped
+paragraph, a bordered frame + frame diff, focus/hit-test traversal and repeated
+class toggles. The heavier sizes are opt-in through the benchmark.
 
 ## Tests
 

@@ -19,6 +19,11 @@ pub const Frame = struct {
     prev: CellGrid,
     next: CellGrid,
     have_prev: bool = false,
+    /// True when `next` is known to be blank: set by init and by `swap`, which
+    /// clears it, and cleared by `begin` because painting dirties it. This lets
+    /// the usual begin-after-swap skip the full-grid clear while a second
+    /// `begin` without a swap still clears the buffer it just handed out.
+    next_clean: bool = true,
 
     pub fn init(allocator: std.mem.Allocator, cols: usize, rows: usize) !Frame {
         const borders = try allocator.create(cell_border.Table);
@@ -51,7 +56,11 @@ pub const Frame = struct {
     }
 
     pub fn begin(self: *Frame) void {
-        self.next.clear();
+        // `next` is already blank right after init or swap; clearing it again
+        // is pure cost. Any later begin, or a begin after a paint pass, still
+        // clears because the buffer is marked dirty until the next swap.
+        if (!self.next_clean) self.next.clear();
+        self.next_clean = false;
     }
 
     pub fn present(self: *Frame) *const CellGrid {
@@ -68,9 +77,43 @@ pub const Frame = struct {
     pub fn swap(self: *Frame) void {
         std.mem.swap(CellGrid, &self.prev, &self.next);
         self.next.clear();
+        self.next_clean = true;
         self.have_prev = true;
     }
 };
+
+test "Frame begin after swap skips the clear but still clears a dirty buffer" {
+    const allocator = std.testing.allocator;
+    var frame = try Frame.init(allocator, 3, 1);
+    defer frame.deinit();
+
+    frame.begin();
+    frame.next.putCodepoint(0, 0, 'x', 1, .{});
+    frame.swap();
+    try std.testing.expectEqual(@as(u32, 'x'), frame.present().cluster[0]);
+    try std.testing.expectEqual(@as(u32, 0), frame.next.cluster[0]);
+
+    // A begin right after swap skips the redundant clear, but the buffer must
+    // really be blank and new writes must reach the presented frame.
+    frame.begin();
+    frame.next.putCodepoint(1, 0, 'y', 1, .{});
+    frame.swap();
+    try std.testing.expectEqual(@as(u32, 'y'), frame.present().cluster[1]);
+    try std.testing.expectEqual(@as(u32, 0), frame.present().cluster[0]);
+
+    // Two begins without an intervening swap: the second still clears the
+    // dirty buffer instead of silently reusing it.
+    frame.begin();
+    frame.next.putCodepoint(2, 0, 'z', 1, .{});
+    frame.begin();
+    try std.testing.expectEqual(@as(u32, 0), frame.next.cluster[2]);
+    try std.testing.expectEqual(@as(u32, 'y'), frame.present().cluster[1]);
+
+    frame.next.putCodepoint(2, 0, 'z', 1, .{});
+    frame.swap();
+    try std.testing.expectEqual(@as(u32, 'z'), frame.present().cluster[2]);
+    try std.testing.expectEqual(@as(u32, 0), frame.present().cluster[0]);
+}
 
 test "Frame exposes the painted grid for terminal graphics overlays" {
     const allocator = std.testing.allocator;

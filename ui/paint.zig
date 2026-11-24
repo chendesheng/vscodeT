@@ -255,6 +255,32 @@ fn applyUnderline(result: *PaintStyle, underline_style: style_mod.UnderlineStyle
     result.attrs |= cell.underlineAttr(underline_style);
 }
 
+/// The clip rectangle snapped and clamped once per border pass, so per-cell
+/// border writers do not re-run `snap` for every cell.
+const ClipBounds = struct {
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+
+    fn init(grid: *const CellGrid, clip: Rect) ClipBounds {
+        return .{
+            .left = cell.snap(clip.x),
+            .top = cell.snap(clip.y),
+            // Out-of-grid cells are dropped by the cell writers either way, so
+            // clamping here is behavior preserving and keeps every span index
+            // inside its planes.
+            .right = @min(grid.cols, cell.snap(clip.right())),
+            .bottom = @min(grid.rows, cell.snap(clip.bottom())),
+        };
+    }
+
+    fn contains(self: ClipBounds, col: usize, row: usize) bool {
+        return col >= self.left and col < self.right and
+            row >= self.top and row < self.bottom;
+    }
+};
+
 fn drawBorder(
     grid: *CellGrid,
     rect: Rect,
@@ -280,47 +306,60 @@ fn drawBorder(
     var paint = PaintStyle{ .fg = inherited.fg, .bg = inherited.bg, .attrs = 0 };
     if (border_color) |color| paint.fg = cell.packColor(color);
 
+    const bounds = ClipBounds.init(grid, clip);
+
     var row = y0;
     while (row < y0 + top) : (row += 1) {
-        var col = x0;
-        while (col < x1) : (col += 1) {
-            const glyph: u21 = if (left > 0 and col < x0 + left)
-                (if (round) '╭' else '┌')
-            else if (right > 0 and col >= x1 - right)
-                (if (round) '╮' else '┐')
-            else
-                '─';
-            putBorderGlyph(grid, col, row, glyph, paint, clip);
-        }
+        borderRow(grid, bounds, row, x0, x1, left, right, if (round) '╭' else '┌', if (round) '╮' else '┐', paint);
     }
 
     row = y1 - bottom;
     while (row < y1) : (row += 1) {
-        var col = x0;
-        while (col < x1) : (col += 1) {
-            const glyph: u21 = if (left > 0 and col < x0 + left)
-                (if (round) '╰' else '└')
-            else if (right > 0 and col >= x1 - right)
-                (if (round) '╯' else '┘')
-            else
-                '─';
-            putBorderGlyph(grid, col, row, glyph, paint, clip);
-        }
+        borderRow(grid, bounds, row, x0, x1, left, right, if (round) '╰' else '└', if (round) '╯' else '┘', paint);
     }
 
-    const column_start = x0;
-    const column_end = x1;
     row = y0 + top;
     while (row < y1 - bottom) : (row += 1) {
-        var col = column_start;
-        while (col < column_start + left) : (col += 1) {
-            putBorderGlyph(grid, col, row, '│', paint, clip);
-        }
-        col = column_end - right;
-        while (col < column_end) : (col += 1) {
-            putBorderGlyph(grid, col, row, '│', paint, clip);
-        }
+        fillBorderRun(grid, bounds, row, x0, x0 + left, '│', paint);
+        fillBorderRun(grid, bounds, row, x1 - right, x1, '│', paint);
     }
+}
+
+/// One horizontal border row: the two corner runs and the dash run. Each run is
+/// clipped and written as one span instead of one bounds-checked glyph per cell.
+fn borderRow(
+    grid: *CellGrid,
+    bounds: ClipBounds,
+    row: usize,
+    x0: usize,
+    x1: usize,
+    left: usize,
+    right: usize,
+    left_glyph: u21,
+    right_glyph: u21,
+    paint: PaintStyle,
+) void {
+    fillBorderRun(grid, bounds, row, x0, x0 + left, left_glyph, paint);
+    fillBorderRun(grid, bounds, row, x0 + left, x1 - right, '─', paint);
+    fillBorderRun(grid, bounds, row, x1 - right, x1, right_glyph, paint);
+}
+
+/// Fills the horizontal span `[start, end)` on `row`, clipped to the snapped
+/// bounds. The background underneath the border is preserved per cell.
+fn fillBorderRun(
+    grid: *CellGrid,
+    bounds: ClipBounds,
+    row: usize,
+    start: usize,
+    end: usize,
+    glyph: u21,
+    paint: PaintStyle,
+) void {
+    if (row < bounds.top or row >= bounds.bottom) return;
+    const left = @max(start, bounds.left);
+    const right = @min(end, bounds.right);
+    if (left >= right) return;
+    grid.fillGlyphSpan(row * grid.cols + left, right - left, glyph, 1, paint, true);
 }
 
 /// Cell-border mode: paint the border as terminal cell attributes on the box's
@@ -346,25 +385,31 @@ fn drawCellBorder(
     const y1 = cell.snap(rect.bottom());
     if (x1 <= x0 or y1 <= y0) return;
 
+    const bounds = ClipBounds.init(grid, clip);
+    const first_col = @max(x0, bounds.left);
+    const last_col = @min(x1, bounds.right);
+    const first_row = @max(y0, bounds.top);
+    const last_row = @min(y1, bounds.bottom);
+
     if (border.top > 0) {
         const stroke = cellBorderStroke(border.top, border_color, inherited);
-        var col = x0;
-        while (col < x1) : (col += 1) addCellBorder(grid, col, y0, cell_border.Segment.top, stroke, clip);
+        var col = first_col;
+        while (col < last_col) : (col += 1) addCellBorder(grid, col, y0, cell_border.Segment.top, stroke, bounds);
     }
     if (border.bottom > 0) {
         const stroke = cellBorderStroke(border.bottom, border_color, inherited);
-        var col = x0;
-        while (col < x1) : (col += 1) addCellBorder(grid, col, y1 - 1, cell_border.Segment.bottom, stroke, clip);
+        var col = first_col;
+        while (col < last_col) : (col += 1) addCellBorder(grid, col, y1 - 1, cell_border.Segment.bottom, stroke, bounds);
     }
     if (border.left > 0) {
         const stroke = cellBorderStroke(border.left, border_color, inherited);
-        var row = y0;
-        while (row < y1) : (row += 1) addCellBorder(grid, x0, row, cell_border.Segment.left, stroke, clip);
+        var row = first_row;
+        while (row < last_row) : (row += 1) addCellBorder(grid, x0, row, cell_border.Segment.left, stroke, bounds);
     }
     if (border.right > 0) {
         const stroke = cellBorderStroke(border.right, border_color, inherited);
-        var row = y0;
-        while (row < y1) : (row += 1) addCellBorder(grid, x1 - 1, row, cell_border.Segment.right, stroke, clip);
+        var row = first_row;
+        while (row < last_row) : (row += 1) addCellBorder(grid, x1 - 1, row, cell_border.Segment.right, stroke, bounds);
     }
 }
 
@@ -397,24 +442,10 @@ fn addCellBorder(
     row: usize,
     mask: u12,
     stroke: cell_border.Stroke,
-    clip: Rect,
+    bounds: ClipBounds,
 ) void {
-    if (col < cell.snap(clip.x) or row < cell.snap(clip.y)) return;
-    if (col >= cell.snap(clip.right()) or row >= cell.snap(clip.bottom())) return;
+    if (!bounds.contains(col, row)) return;
     grid.addBorder(col, row, mask, stroke);
-}
-
-fn putBorderGlyph(
-    grid: *CellGrid,
-    col: usize,
-    row: usize,
-    cp: u21,
-    paint: PaintStyle,
-    clip: Rect,
-) void {
-    if (col < cell.snap(clip.x) or row < cell.snap(clip.y)) return;
-    if (col >= cell.snap(clip.right()) or row >= cell.snap(clip.bottom())) return;
-    grid.putCodepoint(col, row, cp, 1, keepBackground(grid, col, row, paint));
 }
 
 /// A border belongs to its box, not to the root: if the box has no background
@@ -450,20 +481,33 @@ pub fn drawText(
     // Scrolled content can sit at negative x (the scroll viewport clips it).
     // Keep column signed until the clip test so the skipped glyphs keep their
     // measured width instead of collapsing to column zero.
+    const row_base = row * grid.cols;
     var column: i64 = @intFromFloat(@round(x));
     var offset: usize = 0;
     while (offset < text.len) {
         // Fast path for printable ASCII, which is the overwhelming case for
-        // terminal editor text. Avoid decoding/measuring every byte.
+        // terminal editor text. Group the whole run, clip it once and write it
+        // through a precomputed row base instead of decoding, measuring and
+        // bounds-checking every byte.
         const byte = text[offset];
         if (byte >= 0x20 and byte < 0x7f) {
-            offset += 1;
-            if (column >= clip_right) break;
-            if (column >= clip_left) {
-                const cell_paint = if (keep_background) keepBackground(grid, @intCast(column), row, paint) else paint;
-                grid.putCodepoint(@intCast(column), row, byte, 1, cell_paint);
+            const run_start = offset;
+            while (offset < text.len and text[offset] >= 0x20 and text[offset] < 0x7f) offset += 1;
+            if (column >= @as(i64, @intCast(clip_right))) break;
+            const run_end = column + @as(i64, @intCast(offset - run_start));
+            const write_start = @max(column, @as(i64, @intCast(clip_left)));
+            const write_end = @min(run_end, @as(i64, @intCast(clip_right)));
+            if (write_start < write_end) {
+                const skip: usize = @intCast(write_start - column);
+                const length: usize = @intCast(write_end - write_start);
+                grid.putAsciiSpan(
+                    row_base + @as(usize, @intCast(write_start)),
+                    text[run_start + skip .. run_start + skip + length],
+                    paint,
+                    keep_background,
+                );
             }
-            column += 1;
+            column = run_end;
             continue;
         }
         const decoded = dom.decodeAt(text, offset);
@@ -476,23 +520,33 @@ pub fn drawText(
                 @divFloor(column, tab_size) * tab_size + tab_size
             else
                 @intCast(dom.nextTabStop(@intCast(column), doc.tab_size));
-            while (column < next) : (column += 1) {
-                if (column >= clip_left and column < clip_right) {
-                    const cell_paint = if (keep_background) keepBackground(grid, @intCast(column), row, paint) else paint;
-                    grid.putSpace(@intCast(column), row, cell_paint);
-                }
+            const write_start = @max(column, @as(i64, @intCast(clip_left)));
+            const write_end = @min(next, @as(i64, @intCast(clip_right)));
+            if (write_start < write_end) {
+                grid.fillGlyphSpan(
+                    row_base + @as(usize, @intCast(write_start)),
+                    @intCast(write_end - write_start),
+                    ' ',
+                    1,
+                    paint,
+                    keep_background,
+                );
             }
+            column = next;
             continue;
         }
         if (decoded.cp < 0x20 or decoded.cp == 0x7f) continue;
 
         const width: i64 = doc.measure_width(decoded.cp);
         if (width == 0) continue;
-        if (column >= clip_right) break;
-        if (column + width > clip_right) break;
-        if (column >= clip_left) {
+        if (column >= @as(i64, @intCast(clip_right))) break;
+        if (column + width > @as(i64, @intCast(clip_right))) break;
+        if (column >= @as(i64, @intCast(clip_left))) {
             const cell_paint = if (keep_background) keepBackground(grid, @intCast(column), row, paint) else paint;
-            grid.putCodepoint(@intCast(column), row, decoded.cp, @intCast(width), cell_paint);
+            const index = row_base + @as(usize, @intCast(column));
+            grid.putCellAt(index, decoded.cp, @intCast(width), cell_paint);
+            // The continuation cell is empty and advances no cursor of its own.
+            if (width == 2) grid.putCellAt(index + 1, 0, 0, cell_paint);
         }
         column += width;
     }
@@ -607,6 +661,86 @@ test "paint: wide glyph writes a continuation cell" {
     try std.testing.expectEqualStrings("中x", row);
 }
 
+test "paint: drawText clips ASCII runs at negative x and the clip edges" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{
+        .cols = 8,
+        .rows = 2,
+        .measure_width = measureCodepoint,
+    });
+    defer doc.deinit();
+    var grid = try CellGrid.init(allocator, 8, 2);
+    defer grid.deinit();
+
+    const red = cell.packColor(.{ .r = 200, .g = 10, .b = 10 });
+    const blue = cell.packColor(.{ .r = 10, .g = 10, .b = 200 });
+    const full = Rect{ .x = 0, .y = 0, .w = 8, .h = 1 };
+
+    // Negative x keeps the measured width: the first two glyphs are clipped,
+    // not collapsed into column zero.
+    drawText(&doc, &grid, "abcdef", -2, 0, .{ .fg = red }, false, full);
+    try std.testing.expectEqual(@as(u32, 'c'), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, 'f'), grid.cluster[3]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[4]);
+    try std.testing.expectEqual(red, grid.fg[3]);
+
+    // The run is clipped once at both edges of a narrower clip rectangle.
+    grid.clear();
+    drawText(&doc, &grid, "abcdef", 0, 0, .{}, false, .{ .x = 2, .y = 0, .w = 3, .h = 1 });
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, 'c'), grid.cluster[2]);
+    try std.testing.expectEqual(@as(u32, 'd'), grid.cluster[3]);
+    try std.testing.expectEqual(@as(u32, 'e'), grid.cluster[4]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[5]);
+
+    // Negative x combined with a clip that starts mid-run.
+    grid.clear();
+    drawText(&doc, &grid, "abcdef", -3, 0, .{}, false, .{ .x = 1, .y = 0, .w = 3, .h = 1 });
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, 'e'), grid.cluster[1]);
+    try std.testing.expectEqual(@as(u32, 'f'), grid.cluster[2]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[3]);
+
+    // A wide glyph writes its empty continuation cell; a clip that cuts the
+    // pair drops the whole glyph, like the old per-codepoint path.
+    grid.clear();
+    drawText(&doc, &grid, "中x", 0, 0, .{}, false, full);
+    try std.testing.expectEqual(@as(u32, 0x4e2d), grid.cluster[0]);
+    try std.testing.expectEqual(@as(usize, 2), grid.widthAt(0, 0));
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[1]);
+    try std.testing.expectEqual(@as(usize, 0), grid.widthAt(1, 0));
+    try std.testing.expectEqual(@as(u32, 'x'), grid.cluster[2]);
+    grid.clear();
+    drawText(&doc, &grid, "中x", 0, 0, .{}, false, .{ .x = 0, .y = 0, .w = 1, .h = 1 });
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[2]);
+
+    // Tabs expand to the next stop and are written as one background-preserving
+    // span; a tab that starts before the clip only writes its visible part.
+    grid.clear();
+    drawText(&doc, &grid, "a\tb", 0, 0, .{}, false, full);
+    try std.testing.expectEqual(@as(u32, 'a'), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[1]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[3]);
+    try std.testing.expectEqual(@as(u32, 'b'), grid.cluster[4]);
+    grid.clear();
+    drawText(&doc, &grid, "x\ty", -2, 0, .{}, false, full);
+    try std.testing.expectEqual(@as(u32, 'y'), grid.cluster[0]);
+
+    // keep_background reads the destination background before writing, for a
+    // whole ASCII run as well.
+    grid.clear();
+    grid.bg[grid.index(0, 1)] = blue;
+    grid.bg[grid.index(1, 1)] = blue;
+    const row1_clip = Rect{ .x = 0, .y = 1, .w = 8, .h = 1 };
+    drawText(&doc, &grid, "ab", 0, 1, .{ .fg = red, .bg = red }, true, row1_clip);
+    try std.testing.expectEqual(blue, grid.bg[grid.index(0, 1)]);
+    try std.testing.expectEqual(blue, grid.bg[grid.index(1, 1)]);
+    try std.testing.expectEqual(red, grid.fg[grid.index(0, 1)]);
+    drawText(&doc, &grid, "cd", 2, 1, .{ .fg = red, .bg = red }, false, row1_clip);
+    try std.testing.expectEqual(red, grid.bg[grid.index(2, 1)]);
+}
+
 test "paint: border box and box-drawing glyphs" {
     const allocator = std.testing.allocator;
     var doc = try dom.Document.init(allocator, .{ .cols = 9, .rows = 6 });
@@ -637,6 +771,75 @@ test "paint: border box and box-drawing glyphs" {
     try std.testing.expectEqual(@as(u32, '└'), grid.cluster[4 * 9]);
     try std.testing.expectEqual(@as(u32, '┘'), grid.cluster[4 * 9 + 6]);
     try std.testing.expectEqual(cell.packColor(.{ .r = 200, .g = 200, .b = 200 }), grid.fg[0]);
+}
+
+test "paint: box-drawing borders clip at the snapped boundary" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 10, .rows = 3 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 2 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 5 },
+        .height = .{ .cells = 3 },
+        .overflow = .hidden,
+    });
+    doc.setRoot(root);
+
+    const child = try doc.createElement(.div);
+    const child_style: style_mod.Style = .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 7 },
+        .height = .{ .cells = 1 },
+        .border = style_mod.EdgeDecl.all(1),
+        .border_color = .{ .r = 200, .g = 200, .b = 200 },
+    };
+    child.setStyle(child_style);
+    _ = try root.appendChild(child);
+
+    var grid = try CellGrid.init(allocator, 10, 3);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    // The top-left corner is inside the clip; the dashes are cut at x = 7,
+    // the exclusive right edge.
+    try std.testing.expectEqual(@as(u32, '┌'), grid.cluster[grid.index(2, 0)]);
+    try std.testing.expectEqual(@as(u32, '─'), grid.cluster[grid.index(3, 0)]);
+    try std.testing.expectEqual(@as(u32, '─'), grid.cluster[grid.index(6, 0)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(7, 0)]);
+    try std.testing.expectEqual(@as(u32, '│'), grid.cluster[grid.index(2, 1)]);
+    try std.testing.expectEqual(@as(u32, '└'), grid.cluster[grid.index(2, 2)]);
+    try std.testing.expectEqual(@as(u32, '─'), grid.cluster[grid.index(6, 2)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(7, 2)]);
+    // The right edge at x = 10 is outside the grid and the clip.
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(9, 1)]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(9, 2)]);
+
+    // A box whose left corner sits left of the clip starts with a dash at the
+    // clip's inclusive left edge; its corner glyph is dropped.
+    child.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = -2 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 7 },
+        .height = .{ .cells = 1 },
+        .border = style_mod.EdgeDecl.all(1),
+        .border_color = .{ .r = 200, .g = 200, .b = 200 },
+    });
+    var clipped = try CellGrid.init(allocator, 10, 3);
+    defer clipped.deinit();
+    try paintDocument(&doc, &clipped);
+    try std.testing.expectEqual(@as(u32, '─'), clipped.cluster[clipped.index(2, 0)]);
+    try std.testing.expectEqual(@as(u32, '─'), clipped.cluster[clipped.index(6, 0)]);
+    try std.testing.expectEqual(@as(u32, 0), clipped.cluster[clipped.index(7, 0)]);
+    try std.testing.expectEqual(@as(u32, 0), clipped.cluster[clipped.index(0, 1)]);
+    try std.testing.expectEqual(@as(u32, 0), clipped.cluster[clipped.index(1, 1)]);
+    try std.testing.expectEqual(@as(u32, 0), clipped.cluster[clipped.index(2, 1)]);
 }
 
 test "paint: cell borders are attributes on the box edge, not glyphs" {

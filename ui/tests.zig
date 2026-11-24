@@ -21,4 +21,5 @@ comptime {
     _ = @import("style.zig");
     _ = @import("surface.zig");
     _ = @import("text_layout.zig");
+    _ = @import("stress.zig");
 }

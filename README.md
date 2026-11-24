@@ -42,6 +42,7 @@ zig build run -- --preview <file>   # read-only terminal UI preview
 zig build test   # run the editor and ui library tests
 zig build test-watcher -Dwatcher-only=true   # run the file-watcher tests without the TUI
 zig build bench-open   # Debug open/edit benchmarks (skipped by zig build test)
+zig build bench-ui -Dbench-args="--runs 5 --markdown"   # UI library stress benchmarks
 ```
 
 ## Full workbench in the browser
@@ -158,6 +159,13 @@ required for the measurements below.
   paints). Folding/bracket-guide passes and input are not delayed. The
   extension-host pump also skips rebuilding the editor-tabs spec list when the
   tab set, active tab and dirty flags are unchanged.
+- The retained editor view bounds its box arena at 32 MB; the UI library
+  bounds the per-solve layout scratch on the incremental `layoutSubtree` path
+  and marks the tree for a full rebuild when it is crossed. Its
+  `RetainedViewPartHost.rebuildSubtree` lets `BoxTree.rebuildSubtree` refresh
+  the element style and inherited pointer, avoiding a redundant zero-delta
+  translation. Both are terminal retained-view boundary adaptations, not
+  changes to the ported view pipeline.
 - The TUI process uses a stack-trace-free `DebugAllocator` in Debug builds.
   The debug allocator's unwinding used to be 70-94% of active CPU in the
   end-to-end profile; safety checks and the leak report at exit are kept, and
@@ -168,6 +176,15 @@ required for the measurements below.
   `-Dbench-file=<path>` to benchmark another file (default
   `src/tui/app.zig`). The 2026-11-21 scroll-pipeline numbers are in
   [docs/perf/2026-11-21/README.md](docs/perf/2026-11-21/README.md).
+- `zig build bench-ui` runs the standalone `ui` library's TermDOM-style stress
+  scenarios: startup/first paint, large DOM/box derivation, retained scroll and
+  line edits, wrapped paragraphs, flex, cell borders, ANSI encoding and
+  focus/hover/hit testing. The runner reports first-iteration and median
+  timings, an allocation mode and baseline deltas; there is no JIT warmup, so no
+  iteration is discarded. The `UI stress + report` CI job runs the filtered
+  stress tests plus timing/allocation benchmarks and publishes the assembled
+  markdown report as an artifact and in the job summary. See
+  [`ui/README.md`](ui/README.md).
 - An end-to-end profile of the default Debug build and ReleaseFast, including
   historical VSCodeVim interaction latency and CPU hotspots, is in
   [docs/performance-profile-2026-11-20.md](docs/performance-profile-2026-11-20.md).

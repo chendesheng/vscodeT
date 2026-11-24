@@ -365,6 +365,72 @@ pub const CellGrid = struct {
         return @min(width, 2);
     }
 
+    /// Writes one cell by its flat index. The caller has already clipped the
+    /// index into the grid, so a run pays one `row * cols` per row instead of
+    /// one bounds-checked lookup per cell. Used by the paint fast paths.
+    pub fn putCellAt(self: *CellGrid, at: usize, cp: u21, width: usize, paint: PaintStyle) void {
+        self.cluster[at] = cp;
+        self.grapheme[at] = 0;
+        self.fg[at] = paint.fg;
+        self.bg[at] = paint.bg;
+        self.attrs[at] = (paint.attrs & Attr.style_mask) |
+            (@as(u16, @intCast(wordWidth(width))) << Attr.width_shift);
+    }
+
+    /// Writes a clipped run of printable ASCII cells starting at flat index
+    /// `start`. `keep_background` leaves the destination background plane
+    /// untouched, matching `paint.keepBackground`. The caller has clipped the
+    /// run into the grid.
+    pub fn putAsciiSpan(
+        self: *CellGrid,
+        start: usize,
+        text: []const u8,
+        paint: PaintStyle,
+        keep_background: bool,
+    ) void {
+        const fg = paint.fg;
+        const attrs = (paint.attrs & Attr.style_mask) |
+            (@as(u16, 1) << Attr.width_shift);
+        if (keep_background) {
+            for (text, start..) |byte, i| {
+                self.cluster[i] = byte;
+                self.grapheme[i] = 0;
+                self.fg[i] = fg;
+                self.attrs[i] = attrs;
+            }
+        } else {
+            const bg = paint.bg;
+            for (text, start..) |byte, i| {
+                self.cluster[i] = byte;
+                self.grapheme[i] = 0;
+                self.fg[i] = fg;
+                self.bg[i] = bg;
+                self.attrs[i] = attrs;
+            }
+        }
+    }
+
+    /// Fills `len` cells from flat index `start` with the same glyph, keeping
+    /// the same planes as `putCellAt`. Used by the border runs.
+    pub fn fillGlyphSpan(
+        self: *CellGrid,
+        start: usize,
+        len: usize,
+        cp: u21,
+        width: usize,
+        paint: PaintStyle,
+        keep_background: bool,
+    ) void {
+        if (len == 0) return;
+        const attrs = (paint.attrs & Attr.style_mask) |
+            (@as(u16, @intCast(wordWidth(width))) << Attr.width_shift);
+        @memset(self.cluster[start .. start + len], cp);
+        @memset(self.grapheme[start .. start + len], 0);
+        @memset(self.fg[start .. start + len], paint.fg);
+        if (!keep_background) @memset(self.bg[start .. start + len], paint.bg);
+        @memset(self.attrs[start .. start + len], attrs);
+    }
+
     /// Writes one code point. `width` is 0, 1 or 2 terminal cells.
     pub fn putCodepoint(
         self: *CellGrid,
@@ -450,12 +516,24 @@ pub const CellGrid = struct {
         const top = snap(y);
         const right = @min(self.cols, snap(x + w));
         const bottom = @min(self.rows, snap(y + h));
+        // `left` is intentionally not clamped (snap never yields a negative
+        // value); a rect that starts at or past the right edge has nothing to
+        // fill and must not build an out-of-bounds slice.
+        if (left >= right or left >= self.cols or top >= bottom) return;
+        const attrs = (paint.attrs & Attr.style_mask) |
+            (@as(u16, 1) << Attr.width_shift);
         var row = top;
         while (row < bottom) : (row += 1) {
-            var col = left;
-            while (col < right) : (col += 1) {
-                self.putSpace(col, row, paint);
-            }
+            const start = row * self.cols + left;
+            const end = row * self.cols + right;
+            // Per-row plane fills instead of one bounds-checked put per cell.
+            // The border plane is deliberately untouched: a fill keeps the
+            // cell border drawn under the background.
+            @memset(self.cluster[start..end], ' ');
+            @memset(self.grapheme[start..end], 0);
+            @memset(self.fg[start..end], paint.fg);
+            @memset(self.bg[start..end], paint.bg);
+            @memset(self.attrs[start..end], attrs);
         }
     }
 
@@ -734,6 +812,69 @@ test "CellGrid keeps cell borders across text and background paints" {
 
     grid.clear();
     try std.testing.expectEqual(@as(u16, 0), grid.borderIdAt(0, 0));
+}
+
+test "CellGrid fillRect resets cells but keeps the border plane" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 6, 2);
+    defer grid.deinit();
+
+    // A wide glyph and an untouched neighbour so the fill's full cell contract
+    // (glyph, grapheme id, width bits, colors) is observable.
+    grid.putCodepoint(1, 0, '中', 2, .{ .bg = packColor(.{ .r = 5, .g = 6, .b = 7 }) });
+    try grid.putGrapheme(4, 0, "e\u{301}", 1, .{});
+    grid.addBorder(2, 0, cell_border.Segment.top, .{ .width = 16 });
+    const border_id = grid.borderIdAt(2, 0);
+    try std.testing.expect(border_id != 0);
+
+    const fill: PaintStyle = .{
+        .fg = packColor(.{ .r = 10, .g = 20, .b = 30 }),
+        .bg = packColor(.{ .r = 40, .g = 50, .b = 60 }),
+        .attrs = Attr.bold | Attr.underline,
+    };
+    grid.fillRect(0, 0, 3, 1, fill);
+
+    for (0..3) |col| {
+        const i = grid.index(col, 0);
+        try std.testing.expectEqual(@as(u32, ' '), grid.cluster[i]);
+        try std.testing.expectEqual(@as(u32, 0), grid.grapheme[i]);
+        try std.testing.expectEqual(@as(usize, 1), grid.widthAt(col, 0));
+        try std.testing.expectEqual(fill.fg, grid.fg[i]);
+        try std.testing.expectEqual(fill.bg, grid.bg[i]);
+        try std.testing.expectEqual(Attr.bold | Attr.underline, grid.attrs[i] & Attr.style_mask);
+    }
+    // The border under the fill and cells past `right` are untouched.
+    try std.testing.expectEqual(border_id, grid.borderIdAt(2, 0));
+    try std.testing.expectEqual(@as(u32, 'e'), grid.cluster[grid.index(4, 0)]);
+    try std.testing.expectEqualStrings("e\u{301}", grid.graphemeAt(4, 0));
+    // The second row was outside the fill.
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(0, 1)]);
+}
+
+test "CellGrid fillRect clips negative x, out-of-range x and preserves snap rounding" {
+    const allocator = std.testing.allocator;
+    var grid = try CellGrid.init(allocator, 6, 1);
+    defer grid.deinit();
+
+    // Negative origin: snap floors it to 0 and the right edge rounds the sum.
+    grid.fillRect(-4, 0, 6.4, 1, .{});
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[1]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[2]);
+
+    grid.clear();
+    // `left` is not clamped: a rect entirely past the grid must be a no-op
+    // instead of an out-of-bounds slice.
+    grid.fillRect(10, 0, 2, 1, .{});
+    for (0..6) |col| try std.testing.expectEqual(@as(u32, 0), grid.cluster[col]);
+
+    // x = 1.4 snaps to 1, x + w = 3.8 snaps to 4, matching the per-cell loop.
+    grid.fillRect(1.4, 0, 2.4, 1, .{});
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[0]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[1]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[2]);
+    try std.testing.expectEqual(@as(u32, ' '), grid.cluster[3]);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[4]);
 }
 
 test "CellGrid blit remaps border sets into the destination table" {

@@ -22,6 +22,39 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run the ui library tests");
     test_step.dependOn(&run_tests.step);
 
+    // Filtered stress-only run for CI reports. The full suite also includes
+    // these cases; this step just gives the report a small, named workload.
+    const stress_tests = b.addTest(.{
+        .name = "ui_stress_tests",
+        .root_module = tests.root_module,
+        .filters = &.{"stress:"},
+    });
+    const run_stress_tests = b.addRunArtifact(stress_tests);
+    const stress_step = b.step("stress", "Run the ui library stress tests");
+    stress_step.dependOn(&run_stress_tests.step);
+
+    const bench_exe = b.addExecutable(.{
+        .name = "ui-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/run.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    bench_exe.root_module.addImport("ui", ui);
+    const run_bench = b.addRunArtifact(bench_exe);
+    const bench_args = b.option(
+        []const u8,
+        "bench-args",
+        "Extra arguments for ui-bench (for example -Dbench-args=\"--runs 3 --markdown\")",
+    ) orelse "";
+    var bench_args_it = std.mem.tokenizeScalar(u8, bench_args, ' ');
+    while (bench_args_it.next()) |arg| run_bench.addArg(arg);
+    const bench_step = b.step("bench", "Run the UI stress benchmarks");
+    bench_step.dependOn(&run_bench.step);
+    // Compile the benchmark as part of `test` so it cannot rot; do not run it.
+    test_step.dependOn(&bench_exe.step);
+
     const examples = [_]struct {
         step: []const u8,
         path: []const u8,

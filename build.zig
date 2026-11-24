@@ -865,6 +865,28 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const bench_test_step = b.step("bench-open", "Run the Debug open/edit benchmarks");
     bench_test_step.dependOn(&run_bench_tests.step);
 
+    const ui_bench_exe = b.addExecutable(.{
+        .name = "ui_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("ui/bench/run.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    ui_bench_exe.root_module.addImport("ui", ui);
+    const run_ui_bench = b.addRunArtifact(ui_bench_exe);
+    const ui_bench_args = b.option(
+        []const u8,
+        "bench-args",
+        "Extra arguments for ui-bench (for example -Dbench-args=\"--runs 3 --markdown\")",
+    ) orelse "";
+    var ui_bench_args_it = std.mem.tokenizeScalar(u8, ui_bench_args, ' ');
+    while (ui_bench_args_it.next()) |arg| run_ui_bench.addArg(arg);
+    const ui_bench_step = b.step("bench-ui", "Run the UI library stress benchmarks");
+    ui_bench_step.dependOn(&run_ui_bench.step);
+    // Compile the benchmark as part of `test` so it cannot rot; do not run it.
+    test_step.dependOn(&ui_bench_exe.step);
+
     const ui_tests = b.addTest(.{
         .name = "ui_tests",
         .root_module = b.createModule(.{

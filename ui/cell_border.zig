@@ -222,6 +222,61 @@ pub const Set = struct {
     }
 };
 
+/// Feeds one scalar into the intern cache's FNV-1a hash.
+fn mix(hash: u32, value: u32) u32 {
+    return (hash ^ value) *% 0x01000193;
+}
+
+fn mixColor(hash: u32, color: ColorValue) u32 {
+    return switch (color) {
+        .default_fg => mix(hash, 0),
+        .rgb => |rgb| mix(mix(mix(mix(hash, 1), rgb.r), rgb.g), rgb.b),
+        .palette => |index| mix(mix(hash, 2), index),
+    };
+}
+
+fn hashRoundStyle(hash_in: u32, round_style: RoundStyle) u32 {
+    var hash = hash_in;
+    if (round_style.radius) |radius| {
+        hash = mix(mix(hash, 1), radius);
+    } else {
+        hash = mix(hash, 0);
+    }
+    if (round_style.outside) |outside| {
+        switch (outside) {
+            .terminal_background => hash = mix(hash, 1),
+            .rgb => |rgb| hash = mix(mix(mix(mix(hash, 2), rgb.r), rgb.g), rgb.b),
+            .palette => |index| hash = mix(mix(hash, 3), index),
+        }
+    } else {
+        hash = mix(hash, 0);
+    }
+    return hash;
+}
+
+/// Hashes only the fields `Set.eql` compares: `count`, `joints`, the active
+/// `groups[0..count]`, and `round_style` only when the set has joints. The
+/// undefined tail of `groups` is never read, so a set with garbage there still
+/// matches its canonical copy.
+fn hashSet(set: Set) u32 {
+    var hash: u32 = 0x811c9dc5;
+    hash = mix(hash, set.count);
+    hash = mix(hash, set.joints);
+    for (set.groups[0..set.count]) |group| {
+        hash = mix(hash, group.mask);
+        hash = mix(hash, group.stroke.width);
+        hash = mixColor(hash, group.stroke.color);
+        hash = mix(hash, @backingInt(group.stroke.placement));
+        hash = mix(hash, @backingInt(group.stroke.layer));
+        hash = mix(hash, @backingInt(group.stroke.style));
+        hash = mix(hash, group.stroke.priority);
+    }
+    // `Set.eql` ignores the round style for sets without joints; hashing it
+    // there would split equal sets into different ids.
+    if (set.joints != 0) hash = hashRoundStyle(hash, set.round_style);
+    return hash;
+}
+
 /// The provider-wide intern table for border sets. Ids are stable for the life
 /// of the table (`0` is the empty set), so a double-buffered frame can compare
 /// ids. The capacity is fixed: painting is infallible, and a full table simply
@@ -229,8 +284,14 @@ pub const Set = struct {
 pub const Table = struct {
     entries: [max_sets]Set = undefined,
     count: u16 = 0,
+    /// Open-addressed probe cache parallel to `entries`: a slot stores the set
+    /// hash and id, and `ids[slot] == 0` marks it free. Twice `max_sets` wide
+    /// so a half-full table always leaves a free slot for an append.
+    hashes: [cache_size]u32 = @splat(0),
+    ids: [cache_size]u16 = @splat(0),
 
     pub const max_sets = 512;
+    const cache_size = max_sets * 2;
 
     pub fn get(self: *const Table, id: u16) *const Set {
         std.debug.assert(id != 0 and id <= self.count);
@@ -239,12 +300,22 @@ pub const Table = struct {
 
     pub fn intern(self: *Table, set: Set) u16 {
         if (set.isEmpty()) return 0;
-        for (self.entries[0..self.count], 0..) |entry, index| {
-            if (entry.eql(set)) return @intCast(index + 1);
+        const hash = hashSet(set);
+        var slot: usize = @as(usize, hash & (cache_size - 1));
+        var probes: usize = 0;
+        while (probes < cache_size) : (probes += 1) {
+            const id = self.ids[slot];
+            if (id == 0) break;
+            // A matching hash is only a filter; `Set.eql` confirms the entry
+            // and keeps hash collisions from aliasing distinct sets.
+            if (self.hashes[slot] == hash and self.entries[id - 1].eql(set)) return id;
+            slot = (slot + 1) & (cache_size - 1);
         }
-        if (self.count >= max_sets) return 0;
+        if (probes >= cache_size or self.count >= max_sets) return 0;
         self.entries[self.count] = set;
         self.count += 1;
+        self.ids[slot] = self.count;
+        self.hashes[slot] = hash;
         return self.count;
     }
 
@@ -522,6 +593,90 @@ test "cell border: grouping is order independent and merges equal strokes" {
     try std.testing.expectEqual(@as(u3, 2), left.count);
     try std.testing.expectEqual(Segment.right, left.groups[0].mask);
     try std.testing.expectEqual(Segment.top | Segment.left, left.groups[1].mask);
+}
+
+test "cell border: intern probes past hash collisions" {
+    var table = Table{};
+    const stroke = Stroke{ .width = 32, .color = .{ .palette = 7 } };
+
+    // 4095 distinct masks into 1024 cache slots must collide in the low bits.
+    var seen: [Table.cache_size]u12 = @splat(0);
+    var used: [Table.cache_size]bool = @splat(false);
+    var collision_a: u12 = 0;
+    var collision_b: u12 = 0;
+    var mask: usize = 1;
+    while (mask <= 4095) : (mask += 1) {
+        const bits: u12 = @intCast(mask);
+        const set = Set.empty().with(bits, stroke);
+        const slot: usize = @intCast(hashSet(set) & (Table.cache_size - 1));
+        if (used[slot]) {
+            collision_a = seen[slot];
+            collision_b = bits;
+            break;
+        }
+        used[slot] = true;
+        seen[slot] = bits;
+    }
+    try std.testing.expect(collision_a != 0);
+
+    const first = Set.empty().with(collision_a, stroke);
+    const second = Set.empty().with(collision_b, stroke);
+    try std.testing.expect(!first.eql(second));
+    const first_id = table.intern(first);
+    const second_id = table.intern(second);
+    try std.testing.expectEqual(@as(u16, 1), first_id);
+    try std.testing.expectEqual(@as(u16, 2), second_id);
+    // The full `Set.eql` confirmation finds each side of the collision again.
+    try std.testing.expectEqual(first_id, table.intern(first));
+    try std.testing.expectEqual(second_id, table.intern(second));
+    try std.testing.expect(table.get(first_id).eql(first));
+    try std.testing.expect(table.get(second_id).eql(second));
+}
+
+test "cell border: intern handles joints-only sets and ignores round style without joints" {
+    var table = Table{};
+    const joint = Joint;
+
+    var a = Set.empty();
+    a.joints = joint.top_left;
+    var b = Set.empty();
+    b.joints = joint.top_right;
+    try std.testing.expect(a.count == 0 and b.count == 0);
+
+    const id_a = table.intern(a);
+    const id_b = table.intern(b);
+    try std.testing.expectEqual(@as(u16, 1), id_a);
+    try std.testing.expectEqual(@as(u16, 2), id_b);
+
+    // With joints present the round style is part of the equality, so it must
+    // be part of the hash and each variant interns separately.
+    var rounded = a;
+    rounded.round_style = .{ .radius = 128, .outside = .terminal_background };
+    const id_rounded = table.intern(rounded);
+    try std.testing.expectEqual(@as(u16, 3), id_rounded);
+    try std.testing.expectEqual(id_a, table.intern(a));
+    try std.testing.expectEqual(id_rounded, table.intern(rounded));
+
+    // Without joints `Set.eql` ignores the round style; the hash has to ignore
+    // it too or two equal sets would get different ids.
+    const stroke = Stroke{ .width = 16, .color = .default_fg };
+    const plain = Set.empty().with(Segment.top, stroke);
+    var styled = plain;
+    styled.round_style = .{ .radius = 64 };
+    try std.testing.expect(plain.eql(styled));
+    const id_plain = table.intern(plain);
+    try std.testing.expectEqual(id_plain, table.intern(styled));
+
+    try std.testing.expectEqual(@as(u16, 0), table.intern(Set.empty()));
+
+    // A full table drops new sets instead of growing or aliasing.
+    var full = Table{};
+    var index: usize = 1;
+    while (index <= Table.max_sets) : (index += 1) {
+        const set = Set.empty().with(@intCast(index), stroke);
+        try std.testing.expectEqual(@as(u16, @intCast(index)), full.intern(set));
+    }
+    try std.testing.expectEqual(@as(u16, 0), full.intern(Set.empty().with(Segment.all, stroke)));
 }
 
 test "cell border: a newer stroke replaces segments" {

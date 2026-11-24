@@ -2053,6 +2053,31 @@ map, is tracked in the [TUI porting inventory](porting-inventory.md).
 - The `ui/` name, module name and exact style field set are provisional;
   renaming before the first commit is cheap.
 
+## 12.1 Performance measurement
+
+The standalone library has its own stress/benchmark harness, shaped after
+TermDOM's `bench/` suite but native: scenarios report first-iteration and
+p50/p90/p99 samples, an `--allocated` bytes-per-step mode, and optional
+baseline comparison. No iteration is called a warmup because Zig has no JIT;
+one-time page-fault and allocator-growth costs are reported as part of the
+first sample.
+
+```sh
+cd ui
+zig build bench -Dbench-args="--runs 5 --markdown"
+zig build bench -Doptimize=ReleaseFast -Dbench-args="--allocated --runs 3 --markdown"
+zig build test
+```
+
+The retained editor still bounds its box arena (32 MB) in `syncBoxes`. The
+per-solve layout scratch is bounded by the UI library instead: after an
+incremental `BoxTree.layoutSubtree`, crossing the 32 MB scratch budget marks
+the tree for a full rebuild, and the next `ensureLayout` resets both arenas.
+`RetainedViewPartHost.rebuildSubtree` relies on `BoxTree.rebuildSubtree` to
+refresh the element style and inherited pointer, so it does not issue a
+zero-delta translation afterwards. These are terminal retained-view boundary
+rules, not changes to the ported view pipeline.
+
 ## 13. Open questions
 
 - Final library name/location (`ui/` is a placeholder).

@@ -49,10 +49,12 @@ pub fn layoutDocument(doc: *dom.Document) !void {
 
 pub fn layoutTree(tree: *BoxTree, doc: *dom.Document) LayoutError!void {
     _ = tree.scratch.reset(.retain_capacity);
+    tree.syncIntrinsicSettings(doc);
     var ctx = LayoutContext{
         .doc = doc,
         .allocator = tree.scratch.allocator(),
         .tables = try linebreak.LineBreakTables.init(tree.scratch.allocator()),
+        .intrinsic_epoch = tree.intrinsic_epoch,
     };
     defer ctx.tables.deinit();
 
@@ -75,10 +77,12 @@ pub fn layoutTree(tree: *BoxTree, doc: *dom.Document) LayoutError!void {
 /// gutter row or part) without resetting the layout scratch, so fragments for
 /// clean boxes stay valid. Used by the retained editor view.
 pub fn layoutSubtree(tree: *BoxTree, doc: *dom.Document, target: *LayoutBox) LayoutError!void {
+    tree.syncIntrinsicSettings(doc);
     var ctx = LayoutContext{
         .doc = doc,
         .allocator = tree.scratch.allocator(),
         .tables = linebreak.LineBreakTables.value(),
+        .intrinsic_epoch = tree.intrinsic_epoch,
     };
     const containing = containingBlockRect(target) orelse Rect{
         .x = 0,
@@ -89,7 +93,10 @@ pub fn layoutSubtree(tree: *BoxTree, doc: *dom.Document, target: *LayoutBox) Lay
     try layoutAbsolute(&ctx, target, containing);
     try layoutOutOfFlow(&ctx, target, target.padding_rect);
     copyRects(target);
-    clearSubtreeLayout(target);
+    // `layoutSubtree` intentionally keeps scratch alive for clean boxes, so
+    // growth is bounded here instead: crossing the budget schedules the full
+    // rebuild that resets both arenas on the next ensureLayout.
+    tree.checkLayoutScratchBudget();
 }
 
 fn containingBlockRect(target: *const LayoutBox) ?Rect {
@@ -100,11 +107,6 @@ fn containingBlockRect(target: *const LayoutBox) ?Rect {
         current = parent.parent;
     }
     return null;
-}
-
-fn clearSubtreeLayout(target: *LayoutBox) void {
-    target.needs_layout = false;
-    for (target.children.items) |child| clearSubtreeLayout(child);
 }
 
 const Sizing = enum { definite, shrink_to_fit, indefinite };
@@ -135,6 +137,9 @@ const LayoutContext = struct {
     doc: *dom.Document,
     allocator: std.mem.Allocator,
     tables: linebreak.LineBreakTables,
+    /// Must match `BoxTree.intrinsic_epoch`; a box cache entry from another
+    /// epoch is recomputed on demand.
+    intrinsic_epoch: u32,
 };
 
 const ResolvedMargins = struct {
@@ -628,7 +633,19 @@ fn unionRect(a: style_mod.Rect, b: style_mod.Rect) style_mod.Rect {
 /// Max-content width of the box's content (excluding padding, border and
 /// margins). Percentages are treated as auto during intrinsic measurement.
 /// Out-of-flow children do not contribute.
-fn contentMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
+///
+/// The value is independent of the containing block and is cached per box for
+/// the current intrinsic epoch. Any style/text/structure mutation clears the
+/// changed box and its ancestors; measurement-setting changes bump the epoch.
+fn contentMaxWidth(ctx: *const LayoutContext, current: *LayoutBox) f64 {
+    if (current.max_content_epoch == ctx.intrinsic_epoch) return current.max_content_width;
+    const value = computeContentMaxWidth(ctx, current);
+    current.max_content_width = value;
+    current.max_content_epoch = ctx.intrinsic_epoch;
+    return value;
+}
+
+fn computeContentMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
     const content = switch (current.kind) {
         .initial_containing_block => return 0,
         .text => return text_layout.maxContentWidth(
@@ -690,15 +707,10 @@ fn contributesToFlow(current: *const LayoutBox) bool {
 }
 
 /// Border-box plus margin width, used for intrinsic flex and block sizing.
-fn outerMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
+fn outerMaxWidth(ctx: *const LayoutContext, current: *LayoutBox) f64 {
     switch (current.kind) {
         .initial_containing_block => return 0,
-        .text => return text_layout.maxContentWidth(
-            ctx.doc,
-            current.text orelse "",
-            current.text_style,
-            ctx.doc.tab_size,
-        ),
+        .text => return contentMaxWidth(ctx, current),
         .anonymous_inline => return contentMaxWidth(ctx, current),
         .element, .anonymous_flex_item => {
             const padding = current.style.padding.nonNegative();
@@ -712,7 +724,7 @@ fn outerMaxWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
 
 /// Max-content outer width of a flex item, honouring a cell-valued
 /// `flex_basis` the same way the flex pass does.
-fn flexItemOuterWidth(ctx: *const LayoutContext, current: *const LayoutBox) f64 {
+fn flexItemOuterWidth(ctx: *const LayoutContext, current: *LayoutBox) f64 {
     const padding = current.style.padding.nonNegative();
     const border = style_mod.borderWidths(current.style);
     const margin = resolveMargins(current.style.margin);
@@ -1599,6 +1611,7 @@ fn layoutOutOfFlow(ctx: *LayoutContext, parent: *LayoutBox, containing: Rect) La
 }
 
 fn copyRects(current: *LayoutBox) void {
+    current.needs_layout = false;
     if (current.owner) |owner| {
         switch (owner.kind) {
             .element => |*element| element.rect = current.rect,
@@ -3674,4 +3687,80 @@ test "layout: text-align inherits into a nested block" {
 
     // 10-cell line, 3-cell text, centred by the inherited text-align.
     try std.testing.expectEqual(@as(f64, 3.5), text.asText().rect.x);
+}
+
+test "layout: intrinsic cache invalidates after a retained subtree rebuild" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .display = .flex,
+        .align_items = .flex_start,
+    });
+    doc.setRoot(root);
+
+    const first = try testBox(&doc, root, .{});
+    _ = try testText(&doc, first, "abc", .{});
+    const second = try testBox(&doc, root, .{});
+    const second_text = try testText(&doc, second, "de", .{});
+    _ = try testText(&doc, second, "fg", .{});
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+    try std.testing.expectEqual(@as(f64, 4), tree.find(second).?.rect.w);
+
+    // A retained row rebuild keeps the DOM nodes but replaces the boxes'
+    // children and style. The ancestor flex container's cached max-content
+    // width must be dropped, then re-solved through layoutSubtree.
+    try second_text.setTextContent("defghi");
+    _ = try tree.rebuildSubtree(root);
+    const root_box = tree.find(root).?;
+    try layoutSubtree(&tree, &doc, root_box);
+    try std.testing.expectEqual(@as(f64, 8), tree.find(second).?.rect.w);
+}
+
+test "layout: layoutSubtree marks a full rebuild when scratch crosses its budget" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 20, .rows = 5 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 5 },
+    });
+    doc.setRoot(root);
+    const line = try doc.createElement(.div);
+    line.setStyle(.{
+        .position = .absolute,
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 20 },
+        .height = .{ .cells = 1 },
+        .white_space = .pre,
+    });
+    _ = try root.appendChild(line);
+    _ = try line.appendChild(try doc.createText("hello"));
+
+    var tree = try BoxTree.init(allocator);
+    defer tree.deinit();
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+    try std.testing.expect(!tree.needs_rebuild);
+
+    tree.setLayoutScratchLimit(1);
+    try layoutSubtree(&tree, &doc, tree.find(line).?);
+    try std.testing.expect(tree.needs_rebuild);
+    try std.testing.expect(tree.needs_layout);
+
+    // The full rebuild + solve clears the flag and replaces scratch.
+    try tree.rebuild(&doc);
+    try layoutTree(&tree, &doc);
+    try std.testing.expect(!tree.needs_rebuild);
 }

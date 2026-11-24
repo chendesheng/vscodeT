@@ -18,6 +18,12 @@
 //! view also owns the terminal mouse adaptation: click/drag caret placement,
 //! drag selection, click synthesis and the scrollbar-owned wheel path.
 //!
+//! Retained bookkeeping is terminal-specific: `syncBoxes` bounds the box
+//! arena, while the UI library bounds its per-solve layout scratch in
+//! `BoxTree.layoutSubtree`. `BoxTree.rebuildSubtree` refreshes an element's
+//! style and inherited pointer itself, so the retained adapter does not issue
+//! a zero-delta translation afterwards.
+//!
 //! Find, bracket, word and hover ranges are materialized as `TextModel`
 //! decorations by `ModelDecorationSink` or by the view's bracket pass.
 //! `TerminalViewHost` resolves them through the ported `ViewModelDecorations`,
@@ -2183,9 +2189,9 @@ pub const View = struct {
                     self.needs_full_box_rebuild = true;
                     return;
                 };
-                // The element background/geometry may have changed with the
-                // children; refresh the box style before solving.
-                _ = tree.translateSubtree(node, 0, 0);
+                // `rebuildSubtree` refreshes the element style and inherited
+                // pointer itself; a zero-delta translate would repeat the
+                // class cascade and walk the subtree for nothing.
                 try @import("ui").layout.layoutSubtree(tree, doc, box);
                 self.perf.line_rebuilt += 1;
             } else {
