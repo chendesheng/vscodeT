@@ -222,6 +222,7 @@ const MarkerService = @import("../../platform/markers/common/markerService.zig")
 const MarkerChangeEvent = @import("../../platform/markers/common/markerService.zig").MarkerChangeEvent;
 const MarkerDecorationsService = @import("../../editor/common/services/markerDecorationsService.zig").MarkerDecorationsService;
 const markers_mod = @import("../../platform/markers/common/markers.zig");
+const SnippetCompletionProvider = @import("../contrib/snippets/browser/snippetCompletionProvider.zig").SnippetCompletionProvider;
 const WordBasedCompletionProvider = @import("../../editor/contrib/suggest/browser/wordBasedSuggestions.zig").WordBasedCompletionProvider;
 const Position = @import("../../editor/common/core/position.zig").Position;
 const Selection = @import("../../editor/common/core/selection.zig").Selection;
@@ -753,6 +754,8 @@ pub const Workbench = struct {
     language_features: ?*LanguageFeaturesService = null,
     marker_service: ?*MarkerService = null,
     marker_decorations: ?*MarkerDecorationsService = null,
+    snippet_provider: SnippetCompletionProvider,
+    snippet_registration: ?IDisposable = null,
     word_completion_provider: ?*WordBasedCompletionProvider = null,
     word_completion_registration: ?IDisposable = null,
     outline_registration: ?IDisposable = null,
@@ -912,6 +915,8 @@ pub const Workbench = struct {
         self.language_features = null;
         self.marker_service = null;
         self.marker_decorations = null;
+        self.snippet_provider = SnippetCompletionProvider.init(allocator, io);
+        self.snippet_registration = null;
         self.word_completion_provider = null;
         self.word_completion_registration = null;
         self.outline_registration = null;
@@ -1075,6 +1080,8 @@ pub const Workbench = struct {
         self.language_features = null;
         self.marker_service = null;
         self.marker_decorations = null;
+        self.snippet_provider = SnippetCompletionProvider.init(allocator, io);
+        self.snippet_registration = null;
         self.word_completion_provider = null;
         self.word_completion_registration = null;
         self.outline_registration = null;
@@ -1271,6 +1278,8 @@ pub const Workbench = struct {
         self.language_features = null;
         self.marker_service = null;
         self.marker_decorations = null;
+        self.snippet_provider = SnippetCompletionProvider.init(allocator, io);
+        self.snippet_registration = null;
         self.word_completion_provider = null;
         self.word_completion_registration = null;
         self.outline_registration = null;
@@ -2242,6 +2251,8 @@ pub const Workbench = struct {
             self.textmate_background = null;
         }
         self.images.deinit();
+        if (self.snippet_registration) |registration| registration.dispose();
+        self.snippet_provider.deinit();
         if (self.word_completion_registration) |registration| registration.dispose();
         if (self.word_completion_provider) |provider| self.allocator.destroy(provider);
         if (self.marker_decorations) |service| service.deinit();
@@ -4348,6 +4359,7 @@ pub const Workbench = struct {
         self.marker_service = marker_service;
         self.marker_decorations = marker_decorations;
         self.word_completion_provider = word_provider;
+        self.snippet_registration = try features.completion_provider.register(.{ .language = "*" }, self.snippet_provider.interface());
         self.word_completion_registration = try features.completion_provider.register(.{ .language = "*" }, word_provider.interface());
         if (self.markers_status) |status| status.attach(marker_service);
         if (self.problems_view) |view| view.setService(marker_service);
@@ -4383,6 +4395,7 @@ pub const Workbench = struct {
     /// Applies declarative language/grammar contributions to the open tabs and
     /// to tabs opened later.
     pub fn setDeclarativeExtensions(self: *Workbench, registry: *const extensions_registry.Registry) void {
+        self.snippet_provider.setCatalog(registry);
         self.declarative = registry;
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| tab.editor.applyDeclarativeExtensions(registry) catch {};
