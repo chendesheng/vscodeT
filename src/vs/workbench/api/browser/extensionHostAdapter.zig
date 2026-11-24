@@ -806,6 +806,10 @@ pub const Extensions = struct {
             if (session.changed) self.needs_render = true;
             session.changed = false;
         }
+        if (self.accounts.changed) {
+            self.accounts.changed = false;
+            self.needs_render = true;
+        }
         const result = self.needs_render;
         self.needs_render = false;
         return result;
@@ -2453,4 +2457,77 @@ test "Extensions: accept incoming merge conflict in the workbench" {
         time_compat.sleepMillis(10);
     }
     return error.MissingMergeEdit;
+}
+
+test "Extensions: account sessions need a grant for the requesting extension and scopes" {
+    if (!build_options.e2e) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = time_compat.io;
+    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+    const workbench = try Workbench.init(allocator, io, &.{}, 100, 30);
+    defer workbench.deinit();
+    const ext = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/test-fixtures/authentication", .is_under_development = true }}, ".cache-ext/auth-fixture", "host/dist");
+    defer ext.deinit();
+    var tmp = std.heap.ArenaAllocator.init(allocator);
+    defer tmp.deinit();
+    const a = tmp.allocator();
+    try ext.accounts.activate(a, "fixture");
+    const Result = struct {
+        success: ?bool = null,
+        fn receive(ctx: *anyopaque, reply: rpc.Reply) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.success = reply == .json and reply.json == .bool and reply.json.bool;
+        }
+        fn request(self: *@This(), host: *Extensions, interactive: bool, scope: []const u8) !void {
+            self.success = null;
+            _ = try host.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &.{
+                .{ .json = .{ .string = "fixture.account" } }, .{ .json = .{ .bool = interactive } }, .{ .json = .{ .string = scope } },
+            }, null, .{ .context = self, .callback = receive });
+        }
+        fn wait(self: *@This(), host: *Extensions, picker: bool) !void {
+            const deadline = time_compat.milliTimestamp() + 5000;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = host.pump();
+                if (if (picker) host.workbench.quick_access.isOpen() else self.success != null) return;
+                time_compat.sleepMillis(10);
+            }
+            return error.Timeout;
+        }
+    };
+    var result: Result = .{};
+    try result.request(ext, false, "read");
+    try result.wait(ext, false);
+    try std.testing.expect(!result.success.?);
+    try result.request(ext, true, "read");
+    try result.wait(ext, true);
+    const picker = workbench.quick_access.inputService().pickerRef();
+    try std.testing.expectEqualStrings("Cancel", picker.activeItem().?.label);
+    picker.accept();
+    try result.wait(ext, false);
+    try std.testing.expect(!result.success.?);
+    try result.request(ext, true, "read");
+    try result.wait(ext, true);
+    picker.setActiveIndex(1);
+    picker.accept();
+    try result.wait(ext, false);
+    try std.testing.expect(result.success.?);
+    try result.request(ext, false, "read");
+    try result.wait(ext, false);
+    try std.testing.expect(result.success.?);
+    try result.request(ext, false, "write");
+    try result.wait(ext, false);
+    try std.testing.expect(!result.success.?);
+    const accounts = try ext.accounts.accounts(a, "fixture");
+    try std.testing.expectEqual(@as(usize, 1), accounts.array.items.len);
+    try std.testing.expect(accounts.array.items[0].object.get("accessToken") == null);
+    try workbench.commands.execute("workbench.action.accounts.manage");
+    picker.accept();
+    try std.testing.expectEqualStrings("Fixture user", picker.activeItem().?.label);
+    picker.accept();
+    picker.setActiveIndex(1);
+    picker.accept();
+    try std.testing.expectEqual(@as(usize, 0), (try ext.accounts.accounts(a, "fixture")).array.items.len);
+    try result.request(ext, false, "read");
+    try result.wait(ext, false);
+    try std.testing.expect(!result.success.?);
 }

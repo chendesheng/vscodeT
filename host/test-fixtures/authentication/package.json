@@ -1,0 +1,9 @@
+{
+  "name": "accounts-fixture",
+  "publisher": "vscode-textbuffer",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.100.0" },
+  "main": "./extension.js",
+  "activationEvents": ["*"],
+  "contributes": { "authentication": [{ "id": "fixture", "label": "Fixture accounts" }] }
+}
