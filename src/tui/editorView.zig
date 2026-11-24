@@ -273,6 +273,7 @@ const DecorationOwner = struct {
     /// Vim/Helix incremental-search highlights. Separate from the Search view
     /// result range above, so the two never clear each other.
     const incremental_search: usize = 7;
+    const search_editor: usize = 8;
 };
 
 const CellFlag = struct {
@@ -892,6 +893,11 @@ pub const View = struct {
     /// Sets the range highlighted by the Search view.
     pub fn setSearchHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
         try self.replaceModelDecorations(DecorationOwner.search, decorations);
+    }
+
+    /// Sets the match highlights on a serialized Search Editor snapshot.
+    pub fn setSearchEditorHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
+        try self.replaceModelDecorations(DecorationOwner.search_editor, decorations);
     }
 
     /// Sets (or clears) the Problems marker-selection range. This is the

@@ -51,6 +51,7 @@ const StickyScrollController = @import("../../../../editor/contrib/stickyScroll/
 const ImagePreviewPane = @import("../../../../../tui/imagePreview.zig").ImagePreviewPane;
 const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 
+const SearchEditorInput = @import("../../../contrib/searchEditor/browser/searchEditorInput.zig").SearchEditorInput;
 const TerminalEditorInput = @import("../../../contrib/terminal/browser/terminalEditorInput.zig").TerminalEditorInput;
 const TerminalInstance = @import("../../../contrib/terminal/browser/terminalInstance.zig").TerminalInstance;
 const terminal_editor = @import("../../../contrib/terminal/browser/terminalEditor.zig");
@@ -74,6 +75,7 @@ pub const Tab = struct {
     image_preview: ?*ImagePreviewPane = null,
     image_input: ?*ImagePreviewEditorInput = null,
     terminal_input: ?*TerminalEditorInput = null,
+    search_editor_input: ?*SearchEditorInput = null,
     image_runtime: ?*ui.image.Runtime = null,
     /// Io handed over by the workbench for async preview/image loads.
     async_io: ?Io = null,
@@ -137,6 +139,21 @@ pub const Tab = struct {
             .view = view,
             .file_input = input,
             .input = &input.base,
+        };
+        return self;
+    }
+
+    pub fn initSearchEditor(allocator: Allocator, input: *SearchEditorInput) !*Tab {
+        const self = try allocator.create(Tab);
+        errdefer allocator.destroy(self);
+        const view = try View.init(allocator, input.editor);
+        self.* = .{
+            .allocator = allocator,
+            .editor = input.editor,
+            .view = view,
+            .file_input = null,
+            .input = &input.base,
+            .search_editor_input = input,
         };
         return self;
     }
@@ -756,6 +773,8 @@ pub const Tab = struct {
             self.allocator.destroy(self.editor);
             input.deinit();
         } else if (self.file_input) |input| {
+            input.deinit();
+        } else if (self.search_editor_input) |input| {
             input.deinit();
         }
         self.allocator.destroy(self);
