@@ -266,7 +266,10 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
   motion drives drags, and idle motion updates the library's hover target.
   `Document.hoverTarget` and `Node.isHovered` expose the CSS-like inclusive
   ancestor chain, and `Element.hover_style` (a paint-only `HoverStyle`) is
-  applied by the painter. `Surface.updateHoverAt` is the coordinate entry point
+  applied by the painter. The declaration can also set `visibility`, which the
+  painter overlays on the hovered element and its descendants so a
+  `.parent:hover .child { opacity: 1 }` rule has a terminal equivalent (the
+  folding gutter's expanded icons use it). `Surface.updateHoverAt` is the coordinate entry point
   for hosts that hit-test themselves and keeps its pointer cell across a tree
   rebuild. Declarations cascade through `ComputedStyle`, but there is no
   selector engine, no `mouseenter`/`mouseleave` synthesis and no transition;

@@ -352,7 +352,10 @@ _ = try surface.updateHoverAt(mouse.x, mouse.y);
 `Document.hoverTarget()`/`setHoverTarget()`/`clearHover()` expose the underlying
 state. `Surface` remembers the last `updateHoverAt` cell, so a document rebuilt
 under a stationary pointer keeps its highlight. `HoverStyle` has no layout
-properties: hover never dirties or re-runs layout. There are no `mouseenter`/
+properties: hover never dirties or re-runs layout. `HoverStyle.visibility`
+overlays paint visibility on the hovered element and its descendants, so a
+hovered container can reveal a child that is `visibility: hidden` (the terminal
+substitute for a `:hover` descendant rule; there is still no selector engine). There are no `mouseenter`/
 `mouseleave` events or transitions; a retained surface repaints when
 `updateHoverAt` reports a change (the one-row header simply repaints each frame).
 

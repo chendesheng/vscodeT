@@ -8,7 +8,11 @@
 
 const std = @import("std");
 
-pub const ShowFoldingControls = enum { always, mouseover, never };
+const editor_options = @import("../../../common/config/editorOptions.zig");
+
+/// The editor option type, so the provider follows `showFoldingControls`
+/// without an enum conversion at the configuration boundary.
+pub const ShowFoldingControls = editor_options.ShowFoldingControls;
 
 /// Terminal paint intent resolved from the upstream decoration classes.
 pub const FoldIcon = enum { none, collapsed, expanded };
@@ -25,6 +29,19 @@ pub const FoldingDecorationOption = struct {
     fold_icon: FoldIcon = .none,
     folded_background: bool = false,
     ellipsis: bool = false,
+
+    /// Whether `first_line_decoration_class_name` carries the upstream
+    /// `alwaysShowFoldIcons` class (the `.always` folding-control mode). The
+    /// margin always paints those icons; the `mouseover` options only show
+    /// them while the gutter is hovered.
+    pub fn alwaysShowFoldIcons(self: *const FoldingDecorationOption) bool {
+        const class_name = self.first_line_decoration_class_name orelse return false;
+        var tokens = std.mem.tokenizeScalar(u8, class_name, ' ');
+        while (tokens.next()) |token| {
+            if (std.mem.eql(u8, token, "alwaysShowFoldIcons")) return true;
+        }
+        return false;
+    }
 };
 
 const collapsed_visual = FoldingDecorationOption{
@@ -155,6 +172,7 @@ test "folding decoration options follow controls, highlights and manual state" {
     try testing.expect(provider.getDecorationOption(true, false, false).folded_background);
     try testing.expectEqual(FoldIcon.expanded, provider.getDecorationOption(false, false, false).fold_icon);
     try testing.expectEqualStrings("folding-expanded", provider.getDecorationOption(false, false, false).first_line_decoration_class_name.?);
+    try testing.expect(!provider.getDecorationOption(false, false, false).alwaysShowFoldIcons());
 
     provider.show_folding_highlights = false;
     try testing.expect(!provider.getDecorationOption(true, false, false).folded_background);
@@ -166,6 +184,9 @@ test "folding decoration options follow controls, highlights and manual state" {
     provider.show_folding_controls = .always;
     const manual = provider.getDecorationOption(false, false, true);
     try testing.expect(std.mem.indexOf(u8, manual.first_line_decoration_class_name.?, "alwaysShowFoldIcons") != null);
+    try testing.expect(manual.alwaysShowFoldIcons());
+    try testing.expect(provider.getDecorationOption(false, false, false).alwaysShowFoldIcons());
+    try testing.expect(!provider.getDecorationOption(true, false, false).alwaysShowFoldIcons());
 
     const hidden = provider.getDecorationOption(true, true, true);
     try testing.expectEqualStrings("folding-hidden-range-decoration", hidden.description);

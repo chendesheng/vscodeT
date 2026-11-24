@@ -44,7 +44,10 @@ Cascade order for one element:
 2. inherited values from the parent computed style,
 3. class declarations in list order (later classes win),
 4. the inline declaration (`Node.setStyle`),
-5. at paint time, the same paint declarations; hover overlays last.
+5. at paint time, the same paint declarations; hover overlays last. A hover
+   `visibility` declaration also applies to the hovered element's descendants,
+   which is how the port expresses an upstream `.parent:hover .child` rule
+   without a selector engine.
 
 `display: contents` generates no box. Its computed layout/text/pointer values
 are threaded to descendants; its inherited paint declarations are carried in a
@@ -131,6 +134,7 @@ Rules:
   | `viewLines.css` (structural) | `0x0010` | view-lines, view-line |
   | `overlayWidgets.css` | `0x0020` | overlayWidgets |
   | `sash.css` | `0x0030` | sash, vertical, horizontal |
+  | `folding.css` | `0x0040` | codicon-folding, codicon-folding-collapsed, alwaysShowFoldIcons |
 
 - The editor registers every sheet once in `View.init` through
   `editorCss.register(document)`. `Document.clear()` preserves them.
@@ -151,7 +155,10 @@ The first ports attach classes in the terminal view:
 - `View.block_root` and each block node (`blockDecorations_css`),
 - the line-scroll content and each `ViewLine` DOM node (`viewLines_css`),
 - `View.overlay_widgets_root` (`overlayWidgets_css`),
-- the find widget's resize handle (`sash_css`).
+- the find widget's resize handle (`sash_css`),
+- each gutter fold cell (`folding_css`); the margin root carries its
+  `HoverStyle`, which reveals the hidden expanded icons while the gutter is
+  hovered.
 
 The sidebar, editor splits, diff gutter and terminal splitters use the sash
 cursor declarations with their cell hit tests. The find widget attaches the
@@ -183,4 +190,10 @@ depend on terminal cells. No backend parameter or px unit is added yet.
 - `display: contents` has no hover target.
 - Style arrays are owned by the document; class ID ranges are a manual registry.
 - Hover remains a paint-only `Element.hover_style` overlay; there is no
-  `:hover` selector pipeline.
+  `:hover` selector pipeline. `HoverStyle.visibility` can reveal paint-hidden
+  descendants while an ancestor is hovered (the folding gutter uses this for
+  `.margin-view-overlays:hover .codicon`), but the library applies the
+  declaration to the whole hovered subtree; it does not match selectors.
+- `visibility: hidden` now skips the element's background, border and text in
+  the painter; layout and hit testing are unchanged, and a descendant with
+  `visibility: visible` still paints.

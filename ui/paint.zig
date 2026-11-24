@@ -43,7 +43,7 @@ pub fn paintTreeWithBorderCapabilities(tree: *const box.BoxTree, doc: *const dom
         .w = @floatFromInt(doc.cols),
         .h = @floatFromInt(doc.rows),
     };
-    paintBox(doc, tree.root, grid, .{}, viewport, .{ .cell_borders = tree.cell_borders, .capabilities = capabilities });
+    paintBox(doc, tree.root, grid, .{}, .visible, null, viewport, .{ .cell_borders = tree.cell_borders, .capabilities = capabilities });
 }
 
 const BorderOptions = struct {
@@ -56,6 +56,12 @@ fn paintBox(
     current: *const LayoutBox,
     grid: *CellGrid,
     inherited: PaintStyle,
+    /// Visibility inherited by text and anonymous runs. Element boxes resolve
+    /// their own computed value; text boxes have none of their own.
+    inherited_visibility: style_mod.Visibility,
+    /// A hover visibility declaration from an ancestor in the hover chain.
+    /// It wins over every base visibility below it (see `HoverStyle.visibility`).
+    hover_visibility: ?style_mod.Visibility,
     clip: Rect,
     borders: BorderOptions,
 ) void {
@@ -63,6 +69,7 @@ fn paintBox(
 
     switch (current.kind) {
         .text => {
+            if ((hover_visibility orelse inherited_visibility) == .hidden) return;
             const paint = current.paint_ref orelse &current.paint;
             var own = mergeTextStyle(inherited, current.paint_delta);
             own = mergeTextStyle(own, paint.*);
@@ -97,54 +104,61 @@ fn paintBox(
             if (!anonymous) base = mergeStyle(base, style);
             const hover = if (current.kind == .element) hoverStyleOf(current.owner) else null;
             const own = if (hover) |value| mergeHoverStyle(base, value) else base;
-            const paints_background = style.background != null or (style.reverse orelse false) or
-                (hover != null and (hover.?.background != null or (hover.?.reverse orelse false)));
-            const border = style_mod.borderWidths(style);
-            const border_color = if (hover) |value|
-                value.border_color orelse style.border_color
-            else
-                style.border_color;
-            if (current.inline_fragments.len > 0) {
-                for (current.inline_fragments) |fragment| {
-                    const fragment_rect = Rect{
-                        .x = fragment.x,
-                        .y = fragment.y,
-                        .w = fragment.w,
-                        .h = fragment.h,
-                    };
+            const child_hover_visibility = if (hover) |value| value.visibility orelse hover_visibility else hover_visibility;
+            const visibility = child_hover_visibility orelse style.visibility;
+            const visible = visibility == .visible;
+            // A hidden box keeps its layout and hit box but paints only its
+            // descendants that override visibility back to visible.
+            if (visible) {
+                const paints_background = style.background != null or (style.reverse orelse false) or
+                    (hover != null and (hover.?.background != null or (hover.?.reverse orelse false)));
+                const border = style_mod.borderWidths(style);
+                const border_color = if (hover) |value|
+                    value.border_color orelse style.border_color
+                else
+                    style.border_color;
+                if (current.inline_fragments.len > 0) {
+                    for (current.inline_fragments) |fragment| {
+                        const fragment_rect = Rect{
+                            .x = fragment.x,
+                            .y = fragment.y,
+                            .w = fragment.w,
+                            .h = fragment.h,
+                        };
+                        if (paints_background) {
+                            const fill = Rect.intersect(fragment_rect, clip);
+                            grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
+                        }
+                        if (borders.cell_borders) {
+                            drawCellBorder(grid, fragment_rect, current.cell_border, style.border_style, border_color, own, clip);
+                        } else {
+                            drawBorder(grid, fragment_rect, border, border_color, own, clip, style.border_style == .rounded);
+                        }
+                    }
+                } else {
+                    const round = style.border_style == .rounded;
+                    const fill = Rect.intersect(rect, clip);
+                    const rounded_frame = if (round and borders.capabilities.has(.round) and
+                        border.left > 0 and border.right > 0 and border.top > 0 and border.bottom > 0 and
+                        std.meta.eql(fill, rect))
+                        cell.RoundedCellFrame.capture(grid, rect)
+                    else
+                        null;
                     if (paints_background) {
-                        const fill = Rect.intersect(fragment_rect, clip);
+                        // An ancestor's overflow clip cuts everything this box paints, so
+                        // a child background must not paint into the gutter outside the
+                        // padding edge the way its text already is cut.
                         grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
                     }
-                    if (borders.cell_borders) {
-                        drawCellBorder(grid, fragment_rect, current.cell_border, style.border_style, border_color, own, clip);
+                    if (rounded_frame) |frame| {
+                        if (paints_background) grid.clearBordersRect(rect.x, rect.y, rect.w, rect.h);
+                        const stroke = cellBorderStroke(border.top, border_color, own);
+                        frame.paint(grid, borders.capabilities, stroke.color);
+                    } else if (borders.cell_borders) {
+                        drawCellBorder(grid, rect, current.cell_border, style.border_style, border_color, own, clip);
                     } else {
-                        drawBorder(grid, fragment_rect, border, border_color, own, clip, style.border_style == .rounded);
+                        drawBorder(grid, rect, border, border_color, own, clip, round);
                     }
-                }
-            } else {
-                const round = style.border_style == .rounded;
-                const fill = Rect.intersect(rect, clip);
-                const rounded_frame = if (round and borders.capabilities.has(.round) and
-                    border.left > 0 and border.right > 0 and border.top > 0 and border.bottom > 0 and
-                    std.meta.eql(fill, rect))
-                    cell.RoundedCellFrame.capture(grid, rect)
-                else
-                    null;
-                if (paints_background) {
-                    // An ancestor's overflow clip cuts everything this box paints, so
-                    // a child background must not paint into the gutter outside the
-                    // padding edge the way its text already is cut.
-                    grid.fillRect(fill.x, fill.y, fill.w, fill.h, own);
-                }
-                if (rounded_frame) |frame| {
-                    if (paints_background) grid.clearBordersRect(rect.x, rect.y, rect.w, rect.h);
-                    const stroke = cellBorderStroke(border.top, border_color, own);
-                    frame.paint(grid, borders.capabilities, stroke.color);
-                } else if (borders.cell_borders) {
-                    drawCellBorder(grid, rect, current.cell_border, style.border_style, border_color, own, clip);
-                } else {
-                    drawBorder(grid, rect, border, border_color, own, clip, round);
                 }
             }
 
@@ -154,7 +168,7 @@ fn paintBox(
             };
 
             for (current.children.items) |child| {
-                paintBox(doc, child, grid, own, child_clip, borders);
+                paintBox(doc, child, grid, own, visibility, child_hover_visibility, child_clip, borders);
             }
         },
     }
@@ -727,6 +741,106 @@ test "paint: transparent text keeps the background underneath it" {
     try std.testing.expectEqual(@as(u32, 'h'), grid.cluster[0]);
     try std.testing.expectEqual(cell.packColor(explicit), grid.bg[grid.index(0, 1)]);
     try std.testing.expectEqual(@as(u32, 'x'), grid.cluster[grid.index(0, 1)]);
+}
+
+test "paint: visibility hidden keeps the box but skips its own paint" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 6, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 2 },
+        .background = .{ .r = 10, .g = 20, .b = 30 },
+    });
+    doc.setRoot(root);
+
+    const hidden = try commonBox(&doc, root, .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 2 },
+        .height = .{ .cells = 1 },
+        .background = .{ .r = 200, .g = 0, .b = 0 },
+        .visibility = .hidden,
+    });
+    _ = try hidden.appendChild(try doc.createText("xx"));
+
+    // A descendant may opt back in, as the CSS property allows.
+    const shown = try commonBox(&doc, hidden, .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 1 },
+        .height = .{ .cells = 1 },
+        .visibility = .visible,
+    });
+    _ = try shown.appendChild(try doc.createText("o"));
+
+    var grid = try CellGrid.init(allocator, 6, 2);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+
+    // The hidden box paints no background and no text of its own. The root's
+    // background fills the covered cells with spaces.
+    try std.testing.expectEqual(cell.packColor(.{ .r = 10, .g = 20, .b = 30 }), grid.bg[0]);
+    try std.testing.expect(grid.cluster[1] != 'x');
+    // The explicitly visible child still paints.
+    try std.testing.expectEqual(@as(u32, 'o'), grid.cluster[0]);
+}
+
+test "paint: ancestor hover visibility reveals a hidden descendant" {
+    const allocator = std.testing.allocator;
+    var doc = try dom.Document.init(allocator, .{ .cols = 6, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.setStyle(.{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 6 },
+        .height = .{ .cells = 2 },
+    });
+    doc.setRoot(root);
+
+    const row = try commonBox(&doc, root, .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 2 },
+        .height = .{ .cells = 1 },
+    });
+    row.setHoverStyle(.{ .visibility = .visible });
+    const icon = try commonBox(&doc, row, .{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = 1 },
+        .height = .{ .cells = 1 },
+        .visibility = .hidden,
+    });
+    _ = try icon.appendChild(try doc.createText("\u{25BE}"));
+
+    var grid = try CellGrid.init(allocator, 6, 2);
+    defer grid.deinit();
+    try paintDocument(&doc, &grid);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[0]);
+
+    // The hover declaration wins over the child's own hidden declaration.
+    try std.testing.expect(doc.setHoverTarget(row));
+    grid.clear();
+    try paintDocument(&doc, &grid);
+    try std.testing.expectEqual(@as(u32, 0x25BE), grid.cluster[0]);
+
+    try std.testing.expect(doc.clearHover());
+    grid.clear();
+    try paintDocument(&doc, &grid);
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[0]);
 }
 
 fn commonBox(doc: *dom.Document, parent: *dom.Node, style: style_mod.Style) !*dom.Node {

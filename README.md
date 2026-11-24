@@ -1669,8 +1669,10 @@ TUI editor:
   current indentation.
 - Folding: the gutter reserves a control cell when `editor.folding` is on and
   `showFoldingControls` is not `never`; it shows `▾` for an expanded region and
-  `▸` when collapsed (the `mouseover` mode keeps expanded controls hidden until
-  hover, as upstream); clicking it toggles the region on that line. `Ctrl-Shift-[` /
+  `▸` when collapsed. The default `mouseover` mode keeps expanded controls
+  hidden until the pointer is over the gutter (`always` keeps them visible,
+  `never` drops the cell), ported from `folding.css` through the paint-only
+  hover style; clicking the cell toggles the region on that line. `Ctrl-Shift-[` /
   `Ctrl-Shift-]` fold/unfold at the caret, `Ctrl-K Ctrl-L` toggles,
   `Ctrl-K Ctrl-0` folds all and `Ctrl-K Ctrl-J` unfolds all. Collapsed regions
   hide their model lines and end the first visible line with `…`.
@@ -1824,11 +1826,13 @@ Editor contributions:
   `ProjectedViewModelLines.setHiddenAreas` removes collapsed
   lines from the view projection, so view/model conversion, cursor movement,
   selection adjustment, wrapping and the scrollbar all see the folded view.
-  The TUI gutter paints `▾`/`▸` in its last cell and handles the click; the
-  editor binds the upstream fold/unfold/toggle/fold-all/unfold-all commands and
-  registers them in the workbench command palette. Syntax folding providers,
-  folding-decoration CSS classes, fold-imports-by-default, folding
-  mementos/view state, manual folding-range actions and the
+  The TUI gutter paints `▾`/`▸` in its last cell following the hand-ported
+  `folding.css` visibility rules (collapsed controls stay visible, expanded
+  ones are revealed while the gutter is hovered in the default `mouseover`
+  mode) and handles the click; the editor binds the upstream
+  fold/unfold/toggle/fold-all/unfold-all commands and registers them in the
+  workbench command palette. Syntax folding providers, fold-imports-by-default,
+  folding mementos/view state, manual folding-range actions and the
   goto-parent/previous/next-fold actions are not ported. Fold state survives
   edits on the folded line, but inserting or deleting lines above a collapsed
   region re-expands it because the TUI has no tracked folding decorations.

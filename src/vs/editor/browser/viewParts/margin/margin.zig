@@ -12,6 +12,12 @@
 // number for filler rows. Line-number, active-line, folding-control and
 // quick-diff colors come from the terminal `Theme` bundle resolved by the TUI
 // from the `editorLineNumber.*` and `editorGutter.*` ids.
+//
+// Folding icons follow the ported `folding.css`: expanded controls are hidden
+// unless the margin overlays are hovered (`mouseover`, the upstream default) or
+// the decoration selects `alwaysShowFoldIcons`; collapsed controls stay
+// visible. The gutter root carries the CSS `:hover` rule as a paint-only
+// `HoverStyle`, the terminal substitute for `.margin-view-overlays:hover`.
 const std = @import("std");
 const ui = @import("ui");
 
@@ -23,6 +29,7 @@ const LineNumbersOverlay = line_numbers_mod.LineNumbersOverlay;
 const lines_decorations_mod = @import("../linesDecorations/linesDecorations.zig");
 const LinesDecorationsOverlay = lines_decorations_mod.LinesDecorationsOverlay;
 const FoldingDecorationProvider = @import("../../../contrib/folding/browser/foldingDecorations.zig").FoldingDecorationProvider;
+const folding_css = @import("../../../contrib/folding/browser/folding_css.zig");
 const glyph_margin = @import("../glyphMargin/glyphMargin.zig");
 const current_line_mod = @import("../currentLineHighlight/currentLineHighlight.zig");
 const margin_decorations_mod = @import("../marginDecorations/marginDecorations.zig");
@@ -123,6 +130,9 @@ pub const TerminalMargin = struct {
         number_owned: ?[]u8 = null,
         filler: bool = false,
         fold: FoldPaint = .none,
+        /// The icon stays visible without hover (`alwaysShowFoldIcons` or a
+        /// collapsed range).
+        fold_visible: bool = false,
         marker: ?QuickDiffMarker = null,
         marker_buf: [1]u8 = undefined,
     };
@@ -143,6 +153,7 @@ pub const TerminalMargin = struct {
         /// of this render pass, so `applyPaint` copies it into the row.
         number_borrowed: ?[]const u8 = null,
         fold: FoldPaint = .none,
+        fold_visible: bool = false,
         marker: ?QuickDiffMarker = null,
 
         fn numberText(self: *const RowPaint) []const u8 {
@@ -229,6 +240,12 @@ pub const TerminalMargin = struct {
             self.marker_width = marker_width;
             self.geometry_ready = true;
         }
+
+        // `.margin-view-overlays:hover .codicon` from folding.css. The root is
+        // the terminal margin overlays container; when the pointer is over any
+        // gutter row it is in the hover chain and its paint-only visibility
+        // overlay reveals the hidden expanded icons. This never dirties layout.
+        root.setHoverStyle(if (fold_width > 0) folding_css.hoverStyle() else null);
 
         self.next_rows.clearRetainingCapacity();
         var old_index: usize = 0;
@@ -357,6 +374,7 @@ pub const TerminalMargin = struct {
                         .collapsed => .collapsed,
                         .expanded => .expanded,
                     };
+                    paint.fold_visible = state == .collapsed or option.alwaysShowFoldIcons();
                 }
             }
 
@@ -471,6 +489,7 @@ pub const TerminalMargin = struct {
         _ = try filler_line.appendChild(filler_text);
 
         const fold_cell = try doc.createElement(.div);
+        try setFoldClasses(fold_cell, paint.fold, paint.fold_visible);
         fold_cell.setStyle(.{
             .position = .absolute,
             .left = .{ .cells = @floatFromInt(fold_column) },
@@ -632,8 +651,10 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
         changed = true;
     }
 
-    if (row.fold != paint.fold and !paint.filler) {
+    if (!paint.filler and (row.fold != paint.fold or row.fold_visible != paint.fold_visible)) {
         row.fold = paint.fold;
+        row.fold_visible = paint.fold_visible;
+        try setFoldClasses(row.fold_cell, paint.fold, paint.fold_visible);
         if (paint.fold == .none) {
             setDisplay(row.fold_cell, false);
         } else {
@@ -664,6 +685,26 @@ fn applyPaint(self: *TerminalMargin, row: *TerminalMargin.Row, paint: TerminalMa
         }
     }
     return changed;
+}
+
+/// Port of the folding.css visibility classes: the base codicon class hides
+/// the glyph, a collapsed range and `alwaysShowFoldIcons` override it. The
+/// margin hover style reveals the remaining (mouseover) expanded icons.
+fn setFoldClasses(node: *ui.Node, fold: TerminalMargin.FoldPaint, always_visible: bool) !void {
+    switch (fold) {
+        .none => try node.setClasses(&.{folding_css.Class.codicon_folding}),
+        .collapsed => try node.setClasses(&.{
+            folding_css.Class.codicon_folding,
+            folding_css.Class.codicon_folding_collapsed,
+        }),
+        .expanded => if (always_visible)
+            try node.setClasses(&.{
+                folding_css.Class.codicon_folding,
+                folding_css.Class.always_show_fold_icons,
+            })
+        else
+            try node.setClasses(&.{folding_css.Class.codicon_folding}),
+    }
 }
 
 fn setDisplay(node: *ui.Node, visible: bool) void {
@@ -863,6 +904,111 @@ test "margin: theme colors the line numbers and the active line" {
     try testing.expect(margin.rows.items.len >= 2);
     try testing.expect(margin.rows.items[0].number_text.paintStyle().?.color.?.eql(.{ .r = 40, .g = 50, .b = 60 }));
     try testing.expect(margin.rows.items[1].number_text.paintStyle().?.color.?.eql(.{ .r = 10, .g = 20, .b = 30 }));
+}
+
+test "margin: mouseover fold icons hide expanded and keep collapsed visible" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const editor = try Editor.createFromText(
+        allocator,
+        io,
+        "class A {\n  void f() {\n    x();\n  }\n}",
+        "test.zig",
+        40,
+        8,
+    );
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    editor.refreshFoldingIfDirty();
+
+    const host = try TerminalViewHost.init(allocator, editor);
+    defer host.deinit();
+    try host.renderRange(1, editor.viewLineCount());
+
+    var doc = try ui.Document.init(allocator, .{ .cols = 40, .rows = 8 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    try @import("../../../browser/editorCss.zig").register(&doc);
+
+    var margin = TerminalMargin.init(allocator);
+    defer margin.deinit();
+    var folding = FoldingDecorationProvider{};
+    try margin.render(
+        &doc,
+        root,
+        editor,
+        &host.line_numbers,
+        &host.line_decorations,
+        host.glyphMargin(),
+        null,
+        host.marginDecorations(),
+        &folding,
+        editor.gutterWidth(),
+        editor.textHeight(),
+        null,
+    );
+
+    // `mouseover` (the upstream default) hides the expanded control; the
+    // margin container carries the hover rule that reveals it.
+    try std.testing.expectEqual(TerminalMargin.FoldPaint.expanded, margin.rows.items[0].fold);
+    try std.testing.expect(!margin.rows.items[0].fold_visible);
+    try std.testing.expect(margin.rows.items[0].fold_cell.hasClass(folding_css.Class.codicon_folding));
+    try std.testing.expect(!margin.rows.items[0].fold_cell.hasClass(folding_css.Class.always_show_fold_icons));
+    try std.testing.expectEqual(
+        ui.Visibility.hidden,
+        margin.rows.items[0].fold_cell.computedStyle().visibility,
+    );
+    try std.testing.expectEqual(ui.Visibility.visible, root.asElement().hover_style.?.visibility.?);
+
+    // `showFoldingControls: always` selects the upstream
+    // `alwaysShowFoldIcons` decoration class.
+    folding.show_folding_controls = .always;
+    try margin.render(
+        &doc,
+        root,
+        editor,
+        &host.line_numbers,
+        &host.line_decorations,
+        host.glyphMargin(),
+        null,
+        host.marginDecorations(),
+        &folding,
+        editor.gutterWidth(),
+        editor.textHeight(),
+        null,
+    );
+    try std.testing.expect(margin.rows.items[0].fold_cell.hasClass(folding_css.Class.always_show_fold_icons));
+    try std.testing.expectEqual(
+        ui.Visibility.visible,
+        margin.rows.items[0].fold_cell.computedStyle().visibility,
+    );
+
+    // A collapsed control is visible regardless of hover.
+    _ = try editor.toggleFoldAtViewLine(1);
+    folding.show_folding_controls = .mouseover;
+    try margin.render(
+        &doc,
+        root,
+        editor,
+        &host.line_numbers,
+        &host.line_decorations,
+        host.glyphMargin(),
+        null,
+        host.marginDecorations(),
+        &folding,
+        editor.gutterWidth(),
+        editor.textHeight(),
+        null,
+    );
+    try std.testing.expectEqual(TerminalMargin.FoldPaint.collapsed, margin.rows.items[0].fold);
+    try std.testing.expect(margin.rows.items[0].fold_cell.hasClass(folding_css.Class.codicon_folding_collapsed));
+    try std.testing.expectEqual(
+        ui.Visibility.visible,
+        margin.rows.items[0].fold_cell.computedStyle().visibility,
+    );
 }
 
 test "margin: paints the line-number map, blank filler and the quick-diff cell" {

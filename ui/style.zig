@@ -574,8 +574,8 @@ pub const PaintStyle = struct {
 /// Paint-only overrides applied while an element is in the hover chain
 /// (`Element.hover_style`). Every field is optional so a declaration is a
 /// delta: `null` keeps the element's own value, while `false` clears a
-/// boolean attribute. There are deliberately no layout properties: hover is
-/// applied by the painter and never dirties or re-runs layout.
+/// boolean attribute. No property here affects layout: hover is applied by the
+/// painter and never dirties or re-runs layout.
 pub const HoverStyle = struct {
     color: ?Color = null,
     background: ?Color = null,
@@ -587,6 +587,14 @@ pub const HoverStyle = struct {
     strikethrough: ?bool = null,
     dim: ?bool = null,
     reverse: ?bool = null,
+    /// Paint visibility for this element and its descendants while it is
+    /// hovered. Unlike the other paint deltas this deliberately beats a
+    /// descendant's own `visibility` declaration, so it can express upstream
+    /// rules such as `.parent:hover .child { opacity: 1 }`: the child keeps
+    /// its layout and hit box but only paints during hover. `null` keeps the
+    /// computed value. This is still paint-only; layout and hit testing never
+    /// depend on it.
+    visibility: ?Visibility = null,
 };
 
 /// Text-flow overrides carried by a text node. They resolve against the parent

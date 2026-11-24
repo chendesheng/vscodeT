@@ -3758,6 +3758,16 @@ test "View: gutter fold control collapses and expands a region" {
 
     const gutter = editor.gutterWidth();
     const grid = view.surface.grid();
+    // `mouseover` is the upstream default: an expanded control is hidden until
+    // the pointer is over the gutter.
+    try std.testing.expectEqual(@as(u32, 0), grid.cluster[grid.index(gutter - 1, 0)]);
+
+    // The upstream rule is `.margin-view-overlays:hover`, so hovering the
+    // line-number cell reveals the fold control too.
+    var hover = testMouse(.move, 0, 0);
+    _ = try view.dispatchMouse(&hover);
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
     try std.testing.expectEqual(@as(u32, '▾'), grid.cluster[grid.index(gutter - 1, 0)]);
     const target = try view.mouseTargetAt(gutter - 1, 0);
     try std.testing.expectEqual(editorBrowser.MouseTargetType.gutter_line_decorations, target.type);
@@ -3767,6 +3777,10 @@ test "View: gutter fold control collapses and expands a region" {
     try std.testing.expectEqual(@as(usize, 2), editor.viewLineCount());
     try std.testing.expectEqual(@as(usize, 5), editor.modelLineNumber(2));
 
+    // A collapsed control stays visible without hover.
+    var leave = testMouse(.move, gutter + 2, 1);
+    _ = try view.dispatchMouse(&leave);
+    try view.refresh();
     try view.renderAnsi(&out.writer);
     try std.testing.expectEqual(@as(u32, '▸'), grid.cluster[grid.index(gutter - 1, 0)]);
     const row1 = try rowText(view, allocator, 1);
@@ -5873,6 +5887,10 @@ test "View: fold control sits before the quick-diff cell" {
     try view.renderAnsi(&out.writer);
 
     const grid = view.surface.grid();
+    var hover = testMouse(.move, editor.foldCellColumn(), 0);
+    _ = try view.dispatchMouse(&hover);
+    try view.refresh();
+    try view.renderAnsi(&out.writer);
     try std.testing.expectEqual(@as(u32, '▾'), grid.cluster[grid.index(editor.foldCellColumn(), 0)]);
     var down = testMouse(.down, editor.foldCellColumn(), 0);
     try std.testing.expect(try view.dispatchMouse(&down));
