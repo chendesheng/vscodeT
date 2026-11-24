@@ -388,10 +388,10 @@ zig build test-e2e                        # boots the Node host and runs TypeScr
 ```
 
 The native binary resolves executable extensions from its install prefix.
-`zig build host` builds the launcher and fifteen upstream extensions from the pinned
+`zig build host` builds the launcher and executable extensions from the pinned
 checkout. These provide TypeScript/JavaScript, HTML, CSS/Less/SCSS, Emmet,
-PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict
-Simple Browser and the npm, Grunt, Gulp and Jake task providers. The build installs their bundles, language
+PHP, Git Base, Search Result, configuration and manifest authoring, Merge Conflict,
+Simple Browser, Terminal Suggest and the npm, Grunt, Gulp and Jake task providers. The build installs their bundles, language
 servers and TypeScript SDK under `lib/vscode-textbuffer` in the same prefix
 as `zig build` (including `--prefix`). The ordinary native build requires
 no Node installation. Only executable packages present in both the installed
@@ -401,6 +401,15 @@ runtime and the built-in catalog are passed to the extension host.
 The intermediate bundles under `host/dist` are also used by the repository's
 interop tests. The host transport currently supports macOS and Linux.
 Windows requires a local IPC transport and a native launcher.
+
+Markdown preview uses the optional host’s Mermaid renderer for supported
+fenced diagrams. It lays them out in the background and keeps the original
+fence visible if parsing fails. [Terminal Mermaid renderer](https://github.com/lukilabs/beautiful-mermaid)
+
+With shell integration enabled, **Ctrl+Space** opens completion suggestions for
+the current command in Bash, Zsh, fish or PowerShell. Select a suggestion to
+insert it at the prompt. Running the command takes a separate Enter.
+The terminal reads prompt boundaries from OSC 133 and the directory from OSC 7.
 
 #### Extension tasks
 
