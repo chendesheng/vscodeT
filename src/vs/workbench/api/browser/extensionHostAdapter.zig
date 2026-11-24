@@ -179,6 +179,7 @@ pub const Extensions = struct {
     diagnostics_actor: ?*MainThreadDiagnostics = null,
     storage_actor: ?MainThreadStorage = null,
     statusbar_actor: ?MainThreadStatusBar = null,
+    task_actor: @import("mainThreadTask.zig").MainThreadTask = undefined,
     commands_actor: ?MainThreadCommands = null,
     configuration_actor: ?MainThreadConfiguration = null,
     documents_actor: ?MainThreadDocuments = null,
@@ -298,6 +299,8 @@ pub const Extensions = struct {
             .on_did_activate = extensionServiceActivatedHost,
             .as_browser_uri = extensionServiceBrowserUriHost,
         } };
+        try self.task_actor.init(workbench, self.host, self.descriptions);
+        errdefer self.task_actor.deinit();
         self.registerActors();
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
@@ -307,6 +310,7 @@ pub const Extensions = struct {
     }
 
     pub fn deinit(self: *Extensions) void {
+        self.task_actor.deinit();
         self.inline_completions.deinit();
         self.setScrollListener(null);
         self.setContentListener(null);
@@ -357,6 +361,8 @@ pub const Extensions = struct {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeTextEditors });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadEditorTabs)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeEditorTabs });
+            } else if (nid == @backingInt(protocol.MainContext.MainThreadTask)) {
+                self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeTask });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadWindow)) {
                 self.host.setActor(.{ .nid = nid, .sid = entry.sid }, .{ .context = self, .invoke = invokeWindow });
             } else if (nid == @backingInt(protocol.MainContext.MainThreadExtensionService)) {
@@ -476,6 +482,11 @@ pub const Extensions = struct {
         const self: *Extensions = @ptrCast(@alignCast(context));
         if (self.editor_tabs_actor) |*actor| return actor.invoke(method, args, arena);
         return .empty;
+    }
+
+    fn invokeTask(context: *anyopaque, method: []const u8, args: []const rpc.Arg, _: ?@import("../../../base/common/cancellation.zig").CancellationToken, _: Allocator) anyerror!rpc.HandlerReply {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        return self.task_actor.invoke(method, args);
     }
 
     fn invokeWindow(context: *anyopaque, method: []const u8, args: []const rpc.Arg, token: ?@import("../../../base/common/cancellation.zig").CancellationToken, arena: Allocator) anyerror!rpc.HandlerReply {

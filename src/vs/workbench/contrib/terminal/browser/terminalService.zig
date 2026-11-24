@@ -110,14 +110,22 @@ pub const TerminalService = struct {
     }
 
     pub fn createInstanceWithProfile(self: *TerminalService, profile: terminal.ITerminalProfile) !*TerminalInstance {
-        return self.launchInstance(null, &profile);
+        return self.launchInstance(null, &profile, null);
     }
 
     pub fn createInstance(self: *TerminalService, parent: ?*TerminalInstance) !*TerminalInstance {
-        return self.launchInstance(parent, self.profiles.defaultProfile());
+        return self.launchInstance(parent, self.profiles.defaultProfile(), null);
     }
 
-    fn launchInstance(self: *TerminalService, parent: ?*TerminalInstance, profile: ?*const terminal.ITerminalProfile) !*TerminalInstance {
+    pub fn createForTask(self: *TerminalService, profile: terminal.ITerminalProfile, cwd: ?[]const u8) !*TerminalInstance {
+        const instance = try self.launchInstance(null, &profile, cwd);
+        errdefer instance.deinit();
+        try instance.rename(profile.profile_name);
+        try self.group.add(instance);
+        return instance;
+    }
+
+    fn launchInstance(self: *TerminalService, parent: ?*TerminalInstance, profile: ?*const terminal.ITerminalProfile, requested_cwd: ?[]const u8) !*TerminalInstance {
         if (self.options.launch) |launch| return launch(self, self.allocator);
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -133,7 +141,7 @@ pub const TerminalService = struct {
             .initial => instance.initial_cwd,
             .inherited => instance.cwd orelse instance.initial_cwd,
         } else null;
-        const cwd = split_cwd orelse try resolveCwd(scratch, self.options.workspace_root, self.config.cwd);
+        const cwd = requested_cwd orelse split_cwd orelse try resolveCwd(scratch, self.options.workspace_root, self.config.cwd);
         const env = try self.buildEnvironment(scratch);
 
         const instance = try TerminalInstance.create(self.allocator, self.io, self.next_id, .{

@@ -3432,6 +3432,14 @@ pub const Workbench = struct {
         }
     }
 
+    pub fn runTaskInTerminal(self: *Workbench, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !void {
+        const service = try self.ensureTerminalService();
+        _ = try service.createForTask(.{ .path = executable, .args = args, .profile_name = name }, cwd);
+        self.terminal_tabbed_view.tab_list.focused = false;
+        _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
+        self.revealActiveTerminalTab();
+    }
+
     fn newPanelTerminal(self: *Workbench) !void {
         const service = try self.ensureTerminalService();
         _ = try service.create();
