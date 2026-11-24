@@ -133,6 +133,7 @@ pub const Sidebar = struct {
     io: Io,
     model: *ExplorerModel,
     files_filter: FilesFilter,
+    file_icons: file_icon.Appearance = .{},
     data_source: explorer_viewer.ExplorerDataSource,
     tree: *AsyncTree,
     compression_enabled: bool = true,
@@ -841,11 +842,11 @@ fn renderRow(
 
     // Nerd Font file/folder icon, after the twistie and its gap, matching the
     // Explorer row order (twistie, file icon, label).
-    {
+    if (!sidebar.file_icons.disabled) {
         const icon = if (item.is_directory)
-            file_icon.folder(!collapsed)
+            sidebar.file_icons.forFolder(item.name, !collapsed)
         else
-            file_icon.file(item.name);
+            sidebar.file_icons.forFile(item.name, null);
         if (col < row.x + row.width) {
             var icon_paint = PaintStyle{
                 .fg = ui.cell.packColor(icon.color),

@@ -143,3 +143,135 @@ test "fileIcon: folders and common extensions use Nerd Font glyphs" {
     try std.testing.expectEqual(@as(u21, 0xE73E), forPath("/repo/README.md").glyph);
     try std.testing.expectEqual(@as(u21, 0xF15B), forPath("/repo/notes.unknown").glyph);
 }
+
+const registry = @import("../services/extensions/common/extensionsRegistry.zig");
+const glyphs = @import("setiGlyphs.zig").byName;
+const Color = @import("../../base/common/color.zig").Color;
+
+pub const Appearance = struct {
+    catalog: ?*const registry.Registry = null,
+    theme: ?std.json.Value = null,
+    variant: []const u8 = "",
+    foreground: ui.Color = default_file_color,
+    disabled: bool = false,
+
+    pub fn init(catalog: ?*const registry.Registry, id: ?[]const u8, variant: []const u8, foreground: ui.Color) Appearance {
+        const selected = id orelse return .{ .disabled = true };
+        const available = catalog orelse return .{};
+        var index = available.icon_themes.len;
+        while (index > 0) {
+            index -= 1;
+            const theme = available.icon_themes[index];
+            if (std.mem.eql(u8, selected, theme.id)) return .{ .catalog = available, .theme = theme.data, .variant = variant, .foreground = foreground };
+        }
+        return .{};
+    }
+
+    fn association(self: Appearance, group: []const u8, key: ?[]const u8) ?[]const u8 {
+        const theme = self.theme orelse return null;
+        if (field(theme, self.variant)) |variant| {
+            if (associationIn(variant, group, key)) |match| return match;
+        }
+        return associationIn(theme, group, key);
+    }
+
+    fn definition(self: Appearance, id: []const u8, fallback: Icon) Icon {
+        const definitions = field(self.theme.?, "iconDefinitions") orelse return fallback;
+        const def = field(definitions, id) orelse return fallback;
+        const hex = field(def, "fontColor");
+        const color = if (hex != null and hex.? == .string) Color.fromHex(hex.?.string) catch null else null;
+        var symbol = std.mem.trimStart(u8, id, "_");
+        if (std.mem.endsWith(u8, symbol, "_light")) symbol = symbol[0 .. symbol.len - 6];
+        if (std.mem.lastIndexOfScalar(u8, symbol, '_')) |i| {
+            if (i + 1 < symbol.len and std.ascii.isDigit(symbol[i + 1])) symbol = symbol[0..i];
+        }
+        var buf: [128]u8 = undefined;
+        const glyph = if (symbol.len <= buf.len) blk: {
+            const normalized = std.ascii.lowerString(&buf, symbol);
+            for (normalized) |*byte| if (byte.* == '-') {
+                byte.* = '_';
+            };
+            break :blk glyphs.get(normalized) orelse fallback.glyph;
+        } else fallback.glyph;
+        return .{ .glyph = glyph, .color = if (color) |c| .{ .r = c.r, .g = c.g, .b = c.b } else self.foreground };
+    }
+
+    pub fn forFile(self: Appearance, name: []const u8, language_id: ?[]const u8) Icon {
+        const fallback = file(name);
+        if (self.theme == null) return fallback;
+        var buf: [1024]u8 = undefined;
+        if (name.len > buf.len) return fallback;
+        const key = std.ascii.lowerString(&buf, name);
+        if (self.association("fileNames", key)) |id| return self.definition(id, fallback);
+        var suffix = key;
+        while (std.mem.indexOfScalar(u8, suffix, '.')) |i| {
+            suffix = suffix[i + 1 ..];
+            if (self.association("fileExtensions", suffix)) |id| return self.definition(id, fallback);
+        }
+        const language = language_id orelse self.languageForName(name);
+        if (language) |lang| {
+            if (self.association("languageIds", lang)) |id| return self.definition(id, fallback);
+        }
+        return self.definition(self.association("file", null) orelse return fallback, file(""));
+    }
+
+    fn languageForName(self: Appearance, name: []const u8) ?[]const u8 {
+        const catalog = self.catalog orelse return null;
+        var language: ?[]const u8 = null;
+        var length: usize = 0;
+        for (catalog.languages) |contribution| {
+            for (contribution.filenames) |filename| {
+                if (std.ascii.eqlIgnoreCase(name, filename)) return contribution.id;
+            }
+            for (contribution.extensions) |ext| {
+                if (ext.len > length and std.ascii.endsWithIgnoreCase(name, ext)) {
+                    length = ext.len;
+                    language = contribution.id;
+                }
+            }
+        }
+        return language;
+    }
+
+    pub fn forFolder(self: Appearance, name: []const u8, expanded: bool) Icon {
+        const fallback = folder(expanded);
+        if (self.theme == null) return fallback;
+        var buf: [1024]u8 = undefined;
+        if (name.len > buf.len) return fallback;
+        const key = std.ascii.lowerString(&buf, name);
+        const id = self.association(if (expanded) "folderNamesExpanded" else "folderNames", key) orelse
+            self.association(if (expanded) "folderExpanded" else "folder", null) orelse return fallback;
+        return self.definition(id, fallback);
+    }
+};
+
+fn field(value: std.json.Value, key: []const u8) ?std.json.Value {
+    return if (value == .object) value.object.get(key) else null;
+}
+
+fn associationIn(value: std.json.Value, group: []const u8, key: ?[]const u8) ?[]const u8 {
+    const map = field(value, group) orelse return null;
+    const id = if (key) |k| field(map, k) orelse return null else map;
+    return if (id == .string) id.string else null;
+}
+
+test "fileIcon: shipped names override language mappings and color variants" {
+    const allocator = std.testing.allocator;
+    const io = @import("../../base/common/timeCompat.zig").io;
+    std.Io.Dir.cwd().access(io, "vscode/extensions/theme-modern-icons/package.json", .{}) catch return error.SkipZigTest;
+    var catalog = try registry.scan(allocator, &.{
+        "vscode/extensions/theme-seti", "vscode/extensions/theme-modern-icons", "vscode/extensions/javascript",
+    });
+    defer catalog.deinit();
+    const seti = Appearance.init(&catalog, "vs-seti", "", default_file_color);
+    const modern = Appearance.init(&catalog, "vscode-modern-icons", "", default_file_color);
+    const light = Appearance.init(&catalog, "vs-seti", "light", default_file_color);
+    const icon = seti.forFile("README.md", "markdown");
+    try std.testing.expectEqual(@as(u21, 0xE66A), icon.glyph);
+    try std.testing.expectEqual(ui.Color{ .r = 0x51, .g = 0x9A, .b = 0xBA }, icon.color);
+    try std.testing.expectEqual(ui.Color{ .r = 0x49, .g = 0x8B, .b = 0xA7 }, light.forFile("README.md", "markdown").color);
+    try std.testing.expectEqual(@as(u21, 0xE60C), seti.forFile("client.js", null).glyph);
+    try std.testing.expectEqual(icon.glyph, modern.forFile("README.md", null).glyph);
+    try std.testing.expectEqual(default_file_color, modern.forFile("README.md", null).color);
+    try std.testing.expect(Appearance.init(&catalog, null, "", default_file_color).disabled);
+}

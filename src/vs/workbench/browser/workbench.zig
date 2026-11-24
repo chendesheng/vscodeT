@@ -8617,6 +8617,26 @@ pub const Workbench = struct {
         keys.is_centered_layout.set(.{ .boolean = self.layout_model.isMainEditorCentered() });
     }
 
+    fn fileIconAppearance(self: *const Workbench) file_icon.Appearance {
+        var id: ?[]const u8 = "vs-seti";
+        if (self.configuration) |configuration| {
+            if (configuration.getValue("workbench.iconTheme", .{})) |setting| {
+                id = switch (setting.*) {
+                    .null => null,
+                    .string => setting.string,
+                    else => id,
+                };
+            }
+        }
+        const variant: []const u8 = if (self.theme_palette) |palette| switch (palette.theme.theme_type) {
+            .LIGHT => "light",
+            .HIGH_CONTRAST_LIGHT => "highContrastLight",
+            .HIGH_CONTRAST_DARK => "highContrast",
+            .DARK => "",
+        } else "";
+        return file_icon.Appearance.init(self.declarative, id, variant, self.themeColor("foreground", .{ 204, 204, 204 }));
+    }
+
     fn themeColor(self: *const Workbench, id: []const u8, fallback: [3]u8) ui.Color {
         const palette = self.theme_palette orelse return .{ .r = fallback[0], .g = fallback[1], .b = fallback[2] };
         return palette.color(id, fallback);
@@ -11385,6 +11405,7 @@ pub const Workbench = struct {
                     try container.render(&self.frame.next, content, focused, self.theme_palette);
                 } else if (self.sidebar) |sidebar| {
                     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
+                    sidebar.file_icons = self.fileIconAppearance();
                     try sidebar.render(&self.frame.next, content, focused, .{
                         .show_header = false,
                         .cell_borders = self.part.cell_borders,
@@ -11582,6 +11603,7 @@ pub const Workbench = struct {
             for (descriptions.items) |description| self.allocator.free(description);
             descriptions.deinit();
         }
+        const icons = self.fileIconAppearance();
         for (ordered.items, 0..) |tab, index| {
             infos[index] = .{
                 .label = tab.input.getName(),
@@ -11603,6 +11625,11 @@ pub const Workbench = struct {
                 infos[index].icon = .{ .glyph = '❯', .color = .{ .r = 204, .g = 204, .b = 204 } };
                 infos[index].description = tab.input.getDescription(.MEDIUM) orelse "";
                 continue;
+            }
+            if (icons.disabled) {
+                infos[index].file_name = "";
+            } else if (infos[index].file_name.len > 0) {
+                infos[index].icon = icons.forFile(infos[index].file_name, tab.editor.languageId());
             }
             var duplicate = false;
             for (ordered.items, 0..) |other, other_index| {
@@ -12773,6 +12800,7 @@ fn explorerPaneRenderBody(context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect
     const self: *Workbench = @ptrCast(@alignCast(context));
     const sidebar = self.sidebar orelse return;
     if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
+    sidebar.file_icons = self.fileIconAppearance();
     try sidebar.render(grid, rect, focused, .{
         .show_header = false,
         .cell_borders = self.part.cell_borders,
@@ -13027,7 +13055,8 @@ fn breadcrumbFileIcon(context: *anyopaque) ?file_icon.Icon {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return null;
     if (tab.editor.path.len == 0) return null;
-    return file_icon.forPath(tab.editor.path);
+    const icons = self.workbench.fileIconAppearance();
+    return if (icons.disabled) null else icons.forFile(std.fs.path.basename(tab.editor.path), tab.editor.languageId());
 }
 
 fn breadcrumbSymbolIcon(_: *anyopaque, kind: ?u32) []const u8 {
@@ -13195,8 +13224,9 @@ fn onBreadcrumbPickerOpenFile(context: *anyopaque, path: []const u8) anyerror!vo
     try self.openBreadcrumbFile(path);
 }
 
-fn onBreadcrumbPickerFileIcon(_: *anyopaque, path: []const u8) file_icon.Icon {
-    return file_icon.forPath(path);
+fn onBreadcrumbPickerFileIcon(context: *anyopaque, path: []const u8) file_icon.Icon {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return self.fileIconAppearance().forFile(std.fs.path.basename(path), null);
 }
 
 fn onBreadcrumbPickerReveal(context: *anyopaque, outline: *outline_mod.IOutline, element: *anyopaque) anyerror!void {

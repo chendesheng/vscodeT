@@ -37,6 +37,11 @@ pub const Theme = struct {
     path: []const u8,
 };
 
+pub const IconTheme = struct {
+    id: []const u8,
+    data: std.json.Value,
+};
+
 pub const Snippet = struct {
     root: []const u8,
     language: []const u8,
@@ -66,6 +71,7 @@ pub const Registry = struct {
     languages: []const Language,
     grammars: []const Grammar,
     themes: []const Theme,
+    icon_themes: []const IconTheme = &.{},
     snippets: []const Snippet,
 
     pub fn deinit(self: *Registry) void {
@@ -114,6 +120,7 @@ const Contributions = struct {
     languages: *std.array_list.Managed(Language),
     grammars: *std.array_list.Managed(Grammar),
     themes: *std.array_list.Managed(Theme),
+    icon_themes: *std.array_list.Managed(IconTheme),
     snippets: *std.array_list.Managed(Snippet),
 };
 
@@ -135,12 +142,14 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
     var languages = std.array_list.Managed(Language).init(scratch);
     var grammars = std.array_list.Managed(Grammar).init(scratch);
     var themes = std.array_list.Managed(Theme).init(scratch);
+    var icon_themes = std.array_list.Managed(IconTheme).init(scratch);
     var snippets = std.array_list.Managed(Snippet).init(scratch);
     const contributions: Contributions = .{
         .extensions = &extensions,
         .languages = &languages,
         .grammars = &grammars,
         .themes = &themes,
+        .icon_themes = &icon_themes,
         .snippets = &snippets,
     };
 
@@ -159,6 +168,7 @@ pub fn scan(allocator: Allocator, roots: []const []const u8) !Registry {
         .languages = try languages.toOwnedSlice(),
         .grammars = try grammars.toOwnedSlice(),
         .themes = try themes.toOwnedSlice(),
+        .icon_themes = try icon_themes.toOwnedSlice(),
         .snippets = try snippets.toOwnedSlice(),
     };
 }
@@ -270,6 +280,19 @@ fn scanExtensionRoot(allocator: Allocator, scratch: Allocator, absolute: []const
                 });
             }
         }
+    }
+
+    if (points.get("iconThemes")) |items| {
+        if (items == .array) for (items.array.items) |item| {
+            if (item != .object) continue;
+            const id = stringField(item.object, "id") orelse continue;
+            const relative = stringField(item.object, "path") orelse continue;
+            const path = try std.fs.path.join(temporary, &.{ root_copy, relative });
+            const raw = std.Io.Dir.cwd().readFileAlloc(time_compat.io, path, temporary, .limited(8 * 1024 * 1024)) catch continue;
+            const json = configuration_models.stripJsonc(temporary, raw) catch continue;
+            const data = std.json.parseFromSliceLeaky(std.json.Value, scratch, json, .{ .allocate = .alloc_always }) catch continue;
+            if (data == .object) try contributions.icon_themes.append(.{ .id = try scratch.dupe(u8, id), .data = data });
+        };
     }
 
     if (points.get("snippets")) |items| {
