@@ -8834,6 +8834,26 @@ pub const Workbench = struct {
             registry.deinit();
             self.allocator.destroy(registry);
         }
+        // VS Code's baseColors.ts and editorColors.ts supply these even for
+        // themes such as Light High Contrast that omit editor colors.
+        _ = try registry.registerColor("foreground", .{
+            .dark = .{ .string = "#CCCCCC" },
+            .light = .{ .string = "#616161" },
+            .hc_dark = .{ .string = "#FFFFFF" },
+            .hc_light = .{ .string = "#292929" },
+        }, null, "Overall foreground color", false);
+        _ = try registry.registerColor("editor.background", .{
+            .dark = .{ .string = "#1E1E1E" },
+            .light = .{ .string = "#FFFFFF" },
+            .hc_dark = .{ .string = "#000000" },
+            .hc_light = .{ .string = "#FFFFFF" },
+        }, null, "Editor background color", false);
+        _ = try registry.registerColor("editor.foreground", .{
+            .dark = .{ .string = "#BBBBBB" },
+            .light = .{ .string = "#333333" },
+            .hc_dark = .{ .string = "#FFFFFF" },
+            .hc_light = .{ .string = "foreground" },
+        }, null, "Editor foreground color", false);
         const service = try theme_service_mod.ThemeService.init(self.allocator, registry, null);
         self.theme_colors = registry;
         self.theme_service = service;
