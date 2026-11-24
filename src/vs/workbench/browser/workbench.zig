@@ -6193,7 +6193,10 @@ pub const Workbench = struct {
         }
 
         const start_line = topmost_line_monitor.getVisibleLine(tab.editor);
-        if (try tab.ensureMarkdownPreview()) |preview| preview.mermaid.io = self.async_io;
+        if (try tab.ensureMarkdownPreview()) |preview| {
+            preview.mermaid.io = self.async_io;
+            preview.math.io = self.async_io;
+        }
         tab.setMarkdownPreviewConfig(self.markdownPreviewConfig());
         try tab.setMarkdownPreviewVisible(true);
         pane.layout();

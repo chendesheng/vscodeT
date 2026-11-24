@@ -174,13 +174,14 @@ const ParseState = struct {
     slugs: slugify.SlugBuilder,
 };
 
-pub const DiagramRenderer = struct {
+pub const TextRenderer = struct {
     context: *anyopaque,
     lookup: *const fn (*anyopaque, []const u8) ?[]const u8,
 };
 
 const Context = struct {
-    mermaid: ?DiagramRenderer = null,
+    mermaid: ?TextRenderer = null,
+    math: ?TextRenderer = null,
     prefix: []const u8 = "",
     prefix_style: ui.Style = .{},
     /// Language used for a fenced code block without an info string.
@@ -215,7 +216,8 @@ const Context = struct {
 };
 
 pub const ParseOptions = struct {
-    mermaid: ?DiagramRenderer = null,
+    mermaid: ?TextRenderer = null,
+    math: ?TextRenderer = null,
     /// Upstream falls back to the editor's language when a fence has no info
     /// string. The participant supplies the model language here.
     code_fence_fallback_language: []const u8 = "plaintext",
@@ -243,7 +245,7 @@ pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOpt
     errdefer arena.deinit();
     const allocator = arena.allocator();
 
-    const root = markdown.parse(allocator, source, .{ .gfm = true }) catch |err| switch (err) {
+    const root = markdown.parse(allocator, source, .{ .gfm = true, .math = options.mode == .document and options.math != null }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // Invalid UTF-8 and pathological nesting are not worth failing a
         // hover over; keep the text readable instead.
@@ -260,6 +262,7 @@ pub fn parseWithOptions(parent: Allocator, source: []const u8, options: ParseOpt
     var lines = std.array_list.Managed(Line).init(allocator);
     try renderBlocks(allocator, &lines, &definitions, root, .{
         .mermaid = options.mermaid,
+        .math = options.math,
         .code_fence_fallback_language = options.code_fence_fallback_language,
         .code_background = options.code_background,
         .mode = options.mode,
@@ -461,7 +464,16 @@ fn renderBlock(
         .list => try renderList(allocator, out, definitions, node, ctx, depth),
         .table => try renderTable(allocator, out, definitions, node, ctx, depth),
         .footnote_definition => try renderFootnoteDefinition(allocator, out, definitions, node, ctx, depth),
-        .html, .definition, .yaml, .toml, .math => {},
+        .math => |source| {
+            const block = nextBlock(ctx, node, .paragraph, depth);
+            const text = if (ctx.math) |renderer| renderer.lookup(renderer.context, source) orelse source else source;
+            var rows = std.mem.splitScalar(u8, text, '\n');
+            while (rows.next()) |row| {
+                const copy = try allocator.dupe(u8, row);
+                try out.append(try makeLine(allocator, ctx.withBlock(block), &.{.{ .text = copy, .style = .{ .color = code_color } }}, 0, false, false));
+            }
+        },
+        .html, .definition, .yaml, .toml => {},
         .mdx_flow_expression, .mdx_text_expression, .mdx_jsx_flow_element, .mdx_jsx_text_element => {},
         else => {},
     }
@@ -524,8 +536,10 @@ fn renderCode(
     const block_ctx = ctx.withBlock(block);
 
     const language = resolveCodeFenceLanguage(code.lang, ctx.code_fence_fallback_language);
-    if (ctx.mode == .document and std.ascii.eqlIgnoreCase(code.lang orelse "", "mermaid")) {
-        if (ctx.mermaid) |renderer| {
+    const fence = code.lang orelse "";
+    const specialized = if (std.ascii.eqlIgnoreCase(fence, "mermaid")) ctx.mermaid else if (std.ascii.eqlIgnoreCase(fence, "math")) ctx.math else null;
+    if (ctx.mode == .document) {
+        if (specialized) |renderer| {
             if (renderer.lookup(renderer.context, value)) |diagram| {
                 var rows = std.mem.splitScalar(u8, std.mem.trimEnd(u8, diagram, "\r\n"), '\n');
                 while (rows.next()) |row| try appendPlainCodeLine(allocator, out, block_ctx, row);
@@ -1190,7 +1204,10 @@ fn renderInline(
             const text = try std.fmt.allocPrint(allocator, "[^{s}]", .{reference.label});
             try builder.appendText(text, .{ .dim = true, .color = text_color });
         },
-        .inline_math => |math| try builder.appendText(math, withColor(style, code_color)),
+        .inline_math => |math| {
+            const text = if (builder.ctx.math) |renderer| renderer.lookup(renderer.context, math) orelse math else math;
+            try builder.appendText(text, withColor(style, code_color));
+        },
         .html, .mdx_text_expression, .mdx_jsx_text_element => {},
         else => try renderInlineChildren(allocator, builder, node, style, definitions, depth),
     }
@@ -1218,7 +1235,7 @@ fn appendLinkUrl(
 fn flattenText(out: *std.array_list.Managed(u8), node: *const Node) RenderError!void {
     switch (node.data) {
         .text => |text| try out.appendSlice(text),
-        .inline_code => |code| try out.appendSlice(code),
+        .inline_code, .inline_math => |code| try out.appendSlice(code),
         .image => |image| try out.appendSlice(image.alt),
         .break_ => try out.append(' '),
         else => {},
@@ -1698,4 +1715,25 @@ test "document preview replaces only Mermaid fences and retains their source blo
     defer document.deinit();
     try std.testing.expect(findTextLine(std.testing.allocator, &document, "A → B") != null);
     try std.testing.expect(findTextLine(std.testing.allocator, &document, "A --> B") != null);
+}
+
+test "document math renderer respects inline, block, code and disabled contexts" {
+    const renderer = struct {
+        fn lookup(_: *anyopaque, source: []const u8) ?[]const u8 {
+            const tex = std.mem.trim(u8, source, " \r\n");
+            if (std.mem.eql(u8, tex, "x^2")) return "x²";
+            if (std.mem.eql(u8, tex, "y^2")) return "y²";
+            return null;
+        }
+    };
+    const source = "Result $x^2$\n\n$$\ny^2\n$$\n\n`$x^2$`";
+    const a = std.testing.allocator;
+    var enabled = try parseDocument(a, source, .{ .math = .{ .context = undefined, .lookup = renderer.lookup } });
+    defer enabled.deinit();
+    try std.testing.expect(findTextLine(a, &enabled, "Result x²") != null);
+    try std.testing.expect(findTextLine(a, &enabled, "y²") != null);
+    try std.testing.expect(findTextLine(a, &enabled, "$x^2$") != null);
+    var disabled = try parseDocument(a, source, .{});
+    defer disabled.deinit();
+    try std.testing.expect(findTextLine(a, &disabled, "Result $x^2$") != null);
 }

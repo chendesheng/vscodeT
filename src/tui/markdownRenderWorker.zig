@@ -1,11 +1,12 @@
-// Renders Mermaid fences in a worker. The source view stays usable while a
-// diagram is being laid out. Cached drawings belong to one document version.
+// Renders Markdown preview content in a worker. Cached text belongs to one
+// document version. Each renderer has its own job and executable.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 pub const Renderer = struct {
     allocator: Allocator,
+    script_name: []const u8,
     io: ?Io = null,
     executable_checked: bool = false,
     script: ?[]u8 = null,
@@ -58,7 +59,7 @@ pub const Renderer = struct {
             self.executable_checked = true;
             const dir = std.process.executableDirPathAlloc(io, self.allocator) catch return null;
             defer self.allocator.free(dir);
-            const script = std.fs.path.resolveAlloc(self.allocator, &.{ dir, "../lib/vscode-textbuffer/render-mermaid.mjs" }) catch return null;
+            const script = std.fs.path.resolveAlloc(self.allocator, &.{ dir, "../lib/vscode-textbuffer", self.script_name }) catch return null;
             Io.Dir.cwd().access(io, script, .{}) catch {
                 self.allocator.free(script);
                 return null;

@@ -13,6 +13,7 @@ pub const MarkdownPreviewConfig = struct {
     scroll_editor_with_preview: bool = true,
     mark_editor_selection: bool = true,
     preview_breaks: bool = false,
+    math_enabled: bool = true,
     double_click_to_switch_to_editor: bool = true,
 
     pub fn load(configuration: ?*ConfigurationService) MarkdownPreviewConfig {
@@ -21,6 +22,7 @@ pub const MarkdownPreviewConfig = struct {
             .scroll_preview_with_editor = service.getBool("markdown.preview.scrollPreviewWithEditor", true),
             .scroll_editor_with_preview = service.getBool("markdown.preview.scrollEditorWithPreview", true),
             .mark_editor_selection = service.getBool("markdown.preview.markEditorSelection", true),
+            .math_enabled = service.getBool("markdown.math.enabled", true),
             .preview_breaks = service.getBool("markdown.preview.breaks", false),
             .double_click_to_switch_to_editor = service.getBool("markdown.preview.doubleClickToSwitchToEditor", true),
         };
@@ -31,6 +33,7 @@ pub const MarkdownPreviewConfig = struct {
             a.scroll_editor_with_preview == b.scroll_editor_with_preview and
             a.mark_editor_selection == b.mark_editor_selection and
             a.preview_breaks == b.preview_breaks and
+            a.math_enabled == b.math_enabled and
             a.double_click_to_switch_to_editor == b.double_click_to_switch_to_editor;
     }
 };

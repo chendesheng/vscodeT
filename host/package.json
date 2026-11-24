@@ -34,6 +34,7 @@
     "https-proxy-agent": "^9.1.0",
     "image-size": "1.0.2",
     "jsonc-parser": "3.2.0",
+    "katex": "0.16.21",
     "keytar": "file:../vscode/extensions/microsoft-authentication/packageMocks/keytar",
     "markdown-it": "14.3.3",
     "minimatch": "5.1.8",

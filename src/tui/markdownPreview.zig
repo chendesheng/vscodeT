@@ -125,7 +125,8 @@ fn loadMarkdownRemoteImage(preview: *MarkdownPreview, url: []const u8) MarkdownI
 }
 
 pub const MarkdownPreview = struct {
-    mermaid: @import("mermaidPreview.zig").Renderer,
+    mermaid: @import("markdownRenderWorker.zig").Renderer,
+    math: @import("markdownRenderWorker.zig").Renderer,
     allocator: Allocator,
     editor: *Editor,
     runtime: ?*ui.image.Runtime = null,
@@ -182,7 +183,8 @@ pub const MarkdownPreview = struct {
             .editor = editor,
             .image_entries = std.StringHashMap(*ImageEntry).init(allocator),
             .image_specs = std.array_list.Managed(preview_doc.ImageSpec).init(allocator),
-            .mermaid = .{ .allocator = allocator },
+            .mermaid = .{ .allocator = allocator, .script_name = "render-mermaid.mjs" },
+            .math = .{ .allocator = allocator, .script_name = "render-math.mjs" },
             .image_loading = std.StringHashMap(*MarkdownImageJob).init(allocator),
             .image_jobs = std.array_list.Managed(*MarkdownImageJob).init(allocator),
             .image_failed = std.StringHashMap(void).init(allocator),
@@ -219,6 +221,7 @@ pub const MarkdownPreview = struct {
         if (self.async_io != null) return;
         self.async_io = io;
         self.mermaid.io = io;
+        self.math.io = io;
         self.request_service = RequestService.init(self.allocator, io);
     }
 
@@ -229,6 +232,7 @@ pub const MarkdownPreview = struct {
 
     pub fn deinit(self: *MarkdownPreview) void {
         self.mermaid.deinit();
+        self.math.deinit();
         self.cancelImageJobs();
         if (self.request_service) |*service| service.deinit();
         self.request_service = null;
@@ -262,10 +266,10 @@ pub const MarkdownPreview = struct {
 
     pub fn setConfig(self: *MarkdownPreview, config: preview_config.MarkdownPreviewConfig) void {
         if (preview_config.MarkdownPreviewConfig.eql(self.options, config)) return;
-        const breaks_changed = self.options.preview_breaks != config.preview_breaks;
+        const render_changed = self.options.preview_breaks != config.preview_breaks or self.options.math_enabled != config.math_enabled;
         const selection_changed = self.options.mark_editor_selection != config.mark_editor_selection;
         self.options = config;
-        if (breaks_changed) {
+        if (render_changed) {
             self.forceRefresh() catch {};
         } else if (selection_changed) {
             self.updateActiveBlock();
@@ -365,7 +369,8 @@ pub const MarkdownPreview = struct {
 
     pub fn onTick(self: *MarkdownPreview, now_ms: i64) bool {
         var changed = false;
-        if (self.mermaid.poll()) {
+        const math_updated = self.math.poll();
+        if (self.mermaid.poll() or math_updated) {
             self.updatePreview(false) catch |err| {
                 self.last_error = err;
             };
@@ -386,7 +391,7 @@ pub const MarkdownPreview = struct {
     }
 
     pub fn nextTimeout(self: *const MarkdownPreview, now_ms: i64) ?u32 {
-        var result: ?u32 = if (self.mermaid.job != null) 20 else null;
+        var result: ?u32 = if (self.mermaid.job != null or self.math.job != null) 20 else null;
         const timers = [_]*const DeadlineTimer{
             &self.refresh_timer,
             &self.scrolling_timer,
@@ -468,8 +473,10 @@ pub const MarkdownPreview = struct {
         defer value.deinit();
 
         self.mermaid.reset(self.editor.model.getVersionId());
+        self.math.reset(self.editor.model.getVersionId());
         var content = try markdown.parseDocument(self.allocator, value.items, .{
-            .mermaid = .{ .context = &self.mermaid, .lookup = @import("mermaidPreview.zig").Renderer.lookup },
+            .mermaid = .{ .context = &self.mermaid, .lookup = @import("markdownRenderWorker.zig").Renderer.lookup },
+            .math = if (self.options.math_enabled) .{ .context = &self.math, .lookup = @import("markdownRenderWorker.zig").Renderer.lookup } else null,
             .preview_breaks = self.options.preview_breaks,
         });
         errdefer content.deinit();

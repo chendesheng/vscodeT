@@ -182,6 +182,8 @@ fn setupExtensionHost(b: *std.Build) void {
     host_step.dependOn(&install_host.step);
     const mermaid = b.addInstallFile(b.path("host/render-mermaid.mjs"), runtime_dir ++ "/render-mermaid.mjs");
     host_step.dependOn(&mermaid.step);
+    const math_renderer = b.addInstallFile(b.path("host/render-math.mjs"), runtime_dir ++ "/render-math.mjs");
+    host_step.dependOn(&math_renderer.step);
     const product = b.addInstallFile(b.path("vscode/product.json"), runtime_dir ++ "/product.json");
     host_step.dependOn(&product.step);
     const install_extensions = b.addInstallDirectory(.{
