@@ -1601,6 +1601,7 @@ pub const Workbench = struct {
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
             .{ .id = "outline.focus", .label = "Focus Outline", .category = "View", .context = self, .run = commandFocusOutline },
+            .{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions },
             .{ .id = "outline.collapse", .label = "Collapse All", .category = "View", .context = self, .run = commandOutlineCollapse },
             .{ .id = "outline.expand", .label = "Expand All", .category = "View", .context = self, .run = commandOutlineExpand },
             .{ .id = "outline.followCursor", .label = "Follow Cursor", .category = "View", .context = self, .run = commandOutlineFollowCursor },
@@ -12526,6 +12527,7 @@ fn outlinePaneHandleMouse(context: *anyopaque, event: *const ui.MouseEvent, rect
 
 fn outlinePaneTitleActions(context: *anyopaque) []const views_mod.TitleAction {
     const self: *Workbench = @ptrCast(@alignCast(context));
+    self.syncOutlineView() catch return &.{};
     if (self.outline_view) |view| return view.titleActions();
     return &.{};
 }
@@ -13492,6 +13494,19 @@ fn commandFocusOutline(context: *anyopaque) anyerror!void {
     self.syncOutlineView() catch {};
     if (self.outline_view) |view| view.setFocused(true);
     self.updateSidebarTitleActions();
+}
+
+fn commandOutlineMoreActions(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const state = &(self.outline_view orelse return).view_state;
+    try self.quick_access.inputService().showPick(&.{
+        .{ .item = .{ .id = "outline.followCursor", .label = "Follow Cursor", .description = if (state.follow_cursor) "✓" else "" } },
+        .{ .item = .{ .id = "outline.filterOnType", .label = "Filter on Type", .description = if (state.filter_on_type) "✓" else "" } },
+        .{ .separator = .{} },
+        .{ .item = .{ .id = "outline.sortByPosition", .label = "Sort By: Position", .description = if (state.sort_by == .ByPosition) "✓" else "" } },
+        .{ .item = .{ .id = "outline.sortByName", .label = "Sort By: Name", .description = if (state.sort_by == .ByName) "✓" else "" } },
+        .{ .item = .{ .id = "outline.sortByKind", .label = "Sort By: Category", .description = if (state.sort_by == .ByKind) "✓" else "" } },
+    }, .{ .placeholder = "Outline Actions" }, onTitleCommandPick, self);
 }
 
 fn commandOutlineCollapse(context: *anyopaque) anyerror!void {
@@ -20105,7 +20120,15 @@ test "Workbench: outline side panel shows provider symbols" {
     try std.testing.expectEqual(@as(usize, 1), Fake.revealed);
 
     try view.setFollowCursor(true);
-    try std.testing.expect(view.titleActions().len >= 4);
+    const actions = view.titleActions();
+    try std.testing.expectEqual(@as(usize, 2), actions.len);
+    try std.testing.expectEqualStrings("outline.collapse", actions[0].id);
+    try std.testing.expectEqual(@as(u21, 0xeac5), actions[0].glyph);
+    try std.testing.expectEqualStrings(OutlinePane.more_actions_id, actions[1].id);
+    try workbench.commands.execute(OutlinePane.more_actions_id);
+    const picker = workbench.quick_access.inputService().pickerRef();
+    try std.testing.expect(picker.visible);
+    workbench.quick_access.inputService().hide();
 }
 
 test "Workbench: closing the active tab detaches the outline editor handler" {

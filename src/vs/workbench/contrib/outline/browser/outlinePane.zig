@@ -77,7 +77,7 @@ pub const OutlinePane = struct {
     theme: ?*const theme_colors_mod.ThemeColors = null,
     focused: bool = false,
     border: bool = false,
-    action_buf: [6]views.TitleAction = undefined,
+    action_buf: [2]views.TitleAction = undefined,
 
     pub fn init(
         allocator: Allocator,
@@ -127,50 +127,21 @@ pub const OutlinePane = struct {
         self.allocator.destroy(self);
     }
 
+    pub const more_actions_id = "outline.moreActions";
+
     pub fn titleActions(self: *OutlinePane) []const views.TitleAction {
         const all_collapsed = self.isAllCollapsed();
-        const follow = self.view_state.follow_cursor;
-        var count: usize = 0;
-        self.action_buf[count] = .{
-            .id = if (all_collapsed) "outline.expand" else "outline.collapse",
-            .label = if (all_collapsed) "Expand All" else "Collapse All",
-            .glyph = if (all_collapsed) 0x229E else 0x229F,
+        // Navigation stays in the toolbar. The config and sort groups are
+        // secondary actions in the pinned VS Code Outline title menu.
+        self.action_buf = .{
+            .{
+                .id = if (all_collapsed) "outline.expand" else "outline.collapse",
+                .label = if (all_collapsed) "Expand All" else "Collapse All",
+                .glyph = if (all_collapsed) 0xeb95 else 0xeac5,
+            },
+            .{ .id = more_actions_id, .label = "More Actions", .glyph = 0xea7c },
         };
-        count += 1;
-        self.action_buf[count] = .{
-            .id = "outline.followCursor",
-            .label = "Follow Cursor",
-            .glyph = if (follow) 0x25C9 else 0x25CB,
-        };
-        count += 1;
-        self.action_buf[count] = .{
-            .id = "outline.filterOnType",
-            .label = "Filter on Type",
-            .glyph = if (self.view_state.filter_on_type) 'F' else 'f',
-        };
-        count += 1;
-        self.action_buf[count] = .{
-            .id = "outline.sortByPosition",
-            .label = "Sort By: Position",
-            .glyph = 0x21C5,
-            .enabled = self.view_state.sort_by != .ByPosition,
-        };
-        count += 1;
-        self.action_buf[count] = .{
-            .id = "outline.sortByName",
-            .label = "Sort By: Name",
-            .glyph = 'A',
-            .enabled = self.view_state.sort_by != .ByName,
-        };
-        count += 1;
-        self.action_buf[count] = .{
-            .id = "outline.sortByKind",
-            .label = "Sort By: Category",
-            .glyph = 'T',
-            .enabled = self.view_state.sort_by != .ByKind,
-        };
-        count += 1;
-        return self.action_buf[0..count];
+        return &self.action_buf;
     }
 
     pub fn setThemeColors(self: *OutlinePane, palette: ?*const theme_colors_mod.ThemeColors) void {
