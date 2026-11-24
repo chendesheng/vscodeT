@@ -23,6 +23,7 @@ const configuration_mod = @import("../../../../services/configuration/browser/co
 const explorer_viewer = @import("./explorerViewer.zig");
 const async_tree = @import("../../../../../base/browser/ui/tree/asyncDataTree.zig");
 const list = @import("../../../../../base/browser/ui/list/list.zig");
+const list_scrollbar = @import("../../../../../base/browser/ui/list/listScrollbarTerminal.zig");
 const tree = @import("../../../../../base/browser/ui/tree/tree.zig");
 const abstract_tree = @import("../../../../../base/browser/ui/tree/abstractTree.zig");
 const file_icon = @import("../../../../browser/fileIcon.zig");
@@ -61,12 +62,6 @@ const unfocused_selection_style = PaintStyle{
 const unfocused_dir_selection_style = PaintStyle{
     .fg = dir_style.fg,
     .bg = unfocused_selection_style.bg,
-};
-const scrollbar_track_style = PaintStyle{
-    .bg = ui.cell.packColor(.{ .r = 30, .g = 32, .b = 40 }),
-};
-const scrollbar_thumb_style = PaintStyle{
-    .bg = ui.cell.packColor(.{ .r = 105, .g = 108, .b = 122 }),
 };
 
 /// Background shared by the Explorer container and its rows. Upstream rows have
@@ -551,8 +546,7 @@ pub const Sidebar = struct {
         if (height <= self.header_rows) return;
         const rows = height - self.header_rows;
         const content_rows = self.tree.count();
-        const show_scrollbar = width > 1 and content_rows > rows;
-        const list_width = if (show_scrollbar) width - 1 else width;
+        const list_width = list_scrollbar.contentWidth(width, rows, content_rows);
         self.tree.setFocus(focused);
         self.tree.render(grid, .{
             .x = @floatFromInt(x),
@@ -564,34 +558,12 @@ pub const Sidebar = struct {
             renderStickyScrollBorder(self, grid, x, y + self.header_rows, list_width, rows);
         }
 
-        if (show_scrollbar) {
-            const scrollbar_x = x + width - 1;
-            grid.fillRect(
-                @floatFromInt(scrollbar_x),
-                @floatFromInt(y + self.header_rows),
-                1,
-                @floatFromInt(rows),
-                scrollbar_track_style,
-            );
-            const thumb_height = @max(1, @as(usize, @intFromFloat(@round(
-                @as(f64, @floatFromInt(rows * rows)) / @as(f64, @floatFromInt(content_rows)),
-            ))));
-            const max_scroll = @as(f64, @floatFromInt(content_rows - rows));
-            const thumb_top = if (max_scroll <= 0)
-                0
-            else
-                @as(usize, @intFromFloat(@round(
-                    @as(f64, @floatFromInt(rows - thumb_height)) *
-                        self.tree.scrollTop() / max_scroll,
-                )));
-            grid.fillRect(
-                @floatFromInt(scrollbar_x),
-                @floatFromInt(y + self.header_rows + thumb_top),
-                1,
-                @floatFromInt(thumb_height),
-                scrollbar_thumb_style,
-            );
-        }
+        list_scrollbar.paint(grid, .{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(y + self.header_rows),
+            .w = @floatFromInt(width),
+            .h = @floatFromInt(rows),
+        }, content_rows, self.tree.scrollTop());
     }
 };
 
