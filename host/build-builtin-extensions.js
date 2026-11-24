@@ -1,7 +1,7 @@
 // Bundle desktop entry points from the pinned checkout. Clients locate their
 // servers, schemas and TypeScript SDK relative to the installed manifest.
 import { build } from 'esbuild';
-import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,12 +16,12 @@ const options = {
     mainFields: ['module', 'main'], external: ['vscode', '@vscode/internal-github'], nodePaths: [modules]
 };
 
-async function bundleExtension(name, client, resources = [], alias = {}) {
+async function bundleExtension(name, client, resources = [], alias = {}, external = []) {
     const root = path.join(upstream, name);
     const target = path.join(destination, name);
     const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
     const source = client.replace('/dist/', '/src/').replace(/^dist\//, 'src/').replace(/\.js$/, '.ts');
-    await build({ ...options, alias, entryPoints: [path.join(root, source)], outfile: path.join(target, client) });
+    await build({ ...options, external: [...options.external, ...external], alias, entryPoints: [path.join(root, source)], outfile: path.join(target, client) });
     for (const resource of ['package.nls.json', ...resources]) {
         await cp(path.join(root, resource), path.join(target, resource), { recursive: true });
     }
@@ -69,6 +69,21 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     await bundleExtension('npm', 'dist/npmMain.js', [], {
         which: 'npm-extension-which', 'request-light': 'npm-extension-http', 'vscode-uri': 'npm-extension-uri'
     });
+    await bundleExtension('github-authentication', 'dist/extension.js');
+    await bundleExtension('microsoft-authentication', 'dist/extension.js', [], {
+        keytar: path.join(upstream, 'microsoft-authentication/packageMocks/keytar/index.js')
+    }, ['electron', './msal-node-runtime']);
+    const platformFolder = { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform];
+    if (platformFolder) {
+        const source = path.join(modules, '@azure/msal-node-runtime/dist', platformFolder, process.arch);
+        const binaries = await readdir(source).catch(error => {
+            if (error.code === 'ENOENT') return [];
+            throw error;
+        });
+        for (const binary of binaries.filter(name => /^(lib)?msal.*\.(node|dll|dylib|so)$/.test(name))) {
+            await cp(path.join(source, binary), path.join(destination, 'microsoft-authentication/dist', binary));
+        }
+    }
     await bundleExtension('terminal-suggest', 'dist/terminalSuggestMain.js');
     await bundleExtension('simple-browser', 'dist/extension.js');
     await bundleExtension('merge-conflict', 'dist/mergeConflictMain.js');

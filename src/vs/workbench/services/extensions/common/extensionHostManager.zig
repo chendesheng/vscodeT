@@ -643,6 +643,13 @@ pub fn readExtensionDescription(allocator: Allocator, extension_path: []const u8
                     if (id == .string) try appendActivation(&events, "onLanguage:", id.string);
                 };
             }
+            if (points.object.get("authentication")) |providers| {
+                if (providers == .array) for (providers.array.items) |provider| {
+                    if (provider != .object) continue;
+                    const id = provider.object.get("id") orelse continue;
+                    if (id == .string) try appendActivation(&events, "onAuthenticationRequest:", id.string);
+                };
+            }
             if (points.object.get("commands")) |commands| {
                 if (commands == .array) for (commands.array.items) |command| {
                     if (command != .object) continue;
