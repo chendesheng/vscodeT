@@ -426,7 +426,8 @@ VSCODE_TEXTBUFFER_COPILOT_SERVER=copilot-language-server zig-out/bin/zig example
 
 Open the command palette and run **GitHub Copilot: Sign In**. The status bar
 shows a device code. Run the same command again to open GitHub and enter the
-code. After signing in, type at the end of a line. Tab accepts the suggestion,
+code. After signing in, type in a supported file. Insertion suggestions can appear at
+the end of a line or before existing text. Tab accepts the suggestion,
 Escape dismisses it, and Undo restores the previous text. Multiline suggestions
 show their first line with a return marker and insert the full text on acceptance.
 Use **GitHub Copilot: Sign Out** to end the session. The adapter honors

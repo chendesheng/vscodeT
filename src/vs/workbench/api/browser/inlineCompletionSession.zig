@@ -77,6 +77,12 @@ pub const Session = struct {
             self.view = null;
             return self.changed;
         }
+        if (tab.?.controllers) |controllers| {
+            if (controllers.suggest.isOpen() or controllers.suggest.hasSnippetSession()) {
+                self.dismiss();
+                return self.changed;
+            }
+        }
         const editor = tab.?.editor;
         const now = time.milliTimestamp();
         const version = editor.model.getVersionId();
@@ -145,6 +151,9 @@ pub const Session = struct {
         const tab = self.workbench.activeTab() orelse return;
         const editor = tab.editor;
         if (self.stale or self.workbench.focus != .editor or editor != self.editor or editor.model.getVersionId() != self.version or !editor.modelCursorPosition().equals(self.position)) return;
+        if (tab.controllers) |controllers| {
+            if (controllers.suggest.isOpen() or controllers.suggest.hasSnippetSession()) return;
+        }
         const items = list.get("items") orelse return;
         if (items != .array) return;
         for (items.array.items) |item| {

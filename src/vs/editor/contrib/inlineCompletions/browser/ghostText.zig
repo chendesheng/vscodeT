@@ -12,11 +12,17 @@ pub const GhostText = struct {
     text: ?[]u8 = null,
     anchor: Position = .{ .lineNumber = 1, .column = 1 },
     version: u32 = 0,
+    replacement_end: usize = 1,
+    ghost_length: usize = 0,
+    trailing: ?[]u8 = null,
+    editor_foreground: ui.Color = .{ .r = 212, .g = 212, .b = 212 },
     foreground: ui.Color = .{ .r = 128, .g = 128, .b = 128 },
 
     pub fn clear(self: *GhostText) void {
         if (self.text) |text| self.editor.allocator.free(text);
         self.text = null;
+        if (self.trailing) |tail| self.editor.allocator.free(tail);
+        self.trailing = null;
     }
 
     pub fn isVisible(self: *GhostText) bool {
@@ -29,16 +35,21 @@ pub const GhostText = struct {
         self.clear();
         const pos = self.editor.modelCursorPosition();
         if (self.editor.read_only or self.editor.cursorCount() != 1 or !self.editor.modelSelection().isEmpty()) return false;
-        if (!range.getEndPosition().equals(pos) or range.startLineNumber != pos.lineNumber) return false;
+        if (range.startLineNumber != pos.lineNumber or range.endLineNumber != pos.lineNumber or
+            range.startColumn == 0 or range.startColumn > pos.column or range.endColumn < pos.column) return false;
         const line = try self.editor.model.getLineContent(pos.lineNumber);
         defer line.deinit();
-        // Exact-position widgets can paint trailing text without obscuring
-        // existing characters. Replacement-style and middle-of-line edits
-        // require projected view lines.
-        if (pos.column != line.items.len + 1 or range.startColumn == 0 or range.startColumn > pos.column) return false;
-        const prefix = line.items[range.startColumn - 1 ..];
-        if (!std.mem.startsWith(u8, proposed, prefix) or proposed.len == prefix.len) return false;
-        self.text = try self.editor.allocator.dupe(u8, proposed[prefix.len..]);
+        if (range.endColumn > line.items.len + 1) return false;
+        const before = line.items[range.startColumn - 1 .. pos.column - 1];
+        const after = line.items[pos.column - 1 .. range.endColumn - 1];
+        if (!std.mem.startsWith(u8, proposed, before)) return false;
+        const replacement = proposed[before.len..];
+        if (!std.mem.endsWith(u8, replacement, after) or replacement.len == after.len) return false;
+        self.text = try self.editor.allocator.dupe(u8, replacement);
+        errdefer self.clear();
+        self.ghost_length = replacement.len - after.len;
+        self.replacement_end = range.endColumn;
+        if (pos.column <= line.items.len) self.trailing = try self.editor.allocator.dupe(u8, line.items[pos.column - 1 ..]);
         self.version = self.editor.model.getVersionId();
         self.anchor = pos;
         return true;
@@ -47,7 +58,7 @@ pub const GhostText = struct {
     pub fn accept(self: *GhostText) !bool {
         if (!self.isVisible()) return false;
         const p = self.anchor;
-        try self.editor.replaceRange(Range.init(p.lineNumber, p.column, p.lineNumber, p.column), self.text.?);
+        try self.editor.replaceRange(Range.init(p.lineNumber, p.column, p.lineNumber, self.replacement_end), self.text.?);
         self.clear();
         return true;
     }
@@ -73,10 +84,17 @@ pub const GhostText = struct {
         const node = try doc.createElement(.div);
         node.setStyle(.{ .color = self.foreground, .white_space = .pre, .overflow = .hidden });
         // The TUI displays the first line. Acceptance inserts the full text.
-        var lines = std.mem.tokenizeAny(u8, self.text.?, "\r\n");
-        const first = if (self.text.?[0] == '\n' or self.text.?[0] == '\r') "" else lines.next() orelse "";
+        const ghost = self.text.?[0..self.ghost_length];
+        const first = ghost[0 .. std.mem.indexOfAny(u8, ghost, "\r\n") orelse ghost.len];
         _ = try node.appendChild(try doc.createText(first));
-        if (first.len != self.text.?.len) _ = try node.appendChild(try doc.createText(" ↵"));
+        if (first.len != ghost.len) {
+            _ = try node.appendChild(try doc.createText(" ↵"));
+        } else if (self.trailing) |tail| {
+            const suffix = try doc.createElement(.span);
+            suffix.setStyle(.{ .color = self.editor_foreground, .white_space = .pre });
+            _ = try suffix.appendChild(try doc.createText(tail));
+            _ = try node.appendChild(suffix);
+        }
         return node;
     }
     fn focus(_: *anyopaque) ?*ui.Node {

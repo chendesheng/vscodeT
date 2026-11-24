@@ -1325,6 +1325,7 @@ pub const View = struct {
     /// them because the registry colors are cached per document.
     pub fn setThemeColors(self: *View, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme_colors = palette;
+        self.ghost_text.editor_foreground = if (palette) |colors| colors.color("editor.foreground", .{ 212, 212, 212 }) else color(.{ 212, 212, 212 });
         self.ghost_text.foreground = if (palette) |colors| colors.color("editorGhostText.foreground", .{ 128, 128, 128 }) else color(.{ 128, 128, 128 });
         self.terminal_view_host.viewRef().marginPart().setTheme(marginTheme(palette));
         self.clearPaintStyles();
@@ -6399,4 +6400,29 @@ test "View: ghost text starts at the caret, clips at the edge and leaves the buf
     try std.testing.expectEqualStrings("éx", line.items);
     view.ghost_text.clear();
     try std.testing.expect(!try view.ghost_text.accept());
+}
+
+test "View: inline completion displays the projected suffix and accepts the provider range" {
+    const allocator = std.testing.allocator;
+    const editor = try Editor.createFromText(allocator, @import("../vs/base/common/timeCompat.zig").io, "f() + 1", "test.py", 42, 8);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    const view = try View.init(allocator, editor);
+    defer view.deinit();
+    try editor.setCursorPosition(Position.init(1, 3));
+    try std.testing.expect(try view.ghost_text.show(Range.init(1, 1, 1, 4), "f(value)"));
+    try view.refresh();
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try view.renderAnsi(&out.writer);
+    const grid = view.surface.grid();
+    const row = try grid.rowText(allocator, 0);
+    defer allocator.free(row);
+    try std.testing.expect(std.mem.indexOf(u8, row, "f(value) + 1") != null);
+    try std.testing.expect(try view.ghost_text.accept());
+    const value = try editor.model.getLineContent(1);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("f(value) + 1", value.items);
 }

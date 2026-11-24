@@ -25,10 +25,11 @@ connection.onNotification('textDocument/didChange', ({ textDocument, contentChan
 });
 connection.onRequest('textDocument/inlineCompletion', ({ textDocument, position }) => {
     const text = documents.get(textDocument.uri);
-    if (position.line !== 0 || position.character !== text.length) return { items: [] };
+    const midline = text === '+value' && position.character === 1;
+    if (position.line !== 0 || (!midline && position.character !== text.length)) return { items: [] };
     return { items: [{
-        range: { start: { line: 0, character: 0 }, end: position },
-        insertText: text + ' = 42',
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: text.length } },
+        insertText: midline ? '+ 2 + value' : text + ' = 42',
         command: { command: 'github.copilot.didAcceptCompletionItem', arguments: ['fixture'] }
     }] };
 });
