@@ -60,12 +60,12 @@ test "searchResultsView: row labels, counts and line numbers" {
     const result = try tree.SearchResult.create(allocator);
     defer result.deinit();
     result.setQuery(&query);
-    const file = try addFile(allocator, result, "/root/a.txt", 4);
+    const file = try addFile(allocator, result, "/root/src/sub/a.txt", 4);
 
     const file_row = results_view.rowData(.{ .file = file }, .{ .mode = .list });
     try std.testing.expectEqual(results_view.Template.file_match, file_row.template);
     try std.testing.expectEqualStrings("a.txt", file_row.label);
-    try std.testing.expectEqualStrings("a.txt", file_row.description);
+    try std.testing.expectEqualStrings("src/sub", file_row.description);
     try std.testing.expectEqual(@as(usize, 1), file_row.count);
 
     const match_row = results_view.rowData(.{ .match = file.matches()[0] }, .{ .show_line_numbers = true });

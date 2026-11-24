@@ -87,8 +87,18 @@ pub const RowData = struct {
     line_number: usize = 0,
     extra_lines: usize = 0,
     before: []const u8 = "",
+    before_truncated: bool = false,
     inside: []const u8 = "",
     after: []const u8 = "",
+
+    pub fn lineLabel(self: RowData, buffer: []u8) []const u8 {
+        if (self.line_number > 0 and self.extra_lines > 0) {
+            return std.fmt.bufPrint(buffer, "{d}:+{d}", .{ self.line_number, self.extra_lines }) catch "";
+        }
+        if (self.line_number > 0) return std.fmt.bufPrint(buffer, "{d}:", .{self.line_number}) catch "";
+        if (self.extra_lines > 0) return std.fmt.bufPrint(buffer, "+{d}", .{self.extra_lines}) catch "";
+        return "";
+    }
 };
 
 /// Port of upstream `SearchViewDataSource`. Slices returned by the `get*`
@@ -256,7 +266,7 @@ pub fn rowData(node: Node, state: ViewState) RowData {
         .file => |file| .{
             .template = .file_match,
             .label = file.name,
-            .description = if (state.mode == .list) relativePath(file) else "",
+            .description = if (state.mode == .list or file.parent_folder.is_other) std.fs.path.dirname(relativePath(file)) orelse "" else "",
             .count = file.count(),
             .collapsible = file.hasChildren(),
         },
@@ -271,6 +281,7 @@ pub fn rowData(node: Node, state: ViewState) RowData {
                 .template = .match,
                 .label = preview.inside,
                 .before = preview.before,
+                .before_truncated = preview.before_truncated,
                 .inside = preview.inside,
                 .after = preview.after,
                 .line_number = if (state.show_line_numbers) range.startLineNumber else 0,
@@ -282,7 +293,9 @@ pub fn rowData(node: Node, state: ViewState) RowData {
 
 /// Relative path used by the list-mode file row.
 pub fn relativePath(file: *const FileMatch) []const u8 {
-    const root = file.parent_folder.path;
+    var folder = file.parent_folder;
+    while (folder.parent_folder) |parent| folder = parent;
+    const root = folder.path;
     if (root.len == 0) return file.path;
     if (std.mem.startsWith(u8, file.path, root)) {
         var index = root.len;

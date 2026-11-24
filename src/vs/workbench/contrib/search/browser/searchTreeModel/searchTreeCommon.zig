@@ -148,6 +148,7 @@ pub const Match = struct {
     pub const Preview = struct {
         before: []const u8,
         full_before: []const u8,
+        before_truncated: bool = false,
         inside: []const u8,
         after: []const u8,
     };
@@ -161,10 +162,24 @@ pub const Match = struct {
         const start = @min(self.preview_range.start_column, line.len);
         const end = @min(self.preview_range.end_column, line.len);
         const full_before = line[0..start];
-        const before = if (full_before.len > 26) full_before[full_before.len - 26 ..] else full_before;
+        // MatchImpl.preview uses lcut(fullBefore, 26, '…'). Keep the
+        // marker separate so the borrowed preview retains its byte offsets.
+        const trimmed = std.mem.trimStart(u8, full_before, " \t\r\n");
+        var cut: usize = 0;
+        var remaining = std.unicode.calcUtf16LeLen(trimmed) catch trimmed.len;
+        var previous_word = false;
+        for (trimmed, 0..) |byte, index| {
+            if (remaining < 26) break;
+            const word = std.ascii.isAlphanumeric(byte) or byte == '_';
+            if (previous_word != word) cut = index;
+            previous_word = word;
+            if (byte & 0xc0 != 0x80) remaining -|= if (byte >= 0xf0) 2 else 1;
+        }
+        const before = std.mem.trimStart(u8, trimmed[cut..], " \t\r\n");
         return .{
             .before = before,
             .full_before = full_before,
+            .before_truncated = cut != 0,
             .inside = line[start..end],
             .after = line[end..],
         };
