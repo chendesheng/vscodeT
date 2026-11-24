@@ -2121,6 +2121,18 @@ test "Extensions: real TypeScript extension drives the language features" {
     }
     try std.testing.expect(found_definition);
 
+    try tab.editor.setCursorPosition(Position.init(2, 13));
+    try workbench.commands.execute("references-view.findReferences");
+    try std.testing.expect(workbench.quick_access.isOpen());
+    const reference_picker = workbench.quick_access.inputService().pickerRef();
+    try std.testing.expect(reference_picker.items.items.len >= 3);
+    reference_picker.accept();
+    try workbench.commands.execute("references-view.pickFromHistory");
+    try std.testing.expectEqualStrings("value", reference_picker.items.items[0].item.label);
+    reference_picker.accept();
+    try std.testing.expect(reference_picker.items.items.len >= 3);
+    workbench.quick_access.inputService().hide();
+
     // Document symbols: the extension's provider feeds the breadcrumb/outline
     // registries with UTF-16-converted ranges.
     var found_symbol = false;

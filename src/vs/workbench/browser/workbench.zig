@@ -734,6 +734,7 @@ pub const Workbench = struct {
     home_path: ?[]u8 = null,
     breadcrumbs_arena: std.heap.ArenaAllocator,
     navigation_arena: std.heap.ArenaAllocator,
+    reference_history: @import("../../../extensions/references-view/referencesView.zig").History = .{},
     pending_references: ?*ReferencesModel = null,
     pending_symbols: ?[]goto_symbol_quick_access.Entry = null,
     symbol_action_contexts: [go_to_commands.actions.len]SymbolActionContext = undefined,
@@ -892,6 +893,7 @@ pub const Workbench = struct {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
+        self.reference_history = .{};
         self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.navigation_arena.deinit();
         self.pending_references = null;
@@ -1057,6 +1059,7 @@ pub const Workbench = struct {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
+        self.reference_history = .{};
         self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.navigation_arena.deinit();
         self.pending_references = null;
@@ -1255,6 +1258,7 @@ pub const Workbench = struct {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
+        self.reference_history = .{};
         self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.navigation_arena.deinit();
         self.pending_references = null;
@@ -1933,6 +1937,7 @@ pub const Workbench = struct {
         };
         for (commands) |command| try self.commands.register(command);
 
+        try @import("../../../extensions/references-view/referencesView.zig").register(self);
         for (go_to_commands.actions, 0..) |_, index| {
             const action = &go_to_commands.actions[index];
             self.symbol_action_contexts[index] = .{ .workbench = self, .action = action };
@@ -2170,6 +2175,7 @@ pub const Workbench = struct {
             self.home_path = null;
         }
         self.breadcrumbs_arena.deinit();
+        self.reference_history.deinit(self.allocator);
         self.navigation_arena.deinit();
         self.breadcrumbs_service.deinit();
         if (self.outline_view) |view| {
@@ -7041,7 +7047,7 @@ pub const Workbench = struct {
         return self.executeSymbolNavigation(action);
     }
 
-    fn executeSymbolNavigation(self: *Workbench, action: *const go_to_commands.ActionDescriptor) !bool {
+    pub fn executeSymbolNavigation(self: *Workbench, action: *const go_to_commands.ActionDescriptor) !bool {
         const tab = self.activeTab() orelse return false;
         if (tab.isDiff()) return false;
         const features = self.language_features orelse return false;
@@ -21762,6 +21768,18 @@ test "Workbench: LSP navigation, references and symbol picker" {
     try std.testing.expectEqual(@as(usize, 3), reference_picker.items.items.len);
     reference_picker.accept();
     try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
+
+    try tab.editor.setCursorPosition(Position.init(3, 1));
+    try workbench.commands.execute("references-view.findReferences");
+    reference_picker.accept();
+    try workbench.commands.execute("references-view.pickFromHistory");
+    try std.testing.expectEqualStrings("value", picker.items.items[0].item.label);
+    picker.accept();
+    try std.testing.expectEqual(@as(usize, 3), reference_picker.items.items.len);
+    reference_picker.accept();
+    try std.testing.expectEqual(@as(usize, 1), workbench.reference_history.entries.items.len);
+    try workbench.commands.execute("references-view.clearHistory");
+    try std.testing.expectEqual(@as(usize, 0), workbench.reference_history.entries.items.len);
 
     try std.testing.expect(try workbench.showHover());
     try std.testing.expect(tab.controllers.?.hover.isVisible());
