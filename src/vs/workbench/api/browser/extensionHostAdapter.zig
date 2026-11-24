@@ -2268,3 +2268,53 @@ test "extension host document mirror keeps UTF-16 deletion ranges valid" {
     try std.testing.expectEqual(@as(usize, 1), lines.items.len);
     try std.testing.expectEqualStrings("é", lines.items[0]);
 }
+
+/// Use one extension per host so an identically labelled native or Emmet
+/// suggestion cannot mask a client/server or activation failure.
+fn checkBuiltinCompletion(comptime name: []const u8, filename: []const u8, source: []const u8, expected: []const u8) !void {
+    if (!build_options.e2e) return error.SkipZigTest;
+    const io = time_compat.io;
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = source });
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPathFile(io, filename, &buf);
+    var workbench = try Workbench.init(allocator, io, &.{buf[0..len]}, 100, 30);
+    defer workbench.deinit();
+    try workbench.enableLanguageFeatures();
+    var extensions = try Extensions.init(allocator, io, workbench, &.{.{
+        .path = "host/dist/extensions/" ++ name,
+        .is_builtin = true,
+    }}, ".cache-ext/test-" ++ name, "host/dist");
+    defer extensions.deinit();
+    const model = workbench.activeTab().?.editor.model;
+    const deadline = time_compat.milliTimestamp() + 15_000;
+    while (time_compat.milliTimestamp() < deadline) {
+        _ = extensions.pump();
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const providers = try workbench.language_features.?.completion_provider.ordered(a, model, false);
+        for (providers) |provider| {
+            const items = provider.provide_completion_items(provider.context, a, model, Position.init(1, source.len + 1), .{}, .None) catch continue;
+            for (items.items) |item| {
+                if (std.mem.indexOf(u8, item.insert_text, expected) != null) return;
+            }
+        }
+        time_compat.sleepMillis(100);
+    }
+    return error.MissingBuiltinCompletion;
+}
+
+test "Extensions: CSS server suggests background-color" {
+    try checkBuiltinCompletion("css-language-features", "style.css", "a { background-col", "background-color");
+}
+
+test "Extensions: HTML server suggests textarea" {
+    try checkBuiltinCompletion("html-language-features", "index.html", "<textar", "textarea");
+}
+
+test "Extensions: Emmet expands a nested abbreviation" {
+    try checkBuiltinCompletion("emmet", "index.html", "ul>li", "<li>");
+}

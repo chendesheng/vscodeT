@@ -388,15 +388,12 @@ zig build test-e2e                        # boots the Node host and runs TypeScr
 ```
 
 The native binary resolves executable extensions from its install prefix.
-`zig build host` builds the launcher and the upstream PHP, Git Base and Search
-Result bundles, then installs them under `lib/vscode-textbuffer` with the Node
-runtime dependencies. It uses the same prefix as `zig build` (including
-`--prefix`). The ordinary native build requires no Node installation.
-
-To add TypeScript and JavaScript IntelliSense, run
-`npm --prefix host run build:typescript-extension` before `zig build host`.
-This provisions the extension and its SDK from a local VS Code installation
-or built checkout. Only executable packages present in both the installed
+`zig build host` builds the launcher and seven extensions from the pinned
+checkout. These provide TypeScript/JavaScript, HTML, CSS/Less/SCSS, Emmet,
+PHP, Git Base and Search Result. The build installs their bundles, language
+servers and TypeScript SDK under `lib/vscode-textbuffer` in the same prefix
+as `zig build` (including `--prefix`). The ordinary native build requires
+no Node installation. Only executable packages present in both the installed
 runtime and the built-in catalog are passed to the extension host.
 
 `zig build json-server` builds and installs the optional standalone JSON server.
