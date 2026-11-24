@@ -205,6 +205,7 @@ const vscode_grammars = [_]VscodeGrammar{
     .{ .language = "css", .scope = "source.css", .path = "vscode/extensions/css/syntaxes/css.tmLanguage.json" },
     .{ .language = "scss", .scope = "source.css.scss", .path = "vscode/extensions/scss/syntaxes/scss.tmLanguage.json" },
     .{ .language = "markdown", .scope = "text.html.markdown", .path = "vscode/extensions/markdown-basics/syntaxes/markdown.tmLanguage.json", .fallback_path = "src/support/grammars/markdown.json" },
+    .{ .language = "search-result", .scope = "text.searchResult", .path = "vscode/extensions/search-result/syntaxes/searchResult.tmLanguage.json" },
     .{ .language = "shellscript", .scope = "source.shell", .path = "vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
     .{ .language = "bash", .scope = "source.shell", .path = "vscode/extensions/shellscript/syntaxes/shell-unix-bash.tmLanguage.json" },
 };

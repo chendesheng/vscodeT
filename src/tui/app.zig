@@ -875,6 +875,10 @@ pub fn main(init: std.process.Init) !void {
                         continue;
                     }
                     if (try workbench.handleStatusbarKey(event)) continue;
+                    if (workbench.handleSearchEditorKey(event)) {
+                        needs_render = true;
+                        continue;
+                    }
 
                     const modal_host = helix_runtime.host orelse vim_runtime.host;
                     if (modal_host) |host| {
@@ -938,6 +942,10 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (workbench.handleTabMouse(event)) continue;
                     if (workbench.handleTerminalMouse(event)) continue;
+                    if (workbench.handleSearchEditorMouse(event)) {
+                        needs_render = true;
+                        continue;
+                    }
 
                     // The editor pane resolves text/pointer/resize shapes from
                     // the surface's style tree before the event is routed.

@@ -21,6 +21,7 @@ const Allocator = std.mem.Allocator;
 const ui = @import("ui");
 const IndentGuides = @import("../../../../base/browser/ui/tree/abstractTree.zig").RenderIndentGuides;
 const search_editor = @import("../../searchEditor/browser/searchEditorSerialization.zig");
+const search_editor_view = @import("../../searchEditor/browser/searchEditor.zig");
 const theme_colors_mod = @import("../../../browser/themeColors.zig");
 const keybinding_service = @import("../../../services/keybinding/browser/keybindingService.zig");
 const resolved_keybinding_item = @import("../../../../platform/keybinding/common/resolvedKeybindingItem.zig");
@@ -82,7 +83,7 @@ pub const EditorInfo = struct {
 /// workbench; the terminal shell implements these callbacks.
 pub const Host = struct {
     context: *anyopaque,
-    open_results: *const fn (context: *anyopaque, query: []const u8, snapshot: search_editor.Snapshot) anyerror!void,
+    open_results: *const fn (context: *anyopaque, config: search_editor_view.Config, snapshot: search_editor.Snapshot) anyerror!void,
     open_match: *const fn (context: *anyopaque, path: []const u8, range: ?Range) anyerror!void,
     highlight_range: *const fn (context: *anyopaque, path: []const u8, range: ?Range) void,
     read_file: *const fn (context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?[]u8,
@@ -796,7 +797,7 @@ pub const SearchView = struct {
 
         if (event.key == .tab or event.key == .backtab) {
             self.results_focused = false;
-            self.widget.cycleFocus(event.key == .backtab);
+            _ = self.widget.cycleFocus(event.key == .backtab);
             self.focus_field = self.widget.focus_field;
             self.setControllerFocusFromField();
             return .handled;
@@ -1409,7 +1410,16 @@ pub const SearchView = struct {
         if (self.matchCount() == 0) return;
         const snapshot = try search_editor.serializeSearchResultForEditor(self.allocator, self.model.result, self.controller.sortOrder(), self.model.current_limit_hit);
         defer snapshot.deinit(self.allocator);
-        try self.host.open_results(self.host.context, query.pattern, snapshot);
+        try self.host.open_results(self.host.context, .{
+            .query = query.pattern,
+            .includes = self.widget.value(.includes),
+            .excludes = self.widget.value(.excludes),
+            .match_case = self.widget.match_case,
+            .whole_word = self.widget.whole_word,
+            .regex = self.widget.regex,
+            .use_excludes = self.widget.use_excludes,
+            .show_details = self.widget.details_visible,
+        }, snapshot);
     }
 
     pub fn commandToggle(self: *SearchView, option: Option) void {
@@ -1487,7 +1497,7 @@ pub const SearchView = struct {
     }
 };
 
-fn resolveWidgetColors(palette: ?*const theme_colors_mod.ThemeColors, background: ui.Color, foreground: ui.Color) widget_mod.Colors {
+pub fn resolveWidgetColors(palette: ?*const theme_colors_mod.ThemeColors, background: ui.Color, foreground: ui.Color) widget_mod.Colors {
     var colors: widget_mod.Colors = .{ .background = background, .foreground = foreground };
     if (palette) |theme| {
         colors.input_background = theme.colorOr("input.background", colors.input_background);
@@ -1597,7 +1607,7 @@ fn widgetFocus(context: *anyopaque, field: ControllerField) void {
 
 fn widgetCycleFocus(context: *anyopaque, backwards: bool) void {
     const self: *SearchView = @ptrCast(@alignCast(context));
-    self.widget.cycleFocus(backwards);
+    _ = self.widget.cycleFocus(backwards);
 }
 
 fn viewerInterface(self: *SearchView) actions_base.Viewer {

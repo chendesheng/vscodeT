@@ -377,7 +377,7 @@ pub const Tab = struct {
         if (self.controllers) |controllers| {
             controllers.find.widget().setAddExtraSpaceOnTop(controllers.find_add_extra_space);
         }
-        const zone_rows = self.findViewZoneRows();
+        const zone_rows = self.editorTopInset();
         if (zone_rows != self.top_view_zone_rows and self.last_width > 0 and self.last_height > 0) {
             self.layoutCells(self.last_width, self.last_height);
         }
@@ -540,9 +540,10 @@ pub const Tab = struct {
         return if (self.image_input) |input| input.path else null;
     }
 
-    fn findViewZoneRows(self: *Tab) usize {
-        const controllers = self.controllers orelse return 0;
-        return controllers.find.viewZoneRows();
+    fn editorTopInset(self: *Tab) usize {
+        const find_rows = if (self.controllers) |controllers| controllers.find.viewZoneRows() else 0;
+        const query_rows = if (self.search_editor_input) |input| input.search_editor.headerRows() else 0;
+        return find_rows + query_rows;
     }
 
     pub fn layoutCells(self: *Tab, width: usize, height: usize) void {
@@ -562,7 +563,7 @@ pub const Tab = struct {
         }
         const preview_width = if (self.markdown_preview_visible) markdownPreviewWidth(width) else 0;
         const editor_width = if (preview_width > 0) width -| preview_width -| 1 else width;
-        const zone_rows = self.findViewZoneRows();
+        const zone_rows = self.editorTopInset();
         self.top_view_zone_rows = zone_rows;
         self.editor.setViewport(@max(editor_width, 1), @max(height, 1));
         self.editor.setTopInset(zone_rows);

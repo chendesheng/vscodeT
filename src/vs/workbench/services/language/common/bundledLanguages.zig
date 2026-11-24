@@ -51,6 +51,7 @@ pub const bundled_languages = [_]BundledLanguage{
     .{ .id = "css", .names = &.{"CSS"}, .extensions = &.{".css"} },
     .{ .id = "scss", .names = &.{"SCSS"}, .extensions = &.{".scss"} },
     .{ .id = "markdown", .names = &.{"Markdown"}, .extensions = &.{ ".md", ".markdown" } },
+    .{ .id = "search-result", .names = &.{"Search Result"}, .extensions = &.{".code-search"} },
     .{ .id = "yaml", .names = &.{"YAML"}, .extensions = &.{ ".yaml", ".yml" } },
     .{ .id = "toml", .names = &.{"TOML"}, .extensions = &.{".toml"} },
     .{ .id = "shellscript", .names = &.{"Shell Script"}, .extensions = &.{ ".sh", ".bash" } },

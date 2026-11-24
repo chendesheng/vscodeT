@@ -1,7 +1,7 @@
 // Port of the text-result snapshot in
 // `src/vs/workbench/contrib/searchEditor/browser/searchEditorSerialization.ts`.
 // The terminal preserves editor byte columns and serializes the current
-// workspace matches with zero context, as Open Results in Editor requests.
+// workspace matches and any surrounding lines returned by the provider.
 
 const std = @import("std");
 const tree = @import("../../search/browser/searchTreeModel/searchTreeCommon.zig");
@@ -10,13 +10,25 @@ const results_view = @import("../../search/browser/searchResultsView.zig");
 const SearchSortOrder = @import("../../../services/search/common/search.zig").SearchSortOrder;
 const Range = @import("../../../../editor/common/core/range.zig").Range;
 
+pub const FileLocation = struct {
+    line: usize,
+    path: []const u8,
+};
+
+pub fn freeLocations(allocator: std.mem.Allocator, files: []const FileLocation) void {
+    for (files) |file| allocator.free(file.path);
+    allocator.free(files);
+}
+
 pub const Snapshot = struct {
     text: []const u8,
     match_ranges: []const Range,
+    files: []const FileLocation = &.{},
 
     pub fn deinit(self: Snapshot, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
         allocator.free(self.match_ranges);
+        freeLocations(allocator, self.files);
     }
 };
 
@@ -30,6 +42,12 @@ pub fn serializeSearchResultForEditor(
     defer text.deinit();
     var ranges: std.ArrayList(Range) = .empty;
     defer ranges.deinit(allocator);
+
+    var locations: std.ArrayList(FileLocation) = .empty;
+    defer {
+        for (locations.items) |location| allocator.free(location.path);
+        locations.deinit(allocator);
+    }
 
     const count = result.count();
     const files_count = result.fileCount();
@@ -63,6 +81,8 @@ pub fn serializeSearchResultForEditor(
                 try text.writer.writeByte('\n');
                 line += 1;
             }
+            try locations.ensureUnusedCapacity(allocator, 1);
+            locations.appendAssumeCapacity(.{ .line = line, .path = try allocator.dupe(u8, file.path) });
             if (multi_root and !folder.is_other) try text.writer.print("{s}/", .{folder.name});
             try fileMatchToSearchResultFormat(allocator, &text.writer, &ranges, file, &line);
             wrote_file = true;
@@ -71,7 +91,9 @@ pub fn serializeSearchResultForEditor(
 
     const contents = try text.toOwnedSlice();
     errdefer allocator.free(contents);
-    return .{ .text = contents, .match_ranges = try ranges.toOwnedSlice(allocator) };
+    const match_ranges = try ranges.toOwnedSlice(allocator);
+    errdefer allocator.free(match_ranges);
+    return .{ .text = contents, .match_ranges = match_ranges, .files = try locations.toOwnedSlice(allocator) };
 }
 
 fn fileMatchToSearchResultFormat(
@@ -90,6 +112,14 @@ fn fileMatchToSearchResultFormat(
     try writer.print("{s}:\n", .{results_view.relativePath(file)});
     line.* += 1;
 
+    const context_lines = try allocator.alloc(usize, file.contexts.count());
+    defer allocator.free(context_lines);
+    var keys = file.contexts.keyIterator();
+    for (context_lines) |*number| number.* = keys.next().?.*;
+    std.mem.sort(usize, context_lines, {}, std.sort.asc(usize));
+    var context_index: usize = 0;
+    var last_source_line: ?usize = null;
+
     var seen_lines: std.AutoHashMap(usize, usize) = .init(allocator);
     defer seen_lines.deinit();
     for (matches) |match| {
@@ -103,7 +133,14 @@ fn fileMatchToSearchResultFormat(
             const padding = digits -| digitCount(source_line);
             const prefix_len = 2 + padding + digitCount(source_line) + 2;
             if (!entry.found_existing) {
+                while (context_index < context_lines.len and context_lines[context_index] < source_line) : (context_index += 1) {
+                    const number = context_lines[context_index];
+                    try writeContextLine(writer, file, number, digits, line, &last_source_line);
+                }
+                if (context_index < context_lines.len and context_lines[context_index] == source_line) context_index += 1;
+                if (context_lines.len > 0) try writeLineGap(writer, source_line, line, last_source_line);
                 entry.value_ptr.* = line.*;
+                last_source_line = source_line;
                 try writer.splatByteAll(' ', 2 + padding);
                 try writer.print("{d}: {s}\n", .{ source_line, source });
                 line.* += 1;
@@ -116,6 +153,26 @@ fn fileMatchToSearchResultFormat(
                 entry.value_ptr.*,
                 prefix_len + 1 + @min(end, source.len),
             ));
+        }
+    }
+    for (context_lines[context_index..]) |number| {
+        try writeContextLine(writer, file, number, digits, line, &last_source_line);
+    }
+}
+
+fn writeContextLine(writer: *std.Io.Writer, file: *tree.FileMatch, number: usize, digits: usize, line: *usize, previous: *?usize) !void {
+    try writeLineGap(writer, number, line, previous.*);
+    try writer.splatByteAll(' ', 2 + (digits -| digitCount(number)));
+    try writer.print("{d}  {s}\n", .{ number, file.contextForLine(number).? });
+    previous.* = number;
+    line.* += 1;
+}
+
+fn writeLineGap(writer: *std.Io.Writer, number: usize, line: *usize, previous: ?usize) !void {
+    if (previous) |last| {
+        if (number > last + 1) {
+            try writer.writeByte('\n');
+            line.* += 1;
         }
     }
 }

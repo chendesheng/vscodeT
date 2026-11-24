@@ -11,7 +11,7 @@ pub const widgets_left = 0;
 pub const widgets_right = 1;
 pub const widgets_padding_top = 1;
 pub const input_indent = 2;
-pub const more_width = 2;
+pub const icon_button_width = 3;
 
 pub const Class = enum(u16) {
     search_view = base,
@@ -49,7 +49,7 @@ const styles = [_]ui.Style{
     .{ .position = .relative, .height = .{ .cells = 1 }, .overflow = .hidden },
     .{ .position = .absolute, .right = .{ .cells = widgets_right }, .height = .{ .cells = 1 }, .pointer = .pointer },
     .{ .position = .relative, .width = .{ .percent = 100 } },
-    .{ .position = .absolute, .right = .{ .cells = widgets_right }, .width = .{ .cells = more_width }, .height = .{ .cells = 1 }, .z_index = 2, .pointer = .pointer },
+    .{ .position = .absolute, .right = .{ .cells = widgets_right }, .width = .{ .cells = icon_button_width }, .height = .{ .cells = 1 }, .z_index = 2, .pointer = .pointer },
     .{ .position = .absolute, .left = .{ .cells = input_indent }, .height = .{ .cells = 1 }, .overflow = .hidden },
     .{ .position = .absolute, .left = .{ .cells = input_indent }, .height = .{ .cells = 1 }, .white_space = .nowrap, .overflow = .hidden },
     .{ .display = .none },

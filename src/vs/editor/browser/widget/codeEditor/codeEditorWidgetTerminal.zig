@@ -4698,23 +4698,30 @@ pub const Editor = struct {
     pub fn applyReloadedContent(self: *Editor, content: *const ReloadedContent) !void {
         if (self.read_only) return error.ReadOnly;
         self.document.encoding = content.encoding;
+        try self.replaceGeneratedContents(content.text, true);
+    }
 
+    /// Replaces the text of a generated editor, such as the Search Editor.
+    /// The producer owns the text and updates the model independently of
+    /// the text editor's read-only user input mode.
+    pub fn replaceGeneratedContents(self: *Editor, text: []const u8, reset_cursor: bool) !void {
+        const position = if (reset_cursor) Position.init(1, 1) else self.modelCursorPosition();
         var current = try self.model.getValue(.TextDefined, true);
         defer current.deinit();
-        if (std.mem.eql(u8, current.items, content.text)) return;
+        if (std.mem.eql(u8, current.items, text)) return;
 
         const last_line = self.model.getLineCount();
         const last_column = self.model.getLineMaxColumn(last_line);
         var operations = [_]IdentifiedSingleEditOperation{.init(
             Range.init(1, 1, last_line, last_column),
-            if (content.text.len == 0) null else String.initBorrowed(content.text),
+            if (text.len == 0) null else String.initBorrowed(text),
         )};
         _ = try self.model.applyEdits(&operations, false);
         self.model.clearUndoRedo();
         self.document.saved_version = self.model.getAlternativeVersionId();
         self.clearConflict();
         self.document.refreshDirtyState();
-        try self.setCursorPosition(Position.init(1, 1));
+        try self.setCursorPosition(self.model.validatePosition(position));
     }
 
     /// Reloads the editor content from disk (used for external file changes).

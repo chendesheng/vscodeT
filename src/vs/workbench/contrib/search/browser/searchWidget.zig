@@ -31,6 +31,8 @@ pub const Colors = struct {
     disabled: ui.Color = .{ .r = 140, .g = 140, .b = 148 },
 };
 
+const search_editor_css = editor_css.search_editor;
+
 pub const Callbacks = struct {
     context: *anyopaque,
     on_change: ?*const fn (context: *anyopaque, field: Field, value: []const u8) void = null,
@@ -40,6 +42,7 @@ pub const Callbacks = struct {
     on_toggle_replace: ?*const fn (context: *anyopaque) void = null,
     on_toggle_details: ?*const fn (context: *anyopaque) void = null,
     on_use_excludes: ?*const fn (context: *anyopaque) void = null,
+    on_context: ?*const fn (context: *anyopaque) void = null,
     on_replace_all: ?*const fn (context: *anyopaque) void = null,
 };
 
@@ -52,7 +55,7 @@ pub const Layout = struct {
     excludes_y: ?usize = null,
 };
 
-pub const Control = enum { toggle_replace, match_case, whole_word, regex, preserve_case, replace_all, more, use_excludes };
+pub const Control = enum { toggle_replace, match_case, whole_word, regex, preserve_case, replace_all, more, use_excludes, context_lines, toggle_context };
 
 const FieldContext = struct {
     widget: *SearchWidget,
@@ -66,6 +69,9 @@ pub const SearchWidget = struct {
     includes: ui.InputBox,
     excludes: ui.InputBox,
     contexts: [4]FieldContext,
+    editor_mode: bool = false,
+    context_enabled: bool = false,
+    context_lines: ui.InputBox,
     callbacks: ?Callbacks = null,
     focus_field: Field = .search,
     focus_control: ?Control = null,
@@ -98,6 +104,7 @@ pub const SearchWidget = struct {
             .includes = ui.InputBox.init(allocator),
             .excludes = ui.InputBox.init(allocator),
             .contexts = undefined,
+            .context_lines = ui.InputBox.init(allocator),
         };
         for (0..4) |index| {
             self.contexts[index] = .{ .widget = self, .field = @fromBackingInt(@intCast(index)) };
@@ -125,6 +132,7 @@ pub const SearchWidget = struct {
         self.replace.deinit();
         self.includes.deinit();
         self.excludes.deinit();
+        self.context_lines.deinit();
         self.allocator.destroy(self);
     }
 
@@ -170,7 +178,7 @@ pub const SearchWidget = struct {
         control: Control,
     };
 
-    pub fn cycleFocus(self: *SearchWidget, backwards: bool) void {
+    pub fn cycleFocus(self: *SearchWidget, backwards: bool) bool {
         const order = [_]FocusTarget{
             .{ .control = .toggle_replace },
             .{ .field = .search },
@@ -178,6 +186,8 @@ pub const SearchWidget = struct {
             .{ .control = .match_case },
             .{ .control = .whole_word },
             .{ .control = .regex },
+            .{ .control = .context_lines },
+            .{ .control = .toggle_context },
             .{ .control = .preserve_case },
             .{ .control = .replace_all },
             .{ .control = .more },
@@ -204,14 +214,16 @@ pub const SearchWidget = struct {
             targets[count] = target;
             count += 1;
         }
+        if (self.editor_mode and ((backwards and index == 0) or (!backwards and index + 1 == count))) return false;
         const next = if (backwards) (index + count - 1) % count else (index + 1) % count;
         switch (targets[next]) {
             .field => |field| self.focusField(field),
             .control => |control| self.focus_control = control,
         }
+        return true;
     }
 
-    fn computeLayout(self: *const SearchWidget) Layout {
+    pub fn computeLayout(self: *const SearchWidget) Layout {
         const search_y: usize = css.widgets_padding_top;
         const more_y = search_y + 1 + @intFromBool(self.replace_visible);
         return .{
@@ -249,6 +261,7 @@ pub const SearchWidget = struct {
             .background = self.colors.background,
             .color = self.colors.foreground,
         });
+        if (self.editor_mode) try root.addClass(search_editor_css.Class.search_editor);
         const widgets = try appendElement(doc, root, .search_widgets_container, .{
             .padding = .{ .top = css.widgets_padding_top },
             .height = cells(layout.more_y - layout.search_y),
@@ -256,18 +269,22 @@ pub const SearchWidget = struct {
         const widget = try appendElement(doc, widgets, .search_widget, .{
             .height = cells(layout.more_y - layout.search_y),
         });
-        try self.renderSearchInput(doc, widget, width);
-        try self.renderReplaceInput(doc, widget, width);
-
-        const toggle = try appendElement(doc, widget, .toggle_replace_button, .{});
-        try self.renderButton(doc, toggle, .toggle_replace, if (self.replace_visible) "⌄" else "›", false, true);
+        const context_width = search_editor_css.context_width + search_editor_css.context_toggle_width + 2 * search_editor_css.context_gap;
+        const show_context = self.editor_mode and width >= context_width + 10;
+        try self.renderSearchInput(doc, widget, width - if (show_context) @as(usize, context_width) else 0);
+        if (show_context) try self.renderContextControls(doc, widget, width);
+        if (!self.editor_mode) {
+            try self.renderReplaceInput(doc, widget, width);
+            const toggle = try appendElement(doc, widget, .toggle_replace_button, .{});
+            try self.renderButton(doc, toggle, .toggle_replace, if (self.replace_visible) "⌄" else "›", false, true);
+        }
 
         const details = try appendElement(doc, root, .query_details, .{
             .height = cells(layout.height - layout.more_y),
         });
         const more = try appendElement(doc, details, .more, .{
             .top = cells(0),
-            .left = cells(width -| (css.widgets_right + css.more_width)),
+            .left = cells(width -| (css.widgets_right + css.icon_button_width)),
         });
         try self.renderButton(doc, more, .more, "…", false, true);
         if (self.details_visible) try self.renderQueryDetails(doc, details, width);
@@ -293,8 +310,37 @@ pub const SearchWidget = struct {
         const input_width = row_width -| (option_count * option_stride);
         try self.appendInput(doc, row, .search, input_width);
         for (options[0..option_count], 0..) |option, index| {
-            try self.appendOption(doc, row, input_width + index * option_stride, option.control, option.icon, option.checked);
+            try self.appendOption(doc, row, input_width + index * option_stride, 2, option.control, option.icon, option.checked);
         }
+    }
+
+    fn renderContextControls(self: *SearchWidget, doc: *ui.Document, widget: *ui.Node, width: usize) !void {
+        const right = width - css.widgets_right;
+        const toggle_x = right - search_editor_css.context_toggle_width;
+        const input_x = toggle_x - search_editor_css.context_gap - search_editor_css.context_width;
+        const number_box = try appendElement(doc, widget, null, .{
+            .left = cells(input_x),
+            .top = cells(0),
+            .background = self.colors.input_background,
+            .border = if (self.cell_borders) ui.EdgeDecl.all(1) else null,
+            .border_style = .rounded,
+            .border_color = if (self.focused and self.focus_control == .context_lines) self.colors.focus_border else self.colors.border,
+        });
+        try number_box.addClass(search_editor_css.Class.context_lines_input);
+        self.context_lines.focused = self.focused and self.focus_control == .context_lines;
+        self.context_lines.color = self.colors.input_foreground;
+        const number = try self.context_lines.build(doc, search_editor_css.context_width);
+        _ = try number_box.appendChild(number);
+        self.controls[@backingInt(Control.context_lines)] = number_box;
+
+        const toggle = try appendElement(doc, widget, null, .{ .left = cells(toggle_x), .top = cells(0) });
+        try toggle.addClass(search_editor_css.Class.context_lines_toggle);
+        try self.renderButton(doc, toggle, .toggle_context, "\u{eb85}", self.context_enabled, true);
+    }
+
+    pub fn contextLines(self: *SearchWidget) usize {
+        if (!self.editor_mode or !self.context_enabled) return 0;
+        return std.fmt.parseInt(u16, self.context_lines.getValue(), 10) catch 0;
     }
 
     fn renderReplaceInput(self: *SearchWidget, doc: *ui.Document, widget: *ui.Node, width: usize) !void {
@@ -309,7 +355,7 @@ pub const SearchWidget = struct {
         const box = try appendElement(doc, row, .replace_input, self.inputStyle(.replace, 0, box_width));
         const option_width: usize = if (box_width >= 4) 2 else 0;
         try self.appendInput(doc, box, .replace, box_width - option_width);
-        if (option_width != 0) try self.appendOption(doc, box, box_width - option_width, .preserve_case, "AB", self.preserve_case);
+        if (option_width != 0) try self.appendOption(doc, box, box_width - option_width, option_width, .preserve_case, "AB", self.preserve_case);
         if (action_width == 0) return;
         const action = try appendElement(doc, row, .replace_action_bar, .{
             .top = cells(0),
@@ -326,13 +372,13 @@ pub const SearchWidget = struct {
             const y = index * 2;
             const heading = try appendElement(doc, details, .file_types_heading, .{
                 .top = cells(y),
-                .width = cells(if (index == 0) row_width -| css.more_width else row_width),
+                .width = cells(if (index == 0) row_width -| css.icon_button_width else row_width),
             });
             _ = try heading.appendChild(try doc.createText(if (field == .includes) "files to include" else "files to exclude"));
             const row = try appendElement(doc, details, .file_types, self.inputStyle(field, y + 1, row_width));
-            const option_width: usize = if (field == .excludes and row_width >= 4) 2 else 0;
+            const option_width: usize = if (field == .excludes and row_width > css.icon_button_width) css.icon_button_width else 0;
             try self.appendInput(doc, row, field, row_width - option_width);
-            if (option_width != 0) try self.appendOption(doc, row, row_width - option_width, .use_excludes, "⚙", self.use_excludes);
+            if (option_width != 0) try self.appendOption(doc, row, row_width - option_width, option_width, .use_excludes, "⚙", self.use_excludes);
         }
     }
 
@@ -366,12 +412,12 @@ pub const SearchWidget = struct {
         self.nodes[@backingInt(field)] = node;
     }
 
-    fn appendOption(self: *SearchWidget, doc: *ui.Document, parent: *ui.Node, x: usize, control: Control, icon: []const u8, checked: bool) !void {
+    fn appendOption(self: *SearchWidget, doc: *ui.Document, parent: *ui.Node, x: usize, width: usize, control: Control, icon: []const u8, checked: bool) !void {
         const button = try appendElement(doc, parent, null, .{
             .position = .absolute,
             .left = cells(x),
             .top = cells(0),
-            .width = cells(2),
+            .width = cells(width),
             .height = cells(1),
             .underline = control == .whole_word,
         });
@@ -419,7 +465,11 @@ pub const SearchWidget = struct {
         for (self.controls, 0..) |optional, index| {
             const node = optional orelse continue;
             if (!contains(node, x, y)) continue;
-            if (activating) self.activate(@fromBackingInt(@intCast(index)));
+            const control: Control = @fromBackingInt(@intCast(index));
+            if (control == .context_lines) {
+                if (activating) self.focus_control = .context_lines;
+                _ = self.context_lines.handleMouse(event);
+            } else if (activating) self.activate(control);
             return true;
         }
         for (self.nodes, 0..) |optional, index| {
@@ -437,6 +487,11 @@ pub const SearchWidget = struct {
     fn activate(self: *SearchWidget, control: Control) void {
         const callbacks = self.callbacks orelse return;
         switch (control) {
+            .context_lines => {},
+            .toggle_context => {
+                self.context_enabled = !self.context_enabled;
+                if (callbacks.on_context) |callback| callback(callbacks.context);
+            },
             .toggle_replace => if (callbacks.on_toggle_replace) |callback| callback(callbacks.context),
             .more => if (callbacks.on_toggle_details) |callback| callback(callbacks.context),
             .replace_all => if (self.replace_all_enabled) {
@@ -461,6 +516,17 @@ pub const SearchWidget = struct {
 
     pub fn handleKey(self: *SearchWidget, event: *ui.KeyEvent) bool {
         if (self.focus_control) |control| {
+            if (control == .context_lines) {
+                if (event.key == .enter) {
+                    if (self.callbacks) |callbacks| {
+                        if (callbacks.on_context) |callback| callback(callbacks.context);
+                    }
+                    return true;
+                }
+                if (event.key == .char and !event.mods.ctrl and !event.mods.alt and
+                    (event.key.char < '0' or event.key.char > '9')) return true;
+                return self.context_lines.handleKey(event);
+            }
             if (event.key == .enter or (event.key == .char and event.key.char == ' ')) self.activate(control);
             return event.key != .up and event.key != .down;
         }
@@ -535,6 +601,31 @@ test "SearchWidget: renders search row and toggle controls" {
     try std.testing.expect(std.mem.indexOf(u8, replace_row, "AB") != null);
     try std.testing.expect(std.mem.indexOf(u8, replace_row, "⇄") != null);
     try std.testing.expectEqual(widget.layout.replace_y.? + 1, widget.layout.more_y);
+}
+
+test "SearchWidget: centers and aligns Search Editor icon buttons" {
+    const widget = try SearchWidget.init(std.testing.allocator);
+    defer widget.deinit();
+    widget.editor_mode = true;
+    widget.context_enabled = true;
+    widget.setDetailsVisible(true);
+    try widget.render(40);
+
+    const grid = widget.grid();
+    const right: usize = 40 - css.widgets_right;
+    const buttons = [_]struct { control: Control, icon: u32 }{
+        .{ .control = .toggle_context, .icon = 0xeb85 },
+        .{ .control = .more, .icon = '…' },
+        .{ .control = .use_excludes, .icon = '⚙' },
+    };
+    for (buttons) |button| {
+        const rect = widget.controlRect(button.control).?;
+        const left = ui.cell.snap(rect.x);
+        const y = ui.cell.snap(rect.y);
+        try std.testing.expectEqual(right, ui.cell.snap(rect.right()));
+        try std.testing.expectEqual(@as(usize, 3), right - left);
+        try std.testing.expectEqual(button.icon, grid.cluster[grid.index(left + 1, y)]);
+    }
 }
 
 test "SearchWidget: mouse clicks toggle options and place the caret" {

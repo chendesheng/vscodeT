@@ -192,6 +192,7 @@ const hc_dark_unexpected_bracket_color = [3]u8{ 255, 50, 50 };
 const hc_light_unexpected_bracket_color = [3]u8{ 181, 32, 13 };
 
 const find_options = makeDecorationOptions("findMatch", .Left, overview_find_color, 10);
+const search_editor_find_options = makeDecorationOptions("searchEditorFindMatch", null, null, 10);
 const current_find_options = makeDecorationOptions("currentFindMatch", .Full, overview_current_find_color, 13);
 const find_scope_options = makeDecorationOptions("findScope", null, null, 0);
 const bracket_options = makeDecorationOptions("bracket-match", .Right, overview_bracket_color, 0);
@@ -222,6 +223,7 @@ fn makeDecorationOptions(
 fn decorationOptions(kind: editorBrowser.DecorationKind, show_in_overview: bool) *const ModelDecorationOptions {
     return switch (kind) {
         .find_match => &find_options,
+        .search_editor_match => &search_editor_find_options,
         .current_find_match => &current_find_options,
         .find_scope => &find_scope_options,
         .bracket_match => if (show_in_overview) &bracket_options else &bracket_inline_options,
@@ -304,6 +306,7 @@ const CellFlag = struct {
     const char_delete: u32 = 1 << 21;
     /// `.squiggly-inline-unnecessary`: the inline opacity/dim tag.
     const diagnostic_inline_unnecessary: u32 = 1 << 22;
+    const search_editor_match: u32 = 1 << 23;
 };
 
 const find_match_background = [3]u8{ 80, 70, 20 };
@@ -2685,6 +2688,8 @@ fn applyFlagPaint(style: *ui.style.PaintStyle, flag: u32, palette: ?*const theme
         style.color = themedColor(palette, "editor.findMatchForeground", current_find_match_foreground);
     } else if (flag & CellFlag.find_match != 0) {
         style.background = themedColor(palette, "editor.findMatchHighlightBackground", find_match_background);
+    } else if (flag & CellFlag.search_editor_match != 0) {
+        style.background = themedColor(palette, "searchEditor.findMatchBackground", .{ 63, 56, 24 });
     } else if (flag & CellFlag.find_scope != 0) {
         style.background = themedColor(palette, "editor.findRangeHighlightBackground", find_scope_background);
     }
@@ -2811,6 +2816,7 @@ fn decorationBit(class_name: []const u8) ?u32 {
     if (std.mem.eql(u8, class_name, "findMatch") or std.mem.eql(u8, class_name, "findMatchInline")) return CellFlag.find_match;
     if (std.mem.eql(u8, class_name, "currentFindMatch") or std.mem.eql(u8, class_name, "currentFindMatchInline")) return CellFlag.current_find_match;
     if (std.mem.eql(u8, class_name, "findScope")) return CellFlag.find_scope;
+    if (std.mem.eql(u8, class_name, "searchEditorFindMatch")) return CellFlag.search_editor_match;
     if (std.mem.eql(u8, class_name, "bracket-match") or std.mem.eql(u8, class_name, "bracket-match-inline")) return CellFlag.bracket_match;
     if (std.mem.eql(u8, class_name, "hoverHighlight")) return CellFlag.hover_highlight;
     if (std.mem.eql(u8, class_name, "wordHighlightText")) return CellFlag.word_highlight_text;

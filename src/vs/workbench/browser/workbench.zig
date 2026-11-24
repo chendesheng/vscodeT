@@ -172,6 +172,7 @@ const ViewDescriptorService = view_descriptor_service_mod.ViewDescriptorService;
 const range_highlight_mod = @import("./codeeditor.zig");
 const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 
+const search_editor = @import("../contrib/searchEditor/browser/searchEditor.zig");
 const search_editor_serialization = @import("../contrib/searchEditor/browser/searchEditorSerialization.zig");
 const SearchEditorInput = @import("../contrib/searchEditor/browser/searchEditorInput.zig").SearchEditorInput;
 const search_view_mod = @import("../contrib/search/browser/searchViewTerminal.zig");
@@ -1733,6 +1734,8 @@ pub const Workbench = struct {
             .{ .id = "search.action.replaceAllInFile", .label = "Replace All in File", .category = "Search", .context = self, .run = commandSearchReplace },
             .{ .id = "search.action.replaceAllInFolder", .label = "Replace All in Folder", .category = "Search", .context = self, .run = commandSearchReplace },
             .{ .id = "search.action.clearSearchResults", .label = "Clear Search Results", .category = "Search", .context = self, .run = commandSearchClear },
+            .{ .id = "search.action.openNewEditor", .label = "Open New Search Editor", .category = "Search", .context = self, .run = commandOpenNewSearchEditor },
+            .{ .id = "rerunSearchEditorSearch", .label = "Search Again", .category = "Search Editor", .context = self, .run = commandRerunSearchEditor },
             .{ .id = search_command_ids.open_in_editor, .label = "Open Results in Editor", .category = "Search", .context = self, .run = commandSearchOpenInEditor },
             .{ .id = search_command_ids.refresh_search_results, .label = "Refresh Search Results", .category = "Search", .context = self, .run = commandSearchRefresh },
             .{ .id = search_command_ids.view_as_tree, .label = "View as Tree", .category = "Search", .context = self, .run = commandSearchViewAsTree },
@@ -1880,12 +1883,35 @@ pub const Workbench = struct {
     }
 
     pub fn pollSearch(self: *Workbench, now_ms: i64) bool {
-        if (self.search_view) |view| return view.tick(now_ms);
-        return false;
+        var changed = if (self.search_view) |view| view.tick(now_ms) else false;
+        const configuration = self.configuration orelse return changed;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const input = tab.search_editor_input orelse continue;
+                if (!input.search_editor.wantsTick()) continue;
+                const pending = input.search_editor.pending_at;
+                if (pending != null and now_ms < pending.?) continue;
+                const extras = if (pending != null) searchExtraFiles(self, self.allocator) catch null else null;
+                defer if (extras) |paths| searchFreePaths(self, self.allocator, paths);
+                const updated = input.search_editor.poll(now_ms, configuration, self.workspace, extras orelse &.{}, tab.view) catch |err| blk: {
+                    _ = input.search_editor.model.cancelSearch();
+                    tab.editor.setMessage("Search failed: {s}", .{@errorName(err)});
+                    break :blk true;
+                };
+                if (updated) input.updateName() catch {};
+                changed = changed or updated;
+            }
+        }
+        return changed;
     }
 
     pub fn searchWantsTick(self: *const Workbench) bool {
-        if (self.search_view) |view| return view.wantsTick();
+        if (self.search_view) |view| if (view.wantsTick()) return true;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.search_editor_input) |input| if (input.search_editor.wantsTick()) return true;
+            }
+        }
         return false;
     }
 
@@ -1897,6 +1923,7 @@ pub const Workbench = struct {
 
     fn activeEditorInfo(self: *Workbench) ?search_view_mod.EditorInfo {
         const tab = self.activeTab() orelse return null;
+        if (tab.search_editor_input != null) return null;
         return .{ .path = tab.editor.path, .version = tab.editor.model.getVersionId() };
     }
 
@@ -2494,7 +2521,10 @@ pub const Workbench = struct {
         // `updateOptions({ lineNumbers: 'off' })`. The next
         // `applyEditorSettings` after the override is cleared restores the
         // configured value.
-        if (self.zen_hide_line_numbers and !tab.isImage()) {
+        if (tab.search_editor_input) |input| {
+            if (self.configuration) |configuration| input.search_editor.configure(configuration);
+            tab.view.applyLineNumbersOverride(.Off) catch {};
+        } else if (self.zen_hide_line_numbers and !tab.isImage()) {
             tab.view.applyLineNumbersOverride(.Off) catch {};
         }
         if (self.theme_palette) |palette| tab.view.setThemeColors(palette);
@@ -10041,6 +10071,10 @@ pub const Workbench = struct {
                 if (pane.title_action_hit) |hit| {
                     if (event.x >= hit.start and event.x < hit.end) {
                         if (pane.activeTab()) |tab| {
+                            if (tab.search_editor_input) |input| {
+                                input.search_editor.triggerSearch(0, true);
+                                return true;
+                            }
                             if (tab.terminalInstance()) |instance| {
                                 self.service.activateGroup(pane.group);
                                 if (event.x == hit.start + 1) {
@@ -10138,6 +10172,63 @@ pub const Workbench = struct {
 
     /// Resolves the editor instance through the workbench's shared box tree.
     /// Editors still consume mouse coordinates relative to their own viewport.
+    pub fn handleSearchEditorKey(self: *Workbench, event: *ui.KeyEvent) bool {
+        if (self.focus != .editor) return false;
+        const tab = self.activeTab() orelse return false;
+        const input = tab.search_editor_input orelse return false;
+        const query = input.search_editor;
+        if (event.key == .enter and !event.mods.alt and !event.mods.ctrl and !query.query_focused) {
+            return searchEditorOpenTarget(self, tab);
+        }
+        return query.handleKey(event);
+    }
+
+    pub fn handleSearchEditorMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+        const pane = self.paneAt(event.x, event.y) orelse return false;
+        const tab = pane.activeTab() orelse return false;
+        const input = tab.search_editor_input orelse return false;
+        const query = input.search_editor;
+        const top = ui.cell.snap(pane.rect.y) + pane.chromeHeight();
+        if (event.y < top) return false;
+        const activate = event.kind == .down and event.button == .left;
+        if (event.y >= top + query.headerRows()) {
+            query.form.clearHover();
+            if (activate) {
+                query.query_focused = false;
+                if (event.x -| ui.cell.snap(pane.rect.x) < tab.editor.gutterWidth()) {
+                    query.last_result_click = null;
+                    return false;
+                }
+                const now = @import("../../base/common/timeCompat.zig").milliTimestamp();
+                const previous = query.last_result_click;
+                query.last_result_click = .{ .x = event.x, .y = event.y, .at = now };
+                const behavior = if (self.configuration) |configuration|
+                    configuration.getValue("search.searchEditor.doubleClickBehaviour", .{})
+                else
+                    null;
+                const go_to_location = behavior == null or behavior.?.* != .string or
+                    std.mem.eql(u8, behavior.?.string, "goToLocation");
+                if (go_to_location and previous != null and previous.?.x == event.x and previous.?.y == event.y and now - previous.?.at <= 500) {
+                    query.last_result_click = null;
+                    return searchEditorOpenTarget(self, tab);
+                }
+            }
+            return false;
+        }
+        if (event.kind == .wheel) return false;
+        var local = event.*;
+        local.x -|= ui.cell.snap(pane.rect.x);
+        local.y -= top;
+        if (activate) {
+            self.service.activateGroup(pane.group);
+            self.focusEditor();
+            query.query_focused = true;
+        }
+        _ = query.form.handleMouse(local.x, local.y, &local);
+        self.pointer = query.form.pointerAt(local.x, local.y);
+        return true;
+    }
+
     pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?struct { tab: *Tab, event: ui.MouseEvent } {
         if (event.x >= self.cols or event.y >= self.rows or event.x < self.editorAreaX()) return null;
         const surface = self.synchronizeEditorDom() catch return null;
@@ -10197,9 +10288,9 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             const visible = self.expanded_pane == null or self.expanded_pane == pane;
             const active = pane.activeTab();
-            const terminal_editor_active = if (active) |tab| tab.terminal_input != null else false;
-            if (pane.breadcrumbs_suppressed != terminal_editor_active) {
-                pane.breadcrumbs_suppressed = terminal_editor_active;
+            const suppress_breadcrumbs = if (active) |tab| tab.terminal_input != null or tab.search_editor_input != null else false;
+            if (pane.breadcrumbs_suppressed != suppress_breadcrumbs) {
+                pane.breadcrumbs_suppressed = suppress_breadcrumbs;
                 pane.layout();
             }
             try pane.layoutDom(self.editor_grid, visible);
@@ -10235,7 +10326,8 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 const desired = tab.terminal_input == null and self.focus == .editor and
-                    pane == active_pane and pane.activeTab() == tab;
+                    pane == active_pane and pane.activeTab() == tab and
+                    (tab.search_editor_input == null or !tab.search_editor_input.?.search_editor.query_focused);
                 if (tab.view.isFocused() != desired) _ = tab.view.setFocused(desired);
             }
         }
@@ -10432,6 +10524,7 @@ pub const Workbench = struct {
             }
         }
         try editor_surface.paintInto(&self.frame.next);
+        try self.renderSearchEditorQueries();
         self.renderEditorFrame();
         if (self.expanded_pane == null) self.renderDividers(self.part.root);
         if (self.drag_target) |target| {
@@ -10510,6 +10603,33 @@ pub const Workbench = struct {
         }
     }
 
+    fn renderSearchEditorQueries(self: *Workbench) !void {
+        const palette = self.theme_palette;
+        const bg = self.themeColor("editor.background", .{ 30, 30, 33 });
+        const fg = self.themeColor("editor.foreground", .{ 210, 210, 210 });
+        for (self.part.group_views.items) |pane| {
+            if (self.expanded_pane != null and self.expanded_pane != pane) continue;
+            const tab = pane.activeTab() orelse continue;
+            const input = tab.search_editor_input orelse continue;
+            const query = input.search_editor;
+            const width = ui.cell.snap(pane.rect.w);
+            const height = ui.cell.snap(pane.rect.h) -| pane.chromeHeight();
+            if (width == 0 or height == 0) continue;
+            query.form.colors = search_view_mod.resolveWidgetColors(palette, bg, fg);
+            if (palette) |colors| query.form.colors.border = colors.colorOr("searchEditor.textInputBorder", query.form.colors.border);
+            query.form.cell_borders = self.part.cell_borders;
+            query.form.focused = self.focus == .editor and pane == self.activePane() and query.query_focused;
+            try query.form.render(width);
+            try self.frame.next.blit(
+                query.form.grid(),
+                ui.cell.snap(pane.rect.x),
+                ui.cell.snap(pane.rect.y) + pane.chromeHeight(),
+                width,
+                @min(height, query.headerRows()),
+            );
+        }
+    }
+
     fn renderPane(self: *Workbench, pane: *GroupPane) !void {
         const x = ui.cell.snap(pane.rect.x);
         const y = ui.cell.snap(pane.rect.y);
@@ -10541,6 +10661,11 @@ pub const Workbench = struct {
                 .closeable = close_button_visible and
                     !tab.input.hasCapability(editor_mod.EditorInputCapabilities.CannotClose),
             };
+            if (tab.search_editor_input != null) {
+                infos[index].file_name = "";
+                infos[index].icon = .{ .glyph = 0xf002, .color = self.themeColor("tab.activeForeground", .{ 110, 164, 118 }) };
+                continue;
+            }
             if (tab.terminal_input != null) {
                 infos[index].file_name = "";
                 infos[index].icon = .{ .glyph = '❯', .color = .{ .r = 204, .g = 204, .b = 204 } };
@@ -10575,6 +10700,10 @@ pub const Workbench = struct {
         const title_action: ?tab_bar.TitleAction = if (active_tab) |tab| blk: {
             if (tab.terminal_input != null) break :blk .{
                 .glyphs = "+⌄",
+                .hovered = self.hovered_title_action_pane == pane,
+            };
+            if (tab.search_editor_input != null) break :blk .{
+                .glyphs = "↻",
                 .hovered = self.hovered_title_action_pane == pane,
             };
             if (!tab.isMarkdown()) break :blk null;
@@ -13735,32 +13864,48 @@ fn commandWordHighlightPrevious(context: *anyopaque) anyerror!void {
     tab.controllers.?.word_highlighter.moveBack();
 }
 
-fn searchOpenResults(context: *anyopaque, query: []const u8, snapshot: search_editor_serialization.Snapshot) !void {
+fn startSearchEditorJob(context: *anyopaque, query: *const search_types.TextQuery) !search_types.ISearchJob {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.search_service == null) try self.initSearchFromWorkspace();
+    return self.search_service.?.startTextSearch(query);
+}
+
+fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot: search_editor_serialization.Snapshot) !void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const pane = self.activePane() orelse return error.GroupPaneMissing;
+    try self.ensureConfiguration();
+    const configuration = self.configuration.?;
     const dims = self.editorDimensions(pane);
-    const input = try SearchEditorInput.init(self.allocator, self.io, query, snapshot.text, dims.width, dims.height);
+    const query = try search_editor.SearchEditor.init(self.allocator, .{ .context = self, .start_text_search = startSearchEditorJob }, config, configuration);
+    const input = SearchEditorInput.init(self.allocator, self.io, config.query, query, snapshot.text, dims.width, dims.height) catch |err| {
+        query.deinit();
+        return err;
+    };
     const tab = Tab.initSearchEditor(self.allocator, input) catch |err| {
         input.deinit();
         return err;
     };
     errdefer tab.deinit();
     try tab.view.setStatusBarVisible(false);
-
-    const decorations = try self.allocator.alloc(editorBrowser.Decoration, snapshot.match_ranges.len);
-    defer self.allocator.free(decorations);
-    for (decorations, snapshot.match_ranges) |*decoration, range| {
-        decoration.* = .{ .range = range, .kind = .find_match, .show_in_overview_ruler = false };
-    }
-    try tab.view.setSearchEditorHighlights(decorations);
+    try search_editor.SearchEditor.setMatchRanges(self.allocator, tab.view, snapshot);
+    try query.setLocations(snapshot.files);
     try pane.tabs.ensureUnusedCapacity(1);
     _ = try pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
     try pane.addTab(tab);
     self.applyEditorSettingsToTab(tab);
     self.layoutAll();
     self.focusEditor();
-    tab.focusEditor();
     self.refreshStatus();
+    if (config.query.len > 0 and query.form.contextLines() > 0) query.triggerSearch(0, true);
+}
+
+fn searchEditorOpenTarget(self: *Workbench, tab: *Tab) bool {
+    const query = tab.search_editor_input.?.search_editor;
+    const target = (query.targetAtCursor(tab.editor) catch null) orelse return false;
+    searchOpenMatch(self, target.path, target.range) catch |err| {
+        tab.editor.setMessage("Open failed: {s}", .{@errorName(err)});
+    };
+    return true;
 }
 
 fn searchOpenMatch(context: *anyopaque, path: []const u8, range: ?Range) anyerror!void {
@@ -14027,6 +14172,16 @@ fn commandSearchRemove(context: *anyopaque) anyerror!void {
 fn commandSearchReplace(context: *anyopaque) anyerror!void {
     const view = try ensureSearch(context);
     view.commandReplace();
+}
+
+fn commandOpenNewSearchEditor(context: *anyopaque) anyerror!void {
+    try searchOpenResults(context, .{}, .{ .text = "", .match_ranges = &.{} });
+}
+
+fn commandRerunSearchEditor(context: *anyopaque) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const tab = self.activeTab() orelse return;
+    if (tab.search_editor_input) |input| input.search_editor.triggerSearch(0, true);
 }
 
 fn commandSearchOpenInEditor(context: *anyopaque) anyerror!void {
@@ -17644,6 +17799,132 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
         }
     }
     try std.testing.expectEqual(@as(usize, 2), matches);
+}
+
+test "Workbench: search editor shows query controls and reruns with independent context" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source = try seedFile(allocator, io, &tmp, "test.txt", "before\nalpha\nbetween\nbeta\nafter\n");
+    defer allocator.free(source);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+
+    const workbench = try Workbench.init(allocator, io, &.{source}, 95, 25);
+    defer workbench.deinit();
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    try workbench.findInFiles();
+    const sidebar = workbench.search_view.?;
+    try sidebar.widget.setValue(.search, "alpha");
+    try sidebar.startSearch();
+    const wait = struct {
+        fn run(owner: *Workbench) !void {
+            var guard: usize = 0;
+            while (owner.searchWantsTick() and guard < 1000) : (guard += 1) {
+                _ = owner.pollSearch(@import("../../base/common/timeCompat.zig").milliTimestamp() + 1000);
+            }
+            try std.testing.expect(!owner.searchWantsTick());
+        }
+    }.run;
+    try wait(workbench);
+    try sidebar.openInEditor();
+    try wait(workbench);
+    const tab = workbench.activeTab().?;
+    const input = tab.search_editor_input.?;
+    const query = input.search_editor;
+    workbench.onSearchEditorChanged();
+    try std.testing.expectEqualStrings("alpha", query.form.value(.search));
+    try std.testing.expectEqual(@as(usize, 1), query.form.contextLines());
+
+    var rendered: std.Io.Writer.Allocating = .init(allocator);
+    defer rendered.deinit();
+    try workbench.render(&rendered.writer);
+    try std.testing.expect(query.form.controlRect(.toggle_replace) == null);
+    try std.testing.expect(query.form.controlRect(.context_lines) != null);
+    try std.testing.expect(workbench.activePane().?.breadcrumbs_suppressed);
+    var first = try tab.editor.model.getValue(null, false);
+    defer first.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "  1  before\n  2: alpha\n  3  between") != null);
+
+    const pane = workbench.activePane().?;
+    tab.editor.refreshFoldingIfDirty();
+    const fold_click = ui.MouseEvent{
+        .kind = .down,
+        .button = .left,
+        .x = ui.cell.snap(pane.rect.x) + tab.editor.foldCellColumn(),
+        .y = ui.cell.snap(pane.rect.y) + pane.chromeHeight() + query.headerRows() + 2,
+    };
+    for ([_]bool{ false, true }) |visible| {
+        try std.testing.expect(!workbench.handleSearchEditorMouse(&fold_click));
+        var target = workbench.editorMouseEvent(fold_click).?;
+        try std.testing.expect(try target.tab.view.dispatchMouse(&target.event));
+        try std.testing.expectEqual(visible, tab.editor.isModelLineVisible(4));
+        try workbench.render(&rendered.writer);
+    }
+    try std.testing.expect(workbench.activeTab() == tab);
+    query.query_focused = true;
+
+    try query.form.setValue(.search, "beta");
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try wait(workbench);
+    try std.testing.expect(workbench.activeTab() == tab);
+    try std.testing.expectEqualStrings("Search: beta", input.base.getName());
+    try std.testing.expectEqualStrings("alpha", sidebar.widget.value(.search));
+    var second = try tab.editor.model.getValue(null, false);
+    defer second.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, second.items, "  3  between\n  4: beta\n  5  after") != null);
+
+    const toggle = query.form.controlRect(.toggle_context).?;
+    try std.testing.expect(workbench.handleSearchEditorMouse(&.{
+        .kind = .down,
+        .button = .left,
+        .x = ui.cell.snap(pane.rect.x + toggle.x),
+        .y = ui.cell.snap(pane.rect.y + toggle.y) + pane.chromeHeight(),
+    }));
+    try wait(workbench);
+    var no_context = try tab.editor.model.getValue(null, false);
+    defer no_context.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, no_context.items, "  4: beta") != null);
+    try std.testing.expect(std.mem.indexOf(u8, no_context.items, "between") == null);
+
+    query.form.setDetailsVisible(true);
+    try workbench.render(&rendered.writer);
+    query.form.focusField(.includes);
+    try query.form.setValue(.includes, "*.zig");
+    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try wait(workbench);
+    try workbench.render(&rendered.writer);
+    tab.view.invalidate();
+    try workbench.render(&rendered.writer);
+    const results_y = ui.cell.snap(pane.rect.y) + pane.chromeHeight() + query.headerRows();
+    const no_results_row = try workbench.frame.present().rowText(allocator, results_y);
+    defer allocator.free(no_results_row);
+    try std.testing.expect(std.mem.indexOf(u8, no_results_row, "No Results") != null);
+    try query.form.setValue(.includes, "");
+    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try wait(workbench);
+
+    query.query_focused = false;
+    try tab.editor.setCursorPosition(.{ .lineNumber = 4, .column = 6 });
+    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try std.testing.expect(workbench.activeTab() != tab);
+    try std.testing.expectEqual(@as(usize, 4), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+
+    try workbench.switchTab(1);
+    try std.testing.expect(workbench.activeTab() == tab);
+    query.query_focused = true;
+    query.form.focusField(.search);
+    workbench.onSearchEditorChanged();
+    try query.form.setValue(.search, "");
+    try std.testing.expect(workbench.handleSearchEditorKey(&enter));
+    try wait(workbench);
+    workbench.onSearchEditorChanged();
+    try std.testing.expect(sidebar.controller.refresh_at == null);
+    try std.testing.expectEqualStrings("alpha", sidebar.widget.value(.search));
+    try std.testing.expectEqual(@as(usize, 1), sidebar.matchCount());
 }
 
 test "Workbench: search aligns nested guides and keeps the link inline at the result limit" {
