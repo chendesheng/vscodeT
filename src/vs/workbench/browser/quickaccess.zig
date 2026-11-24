@@ -959,8 +959,10 @@ test "QuickAccessService: missing rg reports a picker error instead of hanging" 
     var typed = ui.KeyEvent{ .key = .{ .char = 'f' } };
     _ = try service.handleKey(&typed);
 
-    var guard: usize = 0;
-    while (guard < 500 and state.reported_len == 0) : (guard += 1) {
+    // The worker runs on its own thread; give a loaded CI host well past the
+    // usual first-result latency instead of failing on a short fixed window.
+    const deadline = time_compat.milliTimestamp() + 10_000;
+    while (state.reported_len == 0 and time_compat.milliTimestamp() < deadline) {
         _ = try service.poll(0);
         time_compat.sleepMillis(2);
     }

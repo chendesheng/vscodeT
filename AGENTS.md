@@ -191,6 +191,13 @@ state that in the comment and keep the behavioral contract intact.
    unavoidable UI/UTF-16 adaptation in the file header.
 4. Add a regression test that fails before the fix. A change that only silences
    a diagnostic without restoring the upstream behavior is not a fix.
+5. **Prove CI fixes in CI.** A CI failure is fixed only when the fix is
+   committed, pushed and the workflow run for that commit passes. Local
+   `zig build test` is necessary but not sufficient: CI runs Linux, macOS and
+   Windows, and platform-specific or timing-sensitive failures may not
+   reproduce locally. Never report CI as fixed while the change is uncommitted,
+   unpushed or its run is still in progress. Fetch `origin/main` first; if the
+   remote already contains the fix, sync with it instead of pushing a duplicate.
 
 ## Faithful porting and performance ownership
 
@@ -408,3 +415,5 @@ Also verify:
 - [ ] Build caches were checked and cleaned as needed; the filesystem still has
       free space.
 - [ ] The working tree contains only intentional changes.
+- [ ] For a CI fix, the fix is committed, pushed, and the CI run for that
+      commit has passed (or any remaining failure is reported explicitly).
