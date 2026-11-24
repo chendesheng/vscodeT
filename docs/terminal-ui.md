@@ -822,9 +822,10 @@ the `DocumentSymbolsOutline` tree snapshot with the ported `DataTree`, the same
 workbench tree component the Explorer uses: indentation guides and twisties,
 fold/unfold from the tree, symbol glyphs, marker counts/rollup bubbles,
 selection/hover/focus colors, wheel scrolling and Enter-to-reveal. The title
-actions are Collapse All, Expand All, Follow Cursor, Filter on Type and the
-three Sort By commands. Follow Cursor selects the symbol enclosing the cursor;
-content changes rebuild from the editor's `ViewLinesChanged` event. The
+toolbar shows Collapse All or Expand All and More Actions. More Actions opens
+the picker for Follow Cursor, Filter on Type, and the three Sort By commands.
+Follow Cursor selects the symbol enclosing the cursor. Content changes rebuild
+from the editor's `ViewLinesChanged` event. The
 terminal has no `TimeoutTimer`, so this is direct rather than debounced and is
 never driven by a workbench polling loop.
 The view lives in the Explorer view container, stacked under the file tree with
@@ -1743,6 +1744,16 @@ Library constraints:
   overview-ruler marker accents and a few legacy badge literals keep their
   fallback colors. The Color Theme picker and icon themes are not ported.
 
+Explorer and Source Control share the ViewPane section header and vertical
+split layout. Shift+Tab from the body focuses its heading. Up and Down move
+between headings, Left and Right collapse and expand, and Enter or Space
+toggles the section. Tab reaches the header toolbar and then the body. The
+header context menu opens in the workbench picker. Drag headers to reorder
+them. The highlighted half of the destination pane shows where the view will
+land. Drop a header on either container's activity icon to move the view.
+The workspace restores view order, visibility, expansion and divider sizes
+when reopened.
+
 ### 8.1 Integrated terminal panel
 
 The terminal panel and terminal editors share the terminal cell renderer.
@@ -1851,7 +1862,7 @@ are listed in the README as remaining async-port work.
 
 ### 8.2 Source Control, quick diff and diff editor
 
-The terminal workbench ports the read-only Git/SCM pipeline without the
+The terminal workbench ports the Git/SCM pipeline without the
 extension host. `src/extensions/git/src/git.zig` is the `IGitExtensionDelegate` host: it
 runs Git with argv (never a shell), an explicit working directory, bounded
 stdout/stderr and a deadline, parses `status --porcelain=v2 -z --branch -uall`
@@ -1867,17 +1878,23 @@ provides the primary/secondary quick-diff providers.
 
 The Source Control Changes view (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`)
 keeps the upstream `SCMTreeDataSource`/`SCMTreeSorter`/`SCMTreeFilter` behavior
-for the read-only subset. With a single repository the groups are the tree-root
+for changes. With a single repository the groups are the tree-root
 children (the repository header only appears with `scm.alwaysShowRepositories`
 or multiple repositories). Groups and tree-mode folders are collapsible rows
-with twisties and count badges; change rows carry a file label, the Git
-decoration badge and the upstream strike-through/faded decoration flags. List
+with twisties and count badges. Change rows use the shared file icons, file
+labels, Git decorations, and the upstream strike-through and faded styles. List
 sorting follows `scm.defaultViewSortKey`, tree mode folders sort before files
 and a deeper single-child folder chain is compressed when `scm.compactFolders`
 is on (top-level folders stay uncompressed, matching
 `SCMTreeCompressionDelegate`).
 Selection is preserved by element identity across refreshes, collapse changes
 and view-mode switches.
+
+The SCM stylesheet gives the message input and split action button the same
+inset and uses terminal border strokes in place of CSS pixel borders. Commit
+and overflow menus use the workbench picker. The Changes and Graph pane
+divider resizes in whole rows. The Graph uses cell glyphs for the upstream
+commit circles and connectors and reserves space on the right for ref badges.
 
 Terminal substitutions and their reasons:
 
@@ -1899,9 +1916,8 @@ Terminal substitutions and their reasons:
   `list.inactiveSelectionBackground`. There is no double click (single click
   toggles a collapsible row and opens a change row), no multi-selection, no
   tree filter/find, no hover tooltip, no drag/drop and no auto-reveal. The
-  commit-message row is pinned above the list rather than scrolling with the
-  tree; a terminal row cannot show the browser's multi-line editor, so the
-  message is single-line, its placeholder substitutes Enter for the
+  commit-message input and Commit button scroll with the tree. The terminal
+  message input is single-line, and its placeholder substitutes Enter for the
   `Ctrl-Enter` binding label, and Enter (or the labelled Commit button below
   the input, or Ctrl-Enter from the list) commits. Staged changes commit
   as-is; with an empty index

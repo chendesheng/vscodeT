@@ -141,6 +141,7 @@ Rules:
   | `editor.css` (viewport) | `0x0080` | monaco-editor, overflow-guard |
   | `searchview.css` | `0x0090` | search-view, search-widgets-container, search-widget, search/replace containers, query details and file types |
   | `searchEditor.css` | `0x00a0` | search-editor, context line input and toggle |
+  | `scm.css` | `0x00b0` | commit input and split action button, Graph labels and badges |
 
 - The editor registers every sheet once in `View.init` through
   `editorCss.register(document)`. `Document.clear()` preserves them.

@@ -968,19 +968,19 @@ console API for raw mode, sizing and input polling.
 - The primary side bar is a ported pane-composite part
   (`src/vs/workbench/browser/parts/sidebar/sidebarPart.zig`), the same way as
   the bottom panel. The part owns the side bar width/position/visibility, the
-  active viewlet, the `EXPLORER`/`SEARCH`/`SOURCE CONTROL` title row and its
+  active viewlet, its title row and its
   toolbar actions; the row is built with the `ui` DOM (`Document` painted
   through a `Surface`) exactly like the panel title, and the view pane
   containers render below it without their own section headers. The Search
   title toolbar runs `Clear Search Results` (`x`) and `Toggle Search Details`
-  (`…`); the SCM title toolbar refreshes the provider and toggles list/tree
-  mode, while the Explorer's New File/New Folder/Refresh/Collapse All actions
+  (`…`); the Source Control overflow manages the Changes and Graph views.
+  The Explorer's New File/New Folder/Refresh/Collapse All actions
   are not ported as commands. `Ctrl-0` focuses the side bar,
   `workbench.action.closeSidebar` closes it,
   `workbench.action.toggleSidebarVisibility` toggles it and
   `workbench.action.previousSideBarView`/`nextSideBarView` cycle the visible
-  containers. Not ported: view title context menus, the title toolbar's
-  overflow/"More Actions" menu, `focusActivityBar` (the rail has no keyboard
+  containers. Gaps include generic view title context and overflow menus,
+  `focusActivityBar` (the rail has no keyboard
   focus model), `workbench.activityBar.iconClickBehavior`,
   the toggle-activity-bar-visibility action (the configuration service has no
   `updateValue`), the right-hand side bar position, the
@@ -1022,7 +1022,7 @@ console API for raw mode, sizing and input polling.
   terminal container. `hideIfEmpty` containers keep their tab while active and
   drop it again once empty. Panel position (top/left/right), floating panels,
   alignment, maximize and the overflow switcher are not ported.
-- Source Control is a read-only Git/SCM port. `src/extensions/git/src/git.zig` implements
+- Source Control runs Git through the CLI. `src/extensions/git/src/git.zig` implements
   the ported `IGitExtensionDelegate` over the Git command line (argv, never a
   shell; explicit cwd; bounded stdout/stderr; per-command deadline), and
   `src/vs/workbench/contrib/git/{common,browser}/gitService.zig` keep the
@@ -1038,28 +1038,33 @@ console API for raw mode, sizing and input polling.
   view: with one repository the resource groups sit at the top level, while
   `scm.alwaysShowRepositories` adds the repository header (whose count follows
   `scm.providerCountBadge`). Each group has a twistie, its label and a count
-  badge; each change row shows the file name, the dimmed repository-relative
-  directory in list mode, the Git status badge in its theme color,
+  badge. Change rows use the workbench's file icons, Git name and badge
+  colors, the dimmed repository-relative directory in list mode,
   strike-through for deleted files and the faded row state. `scm.defaultViewMode`
   (list/tree), `scm.defaultViewSortKey` (path/name/status) and
-  `scm.compactFolders` (tree mode) are honored, and the title action plus the
+  `scm.compactFolders` (tree mode) are honored. The Changes overflow and the
   `Source Control: View as List/Tree` and `Source Control: Sort Changes by ...`
-  commands switch modes and sort keys. A pinned commit-message row above the
-  list shows the branch-aware placeholder
-  (`Message (Enter to commit on "branch")`), with a labelled Commit button
-  below it; `Enter`, the button or `Ctrl-Enter` from the list commits. Staged
+  commands switch modes and sort keys. The commit message and action button
+  scroll with the file rows. The input shows the branch-aware placeholder
+  (`Message (Enter to commit on "branch")`), with the split Commit button
+  below it. Its dropdown opens Commit, Commit (Amend), Commit & Push, and
+  Commit & Sync. A clean branch can show Publish Branch or Sync Changes.
+  `Enter`, the primary button or `Ctrl-Enter` from the list commits. Staged
   changes are committed
   as-is, while an empty index uses the terminal's smart-commit substitution:
   the working/untracked changes are staged (`git.smartCommitChanges`
   `all`/`tracked`) and committed, replacing the browser's smart-commit prompt.
-  `git.showCommitInput` and `scm.showInputActionButton` are honored.
+  `git.showCommitInput`, `scm.showActionButton`, and the terminal
+  `scm.showInputActionButton` setting are honored.
   `Up`/`Down`/`Home`/`End`/`PageUp`/`PageDown` move the selection,
   `Left`/`Right`/`Space` collapse and expand groups and folders, `Enter` or a
   click opens the change, `r` refreshes and `Escape` returns to the editor;
-  the mouse wheel scrolls and rows paint hover/selection backgrounds. Not
-  ported: the commit dropdown (amend/signed/push), staging/discard commands,
-  multi-line commit messages, input validation/history, the Git action button,
-  file/status icons, hover tooltips, multi-selection, the tree filter/find,
+  the mouse wheel scrolls and rows paint hover/selection backgrounds. Tree
+  guides follow `workbench.tree.renderIndentGuides`. File rows show inline
+  Open File, Stage, Unstage and Discard actions as applicable. Discard asks
+  before restoring tracked files or permanently deleting an untracked file.
+  Gaps include multi-line commit messages, input
+  validation/history, hover tooltips, multi-selection, the tree filter/find,
   drag/drop and auto-reveal. The branch/count status entry
   (`⎇ branch ↑n ↓m (count)`) opens the SCM view, and the activity badge follows
   `scm.countBadge` (`all`/`focused`/`off`). There is no extension-host SCM
@@ -1073,18 +1078,22 @@ console API for raw mode, sizing and input polling.
   `│`/`─`/`╮`/`╭`/`╯`/`╰`/`┼` lanes (no diagonals; the terminal adaptation
   follows lazygit's cell-connection model). Lane/edge colors are keyed to the
   swimlane column (`scmGraph.foreground1..5`), including the commit circles, so
-  a lane and its nodes match and a column keeps one color even when swimlanes
-  shift. Commits start collapsed; expanding shows changed files in list or compressed tree mode;
+  a column keeps one color even when swimlanes shift. Named refs and
+  incoming/outgoing nodes use their reference color on the circle.
+  Commits start collapsed; expanding shows changed files in list or compressed tree mode;
+  the inline Open Changes action opens the file diff or a picker for multiple files.
   `Enter` opens a parent↔commit diff and clicking the `Load More…` row pages
   older commits in. `scm.graph.pageSize` (50),
   `scm.graph.pageOnScroll` (true), `scm.graph.badges` (`filter`),
   `scm.graph.showIncomingChanges`/`showOutgoingChanges` (true),
   `scm.defaultViewMode` (`list`), `scm.compactFolders` (true) and
   `git.commitShortHashLength` (7) are honored. The title actions select
-  All/Auto/one history-item reference, reveal the current commit, refresh and
-  toggle list/tree; background ref changes while scrolled show "Outdated".
+  All/Auto/one history-item reference, reveal the current commit, fetch, pull,
+  push or publish, and refresh. The Graph overflow switches list/tree.
+  Background ref changes while scrolled show "Outdated".
   View sections are 1-row headers split into weighted bodies (Changes/Graph
-  40/40). A left click on the header (or its chevron) toggles the section and
+  40/40) with a draggable sash when both sections are expanded. A left click
+  on the header (or its chevron) toggles the section and
   clicking a title action runs it without toggling, matching upstream's pane
   header click listener. Pointer motion over a header never changes the
   expansion state; the `ui` library's paint-only `HoverStyle` tracks the
