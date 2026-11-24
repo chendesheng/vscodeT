@@ -21720,9 +21720,9 @@ test "Workbench: LSP navigation, references and symbol picker" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "lsp/sample.ts",
-        \\\const value = 1;
-        \\\value;
-        \\\value;
+        \\const value = 1;
+        \\value;
+        \\value;
     );
     defer allocator.free(path);
 
