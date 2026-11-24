@@ -946,6 +946,25 @@ pub fn main(init: std.process.Init) !void {
                         if (current.handleDiffKey(event)) needs_render = true;
                         continue;
                     }
+                    if (!workbench.is_pasting and workbench.focus == .editor and !event.mods.ctrl and !event.mods.alt) {
+                        if (extension_host) |ext| {
+                            const suggest_open = if (current.controllers) |c| c.suggest.isOpen() or c.suggest.hasSnippetSession() else false;
+                            if (!suggest_open and current.view.ghost_text.isVisible()) {
+                                switch (event.key) {
+                                    .tab => if (try ext.inline_completions.accept()) {
+                                        needs_render = true;
+                                        continue;
+                                    },
+                                    .escape => {
+                                        ext.inline_completions.dismiss();
+                                        needs_render = true;
+                                        continue;
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                    }
                     if (try current.handleEditorKey(event, &workbench.is_pasting, now_ms, null)) return;
                 },
                 .mouse => |*event| {

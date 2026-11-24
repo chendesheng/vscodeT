@@ -1,6 +1,12 @@
 const vscode = require('vscode');
 
 function activate(context) {
+  context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ language: 'json' }, {
+    provideInlineCompletionItems(document, position) {
+      const line = document.lineAt(position.line).text;
+      return [new vscode.InlineCompletionItem(line + ' inline result', new vscode.Range(position.line, 0, position.line, position.character))];
+    }
+  }));
   context.subscriptions.push(vscode.languages.registerHoverProvider({ language: 'json' }, {
     provideHover() {
       return { contents: ['fixture hover'] };

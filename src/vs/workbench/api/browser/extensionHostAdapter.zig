@@ -174,6 +174,7 @@ pub const Extensions = struct {
     /// built-in extensions such as native Vim.
     content_listener_editor: ?*Editor = null,
     visible_ranges_dirty: bool = false,
+    inline_completions: @import("inlineCompletionSession.zig").Session = undefined,
     language_features_actor: ?MainThreadLanguageFeatures = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
     storage_actor: ?MainThreadStorage = null,
@@ -253,6 +254,7 @@ pub const Extensions = struct {
             .parent_pid = @intCast(manager.currentProcessId()),
         });
         errdefer self.host.deinit();
+        self.inline_completions = .{ .workbench = workbench, .host = self.host, .arena = .init(allocator) };
 
         self.storage_actor = try MainThreadStorage.init(allocator);
         self.statusbar_actor = try MainThreadStatusBar.init(allocator, &workbench.statusbar, .{
@@ -303,6 +305,7 @@ pub const Extensions = struct {
     }
 
     pub fn deinit(self: *Extensions) void {
+        self.inline_completions.deinit();
         self.setScrollListener(null);
         self.setContentListener(null);
         if (self.diagnostics_actor) |actor| {
@@ -751,6 +754,9 @@ pub const Extensions = struct {
         self.activateActiveLanguage();
         self.syncSelection() catch {};
         if (self.visible_ranges_dirty) self.sendVisibleRanges() catch {};
+        if (self.language_features_actor) |*actor| {
+            if (self.inline_completions.tick(actor) catch false) self.needs_render = true;
+        }
         const result = self.needs_render;
         self.needs_render = false;
         return result;
@@ -1848,6 +1854,27 @@ test "Extensions: language feature registration reaches the workbench registries
     workbench.quick_access.inputService().hide();
     try std.testing.expect(runLspCommand(workbench, "editor.action.showHover"));
     try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
+    const tab = workbench.activeTab().?;
+    try tab.editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
+    try tab.editor.insertText("é");
+    _ = extension_host.pump();
+    const inline_deadline = time_compat.milliTimestamp() + 5_000;
+    while (!tab.view.ghost_text.isVisible() and time_compat.milliTimestamp() < inline_deadline) {
+        _ = extension_host.pump();
+        time_compat.sleepMillis(10);
+    }
+    try std.testing.expect(tab.view.ghost_text.isVisible());
+    try std.testing.expectEqualStrings(" inline result", tab.view.ghost_text.text.?);
+    var before_inline = try model.getLineContent(1);
+    defer before_inline.deinit();
+    try std.testing.expect(try extension_host.inline_completions.accept());
+    var after_inline = try model.getLineContent(1);
+    defer after_inline.deinit();
+    try std.testing.expect(std.mem.endsWith(u8, after_inline.items, "é inline result"));
+    try tab.editor.undo();
+    var undone = try model.getLineContent(1);
+    defer undone.deinit();
+    try std.testing.expectEqualStrings(before_inline.items, undone.items);
 }
 
 test "Extensions: relative paths mirror the model URI language features use" {

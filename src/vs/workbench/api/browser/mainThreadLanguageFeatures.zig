@@ -97,12 +97,14 @@ pub const MainThreadLanguageFeatures = struct {
     features: *features_mod.LanguageFeaturesService,
     proxy: HostProxy,
     registrations: std.AutoHashMap(u32, *Registration),
+    inline_providers: @import("../../../editor/common/languageFeatureRegistry.zig").LanguageFeatureRegistry(u32),
 
     pub fn init(allocator: Allocator, features: *features_mod.LanguageFeaturesService, proxy: HostProxy) MainThreadLanguageFeatures {
         return .{
             .allocator = allocator,
             .features = features,
             .proxy = proxy,
+            .inline_providers = .init(allocator),
             .registrations = std.AutoHashMap(u32, *Registration).init(allocator),
         };
     }
@@ -111,6 +113,7 @@ pub const MainThreadLanguageFeatures = struct {
         var iterator = self.registrations.valueIterator();
         while (iterator.next()) |registration_ptr| self.destroyRegistration(registration_ptr.*);
         self.registrations.deinit();
+        self.inline_providers.deinit();
     }
 
     fn destroyRegistration(self: *MainThreadLanguageFeatures, registration: *Registration) void {
@@ -149,6 +152,13 @@ pub const MainThreadLanguageFeatures = struct {
         if (std.mem.eql(u8, method, "$unregister")) {
             const handle = handleArg(args) orelse return error.InvalidArguments;
             if (self.registrations.fetchRemove(handle)) |entry| self.destroyRegistration(entry.value);
+            return .empty;
+        }
+        if (std.mem.eql(u8, method, "$registerInlineCompletionsSupport")) {
+            const handle = handleArg(args) orelse return error.InvalidArguments;
+            const selector = try parseSelector(arena, jsonArg(args, 1) orelse return error.InvalidArguments);
+            const registration = try self.createRegistration(arena, handle);
+            registration.disposable = try self.inline_providers.register(selector, handle);
             return .empty;
         }
         if (std.mem.eql(u8, method, "$registerHoverProvider")) return self.registerHover(args, arena);
@@ -685,7 +695,7 @@ fn metadataKinds(value: ?std.json.Value) ?std.json.Value {
     return item.object.get("providedKinds");
 }
 
-fn positionJson(arena: Allocator, model: *TextModel, position: Position) !std.json.Value {
+pub fn positionJson(arena: Allocator, model: *TextModel, position: Position) !std.json.Value {
     var object: std.json.ObjectMap = .empty;
     try object.put(arena, "lineNumber", .{ .integer = @intCast(position.lineNumber) });
     try object.put(arena, "column", .{ .integer = @intCast(utf16ColumnForModel(model, position.lineNumber, position.column)) });
@@ -701,7 +711,7 @@ fn rangeJson(arena: Allocator, model: *TextModel, range: Range) !std.json.Value 
     return .{ .object = object };
 }
 
-fn rangeFromJson(model: *TextModel, value: std.json.Value) ?Range {
+pub fn rangeFromJson(model: *TextModel, value: std.json.Value) ?Range {
     if (value != .object) return null;
     const object = value.object;
     const start_line = intField(object, "startLineNumber") orelse return null;
