@@ -1622,6 +1622,9 @@ pub const Workbench = struct {
             .{
                 .context = self,
                 .open_file = quickOpenFile,
+                .open_file_to_side = quickOpenToSide,
+                .configure_keybinding = quickConfigureBinding,
+                .lookup_keycaps = quickLookupKeycaps,
                 .report_error = quickReportError,
                 .cancel_popups = quickCancelPopups,
                 .get_excludes = quickGetExcludes,
@@ -11305,7 +11308,11 @@ pub const Workbench = struct {
             });
         }
         try self.renderScmHistoryHover();
-        try self.quick_access.render(&self.frame.next);
+        if (self.quick_access.isOpen()) {
+            self.quick_access.widget.caps = if (self.part.cell_borders) self.part.cell_border_capabilities else .{};
+            self.quick_access.widget.open_to_bottom = self.preferredSideBySideDirection() == .DOWN;
+            try self.quick_access.render(&self.frame.next);
+        }
         if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next, self.part.cell_border_capabilities);
         if (self.context_menu) |menu| menu.popup.?.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
         if (self.dialog) |dialog| dialog.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
@@ -13109,6 +13116,57 @@ fn hasActiveEditor(context: *anyopaque) bool {
 fn quickOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     self.requestOpenPath(path);
+}
+
+fn quickOpenToSide(context: *anyopaque, path: []const u8) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const direction = self.preferredSideBySideDirection();
+    const target = self.findAdjacentPane(direction, false) orelse try self.newEmptyGroup(direction);
+    for (self.part.group_views.items) |pane| {
+        for (pane.tabs.items) |tab| {
+            const resource = if (tab.file_input) |input| input.editor.path else tab.imagePath() orelse continue;
+            if (!self.samePath(resource, path)) continue;
+            const copy = if (pane == target) tab else try self.copyTabIntoPane(target, tab);
+            try target.activateTab(copy);
+            try self.focusPane(target);
+            try self.history.add(path);
+            return;
+        }
+    }
+    try self.focusPane(target);
+    self.requestOpenPath(path);
+}
+
+fn quickConfigureBinding(context: *anyopaque, id: []const u8) anyerror!void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try commandOpenKeybindingsJson(context);
+    const tab = self.activeTab() orelse return;
+    try tab.ensureControllers();
+    const find = tab.controllers.?.find;
+    try find.startFind();
+    try find.widget().find_input.setValue(id);
+}
+
+fn quickLookupKeycaps(context: *anyopaque, arena: Allocator, id: []const u8) anyerror![]const []const u8 {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    const global = try self.ensureGlobalService();
+    const binding = try global.service.lookupKeybinding(arena, id, false) orelse try (try self.ensureTabService()).service.lookupKeybinding(arena, id, false) orelse blk: {
+        const tab = self.activeTab() orelse return &.{};
+        if (tab.isDiff()) return &.{};
+        break :blk try tab.editor.lookupShortcut(id) orelse return &.{};
+    };
+    const labels = @import("../../base/common/keybindingLabels.zig").UILabelProvider.labelsFor(keybinding_service.bindingOS());
+    var keys = std.array_list.Managed([]const u8).init(arena);
+    for (binding.getChords()) |chord| {
+        if (chord.ctrl_key) try keys.append(labels.ctrl_key);
+        if (chord.shift_key) try keys.append(labels.shift_key);
+        if (chord.alt_key) try keys.append(labels.alt_key);
+        if (chord.meta_key) try keys.append(labels.meta_key);
+        if (chord.key_label) |key| {
+            if (key.len != 0) try keys.append(try arena.dupe(u8, key));
+        }
+    }
+    return keys.items;
 }
 
 fn quickGetExcludes(context: *anyopaque, allocator: Allocator) anyerror![]glob.ExcludeEntry {
@@ -18308,6 +18366,66 @@ test "Workbench: switching tabs reveals the active file" {
     try workbench.switchTab(-1);
     try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqualStrings("a.txt", workbench.sidebar.?.selectedNode().?.name);
+}
+
+test "Workbench: quick access row buttons open to the side, configure shortcuts and remove history" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try seedFile(allocator, io, &tmp, "CPU.hs", "");
+    defer allocator.free(file);
+    const bindings = try seedFile(allocator, io, &tmp, "keybindings.json",
+        \\[{"key":"ctrl+alt+b","command":"workbench.action.splitEditor"}]
+    );
+    defer allocator.free(bindings);
+    const workbench = try Workbench.init(allocator, io, &.{}, 90, 24);
+    defer workbench.deinit();
+    try workbench.setKeybindingsPaths(&.{bindings});
+    try workbench.openPath(file);
+    const quick = workbench.quick_access;
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try quick.showFilePicker();
+    try workbench.render(&out.writer);
+    const layout = quick.widget.layout;
+    const right = layout.x + layout.width - layout.inset - 1;
+    var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = right - 5, .y = layout.y + layout.inset + 1 };
+    try std.testing.expect(workbench.handleQuickAccessMouse(&click));
+    try std.testing.expect(!quick.isOpen());
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expectEqualStrings("CPU.hs", workbench.activeTab().?.input.getName());
+
+    try quick.showFilePicker();
+    try workbench.render(&out.writer);
+    click.x = right - 2;
+    try std.testing.expect(workbench.handleQuickAccessMouse(&click));
+    try std.testing.expect(quick.isOpen());
+    try std.testing.expectEqual(@as(usize, 0), workbench.history.getHistory().len);
+    try std.testing.expectEqual(@as(usize, 0), quick.controller.pickerRef().rows.items.len);
+
+    const command = "workbench.action.splitEditor";
+    try quick.commands_provider.base.history.push(command);
+    try quick.showCommandPicker();
+    const picker = quick.controller.pickerRef();
+    try picker.setValue(">" ++ command);
+    try workbench.render(&out.writer);
+    const keys = picker.activeItem().?.keycaps;
+    try std.testing.expectEqual(@as(usize, 3), keys.len);
+    try std.testing.expectEqualStrings("Ctrl", keys[0]);
+    try std.testing.expectEqualStrings("Alt", keys[1]);
+    try std.testing.expectEqualStrings("B", keys[2]);
+    try std.testing.expect(workbench.handleQuickAccessMouse(&click));
+    try std.testing.expect(quick.isOpen());
+    try std.testing.expectEqual(@as(?usize, null), quick.commands_provider.base.history.rank(command));
+    try workbench.render(&out.writer);
+    var tab_key = ui.KeyEvent{ .key = .tab };
+    var enter = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(try workbench.handleQuickAccessKey(&tab_key));
+    try std.testing.expect(try workbench.handleQuickAccessKey(&enter));
+    try std.testing.expect(!quick.isOpen());
+    try std.testing.expectEqualStrings("keybindings.json", workbench.activeTab().?.input.getName());
+    try std.testing.expectEqualStrings(command, workbench.activeTab().?.controllers.?.find.state.search_string);
 }
 
 test "Workbench: quick open renders and an outside click only closes it" {

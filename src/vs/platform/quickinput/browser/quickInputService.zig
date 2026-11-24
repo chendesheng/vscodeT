@@ -143,9 +143,6 @@ pub const QuickInputService = struct {
         for (self.picker.items.items, 0..) |item, index| {
             if (!std.mem.eql(u8, item.id(), id)) continue;
             self.picker.setActiveIndex(index);
-            if (index >= self.picker.scroll_top + self.picker.page_size) {
-                self.picker.scroll_top = index - self.picker.page_size + 1;
-            }
             return;
         }
     }

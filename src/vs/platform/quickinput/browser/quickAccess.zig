@@ -169,6 +169,7 @@ pub const QuickAccessController = struct {
             return;
         }
         if (provider) |p| {
+            self.picker.setBusy(false);
             p.refresh(p.context, &self.picker) catch |err| self.report(err);
         }
     }

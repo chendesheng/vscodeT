@@ -54,6 +54,9 @@ const theme_colors_mod = @import("./themeColors.zig");
 const QuickPickWidget = widget_mod.QuickPickWidget;
 
 pub const Host = struct {
+    open_file_to_side: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+    configure_keybinding: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+    lookup_keycaps: ?platform_commands_quick_access.LookupKeycaps = null,
     context: *anyopaque,
     open_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
     report_error: *const fn (context: *anyopaque, message: []const u8) void,
@@ -77,7 +80,6 @@ pub const QuickAccessService = struct {
     host: Host,
     file_search: *FileSearchWorker,
     file_session_active: bool = false,
-    last_file_busy: bool = false,
     registry: Registry,
     controller: *QuickAccessController,
     widget: *QuickPickWidget,
@@ -114,12 +116,15 @@ pub const QuickAccessService = struct {
         self.history = history;
         self.commands = commands;
         self.host = host;
+        self.file_session_active = false;
 
         self.file_search = try FileSearchWorker.init(allocator, .{ .rg_path = options.rg_path });
         errdefer self.file_search.deinit();
 
         self.widget = try QuickPickWidget.init(allocator);
         errdefer self.widget.deinit();
+        self.widget.on_action = triggerAction;
+        self.widget.action_context = self;
 
         self.registry = Registry.init(allocator);
         errdefer self.registry.deinit();
@@ -148,6 +153,7 @@ pub const QuickAccessService = struct {
             .{
                 .context = self,
                 .execute = executeCommand,
+                .lookup_keycaps = lookupKeycaps,
                 .on_error = reportError,
             },
         );
@@ -206,7 +212,6 @@ pub const QuickAccessService = struct {
     pub fn endFileSession(self: *QuickAccessService) void {
         if (!self.file_session_active) return;
         self.file_session_active = false;
-        self.last_file_busy = false;
         self.file_search.endSession();
     }
 
@@ -294,6 +299,8 @@ pub const QuickAccessService = struct {
             event.y >= layout.y and
             event.y < layout.y + layout.height;
         if (!inside) {
+            if (self.widget.drag != null) return self.widget.handleMouse(picker, event);
+            self.widget.leaveList();
             if (event.kind == .down or event.kind == .click) picker.hide();
             return true;
         }
@@ -305,24 +312,28 @@ pub const QuickAccessService = struct {
     /// open. The bounded wait keeps the event loop responsive. Returns true
     /// when the visible list or busy state changed.
     pub fn poll(self: *QuickAccessService, now_ms: i64) !bool {
-        _ = now_ms;
-        if (!self.controller.isVisible() or !self.isFilePickerActive()) return false;
-
-        const picker = self.controller.pickerRef();
-        const filter = std.mem.trim(u8, picker.value.items, " \t");
-        if (filter.len == 0) return false;
-
+        const picker = self.visiblePicker() orelse return false;
         var changed = false;
-        if (self.file_search.waitForResult(1)) changed = true;
-        const busy = self.file_search.isBusy();
-        if (busy != self.last_file_busy) {
-            self.last_file_busy = busy;
-            changed = true;
+        if (!self.input.isVisible() and self.isFilePickerActive()) {
+            const filter = std.mem.trim(u8, picker.value.items, " \t");
+            if (filter.len != 0 and self.file_search.waitForResult(1) and self.file_search.hasResult(filter)) {
+                try self.controller.refresh();
+                changed = true;
+            }
+            picker.setBusy(self.file_search.isBusy());
         }
-        if (!changed) return false;
+        return changed or self.widget.needsAnimationFrame(picker, now_ms);
+    }
 
-        try self.controller.refresh();
-        return true;
+    fn visiblePicker(self: *QuickAccessService) ?*QuickPick {
+        if (self.input.isVisible()) return self.input.pickerRef();
+        return if (self.controller.isVisible()) self.controller.pickerRef() else null;
+    }
+
+    pub fn pollTimeout(self: *QuickAccessService, now_ms: i64, maximum: i32) i32 {
+        const picker = self.visiblePicker() orelse return maximum;
+        if (self.wantsTick()) return @min(16, maximum);
+        return self.widget.animationTimeout(picker, now_ms, maximum);
     }
 
     pub fn wantsTick(self: *QuickAccessService) bool {
@@ -349,7 +360,7 @@ pub const QuickAccessService = struct {
     fn presenterInputShow(context: *anyopaque, picker: *QuickPick) anyerror!void {
         _ = picker;
         const self: *QuickAccessService = @ptrCast(@alignCast(context));
-        self.widget.setHover(null);
+        self.widget.resetInteraction();
         self.host.cancel_popups(self.host.context);
     }
 
@@ -439,12 +450,44 @@ pub const QuickAccessService = struct {
             return;
         };
         self.file_session_active = true;
-        self.last_file_busy = false;
     }
 
     fn openFile(context: *anyopaque, path: []const u8) anyerror!void {
         const self: *QuickAccessService = @ptrCast(@alignCast(context));
         return self.host.open_file(self.host.context, path);
+    }
+
+    fn lookupKeycaps(context: *anyopaque, arena: Allocator, id: []const u8) anyerror![]const []const u8 {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        const lookup = self.host.lookup_keycaps orelse return &.{};
+        return lookup(self.host.context, arena, id);
+    }
+
+    fn triggerAction(context: *anyopaque, picker: *QuickPick, index: usize, action: widget_mod.ItemAction) void {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        self.runAction(picker, index, action) catch |err| self.host.report_error(self.host.context, @errorName(err));
+    }
+
+    fn runAction(self: *QuickAccessService, picker: *QuickPick, index: usize, action: widget_mod.ItemAction) !void {
+        const id = picker.items.items[index].item.id;
+        switch (action) {
+            .remove_history => {
+                if (self.isFilePickerActive()) {
+                    self.history.remove(id);
+                    picker.removeItem(index);
+                } else {
+                    self.commands_provider.base.history.remove(id);
+                    try self.controller.refresh();
+                }
+            },
+            .open_side, .configure_keybinding => {
+                const callback = (if (action == .open_side) self.host.open_file_to_side else self.host.configure_keybinding) orelse return;
+                const owned = try self.allocator.dupe(u8, id);
+                defer self.allocator.free(owned);
+                picker.hide();
+                try callback(self.host.context, owned);
+            },
+        }
     }
 
     fn executeCommand(context: *anyopaque, command_id: []const u8) anyerror!void {
@@ -460,7 +503,7 @@ pub const QuickAccessService = struct {
     fn presenterShow(context: *anyopaque, picker: *QuickPick) anyerror!void {
         _ = picker;
         const self: *QuickAccessService = @ptrCast(@alignCast(context));
-        self.widget.setHover(null);
+        self.widget.resetInteraction();
         self.host.cancel_popups(self.host.context);
     }
 

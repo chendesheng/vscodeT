@@ -1301,7 +1301,11 @@ console API for raw mode, sizing and input polling.
   quick-pick bindings), Up/Down and PageUp/PageDown move by one or a page,
   Ctrl-Home/Ctrl-End jump to the ends, Enter accepts, Escape or
   an outside click closes, the wheel scrolls the list, and clicking a row
-  accepts it. Go to File is backed by `rg --files`, like upstream's
+  accepts it. A rounded frame encloses the input and results. File and command
+  groups are labeled on their first row. Selected and hovered files offer
+  Open to the Side, and recent entries offer Remove from History. Commands
+  display their resolved shortcut as keycaps. The gear opens the keyboard
+  shortcuts JSON file with Find set to the selected command ID. Go to File is backed by `rg --files`, like upstream's
   `ISearchService.fileSearch`: opening the picker starts one listing per
   session, honors `files.exclude` and `search.exclude`, `.gitignore`/`.ignore`,
   `search.useIgnoreFiles`/`useParentIgnoreFiles`/`useGlobalIgnoreFiles`, and
@@ -1320,8 +1324,7 @@ console API for raw mode, sizing and input polling.
   ported. Text search in the Search view is ripgrep-backed too; see the Search
   panel paragraph above.
   Symbol (`@`), go-to-line
-  (`:`), link and help providers, absolute/relative path queries, open-to-side,
-  icons, quick-input buttons and keybinding labels are not ported. Command
+  (`:`), link and help providers, and absolute/relative path queries are not ported. Command
   history is in memory for the session.
 - Visible text editors and the two sides of a diff share the workbench's editor
   document and layout tree. The split grid positions the group elements, and
@@ -2056,8 +2059,7 @@ Editor contributions:
   selection) and the editing keys (enter/tab/backspace/delete/escape) still
   use the hand-written dispatch until the core-command layer is ported. Quick open
   uses the ported path-aware item scorer but has no symbol/go-to-line/link
-  providers, quick-input buttons,
-  icons, keybinding labels or persisted command history.
+  providers or persisted command history.
 
 - The remaining porting roadmap and its blockers live in
   [`docs/porting-inventory.md`](docs/porting-inventory.md). The computed

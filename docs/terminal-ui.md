@@ -1170,8 +1170,15 @@ Library constraints:
   `search.exclude`, the `search.useIgnoreFiles`/`useParentIgnoreFiles`/
   `useGlobalIgnoreFiles` settings and `search.followSymlinks` are read through
   the same query/exclude helpers as text search. `rg` must be on `PATH`; a
-  missing binary is reported once through the picker error path. Icons,
-  buttons, keybinding labels, virtualized lists, symbol/go-to-line/link
+  missing binary is reported once through the picker error path. The rounded
+  popup uses native cell borders when supported and rounded line glyphs
+  otherwise. After 800 ms of continuous work the picker animates a four-second
+  progress sweep along the bottom of the input. Plain terminals use a colored
+  underline. Overflowing lists reveal a proportional, draggable scrollbar on
+  hover and scroll. Inline group labels, shortcut keycaps and row buttons share the
+  trailing edge. File rows reuse the Explorer icons. The command gear opens
+  the terminal profile's keybindings JSON and searches for the command ID.
+  Virtualized lists, symbol/go-to-line/link
   providers and the browser `fuzzyScorer.ts` path-aware scorer are not ported.
   macOS Unicode normalization is not ported. The Search view's text search uses
   the same `rg` prerequisite: open buffers are searched synchronously by the

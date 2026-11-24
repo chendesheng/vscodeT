@@ -692,7 +692,7 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.markdownPreviewTimeout(now_ms)) |preview_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(preview_timeout, 250))));
         }
-        if (workbench.quickAccessWantsTick()) timeout = 0;
+        timeout = workbench.quick_access.pollTimeout(now_ms, timeout);
         if (workbench.searchWantsTick()) timeout = 0;
         if (workbench.fileWatcherTimeout(now_ms)) |watcher_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(watcher_timeout, 250))));

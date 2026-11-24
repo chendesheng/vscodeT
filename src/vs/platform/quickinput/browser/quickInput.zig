@@ -23,12 +23,15 @@ pub const QuickPick = struct {
     value: std.array_list.Managed(u8),
     placeholder: []const u8 = "",
     items: std.array_list.Managed(QuickPickItem),
+    /// Visible rows exclude inline group separators. Values index the provider items.
+    rows: std.array_list.Managed(usize),
     active_index: ?usize = null,
     selected_index: ?usize = null,
     scroll_top: usize = 0,
     /// Number of list rows the widget can show; page navigation uses it.
     page_size: usize = 10,
     busy: bool = false,
+    busy_since_ms: i64 = 0,
     visible: bool = false,
     item_activation: ItemActivation = .first,
 
@@ -44,16 +47,19 @@ pub const QuickPick = struct {
             .allocator = allocator,
             .value = std.array_list.Managed(u8).init(allocator),
             .items = std.array_list.Managed(QuickPickItem).init(allocator),
+            .rows = std.array_list.Managed(usize).init(allocator),
         };
     }
 
     pub fn deinit(self: *QuickPick) void {
+        self.rows.deinit();
         self.items.deinit();
         self.value.deinit();
     }
 
     pub fn reset(self: *QuickPick) void {
         self.value.clearRetainingCapacity();
+        self.rows.clearRetainingCapacity();
         self.items.clearRetainingCapacity();
         self.active_index = null;
         self.selected_index = null;
@@ -75,6 +81,7 @@ pub const QuickPick = struct {
     }
 
     pub fn setBusy(self: *QuickPick, busy: bool) void {
+        if (busy and !self.busy) self.busy_since_ms = @import("../../../base/common/timeCompat.zig").milliTimestamp();
         self.busy = busy;
     }
 
@@ -82,8 +89,13 @@ pub const QuickPick = struct {
     /// may restore the previous active item afterwards (see
     /// `pickerQuickAccess.zig`).
     pub fn setItems(self: *QuickPick, items: []const QuickPickItem) !void {
+        self.rows.clearRetainingCapacity();
         self.items.clearRetainingCapacity();
+        try self.rows.ensureTotalCapacity(items.len);
         try self.items.appendSlice(items);
+        for (items, 0..) |item, index| {
+            if (item == .item) self.rows.appendAssumeCapacity(index);
+        }
         self.scroll_top = 0;
 
         const mode = self.item_activation;
@@ -96,7 +108,29 @@ pub const QuickPick = struct {
         };
     }
 
+    pub fn removeItem(self: *QuickPick, index: usize) void {
+        const row = std.mem.indexOfScalar(usize, self.rows.items, index) orelse return;
+        const active = self.activeRow() orelse row;
+        _ = self.items.orderedRemove(index);
+        if (index > 0 and self.items.items[index - 1] == .separator and
+            (index == self.items.items.len or self.items.items[index] == .separator))
+            _ = self.items.orderedRemove(index - 1);
+        self.rows.clearRetainingCapacity();
+        for (self.items.items, 0..) |item, i| {
+            if (item == .item) self.rows.appendAssumeCapacity(i);
+        }
+        self.selected_index = null;
+        if (self.rows.items.len == 0) {
+            self.active_index = null;
+            self.scroll_top = 0;
+            return;
+        }
+        const next_row = if (active > row) active - 1 else @min(active, self.rows.items.len - 1);
+        self.setActiveIndex(self.rows.items[next_row]);
+    }
+
     pub fn clearItems(self: *QuickPick) void {
+        self.rows.clearRetainingCapacity();
         self.items.clearRetainingCapacity();
         self.active_index = null;
         self.selected_index = null;
@@ -128,6 +162,7 @@ pub const QuickPick = struct {
         self.active_index = index;
         if (index) |value| {
             if (value >= self.items.items.len) self.active_index = null;
+            self.revealActive();
         }
     }
 
@@ -174,131 +209,41 @@ pub const QuickPick = struct {
     }
 
     fn move(self: *QuickPick, delta: isize) void {
-        const indices = self.itemCount();
-        if (indices == 0) {
-            self.active_index = null;
-            return;
-        }
-
-        const current = self.active_index orelse {
-            self.active_index = if (delta > 0) self.firstItemIndex() else self.lastItemIndex();
+        if (self.rows.items.len == 0) return;
+        const row = self.activeRow() orelse {
+            if (delta > 0) self.focusFirst() else self.focusLast();
             return;
         };
-
-        var index: isize = @intCast(current);
-        var remaining = @abs(delta);
-        while (remaining > 0) : (remaining -= 1) {
-            index = self.step(index, delta);
-        }
-        if (index < 0) index = @intCast(self.items.items.len - 1);
-        if (index >= @as(isize, @intCast(self.items.items.len))) index = 0;
-        self.active_index = @intCast(index);
-        self.revealActive();
+        const next = @mod(@as(isize, @intCast(row)) + delta, @as(isize, @intCast(self.rows.items.len)));
+        self.setActiveIndex(self.rows.items[@intCast(next)]);
     }
 
     fn movePage(self: *QuickPick, delta: isize) void {
-        const indices = self.itemCount();
-        if (indices == 0) {
-            self.active_index = null;
-            return;
-        }
-        if (self.active_index == null) {
-            self.focusFirst();
-            return;
-        }
-
-        const current: isize = @intCast(self.active_index.?);
-        var index = current + delta;
-        if (index < 0) {
-            self.active_index = self.firstItemIndex();
-        } else if (index >= @as(isize, @intCast(self.items.items.len))) {
-            self.active_index = self.lastItemIndex();
-        } else {
-            while (index >= 0 and index < @as(isize, @intCast(self.items.items.len))) : (index += if (delta > 0) 1 else -1) {
-                const candidate = switch (self.items.items[@intCast(index)]) {
-                    .item => true,
-                    .separator => false,
-                };
-                if (candidate) {
-                    self.active_index = @intCast(index);
-                    break;
-                }
-            }
-        }
-        self.revealActive();
+        const row = self.activeRow() orelse return self.focusFirst();
+        const next = std.math.clamp(@as(isize, @intCast(row)) + delta, 0, @as(isize, @intCast(self.rows.items.len - 1)));
+        self.setActiveIndex(self.rows.items[@intCast(next)]);
     }
 
-    /// Finds the next selectable index in `delta` direction, wrapping once.
-    fn step(self: *const QuickPick, from: isize, delta: isize) isize {
-        const count: isize = @intCast(self.items.items.len);
-        if (count == 0) return 0;
-        var index = from;
-        var attempts: isize = 0;
-        while (attempts < count) : (attempts += 1) {
-            index += delta;
-            if (index < 0) index = count - 1;
-            if (index >= count) index = 0;
-            switch (self.items.items[@intCast(index)]) {
-                .item => return index,
-                .separator => {},
-            }
-        }
-        return from;
+    fn activeRow(self: *const QuickPick) ?usize {
+        return std.mem.indexOfScalar(usize, self.rows.items, self.active_index orelse return null);
     }
 
     fn revealActive(self: *QuickPick) void {
-        const index = self.active_index orelse return;
-        if (index < self.scroll_top) {
-            self.scroll_top = index;
-        } else if (self.page_size > 0 and index >= self.scroll_top + self.page_size) {
-            self.scroll_top = index - self.page_size + 1;
-        }
-    }
-
-    fn itemCount(self: *const QuickPick) usize {
-        var count: usize = 0;
-        for (self.items.items) |item| {
-            switch (item) {
-                .item => count += 1,
-                .separator => {},
-            }
-        }
-        return count;
+        const row = self.activeRow() orelse return;
+        if (row < self.scroll_top) self.scroll_top = row;
+        if (row >= self.scroll_top + self.page_size) self.scroll_top = row + 1 - self.page_size;
     }
 
     fn firstItemIndex(self: *const QuickPick) ?usize {
-        for (self.items.items, 0..) |item, index| {
-            switch (item) {
-                .item => return index,
-                .separator => {},
-            }
-        }
-        return null;
+        return if (self.rows.items.len == 0) null else self.rows.items[0];
     }
 
     fn secondItemIndex(self: *const QuickPick) ?usize {
-        var seen: usize = 0;
-        for (self.items.items, 0..) |item, index| {
-            switch (item) {
-                .item => {},
-                .separator => continue,
-            }
-            seen += 1;
-            if (seen == 2) return index;
-        }
-        return self.firstItemIndex();
+        return if (self.rows.items.len >= 2) self.rows.items[1] else self.firstItemIndex();
     }
 
     fn lastItemIndex(self: *const QuickPick) ?usize {
-        var index = self.items.items.len;
-        while (index > 0) {
-            index -= 1;
-            switch (self.items.items[index]) {
-                .item => return index,
-                .separator => {},
-            }
-        }
-        return null;
+        return self.rows.getLastOrNull();
     }
 };
 
