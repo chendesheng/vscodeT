@@ -40,8 +40,12 @@ pub const Position = layout_service.Position;
 pub const ActivityBarPosition = layout_service.ActivityBarPosition;
 pub const CompositeBarPosition = pane.CompositeBarPosition;
 
+const ViewPaneContainer = @import("../views/viewPaneContainer.zig").ViewPaneContainer;
+const DropDestination = @import("../views/viewPaneContainer.zig").DropDestination;
+
 pub const SidebarPart = struct {
     allocator: Allocator,
+    view_pane_containers: std.StringHashMapUnmanaged(*ViewPaneContainer) = .empty,
     pane: pane.PaneCompositePart,
     /// Layout visibility, like `layoutService.isVisible(Parts.SIDEBAR_PART)`.
     visible: bool = false,
@@ -106,7 +110,38 @@ pub const SidebarPart = struct {
         };
     }
 
+    pub fn registerViewPaneContainer(self: *SidebarPart, container: *ViewPaneContainer) !void {
+        try self.view_pane_containers.putNoClobber(self.allocator, container.model.container.id, container);
+    }
+
+    pub fn unregisterViewPaneContainer(self: *SidebarPart, container: *ViewPaneContainer) void {
+        _ = self.view_pane_containers.remove(container.model.container.id);
+    }
+
+    pub fn getViewPaneContainer(self: *const SidebarPart, id: []const u8) ?*ViewPaneContainer {
+        return self.view_pane_containers.get(id);
+    }
+
+    pub fn dropDestination(self: *const SidebarPart, sidebar_rect: ui.Rect, activity_rect: ui.Rect, x: usize, y: usize) ?DropDestination {
+        if (x >= ui.cell.snap(activity_rect.x) and x < ui.cell.snap(activity_rect.right())) if (self.activity_bar) |bar| {
+            if (activity_bar_mod.hitAt(bar, x, y, activity_rect)) |index| {
+                const activity = bar.activityAtVisibleIndex(index) orelse return null;
+                return .{
+                    .container = self.getViewPaneContainer(activity.id) orelse return null,
+                    .rect = .{ .x = activity_rect.x, .y = @floatFromInt(y), .w = activity_rect.w, .h = 1 },
+                };
+            }
+        };
+        const hit = hitTest(self, sidebar_rect, x, y) orelse return null;
+        if (hit != .composite) return null;
+        return .{
+            .container = self.getViewPaneContainer(hit.composite) orelse return null,
+            .rect = compositeItemRect(self, sidebar_rect, hit.composite) orelse return null,
+        };
+    }
+
     pub fn deinit(self: *SidebarPart) void {
+        self.view_pane_containers.deinit(self.allocator);
         if (self.title_surface) |*surface| surface.deinit();
         self.title_surface = null;
         self.title_nodes.deinit();

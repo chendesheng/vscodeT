@@ -39,6 +39,8 @@ pub const Hit = union(enum) {
     body: []const u8,
 };
 
+pub const DropDestination = struct { container: *ViewPaneContainer, rect: ui.Rect };
+
 pub const HeaderEvent = union(enum) {
     handled,
     action: []const u8,
@@ -568,6 +570,26 @@ pub const ViewPaneContainer = struct {
             return .{ .id = id, .position = if (before) .before else .after };
         }
         return null;
+    }
+
+    /// Cross-container header drops use the view descriptor service. The host
+    /// supplies the composite under the pointer, including activity-bar items.
+    pub fn handleHeaderDrop(self: *ViewPaneContainer, event: *const ui.MouseEvent, destination: ?DropDestination, service: *@import("../../../services/views/browser/viewDescriptorService.zig").ViewDescriptorService) bool {
+        if (!self.dragging_header) return false;
+        const press = self.header_press orelse return false;
+        if (event.kind == .move) {
+            self.drop_activity = null;
+            if (destination) |target| {
+                if (self.model.canMoveTo(press.id, target.container.model)) self.drop_activity = target.rect;
+            }
+        } else if (event.kind == .up) {
+            const target = destination orelse return false;
+            if (service.moveViewsToContainer(&.{press.id}, target.container.model)) {
+                self.cancelHeaderDrag();
+                return true;
+            }
+        }
+        return false;
     }
 
     pub fn handleHeaderMouse(self: *ViewPaneContainer, event: *const ui.MouseEvent, content: ui.Rect) ?HeaderEvent {

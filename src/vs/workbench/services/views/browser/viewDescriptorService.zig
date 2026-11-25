@@ -15,6 +15,9 @@ const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const views = @import("../../../common/views.zig");
 
+const ViewContainerModel = @import("../common/viewContainerModel.zig").ViewContainerModel;
+pub const ViewContainerChange = struct { views: []const []const u8, from: *ViewContainerModel, to: *ViewContainerModel };
+
 pub const ViewContainerLocation = views.ViewContainerLocation;
 pub const ViewContainer = views.ViewContainer;
 pub const ViewContainersRegistry = views.ViewContainersRegistry;
@@ -34,6 +37,8 @@ pub const ContainerLocationChange = struct {
 pub const ViewDescriptorService = struct {
     allocator: Allocator,
     registry: *ViewContainersRegistry,
+    models: std.StringHashMapUnmanaged(*ViewContainerModel) = .empty,
+    on_did_change_container: Emitter(ViewContainerChange),
     /// Container id -> location override, mirroring
     /// `viewContainersCustomLocations`.
     custom_locations: std.StringHashMapUnmanaged(ViewContainerLocation) = .{},
@@ -46,6 +51,7 @@ pub const ViewDescriptorService = struct {
         return .{
             .allocator = allocator,
             .registry = registry,
+            .on_did_change_container = .init(allocator),
             .on_did_change_view_containers = Emitter(ContainersChange).init(allocator),
             .on_did_change_container_location = Emitter(ContainerLocationChange).init(allocator),
         };
@@ -74,7 +80,32 @@ pub const ViewDescriptorService = struct {
         try self.on_did_change_view_containers.fire(.{ .removed = &removed });
     }
 
+    pub fn registerViewContainerModel(self: *ViewDescriptorService, model: *ViewContainerModel) !void {
+        try self.models.putNoClobber(self.allocator, model.container.id, model);
+    }
+
+    pub fn unregisterViewContainerModel(self: *ViewDescriptorService, model: *ViewContainerModel) void {
+        _ = self.models.remove(model.container.id);
+    }
+
+    pub fn getViewContainerByViewId(self: *ViewDescriptorService, id: []const u8) ?*ViewContainerModel {
+        var models = self.models.valueIterator();
+        while (models.next()) |model| if (model.*.contains(id)) return model.*;
+        return null;
+    }
+
+    pub fn moveViewsToContainer(self: *ViewDescriptorService, ids: []const []const u8, destination: *ViewContainerModel) bool {
+        if (ids.len == 0) return false;
+        const source = self.getViewContainerByViewId(ids[0]) orelse return false;
+        for (ids) |id| if (!source.canMoveTo(id, destination)) return false;
+        for (ids) |id| _ = source.moveTo(id, destination);
+        self.on_did_change_container.fire(.{ .views = ids, .from = source, .to = destination }) catch {};
+        return true;
+    }
+
     pub fn deinit(self: *ViewDescriptorService) void {
+        self.models.deinit(self.allocator);
+        self.on_did_change_container.deinit();
         if (self.register_listener) |listener| self.registry.on_did_register.unlisten(listener);
         if (self.deregister_listener) |listener| self.registry.on_did_deregister.unlisten(listener);
         self.register_listener = null;
@@ -226,4 +257,41 @@ test "viewDescriptorService: default and custom locations" {
     try std.testing.expectEqual(@as(usize, 2), changes);
     try std.testing.expectEqual(ViewContainerLocation.panel, service.getViewContainerLocation(problems));
     try std.testing.expect(!service.hasCustomLocations());
+}
+
+test "moveViewsToContainer updates all view memberships before firing onDidChangeContainer" {
+    const allocator = std.testing.allocator;
+    var registry = ViewContainersRegistry.init(allocator);
+    defer registry.deinit();
+    var service = ViewDescriptorService.init(allocator, &registry);
+    defer service.deinit();
+    var source = ViewContainerModel.init(allocator, .{ .id = "source", .title = "Source", .icon = "" });
+    defer source.deinit();
+    var destination = ViewContainerModel.init(allocator, .{ .id = "destination", .title = "Destination", .icon = "" });
+    defer destination.deinit();
+    const ids = [_][]const u8{ "one", "two" };
+    for (ids) |id| {
+        try source.addView(.{ .id = id, .name = id });
+        try destination.addView(.{ .id = id, .name = id, .in_container = false });
+    }
+    try service.registerViewContainerModel(&source);
+    try service.registerViewContainerModel(&destination);
+    var events: usize = 0;
+    const Listener = struct {
+        fn changed(event: ViewContainerChange, count: *usize) !void {
+            try std.testing.expectEqual(@as(usize, 2), event.views.len);
+            for (event.views) |id| {
+                try std.testing.expect(!event.from.contains(id));
+                try std.testing.expect(event.to.contains(id));
+            }
+            count.* += 1;
+        }
+    };
+    _ = try service.on_did_change_container.listen(&events, Listener.changed);
+    try std.testing.expect(!service.moveViewsToContainer(&.{ "one", "missing" }, &destination));
+    try std.testing.expect(source.contains("one"));
+    try std.testing.expect(service.moveViewsToContainer(&ids, &destination));
+    try std.testing.expect(!service.moveViewsToContainer(&ids, &destination));
+    try std.testing.expectEqual(&destination, service.getViewContainerByViewId("one").?);
+    try std.testing.expectEqual(@as(usize, 1), events);
 }

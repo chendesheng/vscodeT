@@ -1077,6 +1077,7 @@ pub const Workbench = struct {
         self.view_descriptor_service = ViewDescriptorService.init(self.allocator, &self.view_containers_registry);
         errdefer self.view_descriptor_service.deinit();
         try self.view_descriptor_service.attach();
+        _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
         self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
         self.activity_service = ActivityService.init(self.allocator);
@@ -1167,6 +1168,7 @@ pub const Workbench = struct {
         model.setActiveView("explorer");
 
         const panes = try self.allocator.alloc(view_pane_container_mod.Pane, 4);
+        errdefer self.allocator.free(panes);
         panes[0] = .{
             .id = "explorer",
             .title = "Explorer",
@@ -1205,9 +1207,22 @@ pub const Workbench = struct {
             .show_actions = .when_expanded,
         };
         for (panes) |*pane| pane.run_title_action = runPaneTitleAction;
+        const container = try self.createSidebarContainer(model, panes);
         self.explorer_panes = panes;
         self.explorer_view_model = model;
-        self.explorer_container = try view_pane_container_mod.ViewPaneContainer.init(self.allocator, model, panes);
+        self.explorer_container = container;
+    }
+
+    fn createSidebarContainer(self: *Workbench, model: *view_container_model_mod.ViewContainerModel, panes: []const view_pane_container_mod.Pane) !*view_pane_container_mod.ViewPaneContainer {
+        try self.view_descriptor_service.registerViewContainerModel(model);
+        errdefer self.view_descriptor_service.unregisterViewContainerModel(model);
+        const container = try view_pane_container_mod.ViewPaneContainer.init(self.allocator, model, panes);
+        errdefer {
+            container.deinit();
+            self.allocator.destroy(container);
+        }
+        try self.sidebar_part.registerViewPaneContainer(container);
+        return container;
     }
 
     fn addSidebarViewDescriptors(model: *view_container_model_mod.ViewContainerModel, has_scm: bool, has_history: bool) !void {
@@ -1267,6 +1282,8 @@ pub const Workbench = struct {
             self.markers_status = null;
         }
         if (self.explorer_container) |container| {
+            self.sidebar_part.unregisterViewPaneContainer(container);
+            self.view_descriptor_service.unregisterViewContainerModel(container.model);
             container.deinit();
             self.allocator.destroy(container);
             self.explorer_container = null;
@@ -1872,6 +1889,7 @@ pub const Workbench = struct {
             status.deinit();
             self.editor_status = null;
         }
+        self.deinitGit();
         self.deinitShellModels();
         if (self.tab_service) |service| service.deinit();
         if (self.global_service) |service| {
@@ -1910,7 +1928,6 @@ pub const Workbench = struct {
             surface.deinit();
             self.scm_hover_surface = null;
         }
-        self.deinitGit();
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
         if (self.settings_watcher) |watcher| watcher.deinit();
@@ -4296,6 +4313,8 @@ pub const Workbench = struct {
 
     fn deinitGit(self: *Workbench) void {
         if (self.scm_container) |container| {
+            self.sidebar_part.unregisterViewPaneContainer(container);
+            self.view_descriptor_service.unregisterViewContainerModel(container.model);
             container.deinit();
             self.allocator.destroy(container);
             self.scm_container = null;
@@ -4523,8 +4542,7 @@ pub const Workbench = struct {
         }
         view_model.setActiveView("changes");
 
-        self.scm_container = try view_pane_container_mod.ViewPaneContainer.init(
-            self.allocator,
+        self.scm_container = try self.createSidebarContainer(
             view_model,
             self.explorer_panes.?,
         );
@@ -10175,52 +10193,15 @@ pub const Workbench = struct {
 
     fn activeSidebarViewContainer(self: *const Workbench) ?*view_pane_container_mod.ViewPaneContainer {
         const id = self.activity_bar_part.active_id orelse return null;
-        return self.sidebarViewContainer(id);
+        return self.sidebar_part.getViewPaneContainer(id);
     }
 
-    fn sidebarViewContainer(self: *const Workbench, id: []const u8) ?*view_pane_container_mod.ViewPaneContainer {
-        if (std.mem.eql(u8, id, "scm")) return self.scm_container;
-        if (std.mem.eql(u8, id, "explorer")) return self.explorer_container;
-        return null;
-    }
-
-    const SidebarViewDrop = struct {
-        container: *view_pane_container_mod.ViewPaneContainer,
-        rect: ui.Rect,
-    };
-
-    fn sidebarViewDropContainer(self: *Workbench, x: usize, y: usize) ?SidebarViewDrop {
-        const activity_rect = self.activityRect();
-        if (x >= ui.cell.snap(activity_rect.x) and x < ui.cell.snap(activity_rect.right())) {
-            if (activity_bar_mod.hitAt(&self.activity_bar_part, x, y, activity_rect)) |index| {
-                const activity = self.activity_bar_part.activityAtVisibleIndex(index) orelse return null;
-                return .{
-                    .container = self.sidebarViewContainer(activity.id) orelse return null,
-                    .rect = .{ .x = activity_rect.x, .y = @floatFromInt(y), .w = activity_rect.w, .h = 1 },
-                };
-            }
-        }
-        const sidebar_rect = self.sidebarRect();
-        const hit = sidebar_part_mod.hitTest(&self.sidebar_part, sidebar_rect, x, y) orelse return null;
-        if (hit != .composite) return null;
-        return .{
-            .container = self.sidebarViewContainer(hit.composite) orelse return null,
-            .rect = sidebar_part_mod.compositeItemRect(&self.sidebar_part, sidebar_rect, hit.composite) orelse return null,
-        };
-    }
-
-    fn moveSidebarView(
-        self: *Workbench,
-        source: *view_pane_container_mod.ViewPaneContainer,
-        id: []const u8,
-        destination: *view_pane_container_mod.ViewPaneContainer,
-    ) bool {
-        if (!source.model.moveTo(id, destination.model)) return false;
-        source.cancelHeaderDrag();
-        _ = self.showActivityById(destination.model.container.id) catch false;
-        destination.setActive(id);
+    fn onViewContainerChanged(change: @import("../services/views/browser/viewDescriptorService.zig").ViewContainerChange, self: *Workbench) !void {
+        const destination = self.sidebar_part.getViewPaneContainer(change.to.container.id) orelse return;
+        _ = try self.showActivityById(change.to.container.id);
+        destination.setActive(change.views[0]);
         self.updateSidebarTitleActions();
-        return true;
+        try self.saveSidebarViewStates();
     }
 
     fn handleSidebarPaneHeader(
@@ -10229,23 +10210,16 @@ pub const Workbench = struct {
         event: *const ui.MouseEvent,
         content: ui.Rect,
     ) bool {
-        if (event.kind == .up and container.dragging_header) {
-            if (self.sidebarViewDropContainer(event.x, event.y)) |destination| {
-                if (self.moveSidebarView(container, container.header_press.?.id, destination.container)) {
-                    self.pointer = .default;
-                    return true;
-                }
-            }
+        const target = if (event.kind == .move or event.kind == .up)
+            self.sidebar_part.dropDestination(self.sidebarRect(), self.activityRect(), event.x, event.y)
+        else
+            null;
+        if (event.kind == .up and container.handleHeaderDrop(event, target, &self.view_descriptor_service)) {
+            self.pointer = .default;
+            return true;
         }
         const outcome = container.handleHeaderMouse(event, content) orelse return false;
-        if (event.kind == .move and container.dragging_header) {
-            container.drop_activity = null;
-            if (self.sidebarViewDropContainer(event.x, event.y)) |destination| {
-                if (container.model.canMoveTo(container.header_press.?.id, destination.container.model)) {
-                    container.drop_activity = destination.rect;
-                }
-            }
-        }
+        if (event.kind == .move) _ = container.handleHeaderDrop(event, target, &self.view_descriptor_service);
         if (event.kind == .down) {
             self.focus = .sidebar;
             if (self.scm_view) |view| view.blurInput();
@@ -10335,10 +10309,10 @@ pub const Workbench = struct {
     }
 
     fn runSidebarViewAction(self: *Workbench, menu: *WorkbenchMenu, id: []const u8) anyerror!void {
-        const container = self.sidebarViewContainer(menu.container_id.?) orelse return;
+        const container = self.sidebar_part.getViewPaneContainer(menu.container_id.?) orelse return;
         if (std.mem.eql(u8, id, "moveView")) {
             const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
-            if (other) |destination| _ = self.moveSidebarView(container, menu.view_id.?, destination);
+            if (other) |destination| _ = self.view_descriptor_service.moveViewsToContainer(&.{menu.view_id.?}, destination.model);
             return;
         }
         if (std.mem.eql(u8, id, "hideView")) {
