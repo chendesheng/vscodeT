@@ -94,6 +94,10 @@ with the documented omissions listed at the end of this document.
   port the per-provider originals, the 200 ms recompute trigger, the
   primary/secondary overlap split, and the `dirty-diff-*` whole-line/gutter/
   overview decorations.
+- `src/extensions/git/src/model.zig` owns single-workspace repository discovery,
+  Git CLI configuration and delegate/repository lifetime. The full upstream
+  multi-repository discovery and parent/ignored/unsafe repository tracking
+  remain unported.
 - `src/extensions/git/src/repository.zig` exposes the upstream `Merge Changes`,
   `Staged Changes` and `Changes` groups, v2 status letters and the
   working/index and index/HEAD quick-diff providers. `src/vs/workbench/contrib/scm/browser/scmHistory.zig`

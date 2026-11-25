@@ -226,9 +226,8 @@ const terminal_panel = @import("../contrib/terminal/browser/terminalTabbedView.z
 const terminal_tabs = @import("../contrib/terminal/browser/terminalTabsList.zig");
 const terminal_input_mod = @import("../contrib/terminal/browser/terminalInput.zig");
 const diff_widget_mod = @import("../../editor/browser/widget/diffEditor/diffEditorWidget.zig");
+const git_model_mod = @import("../../../extensions/git/src/model.zig");
 const git_mod = @import("../../../extensions/git/src/git.zig");
-const git_service_mod = @import("../contrib/git/browser/gitService.zig");
-const git_common_mod = @import("../contrib/git/common/gitService.zig");
 const scm_service_mod = @import("../contrib/scm/common/scmService.zig");
 const scm_common = @import("../contrib/scm/common/scm.zig");
 const quick_diff_service_mod = @import("../contrib/scm/common/quickDiffService.zig");
@@ -680,9 +679,7 @@ pub const Workbench = struct {
     terminal_tabbed_view: terminal_panel.TerminalTabbedView = .{},
     terminal_rename_id: ?usize = null,
     suppress_global_command: bool = false,
-    git: ?*git_mod.Git = null,
-    git_delegate: ?*git_common_mod.IGitExtensionDelegate = null,
-    git_service: ?*git_service_mod.GitService = null,
+    git_model: git_model_mod.Model,
     scm_service: ?*scm_service_mod.SCMService = null,
     quick_diff_storage: ?*storage_mod.InMemoryStorageService = null,
     quick_diff_service: ?*quick_diff_service_mod.QuickDiffService = null,
@@ -691,8 +688,6 @@ pub const Workbench = struct {
     scm_history_view: ?*scm_history_view_mod.SCMHistoryViewPane = null,
     scm_view_model: ?*view_container_model_mod.ViewContainerModel = null,
     scm_container: ?*view_pane_container_mod.ViewPaneContainer = null,
-    repository: ?*repository_mod.Repository = null,
-    git_root: ?[]u8 = null,
     scm_interface: ?*scm_common.ISCMService = null,
     git_status_accessor: ?EntryAccessor = null,
     git_status_buf: [96]u8 = undefined,
@@ -762,9 +757,7 @@ pub const Workbench = struct {
         self.terminal_tabbed_view = .{};
         self.terminal_rename_id = null;
         self.suppress_global_command = false;
-        self.git = null;
-        self.git_delegate = null;
-        self.git_service = null;
+        self.git_model = git_model_mod.Model.init(allocator);
         self.scm_service = null;
         self.scm_interface = null;
         self.quick_diff_storage = null;
@@ -774,8 +767,6 @@ pub const Workbench = struct {
         self.scm_history_view = null;
         self.scm_view_model = null;
         self.scm_container = null;
-        self.repository = null;
-        self.git_root = null;
         self.git_status_accessor = null;
         self.git_badge_count = 0;
         self.quit_requested = false;
@@ -2255,7 +2246,7 @@ pub const Workbench = struct {
         replacement_owned = true;
         if (self.view_state_storage != null) {
             const has_scm = self.scm_view_model != null;
-            const has_history = if (self.repository) |provider| provider.historyProvider() != null else false;
+            const has_history = if (self.git_model.repository) |provider| provider.historyProvider() != null else false;
             if (self.explorer_view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
             if (self.scm_view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
             try self.restoreSidebarViewStates();
@@ -2392,7 +2383,7 @@ pub const Workbench = struct {
         self.applyThemeSettingsAsync();
         self.applyBreadcrumbsSettings();
         self.applyMarkdownPreviewConfig();
-        if (self.repository != null) self.refreshGitStatus();
+        if (self.git_model.repository != null) self.refreshGitStatus();
     }
 
     fn editorSettingsReader(self: *Workbench) terminal_editor_config.Reader {
@@ -2582,7 +2573,7 @@ pub const Workbench = struct {
                 .{ .context = self, .callback = reportWatcherMessage },
             );
         }
-        if (self.repository) |provider| provider.watch(self.file_watcher_service.?) catch {};
+        if (self.git_model.repository) |provider| provider.watch(self.file_watcher_service.?) catch {};
     }
 
     fn onWorkspaceFileChanges(changes: []const @import("../../platform/files/common/files.zig").FileChange, self: *Workbench) !void {
@@ -3855,107 +3846,32 @@ pub const Workbench = struct {
             self.allocator.destroy(service);
             self.scm_service = null;
         }
-        if (self.repository) |provider| {
-            provider.destroy();
-            self.repository = null;
-        }
-        if (self.git_service) |service| {
-            service.deinit();
-            self.allocator.destroy(service);
-            self.git_service = null;
-        }
-        if (self.git_delegate) |delegate| {
-            self.allocator.destroy(delegate);
-            self.git_delegate = null;
-        }
-        if (self.git) |cli| {
-            cli.deinit();
-            self.git = null;
-        }
+        self.git_model.deinit();
         if (self.quick_diff_storage) |storage| {
             storage.deinit();
             self.allocator.destroy(storage);
             self.quick_diff_storage = null;
         }
-        if (self.git_root) |root| self.allocator.free(root);
-        self.git_root = null;
     }
 
     /// Creates the git CLI/service, the SCM provider/view and the quick-diff
     /// controller for the workspace folder. A missing git binary, a disabled
     /// `git.enabled` or a non-repository leaves the editor untouched.
     pub fn initGit(self: *Workbench) !void {
-        if (self.git != null) return;
-        const root_value = self.workspaceFolderPath() orelse return;
-        if (self.configuration) |configuration| {
-            if (!configuration.getBool("git.enabled", true)) return;
-        }
-
-        var options = git_mod.Options{
-            .git_path = null,
-            .enabled = true,
-            .timeout_ms = 5000,
+        if (self.git_model.git != null) return;
+        const root = self.workspaceFolderPath() orelse return;
+        const provider = (try self.git_model.openRepository(root, .{
             .io = self.io,
+            .configuration = self.configuration,
+            .window = &self.window_events,
+            .host = .{ .context = self, .open_change = providerOpenChange, .refresh = scmRefresh, .auto_refresh = gitAutoRefresh },
             .on_disabled = gitDisabled,
             .on_disabled_context = self,
-        };
-        if (self.configuration) |configuration| {
-            if (configuration.getValue("git.path", .{})) |value| {
-                switch (value.*) {
-                    .string => |text| options.git_path = text,
-                    else => {},
-                }
-            }
-            if (configuration.getValue("diffEditor.maxFileSize", .{})) |value| {
-                const megabytes: f64 = switch (value.*) {
-                    .integer => |number| @floatFromInt(number),
-                    .float => |number| number,
-                    else => 50,
-                };
-                if (megabytes > 0 and megabytes < 1024) {
-                    options.max_file_size_kb = @intFromFloat(megabytes * 1024);
-                }
-            }
-        }
-
-        const cli = git_mod.Git.init(self.allocator, options) catch return;
-        self.git = cli;
+        })) orelse return;
         errdefer self.deinitGit();
-        if (cli.isDisabled()) return;
-
-        const opened = (cli.openRepository(root_value) catch null) orelse return;
-        const concrete = cli.repositoryForRoot(opened.root_path) orelse return;
-
-        const service = try self.allocator.create(git_service_mod.GitService);
-        service.* = git_service_mod.GitService.init(self.allocator);
-        self.git_service = service;
-
-        const delegate = try self.allocator.create(git_common_mod.IGitExtensionDelegate);
-        delegate.* = cli.interface();
-        self.git_delegate = delegate;
-        _ = service.setDelegate(delegate) catch {};
-
-        const root = try self.allocator.dupe(u8, opened.root_path);
-        self.git_root = root;
-
         const scm_service = try self.allocator.create(scm_service_mod.SCMService);
         scm_service.* = scm_service_mod.SCMService.init(self.allocator);
         self.scm_service = scm_service;
-
-        const provider = try repository_mod.Repository.create(
-            self.allocator,
-            cli,
-            concrete,
-            root,
-            .{
-                .context = self,
-                .open_change = providerOpenChange,
-                .refresh = scmRefresh,
-                .auto_refresh = gitAutoRefresh,
-            },
-        );
-        provider.attachWindow(&self.window_events);
-        self.repository = provider;
         _ = try scm_service.registerSCMProvider(provider.interface());
 
         const storage = try self.allocator.create(storage_mod.InMemoryStorageService);
@@ -4056,7 +3972,7 @@ pub const Workbench = struct {
     /// Re-reads git status, the SCM rows, the quick-diff baselines, the
     /// branch/status entry and the activity badge.
     pub fn refreshGitStatus(self: *Workbench) void {
-        const provider = self.repository orelse return;
+        const provider = self.git_model.repository orelse return;
         provider.refresh() catch {};
         self.syncScmInput();
         if (self.scm_view) |view| view.refresh();
@@ -4069,7 +3985,7 @@ pub const Workbench = struct {
 
     fn syncGitStatus(self: *Workbench) void {
         const accessor = self.git_status_accessor orelse return;
-        const provider = self.repository orelse {
+        const provider = self.git_model.repository orelse {
             accessor.update(.{ .name = "Source Control", .text = "" });
             return;
         };
@@ -4097,7 +4013,7 @@ pub const Workbench = struct {
     }
 
     fn syncGitActivity(self: *Workbench) void {
-        const provider = self.repository orelse return;
+        const provider = self.git_model.repository orelse return;
         var badge_mode: []const u8 = "all";
         if (self.configuration) |configuration| {
             if (configuration.getValue("scm.countBadge", .{})) |value| {
@@ -4139,10 +4055,10 @@ pub const Workbench = struct {
         left_ref: DiffRef,
         right_ref: DiffRef,
     ) !void {
-        if (self.repository == null) return error.NoRepository;
-        const root = self.git_root orelse return error.NoRepository;
+        if (self.git_model.repository == null) return error.NoRepository;
+        const root = self.git_model.git_root orelse return error.NoRepository;
         const relative = relativeToRoot(path, root) orelse return error.OutsideRepository;
-        const git = self.git orelse return error.NoGit;
+        const git = self.git_model.git orelse return error.NoGit;
 
         const left_label = left_ref.label();
         const right_label = right_ref.label();
@@ -4180,8 +4096,8 @@ pub const Workbench = struct {
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
-        const root = self.git_root orelse return error.NoRepository;
-        const git = self.git orelse return error.NoGit;
+        const root = self.git_model.git_root orelse return error.NoRepository;
+        const git = self.git_model.git orelse return error.NoGit;
         const relative_right = if (std.fs.path.isAbsolute(path))
             relativeToRoot(path, root) orelse return error.OutsideRepository
         else
@@ -4296,7 +4212,7 @@ pub const Workbench = struct {
             .working => {
                 // If the path is staged as well, compare index->working; an
                 // unstaged path compares HEAD->working.
-                const staged = self.repository.?.repository.stateRef().index_changes;
+                const staged = self.git_model.repository.?.repository.stateRef().index_changes;
                 var is_staged = false;
                 for (staged) |change| {
                     if (std.mem.eql(u8, change.path, resource.relative_path)) {
@@ -4331,7 +4247,7 @@ pub const Workbench = struct {
 
     fn scmOpenChange(context: *anyopaque, resource: *scm_common.ISCMResource) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        const provider = self.repository orelse return;
+        const provider = self.git_model.repository orelse return;
         const git_resource = @as(*repository_mod.GitScmResource, @ptrCast(@alignCast(resource.context)));
         return self.openScmChange(provider, git_resource);
     }
@@ -4405,7 +4321,7 @@ pub const Workbench = struct {
     }
 
     fn resolveScmDiscard(self: *Workbench, request: ScmDiscardRequest) !void {
-        const provider = self.repository orelse return error.NoRepository;
+        const provider = self.git_model.repository orelse return error.NoRepository;
         if (!std.mem.eql(u8, provider.root, request.root)) return error.RepositoryChanged;
         const git = provider.git orelse return error.NoGit;
         const absolute = try std.fs.path.join(self.allocator, &.{ request.root, request.path });
@@ -4487,7 +4403,7 @@ pub const Workbench = struct {
     }
 
     fn runScmRemoteAction(self: *Workbench, action: git_mod.Git.RemoteAction, remote: ?[]const u8) !void {
-        const provider = self.repository orelse return error.NoRepository;
+        const provider = self.git_model.repository orelse return error.NoRepository;
         const git = provider.git orelse return error.NoGit;
         try git.runRemoteAction(provider.root, action, remote);
         self.refreshGitStatus();
@@ -4519,7 +4435,7 @@ pub const Workbench = struct {
     }
 
     fn commitScmMessageWithAction(self: *Workbench, message: []const u8, action: scm_view_mod.CommitAction) !void {
-        const provider = self.repository orelse return error.NoRepository;
+        const provider = self.git_model.repository orelse return error.NoRepository;
         const state = provider.repository.stateRef();
         if (message.len == 0 and action != .amend) {
             self.setStatusHint("Commit message is required", .{});
@@ -4613,7 +4529,7 @@ pub const Workbench = struct {
         if (self.scm_history_view) |view| view.setConfig(config);
         self.syncScmInput();
         if (self.scm_view) |view| view.setConfig(scm_view_mod.Config.read(service));
-        if (self.repository) |provider| provider.setCommitShortHashLength(config.short_hash_length);
+        if (self.git_model.repository) |provider| provider.setCommitShortHashLength(config.short_hash_length);
     }
 
     /// Updates the Source Control input model from Git settings and the
@@ -4634,7 +4550,7 @@ pub const Workbench = struct {
         input.setVisible(visible);
         var branch: ?[]const u8 = null;
         var branch_action: ?scm_view_mod.BranchAction = null;
-        if (self.repository) |provider| {
+        if (self.git_model.repository) |provider| {
             branch = provider.interface().detail;
             const state = provider.repository.stateRef();
             if (state.head) |head| {
@@ -4649,7 +4565,7 @@ pub const Workbench = struct {
         }
         if (self.scm_view) |view| view.branch_action = branch_action;
         if (self.scm_view) |view| {
-            const head = if (self.repository) |provider| provider.repository.stateRef().head else null;
+            const head = if (self.git_model.repository) |provider| provider.repository.stateRef().head else null;
             view.fresh_repository = if (head) |ref| ref.ref.commit == null else true;
         }
         const placeholder = if (branch) |name|
@@ -10378,7 +10294,7 @@ fn commandGitPush(context: *anyopaque) anyerror!void {
 
 fn commandGitPublish(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    const provider = self.repository orelse return;
+    const provider = self.git_model.repository orelse return;
     const remotes = provider.repository.stateRef().remotes;
     var items: std.ArrayList(QuickPickItem) = .empty;
     defer items.deinit(self.allocator);
@@ -10402,7 +10318,7 @@ fn commandGitOpenChange(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const view = self.scm_view orelse return;
     const resource = view.selectedResource() orelse return;
-    const provider = self.repository orelse return;
+    const provider = self.git_model.repository orelse return;
     const git_resource: *repository_mod.GitScmResource = @ptrCast(@alignCast(resource.context));
     try self.openScmChange(provider, git_resource);
 }
@@ -10951,7 +10867,7 @@ fn commandRevertAndCloseActiveEditor(context: *anyopaque) anyerror!void {
 
 fn commandGithubPublish(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    const folder = if (self.repository) |provider| provider.root else self.workspaceFolderPath() orelse {
+    const folder = if (self.git_model.repository) |provider| provider.root else self.workspaceFolderPath() orelse {
         self.setStatusHint("Open a folder to publish to GitHub", .{});
         return;
     };

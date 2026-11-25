@@ -81,6 +81,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig");
     _ = @import("./vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
     _ = @import("./extensions/git/src/git.zig");
+    _ = @import("./extensions/git/src/model.zig");
     _ = @import("./extensions/git/src/repository.zig");
     _ = @import("./extensions/git/src/test/git.test.zig");
     _ = @import("./extensions/git/src/test/util.test.zig");

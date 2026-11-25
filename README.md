@@ -1118,7 +1118,10 @@ console API for raw mode, sizing and input polling.
   the ported `IGitExtensionDelegate` over the Git command line (argv, never a
   shell; explicit cwd; bounded stdout/stderr; per-command deadline), and
   `src/vs/workbench/contrib/git/{common,browser}/gitService.zig` keep the
-  upstream repository state/ref/diff/commit contract. The terminal provider
+  upstream repository state/ref/diff/commit contract. The native extension
+  `src/extensions/git/src/model.zig` owns repository discovery and service lifetime
+  for the single workspace root; multi-repository discovery and parent, ignored
+  and unsafe repository tracking remain unported. The terminal provider
   (`src/extensions/git/src/repository.zig`) exposes the upstream `Merge Changes`,
   `Staged Changes` and `Changes` groups (untracked files mixed into `Changes`,
   matching `git.untrackedChanges=mixed`), v2 status letters, rename/delete and

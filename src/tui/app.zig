@@ -739,7 +739,7 @@ pub fn main(init: std.process.Init) !void {
             }
             switch (item.*) {
                 .focus => |focused| {
-                    if (workbench.repository) |repo| repo.onWindowFocus(focused);
+                    if (workbench.git_model.repository) |repo| repo.onWindowFocus(focused);
                     if (workbench.notification_controller) |controller| controller.toasts.onWindowFocus(focused);
                     if (!focused) {
                         if (workbench.context_menu_service.current != null) {

@@ -7697,7 +7697,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     pumpSidebarForTests(workbench);
     try workbench.initGit();
 
-    try std.testing.expect(workbench.repository != null);
+    try std.testing.expect(workbench.git_model.repository != null);
     try std.testing.expect(workbench.scm_view != null);
     try std.testing.expect(workbench.quick_diff_controller != null);
     const quick_diff = workbench.quick_diff_controller.?;
@@ -7714,7 +7714,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try workbench.setUserConfigurationValue("scm.diffDecorationsIgnoreTrimWhitespace", .{ .string = "true" });
     try std.testing.expect(quick_diff.entries.items[0].model.ignore_trim_whitespace);
     const initial_tabs = workbench.tabCount();
-    const provider = workbench.repository.?;
+    const provider = workbench.git_model.repository.?;
     try std.testing.expect(provider.count() >= 3);
     try std.testing.expect(workbench.scm_view.?.resourceCount() >= 3);
 

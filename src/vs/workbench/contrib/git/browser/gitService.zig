@@ -3,7 +3,7 @@
 // Terminal adaptations:
 // - `Promise` becomes a synchronous `!T` return.
 // - The 10 second `AutoOpenBarrier` is not ported: the terminal sets its
-//   command-line delegate during `Workbench.initGit`, before anything can call
+//   command-line delegate during the native extension `Model.openRepository`, before anything can call
 //   `openRepository`, so there is no cross-process wait.
 // - `IObservable` becomes an owned state value plus a change event.
 const std = @import("std");
