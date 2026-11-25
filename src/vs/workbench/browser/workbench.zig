@@ -2004,7 +2004,7 @@ pub const Workbench = struct {
         return WorkbenchGrid.layout(.{
             .w = @floatFromInt(self.cols),
             .h = @floatFromInt(self.workbenchRows()),
-        }, self.activityBarWidth(), if (self.sidebarShown()) self.sidebarWidth() + self.sidebarFrameInset() else 0, self.panelHeight());
+        }, self.activityBarWidth(), if (self.sidebarShown()) self.sidebarWidth() + self.sidebarFrameInset() else 0, self.panelHeight(), self.layout_api.getSideBarPosition());
     }
 
     fn editorRows(self: *const Workbench) usize {
@@ -2031,10 +2031,6 @@ pub const Workbench = struct {
     pub fn panelContentRect(self: *const Workbench) ui.Rect {
         if (!self.panelShown()) return .{};
         return panel_part_mod.contentRect(self.panelRect());
-    }
-
-    fn editorAreaX(self: *const Workbench) usize {
-        return ui.cell.snap(self.workbenchGridLayout().editor.x);
     }
 
     /// Editor content height: the rows above the workbench status bar minus the
@@ -2226,7 +2222,7 @@ pub const Workbench = struct {
     }
 
     fn sidebarRect(self: *const Workbench) ui.Rect {
-        return SidebarPart.innerRect(self.sidebarFrameRect(), self.part.cell_borders);
+        return SidebarPart.innerRect(self.sidebarFrameRect(), self.part.cell_borders, self.layout_api.getSideBarPosition());
     }
 
     pub fn glyphSidebarFrame(self: *const Workbench) bool {
@@ -8556,17 +8552,9 @@ pub const Workbench = struct {
     fn sidebarSashAt(self: *const Workbench, x: usize, y: usize) bool {
         if (self.sidebar == null or y >= self.workbenchRows() or
             self.cols <= self.activityBarWidth() + self.sidebarMinimum()) return false;
-        if (!self.sidebarShown()) {
-            // The collapsed sash shares the first editor cell beside the rail.
-            return x == self.activityBarWidth() and !self.layout.isZenModeActive();
-        }
-        if (self.clampSidebarWidth(self.sidebar_part.maximum_width) == self.sidebar_part.minimum_width) return false;
-        const frame = self.sidebarFrameRect();
-        const edge = ui.cell.snap(frame.right());
-        if (x == edge - 1) return true;
-        // Native borders meet between cells. The glyph editor frame adds a
-        // second visible line along the same seam where the frames overlap.
-        return x == edge and (self.part.cell_borders or (self.part.glyphFrame() and y < self.editorRows()));
+        if (self.sidebarShown() and self.clampSidebarWidth(self.sidebar_part.maximum_width) == self.sidebar_part.minimum_width) return false;
+        if (!self.sidebarShown() and self.layout.isZenModeActive()) return false;
+        return self.workbenchGridLayout().hitsSidebarSash(x, self.part.cell_borders or (self.part.glyphFrame() and y < self.editorRows()));
     }
 
     fn panelSashAt(self: *const Workbench, x: usize, y: usize) bool {
@@ -8605,8 +8593,8 @@ pub const Workbench = struct {
 
     fn workbenchSashPointer(self: *const Workbench, sash: WorkbenchGrid.Sash) ui.Pointer {
         if (sash == .panel) return sash_css.pointer(.horizontal);
-        if (!self.sidebarShown() or self.sidebarWidth() == self.sidebar_part.minimum_width) return sash_css.pointer(.vertical_minimum);
-        if (self.sidebarWidth() == self.clampSidebarWidth(self.sidebar_part.maximum_width)) return sash_css.pointer(.vertical_maximum);
+        if (!self.sidebarShown() or self.sidebarWidth() == self.sidebar_part.minimum_width) return sash_css.pointer(if (self.layout_api.getSideBarPosition() == .left) .vertical_minimum else .vertical_maximum);
+        if (self.sidebarWidth() == self.clampSidebarWidth(self.sidebar_part.maximum_width)) return sash_css.pointer(if (self.layout_api.getSideBarPosition() == .left) .vertical_maximum else .vertical_minimum);
         return sash_css.pointer(.vertical);
     }
 
@@ -8653,7 +8641,7 @@ pub const Workbench = struct {
                     if (changed) {
                         // ViewItem.setVisible caches the size at pointer-down.
                         if (!visible) {
-                            self.layout.setSize(.sidebar, grid.drag.?.state.sizes[0] -| self.sidebarFrameInset()) catch return true;
+                            self.layout.setSize(.sidebar, grid.drag.?.state.sizes[grid.drag.?.fixed_index] -| self.sidebarFrameInset()) catch return true;
                             if (self.focus == .sidebar) self.focusEditor();
                         }
                         self.setSidebarVisible(visible) catch return true;
@@ -9670,7 +9658,7 @@ pub const Workbench = struct {
     pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         // The activity bar stays clickable while the side bar is hidden; an
         // entry click reveals the side bar again, like upstream.
-        if (event.x < self.activityBarWidth()) {
+        if (WorkbenchGrid.Rects.inColumn(self.activityRect(), event.x)) {
             if (event.kind == .wheel) return true;
             if (event.kind == .move) self.clearSidebarViewHover();
             const activity_rect = self.activityRect();
@@ -9691,7 +9679,7 @@ pub const Workbench = struct {
             return false;
         }
 
-        if (event.x >= self.editorAreaX() or event.y >= self.workbenchRows()) {
+        if (!WorkbenchGrid.Rects.inColumn(self.sidebarFrameRect(), event.x) or event.y >= self.workbenchRows()) {
             if (event.kind == .move) self.clearSidebarViewHover();
             return false;
         }
@@ -9909,7 +9897,7 @@ pub const Workbench = struct {
 
     pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (self.handleTabDragMouse(event)) return true;
-        if (event.x < self.editorAreaX()) return false;
+        if (!WorkbenchGrid.Rects.inColumn(self.workbenchGridLayout().editor, event.x)) return false;
 
         const pane = self.paneAt(event.x, event.y) orelse {
             self.clearTabHover();
@@ -10209,7 +10197,7 @@ pub const Workbench = struct {
     }
 
     pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?struct { tab: *Tab, event: ui.MouseEvent } {
-        if (event.x >= self.cols or event.y >= self.rows or event.x < self.editorAreaX()) return null;
+        if (event.x >= self.cols or event.y >= self.rows or !WorkbenchGrid.Rects.inColumn(self.workbenchGridLayout().editor, event.x)) return null;
         const surface = self.synchronizeEditorDom() catch return null;
         const target = (surface.elementFromPoint(event.x, event.y) catch null) orelse return null;
         const pane = self.editorGroupAtNode(target) orelse return null;
@@ -10292,7 +10280,7 @@ pub const Workbench = struct {
         });
         for (options.extra_classes) |class| try main.addClass(class);
         const Class = editor_css.part.Class;
-        const side: Class = if (self.layout.sidebarPosition() == .left) .left else .right;
+        const side: Class = if (self.layout_api.getSideBarPosition() == .left) .left else .right;
         inline for (.{
             .{ .activitybar, "none", &[_]Class{ .activitybar, side } },
             .{ .sidebar, "none", &[_]Class{ .sidebar, side } },
@@ -10406,10 +10394,10 @@ pub const Workbench = struct {
         const view = self.scm_history_view orelse return;
         const content = view.hoverContent() orelse return;
         const rect = view.hoverRect() orelse return;
-        const x = self.activityBarWidth() + self.sidebarWidth() + 1;
+        const column = self.workbenchGridLayout().editor_column;
         const y = ui.cell.snap(rect.y);
-        if (x >= self.cols) return;
-        const max_width = self.cols - x - 1;
+        const gap = @intFromBool(self.part.cell_borders);
+        const max_width = ui.cell.snap(column.w) -| gap -| 1;
         if (max_width < 12) return;
         var lines: usize = 1;
         for (content) |ch| {
@@ -10418,6 +10406,7 @@ pub const Workbench = struct {
         const max_height = self.workbenchRows() -| y -| 2;
         if (max_height < scm_history_hover_chrome + 1) return;
         const size = scmHistoryHoverSize(max_width, max_height, lines);
+        const x = if (self.layout_api.getSideBarPosition() == .left) ui.cell.snap(column.x) + gap else ui.cell.snap(column.right()) - gap - size.width;
 
         if (self.scm_hover_surface == null or self.scm_hover_surface.?.doc.cols != size.width or self.scm_hover_surface.?.doc.rows != size.height) {
             if (self.scm_hover_surface) |*surface| {
@@ -10708,6 +10697,8 @@ pub const Workbench = struct {
         const values = layout_service_mod.LayoutSettingsValues.load(self.configuration, self.workspaceRoot());
         if (change == null or @import("../../platform/configuration/common/configuration.zig").affectsConfiguration(change.?, layout_service_mod.LayoutSettings.status_bar_visible))
             self.layout.setStatusBarConfiguration(values.status_bar_visible) catch {};
+        if (change == null or @import("../../platform/configuration/common/configuration.zig").affectsConfiguration(change.?, layout_service_mod.LayoutSettings.sidebar_position))
+            self.layout.setSideBarPosition(values.sidebar_position) catch {};
         self.activity_bar_part.setCompact(values.activity_bar_compact) catch {};
         self.sidebar_part.setLayoutSettings(values) catch {};
         self.syncActivityBarVisibility() catch {};

@@ -1,6 +1,6 @@
 // Port of the two-view resize path in src/vs/base/browser/ui/splitview/splitview.ts.
 // Terminal cells replace CSS pixels. The workbench branches have two views,
-// with an optional snapping view before the sash.
+// with an optional snapping view on either side of the sash.
 
 const std = @import("std");
 
@@ -17,6 +17,7 @@ pub const SashDragState = struct {
     start: usize,
     sizes: [2]usize,
     snap_before_limit: ?i64 = null,
+    snap_after_limit: ?i64 = null,
     alt: bool = false,
 
     pub fn onSashStart(start: usize, views: [2]ViewSize) SashDragState {
@@ -27,6 +28,13 @@ pub const SashDragState = struct {
             const visible = before.size != 0;
             const min_delta = @max(offset(if (visible) before.minimum else 0, before.size), offset(views[1].size, views[1].maximum));
             state.snap_before_limit = min_delta + if (visible) -half else half;
+        }
+        const after = views[1];
+        if (after.snap) {
+            const half: i64 = @intCast(after.minimum / 2);
+            const visible = after.size != 0;
+            const max_delta = @min(offset(after.size, if (visible) after.minimum else 0), offset(before.maximum, before.size));
+            state.snap_after_limit = max_delta + if (visible) half else -half;
         }
         return state;
     }
@@ -41,10 +49,17 @@ pub const SashDragState = struct {
                 bounds[0].minimum = 0;
                 bounds[0].maximum = 0;
             }
-            if (self.alt) {
-                // The last sash resizes its preceding view with half bounds.
-                delta = std.math.clamp(delta, @divTrunc(offset(bounds[0].minimum, self.sizes[0]), 2), @divTrunc(offset(bounds[0].maximum, self.sizes[0]), 2));
+        }
+        if (self.snap_after_limit) |limit| {
+            const visible = if (self.alt) self.sizes[1] != 0 else delta < limit;
+            if (!visible) {
+                bounds[1].minimum = 0;
+                bounds[1].maximum = 0;
             }
+        }
+        if (self.alt and (views[0].snap or views[1].snap)) {
+            // For the last sash VS Code halves the preceding view's bounds.
+            delta = std.math.clamp(delta, @divTrunc(offset(bounds[0].minimum, self.sizes[0]), 2), @divTrunc(offset(bounds[0].maximum, self.sizes[0]), 2));
         }
         return resize(delta, self.sizes, bounds);
     }

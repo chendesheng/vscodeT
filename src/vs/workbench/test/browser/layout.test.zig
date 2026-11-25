@@ -20,7 +20,7 @@ test "LayoutModel: defaults and part visibility" {
     try std.testing.expect(layout.isVisible(.sidebar));
     try std.testing.expect(layout.isVisible(.editor));
     try std.testing.expect(layout.isVisible(.statusbar));
-    try std.testing.expectEqual(Position.left, layout.sidebarPosition());
+    try std.testing.expectEqual(Position.left, layout.getSideBarPosition());
 
     try layout.setPartHidden(true, .sidebar);
     try std.testing.expect(!layout.isVisible(.sidebar));
@@ -48,8 +48,8 @@ test "LayoutModel: sizes and sidebar position fire changes" {
     try layout.setSize(.sidebar, 28);
     try std.testing.expectEqual(@as(usize, 1), changes);
 
-    try layout.setSidebarPosition(.right);
-    try std.testing.expectEqual(Position.right, layout.sidebarPosition());
+    try layout.setSideBarPosition(.right);
+    try std.testing.expectEqual(Position.right, layout.getSideBarPosition());
     try std.testing.expectEqual(@as(usize, 2), changes);
 }
 

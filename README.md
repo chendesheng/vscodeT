@@ -9,6 +9,7 @@ is ported into `src/vs/...` at matching upstream paths, and built-in extension
 sources (currently the Git extension) into `src/extensions/...`, mirroring
 `vscode/extensions/...`.
 
+The sidebar and its activity bar follow `workbench.sideBar.location` on either edge.
 The terminal host owns the window document, measures cell widths, handles input and writes frames. Workbench startup creates
 the activity bar, sidebar, editor, panel and status bar in one document. The
 browser workbench still contains feature and rendering code. The port audit tracks the service owners,

@@ -15,6 +15,7 @@ pub const layout_service_id = @import("../../../../platform/instantiation/common
 
 pub const IWorkbenchLayoutService = struct {
     context: *anyopaque,
+    get_side_bar_position: *const fn (*anyopaque) Position,
     register_part: *const fn (*anyopaque, *Part) anyerror!IDisposable,
     set_part_hidden: *const fn (*anyopaque, bool, Parts) anyerror!void,
     is_visible: *const fn (*anyopaque, Parts) bool,
@@ -24,6 +25,10 @@ pub const IWorkbenchLayoutService = struct {
     toggle_zen_mode: *const fn (*anyopaque) anyerror!void,
     is_zen_mode_active: *const fn (*anyopaque) bool,
     is_main_editor_centered: *const fn (*anyopaque) bool,
+
+    pub fn getSideBarPosition(self: @This()) Position {
+        return self.get_side_bar_position(self.context);
+    }
 
     pub fn toggleZenMode(self: @This()) !void {
         try self.toggle_zen_mode(self.context);
@@ -74,6 +79,7 @@ pub const ActivityBarPosition = enum {
 
 /// Upstream `LayoutSettings` ids read by the terminal shell.
 pub const LayoutSettings = struct {
+    pub const sidebar_position = "workbench.sideBar.location";
     pub const status_bar_visible = "workbench.statusBar.visible";
     pub const activity_bar_location = "workbench.activityBar.location";
     pub const activity_bar_auto_hide = "workbench.activityBar.autoHide";
@@ -100,6 +106,7 @@ pub const ZenModeSettings = struct {
 
 /// The layout settings the terminal shell reads, with upstream defaults.
 pub const LayoutSettingsValues = struct {
+    sidebar_position: Position = .left,
     status_bar_visible: bool = true,
     activity_bar_location: ActivityBarPosition = .default,
     activity_bar_auto_hide: bool = false,
@@ -115,6 +122,9 @@ pub const LayoutSettingsValues = struct {
         var values = LayoutSettingsValues{};
         const config = configuration_service orelse return values;
         const overrides: configuration.Overrides = if (resource) |path| .{ .resource = path } else .{};
+        if (config.getValue(LayoutSettings.sidebar_position, overrides)) |v| {
+            if (v.* == .string and std.mem.eql(u8, v.string, "right")) values.sidebar_position = .right;
+        }
         if (config.getValue(LayoutSettings.status_bar_visible, overrides)) |value| {
             if (value.* == .bool) values.status_bar_visible = value.bool;
         }

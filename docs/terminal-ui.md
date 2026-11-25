@@ -749,7 +749,7 @@ The terminal window owns the cell surface and its root element. Workbench startu
 
 Workbenches can attach registered stylesheet class IDs to the main container
 through `IWorkbenchOptions.extra_classes`. Terminal cells supply font metrics.
-The side bar, activity bar, bottom panel and status bar still paint separately.
+The side bar, activity bar, bottom panel and status bar still paint separately. Changing `workbench.sideBar.location` repositions the rail, its sidebar sash and the adjacent editor and panel.
 
 ### Native context menus
 

@@ -6713,7 +6713,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
         if (native) {
             try std.testing.expectEqual(ui.cell_border.Joint.top_left, grid_cells.borderSetAt(side_x, 0).joints);
             try std.testing.expectEqual(ui.cell_border.Joint.top_right, grid_cells.borderSetAt(side_right, 0).joints);
-            try std.testing.expect(std.meta.eql(side, sidebar_part_mod.SidebarPart.innerRect(workbench.sidebar_part.base.bounds.?, workbench.part.cell_borders)));
+            try std.testing.expect(std.meta.eql(side, sidebar_part_mod.SidebarPart.innerRect(workbench.sidebar_part.base.bounds.?, workbench.part.cell_borders, workbench.layout.getSideBarPosition())));
         } else {
             try std.testing.expectEqual(@as(u32, '╭'), grid_cells.cluster[grid_cells.index(side_x, 0)]);
             try std.testing.expectEqual(@as(u32, '╮'), grid_cells.cluster[grid_cells.index(side_right, 0)]);
@@ -6852,6 +6852,63 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
     try std.testing.expectEqual(workbench.panel_part.minimum_height, ui.cell.snap(workbench.panel_part.base.bounds.?.h));
     try std.testing.expect(workbench.cancelSashDrag());
     try std.testing.expect(workbench.layout.workbench_grid.activeSash() == null);
+}
+
+test "Workbench: right sidebar moves its rail, hit targets and snapping sash together" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "right.txt", "right sidebar");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{}");
+    defer allocator.free(settings);
+    const window = try TestWindow.init(allocator, io, &.{path}, 90, 12);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    try wb.initSidebar(std.fs.path.dirname(path).?);
+    pumpSidebarForTests(wb);
+    try wb.setUserConfigurationValue("workbench.sideBar.location", .{ .string = "right" });
+    const rects = wb.workbenchGridLayout();
+    try std.testing.expectEqual(workbench_layout.Position.right, wb.layout_api.getSideBarPosition());
+    try std.testing.expectEqual(@as(f64, 0), rects.editor.x);
+    try std.testing.expectEqual(rects.editor.right(), rects.sidebar.x);
+    try std.testing.expectEqual(rects.sidebar.right(), rects.activity_bar.x);
+    try std.testing.expectEqual(@as(f64, 90), rects.activity_bar.right());
+    try std.testing.expectEqual(rects.sidebar, wb.sidebar_part.base.bounds.?);
+    try std.testing.expect(!wb.handleSidebarMouse(&.{ .x = 1, .y = 2, .kind = .move }));
+    try std.testing.expect(wb.handleSidebarMouse(&.{ .x = 89, .y = 1, .kind = .move }));
+    var frame = std.Io.Writer.Allocating.init(allocator);
+    defer frame.deinit();
+    try renderFrame(wb, &frame.writer);
+    const edge = ui.cell.snap(rects.sidebar.x);
+    const initial = wb.layout.size(.sidebar);
+    try sidebarMouseForTest(wb, .down, edge);
+    try sidebarMouseForTest(wb, .move, edge - 4);
+    try std.testing.expectEqual(initial + 4, wb.layout.size(.sidebar));
+    try sidebarMouseForTest(wb, .up, edge - 4);
+    const minimum = wb.sidebar_part.minimum_width + 1;
+    const collapse = edge + ui.cell.snap(rects.sidebar.w) - minimum + minimum / 2;
+    try sidebarMouseForTest(wb, .down, edge - 4);
+    try sidebarMouseForTest(wb, .move, collapse - 1);
+    try std.testing.expect(wb.layout.isVisible(.sidebar));
+    try sidebarMouseForTest(wb, .move, collapse);
+    try std.testing.expect(!wb.layout.isVisible(.sidebar));
+    try std.testing.expectEqual(ui.Pointer.w_resize, wb.pointerShape());
+    try sidebarMouseForTest(wb, .up, collapse);
+    const hidden_edge = ui.cell.snap(wb.workbenchGridLayout().activity_bar.x) - 1;
+    try sidebarMouseForTest(wb, .down, hidden_edge);
+    try sidebarMouseForTest(wb, .move, hidden_edge - minimum);
+    try std.testing.expect(wb.layout.isVisible(.sidebar));
+    try sidebarMouseForTest(wb, .up, hidden_edge - minimum);
+    const alt_edge = wb.workbenchGridLayout().sidebarSashCell();
+    try std.testing.expect(wb.handleSashMouse(&.{ .kind = .down, .x = alt_edge, .y = 2, .button = .left, .mods = .{ .alt = true } }));
+    try std.testing.expect(wb.handleSashMouse(&.{ .kind = .move, .x = 89, .y = 2, .mods = .{ .alt = true } }));
+    try std.testing.expect(wb.layout.isVisible(.sidebar));
+    try sidebarMouseForTest(wb, .up, 89);
+    try wb.setUserConfigurationValue("workbench.sideBar.location", .{ .string = "left" });
+    try std.testing.expectEqual(@as(f64, 0), wb.workbenchGridLayout().activity_bar.x);
 }
 
 test "Workbench: dragging the sidebar divider resizes the side bar" {
@@ -7128,7 +7185,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
     try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
 
     // Find the title action through the same hit testing as a mouse press.
-    const sidebar_rect = sidebar_part_mod.SidebarPart.innerRect(workbench.sidebar_part.base.bounds.?, workbench.part.cell_borders);
+    const sidebar_rect = sidebar_part_mod.SidebarPart.innerRect(workbench.sidebar_part.base.bounds.?, workbench.part.cell_borders, workbench.layout.getSideBarPosition());
     const title_y = ui.cell.snap(sidebar_rect.y);
     var clear_x: ?usize = null;
     for (ui.cell.snap(sidebar_rect.x)..ui.cell.snap(sidebar_rect.right())) |x| {
@@ -8427,11 +8484,11 @@ test "workbench startup creates the live editor part and applies extraClasses be
         const node = (try wb.layout.getPart(id)).getContainer().?;
         try std.testing.expect(node.hasClass(editor_css.part.Class.left));
     }
-    try wb.layout.setSidebarPosition(.right);
+    try wb.layout.setSideBarPosition(.right);
     const sidebar_node = (try wb.layout.getPart(.sidebar)).getContainer().?;
     try std.testing.expect(sidebar_node.hasClass(editor_css.part.Class.right));
     try std.testing.expect(!sidebar_node.hasClass(editor_css.part.Class.left));
-    try wb.layout.setSidebarPosition(.left);
+    try wb.layout.setSideBarPosition(.left);
     const status = (try wb.layout.getPart(.statusbar)).getContainer().?;
     try std.testing.expectEqual(.footer, status.asElement().tag);
     try std.testing.expectEqualStrings("status", status.getAttribute("role").?);

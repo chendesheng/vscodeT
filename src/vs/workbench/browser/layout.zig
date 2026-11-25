@@ -20,7 +20,7 @@ const IDisposable = @import("../../base/common/lifecycle.zig").IDisposable;
 pub const Parts = layout_service.Parts;
 pub const Position = layout_service.Position;
 
-/// Port of the workbench grid's middle section for a left sidebar and a
+/// Port of the workbench grid's middle section for a left or right sidebar and a
 /// bottom, center-aligned panel. As in createGridDescriptor, the editor and
 /// panel share a vertical branch inside the horizontal middle section.
 pub const WorkbenchGrid = struct {
@@ -34,11 +34,29 @@ pub const WorkbenchGrid = struct {
     };
 
     pub const Rects = struct {
+        sidebar_position: Position = .left,
         activity_bar: ui.Rect,
         sidebar: ui.Rect,
         editor_column: ui.Rect,
         editor: ui.Rect,
         panel: ui.Rect,
+
+        pub fn inColumn(rect: ui.Rect, x: usize) bool {
+            return x >= ui.cell.snap(rect.x) and x < ui.cell.snap(rect.right());
+        }
+
+        pub fn sidebarSashCell(self: Rects) usize {
+            const left = self.sidebar_position == .left;
+            if (self.sidebar.w == 0) return if (left) ui.cell.snap(self.editor.x) else ui.cell.snap(self.editor.right()) -| 1;
+            return if (left) ui.cell.snap(self.sidebar.right()) - 1 else ui.cell.snap(self.sidebar.x);
+        }
+
+        pub fn hitsSidebarSash(self: Rects, x: usize, include_editor_edge: bool) bool {
+            const edge = self.sidebarSashCell();
+            if (x == edge) return true;
+            if (self.sidebar.w == 0 or !include_editor_edge) return false;
+            return if (self.sidebar_position == .left) x == edge + 1 else edge != 0 and x == edge - 1;
+        }
     };
 
     pub const Limits = struct { minimum: usize, maximum: usize };
@@ -50,16 +68,26 @@ pub const WorkbenchGrid = struct {
         current: usize,
         state: split_view.SashDragState,
         views: [2]split_view.ViewSize,
+        fixed_index: usize,
     } = null,
 
-    pub fn layout(rect: ui.Rect, activity_width: usize, sidebar_width: usize, panel_height: usize) Rects {
+    pub fn layout(rect: ui.Rect, activity_width: usize, sidebar_width: usize, panel_height: usize, position: Position) Rects {
         const activity = grid.splitRectsAt(rect, .horizontal, @floatFromInt(activity_width), 0);
         const middle = grid.splitRectsAt(activity.second, .horizontal, @floatFromInt(sidebar_width), 0);
-        const editor = grid.splitRectsAt(middle.second, .vertical, middle.second.h - @as(f64, @floatFromInt(panel_height)), 0);
+        var rail_rect = activity.first;
+        var sidebar_rect = middle.first;
+        var column = middle.second;
+        if (position == .right) {
+            rail_rect.x = rect.right() - rail_rect.w;
+            sidebar_rect.x = rail_rect.x - sidebar_rect.w;
+            column.x = rect.x;
+        }
+        const editor = grid.splitRectsAt(column, .vertical, column.h - @as(f64, @floatFromInt(panel_height)), 0);
         return .{
-            .activity_bar = activity.first,
-            .sidebar = middle.first,
-            .editor_column = middle.second,
+            .sidebar_position = position,
+            .activity_bar = rail_rect,
+            .sidebar = sidebar_rect,
+            .editor_column = column,
             .editor = editor.first,
             .panel = editor.second,
         };
@@ -83,8 +111,9 @@ pub const WorkbenchGrid = struct {
         };
         const fixed: split_view.ViewSize = .{ .size = side, .minimum = limits.minimum, .maximum = limits.maximum, .snap = sash == .sidebar };
         const flexible: split_view.ViewSize = .{ .size = remaining, .minimum = sibling_minimum, .maximum = std.math.maxInt(usize) };
-        const views = if (sash == .sidebar) [2]split_view.ViewSize{ fixed, flexible } else .{ flexible, fixed };
-        self.drag = .{ .sash = sash, .current = start, .state = .onSashStart(start, views), .views = views };
+        const fixed_first = sash == .sidebar and rects.sidebar_position == .left;
+        const views = if (fixed_first) [2]split_view.ViewSize{ fixed, flexible } else .{ flexible, fixed };
+        self.drag = .{ .sash = sash, .current = start, .state = .onSashStart(start, views), .views = views, .fixed_index = @intFromBool(!fixed_first) };
         self.drag.?.state.alt = alt;
     }
 
@@ -93,7 +122,7 @@ pub const WorkbenchGrid = struct {
         if (current != drag.current) drag.click_y = null;
         drag.current = current;
         const sizes = drag.state.onSashChange(current, drag.views);
-        return sizes[if (drag.sash == .sidebar) 0 else 1];
+        return sizes[drag.fixed_index];
     }
 
     pub fn onSashEnd(self: *WorkbenchGrid) void {
@@ -229,7 +258,12 @@ pub const Layout = struct {
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered };
+        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered };
+    }
+
+    fn getSideBarPositionContext(context: *anyopaque) Position {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.getSideBarPosition();
     }
 
     fn zenMode(context: *anyopaque) bool {
@@ -362,7 +396,7 @@ pub const Layout = struct {
         return self.states[@backingInt(part)].size;
     }
 
-    pub fn setSidebarPosition(self: *Layout, position: Position) !void {
+    pub fn setSideBarPosition(self: *Layout, position: Position) !void {
         if (self.sidebar_position == position) return;
         const Class = @import("media/part_css.zig").Class;
         const side: Class = if (position == .left) .left else .right;
@@ -373,11 +407,13 @@ pub const Layout = struct {
             try container.addClass(side);
             container.removeClass(previous);
         }
+        self.workbench_grid.onSashEnd();
+        self.workbench_grid.last_sidebar_click = null;
         self.sidebar_position = position;
         try self.on_did_change.fire({});
     }
 
-    pub fn sidebarPosition(self: *const Layout) Position {
+    pub fn getSideBarPosition(self: *const Layout) Position {
         return self.sidebar_position;
     }
 

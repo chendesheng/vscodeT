@@ -211,8 +211,9 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
         renderPanelFrame(workbench);
     }
     if (!workbench.sidebarShown() and workbench.workbenchSashHighlighted(.sidebar)) {
-        const rail = workbench.workbenchGridLayout().activity_bar;
-        const x = ui.cell.snap(rail.w);
+        const rects = workbench.workbenchGridLayout();
+        const rail = rects.activity_bar;
+        const x = rects.sidebarSashCell();
         if (x < workbench.cols) for (0..ui.cell.snap(rail.h)) |y| {
             paintSashBackground(&workbench.frame.next, x, y, ui.cell.packColor(sashHoverStyle(workbench).background.?));
         };
@@ -427,10 +428,11 @@ fn sashHoverStyle(workbench: *const Workbench) ui.HoverStyle {
 }
 
 fn renderSidebarFrame(workbench: *Workbench) void {
-    const rect = workbench.workbenchGridLayout().sidebar;
+    const rects = workbench.workbenchGridLayout();
+    const rect = rects.sidebar;
     const color = workbench.themeColor("sideBar.border", .{ 70, 70, 70 });
     const cells = &workbench.frame.next;
-    const right = ui.cell.snap(rect.right()) - 1;
+    const edge = rects.sidebarSashCell();
     const rows = ui.cell.snap(rect.h);
     const highlighted = workbench.workbenchSashHighlighted(.sidebar);
     const sash_color = if (highlighted) sashHoverStyle(workbench).background.? else color;
@@ -439,14 +441,14 @@ fn renderSidebarFrame(workbench: *Workbench) void {
         paintPaneCompositeCellFrame(workbench, rect, color);
         if (highlighted) {
             for (0..rows) |row| {
-                cells.addBorder(right, row, ui.cell_border.Segment.right, .{
+                cells.addBorder(edge, row, if (rects.sidebar_position == .left) ui.cell_border.Segment.right else ui.cell_border.Segment.left, .{
                     .width = sash_highlight_width,
                     .color = .{ .rgb = sash_color },
                     .placement = .inside,
                     .layer = .above_text,
                     .priority = 3,
                 });
-                paintSashBackground(cells, right, row, sash_bg);
+                paintSashBackground(cells, edge, row, sash_bg);
             }
         }
         return;
@@ -461,13 +463,13 @@ fn renderSidebarFrame(workbench: *Workbench) void {
         cells.paintRoundedFrame(rect, paint);
         if (highlighted) {
             for (0..rows) |row| {
-                const at = cells.index(right, row);
+                const at = cells.index(edge, row);
                 cells.fg[at] = sash_paint.fg;
                 cells.bg[at] = sash_paint.bg;
             }
         }
     } else {
-        for (0..rows) |row| cells.putCodepoint(right, row, '│', 1, sash_paint);
+        for (0..rows) |row| cells.putCodepoint(edge, row, '│', 1, sash_paint);
     }
 }
 

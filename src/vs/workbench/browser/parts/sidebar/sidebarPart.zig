@@ -183,10 +183,10 @@ pub const SidebarPart = struct {
 
     /// The terminal border is painted on the cell edge when supported.
     /// Glyph borders reserve space inside the sidebar's grid rectangle.
-    pub fn innerRect(frame: ui.Rect, cell_borders: bool) ui.Rect {
+    pub fn innerRect(frame: ui.Rect, cell_borders: bool, position: layout_service.Position) ui.Rect {
         if (cell_borders) return frame;
         if (frame.h >= 14) return .{ .x = frame.x + 1, .y = frame.y + 1, .w = frame.w - 2, .h = frame.h - 2 };
-        return .{ .x = frame.x, .y = frame.y, .w = frame.w - 1, .h = frame.h };
+        return .{ .x = frame.x + @as(f64, if (position == .right) 1 else 0), .y = frame.y, .w = frame.w - 1, .h = frame.h };
     }
 
     pub fn setWidth(self: *SidebarPart, width: usize) !void {
