@@ -19,13 +19,7 @@ const IEditorService = @import("../common/editorService.zig").IEditorService;
 const IVisibleEditorPane = @import("../../../common/editor.zig").IVisibleEditorPane;
 const Event = @import("../../../../base/common/event.zig").Emitter(void);
 
-pub const OpenOptions = struct {
-    /// Preview editors are replaced by the next preview in the group.
-    pinned: bool = true,
-    preserve_focus: bool = false,
-    /// Explicit text editor override for image files.
-    force_text: bool = false,
-};
+pub const OpenOptions = @import("../common/editorService.zig").OpenOptions;
 
 pub const OpenedTextEditor = struct {
     pane: *GroupView,
@@ -35,6 +29,7 @@ pub const OpenedTextEditor = struct {
 
 pub const EditorService = struct {
     part: *EditorPart,
+    opening: ?*EditorOpening = null,
 
     /// Resolves an already-open input from the groups before opening a second
     /// model or reading the resource. The URI identity boundary is shared.
@@ -202,6 +197,13 @@ pub const EditorService = struct {
                     return service.part.service.activeGroup().model.activeEditor();
                 }
             }.get,
+            .open_editor_fn = struct {
+                fn open(context: *anyopaque, resource: []const u8, options: OpenOptions) !void {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    const opening = service.opening orelse return error.EditorOpeningUnavailable;
+                    try opening.openPathWithOptions(resource, options);
+                }
+            }.open,
             .on_did_active_editor_change = self.onDidActiveEditorChange(),
             .on_did_visible_editors_change = self.onDidVisibleEditorsChange(),
         };

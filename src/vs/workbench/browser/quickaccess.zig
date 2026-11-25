@@ -74,7 +74,8 @@ const dispatch = @import("../../base/common/windowDispatch.zig");
 pub const Host = struct {
     window: ?*dispatch.Queue = null,
     open_file_to_side: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
-    configure_keybinding: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+    preferences: ?*const @import("../services/preferences/common/preferences.zig").IPreferencesService = null,
+    code_editors: ?*const @import("../../editor/browser/services/codeEditorService.zig").ICodeEditorService = null,
     lookup_keycaps: ?platform_commands_quick_access.LookupKeycaps = null,
     context: *anyopaque,
     open_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
@@ -533,13 +534,36 @@ pub const QuickAccessService = struct {
                 }
             },
             .open_side, .configure_keybinding => {
-                const callback = (if (action == .open_side) self.host.open_file_to_side else self.host.configure_keybinding) orelse return;
+                if (action == .open_side and self.host.open_file_to_side == null) return;
+                if (action == .configure_keybinding and self.host.preferences == null) return;
                 const owned = try self.allocator.dupe(u8, id);
                 defer self.allocator.free(owned);
                 picker.hide();
-                try callback(self.host.context, owned);
+                switch (action) {
+                    .open_side => {
+                        const callback = self.host.open_file_to_side orelse return;
+                        try callback(self.host.context, owned);
+                    },
+                    .configure_keybinding => try self.configureKeybinding(owned),
+                    else => unreachable,
+                }
             },
         }
+    }
+
+    /// Upstream CommandsQuickAccessProvider opens the keybindings editor
+    /// with an @command query. The terminal has the textual editor only:
+    /// open that editor through PreferencesService and reveal the command ID
+    /// using the mounted FindController.
+    fn configureKeybinding(self: *QuickAccessService, id: []const u8) !void {
+        const preferences = self.host.preferences orelse return;
+        try preferences.openGlobalKeybindingSettings(true);
+        const code_editors = self.host.code_editors orelse return;
+        const editor = code_editors.getActiveCodeEditor() orelse return;
+        const FindController = @import("../../editor/contrib/find/browser/findController.zig").FindController;
+        const find = editor.getContribution(FindController) orelse return;
+        try find.startFind();
+        try find.widget().find_input.setValue(id);
     }
 
     fn executeCommand(context: *anyopaque, command_id: []const u8) anyerror!void {

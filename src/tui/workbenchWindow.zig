@@ -331,6 +331,8 @@ pub const TerminalWorkbench = struct {
     code_editor_api: code_editor_service.ICodeEditorService,
     editors: editor_service_mod.EditorService,
     editor_api: @import("../vs/workbench/services/editor/common/editorService.zig").IEditorService,
+    preferences: @import("../vs/workbench/services/preferences/browser/preferencesService.zig").PreferencesService,
+    preferences_api: @import("../vs/workbench/services/preferences/common/preferences.zig").IPreferencesService,
     editor_groups_api: editor_groups.IEditorGroupsService,
     allocator: Allocator,
     view_factory: @import("../vs/workbench/browser/parts/editor/editorPane.zig").EditorViewFactory,
@@ -1074,9 +1076,12 @@ pub const TerminalWorkbench = struct {
         self.code_editors = .{ .part = self.part };
         self.code_editor_api = self.code_editors.interface();
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
-        self.editors = .{ .part = self.part };
+        self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
+        self.preferences = .{ .allocator = self.allocator, .editor_service = &self.editor_api, .text_file_service = &self.text_file_service, .settings_paths = &self.user_settings_paths, .keybindings_paths = &self.user_keybindings.paths };
+        self.preferences_api = self.preferences.interface();
+        _ = try self.services.set(@import("../vs/workbench/services/preferences/common/preferences.zig").preferences_service_id, &self.preferences_api);
         self.dialog_api = self.dialog_service.interface();
         _ = try self.services.set(dialogs.dialog_service_id, &self.dialog_api);
         self.terminal_action_services = terminal_actions.TerminalActionServices.bind(self);
@@ -1387,7 +1392,8 @@ pub const TerminalWorkbench = struct {
                 .window = &self.window_events,
                 .open_file = quickOpenFile,
                 .open_file_to_side = quickOpenToSide,
-                .configure_keybinding = quickConfigureBinding,
+                .preferences = &self.preferences_api,
+                .code_editors = &self.code_editor_api,
                 .lookup_keycaps = quickLookupKeycaps,
                 .report_error = quickReportError,
                 .cancel_popups = quickCancelPopups,
@@ -1515,14 +1521,16 @@ pub const TerminalWorkbench = struct {
             .{ .id = "github.publish", .label = "Publish to GitHub", .category = "GitHub", .context = self, .run = commandGithubPublish },
             .{ .id = "simpleBrowser.show", .label = "Show", .category = "Simple Browser", .context = &self.simple_browser, .run = SimpleBrowserManager.run },
             .{ .id = "workbench.action.browser.open", .label = "Open Integrated Browser", .show_in_palette = false, .context = &self.simple_browser, .run = SimpleBrowserManager.run },
-            .{ .id = "workbench.action.openSettingsJson", .label = "Open User Settings (JSON)", .category = "Preferences", .context = self, .run = commandOpenSettingsJson },
-            .{ .id = "workbench.action.openGlobalKeybindingsFile", .label = "Open Keyboard Shortcuts (JSON)", .category = "Preferences", .context = self, .run = commandOpenKeybindingsJson },
+        };
+        for (after_file_actions) |command| try self.commands.register(command);
+        for (@import("../vs/workbench/contrib/preferences/browser/preferences.contribution.zig").preferences_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        const after_preferences_actions = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.closeActiveEditor", .label = "Close Editor", .category = "View", .context = self, .run = commandCloseEditor },
             .{ .id = "workbench.action.reopenClosedEditor", .label = "Reopen Closed Editor", .category = "View", .context = self, .run = commandReopenClosedEditor },
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
         };
-        for (after_file_actions) |command| try self.commands.register(command);
+        for (after_preferences_actions) |command| try self.commands.register(command);
         const outline_actions = @import("../vs/workbench/contrib/outline/browser/outlineActions.zig");
         try self.commands.registerAction(self.instantiation, outline_actions.focus_action);
         try self.commands.register(.{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions });
@@ -5421,16 +5429,6 @@ fn quickOpenToSide(context: *anyopaque, path: []const u8) anyerror!void {
     self.requestOpenPath(path);
 }
 
-fn quickConfigureBinding(context: *anyopaque, id: []const u8) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try commandOpenKeybindingsJson(context);
-    const tab = self.activeTab() orelse return;
-    try tab.ensureControllers();
-    const find = tab.controllers.?.find;
-    try find.startFind();
-    try find.widget().find_input.setValue(id);
-}
-
 fn quickLookupKeycaps(context: *anyopaque, arena: Allocator, id: []const u8) anyerror![]const []const u8 {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const global = try self.ensureGlobalService();
@@ -5908,36 +5906,6 @@ fn commandListToggleExpand(context: *anyopaque) anyerror!void {
 }
 fn commandListSelect(context: *anyopaque) anyerror!void {
     return runListCommand(context, "list.select");
-}
-
-fn commandOpenSettingsJson(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try openConfigJson(self, self.user_settings_paths, "{\n}\n");
-}
-
-fn commandOpenKeybindingsJson(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try openConfigJson(self, self.user_keybindings.paths, "[\n]\n");
-}
-
-/// Opens the highest-precedence (TUI) settings or keybindings file, creating
-/// it with valid empty JSONC when it does not exist yet. VS Code's profile
-/// files stay read-only inputs.
-fn openConfigJson(self: *TerminalWorkbench, paths: []const []const u8, empty_contents: []const u8) !void {
-    if (paths.len == 0) return error.NoConfigPath;
-    const target = paths[paths.len - 1];
-    if (std.fs.path.dirname(target)) |dir| {
-        std.Io.Dir.cwd().createDirPath(self.io, dir) catch {};
-    }
-    if (std.Io.Dir.cwd().access(self.io, target, .{})) |_| {} else |err| switch (err) {
-        error.FileNotFound => {
-            var file = try std.Io.Dir.cwd().createFile(self.io, target, .{});
-            defer file.close(self.io);
-            try file.writeStreamingAll(self.io, empty_contents);
-        },
-        else => return err,
-    }
-    try self.openPath(target);
 }
 
 fn statusFocusEditor(context: *anyopaque) void {

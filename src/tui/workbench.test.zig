@@ -2733,8 +2733,12 @@ test "Workbench: Preferences JSON commands create and open the TUI layer" {
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
-    try workbench.setUserSettingsPaths(&.{settings_path});
-    try workbench.setKeybindingsPaths(&.{keybindings_path});
+    const profile_settings = try seedFile(allocator, io, &tmp, "profile-settings.json", "{\"editor.tabSize\":2}");
+    defer allocator.free(profile_settings);
+    const profile_keybindings = try seedFile(allocator, io, &tmp, "profile-keybindings.json", "[]");
+    defer allocator.free(profile_keybindings);
+    try workbench.setUserSettingsPaths(&.{ profile_settings, settings_path });
+    try workbench.setKeybindingsPaths(&.{ profile_keybindings, keybindings_path });
 
     try workbench.commands.execute("workbench.action.openSettingsJson");
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
@@ -2749,6 +2753,13 @@ test "Workbench: Preferences JSON commands create and open the TUI layer" {
     var keybindings_content = try workbench.activeTab().?.editor.model.getValue(.TextDefined, false);
     defer keybindings_content.deinit();
     try std.testing.expectEqualStrings("[\n]\n", keybindings_content.items);
+    const profile_contents = try workbench.text_file_service.read(profile_settings, allocator);
+    defer allocator.free(profile_contents);
+    try std.testing.expectEqualStrings("{\"editor.tabSize\":2}", profile_contents);
+    // Opening the same editable resource must preserve existing contents.
+    try workbench.commands.execute("workbench.action.openSettingsJson");
+    try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
+    try std.testing.expectEqualStrings("settings.json", workbench.activeTab().?.input.getName());
 }
 
 test "Workbench: user keybindings override defaults, honor when and removals" {
