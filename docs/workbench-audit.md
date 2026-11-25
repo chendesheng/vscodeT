@@ -74,9 +74,11 @@ and hover contributions. Hover resolves the mounted ContentHoverController.
 Diff commands use IDiffEditorCommandsService; Git-specific snapshot refresh
 is resolved by the Git contribution.
 
+TextEditorConfiguration and the workbench language service now subscribe directly to the configuration binding, applying resource/language overrides, file associations and temporary Zen line-number options at the owning controls. The per-document language service is a terminal adaptation; a shared global registry is still unported.
+
 Layout now closes the active sidebar composite on hide, restores the last active/default/visible composite on show, and preserves upstream panel/editor focus preference. Sidebar visibility and focus commands resolve IWorkbenchLayoutService and IPaneCompositePartService.
 
-The portable browser Workbench is 270 lines and has no inline tests. The native TerminalWorkbench window is 5,447 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+The portable browser Workbench is 270 lines and has no inline tests. The native TerminalWorkbench window is 5,328 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

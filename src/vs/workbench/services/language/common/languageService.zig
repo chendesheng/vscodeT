@@ -4,8 +4,8 @@
 // Terminal adaptations: contributions are registered explicitly (there is no
 // extension host or extension-point collector), most `isValidLanguageExtensionPoint`
 // checks are enforced by the typed `ILanguageExtensionPoint`, and configuration
-// changes are not subscribed: the host calls `updateMime` after reloading the
-// settings. `configuration` paths/icon URIs are carried through when present.
+// changes are delivered by the stable ConfigurationServiceBinding to each
+// document language service. `configuration` paths/icon URIs are carried through.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -226,3 +226,65 @@ test "workbench language service: configured associations from files.association
     try workbench_service.updateMime();
     try testing.expectEqualStrings("foo", language_service.guessLanguageIdByFilepathOrFirstLine("x.foo", null).?);
 }
+
+const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
+const GroupPane = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
+const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(GroupPane);
+const ConfigurationServiceBinding = @import("../../configuration/browser/configurationService.zig").ConfigurationServiceBinding;
+const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
+const ILanguageAssociation = @import("../../../../editor/common/services/languagesAssociations.zig").ILanguageAssociation;
+
+/// The terminal currently keeps a language service per shared editor document,
+/// not one process-global registry. Broadcast the upstream updateMime event
+/// to those document services, and apply the same associations at creation.
+pub const ConfiguredLanguageAssociations = struct {
+    allocator: Allocator,
+    part: *EditorPart,
+    configuration: *ConfigurationServiceBinding,
+    listener: ?SignalSubscription = null,
+
+    pub fn attach(self: *ConfiguredLanguageAssociations) !void {
+        self.listener = try self.configuration.on_did_change_configuration.listenDisposable(self, onConfigurationChanged);
+    }
+
+    pub fn deinit(self: *ConfiguredLanguageAssociations) void {
+        if (self.listener) |listener| listener.dispose();
+        self.listener = null;
+    }
+
+    fn onConfigurationChanged(change: configuration.Change, self: *ConfiguredLanguageAssociations) !void {
+        if (self.configuration.service == null) return;
+        if (!configuration.affectsConfiguration(change, FILES_ASSOCIATIONS_CONFIG) and
+            !(change.source == .DEFAULT and change.keys.len == 0)) return;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| self.applyToEditor(tab.editor);
+        }
+    }
+
+    pub fn applyToEditor(self: *ConfiguredLanguageAssociations, editor: *Editor) void {
+        const service = self.configuration.service orelse {
+            editor.applyFileAssociations(&.{}) catch {};
+            return;
+        };
+        const value = service.getValue(FILES_ASSOCIATIONS_CONFIG, .{}) orelse {
+            editor.applyFileAssociations(&.{}) catch {};
+            return;
+        };
+        if (value.* != .object) {
+            editor.applyFileAssociations(&.{}) catch {};
+            return;
+        }
+        var associations = std.array_list.Managed(ILanguageAssociation).init(self.allocator);
+        defer associations.deinit();
+        var it = value.object.iterator();
+        while (it.next()) |entry| {
+            const id = switch (entry.value_ptr.*) {
+                .string => |text| text,
+                else => continue,
+            };
+            associations.append(.{ .id = id, .mime = "", .filepattern = entry.key_ptr.* }) catch return;
+        }
+        editor.applyFileAssociations(associations.items) catch {};
+    }
+};

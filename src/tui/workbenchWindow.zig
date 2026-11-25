@@ -52,8 +52,6 @@ const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/edit
 const editor_factory = @import("../vs/workbench/common/editor/editorFactory.zig");
 const tui_editor_mod = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 const Editor = tui_editor_mod.Editor;
-const terminal_editor_config = @import("../vs/editor/browser/config/terminalEditorConfiguration.zig");
-const editor_options = @import("../vs/editor/common/config/editorOptions.zig");
 const tab_bar = @import("../vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
 const file_icon = @import("../vs/workbench/services/themes/browser/fileIconThemeData.zig");
 const Sidebar = @import("../vs/workbench/contrib/files/browser/views/explorerView.zig").Sidebar;
@@ -97,7 +95,6 @@ const FileWatcherService = file_watcher_service_mod.FileWatcherService;
 const contributions_mod = @import("../vs/workbench/common/contributions.zig");
 const workspace_watcher_mod = @import("../vs/workbench/contrib/files/browser/workspaceWatcher.zig");
 const WorkspaceWatcher = workspace_watcher_mod.WorkspaceWatcher;
-const languages_associations = @import("../vs/editor/common/services/languagesAssociations.zig");
 const working_copy_service_mod = @import("../vs/workbench/services/workingCopy/common/workingCopyService.zig");
 const WorkingCopyService = working_copy_service_mod.WorkingCopyService;
 const keybinding_service = @import("../vs/workbench/services/keybinding/browser/keybindingService.zig");
@@ -420,6 +417,8 @@ pub const TerminalWorkbench = struct {
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
     configuration_binding: configuration_mod.ConfigurationServiceBinding,
+    editor_configuration: @import("../vs/workbench/browser/parts/editor/textEditor.zig").TextEditorConfiguration,
+    configured_languages: @import("../vs/workbench/services/language/common/languageService.zig").ConfiguredLanguageAssociations,
     configuration_api: @import("../vs/platform/configuration/common/configuration.zig").IConfigurationService,
     settings_watcher: ?*SettingsWatcher = null,
     /// Window file service shared by workspace and configuration watchers.
@@ -622,6 +621,12 @@ pub const TerminalWorkbench = struct {
         errdefer self.service.deinit();
         self.part = try editor_part.EditorPart(GroupPane).initWithState(allocator, self.service, if (state) |previous| previous.data.serialized_grid else null);
         errdefer self.part.deinit();
+        self.configured_languages = .{ .allocator = allocator, .part = self.part, .configuration = &self.configuration_binding };
+        try self.configured_languages.attach();
+        errdefer self.configured_languages.deinit();
+        self.editor_configuration = .{ .part = self.part, .configuration = &self.configuration_binding, .theme = &self.theme_palette };
+        try self.editor_configuration.attach();
+        errdefer self.editor_configuration.deinit();
         self.markdown_previews = .{
             .allocator = allocator,
             .part = self.part,
@@ -837,14 +842,15 @@ pub const TerminalWorkbench = struct {
                 .configure_editor = struct {
                     fn configure(context: *anyopaque, editor: *Editor) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                        host.applyConfiguredLanguageAssociations(editor);
+                        host.ensureConfiguration() catch {};
+                        host.configured_languages.applyToEditor(editor);
                         if (host.language_features) |features| editor.attachLanguageServices(features, host.marker_service, host.marker_decorations);
                     }
                 }.configure,
                 .configure_tab = struct {
                     fn configure(context: *anyopaque, tab: *Tab) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                        host.applyEditorSettingsToTab(tab);
+                        host.editor_configuration.applyToTab(tab);
                     }
                 }.configure,
                 .register_working_copy = struct {
@@ -893,7 +899,7 @@ pub const TerminalWorkbench = struct {
                 .configure_tab = struct {
                     fn run(context: *anyopaque, tab: *Tab) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                        host.applyEditorSettingsToTab(tab);
+                        host.editor_configuration.applyToTab(tab);
                     }
                 }.run,
                 .update_focus = struct {
@@ -1733,6 +1739,8 @@ pub const TerminalWorkbench = struct {
         self.history.deinit();
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
+        self.editor_configuration.deinit();
+        self.configured_languages.deinit();
         self.part.disposeGroupModelListeners();
         self.markdown_previews.deinit();
         self.service.deinit();
@@ -2004,9 +2012,7 @@ pub const TerminalWorkbench = struct {
             self.configuration = null;
             try self.ensureConfiguration();
             self.configureJsonLanguage();
-            self.applyConfiguredLanguageAssociationsToAllEditors();
             try self.layout.onZenModeConfigurationChange(null);
-            self.applyEditorSettingsToAllTabs();
             self.layoutAll();
             if (self.lifecycle.phase.reached(.Restored) and self.workspace.getWorkspace().folders.items.len > 0) {
                 self.ensureWorkspaceWatcher() catch |err| {
@@ -2073,119 +2079,6 @@ pub const TerminalWorkbench = struct {
             config.affectsConfiguration(change, "diffEditor.renderSideBySide"))
         {
             try self.layout.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
-        }
-        if (config.affectsConfiguration(change, "files.associations")) self.applyConfiguredLanguageAssociationsToAllEditors();
-        if (config.affectsConfiguration(change, "editor")) self.applyEditorSettingsToAllTabs();
-    }
-
-    fn editorSettingsReader(self: *TerminalWorkbench) terminal_editor_config.Reader {
-        return .{ .context = self, .get_value = readEditorSetting };
-    }
-
-    fn applyEditorSettingsToTab(self: *TerminalWorkbench, tab: *Tab) void {
-        if (tab.isDiff()) {
-            if (self.layout.zen_hide_line_numbers) self.applyLineNumbersOverrideToTab(tab, .Off);
-            return;
-        }
-        const reader = self.editorSettingsReader();
-        const language_id = tab.editor.languageId();
-        const resource = tab.editor.path;
-        _ = tab.editor.applyEditorSettings(reader, language_id, resource) catch false;
-        _ = tab.view.applyEditorSettings(reader, language_id, resource) catch false;
-        // Zen mode's temporary line-number override, matching upstream
-        // `updateOptions({ lineNumbers: 'off' })`. The next
-        // `applyEditorSettings` after the override is cleared restores the
-        // configured value.
-        if (tab.search_editor_input) |input| {
-            if (self.configuration) |configuration| input.search_editor.configure(configuration);
-            tab.view.applyLineNumbersOverride(.Off) catch {};
-        } else if (self.layout.zen_hide_line_numbers and !tab.isImage()) {
-            tab.view.applyLineNumbersOverride(.Off) catch {};
-        }
-        if (self.theme_palette) |palette| tab.view.setThemeColors(palette);
-        if (self.theme_palette) |palette| {
-            if (tab.image_preview) |pane| pane.setThemeColors(palette);
-        }
-    }
-
-    fn applyEditorSettingsToAllTabs(self: *TerminalWorkbench) void {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| self.applyEditorSettingsToTab(tab);
-        }
-    }
-
-    /// Port of the `setLineNumbers()` restore path in `toggleZenMode`: read
-    /// `editor.lineNumbers` per editor (the configured value, or upstream's
-    /// `on` default) and write it back after the zen override is cleared.
-    /// `applyEditorSettings` leaves the option untouched when the setting is
-    /// absent, so the temporary `off` value would otherwise survive.
-    fn restoreLineNumbersFromConfiguration(self: *TerminalWorkbench) void {
-        const reader = self.editorSettingsReader();
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.isImage()) continue;
-                const render_type = terminal_editor_config.lineNumbersSetting(
-                    reader,
-                    tab.editor.languageId(),
-                    tab.editor.path,
-                ) orelse .On;
-                self.applyLineNumbersOverrideToTab(tab, render_type);
-            }
-        }
-    }
-
-    /// Applies a line-number option to a tab's editor view(s). A diff tab has
-    /// the original and modified views; upstream's `visibleTextEditorControls`
-    /// includes both code editor widgets.
-    fn applyLineNumbersOverrideToTab(self: *TerminalWorkbench, tab: *Tab, render_type: editor_options.RenderLineNumbersType) void {
-        _ = self;
-        if (tab.diff) |diff| {
-            diff.widget.original_view.applyLineNumbersOverride(render_type) catch {};
-            diff.widget.modified_view.applyLineNumbersOverride(render_type) catch {};
-            return;
-        }
-        if (tab.isImage()) return;
-        tab.view.applyLineNumbersOverride(render_type) catch {};
-    }
-
-    /// Applies `files.associations` from the current configuration to `editor`.
-    fn applyConfiguredLanguageAssociations(self: *TerminalWorkbench, editor: *Editor) void {
-        self.ensureConfiguration() catch {};
-        const configuration = self.configuration orelse {
-            editor.applyFileAssociations(&.{}) catch {};
-            return;
-        };
-        const value = configuration.getValue("files.associations", .{}) orelse {
-            editor.applyFileAssociations(&.{}) catch {};
-            return;
-        };
-        switch (value.*) {
-            .object => |object| {
-                var associations = std.array_list.Managed(languages_associations.ILanguageAssociation).init(self.allocator);
-                defer associations.deinit();
-                var iterator = object.iterator();
-                while (iterator.next()) |entry| {
-                    const language_id = switch (entry.value_ptr.*) {
-                        .string => |text| text,
-                        else => continue,
-                    };
-                    associations.append(.{
-                        .id = language_id,
-                        .mime = "",
-                        .filepattern = entry.key_ptr.*,
-                    }) catch {};
-                }
-                editor.applyFileAssociations(associations.items) catch {};
-            },
-            else => editor.applyFileAssociations(&.{}) catch {},
-        }
-    }
-
-    fn applyConfiguredLanguageAssociationsToAllEditors(self: *TerminalWorkbench) void {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                self.applyConfiguredLanguageAssociations(tab.editor);
-            }
         }
     }
 
@@ -3767,7 +3660,7 @@ pub const TerminalWorkbench = struct {
 
     fn configureCopiedPane(context: *anyopaque, tab: *Tab) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        self.applyEditorSettingsToTab(tab);
+        self.editor_configuration.applyToTab(tab);
         if (!tab.isImage()) self.registerWorkingCopy(tab);
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
     }
@@ -4574,8 +4467,7 @@ pub const TerminalWorkbench = struct {
 
     fn applyZenLineNumbers(context: *anyopaque, hidden: bool) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        self.applyEditorSettingsToAllTabs();
-        if (!hidden) self.restoreLineNumbersFromConfiguration();
+        self.editor_configuration.setZenLineNumbers(hidden);
     }
 
     fn focusedLayoutPart(context: *anyopaque) layout_service_mod.Parts {
@@ -5390,17 +5282,6 @@ fn executeGlobalCommand(context: *anyopaque, command_id: []const u8) anyerror!vo
 
 fn terminalCommandSkipsShell(command_id: []const u8) bool {
     return terminal_common.skipsShell(command_id);
-}
-
-fn readEditorSetting(
-    context: *anyopaque,
-    key: []const u8,
-    language_id: ?[]const u8,
-    resource: ?[]const u8,
-) ?*const configuration_mod.Value {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const configuration = self.configuration orelse return null;
-    return configuration.getValue(key, .{ .override_identifier = language_id, .resource = resource });
 }
 
 fn dupeOwnedPaths(allocator: Allocator, paths: []const []const u8) ![]const []const u8 {
