@@ -8,6 +8,7 @@
 // multi-repository discovery are not yet ported by this single-root adapter.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const extpath = @import("../../../vs/base/common/extpath.zig");
 const Git = @import("git.zig").Git;
 const git = @import("git.zig");
 const repository_mod = @import("repository.zig");
@@ -88,6 +89,49 @@ pub const Model = struct {
         provider.attachWindow(open_options.window);
         self.repository = provider;
         return provider;
+    }
+
+    /// The terminal projects Git's virtual text resources to snapshot buffers
+    /// for the editor service. Both returned slices are owned by the caller.
+    pub fn resolveDiffTexts(self: *Model, path: []const u8, working: ?[]const u8, left: git.DiffRef, right: git.DiffRef) !git.ResolvedDiffTexts {
+        if (self.repository == null) return error.NoRepository;
+        const root = self.git_root orelse return error.NoRepository;
+        const relative = extpath.relativeToRoot(path, root) orelse return error.OutsideRepository;
+        const cli = self.git orelse return error.NoGit;
+        return cli.resolveDiffTexts(root, relative, working, left, right);
+    }
+
+    pub fn resolveRefDiffTexts(
+        self: *Model,
+        path: []const u8,
+        original_path: ?[]const u8,
+        left_rev: ?[]const u8,
+        right_rev: []const u8,
+    ) !git.ResolvedDiffTexts {
+        const root = self.git_root orelse return error.NoRepository;
+        const cli = self.git orelse return error.NoGit;
+        const relative_right = if (std.fs.path.isAbsolute(path))
+            extpath.relativeToRoot(path, root) orelse return error.OutsideRepository
+        else
+            path;
+        const relative_left = if (original_path) |value|
+            if (std.fs.path.isAbsolute(value))
+                extpath.relativeToRoot(value, root) orelse relative_right
+            else
+                value
+        else
+            relative_right;
+
+        const left_text = if (left_rev) |revision| blk: {
+            const value = cli.readRefAt(self.allocator, root, relative_left, revision) catch null;
+            break :blk value orelse try self.allocator.dupe(u8, "");
+        } else try self.allocator.dupe(u8, "");
+        errdefer self.allocator.free(left_text);
+        const right_text = blk: {
+            const value = cli.readRefAt(self.allocator, root, relative_right, right_rev) catch null;
+            break :blk value orelse try self.allocator.dupe(u8, "");
+        };
+        return .{ .original = left_text, .modified = right_text };
     }
 
     /// Source Control unregisters its provider before releasing the model.

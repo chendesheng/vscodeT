@@ -7965,6 +7965,20 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expectEqual(tab, workbench.activeTab().?);
     try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
 
+    // Git chooses index -> working for a partially staged resource, and the
+    // editor service reuses its already-open snapshot pane.
+    var partially_staged: ?*@import("../extensions/git/src/repository.zig").GitScmResource = null;
+    for (provider.groups[2].resources.items) |resource| {
+        if (std.mem.eql(u8, resource.relative_path, "staged.txt")) {
+            partially_staged = resource;
+            break;
+        }
+    }
+    const staged_resource = partially_staged orelse return error.TestExpectedPartiallyStagedResource;
+    try workbench.scm.changes.?.host.open_change(workbench.scm.changes.?.host.context, &staged_resource.iface);
+    try std.testing.expectEqual(index_working_tab, workbench.activeTab().?);
+    try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
+
     // Opening a changed file from the Graph uses the parent/commit snapshot
     // diff; root commits compare against the empty tree.
     var change_row: ?usize = null;

@@ -13,6 +13,18 @@ pub fn toSlashes(path: []const u8, allocator: Allocator) ![]u8 {
     return result;
 }
 
+/// Terminal path projection for a strictly nested resource. Unlike the URI
+/// relativePath service, this borrows the original path instead of normalizing
+/// it or manufacturing a path containing '..'.
+pub fn relativeToRoot(path: []const u8, root: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trimEnd(u8, root, "/\\");
+    if (trimmed.len == 0) return null;
+    if (path.len <= trimmed.len + 1) return null;
+    if (!std.mem.startsWith(u8, path, trimmed)) return null;
+    if (path[trimmed.len] != '/' and path[trimmed.len] != '\\') return null;
+    return path[trimmed.len + 1 ..];
+}
+
 pub fn getRoot(path: []const u8) []const u8 {
     if (path.len == 0) return "";
     // Windows drive letter.

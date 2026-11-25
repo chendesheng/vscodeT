@@ -380,6 +380,25 @@ pub const Repository = struct {
         return .{ &self.primary_quick_diff, &self.secondary_quick_diff };
     }
 
+    /// The Git resource's status determines its original and modified
+    /// resources. Conflict resources open the file instead of a snapshot diff.
+    pub fn diffRefsForResource(self: *Repository, resource: *const GitScmResource) ?struct { left: git_mod.DiffRef, right: git_mod.DiffRef } {
+        return switch (resource.kind) {
+            .merge => null,
+            .untracked => .{ .left = .empty, .right = .working },
+            .index => .{ .left = .head, .right = .index },
+            .working => blk: {
+                // A partially staged file compares index -> working;
+                // otherwise the original is HEAD.
+                for (self.repository.stateRef().index_changes) |change| {
+                    if (std.mem.eql(u8, change.path, resource.relative_path))
+                        break :blk .{ .left = .index, .right = .working };
+                }
+                break :blk .{ .left = .head, .right = .working };
+            },
+        };
+    }
+
     pub fn count(self: *const Repository) usize {
         var total: usize = 0;
         for (&self.groups) |*group| total += group.resources.items.len;

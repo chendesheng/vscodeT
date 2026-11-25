@@ -236,7 +236,6 @@ const scm_history_view_mod = @import("../contrib/scm/browser/scmHistoryViewPane.
 const scm_common_history = @import("../contrib/scm/common/history.zig");
 const view_container_model_mod = @import("../services/views/common/viewContainerModel.zig");
 const view_pane_container_mod = @import("./parts/views/viewPaneContainer.zig");
-const text_diff_editor_mod = @import("./parts/editor/textDiffEditor.zig");
 const storage_mod = @import("../../platform/storage/common/storage.zig");
 const TerminalService = terminal_service_mod.TerminalService;
 
@@ -3972,10 +3971,6 @@ pub const Workbench = struct {
         right_ref: DiffRef,
     ) !void {
         if (self.git_model.repository == null) return error.NoRepository;
-        const root = self.git_model.git_root orelse return error.NoRepository;
-        const relative = relativeToRoot(path, root) orelse return error.OutsideRepository;
-        const git = self.git_model.git orelse return error.NoGit;
-
         const left_label = left_ref.label();
         const right_label = right_ref.label();
 
@@ -3984,10 +3979,10 @@ pub const Workbench = struct {
             break :blk try value.toOwnedSlice();
         } else null else null;
         defer if (working) |text| self.allocator.free(text);
-        const text = try git.resolveDiffTexts(root, relative, working, left_ref, right_ref);
+        const text = try self.git_model.resolveDiffTexts(path, working, left_ref, right_ref);
         defer self.allocator.free(text.original);
         defer self.allocator.free(text.modified);
-        if (text.original.len == 0 and text.modified.len == 0 and self.findDiffTab(path, left_label, right_label) == null) {
+        if (text.original.len == 0 and text.modified.len == 0 and (editor_service_mod.EditorService{ .part = self.part }).findDiffTab(path, left_label, right_label) == null) {
             const file_exists = if (std.Io.Dir.cwd().access(self.io, path, .{})) |_| true else |_| false;
             if (file_exists) {
                 if (self.status_hint_accessor) |hint| {
@@ -4012,32 +4007,10 @@ pub const Workbench = struct {
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
-        const root = self.git_model.git_root orelse return error.NoRepository;
-        const git = self.git_model.git orelse return error.NoGit;
-        const relative_right = if (std.fs.path.isAbsolute(path))
-            relativeToRoot(path, root) orelse return error.OutsideRepository
-        else
-            path;
-        const relative_left = if (original_path) |value|
-            if (std.fs.path.isAbsolute(value))
-                relativeToRoot(value, root) orelse relative_right
-            else
-                value
-        else
-            relative_right;
-
-        const left_text = if (left_rev) |revision| blk: {
-            const value = git.readRefAt(self.allocator, root, relative_left, revision) catch null;
-            break :blk value orelse try self.allocator.dupe(u8, "");
-        } else try self.allocator.dupe(u8, "");
-        defer self.allocator.free(left_text);
-        const right_text = blk: {
-            const value = git.readRefAt(self.allocator, root, relative_right, right_rev) catch null;
-            break :blk value orelse try self.allocator.dupe(u8, "");
-        };
-        defer self.allocator.free(right_text);
-
-        try self.openSnapshotDiff(path, left_text, right_text, left_label, right_label);
+        const texts = try self.git_model.resolveRefDiffTexts(path, original_path, left_rev, right_rev);
+        defer self.allocator.free(texts.original);
+        defer self.allocator.free(texts.modified);
+        try self.openSnapshotDiff(path, texts.original, texts.modified, left_label, right_label);
     }
 
     fn openSnapshotDiff(
@@ -4048,105 +4021,17 @@ pub const Workbench = struct {
         left_label: []const u8,
         right_label: []const u8,
     ) !void {
-        if (self.findDiffTab(path, left_label, right_label)) |existing| {
-            const tab = existing.tab;
-            const dims = existing.pane.contentDimensions();
-            try tab.diff.?.replace(original_text, modified_text, dims.width, dims.height, text_diff_editor_mod.computeConfiguration(if (self.configuration) |config| config.interface() else null));
-            tab.syncDiffViews();
-            try existing.pane.activateTab(tab);
-            self.service.activateGroup(existing.pane.group);
-            tab.layoutCells(dims.width, dims.height);
-            tab.focusEditor();
-            self.focusEditor();
-            return;
-        }
-
-        const pane = self.activePane() orelse return error.GroupPaneMissing;
-        const dims = pane.contentDimensions();
-        const tab = blk: {
-            const view = try text_diff_editor_mod.DiffView.create(
-                self.allocator,
-                self.io,
-                .{
-                    .original_path = path,
-                    .modified_path = path,
-                    .original_label = left_label,
-                    .modified_label = right_label,
-                },
-                original_text,
-                modified_text,
-                dims.width,
-                dims.height,
-                text_diff_editor_mod.computeConfiguration(if (self.configuration) |config| config.interface() else null),
-            );
-            errdefer view.destroy();
-            break :blk try Tab.initDiff(self.allocator, view);
-        };
-        var registered = false;
-        defer if (!registered) tab.deinit();
-
-        try pane.tabs.ensureUnusedCapacity(1);
-        errdefer if (pane.group.model.indexOfExact(tab.input) != null) {
-            _ = pane.group.model.closeEditor(tab.input, .UNKNOWN, true) catch {};
-            pane.syncActivePane();
-        };
-        const opened = try self.service.openEditor(
-            tab.input,
-            pane.group,
-            .{ .open = .{ .pinned = true, .active = true } },
-        );
-        if (!opened.result.is_new) {
-            pane.syncActivePane();
-            if (pane.tabForInput(opened.result.editor)) |existing| existing.focusEditor();
-            self.focusEditor();
-            return;
-        }
-
-        try pane.addTab(tab);
-        registered = true;
-        tab.layoutCells(dims.width, dims.height);
-        tab.focusEditor();
+        const editors = editor_service_mod.EditorService{ .part = self.part };
+        try editors.openSnapshotDiff(self.io, if (self.configuration) |config| config.interface() else null, path, original_text, modified_text, left_label, right_label);
         self.focusEditor();
     }
 
-    fn findDiffTab(self: *Workbench, path: []const u8, left_label: []const u8, right_label: []const u8) ?struct { pane: *GroupPane, tab: *Tab } {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                const diff = tab.diff orelse continue;
-                if (diff.matches(path, left_label, right_label)) return .{ .pane = pane, .tab = tab };
-            }
-        }
-        return null;
-    }
-
     fn openScmChange(self: *Workbench, provider: *repository_mod.Repository, resource: *repository_mod.GitScmResource) !void {
-        _ = provider;
-        switch (resource.kind) {
-            .merge => try self.openPath(resource.absolute_path),
-            .untracked => try self.openDiff(resource.absolute_path, .empty, .working),
-            .index => try self.openDiff(resource.absolute_path, .head, .index),
-            .working => {
-                // If the path is staged as well, compare index->working; an
-                // unstaged path compares HEAD->working.
-                const staged = self.git_model.repository.?.repository.stateRef().index_changes;
-                var is_staged = false;
-                for (staged) |change| {
-                    if (std.mem.eql(u8, change.path, resource.relative_path)) {
-                        is_staged = true;
-                        break;
-                    }
-                }
-                if (is_staged) {
-                    try self.openDiff(resource.absolute_path, .index, .working);
-                } else {
-                    try self.openDiff(resource.absolute_path, .head, .working);
-                }
-            },
-        }
+        if (provider.diffRefsForResource(resource)) |refs| {
+            try self.openDiff(resource.absolute_path, refs.left, refs.right);
+        } else try self.openPath(resource.absolute_path);
     }
 
-    /// Reports a hard git disable once through the status hint entry. The
-    /// editor stays usable; the SCM view shows its welcome/placeholder text.
     fn gitDisabled(context: ?*anyopaque, reason: []const u8) void {
         const raw_context = context orelse return;
         const self: *Workbench = @ptrCast(@alignCast(raw_context));
@@ -4730,15 +4615,6 @@ pub const Workbench = struct {
     fn boolSetting(self: *Workbench, key: []const u8, default: bool) bool {
         const configuration = self.configuration orelse return default;
         return configuration.getBool(key, default);
-    }
-
-    fn relativeToRoot(path: []const u8, root: []const u8) ?[]const u8 {
-        const trimmed = std.mem.trimEnd(u8, root, "/\\");
-        if (trimmed.len == 0) return null;
-        if (path.len <= trimmed.len + 1) return null;
-        if (!std.mem.startsWith(u8, path, trimmed)) return null;
-        if (path[trimmed.len] != '/' and path[trimmed.len] != '\\') return null;
-        return path[trimmed.len + 1 ..];
     }
 
     fn pathForUri(allocator: Allocator, uri: []const u8) []const u8 {
@@ -5335,7 +5211,7 @@ pub const Workbench = struct {
             try items.append(.{ .separator = .{ .label = separator_label } });
 
             const root = self.workspaceFolderPath();
-            const description = if (root) |value| relativeToRoot(path, value) orelse path else path;
+            const description = if (root) |value| @import("../../base/common/extpath.zig").relativeToRoot(path, value) orelse path else path;
             for (group.children) |*reference| {
                 const id = try std.fmt.allocPrint(arena, "ref:{d}", .{index});
                 const label = try self.referenceItemLabel(arena, reference);

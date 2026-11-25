@@ -11,6 +11,8 @@ const text_files = @import("../../textfile/common/textFileService.zig");
 const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
 const GroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
 const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(GroupView);
+const text_diff_editor_mod = @import("../../../browser/parts/editor/textDiffEditor.zig");
+const IConfigurationService = @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
 const Event = @import("../../../../base/common/event.zig").Emitter(void);
 
@@ -99,6 +101,84 @@ pub const EditorService = struct {
         try pane.addTab(tab);
         owned_tab = null;
         return .{ .pane = pane, .tab = tab, .is_new = true };
+    }
+
+    pub fn openSnapshotDiff(
+        self: EditorService,
+        io: std.Io,
+        configuration: ?IConfigurationService,
+        path: []const u8,
+        original_text: []const u8,
+        modified_text: []const u8,
+        left_label: []const u8,
+        right_label: []const u8,
+    ) !void {
+        if (self.findDiffTab(path, left_label, right_label)) |existing| {
+            const tab = existing.tab;
+            const dims = existing.pane.contentDimensions();
+            try tab.diff.?.replace(original_text, modified_text, dims.width, dims.height, text_diff_editor_mod.computeConfiguration(configuration));
+            tab.syncDiffViews();
+            try existing.pane.activateTab(tab);
+            self.part.service.activateGroup(existing.pane.group);
+            tab.layoutCells(dims.width, dims.height);
+            tab.focusEditor();
+            return;
+        }
+
+        const pane = self.part.activeView() orelse return error.GroupPaneMissing;
+        const dims = pane.contentDimensions();
+        const tab = blk: {
+            const view = try text_diff_editor_mod.DiffView.create(
+                self.part.allocator,
+                io,
+                .{
+                    .original_path = path,
+                    .modified_path = path,
+                    .original_label = left_label,
+                    .modified_label = right_label,
+                },
+                original_text,
+                modified_text,
+                dims.width,
+                dims.height,
+                text_diff_editor_mod.computeConfiguration(configuration),
+            );
+            errdefer view.destroy();
+            break :blk try Tab.initDiff(self.part.allocator, view);
+        };
+        var registered = false;
+        defer if (!registered) tab.deinit();
+
+        try pane.tabs.ensureUnusedCapacity(1);
+        errdefer if (pane.group.model.indexOfExact(tab.input) != null) {
+            _ = pane.group.model.closeEditor(tab.input, .UNKNOWN, true) catch {};
+            pane.syncActivePane();
+        };
+        const opened = try self.part.service.openEditor(
+            tab.input,
+            pane.group,
+            .{ .open = .{ .pinned = true, .active = true } },
+        );
+        if (!opened.result.is_new) {
+            pane.syncActivePane();
+            if (pane.tabForInput(opened.result.editor)) |existing| existing.focusEditor();
+            return;
+        }
+
+        try pane.addTab(tab);
+        registered = true;
+        tab.layoutCells(dims.width, dims.height);
+        tab.focusEditor();
+    }
+
+    pub fn findDiffTab(self: EditorService, path: []const u8, left_label: []const u8, right_label: []const u8) ?struct { pane: *GroupView, tab: *Tab } {
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                const diff = tab.diff orelse continue;
+                if (diff.matches(path, left_label, right_label)) return .{ .pane = pane, .tab = tab };
+            }
+        }
+        return null;
     }
 
     pub fn activeEditorPane(self: EditorService) ?*Tab {
