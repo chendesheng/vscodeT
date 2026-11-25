@@ -80,6 +80,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/search/browser/searchViewTerminal.zig");
     _ = @import("./vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig");
     _ = @import("./vs/workbench/browser/parts/editor/multiEditorTabsControl.zig");
+    _ = @import("./vs/workbench/test/browser/parts/editor/multiEditorTabsControl.test.zig");
     _ = @import("./extensions/git/src/git.zig");
     _ = @import("./vs/workbench/services/editor/common/editorService.zig");
     _ = @import("./vs/workbench/contrib/scm/browser/scm.contribution.zig");

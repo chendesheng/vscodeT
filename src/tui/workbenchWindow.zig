@@ -171,7 +171,6 @@ const languages = @import("../vs/editor/common/languages.zig");
 const go_to_commands = @import("../vs/editor/contrib/gotoSymbol/browser/goToCommands.zig");
 const goto_symbol_quick_access = @import("../vs/workbench/contrib/codeEditor/browser/quickaccess/gotoSymbolQuickAccess.zig");
 const hover_actions = @import("../vs/editor/contrib/hover/browser/hoverActions.zig");
-const sticky_actions = @import("../vs/editor/contrib/stickyScroll/browser/stickyScrollActions.zig");
 const MarkdownPreviewManager = @import("../extensions/markdown-language-features/src/preview/previewManager.zig").MarkdownPreviewManager;
 const ImagePreviewEditorInput = @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 const ImagePreviewEditorInputSerializer = @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInputSerializer;
@@ -1493,98 +1492,23 @@ pub const TerminalWorkbench = struct {
     }
 
     fn registerActions(self: *TerminalWorkbench) !void {
-        const panel_actions = @import("../vs/workbench/browser/parts/panel/panelActions.zig");
-        try self.commands.registerAction(self.instantiation, quick_access_mod.quick_open_action);
-        try self.commands.registerAction(self.instantiation, @import("../vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
-        for (self.editor_status.?.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (@import("../vs/workbench/contrib/files/browser/fileCommands.zig").editor_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (@import("../vs/workbench/browser/actions/listCommands.zig").list_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, self.github_publish.descriptor());
-        for (self.simple_browser.actions()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (@import("../vs/workbench/contrib/preferences/browser/preferences.contribution.zig").preferences_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try @import("../vs/workbench/browser/parts/editor/editorTabsControl.zig").registerEditorTitleContext(&self.commands.menus);
-        try @import("../vs/workbench/contrib/terminal/browser/terminalActions.zig").registerEditorTitleContext(&self.commands.menus);
-        for (self.group_actions.closeAndReopenActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (self.breadcrumbs.focusActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        const outline_actions = @import("../vs/workbench/contrib/outline/browser/outlineActions.zig");
-        try self.commands.registerAction(self.instantiation, outline_actions.focus_action);
-        try self.commands.registerAction(self.instantiation, outline_actions.more_actions);
-        for (outline_actions.outline_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (self.group_actions.splitActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (@import("../vs/workbench/browser/parts/editor/editorActions.zig").focus_group_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        const editor_actions = @import("../vs/workbench/browser/parts/editor/editorActions.zig");
-        for (editor_actions.new_group_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (self.group_actions.joinActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (editor_actions.move_group_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (self.group_actions.transferActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (@import("../vs/workbench/browser/actions/navigationActions.zig").navigation_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, editor_actions.navigate_between_groups_action);
-        try self.commands.registerAction(self.instantiation, editor_actions.reset_group_sizes_action);
-        for (@import("../vs/workbench/browser/actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, editor_actions.maximize_editor_action);
-        try self.commands.registerAction(self.instantiation, panel_actions.close_panel_action);
-        try self.commands.registerAction(self.instantiation, panel_actions.toggle_maximized_panel_action);
-        for (panel_actions.positioning_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (self.group_actions.closeEditorsActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, self.group_actions.joinAllAction());
-        for (self.group_actions.navigationActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, terminal_actions.editor_action);
-        try self.commands.registerAction(self.instantiation, @import("../vs/workbench/contrib/files/browser/explorerViewlet.zig").show_explorer_action);
-        try self.commands.registerAction(self.instantiation, scm_contribution.show_scm_action);
-        for (markers_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, panel_actions.toggle_panel_action);
-        try panel_actions.registerPanelTitle(&self.commands.menus);
-        try self.commands.registerAction(self.instantiation, zen_mode_contribution.toggle_action);
-        try self.commands.registerAction(self.instantiation, zen_mode_contribution.exit_action);
-        try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/actions/layoutActions.zig").toggle_centered_layout_action);
-        for (@import("../vs/workbench/browser/actions/layoutActions.zig").zen_tabs_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (panel_actions.focus_and_switch_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (self.git_commands.refreshActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, scm_view_mod.changes_menu_action);
-        try self.commands.registerAction(self.instantiation, scm_history_view_mod.graph_menu_action);
-        try self.commands.registerAction(self.instantiation, scm_contribution.show_menu_action);
-        for (self.git_commands.remoteActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (scm_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (self.git_commands.openActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (@import("../vs/workbench/browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/actions/layoutActions.zig").toggle_sidebar_visibility_action);
-        for (@import("../vs/workbench/browser/parts/sidebar/sidebarActions.zig").sidebar_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (activity_bar_mod.switch_sidebar_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        const statusbar_actions = @import("../vs/workbench/browser/parts/statusbar/statusbarActions.zig");
-        try self.commands.registerAction(self.instantiation, statusbar_actions.focus_statusbar_action);
-        for (statusbar_actions.navigation_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (terminal_actions.terminal_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.markdown_previews.registerCommands(&self.commands, self.instantiation);
-        for (media_actions.zoom_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        try self.commands.registerEditorAction(self.instantiation, media_actions.open_in_text_action);
-        const search_contribution = @import("../vs/workbench/contrib/search/browser/search.contribution.zig");
-        for (search_contribution.search_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (self.search_window.factory.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
-        for (search_contribution.result_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/find/browser/findController.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/comment/browser/comment.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/linesOperations/browser/linesOperations.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/linesOperations/browser/linesOperations.zig").indent_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/insertFinalNewLine/browser/insertFinalNewLine.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/lineSelection/browser/lineSelection.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/multicursor/browser/multicursor.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/bracketMatching/browser/bracketMatching.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/smartSelect/browser/smartSelect.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/format/browser/formatActions.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/indentation/browser/indentation.zig").conversion_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        try self.commands.registerEditorAction(self.instantiation, @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").trigger_action);
-        for (@import("../vs/editor/contrib/inPlaceReplace/browser/inPlaceReplace.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/indentation/browser/indentation.zig").reindent_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/folding/browser/folding.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (sticky_actions.editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        for (@import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").navigation_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-
+        const main = @import("../vs/workbench/workbench.common.main.zig");
+        try main.registerActions(&self.commands, self.instantiation, .{
+            .editor_status = self.editor_status.?,
+            .groups = &self.group_actions,
+            .breadcrumbs = &self.breadcrumbs,
+            .search_editor = &self.search_window.factory,
+            .github_publish = self.github_publish.descriptor(),
+            .simple_browser = &self.simple_browser.actions(),
+            .git_refresh = &self.git_commands.refreshActions(),
+            .git_remote = &self.git_commands.remoteActions(),
+            .git_open = &self.git_commands.openActions(),
+            .markdown = &self.markdown_previews.actionDescriptors(),
+        });
         try self.builtin_host.registerPortActions();
         try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
         self.references_view_registered = true;
-        for (self.symbol_navigation.actionDescriptors()) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        try self.commands.registerEditorAction(self.instantiation, self.symbol_quick_access.actionDescriptor());
-        try self.commands.registerEditorAction(self.instantiation, hover_actions.show_or_focus_hover_action);
+        try main.registerEditorNavigationActions(&self.commands, self.instantiation, &self.symbol_navigation, &self.symbol_quick_access);
     }
 
     fn reportMenuError(context: *anyopaque, err: anyerror) void {

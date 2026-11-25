@@ -16,7 +16,6 @@ const FileEditorInput = @import("../../../../vs/workbench/contrib/files/browser/
 const ConfigurationService = @import("../../../../vs/workbench/services/configuration/browser/configurationService.zig").ConfigurationService;
 const ThemeColors = @import("../../../../vs/workbench/browser/themeColors.zig").ThemeColors;
 const MarkdownPreviewConfig = @import("../../../../vs/workbench/contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
-const commands_mod = @import("../../../../vs/workbench/browser/commands.zig");
 
 pub const MarkdownPreviewManager = struct {
     allocator: std.mem.Allocator,
@@ -68,14 +67,14 @@ pub const MarkdownPreviewManager = struct {
         };
     }
 
-    pub fn registerCommands(self: *MarkdownPreviewManager, commands: *commands_mod.CommandRegistry, instantiation: *@import("../../../../vs/platform/instantiation/common/instantiationService.zig").InstantiationService) !void {
-        for ([_]@import("../../../../vs/platform/actions/common/actions.zig").Action2{
+    pub fn actionDescriptors(self: *MarkdownPreviewManager) [5]@import("../../../../vs/platform/actions/common/actions.zig").Action2 {
+        return .{
             self.action("markdown.showSource", "Show Source", commandShowMarkdownSource),
             self.action("markdown.showPreview", "Open Preview", commandOpenMarkdownPreview),
             self.action("markdown.showPreviewToSide", "Open Preview to the Side", commandShowMarkdownPreview),
             self.action("markdown.togglePreview", "Toggle Preview", commandToggleMarkdownPreview),
             self.action("markdown.preview.refresh", "Refresh Preview", commandRefreshMarkdownPreview),
-        }) |descriptor| try commands.registerEditorAction(instantiation, descriptor);
+        };
     }
 
     fn focusPane(pane: *GroupPane) !void {
