@@ -19,6 +19,8 @@ const git_common = @import("../../../vs/workbench/contrib/git/common/gitService.
 const git_browser = @import("../../../vs/workbench/contrib/git/browser/gitService.zig");
 const git_mod = @import("./git.zig");
 const history_provider_mod = @import("./historyProvider.zig");
+const configuration = @import("../../../vs/platform/configuration/common/configuration.zig");
+const ConfigurationService = @import("../../../vs/workbench/services/configuration/browser/configurationService.zig").ConfigurationService;
 const Emitter = @import("../../../vs/base/common/event.zig").Emitter;
 
 pub const Git = git_mod.Git;
@@ -106,6 +108,10 @@ pub const Repository = struct {
     group_slice: [3]*scm.ISCMResourceGroup,
     base: scm.ISCMProvider,
     on_resources: Emitter(void),
+    on_change: Emitter(void),
+    input_placeholder_buffer: [160]u8 = undefined,
+    configuration_service: ?*ConfigurationService = null,
+    configuration_listener: ?usize = null,
     on_groups: Emitter(void),
     primary_quick_diff: QuickDiffProvider,
     secondary_quick_diff: QuickDiffProvider,
@@ -160,12 +166,14 @@ pub const Repository = struct {
             .group_slice = undefined,
             .base = undefined,
             .on_resources = Emitter(void).init(allocator),
+            .on_change = Emitter(void).init(allocator),
             .on_groups = Emitter(void).init(allocator),
             .primary_quick_diff = undefined,
             .secondary_quick_diff = undefined,
         };
         errdefer {
             self.on_resources.deinit();
+            self.on_change.deinit();
             self.on_groups.deinit();
         }
 
@@ -209,6 +217,7 @@ pub const Repository = struct {
             .groups_fn = providerGroups,
             .on_did_change_resource_groups = &self.on_groups,
             .on_did_change_resources = &self.on_resources,
+            .on_did_change = &self.on_change,
             .dispose_fn = null,
         };
 
@@ -282,6 +291,7 @@ pub const Repository = struct {
     }
 
     pub fn onFileChange(self: *Repository, path: []const u8) void {
+        if (self.configuration_service) |config| if (!config.getBool("git.autorefresh", true)) return;
         if (self.host.auto_refresh) |enabled| if (!enabled(self.host.context)) return;
         const ignore_case = @import("builtin").os.tag == .windows;
         const name = std.fs.path.basename(path);
@@ -328,6 +338,7 @@ pub const Repository = struct {
 
     pub fn destroy(self: *Repository) void {
         const allocator = self.allocator;
+        self.detachConfiguration();
         self.status_timer.schedule(null);
         if (self.file_listener) |listener| self.file_service.?.on_did_change.unlisten(listener);
         if (self.upstream_watcher) |w| w.dispose();
@@ -346,6 +357,7 @@ pub const Repository = struct {
             group.changed.deinit();
         }
         self.on_resources.deinit();
+        self.on_change.deinit();
         self.on_groups.deinit();
         if (self.branch) |branch| allocator.free(branch);
         allocator.free(self.root);
@@ -361,6 +373,38 @@ pub const Repository = struct {
 
     pub fn historyProvider(self: *Repository) ?*GitHistoryProvider {
         return self.history;
+    }
+
+    pub fn detachConfiguration(self: *Repository) void {
+        if (self.configuration_listener) |listener| self.configuration_service.?.unlistenConfigurationChange(listener);
+        self.configuration_listener = null;
+        self.configuration_service = null;
+    }
+
+    pub fn setConfiguration(self: *Repository, config: ?*ConfigurationService) !void {
+        self.detachConfiguration();
+        self.configuration_service = config;
+        if (config) |service| self.configuration_listener = try service.listenConfigurationChange(self, onDidChangeConfiguration);
+        self.applyConfiguration();
+    }
+
+    fn onDidChangeConfiguration(change: configuration.Change, self: *Repository) !void {
+        if (configuration.affectsConfiguration(change, "git.showCommitInput") or
+            configuration.affectsConfiguration(change, "git.commitShortHashLength"))
+            self.applyConfiguration();
+    }
+
+    fn applyConfiguration(self: *Repository) void {
+        const config = self.configuration_service;
+        self.base.input_box_visible = if (config) |service| service.getBool("git.showCommitInput", true) else true;
+        var short_hash_length: usize = 7;
+        if (config) |service| {
+            if (service.getValue("git.commitShortHashLength", .{})) |value| {
+                if (value.* == .integer) short_hash_length = @intCast(@max(value.integer, 1));
+            }
+        }
+        self.setCommitShortHashLength(short_hash_length);
+        self.on_change.fire({}) catch {};
     }
 
     pub fn setCommitShortHashLength(self: *Repository, length: usize) void {
@@ -418,6 +462,7 @@ pub const Repository = struct {
             group.changed.fire({}) catch {};
         }
         self.on_resources.fire({}) catch {};
+        self.on_change.fire({}) catch {};
     }
 
     fn rebuild(self: *Repository) void {
@@ -456,6 +501,14 @@ pub const Repository = struct {
             }
         }
         self.base.detail = self.branch;
+        self.base.branch_action = @import("actionButton.zig").branchAction(state);
+        self.base.fresh_repository = if (state.head) |head| head.ref.commit == null else true;
+        // Upstream inserts the accept-command keybinding into the template.
+        // This terminal input currently accepts Enter.
+        self.base.input_box_placeholder = if (self.branch) |branch|
+            std.fmt.bufPrint(&self.input_placeholder_buffer, "Message (Enter to commit on \"{s}\")", .{branch}) catch "Message (Enter to commit)"
+        else
+            "Message (Enter to commit)";
     }
 
     fn appendResource(self: *Repository, group_index: usize, kind: ResourceKind, change: GitChange) !void {

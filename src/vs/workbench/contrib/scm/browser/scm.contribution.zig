@@ -14,6 +14,7 @@ const QuickDiffWorkbenchController = @import("quickDiffDecorator.zig").QuickDiff
 const scm_view = @import("scmViewPane.zig");
 const scm_history = @import("scmHistoryViewPane.zig");
 const Storage = @import("../../../../platform/storage/common/storage.zig").InMemoryStorageService;
+const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
 const EditorService = @import("../../../services/editor/browser/editorService.zig").EditorService;
 const ThemeColors = @import("../../../browser/themeColors.zig").ThemeColors;
@@ -31,6 +32,10 @@ pub const SCMContribution = struct {
     changes: ?*scm_view.SCMViewPane = null,
     history: ?*scm_history.SCMHistoryViewPane = null,
     activity: ?*SCMActiveRepositoryController = null,
+    provider_event: ?*@import("../../../../base/common/event.zig").Emitter(void) = null,
+    provider_listener: ?usize = null,
+    configuration_service: ?*ConfigurationService = null,
+    configuration_listener: ?usize = null,
 
     pub fn init(allocator: Allocator) SCMContribution {
         return .{ .allocator = allocator };
@@ -83,9 +88,16 @@ pub const SCMContribution = struct {
         const history = try scm_history.SCMHistoryViewPane.init(allocator, options.history_host, storage);
         self.history = history;
         history.quick_input = options.quick_input;
+        self.provider_event = provider.on_did_change orelse provider.on_did_change_resources;
+        self.provider_listener = try self.provider_event.?.listen(self, onProviderChanged);
+        try self.setViewConfiguration(options.configuration);
+        self.applyProviderState();
     }
 
     pub fn detachConfiguration(self: *SCMContribution) void {
+        if (self.configuration_listener) |listener| self.configuration_service.?.unlistenConfigurationChange(listener);
+        self.configuration_listener = null;
+        self.configuration_service = null;
         if (self.activity) |activity| activity.detachConfiguration();
         if (self.quick_diff_controller) |controller| controller.detachConfiguration();
     }
@@ -93,6 +105,47 @@ pub const SCMContribution = struct {
     pub fn setConfiguration(self: *SCMContribution, service: ?*ConfigurationService) !void {
         if (self.activity) |activity| try activity.setConfiguration(service);
         if (self.quick_diff_controller) |controller| try controller.setConfiguration(service);
+        try self.setViewConfiguration(service);
+    }
+
+    fn setViewConfiguration(self: *SCMContribution, service: ?*ConfigurationService) !void {
+        if (self.configuration_listener) |listener| self.configuration_service.?.unlistenConfigurationChange(listener);
+        self.configuration_service = service;
+        self.configuration_listener = null;
+        if (service) |config| self.configuration_listener = try config.listenConfigurationChange(self, onDidChangeConfiguration);
+        self.applyViewConfiguration();
+    }
+
+    fn onDidChangeConfiguration(change: configuration.Change, self: *SCMContribution) !void {
+        if (configuration.affectsConfiguration(change, "scm") or configuration.affectsConfiguration(change, "git") or
+            configuration.affectsConfiguration(change, "explorer.decorations") or configuration.affectsConfiguration(change, "workbench.tree.renderIndentGuides"))
+            self.applyViewConfiguration();
+    }
+
+    fn applyViewConfiguration(self: *SCMContribution) void {
+        const config = self.configuration_service orelse return;
+        const service = config.interface();
+        if (self.history) |view| view.setConfig(scm_history.Config.read(service));
+        if (self.changes) |view| view.setConfig(scm_view.Config.read(service));
+    }
+
+    fn onProviderChanged(_: void, self: *SCMContribution) !void {
+        self.applyProviderState();
+    }
+
+    fn applyProviderState(self: *SCMContribution) void {
+        const service = self.service_api orelse return;
+        const repositories = service.repositories();
+        if (repositories.len == 0) return;
+        const repository = repositories[0];
+        const provider = repository.provider;
+        if (provider.input_box_visible) |visible| repository.input.setVisible(visible);
+        if (provider.input_box_placeholder) |placeholder| repository.input.setPlaceholder(placeholder);
+        if (self.changes) |view| {
+            view.branch_action = provider.branch_action;
+            view.fresh_repository = provider.fresh_repository;
+            view.refresh();
+        }
     }
 
     /// Configure the view before mounting its history provider (initial query
@@ -107,6 +160,8 @@ pub const SCMContribution = struct {
     /// destroy all views and services before the extension releases them.
     pub fn deinit(self: *SCMContribution) void {
         const allocator = self.allocator;
+        self.detachConfiguration();
+        if (self.provider_listener) |listener| self.provider_event.?.unlisten(listener);
         if (self.activity) |activity| activity.destroy();
         if (self.history) |view| {
             view.deinit();

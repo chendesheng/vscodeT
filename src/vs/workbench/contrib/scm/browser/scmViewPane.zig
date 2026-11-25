@@ -107,10 +107,7 @@ pub const ResourceAction = enum {
         };
     }
 };
-pub const BranchAction = union(enum) {
-    publish,
-    sync: struct { ahead: usize, behind: usize },
-};
+pub const BranchAction = scm.BranchAction;
 
 pub const ISCMService = scm.ISCMService;
 pub const ISCMRepository = scm.ISCMRepository;
@@ -560,7 +557,7 @@ pub const SCMViewPane = struct {
 
     fn appendGroups(self: *SCMViewPane, repository: *const ISCMRepository, depth: usize) !void {
         const arena = self.arena.allocator();
-        const provider = &repository.provider;
+        const provider = repository.provider;
         for (provider.groups()) |group| {
             const resources = group.resources();
             // `SCMTreeFilter`: an empty group is hidden when it opted into

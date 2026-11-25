@@ -20,6 +20,7 @@ const history = @import("./history.zig");
 pub const Command = languages.Command;
 /// Terminal projection of the Git commit dropdown / post-commit command.
 pub const CommitAction = enum { commit, amend, push, sync };
+pub const BranchAction = union(enum) { publish, sync: struct { ahead: usize, behind: usize } };
 pub const Selector = language_selector.Selector;
 
 pub const VIEWLET_ID = "workbench.view.scm";
@@ -101,6 +102,13 @@ pub const ISCMProvider = struct {
     /// Short terminal detail for the repository row (for Git, the branch name).
     detail: ?[]const u8 = null,
     status_bar_commands: []const Command = &.{},
+    // Terminal projection of the extension SourceControl input box and
+    // actionButton properties. The native provider owns the borrowed text.
+    input_box_visible: ?bool = null,
+    input_box_placeholder: ?[]const u8 = null,
+    branch_action: ?BranchAction = null,
+    fresh_repository: bool = false,
+    on_did_change: ?*Emitter(void) = null,
     /// Terminal projection of the upstream `historyProvider` observable. Null
     /// when the provider cannot supply history (for example no Git repository).
     history_provider: ?*history.ISCMHistoryProvider = null,
@@ -169,7 +177,7 @@ pub const ISCMInput = struct {
 pub const ISCMRepository = struct {
     context: *anyopaque,
     id: []const u8,
-    provider: ISCMProvider,
+    provider: *ISCMProvider,
     input: ISCMInput,
     dispose_fn: *const fn (context: *anyopaque) void,
 

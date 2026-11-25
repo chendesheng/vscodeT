@@ -124,7 +124,7 @@ pub const SCMRepository = struct {
     allocator: Allocator,
     service: *SCMService,
     id: []u8,
-    provider: ISCMProvider,
+    provider: *ISCMProvider,
     input: SCMInput,
     iface: ISCMRepository,
     disposed: bool = false,
@@ -186,7 +186,7 @@ pub const SCMService = struct {
             .allocator = self.allocator,
             .service = self,
             .id = id,
-            .provider = provider.*,
+            .provider = provider,
             .input = try SCMInput.init(self.allocator),
             .iface = undefined,
         };
@@ -444,3 +444,17 @@ const TestProvider = struct {
         return &self.groups_data;
     }
 };
+
+test "SCMService: registered repositories retain live provider properties" {
+    const allocator = std.testing.allocator;
+    var provider = TestProvider{};
+    try provider.init(allocator, "git");
+    defer provider.deinit();
+    var service = SCMService.init(allocator);
+    defer service.deinit();
+    _ = try service.registerSCMProvider(&provider.base);
+    provider.base.count = 5;
+    provider.base.detail = "new-branch";
+    try std.testing.expectEqual(@as(?usize, 5), service.repositoryInterfaces()[0].provider.count);
+    try std.testing.expectEqualStrings("new-branch", service.repositoryInterfaces()[0].provider.detail.?);
+}

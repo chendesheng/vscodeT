@@ -88,7 +88,16 @@ pub const Model = struct {
         const provider = try Repository.create(self.allocator, cli, concrete, root, open_options.host);
         provider.attachWindow(open_options.window);
         self.repository = provider;
+        try provider.setConfiguration(open_options.configuration);
         return provider;
+    }
+
+    pub fn detachConfiguration(self: *Model) void {
+        if (self.repository) |provider| provider.detachConfiguration();
+    }
+
+    pub fn setConfiguration(self: *Model, config: ?*ConfigurationService) !void {
+        if (self.repository) |provider| try provider.setConfiguration(config);
     }
 
     /// The terminal projects Git's virtual text resources to snapshot buffers

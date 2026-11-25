@@ -572,7 +572,6 @@ pub const Workbench = struct {
     /// status-bar entry keeps the slice.
     status_hint_buf: [256]u8 = undefined,
     /// Branch-aware placeholder for the Source Control commit input.
-    scm_placeholder_buf: [160]u8 = undefined,
     markers_status: ?*MarkersStatusBar = null,
     problems_view: ?MarkersView = null,
     marker_listener: ?Emitter(MarkerChangeEvent).ListenerId = null,
@@ -2224,6 +2223,7 @@ pub const Workbench = struct {
         }
         if (self.configuration) |configuration| {
             if (self.terminal_service) |service| service.options.configuration = null;
+            self.git_model.detachConfiguration();
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             if (self.notification_controller) |controller| try controller.attachConfiguration(null);
@@ -2284,6 +2284,7 @@ pub const Workbench = struct {
                 self.settings_watcher = null;
             }
             if (self.terminal_service) |service| service.options.configuration = null;
+            self.git_model.detachConfiguration();
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             if (self.notification_controller) |controller| try controller.attachConfiguration(null);
@@ -2334,6 +2335,7 @@ pub const Workbench = struct {
         );
         const themes = try self.ensureThemeService();
         try themes.setConfiguration(self.configuration.?);
+        try self.git_model.setConfiguration(self.configuration);
         try self.scm.setConfiguration(self.configuration);
         if (self.notification_controller) |controller| try controller.attachConfiguration(self.configuration);
         try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
@@ -2347,7 +2349,6 @@ pub const Workbench = struct {
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
         self.applyLayoutSettings(null);
-        self.applyScmConfig();
     }
 
     fn onWorkbenchConfigurationChange(change: configuration_mod.Change, self: *Workbench) !void {
@@ -2359,7 +2360,6 @@ pub const Workbench = struct {
         if (config.affectsConfiguration(change, "scm") or config.affectsConfiguration(change, "git") or
             config.affectsConfiguration(change, "explorer.decorations") or config.affectsConfiguration(change, "workbench.tree.renderIndentGuides"))
         {
-            self.applyScmConfig();
             self.requestFrame();
         }
         if (config.affectsConfiguration(change, layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize) or
@@ -3821,7 +3821,7 @@ pub const Workbench = struct {
             .io = self.io,
             .configuration = self.configuration,
             .window = &self.window_events,
-            .host = .{ .context = self, .open_change = providerOpenChange, .refresh = scmRefresh, .auto_refresh = gitAutoRefresh },
+            .host = .{ .context = self, .open_change = providerOpenChange, .refresh = scmRefresh },
             .on_disabled = gitDisabled,
             .on_disabled_context = self,
         })) orelse return;
@@ -3852,7 +3852,6 @@ pub const Workbench = struct {
                 .focus_editor = scmFocusEditor,
             },
         });
-        self.applyScmConfig();
         self.scm.attachHistoryProvider(provider.interface(), self.theme_palette);
 
         const view_model = try self.allocator.create(view_container_model_mod.ViewContainerModel);
@@ -3878,12 +3877,6 @@ pub const Workbench = struct {
         );
 
         if (self.file_watcher_service) |files_service| provider.watch(files_service) catch {};
-        if (self.scm.changes) |view| view.refresh();
-    }
-
-    fn gitAutoRefresh(context: *anyopaque) bool {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        return if (self.configuration) |config| config.getBool("git.autorefresh", true) else true;
     }
 
     /// Re-reads git status, the SCM rows, the quick-diff baselines, the
@@ -3891,8 +3884,6 @@ pub const Workbench = struct {
     pub fn refreshGitStatus(self: *Workbench) void {
         const provider = self.git_model.repository orelse return;
         provider.refresh() catch {};
-        self.syncScmInput();
-        if (self.scm.changes) |view| view.refresh();
         if (provider.refreshHistoryRefs(true)) {
             if (self.scm.history) |view| view.onHistoryItemRefsChanged(true);
         }
@@ -4154,65 +4145,6 @@ pub const Workbench = struct {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.refreshGitStatus();
         if (self.scm.history) |view| view.refresh(.reload) catch {};
-    }
-
-    /// Re-applies the SCM settings the terminal views understand. A view keeps
-    /// an explicit list/tree or sort choice made through its title action or
-    /// command, like upstream's workspace storage override.
-    fn applyScmConfig(self: *Workbench) void {
-        const configuration = self.configuration orelse {
-            self.syncScmInput();
-            return;
-        };
-        const service = configuration.interface();
-        const config = scm_history_view_mod.Config.read(service);
-        if (self.scm.history) |view| view.setConfig(config);
-        self.syncScmInput();
-        if (self.scm.changes) |view| view.setConfig(scm_view_mod.Config.read(service));
-        if (self.git_model.repository) |provider| provider.setCommitShortHashLength(config.short_hash_length);
-    }
-
-    /// Updates the Source Control input model from Git settings and the
-    /// current branch: `git.showCommitInput` controls visibility and the
-    /// placeholder mirrors the extension's
-    /// `Message ({0} to commit on "{1}")` template. The terminal uses Enter
-    /// as the accept key because a terminal cannot reliably distinguish
-    /// Ctrl+Enter from Enter.
-    fn syncScmInput(self: *Workbench) void {
-        const interface = self.scm.service_api orelse return;
-        const repositories = interface.repositories();
-        if (repositories.len == 0) return;
-        const input = repositories[0].input;
-        const visible = if (self.configuration) |configuration|
-            configuration.getBool("git.showCommitInput", true)
-        else
-            true;
-        input.setVisible(visible);
-        var branch: ?[]const u8 = null;
-        var branch_action: ?scm_view_mod.BranchAction = null;
-        if (self.git_model.repository) |provider| {
-            branch = provider.interface().detail;
-            const state = provider.repository.stateRef();
-            if (state.head) |head| {
-                const ahead = head.ahead orelse 0;
-                const behind = head.behind orelse 0;
-                if (head.upstream != null and (ahead > 0 or behind > 0)) {
-                    branch_action = .{ .sync = .{ .ahead = ahead, .behind = behind } };
-                } else if (branch != null and head.upstream == null and state.remotes.len != 0) {
-                    branch_action = .publish;
-                }
-            }
-        }
-        if (self.scm.changes) |view| view.branch_action = branch_action;
-        if (self.scm.changes) |view| {
-            const head = if (self.git_model.repository) |provider| provider.repository.stateRef().head else null;
-            view.fresh_repository = if (head) |ref| ref.ref.commit == null else true;
-        }
-        const placeholder = if (branch) |name|
-            std.fmt.bufPrint(&self.scm_placeholder_buf, "Message (Enter to commit on \"{s}\")", .{name}) catch "Message (Enter to commit)"
-        else
-            "Message (Enter to commit)";
-        input.setPlaceholder(placeholder);
     }
 
     fn scmChangesRenderBody(
