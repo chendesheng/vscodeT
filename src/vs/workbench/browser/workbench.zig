@@ -354,7 +354,7 @@ const WindowViews = struct {
         const active = self.workbench.sidebar_part.pane.active_id orelse return null;
         if (std.mem.eql(u8, id, SearchView.ID))
             return if (std.mem.eql(u8, active, "search")) self.workbench.search_view else null;
-        const local_id: []const u8 = if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) "changes" else if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) "graph" else return null;
+        const local_id: []const u8 = if (std.mem.eql(u8, id, OutlinePane.ID)) "outline" else if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) "changes" else if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) "graph" else return null;
         const container = self.workbench.view_descriptor_service.getViewContainerByViewId(local_id) orelse return null;
         return if (std.mem.eql(u8, active, container.container.id)) getView(context, id) else null;
     }
@@ -362,6 +362,7 @@ const WindowViews = struct {
     fn getView(context: *anyopaque, id: []const u8) ?*anyopaque {
         const self: *WindowViews = @ptrCast(@alignCast(context));
         if (std.mem.eql(u8, id, SearchView.ID)) return self.workbench.search_view;
+        if (std.mem.eql(u8, id, OutlinePane.ID)) return self.workbench.outline_view;
         if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) return self.workbench.scm.changes;
         if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) return self.workbench.scm.history;
         return null;
@@ -369,6 +370,10 @@ const WindowViews = struct {
 
     fn openView(context: *anyopaque, id: []const u8, focus: bool) !?*anyopaque {
         const self: *WindowViews = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, id, OutlinePane.ID)) {
+            try self.workbench.openOutlineView(focus);
+            return self.workbench.outline_view;
+        }
         if (!std.mem.eql(u8, id, SearchView.ID)) return null;
         try self.workbench.openActivity("search", focus);
         return self.workbench.search_view;
@@ -1394,15 +1399,13 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.reopenClosedEditor", .label = "Reopen Closed Editor", .category = "View", .context = self, .run = commandReopenClosedEditor },
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
-            .{ .id = "outline.focus", .label = "Focus Outline", .category = "View", .context = self, .run = commandFocusOutline },
-            .{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions },
-            .{ .id = "outline.collapse", .label = "Collapse All", .category = "View", .context = self, .run = commandOutlineCollapse },
-            .{ .id = "outline.expand", .label = "Expand All", .category = "View", .context = self, .run = commandOutlineExpand },
-            .{ .id = "outline.followCursor", .label = "Follow Cursor", .category = "View", .context = self, .run = commandOutlineFollowCursor },
-            .{ .id = "outline.filterOnType", .label = "Filter on Type", .category = "View", .context = self, .run = commandOutlineFilterOnType },
-            .{ .id = "outline.sortByPosition", .label = "Sort By: Position", .category = "View", .context = self, .run = commandOutlineSortByPosition },
-            .{ .id = "outline.sortByName", .label = "Sort By: Name", .category = "View", .context = self, .run = commandOutlineSortByName },
-            .{ .id = "outline.sortByKind", .label = "Sort By: Category", .category = "View", .context = self, .run = commandOutlineSortByKind },
+        };
+        for (before_group_focus) |command| try self.commands.register(command);
+        const outline_actions = @import("../contrib/outline/browser/outlineActions.zig");
+        try self.commands.registerAction(&self.instantiation, outline_actions.focus_action);
+        try self.commands.register(.{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions });
+        for (outline_actions.outline_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        const split_commands = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
             .{ .id = "workbench.action.splitEditorOrthogonal", .label = "Split Editor Orthogonal", .category = "View", .context = self, .run = commandSplitEditorOrthogonal },
             .{ .id = "workbench.action.splitEditorLeft", .label = "Split Editor Left", .category = "View", .context = self, .run = commandSplitEditorLeft },
@@ -1410,7 +1413,7 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.splitEditorUp", .label = "Split Editor Up", .category = "View", .context = self, .run = commandSplitEditorUp },
             .{ .id = "workbench.action.splitEditorDown", .label = "Split Editor Down", .category = "View", .context = self, .run = commandSplitEditorDown },
         };
-        for (before_group_focus) |command| try self.commands.register(command);
+        for (split_commands) |command| try self.commands.register(command);
         for (@import("parts/editor/editorActions.zig").focus_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
         const editor_actions = @import("parts/editor/editorActions.zig");
         for (editor_actions.new_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
@@ -5828,6 +5831,20 @@ pub const Workbench = struct {
         return self.breadcrumbs.getControl(pane) orelse error.NoActiveTab;
     }
 
+    fn openOutlineView(self: *Workbench, focus: bool) !void {
+        const location = if (self.scm_view_model) |model| if (model.contains("outline")) "scm" else "explorer" else "explorer";
+        try self.openActivity(location, focus);
+        if (self.activeSidebarViewContainer()) |container| {
+            container.model.setVisible("outline", true);
+            container.model.setCollapsed("outline", false);
+            container.setActive("outline");
+        }
+        if (focus) self.focusSidebar();
+        self.syncOutlineView() catch {};
+        if (focus) if (self.outline_view) |view| view.setFocused(true);
+        self.updateSidebarTitleActions();
+    }
+
     fn ensureOutlineView(self: *Workbench) !*OutlinePane {
         if (self.outline_view) |view| return view;
         const view = try OutlinePane.init(self.allocator, .{
@@ -5836,6 +5853,12 @@ pub const Workbench = struct {
             .active_resource = outlineActiveResource,
             .current_position = outlineViewCurrentPosition,
             .request_render = requestWorkbenchFrame,
+            .title_actions_changed = struct {
+                fn changed(context: *anyopaque) void {
+                    const workbench: *Workbench = @ptrCast(@alignCast(context));
+                    workbench.updateSidebarTitleActions();
+                }
+            }.changed,
             .focus_editor = outlineFocusEditor,
             .is_symbol_visible = outlineSymbolVisible,
         }, &self.outline_service);
@@ -6707,21 +6730,6 @@ fn commandFocusBreadcrumbs(context: *anyopaque) anyerror!void {
     _ = self.focusBreadcrumbs(false);
 }
 
-fn commandFocusOutline(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const location = if (self.scm_view_model) |model| if (model.contains("outline")) "scm" else "explorer" else "explorer";
-    _ = try self.showActivityById(location);
-    if (self.activeSidebarViewContainer()) |container| {
-        container.model.setVisible("outline", true);
-        container.model.setCollapsed("outline", false);
-        container.setActive("outline");
-    }
-    self.focusSidebar();
-    self.syncOutlineView() catch {};
-    if (self.outline_view) |view| view.setFocused(true);
-    self.updateSidebarTitleActions();
-}
-
 fn commandOutlineMoreActions(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const view = self.outline_view orelse return;
@@ -6729,62 +6737,6 @@ fn commandOutlineMoreActions(context: *anyopaque) anyerror!void {
     errdefer menu.deinit();
     try @import("../contrib/outline/browser/outlineActions.zig").appendSecondary(menu, &self.menu_service, (try self.ensureContextKeys()).interface().getContext(), &view.view_state);
     try self.showContextMenu(menu, self.sidebarMenuAnchor(OutlinePane.more_actions_id));
-}
-
-fn commandOutlineCollapse(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.outline_view) |view| {
-        view.collapseAll();
-        self.updateSidebarTitleActions();
-    }
-}
-
-fn commandOutlineExpand(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.outline_view) |view| {
-        view.expandAll();
-        self.updateSidebarTitleActions();
-    }
-}
-
-fn commandOutlineFollowCursor(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.outline_view) |view| {
-        try view.setFollowCursor(!view.view_state.follow_cursor);
-        self.updateSidebarTitleActions();
-    }
-}
-
-fn commandOutlineFilterOnType(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.outline_view) |view| {
-        try view.setFilterOnType(!view.view_state.filter_on_type);
-        self.updateSidebarTitleActions();
-    }
-}
-
-fn commandOutlineSortByPosition(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.outline_view) |view| {
-        try view.setSortBy(.ByPosition);
-        self.updateSidebarTitleActions();
-    }
-}
-
-fn commandOutlineSortByName(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.outline_view) |view| {
-        try view.setSortBy(.ByName);
-        self.updateSidebarTitleActions();
-    }
-}
-
-fn commandOutlineSortByKind(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.outline_view) |view| {
-        try view.setSortBy(.ByKind);
-        self.updateSidebarTitleActions();
-    }
 }
 
 fn commandCloseEditor(context: *anyopaque) anyerror!void {

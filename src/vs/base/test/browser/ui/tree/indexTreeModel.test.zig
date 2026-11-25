@@ -94,6 +94,25 @@ test "IndexTreeModel: delete and render indexes" {
     try testing.expect(!model.has(&.{2}));
 }
 
+test "IndexTreeModel: recursive collapse skips the root and non-collapsible leaves" {
+    const allocator = testing.allocator;
+    var model = try Model.init(allocator, "test", -1, .{});
+    defer model.deinit();
+    const children = [_]Element{.{ .element = 10 }};
+    const elements = [_]Element{ .{ .element = 0, .children = &children }, .{ .element = 1 } };
+    try model.splice(&.{0}, 0, &elements);
+
+    try testing.expect(try model.setCollapsed(&.{}, true, true));
+    try testing.expect(!model.root.collapsed);
+    try testing.expect(model.isCollapsed(&.{0}));
+    try testing.expect(!model.isCollapsed(&.{ 0, 0 }));
+    try testing.expect(!model.isCollapsed(&.{1}));
+    try testing.expectEqual(@as(usize, 2), model.root.render_node_count);
+    try testing.expect(!try model.setCollapsed(&.{}, true, true));
+    try testing.expect(try model.setCollapsed(&.{}, false, true));
+    try testing.expectEqual(@as(usize, 3), model.root.render_node_count);
+}
+
 test "IndexTreeModel: collapse and expand" {
     const allocator = testing.allocator;
     var model = try Model.init(allocator, "test", -1, .{});

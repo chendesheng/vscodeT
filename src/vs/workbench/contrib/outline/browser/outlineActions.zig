@@ -1,4 +1,4 @@
-// Port of the ViewTitle context-menu contributions in
+// Port of the Action2 and ViewTitle context-menu contributions in
 // src/vs/workbench/contrib/outline/browser/outlineActions.ts.
 const actions = @import("../../../../platform/actions/common/actions.zig");
 const keys = @import("../../../../platform/contextkey/common/contextkey.zig");
@@ -32,3 +32,39 @@ pub fn appendSecondary(menu: *Menu, service: *MenuService, global: keys.IContext
     } };
     try menu.appendMenuActions(service, actions.menu_ids.ViewTitle, context.interface(), true);
 }
+
+const OutlinePane = @import("outlinePane.zig").OutlinePane;
+const viewAction = @import("../../../browser/parts/views/viewPane.zig").viewAction;
+const views = @import("../../../services/views/common/viewsService.zig");
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
+pub const focus_action: actions.Action2 = .{
+    .command = .{ .id = "outline.focus", .title = "Focus Outline", .category = "View" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = focus,
+};
+
+fn focus(_: *anyopaque, accessor: ServicesAccessor) !void {
+    _ = try (try accessor.get(views.views_service_id)).openView(OutlinePane, true);
+}
+
+fn followCursor(view: *OutlinePane) !void {
+    try view.setFollowCursor(!view.view_state.follow_cursor);
+}
+
+fn filterOnType(view: *OutlinePane) !void {
+    try view.setFilterOnType(!view.view_state.filter_on_type);
+}
+
+// Keep the existing terminal palette entries and the registered-view lookup
+// when extracting these actions. Upstream hides these title actions from F1.
+pub const outline_actions = [_]actions.Action2{
+    viewAction(OutlinePane, .registered, .{ .id = "outline.collapse", .title = "Collapse All", .category = "View" }, true, OutlinePane.collapseAll, .{}),
+    viewAction(OutlinePane, .registered, .{ .id = "outline.expand", .title = "Expand All", .category = "View" }, true, OutlinePane.expandAll, .{}),
+    viewAction(OutlinePane, .registered, .{ .id = "outline.followCursor", .title = "Follow Cursor", .category = "View" }, true, followCursor, .{}),
+    viewAction(OutlinePane, .registered, .{ .id = "outline.filterOnType", .title = "Filter on Type", .category = "View" }, true, filterOnType, .{}),
+    viewAction(OutlinePane, .registered, .{ .id = "outline.sortByPosition", .title = "Sort By: Position", .category = "View" }, true, OutlinePane.setSortBy, .{outline.OutlineSortOrder.ByPosition}),
+    viewAction(OutlinePane, .registered, .{ .id = "outline.sortByName", .title = "Sort By: Name", .category = "View" }, true, OutlinePane.setSortBy, .{outline.OutlineSortOrder.ByName}),
+    viewAction(OutlinePane, .registered, .{ .id = "outline.sortByKind", .title = "Sort By: Category", .category = "View" }, true, OutlinePane.setSortBy, .{outline.OutlineSortOrder.ByKind}),
+};

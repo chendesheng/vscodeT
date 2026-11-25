@@ -345,8 +345,6 @@ pub fn IndexTreeModel(comptime T: type) type {
             recursive: bool,
         ) !bool {
             const node = try self.getNode(location);
-            if (!node.collapsible and !node.collapsed and collapsed) return false;
-            if (node.collapsed == collapsed and !recursive) return false;
             const changed = try self.setCollapsedRecursive(node, collapsed, recursive);
             if (changed) _ = try self.updateRenderCount(self.root, .visible);
             return changed;
@@ -359,7 +357,9 @@ pub fn IndexTreeModel(comptime T: type) type {
             recursive: bool,
         ) !bool {
             var changed = false;
-            if (node.collapsed != collapsed) {
+            // Upstream _setNodeCollapseState leaves the synthetic root and
+            // non-collapsible nodes unchanged but still recurses into children.
+            if (node != self.root and node.collapsible and node.collapsed != collapsed) {
                 node.collapsed = collapsed;
                 changed = true;
             }

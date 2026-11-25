@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 7,736 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
+The browser shell is 7,688 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -193,3 +193,5 @@ to the portable endpoint assertions. Record each remaining browser-only omission
 with its owning port.
 
 * Layout exposes the registered part containers and cell sizes through IWorkbenchLayoutService. Editor resize Action2 handlers use the upstream active-group-first rule, falling back to the outer editor part only in unchanged dimensions. Sash and terminal panel resize commands use the same layout service.
+
+* Outline focus and ViewTitle commands are Action2 contributions in outlineActions, resolving the typed pane via IViewsService. The pane publishes title-action changes from its setters rather than commands updating the window toolbar. The previous terminal palette visibility is retained.

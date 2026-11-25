@@ -7697,6 +7697,22 @@ test "Workbench: outline side panel shows provider symbols" {
     try std.testing.expect(!view.view_state.follow_cursor);
     try std.testing.expect(workbench.context_menu_service.current == null);
 
+    try workbench.commands.execute("outline.collapse");
+    try std.testing.expectEqual(@as(usize, 1), view.rowCount());
+    try std.testing.expectEqualStrings("outline.expand", view.titleActions()[0].id);
+    try workbench.commands.execute("outline.expand");
+    try std.testing.expectEqual(@as(usize, 2), view.rowCount());
+    try workbench.commands.execute("outline.filterOnType");
+    try std.testing.expect(!view.view_state.filter_on_type);
+    try workbench.commands.execute("outline.filterOnType");
+    try std.testing.expect(view.view_state.filter_on_type);
+    try workbench.commands.execute("outline.sortByName");
+    try std.testing.expectEqual(.ByName, view.view_state.sort_by);
+    try workbench.commands.execute("outline.sortByKind");
+    try std.testing.expectEqual(.ByKind, view.view_state.sort_by);
+    try workbench.commands.execute("outline.sortByPosition");
+    try std.testing.expectEqual(.ByPosition, view.view_state.sort_by);
+
     // The native title menu also resolves contributions registered after startup.
     const Probe = struct {
         workbench: *Workbench,

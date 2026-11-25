@@ -47,6 +47,7 @@ pub const Host = struct {
     active_resource: *const fn (context: *anyopaque) ?[]const u8,
     current_position: *const fn (context: *anyopaque) ?@import("../../../../editor/common/core/position.zig").Position,
     request_render: *const fn (context: *anyopaque) void,
+    title_actions_changed: ?*const fn (context: *anyopaque) void = null,
     focus_editor: *const fn (context: *anyopaque) void,
     is_symbol_visible: *const fn (context: *anyopaque, kind: u32) bool,
 };
@@ -59,6 +60,7 @@ const SortContext = struct {
 const OutlineTree = data_tree_mod.DataTree(*const TreeElement);
 
 pub const OutlinePane = struct {
+    pub const ID = @import("outline.zig").outline_id;
     allocator: Allocator,
     host: Host,
     outline_service: *OutlineService,
@@ -281,6 +283,7 @@ pub const OutlinePane = struct {
     pub fn setFollowCursor(self: *OutlinePane, value: bool) !void {
         try self.view_state.setFollowCursor(value);
         if (value) _ = self.revealActiveElement();
+        if (self.host.title_actions_changed) |changed| changed(self.host.context);
         self.host.request_render(self.host.context);
     }
 
@@ -290,22 +293,26 @@ pub const OutlinePane = struct {
             self.filter_text.clearRetainingCapacity();
             try self.rebuildInput();
         }
+        if (self.host.title_actions_changed) |changed| changed(self.host.context);
         self.host.request_render(self.host.context);
     }
 
     pub fn setSortBy(self: *OutlinePane, order: OutlineSortOrder) !void {
         try self.view_state.setSortBy(order);
         try self.rebuildInput();
+        if (self.host.title_actions_changed) |changed| changed(self.host.context);
         self.host.request_render(self.host.context);
     }
 
     pub fn collapseAll(self: *OutlinePane) void {
         _ = self.tree.tree.setCollapsed(null, true, true) catch {};
+        if (self.host.title_actions_changed) |changed| changed(self.host.context);
         self.host.request_render(self.host.context);
     }
 
     pub fn expandAll(self: *OutlinePane) void {
         _ = self.tree.tree.setCollapsed(null, false, true) catch {};
+        if (self.host.title_actions_changed) |changed| changed(self.host.context);
         self.host.request_render(self.host.context);
     }
 
