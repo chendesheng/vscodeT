@@ -281,3 +281,16 @@ fn orderBrackets(pair: Brackets) Brackets {
     }
     return .{ pair[1], pair[0] };
 }
+
+const ActionEditor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ActionCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const action_registry = @import("../../../../platform/actions/common/actions.zig");
+fn selectToBracketDefault(editor: *ActionEditor) !void {
+    try editor.selectToBracket(true);
+}
+
+pub const editor_actions = [_]action_registry.Action2{
+    ActionCommand.action(.{ .id = "editor.action.jumpToBracket", .title = "Go to Bracket", .category = "Go" }, false, ActionEditor.jumpToBracket),
+    ActionCommand.action(.{ .id = "editor.action.selectToBracket", .title = "Select to Bracket", .category = "Selection" }, false, selectToBracketDefault),
+    ActionCommand.action(.{ .id = "editor.action.removeBrackets", .title = "Remove Brackets", .category = "Editor" }, false, ActionEditor.removeBrackets),
+};

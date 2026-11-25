@@ -8686,9 +8686,17 @@ test "line actions resolve the active code editor when focus leaves it and honor
     var value = try tab.editor.model.getValue(null, false);
     defer value.deinit();
     try std.testing.expectEqualStrings("one\none", value.items);
+    try workbench.commands.execute("editor.action.insertFinalNewLine");
+    try std.testing.expectEqual(@as(usize, 3), tab.editor.model.getLineCount());
     tab.editor.setReadOnly(true);
     try workbench.commands.execute("editor.action.copyLinesDownAction");
-    try std.testing.expectEqual(@as(usize, 2), tab.editor.model.getLineCount());
+    try workbench.commands.execute("editor.action.indentLines");
+    try std.testing.expectEqual(@as(usize, 3), tab.editor.model.getLineCount());
+    var read_only_value = try tab.editor.model.getValue(null, false);
+    defer read_only_value.deinit();
+    try std.testing.expectEqualStrings("one\none\n", read_only_value.items);
+    try workbench.commands.execute("expandLineSelection");
+    try std.testing.expect(!tab.editor.modelSelection().isEmpty());
 }
 
 test "Workbench: notification center commands render an actionable notification and close it" {

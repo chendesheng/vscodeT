@@ -194,3 +194,18 @@ pub const InPlaceReplaceDownAction = struct {
         return self.run();
     }
 };
+
+const ActionEditor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ActionCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const action_registry = @import("../../../../platform/actions/common/actions.zig");
+fn replacePreviousValue(editor: *ActionEditor) !void {
+    _ = try editor.inPlaceReplace(false);
+}
+fn replaceNextValue(editor: *ActionEditor) !void {
+    _ = try editor.inPlaceReplace(true);
+}
+
+pub const editor_actions = [_]action_registry.Action2{
+    ActionCommand.action(.{ .id = "editor.action.inPlaceReplace.up", .title = "Replace with Previous Value", .category = "Editor", .precondition = &ActionCommand.writable }, true, replacePreviousValue),
+    ActionCommand.action(.{ .id = "editor.action.inPlaceReplace.down", .title = "Replace with Next Value", .category = "Editor", .precondition = &ActionCommand.writable }, true, replaceNextValue),
+};

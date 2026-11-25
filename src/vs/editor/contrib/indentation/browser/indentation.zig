@@ -220,3 +220,17 @@ comptime {
     _ = commandOf(IndentationToSpacesCommand).of;
     _ = commandOf(IndentationToTabsCommand).of;
 }
+
+const ActionEditor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ActionCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const action_registry = @import("../../../../platform/actions/common/actions.zig");
+
+pub const conversion_actions = [_]action_registry.Action2{
+    ActionCommand.action(.{ .id = "editor.action.indentationToSpaces", .title = "Convert Indentation to Spaces", .category = "Editor", .precondition = &ActionCommand.writable }, true, ActionEditor.indentationToSpaces),
+    ActionCommand.action(.{ .id = "editor.action.indentationToTabs", .title = "Convert Indentation to Tabs", .category = "Editor", .precondition = &ActionCommand.writable }, true, ActionEditor.indentationToTabs),
+};
+
+pub const reindent_actions = [_]action_registry.Action2{
+    ActionCommand.action(.{ .id = "editor.action.reindentlines", .title = "Reindent Lines", .category = "Editor", .precondition = &ActionCommand.writable }, true, ActionEditor.reindentLines),
+    ActionCommand.action(.{ .id = "editor.action.reindentselectedlines", .title = "Reindent Selected Lines", .category = "Editor", .precondition = &ActionCommand.writable }, true, ActionEditor.reindentSelectedLines),
+};

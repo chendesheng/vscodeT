@@ -74,3 +74,11 @@ test "lineSelection: action metadata and run" {
     try action.run();
     try std.testing.expect(state.ran);
 }
+
+const ActionEditor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ActionCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const action_registry = @import("../../../../platform/actions/common/actions.zig");
+
+pub const editor_actions = [_]action_registry.Action2{
+    ActionCommand.action(.{ .id = "expandLineSelection", .title = "Expand Line Selection", .category = "Editor" }, false, ActionEditor.expandLineSelection),
+};

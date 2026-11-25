@@ -391,3 +391,14 @@ pub fn selectAllOccurrences(allocator: Allocator, model: *TextModel, selections:
     defer session.deinit();
     return session.selectAll(model);
 }
+
+const ActionEditor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ActionCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const action_registry = @import("../../../../platform/actions/common/actions.zig");
+
+pub const editor_actions = [_]action_registry.Action2{
+    ActionCommand.action(.{ .id = "editor.action.insertCursorAbove", .title = "Add Cursor Above", .category = "Editor" }, false, ActionEditor.addCursorAbove),
+    ActionCommand.action(.{ .id = "editor.action.insertCursorBelow", .title = "Add Cursor Below", .category = "Editor" }, false, ActionEditor.addCursorBelow),
+    ActionCommand.action(.{ .id = "editor.action.addSelectionToNextFindMatch", .title = "Add Selection To Next Find Match", .category = "Selection" }, false, ActionEditor.selectNextOccurrence),
+    ActionCommand.action(.{ .id = "editor.action.selectHighlights", .title = "Select All Occurrences of Find Match", .category = "Selection" }, false, ActionEditor.selectAllOccurrences),
+};

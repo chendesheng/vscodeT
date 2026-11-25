@@ -56,12 +56,15 @@ test "SuggestController: typing opens suggestions and Enter accepts" {
         .focus_editor = Harness.focusEditor,
         .has_editor_focus = Harness.hasEditorFocus,
     });
+    var queue = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = io };
     defer controller.deinit();
+    controller.attachWindow(&queue);
 
     // No shortcut: a typed word character schedules the 10 ms quick trigger.
     try std.testing.expect(!try controller.onTypedCharacter('l', 0));
     try std.testing.expect(!controller.isOpen());
-    try std.testing.expect(try controller.onTick(10));
+    try std.testing.expect(!queue.dispatch(9));
+    try std.testing.expect(queue.dispatch(10));
     try std.testing.expect(controller.isOpen());
     try std.testing.expectEqual(@as(usize, 1), controller.model.completionModel().?.count());
     try std.testing.expectEqualStrings("alpha", controller.model.completionModel().?.selected().?.label);

@@ -1584,50 +1584,35 @@ pub const Workbench = struct {
         };
         for (search_editor_commands) |command| try self.commands.register(command);
         for (search_contribution.result_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        const commands = [_]commands_mod.CommandInfo{
+        const editor_commands_1 = [_]commands_mod.CommandInfo{
             .{ .id = "actions.find", .label = "Find", .context = self, .requires_editor = true, .run = commandFind },
             .{ .id = "editor.action.startFindReplaceAction", .label = "Replace", .context = self, .requires_editor = true, .run = commandReplace },
-            .{ .id = "editor.action.commentLine", .label = "Toggle Line Comment", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleLineComment },
-            .{ .id = "editor.action.blockComment", .label = "Toggle Block Comment", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleBlockComment },
         };
-        for (commands) |command| try self.commands.register(command);
+        for (editor_commands_1) |command| try self.commands.register(command);
+        for (@import("../../editor/contrib/comment/browser/comment.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
         for (@import("../../editor/contrib/linesOperations/browser/linesOperations.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
-        const remaining_editor_commands = [_]commands_mod.CommandInfo{
-            .{ .id = "editor.action.indentLines", .label = "Indent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandIndentLines },
-            .{ .id = "editor.action.outdentLines", .label = "Outdent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandOutdentLines },
-            .{ .id = "editor.action.insertFinalNewLine", .label = "Insert Final New Line", .category = "Editor", .context = self, .requires_editor = true, .run = commandInsertFinalNewLine },
-            .{ .id = "expandLineSelection", .label = "Expand Line Selection", .category = "Editor", .context = self, .requires_editor = true, .run = commandExpandLineSelection },
-            .{ .id = "editor.action.insertCursorAbove", .label = "Add Cursor Above", .category = "Editor", .context = self, .requires_editor = true, .run = commandInsertCursorAbove },
-            .{ .id = "editor.action.insertCursorBelow", .label = "Add Cursor Below", .category = "Editor", .context = self, .requires_editor = true, .run = commandInsertCursorBelow },
-            .{ .id = "editor.action.addSelectionToNextFindMatch", .label = "Add Selection To Next Find Match", .category = "Selection", .context = self, .requires_editor = true, .run = commandAddSelectionToNextFindMatch },
-            .{ .id = "editor.action.selectHighlights", .label = "Select All Occurrences of Find Match", .category = "Selection", .context = self, .requires_editor = true, .run = commandSelectHighlights },
-            .{ .id = "editor.action.jumpToBracket", .label = "Go to Bracket", .category = "Go", .context = self, .requires_editor = true, .run = commandJumpToBracket },
-            .{ .id = "editor.action.selectToBracket", .label = "Select to Bracket", .category = "Selection", .context = self, .requires_editor = true, .run = commandSelectToBracket },
-            .{ .id = "editor.action.removeBrackets", .label = "Remove Brackets", .category = "Editor", .context = self, .requires_editor = true, .run = commandRemoveBrackets },
-            .{ .id = "editor.action.smartSelect.expand", .label = "Expand Selection", .category = "Selection", .context = self, .requires_editor = true, .run = commandExpandSelection },
-            .{ .id = "editor.action.smartSelect.grow", .label = "Expand Selection", .category = "Selection", .context = self, .requires_editor = true, .run = commandExpandSelection },
-            .{ .id = "editor.action.smartSelect.shrink", .label = "Shrink Selection", .category = "Selection", .context = self, .requires_editor = true, .run = commandShrinkSelection },
-            .{ .id = "editor.action.formatSelection", .label = "Format Selection", .category = "Editor", .context = self, .requires_editor = true, .run = commandFormatSelection },
-            .{ .id = "editor.action.indentationToSpaces", .label = "Convert Indentation to Spaces", .category = "Editor", .context = self, .requires_editor = true, .run = commandIndentationToSpaces },
-            .{ .id = "editor.action.indentationToTabs", .label = "Convert Indentation to Tabs", .category = "Editor", .context = self, .requires_editor = true, .run = commandIndentationToTabs },
+        for (@import("../../editor/contrib/linesOperations/browser/linesOperations.zig").indent_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/insertFinalNewLine/browser/insertFinalNewLine.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/lineSelection/browser/lineSelection.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/multicursor/browser/multicursor.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/bracketMatching/browser/bracketMatching.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/smartSelect/browser/smartSelect.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/format/browser/formatActions.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/indentation/browser/indentation.zig").conversion_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        const editor_commands_2 = [_]commands_mod.CommandInfo{
             .{ .id = "editor.action.wordHighlight.trigger", .label = "Trigger Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightTrigger },
-            .{ .id = "editor.action.inPlaceReplace.up", .label = "Replace with Previous Value", .category = "Editor", .context = self, .requires_editor = true, .run = commandInPlaceReplacePrevious },
-            .{ .id = "editor.action.inPlaceReplace.down", .label = "Replace with Next Value", .category = "Editor", .context = self, .requires_editor = true, .run = commandInPlaceReplaceNext },
-            .{ .id = "editor.action.reindentlines", .label = "Reindent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandReindentLines },
-            .{ .id = "editor.action.reindentselectedlines", .label = "Reindent Selected Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandReindentSelectedLines },
-            .{ .id = "editor.fold", .label = "Fold", .category = "Editor", .context = self, .requires_editor = true, .run = commandFold },
-            .{ .id = "editor.unfold", .label = "Unfold", .category = "Editor", .context = self, .requires_editor = true, .run = commandUnfold },
-            .{ .id = "editor.toggleFold", .label = "Toggle Fold", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleFold },
-            .{ .id = "editor.foldRecursively", .label = "Fold Recursively", .category = "Editor", .context = self, .requires_editor = true, .run = commandFoldRecursively },
-            .{ .id = "editor.unfoldRecursively", .label = "Unfold Recursively", .category = "Editor", .context = self, .requires_editor = true, .run = commandUnfoldRecursively },
-            .{ .id = "editor.foldAll", .label = "Fold All", .category = "Editor", .context = self, .requires_editor = true, .run = commandFoldAll },
-            .{ .id = "editor.unfoldAll", .label = "Unfold All", .category = "Editor", .context = self, .requires_editor = true, .run = commandUnfoldAll },
+        };
+        for (editor_commands_2) |command| try self.commands.register(command);
+        for (@import("../../editor/contrib/inPlaceReplace/browser/inPlaceReplace.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/indentation/browser/indentation.zig").reindent_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        for (@import("../../editor/contrib/folding/browser/folding.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        const editor_commands_3 = [_]commands_mod.CommandInfo{
             .{ .id = sticky_actions.toggle_sticky_scroll.id, .label = sticky_actions.toggle_sticky_scroll.label, .category = "View", .context = self, .requires_editor = true, .run = commandToggleStickyScroll },
             .{ .id = sticky_actions.focus_sticky_scroll.id, .label = sticky_actions.focus_sticky_scroll.label, .category = "View", .context = self, .requires_editor = true, .run = commandFocusStickyScroll },
             .{ .id = "editor.action.wordHighlight.next", .label = "Go to Next Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightNext },
             .{ .id = "editor.action.wordHighlight.prev", .label = "Go to Previous Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightPrevious },
         };
-        for (remaining_editor_commands) |command| try self.commands.register(command);
+        for (editor_commands_3) |command| try self.commands.register(command);
 
         try self.builtin_host.registerPortActions();
         try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
@@ -11663,116 +11648,6 @@ fn commandReplace(context: *anyopaque) anyerror!void {
     try tab.controllers.?.find.startReplace();
 }
 
-fn commandToggleLineComment(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.toggleLineComment();
-}
-
-fn commandToggleBlockComment(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.toggleBlockComment();
-}
-
-fn commandIndentLines(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.indentLines();
-}
-
-fn commandOutdentLines(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.outdentLines();
-}
-
-fn commandInsertFinalNewLine(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.insertFinalNewLine();
-}
-
-fn commandExpandLineSelection(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.expandLineSelection();
-}
-
-fn commandInsertCursorAbove(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.addCursorAbove();
-}
-
-fn commandInsertCursorBelow(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.addCursorBelow();
-}
-
-fn commandAddSelectionToNextFindMatch(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.selectNextOccurrence();
-}
-
-fn commandSelectHighlights(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.selectAllOccurrences();
-}
-
-fn commandJumpToBracket(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.jumpToBracket();
-}
-
-fn commandSelectToBracket(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.selectToBracket(true);
-}
-
-fn commandRemoveBrackets(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.removeBrackets();
-}
-
-fn commandExpandSelection(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.growSelection(true);
-}
-
-fn commandShrinkSelection(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.growSelection(false);
-}
-
-fn commandInPlaceReplacePrevious(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    _ = try tab.editor.inPlaceReplace(false);
-}
-
-fn commandInPlaceReplaceNext(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    _ = try tab.editor.inPlaceReplace(true);
-}
-
-fn commandReindentLines(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.reindentLines();
-}
-
-fn commandReindentSelectedLines(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.reindentSelectedLines();
-}
-
-fn commandFold(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.foldAtCursor();
-}
-
-fn commandUnfold(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.unfoldAtCursor();
-}
-
-fn commandToggleFold(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.toggleFoldAtCursor();
-}
-
 fn commandToggleStickyScroll(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
     try tab.ensureControllers();
@@ -11783,41 +11658,6 @@ fn commandFocusStickyScroll(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
     try tab.ensureControllers();
     if (tab.controllers) |controllers| controllers.sticky.focus();
-}
-
-fn commandFoldRecursively(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.foldRecursivelyAtCursor();
-}
-
-fn commandUnfoldRecursively(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.unfoldRecursivelyAtCursor();
-}
-
-fn commandFoldAll(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.foldAll();
-}
-
-fn commandUnfoldAll(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.unfoldAll();
-}
-
-fn commandFormatSelection(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.formatSelection();
-}
-
-fn commandIndentationToSpaces(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.indentationToSpaces();
-}
-
-fn commandIndentationToTabs(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.indentationToTabs();
 }
 
 fn commandWordHighlightTrigger(context: *anyopaque) anyerror!void {

@@ -38,6 +38,25 @@ pub const EditorCommand = struct {
     const Editor = @import("widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
     const Accessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 
+    const platform_actions = @import("../../platform/actions/common/actions.zig");
+    const contextkey = @import("../../platform/contextkey/common/contextkey.zig");
+    pub const writable = contextkey.Expr{ .Not = "editorReadonly" };
+
+    /// Zig adapter for the EditorAction constructor and its runEditorCommand
+    /// implementation. The declaring contribution owns the descriptor.
+    pub fn action(comptime command: platform_actions.ICommandAction, comptime requires_writable: bool, comptime operation: fn (*Editor) anyerror!void) platform_actions.Action2 {
+        return .{
+            .command = command,
+            .f1 = true,
+            .context = @constCast(&{}),
+            .run_fn = struct {
+                fn run(_: *anyopaque, accessor: Accessor) !void {
+                    try runEditorCommand(accessor, requires_writable, operation);
+                }
+            }.run,
+        };
+    }
+
     pub fn runEditorCommand(accessor: Accessor, requires_writable: bool, comptime run: fn (*Editor) anyerror!void) !void {
         const service = try accessor.get(@import("services/codeEditorService.zig").code_editor_service_id);
         const editor = service.getFocusedCodeEditor() orelse service.getActiveCodeEditor() orelse return;

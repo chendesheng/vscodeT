@@ -25,13 +25,12 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 12,264 lines and has no inline tests. It has no direct imports from `src/tui`. Five files import the shell. All 151 baseline
+The browser shell is 12,104 lines and has no inline tests. It has no direct imports from `src/tui`. Five files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
 populated editor groups. The live palette reads CommandPalette menu contributions.
-The seven line copy, move, sort and duplicate actions resolve the focused or active
-code editor through ICodeEditorService. A diff exposes its modified control as
+The line copy, move, sort, duplicate and indentation actions, comment, multicursor, bracket matching, smart selection, formatting, insert-final-newline, in-place replace and folding registrations now live in their editor contribution owners. They resolve the focused or active code editor through ICodeEditorService. The extraction preserves the pre-existing palette labels/categories and alias visibility; full upstream action metadata is still incomplete. A diff exposes its modified control as
 the active editor and its focused side for commands.
 Show All Commands resolves the quick input service through its Action2 handler.
 

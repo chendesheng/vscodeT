@@ -276,3 +276,8 @@ pub fn trimTrailingWhitespace(
 
     return runConcrete(TrimTrailingWhitespaceCommand, allocator, model, selections, commands);
 }
+
+pub const indent_actions = [_]actions.Action2{
+    EditorCommand.action(.{ .id = "editor.action.indentLines", .title = "Indent Lines", .category = "Editor", .precondition = &EditorCommand.writable }, true, Editor.indentLines),
+    EditorCommand.action(.{ .id = "editor.action.outdentLines", .title = "Outdent Lines", .category = "Editor", .precondition = &EditorCommand.writable }, true, Editor.outdentLines),
+};

@@ -422,3 +422,19 @@ pub const ShrinkSelectionAction = struct {
         return self.run();
     }
 };
+
+const ActionEditor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ActionCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const action_registry = @import("../../../../platform/actions/common/actions.zig");
+fn expandSelection(editor: *ActionEditor) !void {
+    try editor.growSelection(true);
+}
+fn shrinkSelection(editor: *ActionEditor) !void {
+    try editor.growSelection(false);
+}
+
+pub const editor_actions = [_]action_registry.Action2{
+    ActionCommand.action(.{ .id = "editor.action.smartSelect.expand", .title = "Expand Selection", .category = "Selection" }, false, expandSelection),
+    ActionCommand.action(.{ .id = "editor.action.smartSelect.grow", .title = "Expand Selection", .category = "Selection" }, false, expandSelection),
+    ActionCommand.action(.{ .id = "editor.action.smartSelect.shrink", .title = "Shrink Selection", .category = "Selection" }, false, shrinkSelection),
+};

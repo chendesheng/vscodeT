@@ -267,3 +267,17 @@ pub const Controller = struct {
         self.hidden_model.updateHiddenRanges();
     }
 };
+
+const ActionEditor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const ActionCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const action_registry = @import("../../../../platform/actions/common/actions.zig");
+
+pub const editor_actions = [_]action_registry.Action2{
+    ActionCommand.action(.{ .id = "editor.fold", .title = "Fold", .category = "Editor" }, false, ActionEditor.foldAtCursor),
+    ActionCommand.action(.{ .id = "editor.unfold", .title = "Unfold", .category = "Editor" }, false, ActionEditor.unfoldAtCursor),
+    ActionCommand.action(.{ .id = "editor.toggleFold", .title = "Toggle Fold", .category = "Editor" }, false, ActionEditor.toggleFoldAtCursor),
+    ActionCommand.action(.{ .id = "editor.foldRecursively", .title = "Fold Recursively", .category = "Editor" }, false, ActionEditor.foldRecursivelyAtCursor),
+    ActionCommand.action(.{ .id = "editor.unfoldRecursively", .title = "Unfold Recursively", .category = "Editor" }, false, ActionEditor.unfoldRecursivelyAtCursor),
+    ActionCommand.action(.{ .id = "editor.foldAll", .title = "Fold All", .category = "Editor" }, false, ActionEditor.foldAll),
+    ActionCommand.action(.{ .id = "editor.unfoldAll", .title = "Unfold All", .category = "Editor" }, false, ActionEditor.unfoldAll),
+};
