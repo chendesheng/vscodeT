@@ -24,8 +24,9 @@ pub const DecorationSink = struct {
     set: ?*const fn (context: ?*anyopaque, decorations: []const editorBrowser.Decoration) void = null,
 };
 
-pub const SeedSearchString = enum { never, always, selection };
-pub const AutoFindInSelection = enum { never, always, multiline };
+const EditorFindOptions = @import("../../../common/config/editorOptions.zig").EditorFindOptions;
+pub const SeedSearchString = EditorFindOptions.SeedSearchString;
+pub const AutoFindInSelection = EditorFindOptions.AutoFindInSelection;
 
 pub const FindController = struct {
     allocator: Allocator,
@@ -76,6 +77,17 @@ pub const FindController = struct {
 
     pub fn widget(self: *FindController) *FindWidget {
         return self.find_widget;
+    }
+
+    pub fn applyConfiguration(self: *FindController, options: EditorFindOptions) void {
+        self.model.cursor_move_on_type = options.cursor_move_on_type;
+        self.setSeedSearchStringFromSelection(options.seed_search_string_from_selection);
+        self.setAutoFindInSelection(options.auto_find_in_selection);
+        self.state.loop = options.loop;
+        self.find_widget.setAddExtraSpaceOnTop(options.add_extra_space_on_top);
+        self.find_widget.setFindOnType(options.find_on_type);
+        self.find_widget.setCloseOnResult(options.close_on_result);
+        self.find_widget.setHistorySettings(options.history == .workspace, options.replace_history == .workspace);
     }
 
     /// Applies the host-resolved terminal colors to the find bar.

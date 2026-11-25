@@ -343,6 +343,23 @@ pub const InternalEditorPaddingOptions = struct {
     bottom: f64 = 0,
 };
 
+pub const EditorFindOptions = struct {
+    pub const SeedSearchString = enum { never, always, selection };
+    pub const AutoFindInSelection = enum { never, always, multiline };
+    pub const History = enum { never, workspace };
+
+    cursor_move_on_type: bool = true,
+    find_on_type: bool = true,
+    seed_search_string_from_selection: SeedSearchString = .always,
+    auto_find_in_selection: AutoFindInSelection = .never,
+    global_find_clipboard: bool = false,
+    add_extra_space_on_top: bool = true,
+    loop: bool = true,
+    close_on_result: bool = false,
+    history: History = .workspace,
+    replace_history: History = .workspace,
+};
+
 /// Port of `EditorStickyScrollOptions`.
 pub const EditorStickyScrollOptions = struct {
     enabled: bool = true,
@@ -500,6 +517,7 @@ pub fn OptionValueType(comptime option: EditorOption) type {
         .scrollbar => InternalEditorScrollbarOptions,
         .lineNumbers => InternalEditorRenderLineNumbersOptions,
         .guides => InternalGuidesOptions,
+        .find => EditorFindOptions,
         .stickyScroll => EditorStickyScrollOptions,
         .rulers => []const IRulerOption,
         .fontInfo => fontInfo.FontInfo,

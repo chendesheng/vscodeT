@@ -1365,10 +1365,11 @@ console API for raw mode, sizing and input polling.
   find (a single-line selection seeds the query), Ctrl-R opens the replace row,
   Enter/Shift-Enter go to the next/previous match, Escape closes, Tab switches
   between the find and replace inputs, Up/Down recall previous find/replace
-  strings, `editor.find.findOnType`/`closeOnResult`/`loop` and
-  `seedSearchStringFromSelection` (never/always/selection) and
-  `autoFindInSelection` (never/always/multiline) and the
-  `editor.find.history`/`replaceHistory` enablement are honored,
+  strings. Each editor applies `editor.find.cursorMoveOnType`,
+  `findOnType`, `closeOnResult` and `loop` from its configuration.
+  `seedSearchStringFromSelection` (never/always/selection),
+  `autoFindInSelection` (never/always/multiline), and the find and replace
+  history settings also follow per-language overrides.
   Alt-C/Alt-W/Alt-R toggle match case,
   whole word and regex, Alt-P toggles preserve case, Alt-L limits the search to
   the current selection(s), Alt-Enter selects all matches, and Ctrl-Alt-Enter

@@ -5455,66 +5455,9 @@ pub const Workbench = struct {
 
     const ShowTabs = layout_service_mod.EditorTabsMode;
 
-    fn findAddExtraSpaceOnTop(self: *Workbench) bool {
-        return self.findBoolSetting("editor.find.addExtraSpaceOnTop", true);
-    }
-
-    fn findAutoFindInSelection(self: *Workbench) @import("../../editor/contrib/find/browser/findController.zig").AutoFindInSelection {
-        const configuration = self.configuration orelse return .never;
-        const value = configuration.getValue("editor.find.autoFindInSelection", .{}) orelse return .never;
-        return switch (value.*) {
-            .string => |text| if (std.mem.eql(u8, text, "always"))
-                .always
-            else if (std.mem.eql(u8, text, "multiline"))
-                .multiline
-            else
-                .never,
-            else => .never,
-        };
-    }
-
-    fn findSeedSearchStringFromSelection(self: *Workbench) @import("../../editor/contrib/find/browser/findController.zig").SeedSearchString {
-        const configuration = self.configuration orelse return .always;
-        const value = configuration.getValue("editor.find.seedSearchStringFromSelection", .{}) orelse return .always;
-        return switch (value.*) {
-            .string => |text| if (std.mem.eql(u8, text, "never"))
-                .never
-            else if (std.mem.eql(u8, text, "selection"))
-                .selection
-            else
-                .always,
-            else => .always,
-        };
-    }
-
-    fn findHistoryEnabled(self: *Workbench, key: []const u8) bool {
-        const configuration = self.configuration orelse return true;
-        const value = configuration.getValue(key, .{}) orelse return true;
-        return switch (value.*) {
-            .string => |text| !std.mem.eql(u8, text, "never"),
-            else => true,
-        };
-    }
-
-    fn findOnType(self: *Workbench) bool {
-        return self.findBoolSetting("editor.find.findOnType", true);
-    }
-
-    fn findCloseOnResult(self: *Workbench) bool {
-        return self.findBoolSetting("editor.find.closeOnResult", false);
-    }
-
-    fn findLoop(self: *Workbench) bool {
-        return self.findBoolSetting("editor.find.loop", true);
-    }
-
-    fn findBoolSetting(self: *Workbench, key: []const u8, default: bool) bool {
+    fn boolSetting(self: *Workbench, key: []const u8, default: bool) bool {
         const configuration = self.configuration orelse return default;
-        const value = configuration.getValue(key, .{}) orelse return default;
-        return switch (value.*) {
-            .bool => |enabled| enabled,
-            else => default,
-        };
+        return configuration.getBool(key, default);
     }
 
     fn tabsVisibleFor(self: *Workbench, tab_count: usize) bool {
@@ -10480,7 +10423,7 @@ pub const Workbench = struct {
         try surface.resize(self.cols, self.rows);
         surface.border_capabilities = self.part.cell_border_capabilities;
         const colors = self.watermarkColors();
-        const show_tips = self.part.count() == 1 and self.findBoolSetting(editor_group_watermark.settings_key, true);
+        const show_tips = self.part.count() == 1 and self.boolSetting(editor_group_watermark.settings_key, true);
         for (self.part.group_views.items) |pane| {
             const visible = self.part.maximized_group == null or self.part.maximized_group == pane;
             try pane.layoutEditorArea(self.part.grid_element.?, self.part.base.bounds.?, surface, visible, show_tips, colors, .{ .context = self, .render = renderWatermarkShortcuts });
@@ -10807,19 +10750,6 @@ pub const Workbench = struct {
             try self.renderBreadcrumbs(pane, x, y + pane.titleHeight(), width, active_group);
         }
         if (pane.activeTab()) |active| {
-            if (active.controllers) |controllers| {
-                controllers.find_add_extra_space = self.findAddExtraSpaceOnTop();
-                const widget = controllers.find.widget();
-                widget.setFindOnType(self.findOnType());
-                widget.setCloseOnResult(self.findCloseOnResult());
-                controllers.find.setSeedSearchStringFromSelection(self.findSeedSearchStringFromSelection());
-                controllers.find.setAutoFindInSelection(self.findAutoFindInSelection());
-                widget.setHistorySettings(
-                    self.findHistoryEnabled("editor.find.history"),
-                    self.findHistoryEnabled("editor.find.replaceHistory"),
-                );
-                controllers.find.state.loop = self.findLoop();
-            }
             try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
         }
     }
@@ -11575,7 +11505,7 @@ fn outlineFocusEditor(context: *anyopaque) void {
 
 fn outlineSymbolVisible(context: *anyopaque, kind: u32) bool {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.findBoolSetting(outline_contrib.showConfigForKind(kind), true);
+    return self.boolSetting(outline_contrib.showConfigForKind(kind), true);
 }
 
 const InactiveBreadcrumb = struct {

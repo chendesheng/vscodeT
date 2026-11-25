@@ -70,6 +70,46 @@ fn readString(reader: Reader, key: []const u8, language_id: ?[]const u8, resourc
     };
 }
 
+// Mirrors the boolean and stringSet validation in EditorFind.validate.
+fn findBoolean(value: ?*const Value, default: bool) bool {
+    return switch ((value orelse return default).*) {
+        .null => false,
+        .bool => |v| v,
+        .integer => |v| v != 0,
+        .float => |v| v != 0,
+        .number_string => |v| (std.fmt.parseFloat(f64, v) catch return true) != 0,
+        .string => |v| v.len != 0 and !std.mem.eql(u8, v, "false"),
+        .array, .object => true,
+    };
+}
+
+fn findMode(comptime T: type, value: ?*const Value, default: T) T {
+    return switch ((value orelse return default).*) {
+        .string => |v| std.meta.stringToEnum(T, v) orelse default,
+        .bool => |v| if (T == editorOptions.EditorFindOptions.History) default else if (v) .always else .never,
+        else => default,
+    };
+}
+
+fn readFindOptions(reader: Reader, language_id: ?[]const u8, resource: ?[]const u8) editorOptions.EditorFindOptions {
+    const defaults: editorOptions.EditorFindOptions = .{};
+    const value = reader.get_value(reader.context, "editor.find", language_id, resource) orelse return defaults;
+    if (value.* != .object) return defaults;
+    const input = value.object;
+    return .{
+        .cursor_move_on_type = findBoolean(input.getPtr("cursorMoveOnType"), defaults.cursor_move_on_type),
+        .find_on_type = findBoolean(input.getPtr("findOnType"), defaults.find_on_type),
+        .seed_search_string_from_selection = findMode(editorOptions.EditorFindOptions.SeedSearchString, input.getPtr("seedSearchStringFromSelection"), defaults.seed_search_string_from_selection),
+        .auto_find_in_selection = findMode(editorOptions.EditorFindOptions.AutoFindInSelection, input.getPtr("autoFindInSelection"), defaults.auto_find_in_selection),
+        .global_find_clipboard = findBoolean(input.getPtr("globalFindClipboard"), defaults.global_find_clipboard),
+        .add_extra_space_on_top = findBoolean(input.getPtr("addExtraSpaceOnTop"), defaults.add_extra_space_on_top),
+        .loop = findBoolean(input.getPtr("loop"), defaults.loop),
+        .close_on_result = findBoolean(input.getPtr("closeOnResult"), defaults.close_on_result),
+        .history = findMode(editorOptions.EditorFindOptions.History, input.getPtr("history"), defaults.history),
+        .replace_history = findMode(editorOptions.EditorFindOptions.History, input.getPtr("replaceHistory"), defaults.replace_history),
+    };
+}
+
 /// Resolves `editor.lineNumbers` for one editor. Zen mode calls this after
 /// clearing its temporary override to restore the configured value, matching
 /// upstream `setLineNumbers()` reading the setting per visible editor.
@@ -97,7 +137,10 @@ pub fn applyViewSettings(
     changed: *ChangeSet,
 ) bool {
     @memset(changed, false);
-    var any = false;
+    const find = readFindOptions(reader, language_id, resource);
+    var any = !std.meta.eql(options.get(.find), find);
+    mark(changed, .find, any);
+    options.set(.find, find);
 
     if (readString(reader, "editor.lineNumbers", language_id, resource)) |text| {
         if (parseLineNumbers(text)) |value| {

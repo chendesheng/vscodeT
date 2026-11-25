@@ -2571,6 +2571,36 @@ test "Workbench: user keybindings override defaults, honor when and removals" {
     try std.testing.expect(!(try workbench.handleGlobalKey(&ctrl_alt_g)));
 }
 
+test "Find reads language options before paint and observes settings changes immediately" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "file.json", "{}");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json",
+        \\{
+        \\    "[json]": { "editor.find.cursorMoveOnType": false, "editor.find.history": "never" },
+        \\    "editor.find.seedSearchStringFromSelection": false,
+        \\    "editor.find.autoFindInSelection": true
+        \\}
+    );
+    defer allocator.free(settings);
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
+    defer workbench.deinit();
+    try workbench.setUserSettingsPaths(&.{settings});
+    const find = workbench.activeTab().?.controllers.?.find;
+    try std.testing.expect(!find.model.cursor_move_on_type);
+    try std.testing.expect(!find.widget().history_enabled);
+    try std.testing.expectEqual(.never, find.seed_search_string_from_selection);
+    try std.testing.expectEqual(.always, find.auto_find_in_selection);
+
+    try workbench.setUserConfigurationValue("editor.find.loop", .{ .bool = false });
+    try std.testing.expect(!find.state.loop);
+    try workbench.setUserConfigurationValue("editor.find.loop", null);
+    try std.testing.expect(find.state.loop);
+}
+
 test "Workbench: editor settings apply to open editors and reload" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

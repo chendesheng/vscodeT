@@ -8,8 +8,6 @@
 // - `FindDecorations` keeps the match ranges and notifies the decoration
 //   sink, which materializes them as `TextModel` decorations with find class
 //   names.
-// - Find options collapse to their defaults (`cursorMoveOnType` is on,
-//   `find.loop` lives on the state).
 // - `replaceAll` uses the regular path; the upstream large-file path replaces
 //   the whole model text through a regex and is not needed for the terminal
 //   buffer size.

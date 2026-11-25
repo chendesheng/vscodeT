@@ -249,7 +249,7 @@ const secondary_cursor_background = [3]u8{ 110, 90, 30 };
 /// Terminal contribution callback for `View.applyEditorSettings`.
 pub const ConfigurationListener = struct {
     context: *anyopaque,
-    notify: *const fn (context: *anyopaque) void,
+    notify: *const fn (context: *anyopaque, event: editor_options.ConfigurationChangedEvent) void,
 };
 
 /// A cell position, 0-based, ready for `tui.moveCursor` after adding one.
@@ -1510,11 +1510,10 @@ pub const View = struct {
         // exactly like the upstream view-model event flow. Calling the concrete
         // `View` method directly skipped `ViewLines`, leaving line options such
         // as `renderWhitespace` stale.
-        const event = view_events.ViewConfigurationChangedEvent.init(
-            editor_options.ConfigurationChangedEvent.init(&changed),
-        );
+        const source = editor_options.ConfigurationChangedEvent.init(&changed);
+        const event = view_events.ViewConfigurationChangedEvent.init(source);
         self.editor.emitViewEvent(.{ .ViewConfigurationChanged = event });
-        for (self.configuration_listeners.items) |listener| listener.notify(listener.context);
+        for (self.configuration_listeners.items) |listener| listener.notify(listener.context, source);
         self.document_ready = false;
         self.invalidate();
         return true;
@@ -1531,11 +1530,10 @@ pub const View = struct {
         var changed: terminal_editor_config.ChangeSet = undefined;
         @memset(changed[0..], false);
         changed[@backingInt(editor_options.EditorOption.lineNumbers)] = true;
-        const event = view_events.ViewConfigurationChangedEvent.init(
-            editor_options.ConfigurationChangedEvent.init(&changed),
-        );
+        const source = editor_options.ConfigurationChangedEvent.init(&changed);
+        const event = view_events.ViewConfigurationChangedEvent.init(source);
         self.editor.emitViewEvent(.{ .ViewConfigurationChanged = event });
-        for (self.configuration_listeners.items) |listener| listener.notify(listener.context);
+        for (self.configuration_listeners.items) |listener| listener.notify(listener.context, source);
         self.document_ready = false;
         self.invalidate();
     }

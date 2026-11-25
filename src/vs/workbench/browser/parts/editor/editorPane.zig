@@ -417,9 +417,6 @@ pub const Tab = struct {
             try terminal_editor.paint(instance, &frame.next, .{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(w), .h = @floatFromInt(h) });
             return;
         }
-        if (self.controllers) |controllers| {
-            controllers.find.widget().setAddExtraSpaceOnTop(controllers.find_add_extra_space);
-        }
         const zone_rows = self.editorTopInset();
         if (zone_rows != self.top_view_zone_rows and self.last_width > 0 and self.last_height > 0) {
             self.layoutCells(self.last_width, self.last_height);
@@ -843,7 +840,6 @@ pub const Controllers = struct {
     completion_providers: [2]completion.CompletionItemProvider,
     completion_count: usize = 1,
     hover_registration: ?IDisposable = null,
-    find_add_extra_space: bool = true,
     suggest: *SuggestController,
 
     /// Applies the palette-derived hover code-block background and the find
@@ -1006,7 +1002,8 @@ pub const Controllers = struct {
         // theme earlier dereferenced an unset widget.
         self.setThemeColors(view.theme_colors);
 
-        try view.addConfigurationListener(.{ .context = self, .notify = onStickyConfigurationChanged });
+        self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
+        try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
         return self;
     }
 
@@ -1025,7 +1022,7 @@ pub const Controllers = struct {
     pub fn deinit(self: *Controllers) void {
         // The sink context points at this controller; detach before it dies.
         self.editor.setSearchHighlightSink(null);
-        self.view.removeConfigurationListener(.{ .context = self, .notify = onStickyConfigurationChanged });
+        self.view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
         self.sticky.deinit();
         if (self.hover_registration) |registration| registration.dispose();
         self.suggest.deinit();
@@ -1039,8 +1036,9 @@ pub const Controllers = struct {
     }
 };
 
-fn onStickyConfigurationChanged(context: *anyopaque) void {
+fn onConfigurationChanged(context: *anyopaque, event: @import("../../../../editor/common/config/editorOptions.zig").ConfigurationChangedEvent) void {
     const self: *Controllers = @ptrCast(@alignCast(context));
+    if (event.hasChanged(.find)) self.find.applyConfiguration(self.view.terminal_view_host.options.get(.find));
     self.sticky.onConfigurationChanged();
 }
 
