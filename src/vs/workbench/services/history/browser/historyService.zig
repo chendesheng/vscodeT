@@ -113,6 +113,15 @@ pub const ClosedEditor = struct {
     batch_id: u64,
 };
 
+const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
+const GroupPane = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
+const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(GroupPane);
+const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
+const editor_widget = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
+const text_editor_selection_mod = @import("../../../browser/parts/editor/textEditor.zig");
+const Selection = @import("../../../../editor/common/core/selection.zig").Selection;
+const text_files = @import("../../textfile/common/textFileService.zig");
+
 pub const HistoryService = struct {
     allocator: Allocator,
     paths: std.array_list.Managed([]u8),
@@ -125,6 +134,227 @@ pub const HistoryService = struct {
     editor_stacks: std.StringHashMap(*EditorNavigationStacks),
     closed_editors: std.array_list.Managed(ClosedEditor),
     closed_batch_id: u64 = 0,
+
+    editor_host: ?EditorHost = null,
+    active_listener: ?usize = null,
+    visible_listener: ?usize = null,
+    history_tab: ?*Tab = null,
+    history_selection_listener: ?Tab.SelectionListener = null,
+    history_content_listener: ?editor_widget.ChangeListener = null,
+    history_navigating: bool = false,
+    in_closed_batch: bool = false,
+
+    pub const EditorHost = struct {
+        context: *anyopaque,
+        part: *EditorPart,
+        io: std.Io,
+        open_path: *const fn (*anyopaque, []const u8) anyerror!void,
+        focus_editor: *const fn (*anyopaque) void,
+    };
+
+    /// The editor service publishes both active model and mounted pane events;
+    /// the latter guarantees that the pane exists before subscribing to its
+    /// selection and working-copy change emitters.
+    pub fn registerListeners(self: *HistoryService, host: EditorHost) !void {
+        self.editor_host = host;
+        errdefer self.disposeEditorListeners();
+        self.active_listener = try host.part.service.on_did_active_editor_change.listen(self, onActiveHistoryEditor);
+        self.visible_listener = try host.part.service.on_did_visible_editors_change.listen(self, onHistoryVisibleEditorsChanged);
+        try onHistoryVisibleEditorsChanged({}, self);
+    }
+
+    fn disposeEditorListeners(self: *HistoryService) void {
+        const host = self.editor_host orelse return;
+        if (self.active_listener) |id| host.part.service.on_did_active_editor_change.unlisten(id);
+        if (self.visible_listener) |id| host.part.service.on_did_visible_editors_change.unlisten(id);
+        if (self.history_tab) |tab| self.detachHistoryTab(tab);
+        self.active_listener = null;
+        self.visible_listener = null;
+        self.editor_host = null;
+    }
+
+    fn activePane(self: *HistoryService) ?*GroupPane {
+        const host = self.editor_host orelse return null;
+        return host.part.activeView();
+    }
+
+    fn activeTab(self: *HistoryService) ?*Tab {
+        const pane = self.activePane() orelse return null;
+        return pane.activeTab();
+    }
+
+    pub fn recordClosedTab(self: *HistoryService, pane: *GroupPane, tab: *Tab) void {
+        if (!self.in_closed_batch) self.closed_batch_id +%= 1;
+        if (!tab.input.canReopen()) return;
+        const index = pane.indexOfTab(tab) orelse return;
+        const path = self.allocator.dupe(u8, tab.editor.path) catch return;
+        self.recordClosedEditor(.{
+            .path = path,
+            .group_id = pane.group.id,
+            .index = index,
+            .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
+            .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
+            .batch_id = self.closed_batch_id,
+        }) catch self.allocator.free(path);
+    }
+
+    fn onActiveHistoryEditor(_: ?*EditorInput, self: *HistoryService) !void {
+        try onHistoryVisibleEditorsChanged({}, self);
+    }
+
+    fn onHistoryVisibleEditorsChanged(_: void, self: *HistoryService) !void {
+        const pane = self.editor_host.?.part.activeView();
+        self.syncHistorySelectionTab(if (pane) |group| group.panes.activePane() else null);
+    }
+
+    fn syncHistorySelectionTab(self: *HistoryService, active_tab: ?*Tab) void {
+        const tab = if (active_tab != null and active_tab.?.terminal_input != null) null else active_tab;
+        if (self.history_tab == tab) return;
+        if (self.history_tab) |old_tab| {
+            if (self.history_selection_listener) |listener| old_tab.removeSelectionListener(listener);
+            if (self.history_content_listener) |listener| old_tab.editor.removeWorkingCopyContentListener(listener);
+        }
+        self.history_tab = tab;
+        self.history_selection_listener = null;
+        self.history_content_listener = null;
+        const next = tab orelse return;
+        const listener = Tab.SelectionListener{
+            .context = self,
+            .callback = onHistorySelectionChanged,
+        };
+        next.addSelectionListener(listener) catch return;
+        self.history_selection_listener = listener;
+        const content_listener = editor_widget.ChangeListener{ .context = self, .callback = onHistoryContentChanged };
+        next.editor.addWorkingCopyContentListener(content_listener);
+        self.history_content_listener = content_listener;
+    }
+
+    pub fn detachHistoryTab(self: *HistoryService, tab: *Tab) void {
+        if (self.history_tab != tab) return;
+        if (self.history_selection_listener) |listener| tab.removeSelectionListener(listener);
+        if (self.history_content_listener) |listener| tab.editor.removeWorkingCopyContentListener(listener);
+        self.history_tab = null;
+        self.history_selection_listener = null;
+        self.history_content_listener = null;
+    }
+
+    fn onHistoryContentChanged(context: *anyopaque) void {
+        const self: *HistoryService = @ptrCast(@alignCast(context));
+        self.recordActiveNavigation(.EDIT);
+    }
+
+    fn onHistorySelectionChanged(context: *anyopaque, reason: editor_common.EditorPaneSelectionChangeReason) void {
+        const self: *HistoryService = @ptrCast(@alignCast(context));
+        // Vim and other navigation sources record explicitly before moving.
+        // A bare USER cursor move must not add a jump-list entry.
+        if (reason == .USER) return;
+        self.recordActiveNavigation(reason);
+    }
+
+    pub fn recordActiveNavigation(self: *HistoryService, reason: editor_common.EditorPaneSelectionChangeReason) void {
+        if (self.history_navigating) return;
+        const tab = self.activeTab() orelse return;
+        const selections = tab.editor.getSelections() catch return;
+        defer self.allocator.free(selections);
+        if (selections.len == 0) return;
+        const group_id = self.editor_host.?.part.service.activeGroup().id;
+        const selection = text_editor_selection_mod.TextEditorPaneSelection.create(self.allocator, selections[0]) catch return;
+        var iface = selection.interface();
+        self.recordNavigation(group_id, tab.editor.path, iface, tab.editor.topViewLine(), reason) catch {
+            iface.dispose();
+        };
+    }
+
+    pub fn goBackInHistory(self: *HistoryService) bool {
+        const tab = self.activeTab() orelse return false;
+        const group_id = self.editor_host.?.part.service.activeGroup().id;
+        // The active location is the destination of a forward navigation and
+        // must be in the stack before stepping back.
+        self.recordActiveNavigation(.NAVIGATION);
+        const entry = self.goBack(.DEFAULT, .NONE, group_id, tab.editor.path) orelse return false;
+        self.restoreNavigation(entry);
+        return true;
+    }
+
+    pub fn goForwardInHistory(self: *HistoryService) bool {
+        const tab = self.activeTab() orelse return false;
+        const group_id = self.editor_host.?.part.service.activeGroup().id;
+        const entry = self.goForward(.DEFAULT, .NONE, group_id, tab.editor.path) orelse return false;
+        self.restoreNavigation(entry);
+        return true;
+    }
+
+    fn restoreNavigation(self: *HistoryService, entry: *EditorNavigationStackEntry) void {
+        if (self.history_navigating) return;
+        self.history_navigating = true;
+        defer self.history_navigating = false;
+
+        var pane: ?*GroupPane = null;
+        for (self.editor_host.?.part.group_views.items) |candidate| {
+            if (candidate.group.id == entry.group_id) {
+                pane = candidate;
+                break;
+            }
+        }
+        if (pane) |target_pane| self.editor_host.?.part.service.activateGroup(target_pane.group);
+
+        if (self.activeTab() == null or !text_files.samePath(self.allocator, self.editor_host.?.io, self.activeTab().?.editor.path, entry.path)) {
+            self.editor_host.?.open_path(self.editor_host.?.context, entry.path) catch |err| {
+                if (self.activeTab()) |tab| tab.editor.setMessage("navigation restore failed: {s}", .{@errorName(err)});
+                return;
+            };
+        } else if (pane) |target_pane| {
+            if (target_pane.activeTab()) |target| {
+                target_pane.activateTab(target) catch {};
+                target.focusEditor();
+            }
+        }
+
+        const tab = self.activeTab() orelse return;
+        if (entry.selection) |selection| {
+            const options = selection.restore(.{});
+            if (options.selection) |restored| {
+                tab.editor.setTextEditorSelectionSource(.PROGRAMMATIC);
+                tab.editor.setSelections(&[_]Selection{restored}) catch {};
+            }
+        }
+        _ = tab.editor.setTopViewLine(entry.top_view_line);
+        self.editor_host.?.focus_editor(self.editor_host.?.context);
+        tab.focusEditor();
+    }
+
+    pub fn beginClosedBatch(self: *HistoryService) void {
+        if (self.in_closed_batch) return;
+        self.in_closed_batch = true;
+        self.closed_batch_id +%= 1;
+    }
+
+    pub fn endClosedBatch(self: *HistoryService) void {
+        self.in_closed_batch = false;
+    }
+
+    pub fn reopenLastClosedEditor(self: *HistoryService) bool {
+        if (self.editor_host == null or self.closed_editors.items.len == 0) return false;
+        const batch_id = self.closed_editors.items[self.closed_editors.items.len - 1].batch_id;
+        var reopened = false;
+        while (self.closed_editors.items.len > 0) {
+            const last = self.closed_editors.items[self.closed_editors.items.len - 1];
+            if (last.batch_id != batch_id) break;
+            const closed = self.closed_editors.pop().?;
+            defer self.allocator.free(closed.path);
+            self.editor_host.?.open_path(self.editor_host.?.context, closed.path) catch continue;
+            if (self.activePane()) |pane| {
+                if (pane.activeTab()) |tab| {
+                    if (closed.index < pane.tabs.items.len) {
+                        _ = pane.group.model.moveEditor(tab.input, @intCast(closed.index)) catch {};
+                    }
+                    if (closed.pinned) _ = pane.group.model.pin(tab.input) catch {};
+                }
+            }
+            reopened = true;
+        }
+        return reopened;
+    }
 
     pub fn init(allocator: Allocator) HistoryService {
         return .{
@@ -139,6 +369,7 @@ pub const HistoryService = struct {
     }
 
     pub fn deinit(self: *HistoryService) void {
+        self.disposeEditorListeners();
         for (self.paths.items) |path| self.allocator.free(path);
         self.paths.deinit();
         self.default_stacks.deinit();

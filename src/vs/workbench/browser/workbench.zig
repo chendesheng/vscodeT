@@ -329,8 +329,6 @@ const ScmDiscardRequest = struct {
 };
 
 const editor_mod = @import("../common/editor.zig");
-const text_editor_selection_mod = @import("./parts/editor/textEditor.zig");
-const editor_widget = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 
 const text_files = @import("../services/textfile/common/textFileService.zig");
 const TextFileRead = text_files.TextFileRead;
@@ -479,15 +477,8 @@ pub const Workbench = struct {
     lifecycle: @import("../services/lifecycle/common/lifecycleService.zig").LifecycleService,
     user_settings_paths: []const []const u8,
     history: HistoryService,
-    /// True while restoring a navigation entry; suppresses recording the
-    /// restore as another navigation.
-    history_navigating: bool = false,
     view_state_storage: ?view_container_model_mod.ViewDescriptorsState = null,
     sidebar_action_anchor: ?MenuAnchor = null,
-    history_tab: ?*Tab = null,
-    history_selection_listener: ?Tab.SelectionListener = null,
-    history_content_listener: ?editor_widget.ChangeListener = null,
-    in_closed_batch: bool = false,
     commands: CommandRegistry,
     working_copy_service: WorkingCopyService,
     tab_service: ?*keybinding_service.KeybindingService,
@@ -865,8 +856,23 @@ pub const Workbench = struct {
         _ = try self.part.on_did_add_group.listenSignal(self, onEditorGroupsChanged);
         _ = try self.part.on_did_move_group.listenSignal(self, onEditorGroupsChanged);
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
-        _ = try self.service.on_did_active_editor_change.listen(self, onActiveHistoryEditor);
-        _ = try self.service.on_did_visible_editors_change.listen(self, onHistoryVisibleEditorsChanged);
+        try self.history.registerListeners(.{
+            .context = self,
+            .part = self.part,
+            .io = self.io,
+            .open_path = struct {
+                fn run(context: *anyopaque, path: []const u8) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.openPath(path);
+                }
+            }.run,
+            .focus_editor = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.focusEditor();
+                }
+            }.run,
+        });
         self.focus_subscriptions[0] = try self.service.on_did_active_editor_change.listenSignal(self, updatePartFocus);
         self.focus_subscriptions[1] = try self.service.on_did_visible_editors_change.listenSignal(self, updatePartFocus);
         self.focus_subscriptions[2] = try self.quick_input_api.on_show.listenSignal(self, updatePartFocus);
@@ -1245,11 +1251,6 @@ pub const Workbench = struct {
     fn initQuickAccess(self: *Workbench) !void {
         self.view_state_storage = null;
         self.sidebar_action_anchor = null;
-        self.history_navigating = false;
-        self.history_tab = null;
-        self.history_selection_listener = null;
-        self.history_content_listener = null;
-        self.in_closed_batch = false;
         self.history = HistoryService.init(self.allocator);
         errdefer self.history.deinit();
 
@@ -1779,11 +1780,6 @@ pub const Workbench = struct {
         self.working_copy_service.deinit();
         self.menu_service.deinit();
         self.commands.deinit();
-        if (self.history_tab) |tab| {
-            if (self.history_selection_listener) |listener| tab.removeSelectionListener(listener);
-            if (self.history_content_listener) |listener| tab.editor.removeWorkingCopyContentListener(listener);
-            self.history_tab = null;
-        }
         self.history.deinit();
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
@@ -3241,57 +3237,6 @@ pub const Workbench = struct {
         return pane.activeTab();
     }
 
-    fn onActiveHistoryEditor(_: ?*EditorInput, self: *Workbench) !void {
-        try onHistoryVisibleEditorsChanged({}, self);
-    }
-    fn onHistoryVisibleEditorsChanged(_: void, self: *Workbench) !void {
-        const editor_service = @import("../services/editor/browser/editorService.zig").EditorService{ .part = self.part };
-        self.syncHistorySelectionTab(editor_service.activeEditorPane());
-    }
-    fn syncHistorySelectionTab(self: *Workbench, active_tab: ?*Tab) void {
-        const tab = if (active_tab != null and active_tab.?.terminal_input != null) null else active_tab;
-        if (self.history_tab == tab) return;
-        if (self.history_tab) |old_tab| {
-            if (self.history_selection_listener) |listener| old_tab.removeSelectionListener(listener);
-            if (self.history_content_listener) |listener| old_tab.editor.removeWorkingCopyContentListener(listener);
-        }
-        self.history_tab = tab;
-        self.history_selection_listener = null;
-        self.history_content_listener = null;
-        const next = tab orelse return;
-        const listener = Tab.SelectionListener{
-            .context = self,
-            .callback = onHistorySelectionChanged,
-        };
-        next.addSelectionListener(listener) catch return;
-        self.history_selection_listener = listener;
-        const content_listener = editor_widget.ChangeListener{ .context = self, .callback = onHistoryContentChanged };
-        next.editor.addWorkingCopyContentListener(content_listener);
-        self.history_content_listener = content_listener;
-    }
-
-    fn detachHistoryTab(self: *Workbench, tab: *Tab) void {
-        if (self.history_tab != tab) return;
-        if (self.history_selection_listener) |listener| tab.removeSelectionListener(listener);
-        if (self.history_content_listener) |listener| tab.editor.removeWorkingCopyContentListener(listener);
-        self.history_tab = null;
-        self.history_selection_listener = null;
-        self.history_content_listener = null;
-    }
-
-    fn onHistoryContentChanged(context: *anyopaque) void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        self.recordNavigationWithReason(.EDIT);
-    }
-
-    fn onHistorySelectionChanged(context: *anyopaque, reason: editor_mod.EditorPaneSelectionChangeReason) void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        // Vim and other navigation sources record explicitly before moving.
-        // A bare USER cursor move must not add a jump-list entry.
-        if (reason == .USER) return;
-        self.recordNavigationWithReason(reason);
-    }
-
     pub fn tabCount(self: *Workbench) usize {
         return (editor_service_mod.EditorService{ .part = self.part }).tabCount();
     }
@@ -4136,75 +4081,15 @@ pub const Workbench = struct {
     }
 
     pub fn recordNavigationWithReason(self: *Workbench, reason: editor_mod.EditorPaneSelectionChangeReason) void {
-        if (self.history_navigating) return;
-        const tab = self.activeTab() orelse return;
-        const selections = tab.editor.getSelections() catch return;
-        defer self.allocator.free(selections);
-        if (selections.len == 0) return;
-        const group_id = self.service.activeGroup().id;
-        const selection = text_editor_selection_mod.TextEditorPaneSelection.create(self.allocator, selections[0]) catch return;
-        var iface = selection.interface();
-        self.history.recordNavigation(group_id, tab.editor.path, iface, tab.editor.topViewLine(), reason) catch {
-            iface.dispose();
-        };
+        self.history.recordActiveNavigation(reason);
     }
 
     pub fn goBackInHistory(self: *Workbench) bool {
-        const tab = self.activeTab() orelse return false;
-        const group_id = self.service.activeGroup().id;
-        // The active location is the destination of a forward navigation and
-        // must be in the stack before stepping back.
-        self.recordNavigationWithReason(.NAVIGATION);
-        const entry = self.history.goBack(.DEFAULT, .NONE, group_id, tab.editor.path) orelse return false;
-        self.restoreNavigation(entry);
-        return true;
+        return self.history.goBackInHistory();
     }
 
     pub fn goForwardInHistory(self: *Workbench) bool {
-        const tab = self.activeTab() orelse return false;
-        const group_id = self.service.activeGroup().id;
-        const entry = self.history.goForward(.DEFAULT, .NONE, group_id, tab.editor.path) orelse return false;
-        self.restoreNavigation(entry);
-        return true;
-    }
-
-    fn restoreNavigation(self: *Workbench, entry: *history_mod.EditorNavigationStackEntry) void {
-        if (self.history_navigating) return;
-        self.history_navigating = true;
-        defer self.history_navigating = false;
-
-        var pane: ?*GroupPane = null;
-        for (self.part.group_views.items) |candidate| {
-            if (candidate.group.id == entry.group_id) {
-                pane = candidate;
-                break;
-            }
-        }
-        if (pane) |target_pane| self.service.activateGroup(target_pane.group);
-
-        if (self.activeTab() == null or !self.samePath(self.activeTab().?.editor.path, entry.path)) {
-            self.openPath(entry.path) catch |err| {
-                if (self.activeTab()) |tab| tab.editor.setMessage("navigation restore failed: {s}", .{@errorName(err)});
-                return;
-            };
-        } else if (pane) |target_pane| {
-            if (target_pane.activeTab()) |target| {
-                target_pane.activateTab(target) catch {};
-                target.focusEditor();
-            }
-        }
-
-        const tab = self.activeTab() orelse return;
-        if (entry.selection) |selection| {
-            const options = selection.restore(.{});
-            if (options.selection) |restored| {
-                tab.editor.setTextEditorSelectionSource(.PROGRAMMATIC);
-                tab.editor.setSelections(&[_]Selection{restored}) catch {};
-            }
-        }
-        _ = tab.editor.setTopViewLine(entry.top_view_line);
-        self.focusEditor();
-        tab.focusEditor();
+        return self.history.goForwardInHistory();
     }
 
     pub fn openPath(self: *Workbench, path: []const u8) !void {
@@ -4844,7 +4729,7 @@ pub const Workbench = struct {
             _ = pane.removeTab(tab);
 
             self.unregisterWorkingCopy(tab);
-            self.detachHistoryTab(tab);
+            self.history.detachHistoryTab(tab);
             self.detachTabViewHandlers(tab);
             tab.deinit();
         }
@@ -5169,8 +5054,8 @@ pub const Workbench = struct {
     /// Close every editor in every group, stopping at the first dirty-close
     /// confirmation instead of silently discarding the remaining editors.
     pub fn closeAllEditors(self: *Workbench) !void {
-        self.beginClosedBatch();
-        defer self.endClosedBatch();
+        self.history.beginClosedBatch();
+        defer self.history.endClosedBatch();
         while (self.tabCount() > 0) {
             var closed = false;
             for (self.part.group_views.items) |pane| {
@@ -5186,8 +5071,8 @@ pub const Workbench = struct {
     /// Port of `workbench.action.closeOtherEditors`: close every tab in the
     /// active group except the active one.
     pub fn closeOtherEditors(self: *Workbench) !void {
-        self.beginClosedBatch();
-        defer self.endClosedBatch();
+        self.history.beginClosedBatch();
+        defer self.history.endClosedBatch();
         const pane = self.activePane() orelse return;
         const active = pane.activeTab() orelse return;
         while (pane.tabs.items.len > 1) {
@@ -5486,37 +5371,8 @@ pub const Workbench = struct {
         if (self.activeTab()) |tab| tab.focusEditor();
     }
 
-    fn beginClosedBatch(self: *Workbench) void {
-        if (self.in_closed_batch) return;
-        self.in_closed_batch = true;
-        self.history.closed_batch_id +%= 1;
-    }
-
-    fn endClosedBatch(self: *Workbench) void {
-        self.in_closed_batch = false;
-    }
-
     pub fn reopenLastClosedEditor(self: *Workbench) bool {
-        if (self.history.closed_editors.items.len == 0) return false;
-        const batch_id = self.history.closed_editors.items[self.history.closed_editors.items.len - 1].batch_id;
-        var reopened = false;
-        while (self.history.closed_editors.items.len > 0) {
-            const last = self.history.closed_editors.items[self.history.closed_editors.items.len - 1];
-            if (last.batch_id != batch_id) break;
-            const closed = self.history.closed_editors.pop().?;
-            defer self.allocator.free(closed.path);
-            self.openPath(closed.path) catch continue;
-            if (self.activePane()) |pane| {
-                if (pane.activeTab()) |tab| {
-                    if (closed.index < pane.tabs.items.len) {
-                        _ = pane.group.model.moveEditor(tab.input, @intCast(closed.index)) catch {};
-                    }
-                    if (closed.pinned) _ = pane.group.model.pin(tab.input) catch {};
-                }
-            }
-            reopened = true;
-        }
-        return reopened;
+        return self.history.reopenLastClosedEditor();
     }
 
     /// Detaches raw editor view-event handlers before a tab destroys its
@@ -5536,17 +5392,7 @@ pub const Workbench = struct {
                 if (std.mem.indexOfScalar(*Tab, context.tabs, tab) != null) self.context_menu_service.hideContextMenu();
             }
         }
-        if (!self.in_closed_batch) self.history.closed_batch_id +%= 1;
-        if (tab.input.canReopen()) if (pane.indexOfTab(tab)) |index| {
-            self.history.recordClosedEditor(.{
-                .path = self.allocator.dupe(u8, tab.editor.path) catch &.{},
-                .group_id = pane.group.id,
-                .index = index,
-                .sticky = pane.group.model.isSticky(.{ .editor = tab.input }),
-                .pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
-                .batch_id = self.history.closed_batch_id,
-            }) catch {};
-        };
+        self.history.recordClosedTab(pane, tab);
         _ = try pane.group.model.closeEditor(tab.input, .UNKNOWN, true);
         _ = pane.removeTab(tab);
         pane.syncActivePane();
@@ -5555,7 +5401,7 @@ pub const Workbench = struct {
         if (!tab.isImage() and tab.terminal_input == null) {
             self.unregisterWorkingCopy(tab);
         }
-        self.detachHistoryTab(tab);
+        self.history.detachHistoryTab(tab);
         self.detachTabViewHandlers(tab);
         tab.deinit();
 
@@ -6002,7 +5848,7 @@ pub const Workbench = struct {
     /// workbench registrations that keep raw pointers into it.
     fn discardTab(self: *Workbench, tab: *Tab) void {
         if (self.hovered_tab == tab) self.hovered_tab = null;
-        self.detachHistoryTab(tab);
+        self.history.detachHistoryTab(tab);
         self.unregisterWorkingCopy(tab);
         self.detachTabViewHandlers(tab);
         tab.deinit();

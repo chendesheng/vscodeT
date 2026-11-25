@@ -8922,3 +8922,27 @@ test "editor and quick input focus events precede the next terminal frame" {
     wb.focusEditor();
     try std.testing.expect(a.view.isFocused());
 }
+
+test "HistoryService records active editor changes before a frame and detaches old pane listeners" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path_a = try seedFile(allocator, io, &tmp, "history-event-a.txt", "a");
+    defer allocator.free(path_a);
+    const path_b = try seedFile(allocator, io, &tmp, "history-event-b.txt", "b");
+    defer allocator.free(path_b);
+    const window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 15);
+    defer window.deinit();
+    const workbench = window.workbench;
+    try workbench.activateIndex(0);
+    const first = workbench.activeTab().?;
+    try first.editor.insertText("x");
+    try std.testing.expectEqualStrings(first.editor.path, workbench.history.default_stacks.edits.current().?.path);
+    try workbench.activateIndex(1);
+    const second = workbench.activeTab().?;
+    try second.editor.insertText("y");
+    try std.testing.expectEqualStrings(second.editor.path, workbench.history.default_stacks.edits.current().?.path);
+    try first.editor.insertText("z");
+    try std.testing.expectEqualStrings(second.editor.path, workbench.history.default_stacks.edits.current().?.path);
+}
