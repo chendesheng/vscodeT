@@ -374,41 +374,10 @@ const editor_widget = @import("../../editor/browser/widget/codeEditor/codeEditor
 
 const text_files = @import("../services/textfile/common/textFileService.zig");
 const TextFileRead = text_files.TextFileRead;
-const WindowTask = @import("../../base/common/windowDispatch.zig").Task;
 const OpenJob = struct {
     read: *TextFileRead,
     options: Workbench.OpenOptions,
 };
-
-const KeybindingsOutcome = union(enum) {
-    bindings: *user_keybindings_mod.UserKeybindings,
-    err: anyerror,
-};
-
-const KeybindingsJob = struct {
-    allocator: Allocator,
-    io: Io,
-    future: Io.Future(KeybindingsOutcome),
-    completion: WindowTask,
-    paths: [][]u8,
-
-    fn deinit(self: *KeybindingsJob, allocator: Allocator) void {
-        for (self.paths) |path| allocator.free(path);
-        allocator.free(self.paths);
-        allocator.destroy(self);
-    }
-};
-
-fn runKeybindingsJob(job: *KeybindingsJob) KeybindingsOutcome {
-    defer job.completion.post();
-    var path_views = std.array_list.Managed([]const u8).init(job.allocator);
-    defer path_views.deinit();
-    for (job.paths) |path| path_views.append(path) catch return .{ .err = error.OutOfMemory };
-    const bindings = user_keybindings_mod.UserKeybindings.load(job.allocator, job.io, path_views.items) catch |err| {
-        return .{ .err = err };
-    };
-    return .{ .bindings = bindings };
-}
 
 const context_menus = @import("../../platform/contextview/browser/contextMenuService.zig");
 const Menu = context_menus.Menu;
@@ -490,8 +459,6 @@ pub const Workbench = struct {
     /// supersedes it; the generation is checked again when the result lands.
     pending_open: ?OpenJob = null,
     reload_jobs: std.array_list.Managed(*TextFileRead),
-    keybindings_job: ?*KeybindingsJob = null,
-    keybindings_reload_pending: bool = false,
     cols: usize,
     rows: usize,
 
@@ -556,9 +523,6 @@ pub const Workbench = struct {
     contributions: contributions_mod.WorkbenchContributions,
     lifecycle: @import("../services/lifecycle/common/lifecycleService.zig").LifecycleService,
     user_settings_paths: []const []const u8,
-    /// User keybinding files (VS Code profile then TUI override). Watched by
-    /// the settings watcher; reloaded with the rest of the configuration.
-    keybindings_paths: []const []const u8,
     history: HistoryService,
     /// True while restoring a navigation entry; suppresses recording the
     /// restore as another navigation.
@@ -578,9 +542,7 @@ pub const Workbench = struct {
     context_keys: ?*context_key_mod.ContextKeyService,
     context_key_handles: ?ContextKeyHandles,
     workbench_context: @import("contextkeys.zig").WorkbenchContextKeysHandler,
-    user_keybindings: ?*user_keybindings_mod.UserKeybindings,
-    /// Filtered user bindings passed to the global host; owned by the workbench.
-    global_user_overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem,
+    user_keybindings: *user_keybindings_mod.UserKeybindingsLoader,
     theme_service: ?*theme_service_mod.ThemeService,
     syntax_theme: syntax_theme_mod.SyntaxTheme,
     syntax_theme_ready: bool,
@@ -701,8 +663,6 @@ pub const Workbench = struct {
         errdefer self.text_file_service.deinit();
         self.pending_open = null;
         self.reload_jobs = std.array_list.Managed(*TextFileRead).init(allocator);
-        self.keybindings_job = null;
-        self.keybindings_reload_pending = false;
         self.editor_surface = surface;
         self.cols = surface.document().cols;
         self.tab_service = null;
@@ -710,8 +670,6 @@ pub const Workbench = struct {
         self.statusbar_service = null;
         self.context_keys = null;
         self.context_key_handles = null;
-        self.user_keybindings = null;
-        self.global_user_overrides = &.{};
         self.theme_service = null;
         self.syntax_theme = .{};
         self.syntax_theme_ready = false;
@@ -751,6 +709,9 @@ pub const Workbench = struct {
         self.explorer_view_model = null;
         self.explorer_panes = null;
         self.window_events = .{ .io = self.async_io };
+        self.user_keybindings = try user_keybindings_mod.UserKeybindingsLoader.create(allocator, io, self.async_io, &self.window_events);
+        errdefer self.user_keybindings.destroy();
+        _ = try self.user_keybindings.on_did_change.listen(self, onUserKeybindingsChanged);
         self.drag_task = .{ .queue = &self.window_events, .context = self, .run = onEditorDragDeadline };
         self.search_view = null;
         self.search_service = null;
@@ -809,7 +770,6 @@ pub const Workbench = struct {
         errdefer self.contributions.deinit();
         try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
         self.user_settings_paths = &.{};
-        self.keybindings_paths = &.{};
 
         self.service = if (state) |previous|
             try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, previous.data, previous.registry, .{})
@@ -1821,9 +1781,7 @@ pub const Workbench = struct {
             service.deinit();
         }
         if (self.statusbar_service) |service| service.deinit();
-        self.freeUserOverrides(self.global_user_overrides);
-        self.global_user_overrides = &.{};
-        if (self.user_keybindings) |bindings| bindings.deinit();
+        self.user_keybindings.destroy();
         if (self.context_keys) |service| {
             service.deinit();
             self.allocator.destroy(service);
@@ -1862,7 +1820,6 @@ pub const Workbench = struct {
         self.lifecycle.deinit();
         if (self.configuration) |configuration| configuration.deinit();
         freeOwnedPaths(self.allocator, self.user_settings_paths);
-        freeOwnedPaths(self.allocator, self.keybindings_paths);
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
@@ -2270,12 +2227,7 @@ pub const Workbench = struct {
     /// Sets the user keybinding files. They are watched by the settings
     /// watcher; the keymap itself is rebuilt by the keybinding phase.
     pub fn setKeybindingsPaths(self: *Workbench, paths: []const []const u8) !void {
-        freeOwnedPaths(self.allocator, self.keybindings_paths);
-        self.keybindings_paths = try dupeOwnedPaths(self.allocator, paths);
-        if (self.settings_watcher) |watcher| {
-            watcher.setExtraPaths(self.keybindings_paths) catch {};
-        }
-        self.reloadKeybindings();
+        try self.user_keybindings.setPaths(paths, self.ensureFileService() catch null);
     }
 
     fn ensureConfiguration(self: *Workbench) !void {
@@ -2307,7 +2259,6 @@ pub const Workbench = struct {
         if (self.settings_watcher) |watcher| {
             watcher.setOnReload(.{ .context = self, .callback = onSettingsReloaded });
             watcher.setAsyncIo(self.async_io);
-            watcher.setExtraPaths(self.keybindings_paths) catch {};
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
         self.applyLayoutSettings(null);
@@ -2336,7 +2287,6 @@ pub const Workbench = struct {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyConfiguredLanguageAssociationsToAllEditors();
         if (self.search_view) |view| view.onConfigurationChanged();
-        self.requestKeybindingsReload();
         self.applyBreadcrumbsSettings();
         self.applyMarkdownPreviewConfig();
         if (self.git_model.repository != null) self.refreshGitStatus();
@@ -4762,7 +4712,7 @@ pub const Workbench = struct {
         self.cancelPendingOpen();
         self.cancelReloadJobs();
         if (self.theme_service) |service| service.cancelColorThemeLoad();
-        self.cancelKeybindingsJob();
+        self.user_keybindings.cancelReload();
         if (self.sidebar) |sidebar| sidebar.cancelLoad();
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -6218,19 +6168,8 @@ pub const Workbench = struct {
         return palette.color(id, fallback);
     }
 
-    fn ensureUserKeybindings(self: *Workbench) !void {
-        if (self.user_keybindings != null) return;
-        if (self.keybindings_paths.len == 0) return;
-        self.user_keybindings = try user_keybindings_mod.UserKeybindings.load(
-            self.allocator,
-            self.io,
-            self.keybindings_paths,
-        );
-    }
-
     fn userRemovalOverrides(self: *Workbench) []const *const resolved_keybinding_item.ResolvedKeybindingItem {
-        const bindings = self.user_keybindings orelse return &.{};
-        return bindings.removals();
+        return self.user_keybindings.removals();
     }
 
     fn isKnownCommand(self: *const Workbench, command: []const u8) bool {
@@ -6247,34 +6186,15 @@ pub const Workbench = struct {
         return false;
     }
 
-    fn buildGlobalUserOverrides(self: *Workbench) ![]const *const resolved_keybinding_item.ResolvedKeybindingItem {
-        self.ensureUserKeybindings() catch return &.{};
-        const bindings = self.user_keybindings orelse return &.{};
-        var overrides = std.array_list.Managed(*const resolved_keybinding_item.ResolvedKeybindingItem).init(self.allocator);
-        errdefer overrides.deinit();
-        for (bindings.userItems()) |item| {
-            const command = item.command orelse continue;
-            if (!self.isKnownCommand(command)) continue;
-            try overrides.append(item);
-        }
-        for (bindings.removals()) |item| try overrides.append(item);
-        return overrides.toOwnedSlice();
+    fn isKnownKeybindingCommand(context: *anyopaque, command: []const u8) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return self.isKnownCommand(command);
     }
 
-    fn freeUserOverrides(
-        self: *Workbench,
-        overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem,
-    ) void {
-        if (overrides.len > 0) self.allocator.free(overrides);
-    }
-
-    /// Rebuilds every keybinding host after the user keymap changed. The old
-    /// hosts are disposed before the keymap owner so no service keeps borrowed
-    /// items past their lifetime.
-    pub fn reloadKeybindings(self: *Workbench) void {
+    fn onUserKeybindingsChanged(_: void, self: *Workbench) !void {
         self.disposeKeybindingServices();
-        self.ensureUserKeybindings() catch {};
         self.applyKeybindingConsumers();
+        self.requestFrame();
     }
 
     fn disposeKeybindingServices(self: *Workbench) void {
@@ -6290,12 +6210,6 @@ pub const Workbench = struct {
             service.deinit();
             self.statusbar_service = null;
         }
-        self.freeUserOverrides(self.global_user_overrides);
-        self.global_user_overrides = &.{};
-        if (self.user_keybindings) |bindings| {
-            bindings.deinit();
-            self.user_keybindings = null;
-        }
     }
 
     fn applyKeybindingConsumers(self: *Workbench) void {
@@ -6307,72 +6221,6 @@ pub const Workbench = struct {
             }
         }
         if (self.search_view) |view| view.reloadKeybindings(removals);
-    }
-
-    /// Watcher-triggered keybindings reload. The JSONC files are read/parsed on
-    /// the async Io, then installed on the TUI thread.
-    fn requestKeybindingsReload(self: *Workbench) void {
-        if (self.keybindings_job != null) {
-            self.keybindings_reload_pending = true;
-            return;
-        }
-        const paths = self.allocator.alloc([]u8, self.keybindings_paths.len) catch return;
-        var initialized: usize = 0;
-        for (self.keybindings_paths, 0..) |path, index| {
-            paths[index] = self.allocator.dupe(u8, path) catch {
-                for (paths[0..initialized]) |owned| self.allocator.free(owned);
-                self.allocator.free(paths);
-                return;
-            };
-            initialized += 1;
-        }
-        const job = self.allocator.create(KeybindingsJob) catch {
-            for (paths) |path| self.allocator.free(path);
-            self.allocator.free(paths);
-            return;
-        };
-        job.* = .{
-            .allocator = self.allocator,
-            .io = self.async_io,
-            .completion = .{ .queue = &self.window_events, .context = self, .run = applyLoadedKeybindings, .progress = true },
-            .future = undefined,
-            .paths = paths,
-        };
-        job.future = self.async_io.async(runKeybindingsJob, .{job});
-        self.keybindings_job = job;
-    }
-
-    fn applyLoadedKeybindings(context: *anyopaque, _: i64, _: bool) bool {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const job = self.keybindings_job.?;
-        const result = job.future.await(self.async_io);
-        self.keybindings_job = null;
-        switch (result) {
-            .bindings => |bindings| {
-                self.disposeKeybindingServices();
-                self.user_keybindings = bindings;
-                self.applyKeybindingConsumers();
-            },
-            .err => {},
-        }
-        job.deinit(self.allocator);
-        if (self.keybindings_reload_pending) {
-            self.keybindings_reload_pending = false;
-            self.requestKeybindingsReload();
-        }
-        return true;
-    }
-
-    fn cancelKeybindingsJob(self: *Workbench) void {
-        self.keybindings_reload_pending = false;
-        const job = self.keybindings_job orelse return;
-        self.keybindings_job = null;
-        const result = job.future.cancel(job.io);
-        job.completion.schedule(null);
-        if (result == .bindings) {
-            result.bindings.deinit();
-        }
-        job.deinit(self.allocator);
     }
 
     fn ensureThemeService(self: *Workbench) !*theme_service_mod.ThemeService {
@@ -6462,8 +6310,8 @@ pub const Workbench = struct {
         if (self.global_service) |service| return service;
         const context = try self.ensureContextKeys();
         self.updateContextKeys();
-        const overrides = try self.buildGlobalUserOverrides();
-        errdefer self.freeUserOverrides(overrides);
+        const overrides = try self.user_keybindings.filteredOverrides(self, isKnownKeybindingCommand);
+        defer self.allocator.free(overrides);
         const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
             .rules = &global_keybinding_rules,
             .contributions = &self.commands.bindings,
@@ -6471,7 +6319,6 @@ pub const Workbench = struct {
             .context = context,
             .overrides = overrides,
         });
-        self.global_user_overrides = overrides;
         self.global_service = service;
         return service;
     }
@@ -6500,7 +6347,7 @@ pub const Workbench = struct {
 
     fn ensureTabService(self: *Workbench) !*keybinding_service.KeybindingService {
         if (self.tab_service) |service| return service;
-        self.ensureUserKeybindings() catch {};
+        self.user_keybindings.ensureLoaded() catch {};
         const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
             .rules = &tab_keybinding_rules,
             .executor = .{ .context = self, .execute = executeTabCommand },
@@ -7342,7 +7189,7 @@ pub const Workbench = struct {
 
     fn ensureStatusbarService(self: *Workbench) !*keybinding_service.KeybindingService {
         if (self.statusbar_service) |service| return service;
-        self.ensureUserKeybindings() catch {};
+        self.user_keybindings.ensureLoaded() catch {};
         const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
             .rules = &statusbar_keybinding_rules,
             .executor = .{ .context = self, .execute = executeStatusbarKeyCommand },
@@ -9938,7 +9785,7 @@ fn commandOpenSettingsJson(context: *anyopaque) anyerror!void {
 
 fn commandOpenKeybindingsJson(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    try openConfigJson(self, self.keybindings_paths, "[\n]\n");
+    try openConfigJson(self, self.user_keybindings.paths, "[\n]\n");
 }
 
 /// Opens the highest-precedence (TUI) settings or keybindings file, creating

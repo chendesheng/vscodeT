@@ -50,7 +50,7 @@ pub const Options = struct {
     /// (tests and standalone hosts).
     context: ?*contextkey.ContextKeyService = null,
     /// User-keybinding overrides, including `-command` removal entries. The
-    /// resolver borrows them for the lifetime of the service.
+    /// resolver borrows the items (not the pointer slice) for its lifetime.
     overrides: []const *const ResolvedKeybindingItem = &.{},
 };
 
@@ -59,7 +59,6 @@ pub const KeybindingService = struct {
     arena: std.heap.ArenaAllocator,
     context: *contextkey.ContextKeyService,
     owns_context: bool,
-    overrides: []const *const ResolvedKeybindingItem,
     noop_notification: notification_mod.NoOpNotification = .{},
     commands: abstract_mod.CommandExecutor,
     items: std.array_list.Managed(*ResolvedKeybindingItem),
@@ -103,7 +102,6 @@ pub const KeybindingService = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .context = context,
             .owns_context = options.context == null,
-            .overrides = options.overrides,
             .commands = options.executor,
             .items = std.array_list.Managed(*ResolvedKeybindingItem).init(allocator),
             .resolved = std.array_list.Managed(*USLayoutResolvedKeybinding).init(allocator),
@@ -131,8 +129,7 @@ pub const KeybindingService = struct {
             );
             try self.items.append(entry);
         }
-        const item_ptrs = try allocator.alloc(*const ResolvedKeybindingItem, self.items.items.len);
-        defer allocator.free(item_ptrs);
+        const item_ptrs = try self.arena.allocator().alloc(*const ResolvedKeybindingItem, self.items.items.len);
         for (self.items.items, 0..) |item, index| item_ptrs[index] = item;
         self.resolver = try resolver_module.KeybindingResolver.init(allocator, item_ptrs, options.overrides);
 

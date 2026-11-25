@@ -2575,6 +2575,24 @@ test "Workbench: list keybindings route to the focused sidebar" {
     try std.testing.expect(!(try workbench.handleGlobalKey(&j)));
     workbench.focusSidebar();
     try std.testing.expect(try workbench.handleGlobalKey(&j));
+
+    // File-service notifications schedule the user-keybinding owner's reload
+    // independently of settings.json, even while the editor is idle.
+    const old = workbench.user_keybindings.current;
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = keybindings_path,
+        .data = "[{ \"key\": \"k\", \"command\": \"list.focusDown\", \"when\": \"listFocus\" }]",
+    });
+    try workbench.file_watcher_service.?.on_did_change.fire(&.{.{ .type = .UPDATED, .resource = keybindings_path }});
+    var guard: usize = 0;
+    while (old == workbench.user_keybindings.current and guard < 1000) : (guard += 1) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+    }
+    try std.testing.expect(old != workbench.user_keybindings.current);
+    try std.testing.expect(!(try workbench.handleGlobalKey(&j)));
+    var k = ui.KeyEvent{ .key = .{ .char = 'k' } };
+    try std.testing.expect(try workbench.handleGlobalKey(&k));
 }
 
 test "Workbench: color theme settings load a registered theme palette" {
