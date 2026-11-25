@@ -349,12 +349,14 @@ const CloseTabRequest = struct {
     tab: *Tab,
 };
 
-/// The workbench operation waiting for the modal dialog result.
-const DialogRequest = union(enum) {
-    close_tab: CloseTabRequest,
-    quit,
-    replace_all,
-    discard_scm: ScmDiscardRequest,
+const CloseTabDialog = struct {
+    workbench: *Workbench,
+    request: CloseTabRequest,
+};
+
+const ScmDiscardDialog = struct {
+    workbench: *Workbench,
+    request: ScmDiscardRequest,
 };
 
 const ScmDiscardRequest = struct {
@@ -629,8 +631,9 @@ pub const Workbench = struct {
     /// Set when the quit confirmation commits to closing the window.
     quit_requested: bool = false,
     /// The modal save confirmation, if one is open.
-    dialog: ?*ui.Dialog = null,
-    pending_dialog: ?DialogRequest = null,
+    dialog_service: @import("../services/dialogs/common/dialogService.zig").DialogService,
+    dialog_handler: *@import("parts/dialogs/dialog.web.contribution.zig").DialogHandlerContribution,
+    dialog_api: dialogs.IDialogService,
 
     pub const PreviousState = struct {
         data: editor_groups.SerializedEditorPart,
@@ -690,8 +693,6 @@ pub const Workbench = struct {
         self.scm_view_model = null;
         self.scm_container = null;
         self.quit_requested = false;
-        self.dialog = null;
-        self.pending_dialog = null;
         self.images = ui.image.Runtime.init(allocator);
         self.pointer = .default;
         self.pointer_state = .{};
@@ -850,6 +851,8 @@ pub const Workbench = struct {
     fn registerListeners(self: *Workbench) !void {
         _ = try self.lifecycle_api.on_will_shutdown.listen(self, onWillShutdown);
         _ = try self.lifecycle_api.on_did_shutdown.listen(self, onDidShutdown);
+        _ = try self.dialog_api.on_will_show_dialog.listenSignal(self, onDialogStateChanged);
+        _ = try self.dialog_api.on_did_show_dialog.listenSignal(self, onDialogStateChanged);
         _ = try self.part.on_did_focus.listen(self, onEditorPartFocus);
         _ = try self.part.on_did_add_group.listenSignal(self, onEditorGroupsChanged);
         _ = try self.part.on_did_move_group.listenSignal(self, onEditorGroupsChanged);
@@ -889,6 +892,8 @@ pub const Workbench = struct {
         self.editors = .{ .part = self.part };
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
+        self.dialog_api = self.dialog_service.interface();
+        _ = try self.services.set(dialogs.dialog_service_id, &self.dialog_api);
         _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
         _ = try self.services.set(layout_service_mod.layout_service_id, &self.layout_api);
         _ = try self.services.set(@import("../../platform/notification/common/notification.zig").notification_service_id, &self.notification_api);
@@ -960,6 +965,10 @@ pub const Workbench = struct {
     }
 
     fn initShellModels(self: *Workbench) !void {
+        self.dialog_service = .init(self.allocator);
+        errdefer self.dialog_service.deinit();
+        self.dialog_handler = try @import("parts/dialogs/dialog.web.contribution.zig").DialogHandlerContribution.create(self.allocator, &self.dialog_service.model);
+        errdefer self.dialog_handler.destroy();
         self.problems_view = null;
         self.marker_listener = null;
         self.markers_status = null;
@@ -1181,6 +1190,8 @@ pub const Workbench = struct {
     }
 
     fn deinitShellModels(self: *Workbench) void {
+        self.dialog_handler.destroy();
+        self.dialog_service.deinit();
         if (self.problems_view) |*view| {
             view.deinit();
             self.problems_view = null;
@@ -1653,30 +1664,18 @@ pub const Workbench = struct {
         try self.context_menu_service.showContextMenu(menu, anchor, theme);
     }
 
-    /// Routes one key to the modal dialog. Returns false when no dialog is
-    /// open. Every key is consumed while it is open; Escape cancels, Enter or
-    /// Space activates the focused button.
     pub fn handleDialogKey(self: *Workbench, event: *ui.KeyEvent) bool {
-        const dialog = self.dialog orelse return false;
-        switch (dialog.handleKey(event)) {
-            .none => {},
-            .activate => |index| self.resolveDialogButton(index),
-            .cancel => self.resolveDialog(.CANCEL),
-        }
-        return true;
+        return self.dialog_handler.handleKey(event);
     }
 
-    /// Routes one mouse event to the modal dialog. Every event is consumed
-    /// while it is open; a click outside the buttons only changes focus.
     pub fn handleDialogMouse(self: *Workbench, event: *ui.MouseEvent) bool {
-        const dialog = self.dialog orelse return false;
-        self.pointer = dialog.pointerAt(event.x, event.y);
-        if (dialog.handleMouse(event)) |index| self.resolveDialogButton(index);
-        return true;
+        if (!self.isDialogOpen()) return false;
+        self.pointer = self.dialog_handler.pointerAt(event.x, event.y);
+        return self.dialog_handler.handleMouse(event);
     }
 
     pub fn isDialogOpen(self: *const Workbench) bool {
-        return self.dialog != null;
+        return self.dialog_service.hasDialog();
     }
 
     /// True once the quit confirmation saved or discarded every dirty tab and
@@ -1737,14 +1736,6 @@ pub const Workbench = struct {
             popup.deinit();
             self.breadcrumb_popup = null;
         }
-        if (self.dialog) |dialog| {
-            dialog.deinit();
-            self.dialog = null;
-        }
-        if (self.pending_dialog) |request| {
-            if (request == .discard_scm) request.discard_scm.deinit(self.allocator);
-        }
-        self.pending_dialog = null;
         if (self.outline_creator) |*creator| creator.dispose();
         self.disposeBreadcrumbs();
         self.disposeAllInactiveBreadcrumbs();
@@ -3130,7 +3121,7 @@ pub const Workbench = struct {
     }
 
     pub fn terminalAcceptsPaste(self: *const Workbench) bool {
-        return self.terminalFocused() and self.context_menu_service.current == null and !self.quick_access.isOpen() and self.dialog == null;
+        return self.terminalFocused() and self.context_menu_service.current == null and !self.quick_access.isOpen() and !self.isDialogOpen();
     }
 
     pub fn pasteTerminal(self: *Workbench, content: []const u8) !void {
@@ -3144,7 +3135,7 @@ pub const Workbench = struct {
     }
 
     pub fn handleTerminalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
-        if (self.dialog != null or self.quick_access.isOpen()) return false;
+        if (self.isDialogOpen() or self.quick_access.isOpen()) return false;
         if (self.focus == .terminal and self.terminalPanelActive()) {
             if (self.terminal_tabbed_view.tab_list.focused) {
                 switch (event.key) {
@@ -3932,7 +3923,7 @@ pub const Workbench = struct {
     }
 
     fn confirmScmDiscard(self: *Workbench, resource: *const repository_mod.GitScmResource) !void {
-        if (self.dialog != null) return error.DialogAlreadyOpen;
+        if (self.isDialogOpen()) return error.DialogAlreadyOpen;
         if (resource.kind != .working and resource.kind != .untracked) return error.InvalidScmResource;
         const untracked = resource.kind == .untracked;
         const message = try std.fmt.allocPrint(self.allocator, "{s} {s}?", .{
@@ -3944,17 +3935,28 @@ pub const Workbench = struct {
         errdefer self.allocator.free(root);
         const path = try self.allocator.dupe(u8, resource.relative_path);
         errdefer self.allocator.free(path);
-        const dialog = try ui.Dialog.init(
-            self.allocator,
-            message,
-            if (untracked) "This deletes the file from disk." else "This restores the file from the Git index.",
-            &.{ if (untracked) "Delete" else "Discard", dialogs.cancel_label },
-        );
-        dialog.theme = self.dialogTheme();
-        dialog.focused = 1;
-        self.setDialog(dialog);
-        self.pending_dialog = .{ .discard_scm = .{ .root = root, .path = path, .untracked = untracked } };
-        self.pointer = .default;
+        const pending = try self.allocator.create(ScmDiscardDialog);
+        errdefer self.allocator.destroy(pending);
+        pending.* = .{ .workbench = self, .request = .{ .root = root, .path = path, .untracked = untracked } };
+        try self.dialog_service.confirm(.{
+            .message = message,
+            .detail = if (untracked) "This deletes the file from disk." else "This restores the file from the Git index.",
+            .primary_button = if (untracked) "Delete" else "Discard",
+            .initial_focus = 1,
+        }, .{ .context = pending, .complete = onScmDiscardConfirmed, .dispose = disposeScmDiscardDialog });
+    }
+
+    fn onScmDiscardConfirmed(context: *anyopaque, result: dialogs.IConfirmationResult) void {
+        const pending: *ScmDiscardDialog = @ptrCast(@alignCast(context));
+        if (result.confirmed) pending.workbench.resolveScmDiscard(pending.request) catch |err|
+            pending.workbench.setStatusHint("Discard failed: {s}", .{@errorName(err)});
+    }
+
+    fn disposeScmDiscardDialog(context: *anyopaque) void {
+        const pending: *ScmDiscardDialog = @ptrCast(@alignCast(context));
+        const allocator = pending.workbench.allocator;
+        pending.request.deinit(allocator);
+        allocator.destroy(pending);
     }
 
     fn resolveScmDiscard(self: *Workbench, request: ScmDiscardRequest) !void {
@@ -5668,7 +5670,7 @@ pub const Workbench = struct {
     /// and the empty-pane collapse. Used by Ctrl-W, the tab close cell and
     /// middle click.
     pub fn closeTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !bool {
-        if (self.dialog != null) return false;
+        if (self.isDialogOpen()) return false;
         if (self.shouldConfirmClose(pane, tab)) {
             try self.openSaveConfirm(pane, tab);
             return false;
@@ -5697,39 +5699,11 @@ pub const Workbench = struct {
         return false;
     }
 
-    /// Opens the modal save confirmation. Upstream reveals the editor before
-    /// asking (`doHandleCloseConfirmation`); the terminal does the same by
-    /// activating the tab so the user sees which buffer is being closed.
-    fn dialogTheme(self: *Workbench) ui.DialogTheme {
-        return .{
-            .background = self.themeColor("dialog.background", .{ 0x25, 0x25, 0x26 }),
-            .border = self.themeColor("dialog.border", .{ 0x58, 0x58, 0x5A }),
-            .text = self.themeColor("foreground", .{ 0xEB, 0xEB, 0xEB }),
-            .detail = self.themeColor("descriptionForeground", .{ 0xC4, 0xC4, 0xC4 }),
-            .warning = self.themeColor("editorWarning.foreground", .{ 0xE8, 0xC2, 0x5A }),
-            .primary_background = self.themeColor("button.background", .{ 0x0E, 0x63, 0x9C }),
-            .primary_focused_background = self.themeColor("button.hoverBackground", .{ 0x11, 0x77, 0xBB }),
-            .primary_foreground = self.themeColor("button.foreground", .{ 0xFF, 0xFF, 0xFF }),
-            .secondary_background = self.themeColor("button.secondaryBackground", .{ 0x3A, 0x3D, 0x41 }),
-            .secondary_focused_background = self.themeColor("button.secondaryHoverBackground", .{ 0x45, 0x49, 0x4E }),
-            .secondary_foreground = self.themeColor("button.secondaryForeground", .{ 0xFF, 0xFF, 0xFF }),
-        };
-    }
-
+    /// Reveal the editor before asking for a close confirmation, as upstream.
     fn openSaveConfirm(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
-        if (self.dialog != null) return;
-
+        if (self.isDialogOpen()) return;
         var prompt = (try dialogs.saveConfirmPrompt(self.allocator, &.{tab.input.getName()})) orelse return;
-        errdefer prompt.deinit();
-        const dialog = try ui.Dialog.init(
-            self.allocator,
-            prompt.message,
-            prompt.detail,
-            &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
-        );
-        errdefer dialog.deinit();
-        dialog.theme = self.dialogTheme();
-
+        defer prompt.deinit();
         self.part.active_sash = null;
         self.clearTabDrag();
         self.last_tab_click = null;
@@ -5739,17 +5713,32 @@ pub const Workbench = struct {
         self.focusEditor();
         tab.focusEditor();
 
-        prompt.deinit();
-        self.setDialog(dialog);
-        self.pointer = .default;
-        self.pending_dialog = .{ .close_tab = .{ .pane = pane, .tab = tab } };
+        const pending = try self.allocator.create(CloseTabDialog);
+        errdefer self.allocator.destroy(pending);
+        pending.* = .{ .workbench = self, .request = .{ .pane = pane, .tab = tab } };
+        try self.dialog_service.prompt(.{
+            .message = prompt.message,
+            .detail = prompt.detail,
+            .buttons = &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
+        }, .{ .context = pending, .complete = onCloseTabDialog, .dispose = disposeCloseTabDialog });
+    }
+
+    fn onCloseTabDialog(context: *anyopaque, selected: ?usize) void {
+        const pending: *CloseTabDialog = @ptrCast(@alignCast(context));
+        pending.workbench.resolveCloseTab(pending.request, saveConfirmResult(selected)) catch |err|
+            pending.workbench.reportDialogError(err);
+    }
+
+    fn disposeCloseTabDialog(context: *anyopaque) void {
+        const pending: *CloseTabDialog = @ptrCast(@alignCast(context));
+        pending.workbench.allocator.destroy(pending);
     }
 
     /// Upstream `AbstractCloseAllAction.run` for the close-window path: collect
     /// every dirty editor, reveal one per group to help the user decide, and
     /// ask a single multi-file save confirmation. Ctrl-Q uses this path.
     fn openQuitConfirm(self: *Workbench) !void {
-        if (self.dialog != null) return;
+        if (self.isDialogOpen()) return;
 
         var names = std.array_list.Managed([]const u8).init(self.allocator);
         defer names.deinit();
@@ -5761,15 +5750,7 @@ pub const Workbench = struct {
         if (names.items.len == 0) return;
 
         var prompt = (try dialogs.saveConfirmPrompt(self.allocator, names.items)) orelse return;
-        errdefer prompt.deinit();
-        const dialog = try ui.Dialog.init(
-            self.allocator,
-            prompt.message,
-            prompt.detail,
-            &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
-        );
-        errdefer dialog.deinit();
-        dialog.theme = self.dialogTheme();
+        defer prompt.deinit();
 
         self.part.active_sash = null;
         self.clearTabDrag();
@@ -5792,44 +5773,24 @@ pub const Workbench = struct {
         if (self.activeTab()) |tab| try tab.ensureControllers();
         self.focusActiveEditor();
 
-        prompt.deinit();
-        self.setDialog(dialog);
-        self.pointer = .default;
-        self.pending_dialog = .quit;
+        try self.dialog_service.prompt(.{
+            .message = prompt.message,
+            .detail = prompt.detail,
+            .buttons = &.{ prompt.save_label, dialogs.dont_save_label, dialogs.cancel_label },
+        }, .{ .context = self, .complete = onQuitDialog });
     }
 
-    fn resolveDialogButton(self: *Workbench, index: usize) void {
-        const result: dialogs.ConfirmResult = switch (index) {
+    fn onQuitDialog(context: *anyopaque, selected: ?usize) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.resolveQuit(saveConfirmResult(selected)) catch |err| self.reportDialogError(err);
+    }
+
+    fn saveConfirmResult(selected: ?usize) dialogs.ConfirmResult {
+        return switch (selected orelse return .CANCEL) {
             0 => .SAVE,
             1 => .DONT_SAVE,
             else => .CANCEL,
         };
-        self.resolveDialog(result);
-    }
-
-    fn resolveDialog(self: *Workbench, result: dialogs.ConfirmResult) void {
-        const dialog = self.dialog orelse return;
-        const request = self.pending_dialog;
-        self.setDialog(null);
-        self.pending_dialog = null;
-        dialog.deinit();
-
-        const pending = request orelse {
-            self.focusActiveEditor();
-            return;
-        };
-        switch (pending) {
-            .close_tab => |close| self.resolveCloseTab(close, result) catch |err| self.reportDialogError(err),
-            .quit => self.resolveQuit(result) catch |err| self.reportDialogError(err),
-            .replace_all => if (self.search_view) |view| {
-                if (result == .SAVE) view.confirmReplaceAll() else view.clearReplaceConfirmation();
-            },
-            .discard_scm => |discard| {
-                defer discard.deinit(self.allocator);
-                if (result == .SAVE) self.resolveScmDiscard(discard) catch |err|
-                    self.setStatusHint("Discard failed: {s}", .{@errorName(err)});
-            },
-        }
     }
 
     fn reportDialogError(self: *Workbench, err: anyerror) void {
@@ -5843,7 +5804,7 @@ pub const Workbench = struct {
     /// leaves the buffer clean; Don't Save discards the buffer and closes;
     /// Cancel vetoes the close.
     fn resolveCloseTab(self: *Workbench, close: CloseTabRequest, result: dialogs.ConfirmResult) !void {
-        if (close.pane.indexOfTab(close.tab) == null) {
+        if (!self.paneExists(close.pane) or close.pane.indexOfTab(close.tab) == null) {
             self.focusActiveEditor();
             return;
         }
@@ -6131,7 +6092,7 @@ pub const Workbench = struct {
         const custom_preview = if (active) |tab| markdown_preview and tab.file_input != null else false;
         keys.editor_lang_id.set(.{ .string = if (active) |tab| (if (tab.file_input != null and !markdown_preview) tab.editor.languageId() else "") else "" });
         keys.active_custom_editor_id.set(.{ .string = if (custom_preview) "vscode.markdown.preview.editor" else "" });
-        keys.editor_text_focus.set(.{ .boolean = editor_focused and !terminal_editor_active and !markdown_preview and self.dialog == null and !self.quick_access.isOpen() });
+        keys.editor_text_focus.set(.{ .boolean = editor_focused and !terminal_editor_active and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen() });
         keys.side_bar_focus.set(.{ .boolean = sidebar_focused });
         keys.list_focus.set(.{ .boolean = sidebar_focused and (!search_active or search_results_focused) });
         keys.input_focus.set(.{ .boolean = sidebar_focused and search_active and !search_results_focused });
@@ -6270,6 +6231,7 @@ pub const Workbench = struct {
         if (self.breadcrumbs_control) |control| control.setThemeColors(palette);
         var inactive_it = self.breadcrumbs_inactive.iterator();
         while (inactive_it.next()) |entry| entry.value_ptr.*.control.setThemeColors(palette);
+        self.dialog_handler.setThemeColors(palette);
         self.statusbar.main_part.setThemeColors(palette);
         self.quick_access.setThemeColors(palette);
         for (self.part.group_views.items) |pane| {
@@ -6485,7 +6447,7 @@ pub const Workbench = struct {
     }
 
     pub fn requestQuit(self: *Workbench) bool {
-        if (self.dialog != null) return false;
+        if (self.isDialogOpen()) return false;
         if (!self.hasDirtyTabs()) return true;
 
         self.openQuitConfirm() catch |err| {
@@ -7976,9 +7938,10 @@ pub const Workbench = struct {
         self.updatePartFocus() catch {};
     }
 
-    fn setDialog(self: *Workbench, dialog: ?*ui.Dialog) void {
-        self.dialog = dialog;
+    fn onDialogStateChanged(self: *Workbench) !void {
+        self.pointer = .default;
         self.updatePartFocus() catch {};
+        self.requestFrame();
     }
 
     fn onTerminalListFocus(context: *anyopaque) void {
@@ -7987,7 +7950,7 @@ pub const Workbench = struct {
     }
 
     fn updatePartFocus(self: *Workbench) !void {
-        const blocked = self.dialog != null or self.quick_access.isOpen();
+        const blocked = self.isDialogOpen() or self.quick_access.isOpen();
         self.part.setEditorFocus(!blocked and self.focus == .editor);
         if (self.terminal_service) |service| {
             if (service.setFocusedInstance(if (blocked) null else self.focusedTerminal())) self.terminal_input.button_down = null;
@@ -8764,7 +8727,7 @@ fn runTabMenuAction(self: *Workbench, menu: *MenuActionContext, id: []const u8) 
         for (tabs) |candidate| {
             if (candidate == tab) continue;
             _ = try self.closeTab(pane, candidate);
-            if (self.dialog != null) break;
+            if (self.isDialogOpen()) break;
         }
     } else if (std.mem.eql(u8, id, "tab:close_right")) {
         const index = pane.indexOfTab(tab) orelse return;
@@ -8773,7 +8736,7 @@ fn runTabMenuAction(self: *Workbench, menu: *MenuActionContext, id: []const u8) 
         for (tabs, 0..) |candidate, candidate_index| {
             if (candidate_index <= index) continue;
             _ = try self.closeTab(pane, candidate);
-            if (self.dialog != null) break;
+            if (self.isDialogOpen()) break;
         }
     } else if (std.mem.eql(u8, id, "tab:close_saved")) {
         const tabs = try self.allocator.dupe(*Tab, pane.tabs.items);
@@ -8781,14 +8744,14 @@ fn runTabMenuAction(self: *Workbench, menu: *MenuActionContext, id: []const u8) 
         for (tabs) |candidate| {
             if (candidate.editor.isDirty()) continue;
             _ = try self.closeTab(pane, candidate);
-            if (self.dialog != null) break;
+            if (self.isDialogOpen()) break;
         }
     } else if (std.mem.eql(u8, id, "tab:close_all")) {
         const tabs = try self.allocator.dupe(*Tab, pane.tabs.items);
         defer self.allocator.free(tabs);
         for (tabs) |candidate| {
             _ = try self.closeTab(pane, candidate);
-            if (self.dialog != null) break;
+            if (self.isDialogOpen()) break;
         }
     } else if (std.mem.eql(u8, id, "tab:pin")) {
         _ = pane.group.model.pin(tab.input) catch {};
@@ -10314,12 +10277,15 @@ fn searchActiveSelectionText(context: *anyopaque, allocator: Allocator) anyerror
 
 fn searchConfirmReplaceAll(context: *anyopaque, message: []const u8) !void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.dialog != null) return error.DialogAlreadyOpen;
-    const dialog = try ui.Dialog.init(self.allocator, message, "", &.{ "Replace", dialogs.cancel_label });
-    dialog.theme = self.dialogTheme();
-    self.setDialog(dialog);
-    self.pending_dialog = .replace_all;
-    self.pointer = .default;
+    if (self.isDialogOpen()) return error.DialogAlreadyOpen;
+    try self.dialog_service.confirm(.{ .message = message, .primary_button = "Replace" }, .{ .context = self, .complete = onSearchReplaceAllConfirmed });
+}
+
+fn onSearchReplaceAllConfirmed(context: *anyopaque, result: dialogs.IConfirmationResult) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    if (self.search_view) |view| {
+        if (result.confirmed) view.confirmReplaceAll() else view.clearReplaceConfirmation();
+    }
 }
 
 fn searchTextModel(context: *anyopaque, path: []const u8) ?*@import("../../editor/common/model/textModel.zig").TextModel {

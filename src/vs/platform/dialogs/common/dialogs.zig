@@ -14,6 +14,80 @@ const Allocator = std.mem.Allocator;
 
 pub const ConfirmResult = enum { SAVE, DONT_SAVE, CANCEL };
 
+const Emitter = @import("../../../base/common/event.zig").Emitter;
+
+/// Portable terminal projection of IPrompt/IDialogArgs. Native button
+/// activation returns the index, while dismissal returns null.
+pub const DialogPrompt = struct {
+    message: []const u8,
+    detail: []const u8 = "",
+    buttons: []const []const u8,
+    initial_focus: usize = 0,
+};
+
+pub const IConfirmation = struct {
+    message: []const u8,
+    detail: []const u8 = "",
+    primary_button: []const u8 = "Yes",
+    cancel_button: []const u8 = cancel_label,
+    initial_focus: usize = 0,
+};
+
+pub const IConfirmationResult = struct { confirmed: bool };
+
+pub const PromptHandler = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, ?usize) void,
+    dispose: ?*const fn (*anyopaque) void = null,
+};
+
+pub const ConfirmationHandler = struct {
+    context: *anyopaque,
+    complete: *const fn (*anyopaque, IConfirmationResult) void,
+    dispose: ?*const fn (*anyopaque) void = null,
+};
+
+pub const DialogCallback = union(enum) {
+    prompt: PromptHandler,
+    confirm: ConfirmationHandler,
+
+    pub fn complete(self: DialogCallback, selected: ?usize) void {
+        switch (self) {
+            .prompt => |handler| handler.complete(handler.context, selected),
+            .confirm => |handler| handler.complete(handler.context, .{ .confirmed = selected != null and selected.? == 0 }),
+        }
+    }
+
+    pub fn dispose(self: DialogCallback) void {
+        switch (self) {
+            inline else => |handler| if (handler.dispose) |cleanup| cleanup(handler.context),
+        }
+    }
+};
+
+pub const dialog_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(IDialogService, "dialogService");
+
+pub const IDialogService = struct {
+    context: *anyopaque,
+    has_dialog: *const fn (*anyopaque) bool,
+    prompt_fn: *const fn (*anyopaque, DialogPrompt, PromptHandler) anyerror!void,
+    confirm_fn: *const fn (*anyopaque, IConfirmation, ConfirmationHandler) anyerror!void,
+    on_will_show_dialog: *Emitter(void),
+    on_did_show_dialog: *Emitter(void),
+
+    pub fn hasDialog(self: IDialogService) bool {
+        return self.has_dialog(self.context);
+    }
+
+    pub fn prompt(self: IDialogService, args: DialogPrompt, handler: PromptHandler) !void {
+        try self.prompt_fn(self.context, args, handler);
+    }
+
+    pub fn confirm(self: IDialogService, args: IConfirmation, handler: ConfirmationHandler) !void {
+        try self.confirm_fn(self.context, args, handler);
+    }
+};
+
 /// Upstream `MAX_CONFIRM_FILES`: the detail lists at most this many names and
 /// summarizes the remainder.
 pub const max_confirm_files: usize = 10;

@@ -260,7 +260,7 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
 pub fn cursorCell(workbench: *Workbench) ?@import("editorView.zig").Cell {
     if (workbench.notification_controller) |controller| if (controller.focusedItem() != null or (controller.center.is_visible and controller.center_focus)) return null;
     if (workbench.quick_access.isOpen()) return null;
-    if (workbench.dialog != null or workbench.context_menu_service.current != null) return null;
+    if (workbench.isDialogOpen() or workbench.context_menu_service.current != null) return null;
     if (workbench.breadcrumbPopupVisible()) return null;
     if (workbench.focus == .terminal) {
         if (!workbench.terminalVisible()) return null;
@@ -388,7 +388,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
     }
     if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next, self.part.cell_border_capabilities);
     if (self.context_menu_service.current) |menu| menu.popup.?.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
-    if (self.dialog) |dialog| dialog.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
+    if (self.dialog_handler.current) |dialog| dialog.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
     try self.editor_drag.paintImage(&self.frame.next, self.drag_tab_drop != null);
 }
 
