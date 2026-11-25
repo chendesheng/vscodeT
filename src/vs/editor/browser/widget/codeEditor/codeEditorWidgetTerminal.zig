@@ -611,6 +611,7 @@ pub const Editor = struct {
     /// Read-only snapshot editors still support navigation, selection and find,
     /// but every text mutation and save is rejected with `error.ReadOnly`.
     read_only: bool,
+    on_did_change_read_only: Emitter(bool),
     /// Rightmost columns reserved by the view for the overview ruler and
     /// scrollbar. Zero for the read-only preview and for editors used without
     /// the TUI view.
@@ -903,6 +904,7 @@ pub const Editor = struct {
             .line_decorations_width = 0,
             .line_number_map = null,
             .read_only = false,
+            .on_did_change_read_only = .init(allocator),
             .scrollbar_width = initial_scrollbar,
             .view_layout = try ViewLayout.init(allocator, initial_view_line_count, text_width, @max(height -| 1, 1)),
             .status = undefined,
@@ -927,6 +929,7 @@ pub const Editor = struct {
         errdefer editor.on_did_change_cursor_selection.deinit();
         errdefer editor.on_will_type.deinit();
         errdefer editor.on_did_type.deinit();
+        errdefer editor.on_did_change_read_only.deinit();
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         _ = try editor.view_layout.onDidScroll().listen(editor, onViewLayoutScroll);
         if (editor.character_pair) |*pair_support| {
@@ -1724,6 +1727,7 @@ pub const Editor = struct {
         self.on_did_change_cursor_selection.deinit();
         self.on_will_type.deinit();
         self.on_did_type.deinit();
+        self.on_did_change_read_only.deinit();
         self.view_event_dispatcher.deinit();
         self.view_layout.deinit();
         self.view_lines.deinit();
@@ -2026,7 +2030,9 @@ pub const Editor = struct {
     }
 
     pub fn setReadOnly(self: *Editor, read_only: bool) void {
+        if (self.read_only == read_only) return;
         self.read_only = read_only;
+        self.on_did_change_read_only.fire(read_only) catch {};
     }
 
     pub fn isReadOnly(self: *const Editor) bool {

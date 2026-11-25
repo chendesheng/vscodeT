@@ -1467,7 +1467,6 @@ fn routeTerminalMouse(self: *Workbench, instance: *terminal_service_mod.Terminal
 /// the open picker.
 pub fn handleGlobalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
     _ = try self.ensureContextKeys();
-    self.updateContextKeys();
     if (self.quick_access.isOpen()) return false;
     self.suppress_global_command = false;
     // Ctrl-] is the TUI-specific definition alias. F12 and its modified

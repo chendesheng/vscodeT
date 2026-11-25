@@ -171,6 +171,7 @@ pub const SearchView = struct {
     header_rows: usize = 1,
     focus_field: Field = .search,
     results_focused: bool = false,
+    on_did_change_focus: @import("../../../../base/common/event.zig").Emitter(void),
     panel_focused: bool = false,
     started_once: bool = false,
     replace_confirmation: ?controller_mod.ReplaceAllRequest = null,
@@ -195,6 +196,7 @@ pub const SearchView = struct {
         errdefer widget.deinit();
         self.* = .{
             .allocator = allocator,
+            .on_did_change_focus = .init(allocator),
             .workspace = workspace,
             .configuration = configuration,
             .host = host,
@@ -207,6 +209,7 @@ pub const SearchView = struct {
             .collapse_seen = OwnedStringSet.init(allocator),
         };
 
+        errdefer self.on_did_change_focus.deinit();
         const controller = try Controller.init(
             allocator,
             workspace,
@@ -269,6 +272,7 @@ pub const SearchView = struct {
         self.collapsed.deinit();
         self.collapse_seen.deinit();
         if (self.keybindings) |service| service.deinit();
+        self.on_did_change_focus.deinit();
         self.allocator.destroy(self);
     }
 
@@ -314,7 +318,7 @@ pub const SearchView = struct {
 
     pub fn focus(self: *SearchView) void {
         self.panel_focused = true;
-        self.results_focused = false;
+        self.setResultsFocused(false);
         self.focus_field = .search;
         self.widget.focusField(.search);
         self.widget.focused = true;
@@ -323,9 +327,15 @@ pub const SearchView = struct {
         self.controller.last_focus_input = true;
     }
 
+    fn setResultsFocused(self: *SearchView, focused: bool) void {
+        if (self.results_focused == focused) return;
+        self.results_focused = focused;
+        self.on_did_change_focus.fire({}) catch {};
+    }
+
     pub fn focusReplace(self: *SearchView) void {
         self.panel_focused = true;
-        self.results_focused = false;
+        self.setResultsFocused(false);
         self.setReplaceVisible(true);
         self.widget.focusField(.replace);
         self.widget.focused = true;
@@ -341,14 +351,14 @@ pub const SearchView = struct {
 
     pub fn blur(self: *SearchView) void {
         self.panel_focused = false;
-        self.results_focused = false;
+        self.setResultsFocused(false);
         self.widget.focused = false;
         self.controller.setPanelFocused(false);
     }
 
     pub fn focusResults(self: *SearchView) void {
         self.panel_focused = true;
-        self.results_focused = true;
+        self.setResultsFocused(true);
         self.widget.focused = false;
         self.controller.setPanelFocused(true);
         self.controller.focus = .results;
@@ -569,7 +579,7 @@ pub const SearchView = struct {
             .results => .search,
         };
         self.widget.focusField(self.focus_field);
-        self.results_focused = self.controller.focus == .results;
+        self.setResultsFocused(self.controller.focus == .results);
         if (self.results_focused) {
             self.panel_focused = true;
         }
@@ -819,7 +829,7 @@ pub const SearchView = struct {
         }
 
         if (event.key == .tab or event.key == .backtab) {
-            self.results_focused = false;
+            self.setResultsFocused(false);
             _ = self.widget.cycleFocus(event.key == .backtab);
             self.focus_field = self.widget.focus_field;
             self.setControllerFocusFromField();
@@ -948,7 +958,7 @@ pub const SearchView = struct {
         }
         switch (event.key) {
             .down, .up => {
-                self.results_focused = true;
+                self.setResultsFocused(true);
                 self.moveSelection(if (event.key == .down) 1 else -1);
                 return .handled;
             },
@@ -987,7 +997,7 @@ pub const SearchView = struct {
             local.y = local_y - input_top;
             if (self.widget.handleMouse(local.x, local.y, &local) and activating) {
                 self.panel_focused = true;
-                self.results_focused = false;
+                self.setResultsFocused(false);
                 self.widget.focused = true;
                 self.focus_field = self.widget.focus_field;
                 self.setControllerFocusFromField();
@@ -1450,12 +1460,12 @@ pub const SearchView = struct {
     }
 
     pub fn commandFocusNext(self: *SearchView) void {
-        self.results_focused = true;
+        self.setResultsFocused(true);
         self.moveToNextMatch(1);
     }
 
     pub fn commandFocusPrevious(self: *SearchView) void {
-        self.results_focused = true;
+        self.setResultsFocused(true);
         self.moveToNextMatch(-1);
     }
 
@@ -1509,7 +1519,7 @@ pub const SearchView = struct {
         self.widget.focusField(if (self.widget.details_visible) .includes else .search);
         self.focus_field = self.widget.focus_field;
         self.widget.input(self.focus_field).selectAll();
-        self.results_focused = false;
+        self.setResultsFocused(false);
         self.panel_focused = true;
         self.setControllerFocusFromField();
     }
@@ -1727,7 +1737,7 @@ fn viewerSetSelected(context: *anyopaque, node: ?Row) void {
 fn viewerFocus(context: *anyopaque) void {
     const self: *SearchView = @ptrCast(@alignCast(context));
     self.panel_focused = true;
-    self.results_focused = true;
+    self.setResultsFocused(true);
 }
 
 fn viewerRefresh(context: *anyopaque) void {
@@ -2050,9 +2060,14 @@ pub const SearchWindow = struct {
         errdefer view.deinit();
         try view.attachActivity(self.activity_service);
         view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = self.window };
+        _ = try view.on_did_change_focus.listenSignal(self, onSearchFocusChanged);
         self.service = service;
         view.model.delivery.attach(self.window, view, SearchView.dispatchSearch);
         self.view = view;
+    }
+
+    fn onSearchFocusChanged(self: *SearchWindow) !void {
+        try self.host.update_focus(self.host.context);
     }
 
     pub fn destroy(self: *SearchWindow) void {

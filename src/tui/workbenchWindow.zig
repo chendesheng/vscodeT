@@ -232,35 +232,6 @@ pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, prob
 /// Handles for the context keys the workbench maintains. User keybindings use
 /// them in `when` clauses; keys the terminal cannot know stay undefined, which
 /// evaluates to false (e.g. `treeFindOpen`).
-const ContextKeyHandles = struct {
-    editor_focus: context_key_mod.IContextKey,
-    editor_text_focus: context_key_mod.IContextKey,
-    editor_lang_id: context_key_mod.IContextKey,
-    active_custom_editor_id: context_key_mod.IContextKey,
-    input_focus: context_key_mod.IContextKey,
-    list_focus: context_key_mod.IContextKey,
-    side_bar_focus: context_key_mod.IContextKey,
-    status_bar_focus: context_key_mod.IContextKey,
-    terminal_focus: context_key_mod.IContextKey,
-    panel_focus: context_key_mod.IContextKey,
-    active_panel: context_key_mod.IContextKey,
-    in_quick_open: context_key_mod.IContextKey,
-    in_files_picker: context_key_mod.IContextKey,
-    explorer_viewlet_visible: context_key_mod.IContextKey,
-    explorer_viewlet_focus: context_key_mod.IContextKey,
-    files_explorer_focus: context_key_mod.IContextKey,
-    search_viewlet_visible: context_key_mod.IContextKey,
-    search_view_focus: context_key_mod.IContextKey,
-    scm_viewlet_visible: context_key_mod.IContextKey,
-    scm_view_focus: context_key_mod.IContextKey,
-    explorer_resource_is_root: context_key_mod.IContextKey,
-    explorer_resource_readonly: context_key_mod.IContextKey,
-    tree_find_open: context_key_mod.IContextKey,
-    resource_scheme: context_key_mod.IContextKey,
-    editor_read_only: context_key_mod.IContextKey,
-    legacy_editor_read_only: context_key_mod.IContextKey,
-};
-
 /// Terminal host color scheme. The terminal has no portable OS color-scheme
 /// API, so the default is dark; `COLORFGBG`-style detection is left to the
 /// host application. High contrast is reported as false.
@@ -444,7 +415,6 @@ pub const TerminalWorkbench = struct {
     global_service: ?*keybinding_service.KeybindingService,
     statusbar_service: ?*keybinding_service.KeybindingService,
     context_keys: ?*context_key_mod.ContextKeyService,
-    context_key_handles: ?ContextKeyHandles,
     workbench_context: @import("../vs/workbench/browser/contextkeys.zig").WorkbenchContextKeysHandler,
     terminal_context: @import("../vs/workbench/contrib/terminal/browser/terminalContextKeys.zig").TerminalContextKeysHandler,
     terminal_action_services: terminal_actions.TerminalActionServices,
@@ -502,7 +472,7 @@ pub const TerminalWorkbench = struct {
     word_completion_registration: ?IDisposable = null,
     outline_creator: ?DocumentSymbolsOutlineCreator = null,
     focus: Focus = .editor,
-    focus_subscriptions: [4]?@import("../vs/base/common/event.zig").SignalSubscription = .{ null, null, null, null },
+    focus_subscriptions: [5]?@import("../vs/base/common/event.zig").SignalSubscription = .{ null, null, null, null, null },
     terminal_focus_subscription: ?@import("../vs/base/common/event.zig").SignalSubscription = null,
     is_pasting: bool = false,
     terminal_service: ?*TerminalService = null,
@@ -552,7 +522,6 @@ pub const TerminalWorkbench = struct {
         self.global_service = null;
         self.statusbar_service = null;
         self.context_keys = null;
-        self.context_key_handles = null;
         self.theme_service = null;
         self.syntax_theme = .{};
         self.syntax_theme_ready = false;
@@ -565,7 +534,7 @@ pub const TerminalWorkbench = struct {
         self.terminal_input = .{};
         self.terminal_tabbed_view = .{ .on_list_focus = .{ .context = self, .changed = onTerminalListFocus } };
         self.terminal_focus_subscription = null;
-        self.focus_subscriptions = .{ null, null, null, null };
+        self.focus_subscriptions = .{ null, null, null, null, null };
         self.suppress_global_command = false;
         self.git_model = git_model_mod.Model.init(allocator);
         self.scm = SCMContribution.init(allocator);
@@ -1087,6 +1056,7 @@ pub const TerminalWorkbench = struct {
         self.focus_subscriptions[1] = try self.service.on_did_visible_editors_change.listenSignal(self, updatePartFocus);
         self.focus_subscriptions[2] = try self.quick_input_api.on_show.listenSignal(self, updatePartFocus);
         self.focus_subscriptions[3] = try self.quick_input_api.on_hide.listenSignal(self, updatePartFocus);
+        self.focus_subscriptions[4] = try self.activity_bar_part.on_did_change.listenSignal(self, updatePartFocus);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
         const editor_service = @import("../vs/workbench/services/editor/browser/editorService.zig").EditorService{ .part = self.part };
         if (self.editor_status) |status| try status.bindActiveEditor(editor_service);
@@ -4166,6 +4136,7 @@ pub const TerminalWorkbench = struct {
     /// terminal keeps one shared OutlinePane, so it must let go of the editor
     /// while the editor is still alive.
     fn detachTabViewHandlers(self: *TerminalWorkbench, tab: *Tab) void {
+        if (self.context_keys != null) self.workbench_context.detachEditor(tab.editor);
         if (self.outline_view) |view| {
             if (view.editor == tab.editor) view.setEditor(null) catch {};
         }
@@ -4246,82 +4217,41 @@ pub const TerminalWorkbench = struct {
         try self.terminal_context.init(service.interface(), self.part, &self.panel_part, self.layout.interface());
         errdefer self.terminal_context.deinit();
         if (self.terminal_service) |terminal| try self.terminal_context.attach(terminal);
-        self.context_key_handles = .{
-            .editor_focus = try service.createKey("editorFocus", .{ .boolean = false }),
-            .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
-            .active_custom_editor_id = try service.createKey("activeCustomEditorId", .{ .string = "" }),
-            .editor_text_focus = try service.createKey("editorTextFocus", .{ .boolean = false }),
-            .input_focus = try service.createKey("inputFocus", .{ .boolean = false }),
-            .list_focus = try service.createKey("listFocus", .{ .boolean = false }),
-            .side_bar_focus = try service.createKey("sideBarFocus", .{ .boolean = false }),
-            .status_bar_focus = try service.createKey("statusBarFocus", .{ .boolean = false }),
-            .terminal_focus = try service.createKey("terminalFocus", .{ .boolean = false }),
-            .panel_focus = try service.createKey("panelFocus", .{ .boolean = false }),
-            .active_panel = try service.createKey("activePanel", .{ .string = "" }),
-            .in_quick_open = try service.createKey("inQuickOpen", .{ .boolean = false }),
-            .in_files_picker = try service.createKey("inFilesPicker", .{ .boolean = false }),
-            .explorer_viewlet_visible = try service.createKey("explorerViewletVisible", .{ .boolean = false }),
-            .explorer_viewlet_focus = try service.createKey("explorerViewletFocus", .{ .boolean = false }),
-            .files_explorer_focus = try service.createKey("filesExplorerFocus", .{ .boolean = false }),
-            .search_viewlet_visible = try service.createKey("searchViewletVisible", .{ .boolean = false }),
-            .search_view_focus = try service.createKey("searchViewFocus", .{ .boolean = false }),
-            .scm_viewlet_visible = try service.createKey("scmViewletVisible", .{ .boolean = false }),
-            .scm_view_focus = try service.createKey("scmViewFocus", .{ .boolean = false }),
-            .explorer_resource_is_root = try service.createKey("explorerResourceIsRoot", .{ .boolean = false }),
-            .explorer_resource_readonly = try service.createKey("explorerResourceReadonly", .{ .boolean = false }),
-            .tree_find_open = try service.createKey("treeFindOpen", .{ .boolean = false }),
-            .resource_scheme = try service.createKey("resourceScheme", .{ .string = "file" }),
-            .editor_read_only = try service.createKey("editorReadonly", .{ .boolean = false }),
-            .legacy_editor_read_only = try service.createKey("editorReadOnly", .{ .boolean = false }),
-        };
         self.context_keys = service;
         self.commands.context_keys = service.interface();
         self.updateContextKeys();
         return service;
     }
 
-    pub fn updateContextKeys(self: *TerminalWorkbench) void {
-        const keys = self.context_key_handles orelse return;
-        const active_activity = self.activity_bar_part.active_id orelse "";
-        const sidebar_focused = self.focus == .sidebar and self.geometry().sidebarShown();
-        const explorer_active = std.mem.eql(u8, active_activity, "explorer");
-        const search_active = std.mem.eql(u8, active_activity, "search");
-        const scm_active = std.mem.eql(u8, active_activity, "scm");
-        const search_results_focused = if (self.search_window.view) |view| view.results_focused else false;
-        const editor_focused = self.focus == .editor;
-        keys.editor_focus.set(.{ .boolean = editor_focused });
+    fn updateContextKeys(self: *TerminalWorkbench) void {
+        if (self.context_keys == null) return;
         const active = self.activeTab();
-        const terminal_editor_active = if (active) |tab| tab.terminal_input != null else false;
+        const terminal_editor = if (active) |tab| tab.terminal_input != null else false;
         const markdown_preview = if (active) |tab| tab.markdown_preview != null else false;
-        const custom_preview = if (active) |tab| markdown_preview and tab.file_input != null else false;
-        keys.editor_lang_id.set(.{ .string = if (active) |tab| (if (tab.file_input != null and !markdown_preview) tab.editor.languageId() else "") else "" });
-        keys.active_custom_editor_id.set(.{ .string = if (custom_preview) "vscode.markdown.preview.editor" else "" });
-        keys.editor_text_focus.set(.{ .boolean = editor_focused and !terminal_editor_active and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen() });
-        keys.side_bar_focus.set(.{ .boolean = sidebar_focused });
-        keys.list_focus.set(.{ .boolean = sidebar_focused and (!search_active or search_results_focused) });
-        keys.input_focus.set(.{ .boolean = sidebar_focused and search_active and !search_results_focused });
-        keys.status_bar_focus.set(.{ .boolean = self.focus == .statusbar });
-        keys.terminal_focus.set(.{ .boolean = self.terminalFocused() });
-        keys.panel_focus.set(.{ .boolean = (self.focus == .terminal or self.focus == .problems) and self.geometry().panelShown() });
-        keys.active_panel.set(.{ .string = if (self.geometry().panelShown()) self.geometry().activePanelId() else "" });
-        keys.in_quick_open.set(.{ .boolean = self.quick_access.isOpen() });
-        keys.in_files_picker.set(.{ .boolean = self.quick_access.isOpen() and !self.quick_access.isPickOpen() });
-        keys.explorer_viewlet_visible.set(.{ .boolean = self.geometry().sidebarShown() and explorer_active });
-        keys.explorer_viewlet_focus.set(.{ .boolean = sidebar_focused and explorer_active });
-        keys.files_explorer_focus.set(.{ .boolean = sidebar_focused and explorer_active });
-        keys.search_viewlet_visible.set(.{ .boolean = self.geometry().sidebarShown() and search_active });
-        keys.search_view_focus.set(.{ .boolean = sidebar_focused and search_active });
-        keys.scm_viewlet_visible.set(.{ .boolean = self.geometry().sidebarShown() and scm_active });
-        keys.scm_view_focus.set(.{ .boolean = sidebar_focused and scm_active });
-        // Explorer file operations are not ported; these keys keep bindings
-        // that require them inert rather than active.
-        keys.explorer_resource_is_root.set(.{ .boolean = false });
-        keys.explorer_resource_readonly.set(.{ .boolean = false });
-        keys.tree_find_open.set(.{ .boolean = false });
-        keys.resource_scheme.set(.{ .string = if (terminal_editor_active) "vscode-terminal" else "file" });
+        const text_editor = if (active) |tab| tab.file_input != null and !markdown_preview else false;
         const target = self.code_editor_api.getFocusedCodeEditor() orelse self.code_editor_api.getActiveCodeEditor();
-        keys.editor_read_only.set(.{ .boolean = if (target) |editor| editor.isReadOnly() else false });
-        keys.legacy_editor_read_only.set(.{ .boolean = if (self.activeTab()) |tab| tab.editor.read_only else false });
+        const geometry_value = self.geometry();
+        self.workbench_context.updateWindowContext(.{
+            .active_editor = if (active) |tab| if (!tab.isDiff()) tab.editor else null else null,
+            .language_visible = text_editor,
+            .language_id = if (text_editor) active.?.editor.languageId() else "",
+            .custom_editor_id = if (markdown_preview and active.?.file_input != null) "vscode.markdown.preview.editor" else "",
+            .editor_focused = self.focus == .editor,
+            .editor_text_focused = self.focus == .editor and !terminal_editor and !markdown_preview and !self.isDialogOpen() and !self.quick_access.isOpen(),
+            .sidebar_focused = self.focus == .sidebar and geometry_value.sidebarShown(),
+            .sidebar_visible = geometry_value.sidebarShown(),
+            .active_activity = self.activity_bar_part.active_id orelse "",
+            .search_results_focused = if (self.search_window.view) |view| view.results_focused else false,
+            .statusbar_focused = self.focus == .statusbar,
+            .terminal_focused = self.terminalFocused(),
+            .panel_focused = (self.focus == .terminal or self.focus == .problems) and geometry_value.panelShown(),
+            .active_panel = if (geometry_value.panelShown()) geometry_value.activePanelId() else "",
+            .quick_access_open = self.quick_access.isOpen(),
+            .files_picker_open = self.quick_access.isOpen() and !self.quick_access.isPickOpen(),
+            .resource_scheme = if (terminal_editor) "vscode-terminal" else "file",
+            .editor_read_only = if (target) |editor| editor.isReadOnly() else false,
+            .legacy_editor_read_only = if (active) |tab| tab.editor.read_only else false,
+        });
     }
 
     fn getFileIconTheme(self: *const TerminalWorkbench) file_icon.FileIconThemeData {
@@ -4473,7 +4403,6 @@ pub const TerminalWorkbench = struct {
     pub fn ensureGlobalService(self: *TerminalWorkbench) !*keybinding_service.KeybindingService {
         if (self.global_service) |service| return service;
         const context = try self.ensureContextKeys();
-        self.updateContextKeys();
         const overrides = try self.user_keybindings.filteredOverrides(self, isKnownKeybindingCommand);
         defer self.allocator.free(overrides);
         const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
@@ -4891,6 +4820,7 @@ pub const TerminalWorkbench = struct {
         if (self.terminal_service) |service| {
             if (service.setFocusedInstance(if (blocked) null else self.focusedTerminal())) self.terminal_input.button_down = null;
         }
+        self.updateContextKeys();
     }
 
     /// First workspace folder resource, or null for an empty workspace.

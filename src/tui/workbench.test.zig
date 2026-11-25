@@ -9061,3 +9061,47 @@ test "Layout resizePart changes the active group before resizing the editor part
     try std.testing.expectEqual(panel_size.height + 2, wb.layout_api.getSize(.panel).height);
     try std.testing.expectEqual(group_size.height - 2, wb.part.getSize(group).height);
 }
+
+test "Workbench: context keys follow language read-only and search focus events without key dispatch" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "context-a.txt", "alpha\n");
+    defer allocator.free(path);
+    const other = try seedFile(allocator, io, &tmp, "context-b.txt", "beta\n");
+    defer allocator.free(other);
+    const root_path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root_path);
+
+    const window = try TestWindow.init(allocator, io, &.{path}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const keys = (try wb.ensureContextKeys()).interface();
+    const first = wb.activeTab().?.editor;
+    try first.setLanguage("markdown");
+    try std.testing.expectEqualStrings("markdown", keys.getContextKeyValue("editorLangId").string);
+    first.setReadOnly(true);
+    try std.testing.expect(keys.getContextKeyValue("editorReadonly").boolean);
+    first.setReadOnly(false);
+    try std.testing.expect(!keys.getContextKeyValue("editorReadonly").boolean);
+
+    try wb.openPath(other);
+    try std.testing.expectEqualStrings("plaintext", keys.getContextKeyValue("editorLangId").string);
+    first.setReadOnly(true);
+    try std.testing.expect(!keys.getContextKeyValue("editorReadonly").boolean);
+    const second = wb.activeTab().?.editor;
+    second.setReadOnly(true);
+    try std.testing.expect(keys.getContextKeyValue("editorReadonly").boolean);
+    second.setReadOnly(false);
+
+    try wb.initSidebar(root_path);
+    _ = try wb.showActivityById("search");
+    const search_view = wb.search_window.view.?;
+    search_view.focus();
+    try std.testing.expect(keys.getContextKeyValue("inputFocus").boolean);
+    try std.testing.expect(!keys.getContextKeyValue("listFocus").boolean);
+    search_view.focusResults();
+    try std.testing.expect(!keys.getContextKeyValue("inputFocus").boolean);
+    try std.testing.expect(keys.getContextKeyValue("listFocus").boolean);
+}
