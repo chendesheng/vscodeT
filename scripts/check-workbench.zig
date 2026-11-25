@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const shell = "src/vs/workbench/browser/workbench.zig";
-const line_budget = 297;
 const native_window = "src/tui/workbenchWindow.zig";
 const native_line_budget = 4322;
 const exceptions = @embedFile("workbench-imports.txt");
@@ -37,13 +36,14 @@ pub fn main(init: std.process.Init) !void {
         std.mem.replaceScalar(u8, path, std.fs.path.sep, '/');
         const is_shell = std.mem.eql(u8, path, shell);
         const is_native = std.mem.eql(u8, path, native_window);
-        if (is_shell or is_native) {
-            if (is_shell) saw_shell = true;
-            if (is_native) saw_native = true;
-            const budget: usize = if (is_shell) line_budget else native_line_budget;
+        if (is_shell) saw_shell = true;
+        // The portable Workbench has reached its composition boundary. Keep
+        // the size ratchet on the native window while its adapters remain.
+        if (is_native) {
+            saw_native = true;
             const count = std.mem.countScalar(u8, source, '\n') + @intFromBool(source.len > 0 and source[source.len - 1] != '\n');
-            if (count > budget) {
-                std.log.err("{s} has {d} lines, budget {d}", .{ path, count, budget });
+            if (count > native_line_budget) {
+                std.log.err("{s} has {d} lines, budget {d}", .{ path, count, native_line_budget });
                 ok = false;
             }
         }
@@ -52,6 +52,10 @@ pub fn main(init: std.process.Init) !void {
         while (true) {
             const token = tokens.next();
             if (token.tag == .eof) break;
+            if (is_shell and token.tag == .keyword_test) {
+                std.log.err("inline test in portable Workbench; use an owner test path", .{});
+                ok = false;
+            }
             if (token.tag != .builtin or !std.mem.eql(u8, source[token.loc.start..token.loc.end], "@import")) continue;
             if (tokens.next().tag != .l_paren) continue;
             const name = tokens.next();
@@ -60,6 +64,10 @@ pub fn main(init: std.process.Init) !void {
             if (!std.mem.endsWith(u8, imported, ".zig")) continue;
             std.mem.replaceScalar(u8, imported, '\\', '/');
             const target = try std.fs.path.resolveAllocPosix(temp, &.{ std.fs.path.dirnamePosix(path) orelse ".", imported });
+            if (is_shell and (std.mem.startsWith(u8, target, "src/vs/workbench/contrib/") or std.mem.startsWith(u8, target, "src/vs/editor/contrib/") or std.mem.startsWith(u8, target, "src/extensions/"))) {
+                std.log.err("feature import in portable Workbench: {s}", .{target});
+                ok = false;
+            }
             if (!std.mem.eql(u8, target, shell) and
                 !((std.mem.startsWith(u8, path, "src/vs/") or std.mem.startsWith(u8, path, "src/extensions/")) and std.mem.startsWith(u8, target, "src/tui/"))) continue;
             const edge = try std.fmt.allocPrint(temp, "{s} -> {s}", .{ path, target });

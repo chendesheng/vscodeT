@@ -2,10 +2,10 @@
 // src/vs/workbench/browser/workbench.ts (pinned VS Code 1.147.0).
 // Native service instances are supplied explicitly by the terminal window;
 // Zig does not use decorator reflection. Layout uses the registered cell
-// parts instead of a browser DOM grid. Auxiliary windows, browser font
-// aliasing/metrics, DOM accessibility announcements, and layout traffic
-// lights have no terminal implementation. The portable notification
-// center, toasts and status handlers are created in the upstream order.
+// parts instead of a browser DOM grid. Floating/auxiliary windows, browser
+// font metrics/aliasing, ARIA live regions/accessible view, traffic lights
+// and browser-managed selection/IME have no terminal implementation. The
+// portable notification handlers are created in the upstream order.
 const std = @import("std");
 const ui = @import("ui");
 const Allocator = std.mem.Allocator;

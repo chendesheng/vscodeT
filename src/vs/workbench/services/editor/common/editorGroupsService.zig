@@ -402,6 +402,9 @@ pub const EditorGroupsService = struct {
             if (group.model.count() != 0) return error.GroupAlreadyRestored;
             try group.model.deserialize(serialized, registry);
         }
+        // The restored active input is a model transition, just as opening an
+        // editor is; mounted-pane events follow when the view is materialized.
+        if (self.active.model.activeEditor()) |input| try self.on_did_active_editor_change.fire(input);
     }
 
     pub fn initFromSerializedPart(allocator: Allocator, data: SerializedEditorPart, registry: *editor_factory.EditorFactoryRegistry, config: group_mod.Configuration) !*EditorGroupsService {

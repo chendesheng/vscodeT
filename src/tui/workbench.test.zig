@@ -9078,6 +9078,53 @@ test "workbench mounts and disposes only its subtree in the terminal window" {
     try std.testing.expectEqual(@as(?*ui.Node, null), sibling.nextSibling());
 }
 
+test "workbench starts contribution and editor factory registries before context keys and parts" {
+    const allocator = std.testing.allocator;
+    var surface: ui.Surface = undefined;
+    try @import("workbench.zig").initWindowSurface(&surface, allocator, 48, 16);
+    defer surface.deinit();
+    var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(allocator);
+    defer services.deinit();
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    const wb = try Workbench.init(allocator, std.testing.io, @import("./editorView.zig").View.createHandle, &surface, &services, .{}, .{ .registry = &registry });
+    defer wb.deinit();
+    const Probe = struct {
+        window: *Workbench,
+        serializer: ImagePreviewEditorInputSerializer,
+        stage: usize = 0,
+
+        fn contribution(context: *anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqual(@as(usize, 0), self.stage);
+            try std.testing.expectEqual(.Ready, self.window.lifecycle.phase);
+            try std.testing.expect(self.window.layout.main_container == null);
+            self.stage = 1;
+        }
+
+        fn factory(context: *anyopaque, accessor: @import("../vs/platform/instantiation/common/instantiation.zig").ServicesAccessor) !editor_factory.IEditorSerializer {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqual(@as(usize, 1), self.stage);
+            const layout = try accessor.get(@import("../vs/workbench/services/layout/browser/layoutService.zig").layout_service_id);
+            try std.testing.expect(layout.getContainer(.editor) == null);
+            try std.testing.expect(self.window.context_keys == null);
+            self.stage = 2;
+            return self.serializer.interface();
+        }
+    };
+    var probe = Probe{ .window = wb, .serializer = ImagePreviewEditorInputSerializer.init(allocator) };
+    try wb.contributions.register(.block_restore, &probe, Probe.contribution);
+    try registry.registerEditorSerializerFactory(ImagePreviewEditorInput.ID, .{ .context = &probe, .create = Probe.factory });
+    try std.testing.expectEqual(@as(usize, 0), probe.stage);
+    _ = try wb.startup();
+    try std.testing.expectEqual(@as(usize, 2), probe.stage);
+    try std.testing.expect(wb.context_keys != null);
+    try std.testing.expect(wb.layout.main_container != null);
+    try std.testing.expect(wb.core.notification_controller != null);
+    try std.testing.expect(wb.part.when_restored.is_open);
+    try std.testing.expectEqual(@as(usize, 1), wb.core.restore_state_ready.pending.items.len);
+}
+
 test "workbench startup creates the live editor part and applies extraClasses before the first frame" {
     const extra: u16 = 0x00ef;
     const wb_window = try TestWindow.initWithOptions(std.testing.allocator, std.testing.io, &.{}, 80, 24, .{ .extra_classes = &.{extra} }, null);

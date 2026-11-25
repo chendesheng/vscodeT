@@ -2,6 +2,8 @@
 //
 // The workbench grid lays out the parts and delegates sash resizing to
 // SplitView. The terminal shell supplies cell sizes and paints the parts.
+// The browser DOM grid, CSS pixel offsets, floating panels and auxiliary
+// windows have no single-terminal equivalent; portable part state remains.
 
 const std = @import("std");
 const ui = @import("ui");
