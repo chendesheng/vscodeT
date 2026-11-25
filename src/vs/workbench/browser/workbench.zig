@@ -240,7 +240,6 @@ pub const TabKeyResult = enum { unhandled, handled, quit };
 pub const SplitDirection = grid_mod.Orientation;
 /// Target selector shared by the move/copy editor and group commands, port of
 /// upstream `SelectedEditorsMoveCopyArguments.to`.
-pub const GroupTarget = enum { first, last, previous, next, left, right, up, down };
 pub const GroupLocation = editor_groups.GroupLocation;
 pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, problems };
 
@@ -438,6 +437,7 @@ pub const Workbench = struct {
     notification_controller: ?*@import("parts/notifications/notificationsCommands.zig").NotificationsController = null,
     images: ui.image.Runtime,
     markdown_previews: MarkdownPreviewManager,
+    group_actions: @import("parts/editor/editorActions.zig").GroupActions,
     /// Desired OSC 22 mouse pointer shape for the next frame. Only the
     /// composited renderer writes it; pane surfaces resolve shapes but never
     /// emit them.
@@ -699,9 +699,20 @@ pub const Workbench = struct {
                     host.layoutAll();
                 }
             }.run,
-            .focus_editor = requestMarkdownEditorFocus,
+            .focus_editor = focusWindowEditor,
         };
         errdefer self.markdown_previews.deinit();
+        self.group_actions = .{
+            .part = self.part,
+            .transfer = self.groupTransferHost(),
+            .configuration = &self.configuration,
+            .report_status = struct {
+                fn report(context: *anyopaque, message: []const u8) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.setStatusHint("{s}", .{message});
+                }
+            }.report,
+        };
         self.range_highlights = try RangeHighlightDecorations.create(allocator, @import("codeeditor.zig").Host.forEditorPart(self.part));
         self.part.attachWindow(&self.window_events);
         try self.part.base.register(self.layout.interface());
@@ -1421,45 +1432,14 @@ pub const Workbench = struct {
         try self.commands.registerAction(&self.instantiation, outline_actions.focus_action);
         try self.commands.register(.{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions });
         for (outline_actions.outline_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        const split_commands = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.splitEditor", .label = "Split Editor", .category = "View", .context = self, .run = commandSplitEditor },
-            .{ .id = "workbench.action.splitEditorOrthogonal", .label = "Split Editor Orthogonal", .category = "View", .context = self, .run = commandSplitEditorOrthogonal },
-            .{ .id = "workbench.action.splitEditorLeft", .label = "Split Editor Left", .category = "View", .context = self, .run = commandSplitEditorLeft },
-            .{ .id = "workbench.action.splitEditorRight", .label = "Split Editor Right", .category = "View", .context = self, .run = commandSplitEditorRight },
-            .{ .id = "workbench.action.splitEditorUp", .label = "Split Editor Up", .category = "View", .context = self, .run = commandSplitEditorUp },
-            .{ .id = "workbench.action.splitEditorDown", .label = "Split Editor Down", .category = "View", .context = self, .run = commandSplitEditorDown },
-        };
-        for (split_commands) |command| try self.commands.register(command);
+        for (self.group_actions.splitActions()) |action| try self.commands.registerAction(&self.instantiation, action);
         for (@import("parts/editor/editorActions.zig").focus_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
         const editor_actions = @import("parts/editor/editorActions.zig");
         for (editor_actions.new_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        const editor_commands = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.closeGroup", .label = "Close Editor Group", .category = "View", .context = self, .run = commandCloseGroup },
-            .{ .id = "workbench.action.joinTwoGroups", .label = "Join Editor Group with Next Group", .category = "View", .context = self, .run = commandJoinTwoGroups },
-        };
-        for (editor_commands) |command| try self.commands.register(command);
+        for (self.group_actions.joinActions()) |action| try self.commands.registerAction(&self.instantiation, action);
         for (editor_actions.move_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        for (self.group_actions.transferActions()) |action| try self.commands.registerAction(&self.instantiation, action);
         const after_move_groups = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.duplicateActiveEditorGroupLeft", .label = "Duplicate Editor Group Left", .category = "View", .context = self, .run = commandDuplicateGroupLeft },
-            .{ .id = "workbench.action.duplicateActiveEditorGroupRight", .label = "Duplicate Editor Group Right", .category = "View", .context = self, .run = commandDuplicateGroupRight },
-            .{ .id = "workbench.action.duplicateActiveEditorGroupUp", .label = "Duplicate Editor Group Up", .category = "View", .context = self, .run = commandDuplicateGroupUp },
-            .{ .id = "workbench.action.duplicateActiveEditorGroupDown", .label = "Duplicate Editor Group Down", .category = "View", .context = self, .run = commandDuplicateGroupDown },
-            .{ .id = "workbench.action.moveEditorToPreviousGroup", .label = "Move Editor into Previous Group", .category = "View", .context = self, .run = commandMoveEditorToPreviousGroup },
-            .{ .id = "workbench.action.moveEditorToNextGroup", .label = "Move Editor into Next Group", .category = "View", .context = self, .run = commandMoveEditorToNextGroup },
-            .{ .id = "workbench.action.moveEditorToAboveGroup", .label = "Move Editor into Group Above", .category = "View", .context = self, .run = commandMoveEditorToAboveGroup },
-            .{ .id = "workbench.action.moveEditorToBelowGroup", .label = "Move Editor into Group Below", .category = "View", .context = self, .run = commandMoveEditorToBelowGroup },
-            .{ .id = "workbench.action.moveEditorToLeftGroup", .label = "Move Editor into Left Group", .category = "View", .context = self, .run = commandMoveEditorToLeftGroup },
-            .{ .id = "workbench.action.moveEditorToRightGroup", .label = "Move Editor into Right Group", .category = "View", .context = self, .run = commandMoveEditorToRightGroup },
-            .{ .id = "workbench.action.moveEditorToFirstGroup", .label = "Move Editor into First Group", .category = "View", .context = self, .run = commandMoveEditorToFirstGroup },
-            .{ .id = "workbench.action.moveEditorToLastGroup", .label = "Move Editor into Last Group", .category = "View", .context = self, .run = commandMoveEditorToLastGroup },
-            .{ .id = "workbench.action.splitEditorToPreviousGroup", .label = "Split Editor into Previous Group", .category = "View", .context = self, .run = commandSplitEditorToPreviousGroup },
-            .{ .id = "workbench.action.splitEditorToNextGroup", .label = "Split Editor into Next Group", .category = "View", .context = self, .run = commandSplitEditorToNextGroup },
-            .{ .id = "workbench.action.splitEditorToAboveGroup", .label = "Split Editor into Group Above", .category = "View", .context = self, .run = commandSplitEditorToAboveGroup },
-            .{ .id = "workbench.action.splitEditorToBelowGroup", .label = "Split Editor into Group Below", .category = "View", .context = self, .run = commandSplitEditorToBelowGroup },
-            .{ .id = "workbench.action.splitEditorToLeftGroup", .label = "Split Editor into Left Group", .category = "View", .context = self, .run = commandSplitEditorToLeftGroup },
-            .{ .id = "workbench.action.splitEditorToRightGroup", .label = "Split Editor into Right Group", .category = "View", .context = self, .run = commandSplitEditorToRightGroup },
-            .{ .id = "workbench.action.splitEditorToFirstGroup", .label = "Split Editor into First Group", .category = "View", .context = self, .run = commandSplitEditorToFirstGroup },
-            .{ .id = "workbench.action.splitEditorToLastGroup", .label = "Split Editor into Last Group", .category = "View", .context = self, .run = commandSplitEditorToLastGroup },
             .{ .id = "workbench.action.navigateLeft", .label = "Focus Group Left", .category = "View", .context = self, .run = commandNavigateLeft },
             .{ .id = "workbench.action.navigateRight", .label = "Focus Group Right", .category = "View", .context = self, .run = commandNavigateRight },
             .{ .id = "workbench.action.navigateUp", .label = "Focus Group Up", .category = "View", .context = self, .run = commandNavigateUp },
@@ -1469,12 +1449,15 @@ pub const Workbench = struct {
         try self.commands.registerAction(&self.instantiation, editor_actions.navigate_between_groups_action);
         try self.commands.registerAction(&self.instantiation, editor_actions.reset_group_sizes_action);
         for (@import("actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        const after_group_actions = [_]commands_mod.CommandInfo{
+        const before_join_all = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.maximizeEditor", .label = "Maximize Editor Group", .category = "View", .context = self, .run = commandMaximizeEditor },
             .{ .id = "workbench.action.closePanel", .label = "Close Panel", .category = "View", .context = self, .run = commandClosePanel },
             .{ .id = "workbench.action.closeAllEditors", .label = "Close All Editors", .category = "View", .context = self, .run = commandCloseAllEditors },
             .{ .id = "workbench.action.closeOtherEditors", .label = "Close Other Editors", .category = "View", .context = self, .run = commandCloseOtherEditors },
-            .{ .id = "workbench.action.joinAllGroups", .label = "Join All Editor Groups", .category = "View", .context = self, .run = commandJoinAllGroups },
+        };
+        for (before_join_all) |command| try self.commands.register(command);
+        try self.commands.registerAction(&self.instantiation, self.group_actions.joinAllAction());
+        const after_group_actions = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.lastEditorInGroup", .label = "Last Editor in Group", .category = "View", .context = self, .run = commandLastEditorInGroup },
             .{ .id = "workbench.action.previousEditor", .label = "Previous Editor", .category = "View", .context = self, .run = commandPreviousEditor },
             .{ .id = "workbench.action.openEditorAtIndex1", .label = "Open Editor 1", .category = "View", .context = self, .run = commandOpenEditorAtIndex1 },
@@ -2979,14 +2962,8 @@ pub const Workbench = struct {
         return false;
     }
 
-    /// Removes an empty pane from the grid and the editor-group service,
-    /// promoting its sibling. The last group is kept so the workbench always
-    /// has a target for the next editor.
     fn collapseEmptyPane(self: *Workbench, pane: *GroupPane) void {
-        if (pane.group.model.count() != 0 or self.service.count() <= 1) return;
-        self.editor_drop_target.invalidateDragPane(pane);
-        if (self.part.maximized_group == pane) self.part.setMaximizedGroup(null);
-        _ = self.part.collapseView(pane);
+        self.part.collapseGroup(pane, self.groupTransferHost());
     }
 
     fn activeGroup(self: *Workbench) *editor_groups.EditorGroup {
@@ -4370,161 +4347,8 @@ pub const Workbench = struct {
         try self.focusPane(pane);
     }
 
-    /// Port of `workbench.action.newGroupLeft/Right/Above/Below`: add an empty
-    /// group and activate it.
-    pub fn newEmptyGroup(self: *Workbench, direction: editor_groups.GroupDirection) !*GroupPane {
-        const source = self.activePane() orelse return error.NoActivePane;
-        const view = try self.part.addGroup(source, direction);
-        try self.focusPane(view);
-        return view;
-    }
-
-    fn preferredOppositeDirection(self: *Workbench) editor_groups.GroupDirection {
-        return if (self.preferredSideBySideDirection() == .RIGHT) .LEFT else .UP;
-    }
-
-    /// Resolves the target group for move/copy-editor commands. Directional
-    /// commands create the missing group, matching `moveCopyEditorsToGroup`.
-    fn resolveGroupTarget(
-        self: *Workbench,
-        source: *GroupPane,
-        target: GroupTarget,
-        create: bool,
-    ) !?*GroupPane {
-        switch (target) {
-            .left, .right, .up, .down => {
-                const direction: editor_groups.GroupDirection = switch (target) {
-                    .left => .LEFT,
-                    .right => .RIGHT,
-                    .up => .UP,
-                    else => .DOWN,
-                };
-                self.layoutAll();
-                if (try self.part.findGroup(.{ .direction = direction }, source, false)) |pane| return pane;
-                if (!create) return null;
-                return try self.newEmptyGroup(direction);
-            },
-            .first, .last, .previous, .next => {
-                const location: GroupLocation = switch (target) {
-                    .first => .first,
-                    .last => .last,
-                    .previous => .previous,
-                    .next => .next,
-                    else => unreachable,
-                };
-                if (try self.part.findGroup(.{ .location = location }, source, false)) |view| return view;
-                if (!create) return null;
-                return try self.newEmptyGroup(if (location == .next) self.preferredSideBySideDirection() else self.preferredOppositeDirection());
-            },
-        }
-    }
-
-    /// Port of `workbench.action.closeGroup`: move the active group's editors
-    /// into the most recently active other group, then remove the group.
-    pub fn closeActiveGroup(self: *Workbench) !void {
-        self.part.active_sash = null;
-        const source = self.activePane() orelse return;
-        if (self.groupCount() <= 1) return;
-        const groups = try self.service.getGroups(self.allocator, .MOST_RECENTLY_ACTIVE);
-        defer self.allocator.free(groups);
-        var destination: ?*GroupPane = null;
-        for (groups) |group| {
-            if (group == source.group) continue;
-            if (self.paneForGroup(group)) |pane| {
-                destination = pane;
-                break;
-            }
-        }
-        const target = destination orelse return;
-        try self.mergePaneInto(source, target);
-    }
-
-    /// Port of `workbench.action.joinTwoGroups`: merge the active group into
-    /// the nearest neighbour, searching right, down, left then up.
-    pub fn joinTwoGroups(self: *Workbench) !void {
-        const source = self.activePane() orelse return;
-        const directions = [_]editor_groups.GroupDirection{ .RIGHT, .DOWN, .LEFT, .UP };
-        for (directions) |direction| {
-            if (try self.findAdjacentPane(direction, false)) |target| {
-                try self.mergePaneInto(source, target);
-                return;
-            }
-        }
-    }
-
-    fn mergePaneInto(self: *Workbench, source: *GroupPane, target: *GroupPane) !void {
-        if (source == target) return;
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try source.orderedTabs(self.allocator, &ordered);
-        for (ordered.items) |tab| {
-            try self.moveTabToPane(source, target, tab, null);
-        }
-        self.service.activateGroup(target.group);
-        target.syncActivePane();
-        if (source.tabs.items.len == 0) self.collapseEmptyPane(source);
-        self.layoutAll();
-        try self.focusPane(target);
-    }
-
     fn destroyPane(self: *Workbench, pane: *GroupPane) void {
-        self.editor_drop_target.invalidateDragPane(pane);
-        while (pane.tabs.items.len > 0) {
-            const tab = pane.tabs.items[0];
-            _ = pane.group.model.closeEditor(tab.input, .UNKNOWN, true) catch {};
-            _ = pane.removeTab(tab);
-            self.discardTab(tab);
-        }
-        _ = self.part.removeView(pane);
-    }
-
-    /// Port of `workbench.action.duplicateActiveEditorGroupLeft/Right/Up/Down`:
-    /// create a group beside the active one and copy every editor into it.
-    pub fn duplicateActiveGroup(self: *Workbench, direction: editor_groups.GroupDirection) !void {
-        self.part.setMaximizedGroup(null);
-        self.part.active_sash = null;
-        self.layoutAll();
-        const source = self.activePane() orelse return;
-        for (source.tabs.items) |tab| {
-            if (tab.diff != null) return error.SplitUnsupported;
-        }
-        const orientation: SplitDirection = switch (direction) {
-            .LEFT, .RIGHT => .horizontal,
-            .UP, .DOWN => .vertical,
-        };
-        const target = try self.part.splitGroup(source, orientation, direction == .LEFT or direction == .UP);
-        errdefer self.destroyPane(target);
-
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try source.orderedTabs(self.allocator, &ordered);
-        const active_index = source.activeIndex(ordered.items);
-        var copies = std.array_list.Managed(*Tab).init(self.allocator);
-        defer copies.deinit();
-        for (ordered.items) |tab| {
-            try copies.append(try self.copyTabIntoPane(target, tab));
-        }
-        if (copies.items.len > 0) {
-            try target.activateTab(copies.items[@min(active_index, copies.items.len - 1)]);
-        }
-        try self.focusPane(target);
-    }
-
-    /// Port of `moveActiveEditor`/`copyActiveEditor` with `by: 'group'`, used
-    /// by the moveEditorTo*Group and splitEditorTo*Group commands.
-    pub fn moveOrSplitActiveEditor(self: *Workbench, target: GroupTarget, copy: bool) !void {
-        self.layoutAll();
-        const source = self.activePane() orelse return;
-        const tab = source.activeTab() orelse return;
-        const destination = try self.resolveGroupTarget(source, target, true) orelse return;
-        if (destination == source) return;
-        if (copy) {
-            _ = try self.copyTabIntoPane(destination, tab);
-        } else {
-            try self.moveTabToPane(source, destination, tab, null);
-            if (source.tabs.items.len == 0) self.collapseEmptyPane(source);
-        }
-        try self.focusPane(destination);
+        self.part.destroyGroup(pane, self.groupTransferHost());
     }
 
     pub fn cycleGroup(self: *Workbench) !void {
@@ -4588,41 +4412,6 @@ pub const Workbench = struct {
             const tab = candidate orelse break;
             if (!try self.closeTab(pane, tab)) break;
         }
-    }
-
-    /// Port of `workbench.action.joinAllGroups`: move every tab into the
-    /// active group, then drop the empty groups.
-    pub fn joinAllGroups(self: *Workbench) !void {
-        const target = self.activePane() orelse return;
-        for (self.part.group_views.items) |pane| {
-            if (pane == target) continue;
-            while (pane.tabs.items.len > 0) {
-                const tab = pane.tabs.items[0];
-                _ = try pane.group.model.closeEditor(tab.input, .MOVE, false);
-                _ = pane.removeTab(tab);
-                const opened = try target.group.model.openEditor(tab.input, .{ .pinned = true, .active = false });
-                if (!opened.is_new) {
-                    // Target already shows this document (a split copy has a
-                    // distinct input over the shared model); drop the moved view.
-                    self.discardTab(tab);
-                    continue;
-                }
-                try target.addTab(tab);
-            }
-            pane.syncActivePane();
-        }
-        var index: usize = 0;
-        while (index < self.part.group_views.items.len) {
-            const pane = self.part.group_views.items[index];
-            if (pane == target or pane.tabs.items.len > 0) {
-                index += 1;
-                continue;
-            }
-            _ = self.part.collapseView(pane);
-        }
-        target.syncActivePane();
-        self.layoutAll();
-        if (self.activeTab()) |tab| try tab.ensureControllers();
     }
 
     pub fn lastEditorInGroup(self: *Workbench) !void {
@@ -4699,39 +4488,8 @@ pub const Workbench = struct {
         });
     }
 
-    /// Port of upstream `splitEditor(editorGroupsService, direction, context)`:
-    /// create a group beside the active one and copy the active editor into it.
-    /// The original tab stays open; both panes share the document/model and
-    /// keep independent view state.
     pub fn splitActiveInDirection(self: *Workbench, direction: editor_groups.GroupDirection) !void {
-        self.part.active_sash = null;
-        self.part.setMaximizedGroup(null);
-        self.editor_drop_target.clearTabDrag();
-        const source = self.activePane() orelse return;
-        const tab = source.activeTab() orelse return;
-
-        const orientation: SplitDirection = switch (direction) {
-            .LEFT, .RIGHT => .horizontal,
-            .UP, .DOWN => .vertical,
-        };
-        const new_first = direction == .LEFT or direction == .UP;
-        const new_pane = try self.part.splitGroup(source, orientation, new_first);
-        var keep_view = false;
-        defer {
-            if (!keep_view) _ = self.part.removeView(new_pane);
-        }
-
-        const copied = try self.copyTabIntoPane(new_pane, tab);
-        keep_view = true;
-
-        self.layoutAll();
-        if (self.activeTab()) |active| {
-            try active.ensureControllers();
-            try active.refresh();
-            active.focusEditor();
-        }
-        self.focusEditor();
-        _ = copied;
+        try self.group_actions.splitActiveInDirection(direction);
     }
 
     /// Copies `tab` into `target`, port of `EditorGroupView.copyEditor` plus
@@ -4743,6 +4501,32 @@ pub const Workbench = struct {
 
     fn copyTabIntoPaneWithOptions(self: *Workbench, target: *GroupPane, tab: *Tab, options: group_mod.EditorOpenOptions) !*Tab {
         return target.copyEditor(tab, options, self.copyEditorHost());
+    }
+
+    fn groupTransferHost(self: *Workbench) @import("parts/editor/editorPart.zig").EditorPart(GroupPane).TransferHost {
+        return .{
+            .copy = self.copyEditorHost(),
+            .move = .{ .context = self, .will_move = willMoveEditor, .discard = discardTransferPane, .focus_editor = focusEditorAfterTransfer },
+            .invalidate_pane = struct {
+                fn run(context: *anyopaque, pane: *GroupPane) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.editor_drop_target.invalidateDragPane(pane);
+                }
+            }.run,
+            .clear_drag = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.editor_drop_target.clearTabDrag();
+                }
+            }.run,
+            .layout = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.layoutAll();
+                }
+            }.run,
+            .focus_editor = focusWindowEditor,
+        };
     }
 
     fn copyEditorHost(self: *Workbench) GroupPane.CopyEditorHost {
@@ -4778,7 +4562,7 @@ pub const Workbench = struct {
         // Upstream `workbench.action.closeActiveEditor` falls through to
         // `workbench.action.closeGroup` when the active group is empty.
         if (pane.tabs.items.len == 0) {
-            try self.closeActiveGroup();
+            try self.group_actions.closeActiveGroup();
             return false;
         }
         const tab = pane.activeTab() orelse return false;
@@ -6263,7 +6047,7 @@ fn quickOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
 fn quickOpenToSide(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const direction = self.preferredSideBySideDirection();
-    const target = try self.findAdjacentPane(direction, false) orelse try self.newEmptyGroup(direction);
+    const target = try self.findAdjacentPane(direction, false) orelse try self.group_actions.newEmptyGroup(direction);
     for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
             const resource = if (tab.file_input) |input| input.editor.path else tab.imagePath() orelse continue;
@@ -6648,7 +6432,7 @@ fn commandReopenClosedEditor(context: *anyopaque) anyerror!void {
     _ = self.reopenLastClosedEditor();
 }
 
-fn requestMarkdownEditorFocus(context: *anyopaque) void {
+fn focusWindowEditor(context: *anyopaque) void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     self.focusEditor();
 }
@@ -6656,165 +6440,6 @@ fn requestMarkdownEditorFocus(context: *anyopaque) void {
 fn commandImageOpenInTextEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.openActiveImageAsText();
-}
-
-fn runSplitCommand(self: *Workbench, direction: editor_groups.GroupDirection) anyerror!void {
-    self.splitActiveInDirection(direction) catch |err| switch (err) {
-        // The terminal diff/snapshot pane owns its models and cannot be
-        // duplicated yet; report the terminal limitation instead of failing
-        // the command handler with no visible feedback.
-        error.SplitUnsupported => self.setStatusHint("Split Editor is unavailable for this editor type", .{}),
-        else => return err,
-    };
-}
-
-fn commandSplitEditor(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try runSplitCommand(self, self.preferredSideBySideDirection());
-}
-
-fn commandSplitEditorOrthogonal(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    // Upstream `SplitEditorOrthogonalAction.getDirection`: the opposite axis
-    // of `workbench.editor.openSideBySideDirection`.
-    try runSplitCommand(self, if (self.preferredSideBySideDirection() == .RIGHT) .DOWN else .RIGHT);
-}
-
-fn commandSplitEditorLeft(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try runSplitCommand(self, .LEFT);
-}
-
-fn commandSplitEditorRight(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try runSplitCommand(self, .RIGHT);
-}
-
-fn commandSplitEditorUp(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try runSplitCommand(self, .UP);
-}
-
-fn commandSplitEditorDown(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try runSplitCommand(self, .DOWN);
-}
-
-fn commandCloseGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.closeActiveGroup();
-}
-
-fn commandJoinTwoGroups(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.joinTwoGroups();
-}
-
-fn commandDuplicateGroupLeft(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.duplicateActiveGroup(.LEFT) catch |err| return splitCommandError(self, err);
-}
-
-fn commandDuplicateGroupRight(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.duplicateActiveGroup(.RIGHT) catch |err| return splitCommandError(self, err);
-}
-
-fn commandDuplicateGroupUp(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.duplicateActiveGroup(.UP) catch |err| return splitCommandError(self, err);
-}
-
-fn commandDuplicateGroupDown(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.duplicateActiveGroup(.DOWN) catch |err| return splitCommandError(self, err);
-}
-
-fn commandMoveEditorToPreviousGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveOrSplitActiveEditor(.previous, false);
-}
-
-fn commandMoveEditorToNextGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveOrSplitActiveEditor(.next, false);
-}
-
-fn commandMoveEditorToAboveGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveOrSplitActiveEditor(.up, false);
-}
-
-fn commandMoveEditorToBelowGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveOrSplitActiveEditor(.down, false);
-}
-
-fn commandMoveEditorToLeftGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveOrSplitActiveEditor(.left, false);
-}
-
-fn commandMoveEditorToRightGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveOrSplitActiveEditor(.right, false);
-}
-
-fn commandMoveEditorToFirstGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveOrSplitActiveEditor(.first, false);
-}
-
-fn commandMoveEditorToLastGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveOrSplitActiveEditor(.last, false);
-}
-
-fn commandSplitEditorToPreviousGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.moveOrSplitActiveEditor(.previous, true) catch |err| return splitCommandError(self, err);
-}
-
-fn commandSplitEditorToNextGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.moveOrSplitActiveEditor(.next, true) catch |err| return splitCommandError(self, err);
-}
-
-fn commandSplitEditorToAboveGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.moveOrSplitActiveEditor(.up, true) catch |err| return splitCommandError(self, err);
-}
-
-fn commandSplitEditorToBelowGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.moveOrSplitActiveEditor(.down, true) catch |err| return splitCommandError(self, err);
-}
-
-fn commandSplitEditorToLeftGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.moveOrSplitActiveEditor(.left, true) catch |err| return splitCommandError(self, err);
-}
-
-fn commandSplitEditorToRightGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.moveOrSplitActiveEditor(.right, true) catch |err| return splitCommandError(self, err);
-}
-
-fn commandSplitEditorToFirstGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.moveOrSplitActiveEditor(.first, true) catch |err| return splitCommandError(self, err);
-}
-
-fn commandSplitEditorToLastGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.moveOrSplitActiveEditor(.last, true) catch |err| return splitCommandError(self, err);
-}
-
-fn splitCommandError(self: *Workbench, err: anyerror) anyerror!void {
-    switch (err) {
-        error.SplitUnsupported => self.setStatusHint("Split Editor is unavailable for this editor type", .{}),
-        else => return err,
-    }
 }
 
 fn commandNavigateLeft(context: *anyopaque) anyerror!void {
@@ -6855,11 +6480,6 @@ fn commandCloseAllEditors(context: *anyopaque) anyerror!void {
 fn commandCloseOtherEditors(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.closeOtherEditors();
-}
-
-fn commandJoinAllGroups(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.joinAllGroups();
 }
 
 fn commandLastEditorInGroup(context: *anyopaque) anyerror!void {

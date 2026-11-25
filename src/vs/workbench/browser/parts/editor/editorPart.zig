@@ -445,6 +445,148 @@ pub fn EditorPart(comptime GroupView: type) type {
             return true;
         }
 
+        /// Terminal adapter for the native editor-pane lifecycle. The group
+        /// operations themselves belong to EditorPart, while view disposal,
+        /// PTY creation and input focus cross the window boundary.
+        pub const TransferHost = struct {
+            copy: GroupView.CopyEditorHost,
+            move: GroupView.MoveEditorHost,
+            invalidate_pane: *const fn (*anyopaque, *GroupView) void,
+            clear_drag: *const fn (*anyopaque) void,
+            layout: *const fn (*anyopaque) void,
+            focus_editor: *const fn (*anyopaque) void,
+        };
+
+        fn focusGroupView(group: *GroupView) !void {
+            if (group.activeTab()) |tab| try tab.ensureControllers();
+            group.focus();
+        }
+
+        pub fn collapseGroup(self: *Self, pane: *GroupView, host: TransferHost) void {
+            if (pane.group.model.count() != 0 or self.service.count() <= 1) return;
+            host.invalidate_pane(host.copy.context, pane);
+            if (self.maximized_group == pane) self.setMaximizedGroup(null);
+            _ = self.collapseView(pane);
+        }
+
+        pub fn mergeGroup(self: *Self, source: *GroupView, target: *GroupView, host: TransferHost) !void {
+            if (source == target) return;
+            var ordered = std.array_list.Managed(*@import("editorPane.zig").Tab).init(self.allocator);
+            defer ordered.deinit();
+            try source.orderedTabs(self.allocator, &ordered);
+            for (ordered.items) |tab| {
+                _ = try source.moveEditor(target, tab, .{ .pinned = true, .active = true }, host.move);
+            }
+            self.service.activateGroup(target.group);
+            target.syncActivePane();
+            if (source.tabs.items.len == 0) self.collapseGroup(source, host);
+            host.layout(host.copy.context);
+            try focusGroupView(target);
+        }
+
+        pub fn destroyGroup(self: *Self, pane: *GroupView, host: TransferHost) void {
+            host.invalidate_pane(host.copy.context, pane);
+            while (pane.tabs.items.len > 0) {
+                const tab = pane.tabs.items[0];
+                _ = pane.group.model.closeEditor(tab.input, .UNKNOWN, true) catch {};
+                _ = pane.removeTab(tab);
+                host.copy.discard(host.copy.context, tab);
+            }
+            _ = self.removeView(pane);
+        }
+
+        pub fn copyGroup(self: *Self, source: *GroupView, direction: GroupDirection, host: TransferHost) !*GroupView {
+            self.setMaximizedGroup(null);
+            self.active_sash = null;
+            host.layout(host.copy.context);
+            for (source.tabs.items) |tab| {
+                if (tab.diff != null) return error.SplitUnsupported;
+            }
+            const orientation: Orientation = switch (direction) {
+                .LEFT, .RIGHT => .horizontal,
+                .UP, .DOWN => .vertical,
+            };
+            const target = try self.splitGroup(source, orientation, direction == .LEFT or direction == .UP);
+            errdefer self.destroyGroup(target, host);
+
+            var ordered = std.array_list.Managed(*@import("editorPane.zig").Tab).init(self.allocator);
+            defer ordered.deinit();
+            try source.orderedTabs(self.allocator, &ordered);
+            const active_index = source.activeIndex(ordered.items);
+            var copies = std.array_list.Managed(*@import("editorPane.zig").Tab).init(self.allocator);
+            defer copies.deinit();
+            for (ordered.items) |tab| {
+                try copies.append(try target.copyEditor(tab, .{ .pinned = true, .active = true }, host.copy));
+            }
+            if (copies.items.len > 0) {
+                try target.activateTab(copies.items[@min(active_index, copies.items.len - 1)]);
+            }
+            try focusGroupView(target);
+            return target;
+        }
+
+        pub fn mergeAllGroups(self: *Self, target: *GroupView, host: TransferHost) !void {
+            for (self.group_views.items) |pane| {
+                if (pane == target) continue;
+                while (pane.tabs.items.len > 0) {
+                    const tab = pane.tabs.items[0];
+                    _ = try pane.group.model.closeEditor(tab.input, .MOVE, false);
+                    _ = pane.removeTab(tab);
+                    const opened = try target.group.model.openEditor(tab.input, .{ .pinned = true, .active = false });
+                    if (!opened.is_new) {
+                        // Target already shows this document (a split copy has a
+                        // distinct input over the shared model); drop the moved view.
+                        host.copy.discard(host.copy.context, tab);
+                        continue;
+                    }
+                    try target.addTab(tab);
+                }
+                pane.syncActivePane();
+            }
+            var index: usize = 0;
+            while (index < self.group_views.items.len) {
+                const pane = self.group_views.items[index];
+                if (pane == target or pane.tabs.items.len > 0) {
+                    index += 1;
+                    continue;
+                }
+                self.collapseGroup(pane, host);
+            }
+            target.syncActivePane();
+            host.layout(host.copy.context);
+            if (if (self.activeView()) |view| view.activeTab() else null) |tab| try tab.ensureControllers();
+        }
+
+        pub fn splitEditor(self: *Self, source: *GroupView, direction: GroupDirection, host: TransferHost) !void {
+            self.active_sash = null;
+            self.setMaximizedGroup(null);
+            host.clear_drag(host.copy.context);
+            const tab = source.activeTab() orelse return;
+
+            const orientation: Orientation = switch (direction) {
+                .LEFT, .RIGHT => .horizontal,
+                .UP, .DOWN => .vertical,
+            };
+            const new_first = direction == .LEFT or direction == .UP;
+            const new_pane = try self.splitGroup(source, orientation, new_first);
+            var keep_view = false;
+            defer {
+                if (!keep_view) _ = self.removeView(new_pane);
+            }
+
+            const copied = try new_pane.copyEditor(tab, .{ .pinned = true, .active = true }, host.copy);
+            keep_view = true;
+
+            host.layout(host.copy.context);
+            if (if (self.activeView()) |view| view.activeTab() else null) |active| {
+                try active.ensureControllers();
+                try active.refresh();
+                active.focusEditor();
+            }
+            host.focus_editor(host.copy.context);
+            _ = copied;
+        }
+
         /// Update mounted editor panes after the native surface is sized.
         /// Only the visible group is laid out when the group is maximized.
         pub fn layoutEditorArea(self: *Self, surface: *ui.Surface, show_tips: bool, colors: @import("editorGroupWatermark.zig").Colors, shortcuts: @import("editorGroupView.zig").WatermarkShortcuts) !void {

@@ -1075,7 +1075,7 @@ test "Workbench: directional group navigation and join all groups" {
     try std.testing.expectEqualStrings("nav_a.txt", workbench.activeTab().?.input.getName());
 
     // Joining drops the split copy whose model is already open in the target.
-    try workbench.joinAllGroups();
+    try workbench.group_actions.joinAllGroups();
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
 }
@@ -5840,7 +5840,7 @@ test "Workbench: markdown side preview reuses a group below and survives closing
     try wb.setUserSettingsPaths(&.{settings});
     wb.ensureConfigurationReady();
     const source_group = wb.activePane().?;
-    const below = try wb.newEmptyGroup(.DOWN);
+    const below = try wb.group_actions.newEmptyGroup(.DOWN);
     wb.service.activateGroup(source_group.group);
     try wb.focusActiveGroup();
     const ctrl_k = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
@@ -6559,9 +6559,9 @@ test "Workbench: centered layout narrows and centers the editor part" {
     try std.testing.expect(pane_rect.x >= centered.x);
     try std.testing.expect(pane_rect.x + pane_rect.w <= centered.x + centered.w);
 
-    _ = try workbench.newEmptyGroup(.DOWN);
+    _ = try workbench.group_actions.newEmptyGroup(.DOWN);
     try std.testing.expect(workbench.layout.isMainEditorCenteredEffective());
-    _ = try workbench.newEmptyGroup(.RIGHT);
+    _ = try workbench.group_actions.newEmptyGroup(.RIGHT);
     try std.testing.expect(workbench.layout.isMainEditorCentered());
     try std.testing.expect(!workbench.layout.isMainEditorCenteredEffective());
     workbench.maximizeActiveGroup();
@@ -6999,7 +6999,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
         try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .move, .x = sidebar_sash_x, .y = 3 }));
         try std.testing.expect(ui.cell.snap(editor_split.first.rect.right()) < editor_sash_x);
         try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .up, .x = sidebar_sash_x, .y = 3, .button = .left }));
-        try workbench.joinAllGroups();
+        try workbench.group_actions.joinAllGroups();
 
         try workbench.layout.setPartHidden(true, .sidebar);
 

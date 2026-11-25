@@ -238,3 +238,220 @@ pub const CloseAllEditorsForWindow = struct {
         }
     }
 };
+
+/// Action context for the terminal editor groups. The upstream actions use
+/// IEditorGroupsService; the native group adapter carries the same part and
+/// explicit view ownership hooks while the transfer vtable is being ported.
+pub const GroupActions = struct {
+    part: *EditorPart,
+    transfer: EditorPart.TransferHost,
+    configuration: *const ?*@import("../../../services/configuration/browser/configurationService.zig").ConfigurationService,
+    report_status: *const fn (*anyopaque, []const u8) void,
+
+    const GroupTarget = enum { first, last, previous, next, left, right, up, down };
+
+    fn preferredSideBySideDirection(self: *GroupActions) groups.GroupDirection {
+        return groups.preferredSideBySideGroupDirection(if (self.configuration.*) |configuration| configuration.interface() else null);
+    }
+
+    fn focusPane(pane: *GroupView) !void {
+        if (pane.activeTab()) |tab| try tab.ensureControllers();
+        pane.focus();
+    }
+
+    fn splitPreferred(self: *GroupActions) !void {
+        try self.splitActiveInDirection(self.preferredSideBySideDirection());
+    }
+
+    fn splitOrthogonal(self: *GroupActions) !void {
+        try self.splitActiveInDirection(if (self.preferredSideBySideDirection() == .RIGHT) .DOWN else .RIGHT);
+    }
+
+    fn action(self: *GroupActions, id: []const u8, title: []const u8, comptime run: anytype, comptime args: anytype) actions.Action2 {
+        return .{
+            .command = .{ .id = id, .title = title, .category = "View" },
+            .f1 = true,
+            .context = self,
+            .run_fn = struct {
+                fn invoke(context: *anyopaque, _: ServicesAccessor) !void {
+                    const service: *GroupActions = @ptrCast(@alignCast(context));
+                    const result: anyerror!void = @call(.auto, run, .{service} ++ args);
+                    result catch |err| switch (err) {
+                        error.SplitUnsupported => service.report_status(service.transfer.copy.context, "Split Editor is unavailable for this editor type"),
+                        else => return err,
+                    };
+                }
+            }.invoke,
+        };
+    }
+
+    /// Port of `workbench.action.newGroupLeft/Right/Above/Below`: add an empty
+    /// group and activate it.
+    pub fn newEmptyGroup(self: *GroupActions, direction: groups.GroupDirection) !*GroupView {
+        const source = self.part.activeView() orelse return error.NoActivePane;
+        const view = try self.part.addGroup(source, direction);
+        try focusPane(view);
+        return view;
+    }
+
+    fn preferredOppositeDirection(self: *GroupActions) groups.GroupDirection {
+        return if (self.preferredSideBySideDirection() == .RIGHT) .LEFT else .UP;
+    }
+
+    /// Resolves the target group for move/copy-editor commands. Directional
+    /// commands create the missing group, matching `moveCopyEditorsToGroup`.
+    fn resolveGroupTarget(
+        self: *GroupActions,
+        source: *GroupView,
+        target: GroupTarget,
+        create: bool,
+    ) !?*GroupView {
+        switch (target) {
+            .left, .right, .up, .down => {
+                const direction: groups.GroupDirection = switch (target) {
+                    .left => .LEFT,
+                    .right => .RIGHT,
+                    .up => .UP,
+                    else => .DOWN,
+                };
+                self.transfer.layout(self.transfer.copy.context);
+                if (try self.part.findGroup(.{ .direction = direction }, source, false)) |pane| return pane;
+                if (!create) return null;
+                return try self.newEmptyGroup(direction);
+            },
+            .first, .last, .previous, .next => {
+                const location: groups.GroupLocation = switch (target) {
+                    .first => .first,
+                    .last => .last,
+                    .previous => .previous,
+                    .next => .next,
+                    else => unreachable,
+                };
+                if (try self.part.findGroup(.{ .location = location }, source, false)) |view| return view;
+                if (!create) return null;
+                return try self.newEmptyGroup(if (location == .next) self.preferredSideBySideDirection() else self.preferredOppositeDirection());
+            },
+        }
+    }
+
+    /// Port of `workbench.action.closeGroup`: move the active group's editors
+    /// into the most recently active other group, then remove the group.
+    pub fn closeActiveGroup(self: *GroupActions) !void {
+        self.part.active_sash = null;
+        const source = self.part.activeView() orelse return;
+        if (self.part.count() <= 1) return;
+        const ordered_groups = try self.part.service.getGroups(self.part.allocator, .MOST_RECENTLY_ACTIVE);
+        defer self.part.allocator.free(ordered_groups);
+        var destination: ?*GroupView = null;
+        for (ordered_groups) |group| {
+            if (group == source.group) continue;
+            if (self.part.viewForGroup(group)) |pane| {
+                destination = pane;
+                break;
+            }
+        }
+        const target = destination orelse return;
+        try self.part.mergeGroup(source, target, self.transfer);
+    }
+
+    /// Port of `workbench.action.joinTwoGroups`: merge the active group into
+    /// the nearest neighbour, searching right, down, left then up.
+    pub fn joinTwoGroups(self: *GroupActions) !void {
+        self.transfer.layout(self.transfer.copy.context);
+        const source = self.part.activeView() orelse return;
+        const directions = [_]groups.GroupDirection{ .RIGHT, .DOWN, .LEFT, .UP };
+        for (directions) |direction| {
+            if (try self.part.findGroup(.{ .direction = direction }, source, false)) |target| {
+                try self.part.mergeGroup(source, target, self.transfer);
+                return;
+            }
+        }
+    }
+
+    /// Port of `workbench.action.duplicateActiveEditorGroupLeft/Right/Up/Down`:
+    /// create a group beside the active one and copy every editor into it.
+    pub fn duplicateActiveGroup(self: *GroupActions, direction: groups.GroupDirection) !void {
+        const source = self.part.activeView() orelse return;
+        _ = try self.part.copyGroup(source, direction, self.transfer);
+    }
+
+    /// Port of `moveActiveEditor`/`copyActiveEditor` with `by: 'group'`, used
+    /// by the moveEditorTo*Group and splitEditorTo*Group commands.
+    pub fn moveOrSplitActiveEditor(self: *GroupActions, target: GroupTarget, copy: bool) !void {
+        self.transfer.layout(self.transfer.copy.context);
+        const source = self.part.activeView() orelse return;
+        const tab = source.activeTab() orelse return;
+        const destination = try self.resolveGroupTarget(source, target, true) orelse return;
+        if (destination == source) return;
+        if (copy) {
+            _ = try destination.copyEditor(tab, .{ .pinned = true, .active = true }, self.transfer.copy);
+        } else {
+            _ = try source.moveEditor(destination, tab, .{ .pinned = true, .active = true }, self.transfer.move);
+            if (source.tabs.items.len == 0) self.part.collapseGroup(source, self.transfer);
+        }
+        try focusPane(destination);
+    }
+
+    /// Port of `workbench.action.joinAllGroups`: move every tab into the
+    /// active group, then drop the empty groups.
+    pub fn joinAllGroups(self: *GroupActions) !void {
+        const target = self.part.activeView() orelse return;
+        try self.part.mergeAllGroups(target, self.transfer);
+    }
+
+    /// Port of upstream `splitEditor(editorGroupsService, direction, context)`:
+    /// create a group beside the active one and copy the active editor into it.
+    /// The original tab stays open; both panes share the document/model and
+    /// keep independent view state.
+    pub fn splitActiveInDirection(self: *GroupActions, direction: groups.GroupDirection) !void {
+        const source = self.part.activeView() orelse return;
+        try self.part.splitEditor(source, direction, self.transfer);
+    }
+
+    pub fn splitActions(self: *GroupActions) [6]actions.Action2 {
+        return .{
+            self.action("workbench.action.splitEditor", "Split Editor", splitPreferred, .{}),
+            self.action("workbench.action.splitEditorOrthogonal", "Split Editor Orthogonal", splitOrthogonal, .{}),
+            self.action("workbench.action.splitEditorLeft", "Split Editor Left", splitActiveInDirection, .{.LEFT}),
+            self.action("workbench.action.splitEditorRight", "Split Editor Right", splitActiveInDirection, .{.RIGHT}),
+            self.action("workbench.action.splitEditorUp", "Split Editor Up", splitActiveInDirection, .{.UP}),
+            self.action("workbench.action.splitEditorDown", "Split Editor Down", splitActiveInDirection, .{.DOWN}),
+        };
+    }
+
+    pub fn joinActions(self: *GroupActions) [2]actions.Action2 {
+        return .{
+            self.action("workbench.action.closeGroup", "Close Editor Group", closeActiveGroup, .{}),
+            self.action("workbench.action.joinTwoGroups", "Join Editor Group with Next Group", joinTwoGroups, .{}),
+        };
+    }
+
+    pub fn transferActions(self: *GroupActions) [20]actions.Action2 {
+        return .{
+            self.action("workbench.action.duplicateActiveEditorGroupLeft", "Duplicate Editor Group Left", duplicateActiveGroup, .{.LEFT}),
+            self.action("workbench.action.duplicateActiveEditorGroupRight", "Duplicate Editor Group Right", duplicateActiveGroup, .{.RIGHT}),
+            self.action("workbench.action.duplicateActiveEditorGroupUp", "Duplicate Editor Group Up", duplicateActiveGroup, .{.UP}),
+            self.action("workbench.action.duplicateActiveEditorGroupDown", "Duplicate Editor Group Down", duplicateActiveGroup, .{.DOWN}),
+            self.action("workbench.action.moveEditorToPreviousGroup", "Move Editor into Previous Group", moveOrSplitActiveEditor, .{ .previous, false }),
+            self.action("workbench.action.moveEditorToNextGroup", "Move Editor into Next Group", moveOrSplitActiveEditor, .{ .next, false }),
+            self.action("workbench.action.moveEditorToAboveGroup", "Move Editor into Group Above", moveOrSplitActiveEditor, .{ .up, false }),
+            self.action("workbench.action.moveEditorToBelowGroup", "Move Editor into Group Below", moveOrSplitActiveEditor, .{ .down, false }),
+            self.action("workbench.action.moveEditorToLeftGroup", "Move Editor into Left Group", moveOrSplitActiveEditor, .{ .left, false }),
+            self.action("workbench.action.moveEditorToRightGroup", "Move Editor into Right Group", moveOrSplitActiveEditor, .{ .right, false }),
+            self.action("workbench.action.moveEditorToFirstGroup", "Move Editor into First Group", moveOrSplitActiveEditor, .{ .first, false }),
+            self.action("workbench.action.moveEditorToLastGroup", "Move Editor into Last Group", moveOrSplitActiveEditor, .{ .last, false }),
+            self.action("workbench.action.splitEditorToPreviousGroup", "Split Editor into Previous Group", moveOrSplitActiveEditor, .{ .previous, true }),
+            self.action("workbench.action.splitEditorToNextGroup", "Split Editor into Next Group", moveOrSplitActiveEditor, .{ .next, true }),
+            self.action("workbench.action.splitEditorToAboveGroup", "Split Editor into Group Above", moveOrSplitActiveEditor, .{ .up, true }),
+            self.action("workbench.action.splitEditorToBelowGroup", "Split Editor into Group Below", moveOrSplitActiveEditor, .{ .down, true }),
+            self.action("workbench.action.splitEditorToLeftGroup", "Split Editor into Left Group", moveOrSplitActiveEditor, .{ .left, true }),
+            self.action("workbench.action.splitEditorToRightGroup", "Split Editor into Right Group", moveOrSplitActiveEditor, .{ .right, true }),
+            self.action("workbench.action.splitEditorToFirstGroup", "Split Editor into First Group", moveOrSplitActiveEditor, .{ .first, true }),
+            self.action("workbench.action.splitEditorToLastGroup", "Split Editor into Last Group", moveOrSplitActiveEditor, .{ .last, true }),
+        };
+    }
+
+    pub fn joinAllAction(self: *GroupActions) actions.Action2 {
+        return self.action("workbench.action.joinAllGroups", "Join All Editor Groups", joinAllGroups, .{});
+    }
+};
