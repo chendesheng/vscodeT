@@ -5,6 +5,7 @@
 // terminal-specific state: the active tab's document mirror, the command
 // surface Node extensions call back into, and the typed-text path
 // through the `type` command.
+const TestWindow = @import("../../test/browser/workbenchTestServices.zig").TestWindow;
 const std = @import("std");
 const build_options = @import("build_options");
 const Allocator = std.mem.Allocator;
@@ -1823,8 +1824,9 @@ test "Extensions: listener detach ignores editors the workbench no longer owns" 
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_len = try tmp.dir.realPathFile(io, "owned.txt", &path_buffer);
 
-    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_len]}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     var content_calls: usize = 0;
     var scroll_calls: usize = 0;
@@ -1921,8 +1923,9 @@ test "Extensions: language feature registration reaches the workbench registries
     const relative_len = try tmp.dir.realPathFile(io, "fixture.json", &path_buffer);
     const relative = path_buffer[0..relative_len];
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
 
     var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
@@ -2054,8 +2057,9 @@ test "Extensions: relative paths mirror the model URI language features use" {
     // The bug only manifests when the input spelling is relative.
     if (std.fs.path.isAbsolute(relative)) return error.SkipZigTest;
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
 
     var extension_host = try Extensions.init(
@@ -2119,8 +2123,9 @@ test "Extensions: real TypeScript extension drives the language features" {
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_length = try tmp.dir.realPathFile(io, "sample.ts", &path_buffer);
 
-    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
     var extension_host = try Extensions.init(
         allocator,
@@ -2310,8 +2315,9 @@ test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_length = try tmp.dir.realPathFile(io, "broken.cjs", &path_buffer);
 
-    var workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
     var extension_host = try Extensions.init(
         allocator,
@@ -2470,8 +2476,9 @@ fn checkBuiltinCompletion(comptime name: []const u8, filename: []const u8, sourc
     try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = source });
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try tmp.dir.realPathFile(io, filename, &buf);
-    var workbench = try Workbench.init(allocator, io, &.{buf[0..len]}, 100, 30);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{buf[0..len]}, 100, 30);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.setDeclarativeExtensions(&catalog);
     try workbench.enableLanguageFeatures();
     var extensions = try Extensions.init(allocator, io, workbench, &.{.{
@@ -2528,8 +2535,9 @@ test "Extensions: accept incoming merge conflict in the workbench" {
     try tmp.dir.writeFile(io, .{ .sub_path = "conflict.txt", .data = "<<<<<<< HEAD\ncurrent\n=======\nincoming\n>>>>>>> branch\n" });
     const path = try tmp.dir.realPathFileAlloc(io, "conflict.txt", allocator);
     defer allocator.free(path);
-    var workbench = try Workbench.init(allocator, io, &.{path}, 80, 25);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 25);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var host = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
     defer host.deinit();
     const command = "merge-conflict.accept.all-incoming";
@@ -2556,8 +2564,9 @@ test "Extensions: account sessions need a grant for the requesting extension and
     const allocator = std.testing.allocator;
     const io = time_compat.io;
     std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    const workbench = try Workbench.init(allocator, io, &.{}, 100, 30);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 100, 30);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const ext = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/test-fixtures/authentication", .is_under_development = true }}, ".cache-ext/auth-fixture", "host/dist");
     defer ext.deinit();
     var tmp = std.heap.ArenaAllocator.init(allocator);

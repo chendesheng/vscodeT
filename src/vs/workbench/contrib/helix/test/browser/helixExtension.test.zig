@@ -1,7 +1,7 @@
 // Built-in Helix extension integration tests.
+const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow;
 const std = @import("std");
 const ui = @import("ui");
-const Workbench = @import("../../../../browser/workbench.zig").Workbench;
 const BuiltinExtensionHost = @import("../../../../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost;
 const helix_extension = @import("../../browser/helixExtension.zig");
 const time_compat = @import("../../../../../base/common/timeCompat.zig");
@@ -20,8 +20,9 @@ test "Helix extension: registers a key handler and edits through the host" {
     const relative_len = try tmp.dir.realPathFile(io, "helix.txt", &path_buffer);
     const relative = path_buffer[0..relative_len];
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     var host = try BuiltinExtensionHost.init(allocator, workbench);
     defer host.deinit();
@@ -56,8 +57,9 @@ test "Helix extension: deactivation removes its key handler" {
     const relative_len = try tmp.dir.realPathFile(io, "helix.txt", &path_buffer);
     const relative = path_buffer[0..relative_len];
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     var host = try BuiltinExtensionHost.init(allocator, workbench);
     defer host.deinit();
@@ -77,8 +79,9 @@ test "Helix extension: Insert mode pairs braces, accepts completion and repeats 
     try tmp.dir.writeFile(io, .{ .sub_path = "insert.zig", .data = "" });
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_len = try tmp.dir.realPathFile(io, "insert.zig", &path_buffer);
-    const workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
 
     const Completion = struct {
@@ -150,8 +153,9 @@ test "Helix extension: helix.enabled is read from user settings" {
     const settings_len = try tmp.dir.realPathFile(io, "settings.json", &settings_buffer);
     const settings_path = settings_buffer[0..settings_len];
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try std.testing.expect(!(workbench.configuration orelse return error.MissingConfiguration).getBool("helix.enabled", false));
     try workbench.setUserSettingsPaths(&.{settings_path});
     try std.testing.expect((workbench.configuration orelse return error.MissingConfiguration).getBool("helix.enabled", false));
@@ -167,8 +171,9 @@ test "Helix extension: read-only edits report an error and do not crash" {
     const relative_len = try tmp.dir.realPathFile(io, "helix.txt", &path_buffer);
     const relative = path_buffer[0..relative_len];
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     var host = try BuiltinExtensionHost.init(allocator, workbench);
     defer host.deinit();

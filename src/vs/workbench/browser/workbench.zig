@@ -45,7 +45,6 @@ const Io = std.Io;
 
 const ui = @import("ui");
 const editor_css = @import("../../editor/browser/editorCss.zig");
-const cell_metrics = @import("../../../tui/cellMetrics.zig");
 const grid_mod = @import("../../base/browser/ui/grid/grid.zig");
 const sash_css = @import("../../base/browser/ui/sash/sash_css.zig");
 const editor_drop_target = @import("./parts/editor/editorDropTarget.zig");
@@ -60,10 +59,8 @@ const editor_factory = @import("../common/editor/editorFactory.zig");
 const tui_editor_mod = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 const Editor = tui_editor_mod.Editor;
 const TextEdit = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
-const View = @import("../../../tui/editorView.zig").View;
 const terminal_editor_config = @import("../../editor/browser/config/terminalEditorConfiguration.zig");
 const editor_options = @import("../../editor/common/config/editorOptions.zig");
-const ViewCell = @import("../../../tui/editorView.zig").Cell;
 const tab_bar = @import("./parts/editor/multiEditorTabsControl.zig");
 const file_icon = @import("../services/themes/browser/fileIconThemeData.zig");
 const Sidebar = @import("../contrib/files/browser/views/explorerView.zig").Sidebar;
@@ -229,7 +226,6 @@ const terminal_common = @import("../contrib/terminal/common/terminal.zig");
 const terminal_panel = @import("../contrib/terminal/browser/terminalTabbedView.zig");
 const terminal_tabs = @import("../contrib/terminal/browser/terminalTabsList.zig");
 const terminal_input_mod = @import("../contrib/terminal/browser/terminalInput.zig");
-const terminal_view = @import("../contrib/terminal/browser/terminalRenderer.zig");
 const diff_widget_mod = @import("../../editor/browser/widget/diffEditor/diffEditorWidget.zig");
 const git_mod = @import("../../../extensions/git/src/git.zig");
 const git_service_mod = @import("../contrib/git/browser/gitService.zig");
@@ -531,7 +527,7 @@ pub const Workbench = struct {
     service: *editor_groups.EditorGroupsService,
     part: *editor_part.EditorPart(GroupPane),
     frame: ui.Frame,
-    editor_surface: ?ui.Surface = null,
+    editor_surface: *ui.Surface,
 
     editor_drag: EditorDrag = .{},
     drag_target: ?DropOverlay = null,
@@ -718,21 +714,14 @@ pub const Workbench = struct {
     dialog: ?*ui.Dialog = null,
     pending_dialog: ?DialogRequest = null,
 
-    pub fn init(
-        allocator: Allocator,
-        io: Io,
-        paths: []const []const u8,
-        cols: usize,
-        rows: usize,
-    ) !*Workbench {
-        return initWithOptions(allocator, io, paths, cols, rows, .{}, null);
-    }
-
-    pub fn initWithOptions(allocator: Allocator, io: Io, paths: []const []const u8, cols: usize, rows: usize, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
-        const self = try initWorkbench(allocator, io, cols, rows, state);
+    /// Mounts the workbench in the window supplied by the host. The window and
+    /// its parent element outlive this workbench.
+    pub fn init(allocator: Allocator, io: Io, surface: *ui.Surface, paths: []const []const u8, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
+        const parent = surface.document().root orelse return error.MissingWorkbenchParent;
+        const self = try initWorkbench(allocator, io, surface, state);
         errdefer self.deinit();
         self.layout.reset_layout = options.reset_layout;
-        try self.startup(options);
+        try self.startup(parent, options);
         if (state != null) {
             try self.restoreEditors();
             self.layoutAll();
@@ -742,36 +731,12 @@ pub const Workbench = struct {
         return self;
     }
 
-    /// Accept legacy sessions containing a single group.
-    pub fn initFromSerialized(
-        allocator: Allocator,
-        io: Io,
-        data: group_mod.SerializedEditorGroupModel,
-        registry: *editor_factory.EditorFactoryRegistry,
-        cols: usize,
-        rows: usize,
-    ) !*Workbench {
-        var groups = [_]group_mod.SerializedEditorGroupModel{data};
-        return initFromSerializedPart(allocator, io, .{ .groups = &groups, .active_group = 0 }, registry, cols, rows);
-    }
-
-    pub fn initFromSerializedPart(
-        allocator: Allocator,
-        io: Io,
-        data: editor_groups.SerializedEditorPart,
-        registry: *editor_factory.EditorFactoryRegistry,
-        cols: usize,
-        rows: usize,
-    ) !*Workbench {
-        return initWithOptions(allocator, io, &.{}, cols, rows, .{}, .{ .data = data, .registry = registry });
-    }
-
     pub const PreviousState = struct {
         data: editor_groups.SerializedEditorPart,
         registry: *editor_factory.EditorFactoryRegistry,
     };
 
-    fn initWorkbench(allocator: Allocator, io: Io, cols: usize, rows: usize, state: ?PreviousState) !*Workbench {
+    fn initWorkbench(allocator: Allocator, io: Io, surface: *ui.Surface, state: ?PreviousState) !*Workbench {
         const self = try allocator.create(Workbench);
         errdefer allocator.destroy(self);
 
@@ -793,7 +758,8 @@ pub const Workbench = struct {
         self.theme_candidate_index = 0;
         self.keybindings_job = null;
         self.keybindings_reload_pending = false;
-        self.cols = @max(cols, 1);
+        self.editor_surface = surface;
+        self.cols = surface.document().cols;
         self.tab_service = null;
         self.global_service = null;
         self.statusbar_service = null;
@@ -808,7 +774,7 @@ pub const Workbench = struct {
         self.textmate_background = null;
         self.theme_scheme_host = .{};
         self.theme_palette = null;
-        self.rows = @max(rows, 1);
+        self.rows = surface.document().rows;
         self.is_pasting = false;
         self.terminal_service = null;
         self.terminal_input = .{};
@@ -927,12 +893,12 @@ pub const Workbench = struct {
         return self;
     }
 
-    fn startup(self: *Workbench, options: IWorkbenchOptions) !void {
+    fn startup(self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
         try self.layout.initLayout(self.part);
         try self.instantiation.invokeFunction(startContributions, .{&self.contributions});
         _ = try self.ensureContextKeys();
         try self.registerListeners();
-        try self.renderWorkbench(options);
+        try self.renderWorkbench(parent, options);
         try self.layout.createWorkbenchLayout();
         self.layoutAll();
     }
@@ -1043,7 +1009,6 @@ pub const Workbench = struct {
     }
 
     fn initShellModels(self: *Workbench) !void {
-        self.editor_surface = null;
         self.problems_view = null;
         self.marker_listener = null;
         self.markers_status = null;
@@ -1953,7 +1918,7 @@ pub const Workbench = struct {
         self.workspace.deinit();
         // The part owns the group views; disposing it disposes the tab views.
         self.part.deinit();
-        if (self.editor_surface) |*surface| surface.deinit();
+        if (self.layout.main_container) |main| main.document.destroy(main);
         self.terminal_tabbed_view.deinit(self.allocator);
         if (self.terminal_service) |service| {
             service.deinit();
@@ -10314,11 +10279,11 @@ pub const Workbench = struct {
         self.commands.execute(id) catch |err| std.log.warn("Editor shortcut {s} failed: {s}", .{ id, @errorName(err) });
     }
 
-    fn renderWorkbench(self: *Workbench, options: IWorkbenchOptions) !void {
-        self.editor_surface = try ui.Surface.init(self.allocator, .{ .cols = self.cols, .rows = self.rows, .measure_width = cell_metrics.measureCodepoint });
-        const doc = self.editor_surface.?.document();
+    fn renderWorkbench(self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
+        const doc = parent.document;
         try editor_css.registerWorkbench(doc);
         const main = try doc.createElement(.div);
+        self.layout.main_container = main;
         try main.addClass(editor_css.workbench.Class.monaco_workbench);
         try main.addClass(switch (@import("builtin").os.tag) {
             .windows => editor_css.workbench.Class.windows,
@@ -10326,7 +10291,6 @@ pub const Workbench = struct {
             else => editor_css.workbench.Class.linux,
         });
         for (options.extra_classes) |class| try main.addClass(class);
-        self.layout.main_container = main;
         const Class = editor_css.part.Class;
         const side: Class = if (self.layout.sidebarPosition() == .left) .left else .right;
         inline for (.{
@@ -10340,7 +10304,7 @@ pub const Workbench = struct {
             const part = try self.layout.getPart(description[0]);
             try part.create(container);
         }
-        doc.setRoot(main);
+        _ = try parent.appendChild(main);
     }
 
     fn createPart(main: *ui.Node, comptime id: workbench_layout.Parts, role: []const u8, classes: []const editor_css.part.Class) !*ui.Node {
@@ -10355,7 +10319,7 @@ pub const Workbench = struct {
     }
 
     fn synchronizeEditorDom(self: *Workbench) !*ui.Surface {
-        const surface = &self.editor_surface.?;
+        const surface = self.editor_surface;
         try surface.resize(self.cols, self.rows);
         surface.border_capabilities = self.part.cell_border_capabilities;
         const colors = editor_group_watermark.Colors.fromTheme(self.theme_palette);
@@ -11170,28 +11134,6 @@ pub const Workbench = struct {
         try outline.reveal(element, .{});
         self.focusEditor();
     }
-    pub fn cursorCell(self: *Workbench) ?ViewCell {
-        if (self.quick_access.isOpen()) return null;
-        if (self.dialog != null or self.context_menu_service.current != null) return null;
-        if (self.breadcrumbPopupVisible()) return null;
-        if (self.focus == .terminal) {
-            if (!self.terminalVisible()) return null;
-            const service = self.terminal_service orelse return null;
-            const instance = service.active() orelse return null;
-            if (self.terminal_tabbed_view.tab_list.focused) return null;
-            const content = self.terminal_tabbed_view.layoutForService(self.panelRect(), service).terminal;
-            const cursor = terminal_view.cursorCell(&instance.emulator, service.group.paneRect(content, service.group.active)) orelse return null;
-            return .{ .row = cursor.row, .col = cursor.col };
-        }
-        if (self.focus != .editor) return null;
-        const pane = self.activePane() orelse return null;
-        const active = pane.activeTab() orelse return null;
-        const cell = active.cursorCell() orelse return null;
-        const row = ui.cell.snap(pane.rect.y) + pane.chromeHeight() + cell.row;
-        const col = ui.cell.snap(pane.rect.x) + cell.col;
-        if (row >= self.editorRows() or col >= self.cols) return null;
-        return .{ .row = row, .col = col };
-    }
 
     pub fn resize(self: *Workbench, cols: usize, rows: usize) !void {
         _ = self.cancelSashDrag();
@@ -11253,7 +11195,7 @@ pub const Workbench = struct {
     pub fn beginMousePointer(self: *Workbench) void {
         self.pointer = .default;
         self.hovered_sash = null;
-        if (self.editor_surface) |*surface| _ = surface.clearHover();
+        _ = self.editor_surface.clearHover();
     }
 
     /// Resolves the pointer for the editor pane under a mouse cell. The tab

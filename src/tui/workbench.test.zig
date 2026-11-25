@@ -1,5 +1,7 @@
 // Terminal workbench integration tests, driven through the host and service APIs.
+const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow;
 const renderFrame = @import("workbench.zig").renderFrame;
+const cursorCell = @import("workbench.zig").cursorCell;
 const shell = @import("../vs/workbench/browser/workbench.zig");
 const Focus = shell.Focus;
 const GroupPane = shell.GroupPane;
@@ -189,8 +191,9 @@ test "Workbench: empty editor renders the watermark and runs its shortcuts" {
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "watermark.txt", "");
     defer allocator.free(path);
-    const workbench = try Workbench.init(allocator, io, &.{}, 90, 32);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 90, 32);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
 
@@ -254,8 +257,9 @@ test "Workbench: watermark tips respond to resized panes, settings, and keybindi
     defer allocator.free(path);
     const settings_path = try seedFile(allocator, io, &tmp, "watermark-settings.json", "{}");
     defer allocator.free(settings_path);
-    const workbench = try Workbench.init(allocator, io, &.{}, 90, 32);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 90, 32);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -291,8 +295,9 @@ test "Workbench: threaded tokenizer shuts down after tabs" {
     const path = try seedFile(allocator, io, &tmp, "tokenized.zig", "const value = 1; // comment\n");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.enableAsyncTokenization();
     try std.testing.expect(workbench.textmate_background != null);
 }
@@ -316,8 +321,9 @@ test "Workbench: sticky scroll paints scope headers" {
     const path = try seedFile(allocator, io, &tmp, "sticky.js", source.items);
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const tab = workbench.activeTab().?;
     try tab.ensureControllers();
     if (tab.controllers) |controllers| {
@@ -345,8 +351,9 @@ test "Workbench: declarative markdown configuration applies to open tabs" {
     var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const length = try tmp.dir.realPathFile(time_compat.io, "README.md", &buffer);
 
-    const workbench = try Workbench.init(allocator, time_compat.io, &.{buffer[0..length]}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, time_compat.io, &.{buffer[0..length]}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.setDeclarativeExtensions(&registry);
 
     workbench.ensureConfigurationReady();
@@ -375,8 +382,9 @@ test "Workbench: opens two files, switches tabs and closes them" {
     const path_b = try seedFile(allocator, io, &tmp, "b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
@@ -388,7 +396,7 @@ test "Workbench: opens two files, switches tabs and closes them" {
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "a.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "b.txt") != null);
-    try std.testing.expectEqual(@as(usize, 2), workbench.cursorCell().?.row);
+    try std.testing.expectEqual(@as(usize, 2), cursorCell(workbench).?.row);
 
     try workbench.activateIndex(0);
     try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.getName());
@@ -414,8 +422,9 @@ test "Workbench: ownsEditor follows tab ownership across close" {
     const path_b = try seedFile(allocator, io, &tmp, "owned-b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const closed = workbench.activeTab().?.editor;
     const kept = workbench.part.group_views.items[0].tabs.items[0].editor;
@@ -440,8 +449,9 @@ test "Workbench: reopening an open file reuses its tab and editor" {
     const path = try seedFile(allocator, io, &tmp, "reuse.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const tab = workbench.activeTab().?;
     const editor = tab.editor;
@@ -462,8 +472,9 @@ test "Workbench: opening a new file rebuilds its view once" {
     const path_b = try seedFile(allocator, io, &tmp, "two.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{path_a}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path_a}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     try workbench.openPath(path_b);
     const tab = workbench.activeTab().?;
@@ -483,8 +494,9 @@ test "Workbench: markdown preview toggle changes the current editor in place" {
     const path = try seedFile(allocator, io, &tmp, "preview.md", "# Title\n\nHello **world**\n");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const pane = workbench.activePane().?;
     const tab = pane.activeTab().?;
@@ -535,8 +547,9 @@ test "Workbench: markdown preview title action is absent for plain text" {
     const path = try seedFile(allocator, io, &tmp, "plain.txt", "plain\n");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const pane = workbench.activePane().?;
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -561,8 +574,9 @@ test "Workbench: markdown preview follows editor scroll and can reveal the edito
     const path = try seedFile(allocator, io, &tmp, "scroll.md", body.written());
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 18);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 18);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const pane = workbench.activePane().?;
     const tab = pane.activeTab().?;
     try workbench.showMarkdownPreviewToSide();
@@ -597,8 +611,9 @@ test "Workbench: split duplicates the active editor and shares its buffer" {
     const path_b = try seedFile(allocator, io, &tmp, "split_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
 
     try workbench.splitActive(.horizontal);
@@ -648,8 +663,9 @@ test "Workbench: split copy shares rendered edits after changing focus" {
     const path = try seedFile(allocator, io, &tmp, "split_edit.txt", "alpha\nbeta");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const left = workbench.activePane().?;
     _ = try workbench.commands.execute("workbench.action.splitEditorRight");
     const right = workbench.activePane().?;
@@ -701,8 +717,9 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
     );
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const left = workbench.activePane().?;
     try workbench.splitActive(.horizontal);
     const right = workbench.activePane().?;
@@ -713,7 +730,7 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(right_tab.view.isFocused());
-    const surface = &workbench.editor_surface.?;
+    const surface = workbench.editor_surface;
     try std.testing.expectEqual(surface.document(), left_tab.view.root_node.?.document);
     try std.testing.expectEqual(surface.document(), right_tab.view.root_node.?.document);
     try std.testing.expectEqual(left.dom.?.editor_container, left_tab.element.?.parent.?);
@@ -750,8 +767,9 @@ test "Workbench: editor group focus, new group and close group commands" {
     const path = try seedFile(allocator, io, &tmp, "group_focus.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const first = workbench.activePane().?;
 
     _ = try workbench.commands.execute("workbench.action.newGroupRight");
@@ -800,8 +818,9 @@ test "Workbench: new group below and above focus commands" {
     const path = try seedFile(allocator, io, &tmp, "group_vertical.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const first = workbench.activePane().?;
     _ = try workbench.commands.execute("workbench.action.newGroupBelow");
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
@@ -824,8 +843,9 @@ test "Workbench: move and duplicate editor group commands" {
     const path_b = try seedFile(allocator, io, &tmp, "group_move_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
@@ -863,8 +883,9 @@ test "Workbench: move editor into group and split editor into group" {
     const path_b = try seedFile(allocator, io, &tmp, "into_group_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     const first = workbench.part.group_views.items[0];
@@ -905,8 +926,9 @@ test "Workbench: splitEditorToRightGroup creates a group without a neighbour" {
     const path = try seedFile(allocator, io, &tmp, "split_into_new_group.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const source = workbench.activePane().?;
     _ = try workbench.commands.execute("workbench.action.splitEditorToRightGroup");
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
@@ -937,8 +959,9 @@ test "Workbench: directional split commands place the copy on each side" {
         .{ .command = "workbench.action.splitEditorDown", .expected = .DOWN },
     };
     for (cases) |case| {
-        const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-        defer workbench.deinit();
+        const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+        const workbench = workbench_window.workbench;
+        defer workbench_window.deinit();
         const source = workbench.part.group_views.items[0];
         _ = try workbench.commands.execute(case.command);
         try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
@@ -969,8 +992,9 @@ test "Workbench: splitEditor follows openSideBySideDirection" {
     const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
     defer allocator.free(settings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     workbench.ensureConfigurationReady();
     try workbench.setUserConfigurationValue("workbench.editor.openSideBySideDirection", .{ .string = "down" });
@@ -993,8 +1017,9 @@ test "Workbench: directional group navigation and join all groups" {
     const path_b = try seedFile(allocator, io, &tmp, "nav_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqualStrings("nav_b.txt", workbench.activeTab().?.input.getName());
@@ -1026,8 +1051,9 @@ test "Workbench: sash drag resizes the split" {
     const path_b = try seedFile(allocator, io, &tmp, "sash_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     workbench.setCellBorders(true);
@@ -1058,8 +1084,9 @@ test "Workbench: tabs and editor content resolve pointer shapes" {
     const path = try seedFile(allocator, io, &tmp, "pointer_shape.txt", "abc");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -1100,8 +1127,9 @@ test "Workbench: render emits OSC 22 only when the pointer changes" {
     const path = try seedFile(allocator, io, &tmp, "pointer_render.txt", "abc");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 8);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 8);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.setPointerShapes(true);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -1135,8 +1163,9 @@ test "Workbench: closing the last tab collapses the empty group" {
     const path_a = try seedFile(allocator, io, &tmp, "collapse_a.txt", "alpha");
     defer allocator.free(path_a);
 
-    const workbench = try Workbench.init(allocator, io, &.{path_a}, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path_a}, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
     try std.testing.expectEqual(@as(usize, 2), workbench.part.group_views.items.len);
@@ -1159,8 +1188,9 @@ test "Workbench: dragging a tab into a pane moves it there" {
     const path_b = try seedFile(allocator, io, &tmp, "drag_move_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
@@ -1205,8 +1235,9 @@ test "Workbench: dragging over a tab strip previews the insertion and reorders o
     const path_b = try seedFile(allocator, io, &tmp, "strip_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.setCellBorders(true);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -1264,8 +1295,9 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
     const path_b = try seedFile(allocator, io, &tmp, "strip_insert_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
@@ -1327,8 +1359,9 @@ test "Workbench: editor drag moves, copies, and merges a whole group" {
     defer allocator.free(b);
     const c = try seedFile(allocator, io, &tmp, "c.txt", "gamma");
     defer allocator.free(c);
-    const workbench = try Workbench.init(allocator, io, &.{ a, b, c }, 120, 30);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ a, b, c }, 120, 30);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -1380,8 +1413,9 @@ test "Workbench: editor drag opens the hovered tab only after its deadline" {
     defer allocator.free(a);
     const b = try seedFile(allocator, io, &tmp, "b.txt", "beta");
     defer allocator.free(b);
-    const workbench = try Workbench.init(allocator, io, &.{ a, b }, 100, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ a, b }, 100, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -1411,8 +1445,9 @@ test "Workbench: openPath reveals an already-open file in another group" {
     const path_b = try seedFile(allocator, io, &tmp, "reveal_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
 
@@ -1436,8 +1471,9 @@ test "Workbench: serialize and restore a group" {
     const path_b = try seedFile(allocator, io, &tmp, "restore_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
 
     var serializer = workbench.createFileSerializer();
@@ -1448,8 +1484,10 @@ test "Workbench: serialize and restore a group" {
     var data = try workbench.serialize(allocator, &registry);
     defer data.deinit(allocator);
 
-    const restored = try Workbench.initFromSerialized(allocator, io, data, &registry, 60, 9);
-    defer restored.deinit();
+    var groups = [_]@TypeOf(data){data};
+    const restored_window = try TestWindow.initWithOptions(allocator, io, &.{}, 60, 9, .{}, .{ .data = .{ .groups = &groups, .active_group = 0 }, .registry = &registry });
+    const restored = restored_window.workbench;
+    defer restored_window.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), restored.tabCount());
     try std.testing.expectEqualStrings("restore_b.txt", restored.activeTab().?.input.getName());
@@ -1485,8 +1523,9 @@ test "Workbench: serialize and restore multiple groups" {
     const path_b = try seedFile(allocator, io, &tmp, "part_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 70, 26);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 70, 26);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.vertical);
     workbench.part.resizeSash(workbench.part.root, 20, 9);
@@ -1506,8 +1545,9 @@ test "Workbench: serialize and restore multiple groups" {
     try session.savePart(allocator, io, path, &data);
     var loaded = (try session.loadPart(allocator, io, path)).?;
     defer loaded.deinit(allocator);
-    const restored = try Workbench.initFromSerializedPart(allocator, io, loaded, &registry, 70, 26);
-    defer restored.deinit();
+    const restored_window = try TestWindow.initWithOptions(allocator, io, &.{}, 70, 26, .{}, .{ .data = loaded, .registry = &registry });
+    const restored = restored_window.workbench;
+    defer restored_window.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), restored.groupCount());
     try std.testing.expectEqual(.vertical, restored.part.root.kind.split.direction);
@@ -1532,8 +1572,9 @@ test "Workbench: sidebar renders and opens a file" {
     const path_a = try seedFile(allocator, io, &tmp, "side_a.txt", "alpha");
     defer allocator.free(path_a);
 
-    const workbench = try Workbench.init(allocator, io, &.{path_a}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path_a}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     // Put the sidebar at the temp root and create the file it should open.
     var sidebar_file = try tmp.dir.createFile(io, "side_open.txt", .{});
@@ -1579,8 +1620,9 @@ test "Workbench: workspace search streams results and opens a match" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
 
@@ -1614,8 +1656,9 @@ test "Workbench: opening a search match selects its range" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
@@ -1667,8 +1710,9 @@ test "Workbench: opening a search result from another file does not restart the 
     const second_resource = try std.fs.path.join(allocator, &.{ root, "second.txt" });
     defer allocator.free(second_resource);
 
-    const workbench = try Workbench.init(allocator, io, &.{first}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{first}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     workbench.onSearchEditorChanged();
@@ -1719,8 +1763,9 @@ test "Workbench: search chevron and replace all confirmation update an open edit
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
 
@@ -1784,8 +1829,9 @@ test "Workbench: activity bar switches view containers" {
     const path = try seedFile(allocator, io, &tmp, "activity.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
@@ -1838,8 +1884,9 @@ test "Workbench: zen mode restores a status bar that was hidden before" {
     const path = try seedFile(allocator, io, &tmp, "zen_status.txt", "alpha\n");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.layout.setPartHidden(true, .statusbar);
     try std.testing.expect(!workbench.statusBarVisible());
 
@@ -1864,8 +1911,9 @@ test "Workbench: zen tab actions are only available in zen mode" {
     const settings_path = try std.fmt.allocPrint(allocator, "{s}/zen-action-settings.json", .{buffer[0..root_len]});
     defer allocator.free(settings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     workbench.ensureConfigurationReady();
 
@@ -1895,8 +1943,9 @@ test "Workbench: zen tab actions are only available in zen mode" {
 test "Workbench: zen mode keybindings toggle and exit" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const ctrl_k = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(try workbench.handleGlobalKey(&ctrl_k));
@@ -1921,8 +1970,9 @@ test "Workbench: Problems panel, status count and range highlight" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 16);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 16);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.enableLanguageFeatures();
@@ -1982,8 +2032,9 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 90, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 90, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.enableLanguageFeatures();
@@ -2076,8 +2127,9 @@ test "Workbench: opens a folder workspace with no initial tabs" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try workbench.initSidebarFromWorkspace();
     pumpSidebarForTests(workbench);
@@ -2114,8 +2166,9 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setWorkspaceFolders(&.{root});
 
     var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
@@ -2168,8 +2221,9 @@ test "Workbench: opening a file reveals it in the Explorer" {
     const path = try std.fmt.allocPrint(allocator, "{s}/src/revealed.txt", .{root});
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.openPath(path);
@@ -2200,8 +2254,9 @@ test "Workbench: explorer.autoReveal false disables selection" {
     const path = try std.fmt.allocPrint(allocator, "{s}/no_reveal.txt", .{root});
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.openPath(path);
@@ -2231,8 +2286,9 @@ test "Workbench: switching tabs reveals the active file" {
     const path_b = try std.fmt.allocPrint(allocator, "{s}/b.txt", .{root});
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.openPath(path_a);
@@ -2255,8 +2311,9 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
         \\[{"key":"ctrl+alt+b","command":"workbench.action.splitEditor"}]
     );
     defer allocator.free(bindings);
-    const workbench = try Workbench.init(allocator, io, &.{}, 90, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 90, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setKeybindingsPaths(&.{bindings});
     try workbench.openPath(file);
     const quick = workbench.quick_access;
@@ -2317,8 +2374,9 @@ test "Workbench: quick open renders and an outside click only closes it" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 60, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 60, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setWorkspaceFolders(&.{root});
 
     var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
@@ -2358,8 +2416,9 @@ test "Workbench: list keybindings route to the focused sidebar" {
     );
     keybindings.close(io);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try workbench.initSidebarFromWorkspace();
     pumpSidebarForTests(workbench);
@@ -2397,8 +2456,9 @@ test "Workbench: color theme settings load a registered theme palette" {
     const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
     defer allocator.free(settings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.registerThemeSources(&.{
         .{
             .root = root,
@@ -2461,8 +2521,9 @@ test "Workbench: opening a themed file initializes the editor controllers" {
     const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
     defer allocator.free(settings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.registerThemeSources(&.{
         .{
             .root = root,
@@ -2496,8 +2557,9 @@ test "Workbench: Preferences JSON commands create and open the TUI layer" {
     const keybindings_path = try std.fmt.allocPrint(allocator, "{s}/config/keybindings.json", .{buffer[0..root_len]});
     defer allocator.free(keybindings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.setKeybindingsPaths(&.{keybindings_path});
 
@@ -2538,8 +2600,9 @@ test "Workbench: user keybindings override defaults, honor when and removals" {
         \\]
     );
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setKeybindingsPaths(&.{keybindings_path});
     workbench.focusEditor();
 
@@ -2593,8 +2656,9 @@ test "Find reads language options before paint and observes settings changes imm
         \\}
     );
     defer allocator.free(settings);
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings});
     const find = workbench.activeTab().?.controllers.?.find;
     try std.testing.expect(!find.model.cursor_move_on_type);
@@ -2625,8 +2689,9 @@ test "Workbench: editor settings apply to open editors and reload" {
     const settings_path = try std.fmt.allocPrint(allocator, "{s}/editor-settings.json", .{buffer[0..root_len]});
     defer allocator.free(settings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
 
     const tab = workbench.activeTab().?;
@@ -2682,8 +2747,9 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
@@ -2734,8 +2800,9 @@ test "Workbench: search editor shows query controls and reruns with independent 
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{source}, 95, 25);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{source}, 95, 25);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
@@ -2861,8 +2928,9 @@ test "Workbench: typing a search query restarts results without stale collapse k
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
@@ -2922,8 +2990,9 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, paths.items, 80, 16);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, paths.items, 80, 16);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
@@ -2966,8 +3035,9 @@ test "Workbench: search input focus follows presses, not hover" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 16);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 16);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
@@ -3023,8 +3093,9 @@ test "Workbench: status bar context menu hides an entry" {
     const path = try seedFile(allocator, io, &tmp, "status_menu.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const model = &workbench.statusbar.main_part.model;
     const entry = if (model.findEntry("status.editor.mode")) |found| found else &model.entries()[0];
@@ -3054,8 +3125,9 @@ test "Workbench: duplicate tab labels show their directories" {
     const path_b = try seedFile(allocator, io, &tmp, "b/same.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 80, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 80, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -3077,8 +3149,9 @@ test "Workbench: status bar spans the window and shows editor state" {
     const path = try seedFile(allocator, io, &tmp, "status.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 120, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 120, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     try std.testing.expect(workbench.statusBarVisible());
     try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(workbench.statusBarRect().y));
@@ -3106,7 +3179,7 @@ test "Workbench: status bar spans the window and shows editor state" {
     workbench.focusStatusBar();
     try std.testing.expectEqual(Focus.statusbar, workbench.focus);
     try std.testing.expect(workbench.statusbar.main_part.focusedHandle() != null);
-    try std.testing.expect(workbench.cursorCell() == null);
+    try std.testing.expect(cursorCell(workbench) == null);
 
     const right = ui.KeyEvent{ .key = .right };
     try std.testing.expect(try workbench.handleStatusbarKey(&right));
@@ -3125,8 +3198,9 @@ test "Workbench: Ctrl-Alt-S toggles status bar focus" {
     const path = try seedFile(allocator, io, &tmp, "focus.txt", "x");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 8);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 8);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const toggle = ui.KeyEvent{ .key = .{ .char = 's' }, .mods = .{ .ctrl = true, .alt = true } };
     try std.testing.expect(try workbench.handleStatusbarKey(&toggle));
@@ -3143,8 +3217,9 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
     const path = try seedFile(allocator, io, &tmp, "click.txt", "x");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 8);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 8);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const State = struct {
         hits: usize = 0,
@@ -3202,8 +3277,9 @@ test "Workbench: status values open the matching pickers" {
     const path = try seedFile(allocator, io, &tmp, "pick.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 120, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 120, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -3244,8 +3320,9 @@ test "Workbench: EOL and language pickers update the editor" {
     const path = try seedFile(allocator, io, &tmp, "pick-actions.txt", "alpha\nbeta\ngamma");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 120, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 120, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -3312,8 +3389,9 @@ test "Workbench: EOL and language pickers update the editor" {
 test "workbench: global shortcuts dispatch through the keybinding registry" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     var ctrl_p = ui.KeyEvent{ .key = .{ .char = 'p' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(try workbench.handleGlobalKey(&ctrl_p));
@@ -3340,8 +3418,9 @@ test "Workbench: files.associations change the opened editor language" {
     const path = try seedFile(allocator, io, &tmp, "sample.custom", "body");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.openPath(path);
 
@@ -3358,8 +3437,9 @@ test "Workbench: starts a workspace file watcher for absolute folders" {
     const root_len = try tmp.dir.realPath(io, &root_buffer);
     const root = root_buffer[0..root_len];
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try std.testing.expect(workbench.workspace_watcher == null);
     try workbench.lifecycle.setPhase(.Restored);
@@ -3387,8 +3467,9 @@ test "Workbench: workspace watcher honors watcherExclude and watcherInclude" {
     const root_len = try tmp.dir.realPath(io, &root_buffer);
     const root = root_buffer[0..root_len];
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try workbench.lifecycle.setPhase(.Restored);
 
@@ -3431,8 +3512,9 @@ test "Workbench: AfterRestored watcher reloads a clean editor" {
     const root_len = try tmp.dir.realPath(io, &root_buffer);
     const root = root_buffer[0..root_len];
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const tab = workbench.activeTab().?;
 
     try workbench.setWorkspaceFolders(&.{root});
@@ -3469,8 +3551,9 @@ test "Workbench: revert command discards edits and clears conflicts" {
     const path = try seedFile(allocator, io, &tmp, "revert.txt", "on disk");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const tab = workbench.activeTab().?;
 
     try tab.editor.insertText("local ");
@@ -3494,8 +3577,9 @@ test "Workbench: working copy service tracks dirty editors" {
     const path = try seedFile(allocator, io, &tmp, "working-copy.txt", "content");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const service = workbench.workingCopyService();
     try std.testing.expectEqual(@as(usize, 0), service.dirtyCount());
     try std.testing.expect(service.hasResource(path));
@@ -3524,8 +3608,9 @@ test "Workbench: decoded divider drag resizes the split" {
     const path_b = try seedFile(allocator, io, &tmp, "sash_decoded_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
 
@@ -3575,8 +3660,9 @@ test "Workbench: sash follows drag motion without button bits" {
     const path_b = try seedFile(allocator, io, &tmp, "sash_buttonless_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
 
@@ -3614,8 +3700,9 @@ test "Workbench: decoded divider drag resizes a vertical split" {
     const path_b = try seedFile(allocator, io, &tmp, "sash_vertical_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.vertical);
 
@@ -3657,8 +3744,9 @@ test "Workbench: tab context menu closes the tab" {
     const path_b = try seedFile(allocator, io, &tmp, "menu_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -3694,8 +3782,9 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/crumbs", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 60, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 60, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try workbench.openPath(path);
     try workbench.activeTab().?.ensureControllers();
@@ -3711,7 +3800,7 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     try std.testing.expect(std.mem.indexOf(u8, row, "src") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, "http-proxy.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, row, ">") != null);
-    try std.testing.expectEqual(@as(usize, 2), workbench.cursorCell().?.row);
+    try std.testing.expectEqual(@as(usize, 2), cursorCell(workbench).?.row);
 
     // The first breadcrumb item opens the folder picker.
     const control = workbench.breadcrumbs_control.?;
@@ -3824,8 +3913,9 @@ test "Workbench: breadcrumb symbols come from a registered outline provider" {
         .disposeFn = Fake.dispose,
     };
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 60, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 60, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const registration = try workbench.outline_service.registerOutlineCreator(.{
         .context = @ptrCast(&context),
         .matches = Fake.matches,
@@ -3854,8 +3944,9 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     const path = try seedFile(allocator, io, &tmp, "close.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activeTab().?.ensureControllers();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -3933,8 +4024,9 @@ test "Workbench: don't save closes a dirty tab without writing" {
     const path = try seedFile(allocator, io, &tmp, "discard.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activeTab().?.ensureControllers();
     try workbench.activeTab().?.editor.insertText("local ");
 
@@ -3972,8 +4064,9 @@ test "Workbench: Ctrl-W on a dirty tab opens the save confirmation" {
     const path = try seedFile(allocator, io, &tmp, "ctrl-w.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activeTab().?.ensureControllers();
     try workbench.activeTab().?.editor.insertText("x");
 
@@ -3997,8 +4090,9 @@ test "Workbench: Ctrl-Q quits clean and confirms one dirty tab" {
     const path = try seedFile(allocator, io, &tmp, "quit_one.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activeTab().?.ensureControllers();
 
     // A clean workbench closes the window immediately.
@@ -4049,8 +4143,9 @@ test "Workbench: Ctrl-Q lists every dirty tab and don't save closes all" {
     const path_b = try seedFile(allocator, io, &tmp, "quit_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(0);
     try workbench.activeTab().?.editor.insertText("a");
     try workbench.activateIndex(1);
@@ -4096,8 +4191,9 @@ test "Workbench: preview replacement and dirty pin" {
     const path_b = try seedFile(allocator, io, &tmp, "preview_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.openPreviewPath(path_a);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expect(!workbench.activePane().?.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
@@ -4132,8 +4228,9 @@ test "Workbench: disabling breadcrumbs removes the row and shifts content" {
     const path = try seedFile(allocator, io, &tmp, "no_crumbs.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.activeTab().?.ensureControllers();
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -4142,7 +4239,7 @@ test "Workbench: disabling breadcrumbs removes the row and shifts content" {
 
     const pane = workbench.activePane().?;
     try std.testing.expectEqual(@as(usize, 1), pane.chromeHeight());
-    try std.testing.expectEqual(@as(usize, 1), workbench.cursorCell().?.row);
+    try std.testing.expectEqual(@as(usize, 1), cursorCell(workbench).?.row);
 }
 
 test "Workbench: double click pins a preview tab and toggles a pinned group" {
@@ -4154,8 +4251,9 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     const path = try seedFile(allocator, io, &tmp, "dblclick.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 40, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.openPreviewPath(path);
     try workbench.activeTab().?.ensureControllers();
 
@@ -4213,8 +4311,9 @@ test "Workbench: double click still pins after a jittery drag starts" {
     const path = try seedFile(allocator, io, &tmp, "jitter.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 40, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.openPreviewPath(path);
     try workbench.activeTab().?.ensureControllers();
 
@@ -4283,8 +4382,9 @@ test "Workbench: LSP navigation, references and symbol picker" {
         }
     };
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
     const features = workbench.language_features.?;
     var context: usize = 0;
@@ -4369,8 +4469,9 @@ test "Workbench: LSP no-result message keeps the word" {
         }
     };
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
     const features = workbench.language_features.?;
     var context: u8 = 0;
@@ -4412,8 +4513,9 @@ test "Workbench: F12 and Shift+F12 dispatch through keybindings" {
         }
     };
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
     const features = workbench.language_features.?;
     var context: u8 = 0;
@@ -4474,8 +4576,9 @@ test "Workbench: same-file navigation reuses the current editor across path form
     };
     var context = Fake{ .dir = directory, .base = basename };
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
     const registration = try workbench.language_features.?.definition_provider.register(.{ .language = "*" }, .{
         .context = &context,
@@ -4494,8 +4597,9 @@ test "Workbench: new terminal creates one tab and hover does not act" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
     workbench.terminal_service = service;
 
@@ -4565,8 +4669,9 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
     workbench.terminal_service = service;
     workbench.newTerminal() catch |err| switch (err) {
@@ -4639,8 +4744,9 @@ test "Workbench: image files open in an image preview tab without touching the f
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const tab = workbench.activeTab().?;
     try std.testing.expect(tab.isImage());
     try std.testing.expect(tab.image_input != null);
@@ -4672,8 +4778,9 @@ test "Workbench: a capable terminal uploads and paints the image" {
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.setImageProtocol(.unicode_placeholders);
     workbench.setCellPixelSize(8, 16);
     const tab = workbench.activeTab().?;
@@ -4718,8 +4825,9 @@ test "Workbench: image files reload on change and open in a text editor" {
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.setImageProtocol(.unicode_placeholders);
     const tab = workbench.activeTab().?;
     const pane = tab.image_preview.?;
@@ -4743,8 +4851,9 @@ test "Workbench: session serialization restores image tabs" {
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     var registry = editor_factory.EditorFactoryRegistry.init(allocator);
     defer registry.deinit();
@@ -4756,8 +4865,9 @@ test "Workbench: session serialization restores image tabs" {
     var serialized = try workbench.serializePart(allocator, &registry);
     defer serialized.deinit(allocator);
 
-    const restored = try Workbench.initFromSerializedPart(allocator, io, serialized, &registry, 40, 12);
-    defer restored.deinit();
+    const restored_window = try TestWindow.initWithOptions(allocator, io, &.{}, 40, 12, .{}, .{ .data = serialized, .registry = &registry });
+    const restored = restored_window.workbench;
+    defer restored_window.deinit();
     const restored_tab = restored.activeTab().?;
     try std.testing.expect(restored_tab.isImage());
     try std.testing.expectEqualStrings("logo.png", restored_tab.input.getName());
@@ -4773,8 +4883,9 @@ test "Workbench: markdown preview shows displayable images" {
     const markdown_path = try seedFile(allocator, io, &tmp, "with-image.md", "# Title\n\n![shot](shot.png)\n");
     defer allocator.free(markdown_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{markdown_path}, 70, 18);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{markdown_path}, 70, 18);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const pane = workbench.activePane().?;
     const tab = pane.activeTab().?;
     try workbench.toggleMarkdownPreview(pane);
@@ -4822,8 +4933,9 @@ test "Workbench: closing an image tab releases the terminal image" {
     const path = try seedBinary(allocator, io, &tmp, "logo.png", &test_png_1x1);
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.setImageProtocol(.unicode_placeholders);
     var first: std.Io.Writer.Allocating = .init(allocator);
     defer first.deinit();
@@ -4846,8 +4958,9 @@ test "Workbench: interactive open reads on the async Io" {
     const path = try seedFile(allocator, io, &tmp, "async-open.txt", "async body");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 40, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     workbench.requestOpenPath(path);
     try std.testing.expect(workbench.pending_open != null);
@@ -4872,9 +4985,10 @@ test "Workbench: cancelling an in-flight open leaves no tab and no pending job" 
     const path = try seedFile(allocator, io, &tmp, "cancel-open.txt", "body");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 40, 10);
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 40, 10);
+    const workbench = workbench_window.workbench;
     workbench.requestOpenPath(path);
-    workbench.deinit();
+    workbench_window.deinit();
 }
 
 test "Workbench: Explorer expands a directory symlink and opens a file inside" {
@@ -4897,8 +5011,9 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
     const inner_path = try std.fmt.allocPrint(allocator, "{s}/link/inner.txt", .{root});
     defer allocator.free(inner_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 70, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     workbench.focusSidebar();
@@ -4987,8 +5102,9 @@ test "Workbench: explorer sticky headers pin the folder ancestors" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{seed}, 60, 14);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{seed}, 60, 14);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     workbench.focusSidebar();
@@ -5046,8 +5162,9 @@ test "Workbench: right click on a tab neither closes nor activates it" {
     const path_b = try seedFile(allocator, io, &tmp, "right_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -5085,8 +5202,9 @@ test "Workbench: inactive breadcrumbs reuse a persistent control" {
     const path_b = try seedFile(allocator, io, &tmp, "crumb_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
@@ -5113,8 +5231,9 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 16);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 16);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.enableLanguageFeatures();
@@ -5182,8 +5301,9 @@ test "Workbench: tab overflow lists clipped tabs" {
     const path_d = try seedFile(allocator, io, &tmp, "overflow_d.txt", "d");
     defer allocator.free(path_d);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b, path_c, path_d }, 28, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b, path_c, path_d }, 28, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -5225,8 +5345,9 @@ test "Workbench: tab context menu closes to the right" {
     const path_c = try seedFile(allocator, io, &tmp, "right_c.txt", "c");
     defer allocator.free(path_c);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b, path_c }, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b, path_c }, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -5257,8 +5378,9 @@ test "Workbench: tab context menu splits the captured tab" {
     const path_b = try seedFile(allocator, io, &tmp, "split_b.txt", "b");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -5292,8 +5414,9 @@ test "Workbench: tab context menu closes saved tabs" {
     const path_b = try seedFile(allocator, io, &tmp, "saved_b.txt", "b");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -5324,8 +5447,9 @@ test "Workbench: close saved keeps dirty tabs" {
     const path_b = try seedFile(allocator, io, &tmp, "dirty_saved_b.txt", "b");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(0);
     try workbench.activeTab().?.editor.insertText("x");
     try std.testing.expect(workbench.activeTab().?.editor.isDirty());
@@ -5361,8 +5485,9 @@ test "Workbench: hiding the tab row reclaims it for content" {
     const path = try seedFile(allocator, io, &tmp, "hidden_tabs.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const pane = workbench.part.group_views.items[0];
     pane.setBreadcrumbsVisible(false);
     pane.setTabsVisible(false);
@@ -5387,8 +5512,9 @@ test "Workbench: the find bar reserves a view-zone row" {
     const path = try seedFile(allocator, io, &tmp, "find_zone.txt", "alpha\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const tab = workbench.activeTab().?;
     try tab.ensureControllers();
     tab.controllers.?.find.widget().open();
@@ -5412,8 +5538,9 @@ test "Workbench: the find bar reserves a view-zone row" {
 
 test "startup opens files at the laid-out pane width with one wrapping pass" {
     const allocator = std.testing.allocator;
-    const wb = try Workbench.init(allocator, time_compat.io, &.{}, 140, 44);
-    defer wb.deinit();
+    const wb_window = try TestWindow.init(allocator, time_compat.io, &.{}, 140, 44);
+    const wb = wb_window.workbench;
+    defer wb_window.deinit();
     try wb.initSidebarFromWorkspace();
     try wb.openPath("src/vs/workbench/browser/workbench.zig");
     const editor = wb.activeTab().?.editor;
@@ -5434,8 +5561,9 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
     defer allocator.free(other);
 
     for ([_]bool{ false, true }) |borders| {
-        const wb = try Workbench.init(allocator, io, &.{path}, 100, 22);
-        defer wb.deinit();
+        const wb_window = try TestWindow.init(allocator, io, &.{path}, 100, 22);
+        const wb = wb_window.workbench;
+        defer wb_window.deinit();
         wb.setCellBorders(borders);
         const source_group = wb.activePane().?;
         const source = source_group.activeTab().?;
@@ -5500,8 +5628,9 @@ test "Workbench: markdown side preview reuses a group below and survives closing
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "persist.md", "# Heading");
     defer allocator.free(path);
-    const wb = try Workbench.init(allocator, io, &.{path}, 100, 32);
-    defer wb.deinit();
+    const wb_window = try TestWindow.init(allocator, io, &.{path}, 100, 32);
+    const wb = wb_window.workbench;
+    defer wb_window.deinit();
     const settings = try seedFile(allocator, io, &tmp, "settings.json", "{\"workbench.editor.openSideBySideDirection\":\"down\"}");
     defer allocator.free(settings);
     try wb.setUserSettingsPaths(&.{settings});
@@ -5550,8 +5679,9 @@ test "Workbench: breadcrumb symbol filtering survives editor group focus changes
         }
     };
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings});
     try workbench.enableLanguageFeatures();
     const registration = try workbench.language_features.?.document_symbol_provider.register(.{ .language = "*" }, .{
@@ -5582,8 +5712,9 @@ test "Workbench: breadcrumb symbol filtering survives editor group focus changes
 }
 
 test "terminal F1 executes ShowAllCommandsAction through quick input" {
-    const workbench = try Workbench.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var pending = try ui.input.decodeWithRemainder(std.testing.allocator, "\x1bO");
     defer pending.items.deinit(std.testing.allocator);
     try std.testing.expectEqual(0, pending.consumed);
@@ -5605,8 +5736,9 @@ test "command palette preserves registration order, metadata and editor precondi
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "palette.txt", "palette");
     defer allocator.free(path);
-    const workbench = try Workbench.init(allocator, io, &.{}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const source = workbench.commands.source();
     const empty = try source.get_picks(source.context, allocator);
     defer allocator.free(empty);
@@ -5645,8 +5777,9 @@ test "Workbench: clicking a pane body focuses its group" {
     const settings_path = try std.fmt.allocPrint(allocator, "{s}/settings.json", .{root});
     defer allocator.free(settings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     workbench.ensureConfigurationReady();
     try workbench.splitActive(.horizontal);
@@ -5709,8 +5842,9 @@ test "Workbench: cell borders remove the split gutter" {
     const path_b = try seedFile(allocator, io, &tmp, "border_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
 
@@ -5745,8 +5879,9 @@ test "Workbench: mixed editor splits join inside a single rounded frame" {
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "round.txt", "text");
     defer allocator.free(path);
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const first = workbench.activePane().?;
     try workbench.splitActive(.horizontal);
     _ = try workbench.part.splitGroup(first, .vertical, false);
@@ -5827,8 +5962,9 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
     const expected_idle = ui.cell.packColor(.{ .r = 0x50, .g = 0x58, .b = 0x60 });
     const expected_highlight = ui.cell.packColor(.{ .r = 0x12, .g = 0x67, .b = 0xa0 });
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.theme_palette = try allocator.create(theme_colors_mod.ThemeColors);
     workbench.theme_palette.?.* = theme_colors_mod.ThemeColors.init(theme);
     try workbench.splitActive(.vertical);
@@ -5903,8 +6039,9 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
     const path_b = try seedFile(allocator, io, &tmp, "drag_split_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 50, 10);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 50, 10);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     workbench.setCellBorders(true);
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
 
@@ -5953,8 +6090,9 @@ test "Workbench: editor drag paints all four destinations and uses the release c
     const zones = [_]DropZone{ .right, .left, .top, .bottom };
     for (zones, 0..) |zone, index| {
         const borders = index % 2 == 0;
-        const workbench = try Workbench.init(allocator, io, &.{ a, b }, 110, 28);
-        defer workbench.deinit();
+        const workbench_window = try TestWindow.init(allocator, io, &.{ a, b }, 110, 28);
+        const workbench = workbench_window.workbench;
+        defer workbench_window.deinit();
         workbench.setCellBorders(borders);
         var out: std.Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
@@ -6024,8 +6162,9 @@ test "Workbench: editor drag keeps range selection and cancels on source removal
     defer allocator.free(b);
     const c = try seedFile(allocator, io, &tmp, "c.txt", "gamma");
     defer allocator.free(c);
-    const workbench = try Workbench.init(allocator, io, &.{ a, b, c }, 100, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ a, b, c }, 100, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -6067,8 +6206,9 @@ test "Workbench: editor drag keeps range selection and cancels on source removal
 test "Workbench: bottom panel has a rounded outline with and without cell borders" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const workbench = try Workbench.init(allocator, io, &.{}, 90, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 90, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.showProblems();
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -6134,8 +6274,9 @@ test "Workbench: zen mode applies configuration changes while active" {
     const settings_path = try std.fmt.allocPrint(allocator, "{s}/zen-live-settings.json", .{buffer[0..root_len]});
     defer allocator.free(settings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.setUserConfigurationValue("editor.lineNumbers", .{ .string = "relative" });
 
@@ -6183,8 +6324,9 @@ test "Workbench: centered layout narrows and centers the editor part" {
     const path = try seedFile(allocator, io, &tmp, "centered.txt", "alpha\n");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const area = workbench.part.base.bounds.?;
     try workbench.commands.execute("workbench.action.toggleCenteredLayout");
@@ -6231,8 +6373,9 @@ test "Workbench: activity bar top moves the composite bar into the side bar" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
 
@@ -6283,8 +6426,9 @@ test "Workbench: closing the side bar keeps the activity bar" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
 
@@ -6323,8 +6467,9 @@ test "Workbench: status bar escape clears the hover tooltip" {
     const path = try seedFile(allocator, io, &tmp, "status_escape.txt", "alpha");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const part = workbench.statusbar.main_part;
     const entry = part.model.entries()[0];
     workbench.focusStatusBar();
@@ -6344,8 +6489,9 @@ test "Workbench: external file changes reload clean editors only" {
     const path = try seedFile(allocator, io, &tmp, "external.txt", "before");
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 40, 9);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 40, 9);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
 
     const tab = workbench.activeTab().?;
 
@@ -6379,8 +6525,9 @@ test "Workbench: terminal splits share one group and preserve panel geometry on 
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const workbench = try Workbench.init(allocator, io, &.{}, 96, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 96, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
     workbench.terminal_service = service;
     workbench.commands.execute(terminal_ids.new) catch |err| switch (err) {
@@ -6434,8 +6581,9 @@ test "terminal host flushes final output and fires one exit before removing pane
             self.still_registered = self.service.getInstanceFromId(self.instance.id) == self.instance;
         }
     };
-    const workbench = try Workbench.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
     var host = try @import("workbench.zig").TerminalWorkbench.init(workbench, &output.writer, null, null);
@@ -6476,8 +6624,9 @@ test "duplicate tab names with identical parent names show their distinguishing 
     defer allocator.free(left);
     const right = try seedFile(allocator, io, &tmp, "right/src/main.txt", "right");
     defer allocator.free(right);
-    const workbench = try Workbench.init(allocator, io, &.{ left, right }, 180, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ left, right }, 180, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var writer: std.Io.Writer.Allocating = .init(allocator);
     defer writer.deinit();
     try renderFrame(workbench, &writer.writer);
@@ -6499,8 +6648,9 @@ test "Workbench: terminal editor moves the live instance between hosts and close
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const workbench = try Workbench.init(allocator, io, &.{}, 96, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 96, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
     workbench.terminal_service = service;
     workbench.commands.execute(terminal_ids.new) catch |err| switch (err) {
@@ -6540,8 +6690,9 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
     defer allocator.free(path);
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
-    const workbench = try Workbench.init(allocator, io, &.{path}, 90, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 90, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
@@ -6634,8 +6785,9 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
 }
 
 test "Workbench: dragging the sash above the bottom panel resizes it" {
-    const workbench = try Workbench.init(std.testing.allocator, std.Io.Threaded.global_single_threaded.io(), &.{}, 90, 36);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(std.testing.allocator, std.Io.Threaded.global_single_threaded.io(), &.{}, 90, 36);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.showProblems();
     workbench.focusEditor();
     const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
@@ -6714,8 +6866,9 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
 
@@ -6845,8 +6998,9 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
     const settings_path = try std.fmt.allocPrint(allocator, "{s}/zen-settings.json", .{buffer[0..root_len]});
     defer allocator.free(settings_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
@@ -6922,8 +7076,9 @@ test "Workbench: side bar part paints the title and runs its actions" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 70, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
 
@@ -7012,8 +7167,9 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     try workbench.layout.setSize(.sidebar, 45);
     pumpSidebarForTests(workbench);
@@ -7100,8 +7256,9 @@ test "Workbench: search aligns nested guides and keeps the link inline at the re
     const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer allocator.free(root);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings});
     try workbench.initSidebar(root);
     try workbench.layout.setSize(.sidebar, 45);
@@ -7214,8 +7371,9 @@ test "Workbench: outline side panel shows provider symbols" {
         .disposeFn = Fake.dispose,
     };
 
-    const workbench = try Workbench.init(allocator, io, &.{}, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{}, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const registration = try workbench.outline_service.registerOutlineCreator(.{
         .context = @ptrCast(&context),
         .matches = Fake.matches,
@@ -7308,8 +7466,9 @@ test "Workbench: closing the active tab detaches the outline editor handler" {
     const path_b = try seedFile(allocator, io, &tmp, "outline-b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 60, 12);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 12);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     _ = try workbench.showActivityById("explorer");
     workbench.explorer_container.?.model.setCollapsed("outline", false);
     try workbench.commands.execute("outline.focus");
@@ -7356,8 +7515,9 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const untracked_path = try std.fmt.allocPrint(allocator, "{s}/untracked.txt", .{root});
     defer allocator.free(untracked_path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 30);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const settings_path = try std.fs.path.join(allocator, &.{ root, ".git", "test-settings.json" });
     defer allocator.free(settings_path);
     try workbench.setUserSettingsPaths(&.{settings_path});
@@ -7577,7 +7737,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try renderFrame(workbench, &diff_frame.writer);
     try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "HEAD") != null);
     try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "Working Tree") != null);
-    try std.testing.expect(workbench.cursorCell() != null);
+    try std.testing.expect(cursorCell(workbench) != null);
 
     // The active diff exposes its modified control. An editor command uses
     // the focused side when the user moves focus to the original control.
@@ -7738,8 +7898,9 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     const path = try std.fmt.allocPrint(allocator, "{s}/a.txt", .{root});
     defer allocator.free(path);
 
-    const workbench = try Workbench.init(allocator, io, &.{path}, 100, 30);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 100, 30);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.initGit();
@@ -7949,8 +8110,9 @@ test "workbench context keys observe part visibility and dirty working copies be
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "context.txt", "one");
     defer allocator.free(path);
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 16);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 16);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const keys = try workbench.ensureContextKeys();
     try std.testing.expect(keys.getValue("mainEditorAreaVisible").boolean);
     try std.testing.expect(!keys.getValue("dirtyWorkingCopies").boolean);
@@ -7972,8 +8134,9 @@ test "Simple Browser command and API apply the same URL restrictions before term
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "browser.txt", "");
     defer allocator.free(path);
-    const workbench = try Workbench.init(allocator, io, &.{path}, 72, 16);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 72, 16);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try std.testing.expectError(error.InvalidBrowserAddress, workbench.simple_browser.show("file:///etc/hosts"));
     try std.testing.expectError(error.InvalidBrowserAddress, workbench.simple_browser.show("https://example.org/a\rb"));
     try workbench.commands.execute("simpleBrowser.show");
@@ -8016,8 +8179,9 @@ test "Ports commands use the registered workspace tunnel provider" {
         }
     };
     var terminal = Terminal{};
-    const w = try Workbench.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
-    defer w.deinit();
+    const w_window = try TestWindow.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
+    const w = w_window.workbench;
+    defer w_window.deinit();
     w.builtin_host.tunnel_provider.terminals = .{ .context = &terminal, .create = Terminal.create, .running = Terminal.running, .send_text = Terminal.send };
     const picker = w.quick_access.inputService().pickerRef();
     try w.commands.execute("remote.tunnel.closeCommandPalette");
@@ -8053,8 +8217,9 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
     defer allocator.free(settings);
 
     {
-        const wb = try Workbench.init(allocator, io, &.{file}, 100, 40);
-        defer wb.deinit();
+        const wb_window = try TestWindow.init(allocator, io, &.{file}, 100, 40);
+        const wb = wb_window.workbench;
+        defer wb_window.deinit();
         try wb.setWorkspaceFolders(&.{root});
         try wb.initSidebarFromWorkspace();
         try std.testing.expect(try wb.openPanelContainer(PROBLEMS_CONTAINER_ID));
@@ -8069,8 +8234,9 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
     }
 
     for ([_]bool{ true, false }) |restore_zen| {
-        const wb = try Workbench.init(allocator, io, &.{file}, 100, 40);
-        defer wb.deinit();
+        const wb_window = try TestWindow.init(allocator, io, &.{file}, 100, 40);
+        const wb = wb_window.workbench;
+        defer wb_window.deinit();
         try wb.setUserSettingsPaths(&.{settings});
         try wb.setWorkspaceFolders(&.{root});
         try wb.initSidebarFromWorkspace();
@@ -8095,8 +8261,9 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
     }
 
     // Another window in the profile gets the shared sizes and its own layout.
-    const wb = try Workbench.init(allocator, io, &.{}, 100, 40);
-    defer wb.deinit();
+    const wb_window = try TestWindow.init(allocator, io, &.{}, 100, 40);
+    const wb = wb_window.workbench;
+    defer wb_window.deinit();
     var storage = try LayoutStorage.init(wb, root, "other.session");
     defer storage.deinit();
     try wb.layout.restoreParts(try storage.load(false), &wb.part.when_restored);
@@ -8146,8 +8313,9 @@ test "workbench restores after editor completion or two seconds and eventually w
         }
     };
     for ([_]bool{ false, true }) |slow| {
-        const wb = try Workbench.init(allocator, std.testing.io, &.{}, 80, 24);
-        defer wb.deinit();
+        const wb_window = try TestWindow.init(allocator, std.testing.io, &.{}, 80, 24);
+        const wb = wb_window.workbench;
+        defer wb_window.deinit();
         // Model an editor group whose visible editor has not resolved yet.
         if (slow) wb.part.when_restored = .{};
         var clock = Clock{};
@@ -8193,8 +8361,9 @@ test "workbench shutdown cancels outstanding restore and idle callbacks" {
     const WindowTimer = @import("../vs/base/common/async.zig").WindowTimer;
     const Phase = @import("../vs/workbench/services/lifecycle/common/lifecycle.zig").LifecyclePhase;
     for ([_]bool{ false, true }) |restoring| {
-        const wb = try Workbench.init(allocator, std.testing.io, &.{}, 80, 24);
-        defer wb.deinit();
+        const wb_window = try TestWindow.init(allocator, std.testing.io, &.{}, 80, 24);
+        const wb = wb_window.workbench;
+        defer wb_window.deinit();
         if (restoring) wb.part.when_restored = .{};
         var now_ms: i64 = 0;
         var timer = WindowTimer{ .clock = .{ .context = &now_ms, .now = struct {
@@ -8215,11 +8384,34 @@ test "workbench shutdown cancels outstanding restore and idle callbacks" {
     }
 }
 
+test "workbench mounts and disposes only its subtree in the terminal window" {
+    var surface: ui.Surface = undefined;
+    try @import("workbench.zig").initWindowSurface(&surface, std.testing.allocator, 48, 16);
+    defer surface.deinit();
+    const doc = surface.document();
+    const parent = doc.root.?;
+    const sibling = try doc.createElement(.div);
+    _ = try parent.appendChild(sibling);
+    {
+        const wb = try Workbench.init(std.testing.allocator, std.testing.io, &surface, &.{}, .{}, null);
+        defer wb.deinit();
+        const main = wb.layout.main_container.?;
+        try std.testing.expectEqual(parent, main.parent.?);
+        try std.testing.expectEqual(main, sibling.nextSibling().?);
+        try std.testing.expectEqual(parent, doc.root.?);
+        try std.testing.expectEqual(@as(u2, 2), doc.measure_width('界'));
+    }
+    try std.testing.expectEqual(parent, doc.root.?);
+    try std.testing.expectEqual(sibling, parent.first_child.?);
+    try std.testing.expectEqual(@as(?*ui.Node, null), sibling.nextSibling());
+}
+
 test "workbench startup creates the live editor part and applies extraClasses before the first frame" {
     const extra: u16 = 0x00ef;
-    const wb = try Workbench.initWithOptions(std.testing.allocator, std.testing.io, &.{}, 80, 24, .{ .extra_classes = &.{extra} }, null);
-    defer wb.deinit();
-    const main = wb.editor_surface.?.document().root.?;
+    const wb_window = try TestWindow.initWithOptions(std.testing.allocator, std.testing.io, &.{}, 80, 24, .{ .extra_classes = &.{extra} }, null);
+    const wb = wb_window.workbench;
+    defer wb_window.deinit();
+    const main = wb.layout.main_container.?;
     try std.testing.expect(main.hasClass(editor_css.workbench.Class.monaco_workbench));
     try std.testing.expect(main.hasClass(extra));
     var child = main.first_child;
@@ -8257,7 +8449,7 @@ test "workbench startup creates the live editor part and applies extraClasses be
     defer out.deinit();
     try renderFrame(wb, &out.writer);
     try std.testing.expectEqual(wb.part.grid_element.?, wb.activePane().?.dom.?.split_view.parent.?);
-    const tree = wb.editor_surface.?.box_tree;
+    const tree = wb.editor_surface.box_tree;
     for ([_]workbench_layout.Parts{ .activitybar, .sidebar, .editor, .panel, .statusbar }) |id| {
         const registered = try wb.layout.getPart(id);
         try std.testing.expectEqual(registered.bounds.?, tree.find(registered.getContainer().?).?.rect);
@@ -8268,12 +8460,13 @@ test "workbench startup creates the live editor part and applies extraClasses be
     try std.testing.expectEqual(@as(f64, 95), tree.find(main).?.rect.w);
     try std.testing.expectEqual(@as(f64, 30), tree.find(main).?.rect.h);
     try std.testing.expectEqual(part.bounds.?, tree.find(editor).?.rect);
-    try std.testing.expectEqual(main, wb.editor_surface.?.document().root.?);
+    try std.testing.expectEqual(main, wb.layout.main_container.?);
 }
 
 test "resetLayout ignores saved workspace visibility and profile sizes while restoring the editor" {
-    const wb = try Workbench.initWithOptions(std.testing.allocator, std.testing.io, &.{}, 80, 24, .{ .reset_layout = true }, null);
-    defer wb.deinit();
+    const wb_window = try TestWindow.initWithOptions(std.testing.allocator, std.testing.io, &.{}, 80, 24, .{ .reset_layout = true }, null);
+    const wb = wb_window.workbench;
+    defer wb_window.deinit();
     const before = wb.layout.size(.sidebar);
     try wb.layout.restorePartSizes(.{ .@"workbench.sideBar.size" = before + 10 });
     try std.testing.expectEqual(before, wb.layout.size(.sidebar));
@@ -8291,8 +8484,9 @@ test "line actions resolve the active code editor when focus leaves it and honor
     defer tmp.cleanup();
     const path = try seedFile(allocator, io, &tmp, "line-actions.txt", "one");
     defer allocator.free(path);
-    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 16);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 60, 16);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const tab = workbench.activeTab().?;
     _ = tab.view.setFocused(false);
     try std.testing.expect(workbench.code_editor_api.getFocusedCodeEditor() == null);

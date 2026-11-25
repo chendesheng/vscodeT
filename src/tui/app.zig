@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow;
 const builtin = @import("builtin");
 const Io = std.Io;
 const tui = @import("./tui.zig");
@@ -452,6 +453,9 @@ pub fn main(init: std.process.Init) !void {
     }
     defer if (registry) |*value| value.deinit();
 
+    var surface: ui.Surface = undefined;
+    try terminal_workbench.initWindowSurface(&surface, allocator, size.width, size.height);
+    defer surface.deinit();
     var workbench: *Workbench = undefined;
     var restored = false;
     if (args.session) |session_path| {
@@ -463,14 +467,7 @@ pub fn main(init: std.process.Init) !void {
             var owned = data;
             defer owned.deinit(allocator);
 
-            const created = Workbench.initFromSerializedPart(
-                allocator,
-                io,
-                data,
-                &registry.?,
-                size.width,
-                size.height,
-            ) catch |err| blk: {
+            const created = Workbench.init(allocator, io, &surface, &.{}, .{}, .{ .data = data, .registry = &registry.? }) catch |err| blk: {
                 report(log_service, "session restore failed: {s}", .{@errorName(err)});
                 break :blk @as(?*Workbench, null);
             };
@@ -490,7 +487,7 @@ pub fn main(init: std.process.Init) !void {
             report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
-        workbench = try Workbench.init(allocator, io, &.{}, size.width, size.height);
+        workbench = try Workbench.init(allocator, io, &surface, &.{}, .{}, null);
     }
     infoLog(log_service, "startup: workbench-init={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
@@ -1743,8 +1740,9 @@ test "app: vim motions reach the hover before the extension key handler" {
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path_len = try tmp.dir.realPathFile(io, "hover-vim.txt", &path_buffer);
 
-    const workbench = try Workbench.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_len]}, 80, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     const tab = workbench.activeTab().?;
     try tab.editor.setCursorPosition(Position.init(1, 7));
     try std.testing.expect(try workbench.showHover());
@@ -2199,8 +2197,9 @@ test "app: Helix and Vim modal runtimes disable each other" {
     const settings_len = try tmp.dir.realPathFile(io, "settings.json", &settings_buffer);
     const settings_path = settings_buffer[0..settings_len];
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
 
     const vim = try VimRuntime.init(allocator, workbench);
@@ -2241,8 +2240,9 @@ test "app: shutdown writes the current editor groups before didShutdown" {
     defer allocator.free(two);
     const path = try std.fs.path.join(allocator, &.{ root, "session.json" });
     defer allocator.free(path);
-    const workbench = try Workbench.init(allocator, io, &.{one}, 60, 20);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{one}, 60, 20);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     var serializers = EditorFactoryRegistry.init(allocator);
     defer serializers.deinit();
     var file = workbench.createFileSerializer();

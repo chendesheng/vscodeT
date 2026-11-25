@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,881 lines and has no inline tests. All 151 baseline
+The browser shell is 13,823 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -50,6 +50,7 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * MultiEditorTabsControl builds labels from the group model and resolves file icons
   through the theme service. Duplicate tabs use the pinned shortest distinguishing
   path algorithm.
+* The native window supplies its parent document and terminal cell surface. Startup mounts the main container under that parent and disposal removes just the workbench subtree.
 * Startup creates the activity bar, sidebar, editor, panel and status bar containers
   through their registered Parts in pinned source order before laying out the grid. EditorPart creates the grid
   container and EditorGroupView mounts its pane and watermark. The other
@@ -83,7 +84,7 @@ Show All Commands resolves the quick input service through its Action2 handler.
   appending a suffix at the prompt cursor.
 * The tunnel view owns the two Ports palette actions. The compiled-in extension
   registers its private local provider with the workspace API and uses the
-  window terminal API. Thirteen files still import the shell.
+  window terminal API.
 * ContextMenuService owns the terminal popup, input capture and hide-before-action
   ordering. Outline, SCM Changes and SCM History resolve their registered actions
   through MenuService with pane-scoped context keys. StatusbarPart builds actions

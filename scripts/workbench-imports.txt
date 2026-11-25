@@ -1,4 +1,3 @@
-src/tui/benchmark.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/workbench.test.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/workbench.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig -> src/tui/editorView.zig
@@ -20,12 +19,7 @@ src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/imagePreview.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/markdownPreview.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/stickyScrollHost.zig
 src/vs/workbench/browser/parts/editor/textDiffEditor.zig -> src/tui/editorView.zig
-src/vs/workbench/browser/workbench.zig -> src/tui/cellMetrics.zig
-src/vs/workbench/browser/workbench.zig -> src/tui/editorView.zig
 src/vs/workbench/contrib/helix/browser/helixRuntime.zig -> src/vs/workbench/browser/workbench.zig
-src/vs/workbench/contrib/helix/test/browser/helixExtension.test.zig -> src/vs/workbench/browser/workbench.zig
-src/vs/workbench/contrib/helix/test/browser/helixRuntime.test.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/contrib/searchEditor/browser/searchEditor.zig -> src/tui/editorView.zig
 src/vs/workbench/contrib/vim/browser/vimRuntime.zig -> src/vs/workbench/browser/workbench.zig
-src/vs/workbench/contrib/vim/test/browser/vimExtension.test.zig -> src/vs/workbench/browser/workbench.zig
-src/vs/workbench/contrib/vim/test/browser/vimRuntime.test.zig -> src/vs/workbench/browser/workbench.zig
+src/vs/workbench/test/browser/workbenchTestServices.zig -> src/vs/workbench/browser/workbench.zig

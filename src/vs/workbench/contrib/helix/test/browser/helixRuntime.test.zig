@@ -1,7 +1,7 @@
 // Runtime enable/disable commands for the built-in Helix extension.
+const TestWindow = @import("../../../../test/browser/workbenchTestServices.zig").TestWindow;
 const std = @import("std");
 const ui = @import("ui");
-const Workbench = @import("../../../../browser/workbench.zig").Workbench;
 const HelixRuntime = @import("../../browser/helixRuntime.zig").HelixRuntime;
 const VimRuntime = @import("../../../vim/browser/vimRuntime.zig").VimRuntime;
 const time_compat = @import("../../../../../base/common/timeCompat.zig");
@@ -30,8 +30,9 @@ test "Helix runtime: enable/disable persist and control the key handler" {
     const settings_len = try tmp.dir.realPathFile(io, "settings.json", &settings_buffer);
     const settings_path = settings_buffer[0..settings_len];
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
     const runtime = try HelixRuntime.init(allocator, workbench);
     defer runtime.deinit();
@@ -70,8 +71,9 @@ test "Helix runtime: enabling Helix disables and persists Vim off" {
     const settings_len = try tmp.dir.realPathFile(io, "settings.json", &settings_buffer);
     const settings_path = settings_buffer[0..settings_len];
 
-    var workbench = try Workbench.init(allocator, io, &.{relative}, 80, 24);
-    defer workbench.deinit();
+    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+    const workbench = workbench_window.workbench;
+    defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
 
     const vim = try VimRuntime.init(allocator, workbench);

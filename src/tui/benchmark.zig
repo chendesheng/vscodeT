@@ -13,7 +13,8 @@
 //! testing allocator does. They are diagnostics, not assertions: only the
 //! structural checks (viewport tokenization, unattached model) assert.
 
-const renderFrame = @import("workbench.zig").renderFrame;
+const terminal_workbench = @import("workbench.zig");
+const renderFrame = terminal_workbench.renderFrame;
 const std = @import("std");
 const ui = @import("ui");
 const build_options = @import("build_options");
@@ -386,13 +387,10 @@ test "benchmark: workbench scroll frame" {
     const path = benchFile();
     std.Io.Dir.cwd().access(io, path, .{}) catch return error.SkipZigTest;
 
-    const workbench = try @import("../vs/workbench/browser/workbench.zig").Workbench.init(
-        allocator,
-        io,
-        &.{path},
-        140,
-        44,
-    );
+    var surface: @import("ui").Surface = undefined;
+    try terminal_workbench.initWindowSurface(&surface, allocator, 140, 44);
+    defer surface.deinit();
+    const workbench = try terminal_workbench.Workbench.init(allocator, io, &surface, &.{path}, .{}, null);
     defer workbench.deinit();
     const tab = workbench.activeTab() orelse return error.SkipZigTest;
 
@@ -451,8 +449,10 @@ test "benchmark: explorer sidebar scroll" {
     if (!enabled()) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
     const io = time_compat.io;
-    const Workbench = @import("../vs/workbench/browser/workbench.zig").Workbench;
-    const workbench = try Workbench.init(allocator, io, &.{}, 140, 44);
+    var surface: @import("ui").Surface = undefined;
+    try terminal_workbench.initWindowSurface(&surface, allocator, 140, 44);
+    defer surface.deinit();
+    const workbench = try terminal_workbench.Workbench.init(allocator, io, &surface, &.{}, .{}, null);
     defer workbench.deinit();
     try workbench.initSidebar(".");
     const sidebar = workbench.sidebar orelse return error.SkipZigTest;

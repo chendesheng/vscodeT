@@ -9,6 +9,14 @@ const time_compat = @import("../vs/base/common/timeCompat.zig");
 const shell = @import("../vs/workbench/browser/workbench.zig");
 pub const Workbench = shell.Workbench;
 
+/// Creates the terminal document and its window element at a stable address.
+pub fn initWindowSurface(surface: *ui.Surface, allocator: std.mem.Allocator, cols: usize, rows: usize) !void {
+    surface.* = try ui.Surface.init(allocator, .{ .cols = @max(cols, 1), .rows = @max(rows, 1), .measure_width = @import("cellMetrics.zig").measureCodepoint });
+    errdefer surface.deinit();
+    const document = surface.document();
+    document.setRoot(try document.createElement(.div));
+}
+
 pub const TerminalWorkbench = struct {
     workbench: *Workbench,
     output: *std.Io.Writer,
@@ -229,8 +237,31 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
     workbench.frame.swap();
 }
 
+pub fn cursorCell(workbench: *Workbench) ?@import("editorView.zig").Cell {
+    if (workbench.quick_access.isOpen()) return null;
+    if (workbench.dialog != null or workbench.context_menu_service.current != null) return null;
+    if (workbench.breadcrumbPopupVisible()) return null;
+    if (workbench.focus == .terminal) {
+        if (!workbench.terminalVisible()) return null;
+        const service = workbench.terminal_service orelse return null;
+        const instance = service.active() orelse return null;
+        if (workbench.terminal_tabbed_view.tab_list.focused) return null;
+        const content = workbench.terminal_tabbed_view.layoutForService(workbench.panelRect(), service).terminal;
+        const cursor = @import("../vs/workbench/contrib/terminal/browser/terminalRenderer.zig").cursorCell(&instance.emulator, service.group.paneRect(content, service.group.active)) orelse return null;
+        return .{ .row = cursor.row, .col = cursor.col };
+    }
+    if (workbench.focus != .editor) return null;
+    const pane = workbench.activePane() orelse return null;
+    const active = pane.activeTab() orelse return null;
+    const cell = active.cursorCell() orelse return null;
+    const row = ui.cell.snap(pane.rect.y) + pane.chromeHeight() + cell.row;
+    const col = ui.cell.snap(pane.rect.x) + cell.col;
+    if (row >= ui.cell.snap(workbench.workbenchGridLayout().editor.h) or col >= workbench.cols) return null;
+    return .{ .row = row, .col = col };
+}
+
 fn syncCursor(workbench: *Workbench, out: *std.Io.Writer) !void {
-    if (workbench.cursorCell()) |cell| {
+    if (cursorCell(workbench)) |cell| {
         try ui.screen.moveCursor(out, cell.row + 1, cell.col + 1);
         try ui.screen.showCursor(out);
     } else {

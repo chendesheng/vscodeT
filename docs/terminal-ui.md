@@ -745,6 +745,8 @@ editor, panel and status bar in the main document, in VS Code’s part order.
 Each container receives its role, classes and cell rectangle from the workbench
 and layout. The status bar uses a footer. Each editor group mounts its active
 pane and watermark under the editor part’s grid.
+The terminal window owns the cell surface and its root element. Workbench startup appends its main container under the root. Closing the workbench removes its subtree and leaves the window document available to its owner.
+
 Workbenches can attach registered stylesheet class IDs to the main container
 through `IWorkbenchOptions.extra_classes`. Terminal cells supply font metrics.
 The side bar, activity bar, bottom panel and status bar still paint separately.
