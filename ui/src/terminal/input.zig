@@ -52,6 +52,9 @@ pub fn decodeWithRemainder(allocator: std.mem.Allocator, input: []const u8) !Dec
     for (tokenized.tokens.items) |token| {
         switch (token) {
             .string => |text| try decodeString(allocator, &result, text),
+            .alt_char => |ch| try result.append(allocator, .{
+                .key = .{ .key = .{ .char = ch }, .mods = .{ .alt = true } },
+            }),
             .csi => |csi| try decodeCsi(allocator, &result, csi),
         }
     }
@@ -126,6 +129,7 @@ fn decodeString(
 
 const Token = union(enum) {
     string: []const u8,
+    alt_char: u8,
     csi: Csi,
 
     const Csi = struct {
@@ -215,21 +219,14 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
                     // `ESC _` is Alt+Shift+- and must stay a key event.
                     state = .apc;
                     last_pos = pos + 1;
-                } else if (chr == '/') {
-                    // Terminals send `ESC /` for Alt+/; `/` is otherwise an
-                    // ANSI intermediate byte.
-                    current.csi = .{ .parameters = "", .intermediate = "", .final = chr };
-                    try result.append(allocator, current);
+                } else if (isFinalCharForEscSequence(chr) or chr == '/') {
+                    // ESC Z is Alt+Shift+Z. Only ESC [ Z is backtab.
+                    try result.append(allocator, .{ .alt_char = chr });
                     state = .normal;
                     last_pos = pos + 1;
                 } else if (isIntermediateChar(chr)) {
                     state = .esc_intermediate;
                     last_pos = pos;
-                } else if (isFinalCharForEscSequence(chr)) {
-                    current.csi = .{ .parameters = "", .intermediate = "", .final = chr };
-                    try result.append(allocator, current);
-                    state = .normal;
-                    last_pos = pos + 1;
                 } else {
                     state = .normal;
                 }

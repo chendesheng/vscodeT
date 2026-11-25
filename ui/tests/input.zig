@@ -38,6 +38,32 @@ test "input: named keys and modifiers" {
     try std.testing.expect(events.items[5].key == .f12);
 }
 
+test "input: Shift+Tab moves focus backward and Alt+Shift+Z keeps focus" {
+    const allocator = std.testing.allocator;
+    var doc = try ui.Document.init(allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    const first = try root.appendChild(try doc.createElement(.div));
+    const second = try root.appendChild(try doc.createElement(.div));
+    first.asElement().focusable = true;
+    second.asElement().focusable = true;
+    try std.testing.expect(second.focus());
+
+    var keys = try decodeKeys(allocator, "\x1b[Z\x1bZ");
+    defer keys.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), keys.items.len);
+    try std.testing.expect(keys.items[0].key == .backtab);
+    doc.dispatchEvent(&keys.items[0]);
+    try std.testing.expectEqual(first, doc.focusedElement().?);
+
+    doc.dispatchEvent(&keys.items[1]);
+    try std.testing.expectEqual(first, doc.focusedElement().?);
+    try std.testing.expect(keys.items[1].key == .char);
+    try std.testing.expectEqual(@as(u21, 'Z'), keys.items[1].key.char);
+    try std.testing.expect(keys.items[1].mods.alt);
+}
+
 test "input: comment shortcuts and alt characters" {
     const allocator = std.testing.allocator;
 
