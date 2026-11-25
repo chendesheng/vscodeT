@@ -6,8 +6,21 @@ const std = @import("std");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
-const View = @import("searchEditor.zig").View;
 const SearchEditor = @import("searchEditor.zig").SearchEditor;
+const Range = @import("../../../../editor/common/core/range.zig").Range;
+const model = @import("../../../../editor/common/model.zig");
+
+pub const SearchEditorFindMatchClass = "searchEditorFindMatch";
+// Terminal adaptation: inline class and z-order retain the cell painter's
+// match background, without changing the model range/stickiness contract.
+const match_decoration_options: model.ModelDecorationOptions = blk: {
+    var options = model.ModelDecorationOptions.init("search-editor-find-match", .NeverGrowsWhenTypingAtEdges);
+    options.className = SearchEditorFindMatchClass;
+    options.inlineClassName = SearchEditorFindMatchClass;
+    options.zIndex = 10;
+    break :blk options;
+};
+const match_owner_id = 8;
 
 const Queue = @import("../../../../base/common/windowDispatch.zig").Queue;
 const Workspace = @import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService;
@@ -27,11 +40,10 @@ pub const SearchEditorInput = struct {
     name: []const u8,
     search_editor: *SearchEditor,
     host: Host = undefined,
-    view: *View = undefined,
+    old_decorations_ids: []u64 = &.{},
 
-    pub fn attach(self: *SearchEditorInput, queue: *Queue, view: *View, host: Host) void {
+    pub fn attach(self: *SearchEditorInput, queue: *Queue, host: Host) void {
         self.host = host;
-        self.view = view;
         self.search_editor.model.delivery.attach(queue, self, deliver);
     }
 
@@ -44,7 +56,7 @@ pub const SearchEditorInput = struct {
         else
             null;
         defer if (extras) |paths| self.host.free_paths(self.host.context, query.allocator, paths);
-        const changed = query.dispatch(now, env.configuration, env.workspace, extras orelse &.{}, self.view, progress) catch |err| {
+        const changed = query.dispatch(now, env.configuration, env.workspace, extras orelse &.{}, self, progress) catch |err| {
             _ = query.model.cancelSearch();
             self.editor.setMessage("Search failed: {s}", .{@errorName(err)});
             return true;
@@ -79,6 +91,39 @@ pub const SearchEditorInput = struct {
         return self;
     }
 
+    /// Port of SearchEditorInput.getMatchRanges. The results model, not the
+    /// terminal view or a separate snapshot, is the source of the ranges.
+    pub fn getMatchRanges(self: *SearchEditorInput, allocator: std.mem.Allocator) ![]Range {
+        const results_model = self.editor.model;
+        const decorations = try results_model.getAllDecorations(0, false);
+        defer results_model.getAllocator().free(decorations);
+        var ranges: std.ArrayList(Range) = .empty;
+        errdefer ranges.deinit(allocator);
+        for (decorations) |decoration| {
+            const class_name = decoration.options.className orelse continue;
+            if (!std.mem.eql(u8, class_name, SearchEditorFindMatchClass)) continue;
+            const range = decoration.range;
+            if (range.startColumn == 1 and range.endColumn == 1) continue;
+            try ranges.append(allocator, range);
+        }
+        return ranges.toOwnedSlice(allocator);
+    }
+
+    /// Port of SearchEditorInput.setMatchRanges: replace the previous IDs
+    /// in one model delta, preserving the underlying decoration event flow.
+    pub fn setMatchRanges(self: *SearchEditorInput, ranges: []const Range) !void {
+        const results_model = self.editor.model;
+        const allocator = results_model.getAllocator();
+        const deltas = try allocator.alloc(model.ModelDeltaDecoration, ranges.len);
+        defer allocator.free(deltas);
+        for (deltas, ranges) |*delta, range| {
+            delta.* = .{ .range = range, .options = @constCast(&match_decoration_options) };
+        }
+        const ids = try results_model.deltaDecorations(self.old_decorations_ids, deltas, match_owner_id);
+        allocator.free(self.old_decorations_ids);
+        self.old_decorations_ids = ids;
+    }
+
     fn createName(allocator: std.mem.Allocator, query: []const u8) ![]const u8 {
         return if (query.len == 0)
             allocator.dupe(u8, "Search")
@@ -105,6 +150,7 @@ pub const SearchEditorInput = struct {
         self.search_editor.deinit();
         self.base.dispose();
         self.base.deinit();
+        self.editor.model.getAllocator().free(self.old_decorations_ids);
         self.editor.deinit();
         allocator.destroy(self.editor);
         allocator.free(self.name);

@@ -190,7 +190,6 @@ const hc_dark_unexpected_bracket_color = [3]u8{ 255, 50, 50 };
 const hc_light_unexpected_bracket_color = [3]u8{ 181, 32, 13 };
 
 const find_options = makeDecorationOptions("findMatch", .Left, overview_find_color, 10);
-const search_editor_find_options = makeDecorationOptions("searchEditorFindMatch", null, null, 10);
 const current_find_options = makeDecorationOptions("currentFindMatch", .Full, overview_current_find_color, 13);
 const find_scope_options = makeDecorationOptions("findScope", null, null, 0);
 const bracket_options = makeDecorationOptions("bracket-match", .Right, overview_bracket_color, 0);
@@ -221,7 +220,6 @@ fn makeDecorationOptions(
 fn decorationOptions(kind: editorBrowser.DecorationKind, show_in_overview: bool) *const ModelDecorationOptions {
     return switch (kind) {
         .find_match => &find_options,
-        .search_editor_match => &search_editor_find_options,
         .current_find_match => &current_find_options,
         .find_scope => &find_scope_options,
         .bracket_match => if (show_in_overview) &bracket_options else &bracket_inline_options,
@@ -273,7 +271,6 @@ const DecorationOwner = struct {
     /// Vim/Helix incremental-search highlights. Separate from the Search view
     /// result range above, so the two never clear each other.
     const incremental_search: usize = 7;
-    const search_editor: usize = 8;
 };
 
 const CellFlag = struct {
@@ -898,11 +895,6 @@ pub const View = struct {
     /// Sets the range highlighted by the Search view.
     pub fn setSearchHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
         try self.replaceModelDecorations(DecorationOwner.search, decorations);
-    }
-
-    /// Sets the match highlights on a serialized Search Editor snapshot.
-    pub fn setSearchEditorHighlights(self: *View, decorations: []const editorBrowser.Decoration) !void {
-        try self.replaceModelDecorations(DecorationOwner.search_editor, decorations);
     }
 
     /// Sets (or clears) the Problems marker-selection range. This is the

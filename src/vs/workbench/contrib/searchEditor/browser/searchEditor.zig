@@ -11,8 +11,7 @@ const SearchModel = @import("../../search/browser/searchTreeModel/searchModel.zi
 const widget = @import("../../search/browser/searchWidget.zig");
 const Range = @import("../../../../editor/common/core/range.zig").Range;
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-pub const View = @import("../../../../../tui/editorView.zig").View;
-const editor_browser = @import("../../../../editor/browser/editorBrowser.zig");
+const SearchEditorInput = @import("searchEditorInput.zig").SearchEditorInput;
 const serialization = @import("searchEditorSerialization.zig");
 
 pub const Config = struct {
@@ -141,7 +140,7 @@ pub const SearchEditor = struct {
         configuration: *ConfigurationService,
         workspace: *WorkspaceContextService,
         extras: []const []const u8,
-        view: *View,
+        input: *SearchEditorInput,
         progress: bool,
     ) !bool {
         if (self.pending_at) |deadline| {
@@ -151,8 +150,8 @@ pub const SearchEditor = struct {
             const value = self.form.value(.search);
             if (value.len == 0) {
                 self.model.clear();
-                try view.editor.replaceGeneratedContents("", true);
-                try view.setSearchEditorHighlights(&.{});
+                try input.editor.replaceGeneratedContents("", true);
+                try input.setMatchRanges(&.{});
                 try self.setLocations(&.{});
                 return true;
             }
@@ -171,7 +170,7 @@ pub const SearchEditor = struct {
                 .is_smart_case = configuration.getBool("search.smartCase", false),
             });
             if (!try self.model.search(query)) {
-                view.editor.setMessage("Invalid search pattern", .{});
+                input.editor.setMessage("Invalid search pattern", .{});
                 return true;
             }
         }
@@ -179,7 +178,7 @@ pub const SearchEditor = struct {
         _ = try self.model.onSearchProgress(32);
         if (self.model.takeMessage()) |message| {
             defer self.allocator.free(message.text);
-            view.editor.setMessage("{s}", .{message.text});
+            input.editor.setMessage("{s}", .{message.text});
             if (message.kind == .err) return true;
         }
         if (self.model.isSearching()) return false;
@@ -190,9 +189,9 @@ pub const SearchEditor = struct {
             .default;
         const snapshot = try serialization.serializeSearchResultForEditor(self.allocator, self.model.result, order, self.model.limitHit());
         defer snapshot.deinit(self.allocator);
-        try view.editor.replaceGeneratedContents(snapshot.text, self.reset_cursor);
+        try input.editor.replaceGeneratedContents(snapshot.text, self.reset_cursor);
         try self.setLocations(snapshot.files);
-        try setMatchRanges(self.allocator, view, snapshot);
+        try input.setMatchRanges(snapshot.match_ranges);
         if (self.focus_results_on_search) self.setQueryFocused(false);
         return true;
     }
@@ -232,15 +231,6 @@ pub const SearchEditor = struct {
             return .{ .path = file.path, .range = Range.init(source_line, column, source_line, column) };
         }
         return null;
-    }
-
-    pub fn setMatchRanges(allocator: Allocator, view: *View, snapshot: serialization.Snapshot) !void {
-        const decorations = try allocator.alloc(editor_browser.Decoration, snapshot.match_ranges.len);
-        defer allocator.free(decorations);
-        for (decorations, snapshot.match_ranges) |*decoration, range| {
-            decoration.* = .{ .range = range, .kind = .search_editor_match, .show_in_overview_ruler = false };
-        }
-        try view.setSearchEditorHighlights(decorations);
     }
 
     fn onChange(context: *anyopaque, _: widget.Field, _: []const u8) void {

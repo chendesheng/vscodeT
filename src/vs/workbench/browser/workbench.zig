@@ -10939,9 +10939,9 @@ fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot
     };
     errdefer tab.deinit();
     try tab.view.setStatusBarVisible(false);
-    try search_editor.SearchEditor.setMatchRanges(self.allocator, tab.view, snapshot);
+    try input.setMatchRanges(snapshot.match_ranges);
     try query.setLocations(snapshot.files);
-    input.attach(&self.window_events, tab.view, .{ .context = self, .environment = searchEditorEnvironment, .extra_files = searchExtraFiles, .free_paths = searchFreePaths });
+    input.attach(&self.window_events, .{ .context = self, .environment = searchEditorEnvironment, .extra_files = searchExtraFiles, .free_paths = searchFreePaths });
     try pane.tabs.ensureUnusedCapacity(1);
     _ = try pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
     try pane.addTab(tab);

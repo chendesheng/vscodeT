@@ -2935,6 +2935,14 @@ test "Workbench: search editor shows query controls and reruns with independent 
     const query = input.search_editor;
     try std.testing.expectEqualStrings("alpha", query.form.value(.search));
     try std.testing.expectEqual(@as(usize, 1), query.form.contextLines());
+    {
+        const matches = try input.getMatchRanges(allocator);
+        defer allocator.free(matches);
+        try std.testing.expectEqual(@as(usize, 1), matches.len);
+        var match_text = try tab.editor.model.getValueInRange(matches[0], null);
+        defer match_text.deinit();
+        try std.testing.expectEqualStrings("alpha", match_text.items);
+    }
 
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
@@ -2974,6 +2982,14 @@ test "Workbench: search editor shows query controls and reruns with independent 
     var second = try tab.editor.model.getValue(null, false);
     defer second.deinit();
     try std.testing.expect(std.mem.indexOf(u8, second.items, "  3  between\n  4: beta\n  5  after") != null);
+    {
+        const matches = try input.getMatchRanges(allocator);
+        defer allocator.free(matches);
+        try std.testing.expectEqual(@as(usize, 1), matches.len);
+        var match_text = try tab.editor.model.getValueInRange(matches[0], null);
+        defer match_text.deinit();
+        try std.testing.expectEqualStrings("beta", match_text.items);
+    }
 
     const toggle = query.form.controlRect(.toggle_context).?;
     try std.testing.expect(workbench.handleSearchEditorMouse(&.{

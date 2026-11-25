@@ -235,7 +235,6 @@ pub const DecorationKind = enum {
     word_highlight,
     word_highlight_strong,
     search_range_highlight,
-    search_editor_match,
     marker_selection_highlight,
 };
 
