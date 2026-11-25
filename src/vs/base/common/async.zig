@@ -2,8 +2,8 @@
 // file watcher needs.
 //
 // Terminal adaptation: there is no hidden `setTimeout` in the library. Every
-// scheduler stores a deadline and is advanced by an explicit `poll(now_ms)`
-// call from the host event loop. This keeps the watcher deterministic and
+// schedulers can attach to a window deadline queue; isolated tests and the
+// native watcher can advance their own clock explicitly. This keeps them deterministic and
 // testable while preserving upstream's chunk sizes, delays and cancellation
 // rules.
 
@@ -104,17 +104,30 @@ pub fn RunOnceScheduler(comptime Context: type) type {
         runner: *const fn (Context) void,
         delay_ms: i64,
         deadline_ms: ?i64 = null,
+        task: @import("windowDispatch.zig").Task = .{},
 
         pub fn init(context: Context, runner: *const fn (Context) void, delay_ms: i64) Self {
             return .{ .context = context, .runner = runner, .delay_ms = delay_ms };
         }
 
+        pub fn attachWindow(self: *Self, queue: *@import("windowDispatch.zig").Queue) void {
+            if (self.task.queue == queue) return;
+            self.task.schedule(null);
+            self.task = .{ .queue = queue, .context = self, .run = onDeadline };
+            self.task.schedule(self.deadline_ms);
+        }
+        fn onDeadline(ctx: *anyopaque, now: i64, _: bool) bool {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return self.flush(now);
+        }
         pub fn schedule(self: *Self, now_ms: i64, delay_ms: ?i64) void {
             self.deadline_ms = now_ms + (delay_ms orelse self.delay_ms);
+            self.task.schedule(self.deadline_ms);
         }
 
         pub fn cancel(self: *Self) void {
             self.deadline_ms = null;
+            self.task.schedule(null);
         }
 
         pub fn isScheduled(self: *const Self) bool {
@@ -124,6 +137,7 @@ pub fn RunOnceScheduler(comptime Context: type) type {
         pub fn flush(self: *Self, now_ms: i64) bool {
             if (self.deadline_ms == null) return false;
             self.deadline_ms = null;
+            self.task.schedule(null);
             self.runner(self.context);
             _ = now_ms;
             return true;

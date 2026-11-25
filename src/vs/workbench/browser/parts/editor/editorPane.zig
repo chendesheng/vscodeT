@@ -310,6 +310,7 @@ pub const Tab = struct {
     pub fn attachWindow(self: *Tab, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
         self.window = window;
         self.editor.attachWindow(window);
+        if (self.controllers) |controllers| controllers.attachWindow(window);
         if (self.diff) |diff| diff.widget.original_editor.attachWindow(window);
     }
 
@@ -325,6 +326,7 @@ pub const Tab = struct {
         try self.view.addContentWidget(controllers.suggest.widgetInterface());
 
         self.controllers = controllers;
+        if (self.window) |window| controllers.attachWindow(window);
         controllers.word_highlighter.onEditorChanged(time_compat.milliTimestamp());
     }
 
@@ -1032,6 +1034,11 @@ pub const Controllers = struct {
         }
     }
 
+    fn attachWindow(self: *Controllers, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.hover.attachWindow(window);
+        self.word_highlighter.attachWindow(window);
+        self.sticky.attachWindow(window);
+    }
     pub fn deinit(self: *Controllers) void {
         // The sink context points at this controller; detach before it dies.
         self.editor.setSearchHighlightSink(null);

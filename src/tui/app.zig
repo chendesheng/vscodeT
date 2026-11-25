@@ -692,6 +692,7 @@ pub fn main(init: std.process.Init) !void {
 
     defer workbench.lifecycle.shutdown(.quit) catch |err| report(log_service, "shutdown failed: {s}", .{@errorName(err)});
     const outline_models = try workbench.instantiation.invokeFunction(@import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").getOutlineModelService, .{});
+    outline_models.attachWindow(&workbench.window_events);
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.window_events.dispatch(now_ms)) needs_render = true;
@@ -705,28 +706,12 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.activeTab()) |active| {
             try active.ensureControllers();
             if (active.controllers) |controllers| {
-                if (active.editor.inPlaceReplaceTick(now_ms)) needs_render = true;
-                if (controllers.hover.onTick(now_ms)) needs_render = true;
-                if (controllers.word_highlighter.onTick(now_ms)) needs_render = true;
-                if (controllers.sticky.onTick(now_ms)) needs_render = true;
                 if (try controllers.suggest.onTick(now_ms)) needs_render = true;
-
-                timeout = controllers.hover.pollTimeout(now_ms, 250);
-                if (active.editor.inPlaceReplacePollTimeout(now_ms)) |replace_timeout| {
-                    timeout = @min(timeout, @as(i32, @intCast(@min(replace_timeout, 250))));
-                }
-                if (controllers.word_highlighter.pollTimeout(now_ms)) |word_timeout| {
-                    timeout = @min(timeout, @as(i32, @intCast(@min(word_timeout, 250))));
-                }
                 if (controllers.suggest.pollTimeout(now_ms)) |suggest_timeout| {
                     timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
                 }
-                if (controllers.sticky.pollTimeout(now_ms)) |sticky_timeout| {
-                    timeout = @min(timeout, @as(i32, @intCast(@min(sticky_timeout, 250))));
-                }
             }
         }
-        timeout = outline_models.dispatchTimers(now_ms, timeout);
         timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), timeout);
 
         timeout = restore_timer.nextTimeout(timeout);

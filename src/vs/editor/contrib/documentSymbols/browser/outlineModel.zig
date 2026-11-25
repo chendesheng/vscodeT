@@ -480,6 +480,7 @@ pub const OutlineModelService = struct {
     entries: std.ArrayList(*Entry) = .empty,
     debounce: debounce_mod.LanguageFeatureDebounceService,
     timers: std.ArrayList(Timer) = .empty,
+    timer_task: @import("../../../../base/common/windowDispatch.zig").Task = .{},
     const Timer = struct { context: *anyopaque, deadline: i64, run: *const fn (*anyopaque) void };
 
     pub fn init(allocator: Allocator) OutlineModelService {
@@ -489,13 +490,24 @@ pub const OutlineModelService = struct {
         while (self.entries.items.len != 0) self.remove(self.entries.items[0]);
         self.entries.deinit(self.allocator);
         self.debounce.deinit();
+        self.timer_task.schedule(null);
         self.timers.deinit(self.allocator);
     }
 
+    pub fn attachWindow(self: *OutlineModelService, queue: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        if (self.timer_task.queue == queue) return;
+        self.timer_task.schedule(null);
+        self.timer_task = .{ .queue = queue, .context = self, .run = onDeadline };
+        self.rearmTimer();
+    }
+    fn rearmTimer(self: *OutlineModelService) void {
+        self.timer_task.schedule(if (self.timers.items.len == 0) null else self.timers.items[0].deadline);
+    }
     // Terminal event loop adapter for TimeoutTimer.cancelAndSet.
     pub fn cancelTimer(self: *OutlineModelService, context: *anyopaque) void {
         for (self.timers.items, 0..) |timer, i| if (timer.context == context) {
             _ = self.timers.orderedRemove(i);
+            self.rearmTimer();
             return;
         };
     }
@@ -505,15 +517,18 @@ pub const OutlineModelService = struct {
         var i: usize = 0;
         while (i < self.timers.items.len and self.timers.items[i].deadline <= deadline) i += 1;
         try self.timers.insert(self.allocator, i, .{ .context = context, .deadline = deadline, .run = run });
+        self.rearmTimer();
     }
-    pub fn dispatchTimers(self: *OutlineModelService, time: i64, timeout: i32) i32 {
-        while (self.timers.items.len != 0) {
-            const delay = self.timers.items[0].deadline - time;
-            if (delay > 0) return @intCast(@min(delay, timeout));
+    fn onDeadline(ctx: *anyopaque, time: i64, _: bool) bool {
+        const self: *OutlineModelService = @ptrCast(@alignCast(ctx));
+        defer self.rearmTimer();
+        var changed = false;
+        while (self.timers.items.len != 0 and self.timers.items[0].deadline <= time) {
             const timer = self.timers.orderedRemove(0);
             timer.run(timer.context);
+            changed = true;
         }
-        return timeout;
+        return changed;
     }
 
     const Entry = struct {

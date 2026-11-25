@@ -213,17 +213,25 @@ test "in-place replace: editor integration and decoration expiry" {
         allocator.destroy(editor);
     }
 
+    var queue = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = io };
+    editor.attachWindow(&queue);
     try std.testing.expect(try editor.inPlaceReplace(true));
     const value = try editor.model.getValue(.TextDefined, false);
     defer value.deinit();
     try std.testing.expectEqualStrings("false", value.items);
 
-    // The replacement decoration lives until the 350 ms deadline.
-    const time_compat = @import("../../../../../../vs/base/common/timeCompat.zig");
-    const now = time_compat.milliTimestamp();
-    try std.testing.expect(editor.inPlaceReplacePollTimeout(now) != null);
-    try std.testing.expect(!editor.inPlaceReplaceTick(now));
-    try std.testing.expect(editor.inPlaceReplaceTick(now + 1000));
+    // The replacement decoration lives until the owner-specific deadline.
+    const due = editor.in_place_replace_task.at.?;
+    for (0..64) |_| {
+        if (queue.nextTimeout(due - 1, 1) != 0) break;
+        _ = queue.dispatch(due - 1);
+    }
+    try std.testing.expectEqual(due, editor.in_place_replace_task.at.?);
+    for (0..64) |_| {
+        if (editor.in_place_replace_task.at == null) break;
+        _ = queue.dispatch(due);
+    }
+    try std.testing.expect(editor.in_place_replace_task.at == null);
 }
 
 test "in-place replace: action metadata matches upstream" {

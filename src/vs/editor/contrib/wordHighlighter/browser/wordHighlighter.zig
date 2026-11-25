@@ -80,6 +80,7 @@ pub const WordHighlighter = struct {
     decorations: ArrayList(editorBrowser.Decoration),
 
     pending_deadline_ms: ?i64 = null,
+    task: @import("../../../../base/common/windowDispatch.zig").Task = .{},
     pending_position: Position = Position.init(1, 1),
     last_model_version: u32,
     last_position: ?Position = null,
@@ -108,6 +109,20 @@ pub const WordHighlighter = struct {
         return self;
     }
 
+    pub fn attachWindow(self: *WordHighlighter, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        if (self.task.queue == window) return;
+        self.task.schedule(null);
+        self.task = .{ .queue = window, .context = self, .run = onDeadline };
+        self.task.schedule(self.pending_deadline_ms);
+    }
+    fn setDeadline(self: *WordHighlighter, deadline: ?i64) void {
+        self.pending_deadline_ms = deadline;
+        self.task.schedule(deadline);
+    }
+    fn onDeadline(ctx: *anyopaque, now: i64, _: bool) bool {
+        const self: *WordHighlighter = @ptrCast(@alignCast(ctx));
+        return self.onTick(now);
+    }
     pub fn deinit(self: *WordHighlighter) void {
         _ = self.stopAll();
         self.ranges.deinit();
@@ -126,7 +141,7 @@ pub const WordHighlighter = struct {
             _ = self.stopAll();
             self.last_position = null;
             self.last_selection = null;
-            self.pending_deadline_ms = null;
+            self.setDeadline(null);
             self.was_focused = false;
             return;
         }
@@ -138,7 +153,7 @@ pub const WordHighlighter = struct {
             self.was_focused = false;
             self.last_position = null;
             self.last_selection = null;
-            self.pending_deadline_ms = null;
+            self.setDeadline(null);
             self.last_model_version = self.model.getVersionId();
             return;
         }
@@ -154,7 +169,7 @@ pub const WordHighlighter = struct {
             // changes with a non-explicit reason (typing). Wait for the next
             // explicit move before highlighting again.
             self.last_model_version = version;
-            self.pending_deadline_ms = null;
+            self.setDeadline(null);
             _ = self.stopAll();
             self.last_position = self.editor.modelCursorPosition();
             self.last_selection = self.editor.modelSelection();
@@ -164,7 +179,7 @@ pub const WordHighlighter = struct {
         const selection = self.editor.modelSelection();
         if (selection.startLineNumber != selection.endLineNumber) {
             _ = self.stopAll();
-            self.pending_deadline_ms = null;
+            self.setDeadline(null);
             self.last_position = selection.getPosition();
             self.last_selection = selection;
             return;
@@ -181,7 +196,7 @@ pub const WordHighlighter = struct {
 
         var word = self.model.getWordAtPosition(position) orelse {
             _ = self.stopAll();
-            self.pending_deadline_ms = null;
+            self.setDeadline(null);
             self.last_position = position;
             self.last_selection = selection;
             return;
@@ -192,7 +207,7 @@ pub const WordHighlighter = struct {
         // the (possibly empty) selection, as upstream requires.
         if (word.startColumn > selection.startColumn or word.endColumn < selection.endColumn) {
             _ = self.stopAll();
-            self.pending_deadline_ms = null;
+            self.setDeadline(null);
             self.last_position = position;
             self.last_selection = selection;
             return;
@@ -211,7 +226,7 @@ pub const WordHighlighter = struct {
         _ = self.clearDecorations();
 
         const delay = @max(self.settings.run_delay_ms, self.settings.delay_ms);
-        self.pending_deadline_ms = now_ms + @as(i64, @intCast(delay));
+        self.setDeadline(now_ms + @as(i64, @intCast(delay)));
         self.pending_position = position;
         self.last_position = position;
         self.last_selection = selection;
@@ -221,18 +236,14 @@ pub const WordHighlighter = struct {
     pub fn onTick(self: *WordHighlighter, now_ms: i64) bool {
         const deadline = self.pending_deadline_ms orelse return false;
         if (now_ms < deadline) return false;
-        self.pending_deadline_ms = null;
+        self.setDeadline(null);
+        if (!self.host.has_text_focus(self.host.context)) return self.stopAll();
         return self.computeAt(self.pending_position);
-    }
-
-    pub fn pollTimeout(self: *const WordHighlighter, now_ms: i64) ?u64 {
-        const deadline = self.pending_deadline_ms orelse return null;
-        return @intCast(@max(deadline - now_ms, 0));
     }
 
     /// Upstream `trigger()`: immediate rendering, no delay.
     pub fn trigger(self: *WordHighlighter) void {
-        self.pending_deadline_ms = null;
+        self.setDeadline(null);
         const selection = self.editor.modelSelection();
         self.last_position = selection.getPosition();
         self.last_selection = selection;
@@ -243,13 +254,12 @@ pub const WordHighlighter = struct {
     /// Upstream `restore(delay)`.
     pub fn restore(self: *WordHighlighter, delay_ms: u64) void {
         if (self.settings.occurrences_highlight == .off) return;
-        self.pending_deadline_ms = @as(i64, @intCast(@max(self.settings.run_delay_ms, delay_ms))) +
-            timeNow();
+        self.setDeadline(@as(i64, @intCast(@max(self.settings.run_delay_ms, delay_ms))) + timeNow());
         self.pending_position = self.editor.modelSelection().getPosition();
     }
 
     pub fn stopHighlighting(self: *WordHighlighter) void {
-        self.pending_deadline_ms = null;
+        self.setDeadline(null);
         _ = self.stopAll();
     }
 
@@ -337,7 +347,7 @@ pub const WordHighlighter = struct {
     }
 
     fn stopAll(self: *WordHighlighter) bool {
-        self.pending_deadline_ms = null;
+        self.setDeadline(null);
         return self.clearDecorations();
     }
 
@@ -387,6 +397,10 @@ pub const WordHighlighterContribution = struct {
         return self;
     }
 
+    pub fn attachWindow(self: *WordHighlighterContribution, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        if (self.word_highlighter) |highlighter| highlighter.attachWindow(window);
+    }
+
     pub fn deinit(self: *WordHighlighterContribution) void {
         if (self.word_highlighter) |highlighter| highlighter.deinit();
         self.word_highlighter = null;
@@ -405,11 +419,6 @@ pub const WordHighlighterContribution = struct {
     pub fn onTick(self: *WordHighlighterContribution, now_ms: i64) bool {
         const highlighter = self.word_highlighter orelse return false;
         return highlighter.onTick(now_ms);
-    }
-
-    pub fn pollTimeout(self: *const WordHighlighterContribution, now_ms: i64) ?u64 {
-        const highlighter = self.word_highlighter orelse return null;
-        return highlighter.pollTimeout(now_ms);
     }
 
     pub fn handleKey(self: *WordHighlighterContribution, event: *ui.KeyEvent) bool {

@@ -2,7 +2,7 @@
 //
 // Terminal adaptation: the browser editor emits `onMouseMove`/`onMouseLeave`
 // and owns timers. Here the TUI event loop forwards mouse/key events and calls
-// `onTick` with the current time; two deadline timers drive the react scheduler
+// window deadlines; two deadline timers drive the react scheduler
 // and the hover operation. Code actions, color pickers, inline suggestions and
 // context menus do not exist in the TUI, so the corresponding "keep the hover
 // visible" branches are not reachable and are omitted.
@@ -43,10 +43,11 @@ pub const HoverSettings = struct {
     above: bool = false,
 };
 
-/// A single pending deadline. The TUI event loop polls with a timeout derived
-/// from the earliest deadline and calls `tick` after each poll.
+/// A single pending deadline. The terminal attaches the window queue; tests
+/// without a window may advance the deadline explicitly.
 pub const DeadlineTimer = struct {
     pending: ?Pending = null,
+    task: @import("../../../../base/common/windowDispatch.zig").Task = .{},
 
     const Pending = struct {
         deadline_ms: i64,
@@ -62,16 +63,28 @@ pub const DeadlineTimer = struct {
         };
     }
 
+    pub fn attachWindow(self: *DeadlineTimer, queue: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        if (self.task.queue == queue) return;
+        self.task.schedule(null);
+        self.task = .{ .queue = queue, .context = self, .run = onDeadline };
+        self.task.schedule(if (self.pending) |pending| pending.deadline_ms else null);
+    }
+    fn onDeadline(ctx: *anyopaque, now: i64, _: bool) bool {
+        const self: *DeadlineTimer = @ptrCast(@alignCast(ctx));
+        return self.tick(now);
+    }
     pub fn schedule(self: *DeadlineTimer, delay_ms: u64, callback: *const fn (context: *anyopaque) void, context: *anyopaque) void {
         self.pending = .{
             .deadline_ms = time_compat.milliTimestamp() + @as(i64, @intCast(delay_ms)),
             .callback = callback,
             .context = context,
         };
+        self.task.schedule(self.pending.?.deadline_ms);
     }
 
     pub fn cancel(self: *DeadlineTimer) void {
         self.pending = null;
+        self.task.schedule(null);
     }
 
     pub fn isScheduled(self: *const DeadlineTimer) bool {
@@ -90,6 +103,7 @@ pub const DeadlineTimer = struct {
         const pending = self.pending orelse return false;
         if (now_ms < pending.deadline_ms) return false;
         self.pending = null;
+        self.task.schedule(null);
         pending.callback(pending.context);
         return true;
     }
@@ -175,6 +189,11 @@ pub const ContentHoverController = struct {
             self.operation_timer.interface(),
         );
         return self;
+    }
+
+    pub fn attachWindow(self: *ContentHoverController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.operation_timer.attachWindow(window);
+        self.react_timer.attachWindow(window);
     }
 
     pub fn deinit(self: *ContentHoverController) void {
@@ -390,17 +409,6 @@ pub const ContentHoverController = struct {
         changed = self.react_timer.tick(now_ms) or changed;
         changed = self.operation_timer.tick(now_ms) or changed;
         return changed;
-    }
-
-    /// Timeout for the input poll: the nearest hover deadline, capped by the
-    /// caller's idle timeout.
-    pub fn pollTimeout(self: *const ContentHoverController, now_ms: i64, idle_timeout_ms: i32) i32 {
-        const react = self.react_timer.nextTimeoutMs(now_ms);
-        const operation = self.operation_timer.nextTimeoutMs(now_ms);
-        var timeout: u64 = @intCast(@max(idle_timeout_ms, 0));
-        if (react) |value| timeout = @min(timeout, value);
-        if (operation) |value| timeout = @min(timeout, value);
-        return @intCast(@min(timeout, @as(u64, @intCast(@max(idle_timeout_ms, 0)))));
     }
 
     pub fn isVisible(self: *const ContentHoverController) bool {

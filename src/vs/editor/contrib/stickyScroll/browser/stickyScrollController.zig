@@ -3,7 +3,7 @@
 //
 // Terminal adaptations:
 // - candidate-model requests are debounced with the existing
-//   polled scheduler from `base/common/async.zig`;
+//   window scheduler from `base/common/async.zig`;
 // - the widget is always registered as a top-left overlay and hides itself by
 //   reporting zero height, instead of being added/removed from the editor;
 // - the 25% viewport cap is recomputed from the current text height, so there
@@ -107,6 +107,10 @@ pub const StickyScrollController = struct {
         _ = provider.on_did_change.listen(self, onProviderChanged) catch {};
         self.readConfiguration() catch {};
         return self;
+    }
+
+    pub fn attachWindow(self: *StickyScrollController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.scheduler.attachWindow(window);
     }
 
     pub fn deinit(self: *StickyScrollController) void {
@@ -283,11 +287,6 @@ pub const StickyScrollController = struct {
     pub fn onTick(self: *StickyScrollController, now_ms: i64) bool {
         if (!self.enabled) return false;
         return self.scheduler.poll(now_ms);
-    }
-
-    pub fn pollTimeout(self: *const StickyScrollController, now_ms: i64) ?u32 {
-        if (!self.enabled) return null;
-        return self.scheduler.nextTimeout(now_ms);
     }
 
     fn scheduleUpdate(self: *StickyScrollController) void {

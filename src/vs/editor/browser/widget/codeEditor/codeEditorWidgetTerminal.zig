@@ -556,7 +556,7 @@ pub const Editor = struct {
     folding_task: window_dispatch.Task = .{},
     folding_delay_ms: i64,
     smart_select: smart_select.SmartSelectController,
-    in_place_replace_deadline: ?i64,
+    in_place_replace_task: window_dispatch.Task = .{},
     language_config_service: *LanguageConfigurationService,
     character_pair: ?CharacterPairSupport,
     multicursor_session: ?multicursor.SearchSession,
@@ -867,7 +867,6 @@ pub const Editor = struct {
             .folding_dirty = false,
             .folding_delay_ms = folding_debounce_min_ms,
             .smart_select = smart_select.SmartSelectController.init(allocator, &.{}, .{}),
-            .in_place_replace_deadline = null,
             .language_config_service = language_config_service,
             .character_pair = character_pair,
             .multicursor_session = null,
@@ -1662,6 +1661,7 @@ pub const Editor = struct {
 
     pub fn deinit(self: *Editor) void {
         self.folding_task.schedule(null);
+        self.in_place_replace_task.schedule(null);
         if (self.document.editors.items.len == 1) self.detachJsonLanguage();
         // Unregister the shared-model listeners first: the model may outlive
         // this view while a split copy stays open.
@@ -2125,6 +2125,8 @@ pub const Editor = struct {
         if (self.folding_task.queue == window) return;
         self.folding_task.schedule(null);
         self.folding_task = .{ .queue = window, .context = self, .run = onFoldingDeadline };
+        self.in_place_replace_task.schedule(null);
+        self.in_place_replace_task = .{ .queue = window, .context = self, .run = onInPlaceReplaceDeadline };
         if (self.folding_dirty) self.triggerFoldingUpdate(time_compat.milliTimestamp());
         self.model.tokenization().tokens.attachWindow(window);
     }
@@ -4468,7 +4470,7 @@ pub const Editor = struct {
         );
         try self.applyCommandResult(after);
         self.setInPlaceReplaceDecoration(result.highlight_range) catch {};
-        self.in_place_replace_deadline = time_compat.milliTimestamp() + 350;
+        self.in_place_replace_task.schedule(time_compat.milliTimestamp() + 350);
         return true;
     }
 
@@ -4504,20 +4506,10 @@ pub const Editor = struct {
         self.model.removeAllDecorationsWithOwnerId(5) catch {};
     }
 
-    /// Called from the app loop. Returns true when the decoration expired.
-    pub fn inPlaceReplaceTick(self: *Editor, now_ms: i64) bool {
-        const deadline = self.in_place_replace_deadline orelse return false;
-        if (now_ms < deadline) return false;
-        self.in_place_replace_deadline = null;
+    fn onInPlaceReplaceDeadline(ctx: *anyopaque, _: i64, _: bool) bool {
+        const self: *Editor = @ptrCast(@alignCast(ctx));
         self.clearInPlaceReplaceDecoration();
         return true;
-    }
-
-    /// Milliseconds until the replacement decoration expires, or null when no
-    /// timer is pending.
-    pub fn inPlaceReplacePollTimeout(self: *Editor, now_ms: i64) ?i64 {
-        const deadline = self.in_place_replace_deadline orelse return null;
-        return @max(0, deadline - now_ms);
     }
 
     /// Recomputes the bracket highlights for the current cursors. `has_focus`
