@@ -232,7 +232,7 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
     try paintEditorGroups(workbench, editor_surface);
     renderEditorFrame(workbench);
     if (workbench.part.maximized_group == null) renderDividers(workbench, workbench.part.root);
-    if (workbench.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").animationsEnabled(if (workbench.configuration) |config| config.interface() else null), time_compat.milliTimestamp());
+    if (workbench.editor_drop_target.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").animationsEnabled(if (workbench.configuration) |config| config.interface() else null), time_compat.milliTimestamp());
     if (workbench.panelShown()) {
         try renderPanel(workbench);
         renderPanelFrame(workbench);
@@ -397,7 +397,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
     if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next, self.part.cell_border_capabilities);
     if (self.context_menu_service.current) |menu| menu.popup.?.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
     if (self.dialog_handler.current) |dialog| dialog.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
-    try self.editor_drag.paintImage(&self.frame.next, self.drag_tab_drop != null);
+    try self.editor_drop_target.editor_drag.paintImage(&self.frame.next, self.editor_drop_target.drag_tab_drop != null);
 }
 
 /// Paints the panel title (composite bar) and the active container's
@@ -485,7 +485,7 @@ fn renderPane(self: *Workbench, pane: *shell.GroupPane) !void {
         .group_active = active_group,
         .hovered_tab = if (self.hovered_pane == pane) self.hovered_tab else null,
         .title_hovered = self.hovered_title_action_pane == pane,
-        .drop_index = if (self.drag_tab_drop) |drop| (if (drop.pane == pane) drop.index else null) else null,
+        .drop_index = if (self.editor_drop_target.drag_tab_drop) |drop| (if (drop.pane == pane) drop.index else null) else null,
         .cell_borders = self.part.cell_borders,
     });
     const chrome = pane.chromeHeight();
@@ -899,7 +899,7 @@ pub fn handleQuickAccessMouse(self: *Workbench, event: *ui.MouseEvent) bool {
 /// Starts, updates and ends a sash drag. Called before tab and editor mouse
 /// handling; a drag consumes every event until the button is released.
 pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-    if (self.editor_drag.source != null) return false;
+    if (self.editor_drop_target.editor_drag.source != null) return false;
     if (!self.quick_access.isOpen() and self.sidebarShown()) {
         if (self.activeSidebarViewContainer()) |container| {
             if (container.header_press != null and (event.kind == .move or event.kind == .up)) {
@@ -1090,13 +1090,13 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         // strip, so the second cell may now belong to a different tab.
         const now = time_compat.milliTimestamp();
         if (event.button == .left and !event.mods.shift and !event.mods.ctrl) {
-            if (self.last_tab_click) |previous| {
+            if (self.editor_drop_target.last_tab_click) |previous| {
                 if (previous.pane == pane and event.y == previous.y and
                     event.x >= previous.start and event.x < previous.end and
                     now - previous.at_ms <= 800 and
                     pane.indexOfTab(previous.tab) != null)
                 {
-                    self.last_tab_click = null;
+                    self.editor_drop_target.last_tab_click = null;
                     // Upstream: double click pins a preview tab; a pinned
                     // tab toggles the group size (default: expand).
                     if (pane.group.model.isPinned(.{ .editor = previous.tab.input })) {
@@ -1178,13 +1178,13 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
                     self.showTabContextMenu(pane, value, event) catch {};
                     return true;
                 }
-                self.selectTabForDrag(pane, value, index, event.mods) catch return true;
+                self.editor_drop_target.selectTabForDrag(pane, value, index, event.mods) catch return true;
                 // Timestamp after activation: creating controllers or
                 // revealing a large file can take long enough that the
                 // second press would otherwise fall outside the window.
                 if (recorded_hit != null and !event.mods.shift and !event.mods.ctrl) {
                     const entry = recorded_hit.?;
-                    self.last_tab_click = .{
+                    self.editor_drop_target.last_tab_click = .{
                         .pane = pane,
                         .tab = value,
                         .at_ms = time_compat.milliTimestamp(),
@@ -1194,11 +1194,11 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
                         .end = entry.end,
                     };
                 }
-                self.editor_drag.arm(.{ .pane = pane, .tab = value }, event.*);
+                self.editor_drop_target.editor_drag.arm(.{ .pane = pane, .tab = value }, event.*);
             }
         } else {
-            self.last_tab_click = null;
-            self.editor_drag.arm(.{ .pane = pane, .tab = null }, event.*);
+            self.editor_drop_target.last_tab_click = null;
+            self.editor_drop_target.editor_drag.arm(.{ .pane = pane, .tab = null }, event.*);
         }
     }
     if (event.kind == .up and event.button == .left and !event.mods.shift and !event.mods.ctrl) {
@@ -2261,7 +2261,7 @@ pub fn handleBreadcrumbPopupMouse(self: *Workbench, event: *const ui.MouseEvent)
 
 /// Routes a claimed drag before ordinary workbench mouse targets.
 pub fn handleTabDragMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-    return self.editor_drag.handleMouse(self, event.*);
+    return self.editor_drop_target.editor_drag.handleMouse(&self.editor_drop_target, event.*);
 }
 
 pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?struct { tab: *Tab, event: ui.MouseEvent } {

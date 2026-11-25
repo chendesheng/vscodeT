@@ -1253,7 +1253,7 @@ test "Workbench: dragging a tab into a pane moves it there" {
         .button = .left,
     };
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &move));
-    try std.testing.expect(workbench.editor_drag.active);
+    try std.testing.expect(workbench.editor_drop_target.editor_drag.active);
 
     var up = move;
     up.kind = .up;
@@ -1298,11 +1298,11 @@ test "Workbench: dragging over a tab strip previews the insertion and reorders o
         .button = .left,
     };
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &move));
-    try std.testing.expect(workbench.editor_drag.active);
-    try std.testing.expect(workbench.drag_target == null);
-    try std.testing.expect(workbench.drag_tab_drop != null);
-    try std.testing.expect(workbench.drag_tab_drop.?.pane == pane);
-    try std.testing.expectEqual(@as(usize, 2), workbench.drag_tab_drop.?.index);
+    try std.testing.expect(workbench.editor_drop_target.editor_drag.active);
+    try std.testing.expect(workbench.editor_drop_target.drag_target == null);
+    try std.testing.expect(workbench.editor_drop_target.drag_tab_drop != null);
+    try std.testing.expect(workbench.editor_drop_target.drag_tab_drop.?.pane == pane);
+    try std.testing.expectEqual(@as(usize, 2), workbench.editor_drop_target.drag_tab_drop.?.index);
 
     // The strip paints upstream's drop-target-right line at the last tab edge.
     try renderFrame(workbench, &out.writer);
@@ -1368,9 +1368,9 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
         .button = .left,
     };
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &move));
-    try std.testing.expect(workbench.drag_tab_drop != null);
-    try std.testing.expect(workbench.drag_tab_drop.?.pane == target);
-    try std.testing.expectEqual(@as(usize, 1), workbench.drag_tab_drop.?.index);
+    try std.testing.expect(workbench.editor_drop_target.drag_tab_drop != null);
+    try std.testing.expect(workbench.editor_drop_target.drag_tab_drop.?.pane == target);
+    try std.testing.expectEqual(@as(usize, 1), workbench.editor_drop_target.drag_tab_drop.?.index);
 
     var up = move;
     up.kind = .up;
@@ -1420,7 +1420,7 @@ test "Workbench: editor drag moves, copies, and merges a whole group" {
 
     try sendDragMouse(workbench, 0, ui.cell.snap(group.rect.right()) - 2, ui.cell.snap(group.rect.y), false);
     try sendDragMouse(workbench, 32, original_left, center_y, false);
-    try std.testing.expect(workbench.editor_drag.source.?.tab == null);
+    try std.testing.expect(workbench.editor_drop_target.editor_drag.source.?.tab == null);
     try sendDragMouse(workbench, 0, original_left, center_y, true);
     try std.testing.expectEqual(id, workbench.activePane().?.group.id);
     try std.testing.expect(group.rect.x < original.rect.x);
@@ -1464,7 +1464,7 @@ test "Workbench: editor drag opens the hovered tab only after its deadline" {
 
     try sendDragMouse(workbench, 0, pane.hits.items[0].start, y, false);
     try sendDragMouse(workbench, 32, pane.hits.items[1].start, y, false);
-    const hover = workbench.drag_hover orelse return error.MissingDragHover;
+    const hover = workbench.editor_drop_target.drag_hover orelse return error.MissingDragHover;
     const deadline = hover.deadline.?;
     // Drive the same scheduler the terminal uses; other contributions may
     // have already registered earlier deadlines on this window.
@@ -1473,14 +1473,14 @@ test "Workbench: editor drag opens the hovered tab only after its deadline" {
         _ = workbench.window_events.dispatch(deadline - 1);
     }
     try std.testing.expect(workbench.activeTab() != hover.tab);
-    try std.testing.expectEqual(deadline, workbench.drag_task.at.?);
+    try std.testing.expectEqual(deadline, workbench.editor_drop_target.drag_task.at.?);
     for (0..256) |_| {
-        if (workbench.drag_task.at == null) break;
+        if (workbench.editor_drop_target.drag_task.at == null) break;
         _ = workbench.window_events.dispatch(deadline);
     }
     try std.testing.expect(workbench.activeTab() == hover.tab);
-    try std.testing.expect(workbench.cancelEditorDrag());
-    try std.testing.expect(workbench.drag_hover == null and workbench.drag_tab_drop == null);
+    try std.testing.expect(workbench.editor_drop_target.cancelEditorDrag());
+    try std.testing.expect(workbench.editor_drop_target.drag_hover == null and workbench.editor_drop_target.drag_tab_drop == null);
 }
 
 test "Workbench: openPath reveals an already-open file in another group" {
@@ -4446,7 +4446,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     var up = ui.MouseEvent{ .kind = .up, .x = x, .y = y, .button = .left };
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &up));
     // Simulate a slow second click caused by the first activation's work.
-    workbench.last_tab_click.?.at_ms -= 700;
+    workbench.editor_drop_target.last_tab_click.?.at_ms -= 700;
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &second));
     try std.testing.expect(pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
@@ -4505,7 +4505,7 @@ test "Workbench: double click still pins after a jittery drag starts" {
     // Hand jitter turns the pending click into a drag before the second press.
     var jitter = ui.MouseEvent{ .kind = .move, .x = x + 3, .y = y, .button = .left };
     try std.testing.expect(terminal_workbench.handleTabDragMouse(workbench, &jitter));
-    try std.testing.expect(workbench.editor_drag.active);
+    try std.testing.expect(workbench.editor_drop_target.editor_drag.active);
 
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(!terminal_workbench.handleTabDragMouse(workbench, &second));
@@ -6260,8 +6260,8 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
         .button = .left,
     };
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &move));
-    try std.testing.expect(workbench.drag_target != null);
-    try std.testing.expectEqual(DropZone.right, workbench.drag_target.?.zone);
+    try std.testing.expect(workbench.editor_drop_target.drag_target != null);
+    try std.testing.expectEqual(DropZone.right, workbench.editor_drop_target.drag_target.?.zone);
 
     var up = move;
     up.kind = .up;
@@ -6319,10 +6319,10 @@ test "Workbench: editor drag paints all four destinations and uses the release c
 
         try sendDragMouse(workbench, 0, tab_x, top, false);
         try sendDragMouse(workbench, 32, edge_x, edge_y, false);
-        if (workbench.drag_target) |*overlay| overlay.fade_start -= 150;
-        const overlay = workbench.drag_target orelse return error.MissingDropOverlay;
+        if (workbench.editor_drop_target.drag_target) |*overlay| overlay.fade_start -= 150;
+        const overlay = workbench.editor_drop_target.drag_target orelse return error.MissingDropOverlay;
         try std.testing.expectEqual(zone, overlay.zone);
-        try std.testing.expect(workbench.editor_drag.data_transfer.image != null);
+        try std.testing.expect(workbench.editor_drop_target.editor_drag.data_transfer.image != null);
         try renderFrame(workbench, &out.writer);
 
         const sample_x = ui.cell.snap(overlay.rect.x + overlay.rect.w / 3);
@@ -6345,7 +6345,7 @@ test "Workbench: editor drag paints all four destinations and uses the release c
             try std.testing.expectEqual(overlay.rect.bottom(), destination.rect.bottom());
         }
         try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
-        try std.testing.expect(workbench.drag_target == null and workbench.editor_drag.source == null);
+        try std.testing.expect(workbench.editor_drop_target.drag_target == null and workbench.editor_drop_target.editor_drag.source == null);
     }
 }
 
@@ -6378,7 +6378,7 @@ test "Workbench: editor drag keeps range selection and cancels on source removal
     const center_y = ui.cell.snap(pane.rect.y + pane.rect.h / 2);
     try sendDragMouse(workbench, 0, pane.hits.items[1].start, y, false);
     try sendDragMouse(workbench, 32, edge_x, center_y, false);
-    const dragged = workbench.editor_drag.data_transfer.payload.?;
+    const dragged = workbench.editor_drop_target.editor_drag.data_transfer.payload.?;
     try std.testing.expectEqual(@as(usize, 2), dragged.len);
     try std.testing.expect(dragged[0] == pane.tabAtIndex(allocator, 0).?);
     try std.testing.expect(dragged[1] == pane.tabAtIndex(allocator, 1).?);
@@ -6388,15 +6388,15 @@ test "Workbench: editor drag keeps range selection and cancels on source removal
     try std.testing.expectEqualStrings("a.txt", destination.tabAtIndex(allocator, 0).?.input.getName());
     try std.testing.expectEqualStrings("b.txt", destination.tabAtIndex(allocator, 1).?.input.getName());
 
-    workbench.last_tab_click = null;
+    workbench.editor_drop_target.last_tab_click = null;
     try renderFrame(workbench, &out.writer);
     const source_tab = destination.tabAtIndex(allocator, 0).?;
     const hit = destination.hits.items[0];
     try sendDragMouse(workbench, 0, hit.start, ui.cell.snap(destination.rect.y), false);
     try sendDragMouse(workbench, 32, edge_x, center_y, false);
-    try std.testing.expect(workbench.editor_drag.active);
+    try std.testing.expect(workbench.editor_drop_target.editor_drag.active);
     _ = try workbench.closePath(source_tab.editor.path);
-    try std.testing.expect(workbench.editor_drag.source == null and workbench.drag_target == null);
+    try std.testing.expect(workbench.editor_drop_target.editor_drag.source == null and workbench.editor_drop_target.drag_target == null);
     try sendDragMouse(workbench, 0, edge_x, center_y, true);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
 }

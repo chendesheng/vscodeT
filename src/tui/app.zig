@@ -746,12 +746,12 @@ pub fn main(init: std.process.Init) !void {
                             workbench.context_menu_service.hideContextMenu();
                             needs_render = true;
                         }
-                        if (workbench.cancelEditorDrag()) needs_render = true;
+                        if (workbench.editor_drop_target.cancelEditorDrag()) needs_render = true;
                         if (workbench.cancelSashDrag()) needs_render = true;
                     }
                 },
                 .key => |*event| {
-                    if (event.key == .escape and workbench.cancelEditorDrag()) {
+                    if (event.key == .escape and workbench.editor_drop_target.cancelEditorDrag()) {
                         needs_render = true;
                         continue;
                     }

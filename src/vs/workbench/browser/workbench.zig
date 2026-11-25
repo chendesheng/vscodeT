@@ -309,31 +309,6 @@ const SymbolActionContext = struct {
     action: *const go_to_commands.ActionDescriptor,
 };
 
-const DropZone = editor_drop_target.Zone;
-const DragSource = struct { pane: *GroupPane, tab: ?*Tab };
-const DragTarget = union(enum) {
-    pane: *GroupPane,
-    tabs: struct { pane: *GroupPane, index: ?usize },
-    terminal_panel,
-};
-const EditorDrag = ui.DragSession(DragSource, DragTarget, []*Tab);
-const TabDrop = struct { pane: *GroupPane, index: usize };
-const DropOverlay = editor_drop_target.DropOverlay(*GroupPane);
-const DragHover = struct { pane: *GroupPane, tab: *Tab, deadline: ?i64 };
-const TabClick = struct {
-    pane: *GroupPane,
-    tab: *Tab,
-    at_ms: i64,
-    x: usize,
-    y: usize,
-    /// Geometry of the clicked tab in the frame the click was recorded in.
-    /// The strip can scroll when the click activates a partially visible tab,
-    /// so the second click is matched against the old rectangle instead of
-    /// trusting the new frame's hit.
-    start: usize,
-    end: usize,
-};
-
 const LayoutNode = grid_mod.Node(*GroupPane);
 
 /// One editor group in the terminal editor part: the ported group view holds
@@ -456,12 +431,7 @@ pub const Workbench = struct {
     frame: ui.Frame,
     editor_surface: *ui.Surface,
 
-    editor_drag: EditorDrag = .{},
-    drag_target: ?DropOverlay = null,
-    drag_tab_drop: ?TabDrop = null,
-    drag_hover: ?DragHover = null,
-    drag_task: @import("../../base/common/windowDispatch.zig").Task,
-    tab_selection_anchor: ?struct { pane: *GroupPane, tab: *Tab } = null,
+    editor_drop_target: editor_drop_target.EditorDropTarget,
     sidebar: ?*Sidebar = null,
     /// Port of the Explorer viewlet's view-pane container: the Explorer tree
     /// and the Outline view are stacked sections in the same SidebarPart.
@@ -589,7 +559,6 @@ pub const Workbench = struct {
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
     hovered_title_action_pane: ?*GroupPane = null,
-    last_tab_click: ?TabClick = null,
     /// Pointer capture for the side-bar divider drag.
     hovered_sash: ?union(enum) { workbench: WorkbenchGrid.Sash, editor: *LayoutNode } = null,
     declarative: ?*const extensions_registry.Registry = null,
@@ -683,11 +652,6 @@ pub const Workbench = struct {
         self.pointer_state = .{};
         self.pointer_shapes = false;
         self.media_status = null;
-        self.editor_drag = .{};
-        self.drag_target = null;
-        self.drag_tab_drop = null;
-        self.drag_hover = null;
-        self.tab_selection_anchor = null;
         self.focus = .editor;
         self.sidebar = null;
         self.hovered_sash = null;
@@ -698,7 +662,6 @@ pub const Workbench = struct {
         self.user_keybindings = try user_keybindings_mod.UserKeybindingsLoader.create(allocator, io, self.async_io, &self.window_events);
         errdefer self.user_keybindings.destroy();
         _ = try self.user_keybindings.on_did_change.listen(self, onUserKeybindingsChanged);
-        self.drag_task = .{ .queue = &self.window_events, .context = self, .run = onEditorDragDeadline };
         self.search_view = null;
         self.search_service = null;
         try self.initShellModels();
@@ -730,7 +693,6 @@ pub const Workbench = struct {
         errdefer self.context_menu_service.deinit();
         self.hovered_tab = null;
         self.hovered_pane = null;
-        self.last_tab_click = null;
         self.declarative = null;
         self.json_client = null;
         self.language_features = null;
@@ -769,6 +731,64 @@ pub const Workbench = struct {
         try self.part.base.register(self.layout.interface());
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
+        self.editor_drop_target.init(allocator, self.part, &self.window_events, &self.configuration, &self.theme_palette, &self.frame, &self.pointer, .{
+            .context = self,
+            .terminal_panel_rect = struct {
+                fn run(context: *anyopaque) ?ui.Rect {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    return if (host.terminalPanelActive()) host.panelRect() else null;
+                }
+            }.run,
+            .clear_hover = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.clearTabHover();
+                }
+            }.run,
+            .activate_index = struct {
+                fn run(context: *anyopaque, index: usize) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.activateIndex(index);
+                }
+            }.run,
+            .copy_editor = struct {
+                fn run(context: *anyopaque, pane: *GroupPane, tab: *Tab, open_options: group_mod.EditorOpenOptions) !*Tab {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    return host.copyTabIntoPaneWithOptions(pane, tab, open_options);
+                }
+            }.run,
+            .move_editor = struct {
+                fn run(context: *anyopaque, source: *GroupPane, target: *GroupPane, tab: *Tab, open_options: group_mod.EditorOpenOptions) !*Tab {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    return host.moveTabToPaneWithOptions(source, target, tab, open_options);
+                }
+            }.run,
+            .move_terminal_to_panel = struct {
+                fn run(context: *anyopaque, pane: *GroupPane, tab: *Tab) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.moveTerminalToPanel(pane, tab);
+                }
+            }.run,
+            .destroy_pane = struct {
+                fn run(context: *anyopaque, pane: *GroupPane) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.destroyPane(pane);
+                }
+            }.run,
+            .collapse_empty_pane = struct {
+                fn run(context: *anyopaque, pane: *GroupPane) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.collapseEmptyPane(pane);
+                }
+            }.run,
+            .focus_pane = struct {
+                fn run(context: *anyopaque, pane: *GroupPane) !void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    try host.focusPane(pane);
+                }
+            }.run,
+        });
+        errdefer self.editor_drop_target.deinit();
         self.services = .init(allocator);
         std.mem.swap(ServiceCollection, services, &self.services);
         errdefer self.services.deinit();
@@ -1700,8 +1720,7 @@ pub const Workbench = struct {
         self.saveSidebarViewStates() catch {};
         if (self.view_state_storage) |state| state.deinit();
         self.view_state_storage = null;
-        self.clearTabDrag();
-        self.drag_task.schedule(null);
+        self.editor_drop_target.deinit();
         self.cancelAsyncJobs();
         if (self.textmate_background) |factory| {
             TokenizationRegistry.instance.setBackgroundTokenizerFactory(null);
@@ -3200,7 +3219,7 @@ pub const Workbench = struct {
     /// has a target for the next editor.
     fn collapseEmptyPane(self: *Workbench, pane: *GroupPane) void {
         if (pane.group.model.count() != 0 or self.service.count() <= 1) return;
-        self.invalidateDragPane(pane);
+        self.editor_drop_target.invalidateDragPane(pane);
         self.disposeInactiveBreadcrumbs(pane.group.id);
         if (self.part.maximized_group == pane) self.part.setMaximizedGroup(null);
         _ = self.part.collapseView(pane);
@@ -5074,7 +5093,7 @@ pub const Workbench = struct {
     }
 
     fn destroyPane(self: *Workbench, pane: *GroupPane) void {
-        self.invalidateDragPane(pane);
+        self.editor_drop_target.invalidateDragPane(pane);
         while (pane.tabs.items.len > 0) {
             const tab = pane.tabs.items[0];
             _ = pane.group.model.closeEditor(tab.input, .UNKNOWN, true) catch {};
@@ -5327,7 +5346,7 @@ pub const Workbench = struct {
     pub fn splitActiveInDirection(self: *Workbench, direction: editor_groups.GroupDirection) !void {
         self.part.active_sash = null;
         self.part.setMaximizedGroup(null);
-        self.clearTabDrag();
+        self.editor_drop_target.clearTabDrag();
         const source = self.activePane() orelse return;
         const tab = source.activeTab() orelse return;
 
@@ -5394,7 +5413,7 @@ pub const Workbench = struct {
 
     pub fn closeActive(self: *Workbench) !bool {
         self.part.active_sash = null;
-        self.clearTabDrag();
+        self.editor_drop_target.clearTabDrag();
         const pane = self.activePane() orelse return false;
         // Upstream `workbench.action.closeActiveEditor` falls through to
         // `workbench.action.closeGroup` when the active group is empty.
@@ -5410,7 +5429,7 @@ pub const Workbench = struct {
     /// all other close paths keep the confirmation.
     pub fn forceCloseActive(self: *Workbench) !void {
         self.part.active_sash = null;
-        self.clearTabDrag();
+        self.editor_drop_target.clearTabDrag();
         const pane = self.activePane() orelse return;
         const tab = pane.activeTab() orelse return;
         try self.performCloseTab(pane, tab);
@@ -5431,8 +5450,8 @@ pub const Workbench = struct {
                 fn run(context: *anyopaque) void {
                     const host: *Workbench = @ptrCast(@alignCast(context));
                     host.part.active_sash = null;
-                    host.clearTabDrag();
-                    host.last_tab_click = null;
+                    host.editor_drop_target.clearTabDrag();
+                    host.editor_drop_target.last_tab_click = null;
                 }
             }.run,
             .focus_editor = struct {
@@ -5523,7 +5542,7 @@ pub const Workbench = struct {
     }
 
     fn performCloseTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
-        self.invalidateDragTab(pane, tab);
+        self.editor_drop_target.invalidateDragTab(pane, tab);
         if (self.context_menu_service.current) |menu| {
             if (menu.getActionsContext(MenuActionContext)) |context| {
                 if (std.mem.indexOfScalar(*Tab, context.tabs, tab) != null) self.context_menu_service.hideContextMenu();
@@ -5993,265 +6012,6 @@ pub const Workbench = struct {
         return hovered == .workbench and hovered.workbench == sash;
     }
 
-    pub fn cancelEditorDrag(self: *Workbench) bool {
-        if (self.editor_drag.source == null) return false;
-        const was_active = self.editor_drag.active;
-        self.clearTabDrag();
-        return was_active;
-    }
-
-    fn clearTabDrag(self: *Workbench) void {
-        self.editor_drag.cancel(self);
-    }
-
-    fn invalidateDragPane(self: *Workbench, pane: *GroupPane) void {
-        if (self.editor_drag.source) |source| {
-            if (source.pane == pane or
-                (self.drag_target != null and self.drag_target.?.pane == pane) or
-                (self.drag_tab_drop != null and self.drag_tab_drop.?.pane == pane)) self.clearTabDrag();
-        }
-        if (self.tab_selection_anchor) |anchor| {
-            if (anchor.pane == pane) self.tab_selection_anchor = null;
-        }
-        if (self.last_tab_click) |click| {
-            if (click.pane == pane) self.last_tab_click = null;
-        }
-    }
-
-    fn invalidateDragTab(self: *Workbench, pane: *GroupPane, tab: *Tab) void {
-        if (self.editor_drag.source) |source| {
-            if (source.pane == pane or (self.drag_hover != null and self.drag_hover.?.tab == tab)) self.clearTabDrag();
-        }
-        if (self.tab_selection_anchor) |anchor| {
-            if (anchor.tab == tab) self.tab_selection_anchor = null;
-        }
-        if (self.last_tab_click) |click| {
-            if (click.tab == tab) self.last_tab_click = null;
-        }
-    }
-
-    pub fn dragTarget(self: *Workbench, source: DragSource, mouse: ui.MouseEvent) ?DragTarget {
-        if (source.tab) |tab| {
-            if (tab.terminal_input != null and self.terminalPanelActive() and
-                terminal_panel.contains(self.panelRect(), mouse.x, mouse.y))
-                return .terminal_panel;
-        }
-        const pane = self.part.viewAt(mouse.x, mouse.y) orelse return null;
-        if (!pane.isEmpty() and pane.tabs_visible and mouse.y == ui.cell.snap(pane.rect.y)) {
-            if (pane.title_action_hit) |hit| {
-                if (mouse.x >= hit.start and mouse.x < hit.end) return null;
-            }
-            return .{ .tabs = .{ .pane = pane, .index = tab_bar.hitAt(pane.hits.items, mouse.x) } };
-        }
-        return .{ .pane = pane };
-    }
-
-    pub fn dispatchDrag(self: *Workbench, event: *EditorDrag.Event) void {
-        defer self.scheduleEditorDragDeadline();
-        switch (event.kind) {
-            .dragstart => self.onEditorDragStart(event) catch event.preventDefault(),
-            .dragenter => {},
-            .dragleave => {
-                self.drag_hover = null;
-                self.drag_target = null;
-                self.drag_tab_drop = null;
-            },
-            .drag => self.pointer = .no_drop,
-            .dragover => self.onEditorDragOver(event),
-            .drop => self.onEditorDrop(event) catch |err| {
-                if (self.activeTab()) |active| active.editor.setMessage("Drop failed: {s}", .{@errorName(err)});
-            },
-            .dragend => {
-                if (event.data_transfer.payload) |tabs| self.allocator.free(tabs);
-                self.drag_target = null;
-                self.drag_tab_drop = null;
-                self.drag_hover = null;
-                self.pointer = .default;
-            },
-        }
-    }
-
-    fn onEditorDragStart(self: *Workbench, event: *EditorDrag.Event) !void {
-        const source = event.source;
-        self.clearTabHover();
-        var tabs = std.array_list.Managed(*Tab).init(self.allocator);
-        defer tabs.deinit();
-        try source.pane.orderedTabs(self.allocator, &tabs);
-        if (source.tab != null) {
-            var index = tabs.items.len;
-            while (index > 0) {
-                index -= 1;
-                if (!source.pane.group.model.isSelected(.{ .editor = tabs.items[index].input })) {
-                    _ = tabs.orderedRemove(index);
-                }
-            }
-            if (tabs.items.len == 0) try tabs.append(source.tab.?);
-        }
-        if (tabs.items.len == 0) return error.EmptyDrag;
-        event.data_transfer.payload = try tabs.toOwnedSlice();
-
-        const frame = if (self.frame.have_prev) &self.frame.prev else &self.frame.next;
-        if (source.tab != null and event.data_transfer.payload.?.len == 1 and
-            tab_bar.tabSizing(self.configuration) != .shrink)
-        {
-            const row = ui.cell.snap(source.pane.rect.y);
-            for (source.pane.hits.items) |hit| {
-                if (source.pane.tabAtIndex(self.allocator, hit.index) != source.tab) continue;
-                if (hit.end > hit.start and hit.end <= frame.cols and row < frame.rows) {
-                    const image = try frame.captureRow(self.allocator, hit.start, row, hit.end - hit.start);
-                    event.data_transfer.setDragImage(image, 0, 0);
-                    return;
-                }
-            }
-        }
-        const count = event.data_transfer.payload.?.len;
-        const tab = source.tab orelse source.pane.activeTab() orelse event.data_transfer.payload.?[0];
-        const name = tab.input.getName();
-        const label = if (count == 1) name else if (source.tab == null)
-            try std.fmt.allocPrint(self.allocator, "{s} (+{d})", .{ name, count - 1 })
-        else
-            try std.fmt.allocPrint(self.allocator, "{s} + {d}", .{ name, count - 1 });
-        defer if (count > 1) self.allocator.free(label);
-        const image = try editor_tabs_control.applyDragImage(self.allocator, label, self.theme_palette, self.part.cell_borders);
-        event.data_transfer.setDragImage(image, -1, -1);
-    }
-
-    fn onEditorDragOver(self: *Workbench, event: *EditorDrag.Event) void {
-        const source = event.source;
-        const target = event.target orelse return;
-        const tabs = event.data_transfer.payload orelse return;
-        const now = time_compat.milliTimestamp();
-        const previous_overlay = self.drag_target;
-        self.drag_target = null;
-        self.drag_tab_drop = null;
-        var copy = editor_tabs_control.isCopyIntoOtherGroup(event.mouse.mods, source.tab != null and
-            tabs[0].input.hasCapability(editor_mod.EditorInputCapabilities.Singleton));
-        const old_hover = self.drag_hover;
-        self.drag_hover = null;
-        switch (target) {
-            .terminal_panel => {
-                if (tabs.len != 1) return;
-                copy = false;
-            },
-            .tabs => |strip| {
-                if (strip.pane == source.pane) {
-                    if (source.tab == null) return;
-                    copy = false;
-                }
-                if (!canTransferTabs(source, tabs, strip.pane, copy)) return;
-                self.drag_tab_drop = .{
-                    .pane = strip.pane,
-                    .index = tab_bar.dropIndexAt(strip.pane.hits.items, event.mouse.x, strip.pane.tabs.items.len),
-                };
-                if (strip.index) |index| {
-                    if (strip.pane.tabAtIndex(self.allocator, index)) |tab| {
-                        self.drag_hover = if (old_hover != null and old_hover.?.pane == strip.pane and old_hover.?.tab == tab)
-                            old_hover
-                        else
-                            .{ .pane = strip.pane, .tab = tab, .deadline = now + 1500 };
-                    }
-                }
-            },
-            .pane => |pane| {
-                const area = editor_drop_target.dropArea(pane.rect, if (pane.tabs.items.len == 0) 0 else pane.titleHeight());
-                const zone = editor_drop_target.zoneAt(area, event.mouse.x, event.mouse.y, .{
-                    .is_dragging_group = source.tab == null,
-                    .prefer_split_vertically = self.preferredSideBySideDirection() == .RIGHT,
-                    .enable_splitting = self.boolSetting("workbench.editor.splitOnDragAndDrop", true) !=
-                        editor_tabs_control.isToggleSplitOperation(event.mouse.mods),
-                }) orelse return;
-                if (pane == source.pane and (zone == .center or (!copy and
-                    (source.tab == null or pane.tabs.items.len < 2)))) return;
-                if (!canTransferTabs(source, tabs, if (zone == .center) pane else null, copy)) return;
-                const gap = self.part.gap(editor_drop_target.orientation(zone), pane.rect);
-                const rect = editor_drop_target.positionOverlay(pane.rect, area, zone, gap);
-                if (rect.w <= 0 or rect.h <= 0) return;
-                self.drag_target = DropOverlay.position(previous_overlay, pane, zone, rect, now);
-            },
-        }
-        event.data_transfer.drop_effect = if (copy) .copy else .move;
-        self.pointer = if (copy) .copy else .grabbing;
-        event.preventDefault();
-    }
-
-    fn scheduleEditorDragDeadline(self: *Workbench) void {
-        var deadline: ?i64 = null;
-        if (self.drag_hover) |hover| deadline = hover.deadline;
-        if (self.drag_target) |overlay| {
-            if (editor_drop_target.animationsEnabled(if (self.configuration) |config| config.interface() else null)) {
-                if (overlay.frameDeadline()) |frame| deadline = @min(deadline orelse frame, frame);
-            }
-        }
-        self.drag_task.schedule(deadline);
-    }
-
-    fn onEditorDragDeadline(context: *anyopaque, now: i64, _: bool) bool {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        defer self.scheduleEditorDragDeadline();
-        var redraw = false;
-        const animate = editor_drop_target.animationsEnabled(if (self.configuration) |config| config.interface() else null);
-        if (self.drag_target) |*overlay| {
-            if (animate) redraw = overlay.advance(now);
-        }
-        if (self.drag_hover) |*hover| {
-            if (hover.deadline) |deadline| {
-                if (now >= deadline) {
-                    hover.deadline = null;
-                    if (self.paneExists(hover.pane) and hover.pane.indexOfTab(hover.tab) != null and
-                        hover.pane.activeTab() != hover.tab)
-                    {
-                        hover.pane.activateTab(hover.tab) catch return redraw;
-                        return true;
-                    }
-                }
-            }
-        }
-        return redraw;
-    }
-
-    pub fn selectTabForDrag(self: *Workbench, pane: *GroupPane, tab: *Tab, index: usize, mods: ui.Modifiers) !void {
-        const model = &pane.group.model;
-        const selection = try model.selectedEditors(self.allocator);
-        defer self.allocator.free(selection);
-        var inactive: std.ArrayList(*EditorInput) = .empty;
-        defer inactive.deinit(self.allocator);
-        const clicked_selected = model.isSelected(.{ .editor = tab.input });
-        const toggle = builtin.os.tag != .macos and mods.ctrl;
-        const anchor = self.tab_selection_anchor;
-        const anchor_tab = if (anchor != null and anchor.?.pane == pane and
-            model.isSelected(.{ .editor = anchor.?.tab.input })) anchor.?.tab else pane.activeTab() orelse tab;
-        if (mods.shift) {
-            const start = model.indexOf(.{ .input = anchor_tab.input }) orelse index;
-            try inactive.appendSlice(self.allocator, selection);
-            var adjacent: isize = @intCast(start);
-            const step: isize = if (start < index) -1 else 1;
-            while (true) {
-                adjacent += step;
-                if (adjacent < 0) break;
-                const candidate = model.getEditorByIndex(@intCast(adjacent)) orelse break;
-                const found = std.mem.indexOfScalar(*EditorInput, inactive.items, candidate) orelse break;
-                _ = inactive.orderedRemove(found);
-            }
-            for (@min(start, index)..@max(start, index) + 1) |i| {
-                if (model.getEditorByIndex(i)) |candidate| try inactive.append(self.allocator, candidate);
-            }
-            self.tab_selection_anchor = .{ .pane = pane, .tab = anchor_tab };
-        } else if (toggle and clicked_selected and selection.len > 1) {
-            for (selection) |candidate| {
-                if (candidate != tab.input) try inactive.append(self.allocator, candidate);
-            }
-            const active = model.activeEditor() orelse tab.input;
-            try model.setSelection(if (active == tab.input) inactive.items[0] else active, inactive.items);
-            pane.syncActivePane();
-            return;
-        } else {
-            if (toggle or clicked_selected) try inactive.appendSlice(self.allocator, selection);
-            self.tab_selection_anchor = .{ .pane = pane, .tab = tab };
-        }
-        try self.activateIndex(index);
-        try model.setSelection(tab.input, inactive.items);
-    }
-
     /// Destroys a tab view that lost to an already-open editor, detaching the
     /// workbench registrations that keep raw pointers into it.
     fn discardTab(self: *Workbench, tab: *Tab) void {
@@ -6273,7 +6033,7 @@ pub const Workbench = struct {
 
     fn willMoveEditor(context: *anyopaque, source: *GroupPane, tab: *Tab) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        self.invalidateDragTab(source, tab);
+        self.editor_drop_target.invalidateDragTab(source, tab);
     }
 
     fn discardTransferPane(context: *anyopaque, tab: *Tab) void {
@@ -6284,105 +6044,6 @@ pub const Workbench = struct {
     fn focusEditorAfterTransfer(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.setFocus(.editor);
-    }
-
-    /// Checks the editor operations before a drop can change the split tree.
-    fn canTransferTabs(source: DragSource, tabs: []*Tab, target: ?*GroupPane, copy: bool) bool {
-        for (tabs) |tab| {
-            if (copy and (tab.input.hasCapability(editor_mod.EditorInputCapabilities.Singleton) or
-                (tab.file_input == null and tab.image_input == null and tab.terminalInstance() == null))) return false;
-            if (!copy) {
-                const destination = target orelse continue;
-                if (destination == source.pane) continue;
-                const match = destination.group.model.findEditor(tab.input, .{}) orelse continue;
-                const existing = destination.tabForInput(match.editor) orelse continue;
-                if (existing.editor.model != tab.editor.model and tab.editor.isDirty()) return false;
-            }
-        }
-        return true;
-    }
-
-    fn onEditorDrop(self: *Workbench, event: *EditorDrag.Event) !void {
-        const tabs = event.data_transfer.payload orelse return;
-        const copy = event.data_transfer.drop_effect == .copy;
-        const source = event.source.pane;
-        switch (event.target orelse return) {
-            .terminal_panel => try self.moveTerminalToPanel(source, tabs[0]),
-            .tabs => {
-                const strip = self.drag_tab_drop orelse return;
-                try self.dropEditors(source, tabs, strip.pane, strip.index, copy, event.source.tab == null);
-            },
-            .pane => {
-                const overlay = self.drag_target orelse return;
-                if (overlay.zone == .center) {
-                    try self.dropEditors(source, tabs, overlay.pane, null, copy, event.source.tab == null);
-                    return;
-                }
-                const orientation = editor_drop_target.orientation(overlay.zone);
-                const first = editor_drop_target.newFirst(overlay.zone);
-                const close_empty_groups = self.boolSetting("workbench.editor.closeEmptyGroups", true);
-                self.part.setMaximizedGroup(null);
-                if (!copy and (event.source.tab == null or
-                    (tabs.len == 1 and source.tabs.items.len == 1 and close_empty_groups)))
-                {
-                    if (source == overlay.pane) return;
-                    try self.part.moveGroupView(source, overlay.pane, orientation, first);
-                    try self.focusPane(source);
-                    return;
-                }
-
-                const pane = try self.part.splitGroup(overlay.pane, orientation, first);
-                errdefer if (copy or pane.tabs.items.len == 0) self.destroyPane(pane);
-                try self.dropEditors(source, tabs, pane, null, copy, event.source.tab == null);
-            },
-        }
-    }
-
-    /// Port of MultiEditorTabsControl.onDrop and the local editor/group
-    /// branches of DropOverlay.onDrop. The existing group model owns order,
-    /// sticky boundaries and matching inputs.
-    fn dropEditors(
-        self: *Workbench,
-        source: *GroupPane,
-        tabs: []*Tab,
-        target: *GroupPane,
-        insertion: ?usize,
-        copy: bool,
-        whole_group: bool,
-    ) !void {
-        const previous_active = source.activeTab();
-        const target_active = target.activeTab();
-        const group_active = if (whole_group and insertion == null) target_active else null;
-        var preferred = group_active;
-        var index = insertion;
-        for (tabs) |tab| {
-            const is_active = tab == previous_active;
-            if (source == target) {
-                const from = target.group.model.indexOf(.{ .input = tab.input }) orelse continue;
-                const next = index orelse return;
-                const to = if (from < next) next - 1 else next;
-                if (from != to) _ = try target.group.model.moveEditor(tab.input, @intCast(to));
-                index = to + 1;
-                continue;
-            }
-            const options: group_mod.EditorOpenOptions = .{
-                .pinned = true,
-                .active = true,
-                .sticky = source.group.model.isSticky(.{ .editor = tab.input }),
-                .index = if (index) |i| @intCast(i) else null,
-            };
-            const result = if (copy)
-                try self.copyTabIntoPaneWithOptions(target, tab, options)
-            else
-                try self.moveTabToPaneWithOptions(source, target, tab, options);
-            if (preferred == null or (is_active and group_active == null)) preferred = result;
-            if (index != null) index = (target.group.model.indexOf(.{ .input = result.input }) orelse index.?) + 1;
-        }
-        if (preferred) |active| try target.activateTab(active);
-        if (!copy and source != target and
-            (whole_group or self.boolSetting("workbench.editor.closeEmptyGroups", true)))
-            self.collapseEmptyPane(source);
-        try self.focusPane(target);
     }
 
     /// A click on the leading ellipsis lists the tabs clipped out of the strip
@@ -7136,7 +6797,7 @@ pub const Workbench = struct {
 
     pub fn resize(self: *Workbench, cols: usize, rows: usize) !void {
         _ = self.cancelSashDrag();
-        self.clearTabDrag();
+        self.editor_drop_target.clearTabDrag();
         self.terminal_tabbed_view.tab_list.dragging_sash = false;
         self.terminal_tabbed_view.tab_list.dragging_pane_sash = null;
         self.terminal_tabbed_view.tab_list.dragged_instance = null;
