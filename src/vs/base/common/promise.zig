@@ -45,32 +45,19 @@ pub fn remove(data: *Promise(*anyopaque)) void {
     }
 }
 
-// run inside some event loop
+// Dispatch settled promises on the owning event loop. Test/worker resolvers
+// may settle concurrently: inspect settlement *before* removing and firing,
+// never remove a promise based on a later state read after an empty delivery.
 pub fn tick() !void {
-    for (_allPromises.items) |p| {
+    var index: usize = 0;
+    while (index < _allPromises.items.len) {
+        const p = _allPromises.items[index];
+        if (!p.isResolved()) {
+            index += 1;
+            continue;
+        }
+        _ = _allPromises.orderedRemove(index);
         try p._events.fire(p);
-    }
-
-    var len = _allPromises.items.len;
-    if (len == 0) {
-        return;
-    }
-
-    var i = len - 1;
-    while (true) {
-        if (_allPromises.items[i].isResolved()) {
-            _ = _allPromises.swapRemove(i);
-            len -= 1;
-        }
-
-        if (i == 0) {
-            break;
-        }
-        i -= 1;
-    }
-
-    if (len < _allPromises.items.len) {
-        try _allPromises.resize(len);
     }
 }
 
@@ -249,16 +236,9 @@ test "Promise/resolve" {
     defer deinit();
 
     const sleeper = try promise(*const []const u8, struct {
-        fn callback(resolver: PromiseResolver(*const []const u8)) !void {
-            _ = try std.Thread.spawn(.{}, struct {
-                fn run(res: @TypeOf(resolver)) void {
-                    io.sleep(.fromMilliseconds(10), .awake) catch {};
-                    var r = res;
-                    r.resolve(&"I'm awake");
-                }
-            }.run, .{resolver});
-        }
+        fn callback(_: PromiseResolver(*const []const u8)) !void {}
     }.callback);
+    defer sleeper.deinit();
 
     var fulfilled: bool = false;
     _ = try sleeper.then(&fulfilled, struct {
@@ -277,9 +257,8 @@ test "Promise/resolve" {
 
     var finally_called: bool = false;
     _ = try sleeper.finally(&finally_called, struct {
-        fn onFinally(p: *Promise(*const []const u8), finally_called_: *bool) !void {
+        fn onFinally(_: *Promise(*const []const u8), finally_called_: *bool) !void {
             finally_called_.* = true;
-            p.deinit();
         }
     }.onFinally);
 
@@ -287,14 +266,18 @@ test "Promise/resolve" {
     try std.testing.expect(!rejected);
     try std.testing.expect(!finally_called);
 
-    // "event loop" — wait for the worker thread to resolve the promise. The
-    // deadline is generous: Windows CI can schedule the spawned thread long
-    // after the timer's nominal 10ms.
-    for (0..500) |_| {
-        io.sleep(.fromMilliseconds(10), .awake) catch {};
-        try tick();
-        if (fulfilled and finally_called) break;
-    }
+    // A pending dispatch cannot consume the callback. Settle from a worker
+    // only after registration, and join instead of relying on a sleep race.
+    try tick();
+    try std.testing.expect(!finally_called);
+    const worker = try std.Thread.spawn(.{}, struct {
+        fn run(res: PromiseResolver(*const []const u8)) void {
+            var r = res;
+            r.resolve(&"I'm awake");
+        }
+    }.run, .{PromiseResolver(*const []const u8){ .promise = sleeper }});
+    worker.join();
+    try tick();
     try std.testing.expect(fulfilled);
     try std.testing.expect(!rejected);
     try std.testing.expect(finally_called);
@@ -306,16 +289,9 @@ test "Promise/catch" {
     defer deinit();
 
     const sleeper = try promise(*const []const u8, struct {
-        fn callback(resolver: PromiseResolver(*const []const u8)) !void {
-            _ = try std.Thread.spawn(.{}, struct {
-                fn run(res: @TypeOf(resolver)) void {
-                    io.sleep(.fromMilliseconds(10), .awake) catch {};
-                    var r = res;
-                    r.reject(error.TestError);
-                }
-            }.run, .{resolver});
-        }
+        fn callback(_: PromiseResolver(*const []const u8)) !void {}
     }.callback);
+    defer sleeper.deinit();
 
     var fulfilled: bool = false;
     try sleeper.then(&fulfilled, struct {
@@ -334,9 +310,8 @@ test "Promise/catch" {
 
     var finally_called: bool = false;
     try sleeper.finally(&finally_called, struct {
-        fn onFinally(p: *Promise(*const []const u8), finally_called_: *bool) !void {
+        fn onFinally(_: *Promise(*const []const u8), finally_called_: *bool) !void {
             finally_called_.* = true;
-            p.deinit();
         }
     }.onFinally);
 
@@ -344,12 +319,52 @@ test "Promise/catch" {
     try std.testing.expect(!rejected);
     try std.testing.expect(!finally_called);
 
-    // "event loop"
-    for (0..3) |_| {
-        io.sleep(.fromMilliseconds(10), .awake) catch {};
-        try tick();
-    }
+    // A pending dispatch cannot consume the callback. Settle from a worker
+    // only after registration, and join instead of relying on a sleep race.
+    try tick();
+    try std.testing.expect(!finally_called);
+    const worker = try std.Thread.spawn(.{}, struct {
+        fn run(res: PromiseResolver(*const []const u8)) void {
+            var r = res;
+            r.reject(error.TestError);
+        }
+    }.run, .{PromiseResolver(*const []const u8){ .promise = sleeper }});
+    worker.join();
+    try tick();
     try std.testing.expect(!fulfilled);
     try std.testing.expect(rejected);
     try std.testing.expect(finally_called);
+}
+
+test "Promise: settlement during another callback remains queued for delivery" {
+    const allocator = std.testing.allocator;
+    try init(allocator);
+    defer deinit();
+    const T = *const []const u8;
+    const Resolver = PromiseResolver(T);
+    const Callbacks = struct {
+        fn pending(_: Resolver) !void {}
+        fn resolveOther(_: T, other: *Promise(T)) !void {
+            var resolver = Resolver{ .promise = other };
+            resolver.resolve(&"second");
+        }
+        fn delivered(value: T, count: *usize) !void {
+            try std.testing.expectEqualStrings("second", value.*);
+            count.* += 1;
+        }
+    };
+    const second = try promise(T, Callbacks.pending);
+    defer second.deinit();
+    const first = try promise(T, Callbacks.pending);
+    defer first.deinit();
+    var deliveries: usize = 0;
+    try second.then(&deliveries, Callbacks.delivered);
+    try first.then(second, Callbacks.resolveOther);
+    var resolver = Resolver{ .promise = first };
+    resolver.resolve(&"first");
+
+    try tick();
+    try tick();
+    try tick();
+    try std.testing.expectEqual(@as(usize, 1), deliveries);
 }
