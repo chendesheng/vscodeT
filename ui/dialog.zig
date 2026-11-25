@@ -232,6 +232,10 @@ pub const Dialog = struct {
                 if (ch == ' ') return .{ .activate = self.focused };
                 return .none;
             },
+            .text => |text| {
+                if (std.mem.eql(u8, text, " ")) return .{ .activate = self.focused };
+                return .none;
+            },
             else => return .none,
         }
     }
@@ -831,6 +835,10 @@ test "Dialog: keyboard wraps focus, activates and cancels" {
     var shift_tab = events.KeyEvent{ .key = .tab, .mods = .{ .shift = true } };
     try std.testing.expectEqual(Action.none, dialog.handleKey(&shift_tab));
     try std.testing.expectEqual(@as(usize, 2), dialog.focused);
+
+    var keys = try @import("input.zig").decodeKeys(allocator, " ");
+    defer keys.deinit(allocator);
+    try std.testing.expectEqual(Action{ .activate = 2 }, dialog.handleKey(&keys.items[0]));
 }
 
 test "Dialog: mouse press and release activate a button" {

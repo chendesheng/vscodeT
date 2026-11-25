@@ -202,6 +202,7 @@ pub const InputBox = struct {
 
     pub fn enable(self: *InputBox) void {
         self.enabled = true;
+        if (self.liveNode()) |node| node.asElement().focusable = true;
     }
 
     /// Disables the box and drops the focused flag. When the last built node
@@ -212,7 +213,8 @@ pub const InputBox = struct {
         self.focused = false;
         self.last_edit_group = .none;
         if (self.liveNode()) |node| {
-            if (node.document.activeElement() == node) node.document.blur();
+            node.asElement().focusable = false;
+            node.blur();
         }
     }
 
@@ -1772,6 +1774,17 @@ test "InputBox: document focus syncs the flag and a cleared document is safe" {
     try std.testing.expect(!input.focused);
     var event = KeyEvent{ .key = .{ .char = 'x' } };
     try std.testing.expect(!input.handleKey(&event));
+
+    try std.testing.expect(doc.focus(node));
+    input.disable();
+    try std.testing.expect(doc.focusedElement() == null);
+    try std.testing.expect(!node.focus());
+    _ = doc.dispatchKey(.tab, .{});
+    try std.testing.expectEqual(other, doc.focusedElement().?);
+    input.enable();
+    _ = doc.dispatchKey(.backtab, .{});
+    try std.testing.expectEqual(node, doc.focusedElement().?);
+    try std.testing.expect(input.focused);
 
     // `clear` invalidates the arena; disable must not dereference the old node.
     doc.clear();

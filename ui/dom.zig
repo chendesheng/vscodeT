@@ -215,6 +215,11 @@ pub const Document = struct {
     /// use any pointer into that subtree afterwards.
     pub fn destroy(self: *Document, node: *Node) void {
         self.clearHoverWithin(node);
+        if (self.root == node) {
+            self.root = null;
+            event.clearDetachedFocus(self);
+            self.notifyMutation(node, .tree);
+        }
         if (node.parent) |parent| _ = parent.detachChild(node, true);
         self.recycleNode(node);
         event.clearDetachedFocus(self);
@@ -639,8 +644,7 @@ pub const Node = struct {
 
     pub fn appendChild(self: *Node, child: *Node) !*Node {
         if (child == self or isAncestorOf(child, self)) return error.Cycle;
-        // A move keeps focus: the node is reattached before anything renders.
-        if (child.parent) |parent| _ = parent.detachChild(child, false);
+        self.detachForMove(child);
 
         child.parent = self;
         child.next = null;
@@ -662,7 +666,7 @@ pub const Node = struct {
         if (ref.parent != self) return error.NotFound;
         if (child == self or isAncestorOf(child, self)) return error.Cycle;
         if (child == ref) return child;
-        if (child.parent) |parent| _ = parent.detachChild(child, false);
+        self.detachForMove(child);
 
         child.parent = self;
         child.next = ref;
@@ -681,9 +685,13 @@ pub const Node = struct {
         return self.detachChild(child, true);
     }
 
-    /// Unlinks `child`. `clear_focus` is false only for the remove/reinsert
-    /// pair inside `appendChild`/`insertBefore`, where the node stays in the
-    /// document and keeps focus.
+    fn detachForMove(destination: *Node, child: *Node) void {
+        const parent = child.parent orelse return;
+        const doc = parent.document;
+        const stays_connected = if (doc.root) |root| isAncestorOf(root, destination) else false;
+        _ = parent.detachChild(child, !stays_connected);
+    }
+
     fn detachChild(self: *Node, child: *Node, clear_focus: bool) *Node {
         std.debug.assert(child.parent == self);
         // Focus does not survive leaving the tree, and no blur fires for an
@@ -982,6 +990,60 @@ test "Node: moving a child reparents it" {
     _ = try two.appendChild(child);
     try std.testing.expectEqual(two, child.parent.?);
     try std.testing.expect(one.firstChild() == null);
+}
+
+test "Document: destroying the focused root clears the fallback before node reuse" {
+    var doc = try Document.init(std.testing.allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    root.asElement().focusable = true;
+    doc.setRoot(root);
+    var press = MouseEvent{ .kind = .down, .button = .left };
+    doc.dispatchMouse(root, &press);
+    var key = doc.dispatchKey(.enter, .{});
+    try std.testing.expectEqual(root, key.target.?);
+
+    doc.destroy(root);
+    const replacement = try doc.createElement(.div);
+    try std.testing.expect(doc.focusedElement() == null);
+    try std.testing.expect(doc.focus_start == null);
+    try std.testing.expect(doc.activeElement() == null);
+    doc.dispatchEvent(&key);
+    try std.testing.expect(key.target == null);
+    doc.setRoot(replacement);
+    try std.testing.expectEqual(replacement, doc.dispatchKey(.enter, .{}).target.?);
+}
+
+test "Node: moving a focused subtree keeps focus only within the connected tree" {
+    var doc = try Document.init(std.testing.allocator, .{ .cols = 10, .rows = 2 });
+    defer doc.deinit();
+
+    const root = try doc.createElement(.div);
+    doc.setRoot(root);
+    const attached = try root.appendChild(try doc.createElement(.div));
+    const detached = try doc.createElement(.div);
+    const marker = try detached.appendChild(try doc.createElement(.div));
+    const branch = try doc.createElement(.div);
+    const control = try branch.appendChild(try doc.createElement(.div));
+    control.asElement().focusable = true;
+    const readonly: *const Node = control;
+
+    for ([_]?*Node{ null, marker }) |reference| {
+        _ = try root.appendChild(branch);
+        var press = MouseEvent{ .kind = .down, .button = .left };
+        doc.dispatchMouse(control, &press);
+        _ = try attached.appendChild(branch);
+        try std.testing.expect(readonly.isFocusable());
+        try std.testing.expectEqual(control, doc.focusedElement().?);
+        try std.testing.expectEqual(control, doc.focus_start.?);
+
+        _ = try detached.insertBefore(branch, reference);
+        try std.testing.expect(!readonly.isFocusable());
+        try std.testing.expect(doc.focusedElement() == null);
+        try std.testing.expect(doc.focus_start == null);
+        try std.testing.expectEqual(root, doc.dispatchKey(.enter, .{}).target.?);
+    }
 }
 
 test "Document: clear drops the tree and focus but keeps capacity" {
