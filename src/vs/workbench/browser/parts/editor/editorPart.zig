@@ -47,6 +47,11 @@ pub fn EditorPart(comptime GroupView: type) type {
         const LayoutNode = grid.Node(*GroupView);
 
         base: Part,
+        maximized_group: ?*GroupView = null,
+        on_did_change_group_maximized: Emitter(bool),
+        on_did_add_group: Emitter(*GroupView),
+        on_did_remove_group: Emitter(*GroupView),
+        on_did_move_group: Emitter(*GroupView),
         visible: bool = true,
         part_options: struct { show_tabs: layout_service.EditorTabsMode = .multiple } = .{},
         allocator: Allocator,
@@ -71,6 +76,10 @@ pub fn EditorPart(comptime GroupView: type) type {
             errdefer allocator.destroy(self);
 
             self.* = .{
+                .on_did_change_group_maximized = .init(allocator),
+                .on_did_add_group = .init(allocator),
+                .on_did_remove_group = .init(allocator),
+                .on_did_move_group = .init(allocator),
                 .base = Part.init(allocator, .editor, Self),
                 .allocator = allocator,
                 .service = service,
@@ -102,6 +111,10 @@ pub fn EditorPart(comptime GroupView: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self.on_did_change_group_maximized.deinit();
+            self.on_did_add_group.deinit();
+            self.on_did_remove_group.deinit();
+            self.on_did_move_group.deinit();
             self.base.deinit();
             for (self.group_views.items) |view| {
                 view.deinit();
@@ -199,7 +212,25 @@ pub fn EditorPart(comptime GroupView: type) type {
                 view,
                 new_first,
             );
+            self.on_did_add_group.fire(view) catch {};
             return view;
+        }
+
+        pub fn setMaximizedGroup(self: *Self, view: ?*GroupView) void {
+            const was_maximized = self.maximized_group != null;
+            self.maximized_group = view;
+            if (was_maximized != (view != null)) self.on_did_change_group_maximized.fire(view != null) catch {};
+        }
+
+        pub fn hasMoreThanOneColumn(self: *const Self) bool {
+            return hasColumns(self.root);
+        }
+
+        fn hasColumns(node: *const LayoutNode) bool {
+            return switch (node.kind) {
+                .leaf => false,
+                .split => |split| split.direction == .horizontal or hasColumns(split.first) or hasColumns(split.second),
+            };
         }
 
         /// Upstream `removeGroup`: removes the view from the grid and the
@@ -217,6 +248,8 @@ pub fn EditorPart(comptime GroupView: type) type {
             }
             // `removeGroup` unlistens the model from the group's inputs; run it
             // before the view (and its tabs) are disposed.
+            if (self.maximized_group == view) self.setMaximizedGroup(null);
+            self.on_did_remove_group.fire(view) catch {};
             self.service.removeGroup(view.group) catch {};
             view.deinit();
             self.allocator.destroy(view);
@@ -269,6 +302,7 @@ pub fn EditorPart(comptime GroupView: type) type {
             self.active_sash = null;
             try grid.moveRoot(*GroupView, self.allocator, &self.root, source, target, direction, new_first);
             self.layout(self.viewport);
+            self.on_did_move_group.fire(source) catch {};
         }
 
         pub fn viewAt(self: *const Self, x: usize, y: usize) ?*GroupView {

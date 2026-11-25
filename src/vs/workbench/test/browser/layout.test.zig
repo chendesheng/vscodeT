@@ -81,9 +81,7 @@ test "LayoutModel: zen mode and centered layout state fire their events" {
 
     try std.testing.expect(!layout.isMainEditorCentered());
     try std.testing.expect(!layout.isMainEditorCenteredEffective());
-    layout.setMainEditorCentered(true);
-    layout.setMainEditorCenteredEffective(true);
-    try layout.fireMainEditorCenteredChanged();
+    try layout.centerMainEditorLayout(true, .{}, false);
     try std.testing.expect(layout.isMainEditorCentered());
     try std.testing.expect(layout.isMainEditorCenteredEffective());
     try std.testing.expectEqual(@as(usize, 1), centered_changes);

@@ -335,19 +335,44 @@ pub const Layout = struct {
         return self.main_editor_centered;
     }
 
-    pub fn setMainEditorCentered(self: *Layout, active: bool) void {
+    pub const CenteredEditorOptions = struct {
+        auto_resize: bool = true,
+        multiple_columns: bool = false,
+        maximized_group: bool = false,
+        complex_editor: bool = false,
+    };
+
+    pub fn centerMainEditorLayout(self: *Layout, active: bool, options: CenteredEditorOptions, skip_layout: bool) !void {
         self.main_editor_centered = active;
+        const disable = options.auto_resize and ((options.multiple_columns and !options.maximized_group) or options.complex_editor);
+        const effective = active and !disable;
+        if (self.main_editor_centered_effective != effective) {
+            self.main_editor_centered_effective = effective;
+            if (!skip_layout) try self.on_did_change.fire({});
+        }
+        try self.on_did_change_main_editor_centered.fire(active);
     }
 
     pub fn isMainEditorCenteredEffective(self: *const Layout) bool {
         return self.main_editor_centered_effective;
     }
 
-    pub fn setMainEditorCenteredEffective(self: *Layout, active: bool) void {
-        self.main_editor_centered_effective = active;
-    }
+    /// Port of `CenteredViewLayout`'s proportional split view: the editor part
+    /// occupies the centered width and the margins use the configured
+    /// `editorPane.background`.
+    const centered_layout_margin_ratio: f64 = 0.1909;
+    const centered_layout_min_width: usize = 20;
 
-    pub fn fireMainEditorCenteredChanged(self: *Layout) !void {
-        try self.on_did_change_main_editor_centered.fire(self.main_editor_centered);
+    pub fn centeredEditorRect(self: *const Layout, base: ui.Rect) ui.Rect {
+        if (!self.isMainEditorCenteredEffective()) return base;
+        const width = ui.cell.snap(base.w);
+        const margin = @as(usize, @intFromFloat(@floor(@as(f64, @floatFromInt(width)) * centered_layout_margin_ratio)));
+        if (width <= margin * 2 + centered_layout_min_width) return base;
+        return .{
+            .x = base.x + @as(f64, @floatFromInt(margin)),
+            .y = base.y,
+            .w = base.w - @as(f64, @floatFromInt(margin * 2)),
+            .h = base.h,
+        };
     }
 };

@@ -4123,7 +4123,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     var second = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&second));
     try std.testing.expect(pane.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
-    try std.testing.expect(workbench.expanded_pane == null);
+    try std.testing.expect(workbench.part.maximized_group == null);
 
     // The UI repaints the now-pinned label without italics.
     try workbench.render(&out.writer);
@@ -4138,7 +4138,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     try std.testing.expect(workbench.handleTabMouse(&third));
     var fourth = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&fourth));
-    try std.testing.expect(workbench.expanded_pane == pane);
+    try std.testing.expect(workbench.part.maximized_group == pane);
 
     // And another double click restores the split layout.
     try workbench.render(&out.writer);
@@ -4146,7 +4146,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     try std.testing.expect(workbench.handleTabMouse(&fifth));
     var sixth = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&sixth));
-    try std.testing.expect(workbench.expanded_pane == null);
+    try std.testing.expect(workbench.part.maximized_group == null);
 }
 
 test "Workbench: double click still pins after a jittery drag starts" {
@@ -6120,6 +6120,16 @@ test "Workbench: centered layout narrows and centers the editor part" {
     const pane_rect = workbench.activePane().?.rect;
     try std.testing.expect(pane_rect.x >= centered.x);
     try std.testing.expect(pane_rect.x + pane_rect.w <= centered.x + centered.w);
+
+    _ = try workbench.newEmptyGroup(.DOWN);
+    try std.testing.expect(workbench.layout.isMainEditorCenteredEffective());
+    _ = try workbench.newEmptyGroup(.RIGHT);
+    try std.testing.expect(workbench.layout.isMainEditorCentered());
+    try std.testing.expect(!workbench.layout.isMainEditorCenteredEffective());
+    workbench.maximizeActiveGroup();
+    try std.testing.expect(workbench.layout.isMainEditorCenteredEffective());
+    workbench.minimizeActiveGroup();
+    try std.testing.expect(!workbench.layout.isMainEditorCenteredEffective());
 
     try workbench.commands.execute("workbench.action.toggleCenteredLayout");
     try std.testing.expect(!workbench.layout.isMainEditorCentered());

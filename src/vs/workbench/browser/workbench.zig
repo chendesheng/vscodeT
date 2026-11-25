@@ -753,7 +753,6 @@ pub const Workbench = struct {
     hovered_pane: ?*GroupPane = null,
     hovered_title_action_pane: ?*GroupPane = null,
     last_tab_click: ?TabClick = null,
-    expanded_pane: ?*GroupPane = null,
     /// Pointer capture for the side-bar divider drag.
     hovered_sash: ?union(enum) { workbench: WorkbenchGrid.Sash, editor: *LayoutNode } = null,
     declarative: ?*const extensions_registry.Registry = null,
@@ -959,7 +958,6 @@ pub const Workbench = struct {
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.last_tab_click = null;
-        self.expanded_pane = null;
         self.declarative = null;
         self.json_client = null;
         self.language_features = null;
@@ -994,6 +992,11 @@ pub const Workbench = struct {
         errdefer self.part.deinit();
         try self.part.base.register(self.layout.interface());
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
+        _ = try self.service.on_did_active_editor_change.listen(self, centeredLayoutEditorChanged);
+        _ = try self.part.on_did_add_group.listen(self, centeredLayoutGroupChanged);
+        _ = try self.part.on_did_remove_group.listen(self, centeredLayoutGroupChanged);
+        _ = try self.part.on_did_move_group.listen(self, centeredLayoutGroupChanged);
+        _ = try self.part.on_did_change_group_maximized.listen(self, centeredLayoutMaximizedChanged);
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
         try self.initServices();
@@ -2129,7 +2132,7 @@ pub const Workbench = struct {
 
     fn editorColumnMinimum(self: *const Workbench) usize {
         const available = self.cols -| self.activityBarWidth() -| self.sidebarMinimum();
-        const editor = if (self.expanded_pane != null) editor_part.min_pane_width else self.part.minimumWidth(self.workbenchRows() -| self.panelHeight());
+        const editor = if (self.part.maximized_group != null) editor_part.min_pane_width else self.part.minimumWidth(self.workbenchRows() -| self.panelHeight());
         const panel = if (self.panelShown()) self.panel_part.minimum_width else 0;
         return @min(available, @max(editor, panel));
     }
@@ -2449,6 +2452,14 @@ pub const Workbench = struct {
         if (config.affectsConfiguration(change, "workbench") or config.affectsConfiguration(change, "zenMode")) {
             self.applyLayoutSettings();
             self.applyZenModeConfigurationChange();
+        }
+        if (config.affectsConfiguration(change, layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize) or config.affectsConfiguration(change, "diffEditor.renderSideBySide")) {
+            self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
+        }
+        if (config.affectsConfiguration(change, layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize) or
+            config.affectsConfiguration(change, "diffEditor.renderSideBySide"))
+        {
+            self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
         }
         if (config.affectsConfiguration(change, "editor")) self.applyEditorSettingsToAllTabs();
     }
@@ -3871,24 +3882,8 @@ pub const Workbench = struct {
         return self.workbenchGridLayout().editor;
     }
 
-    /// Port of `CenteredViewLayout`'s proportional split view: the editor part
-    /// occupies the centered width and the margins use the configured
-    /// `editorPane.background`.
-    const centered_layout_margin_ratio: f64 = 0.1909;
-    const centered_layout_min_width: usize = 20;
-
     fn editorLayoutRect(self: *const Workbench) ui.Rect {
-        const base = self.editorAreaRect();
-        if (!self.layout.isMainEditorCenteredEffective()) return base;
-        const width = ui.cell.snap(base.w);
-        const margin = @as(usize, @intFromFloat(@floor(@as(f64, @floatFromInt(width)) * centered_layout_margin_ratio)));
-        if (width <= margin * 2 + centered_layout_min_width) return base;
-        return .{
-            .x = base.x + @as(f64, @floatFromInt(margin)),
-            .y = base.y,
-            .w = base.w - @as(f64, @floatFromInt(margin * 2)),
-            .h = base.h,
-        };
+        return self.layout.centeredEditorRect(self.editorAreaRect());
     }
 
     fn renderCenteredLayoutMargins(self: *Workbench) void {
@@ -3940,7 +3935,6 @@ pub const Workbench = struct {
             if (!visible) self.layout.workbench_grid.onSashEnd();
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
-        if (self.layout.isMainEditorCentered()) self.recomputeCenteredEditorLayout();
         self.layout.layout(self.workbenchGridLayout(), self.statusBarRect());
         const rect = self.editorLayoutRect();
         for (self.part.group_views.items) |pane| {
@@ -3950,13 +3944,9 @@ pub const Workbench = struct {
             pane.setTabsVisible(self.tabsVisibleFor(pane.tabs.items.len));
         }
         self.part.layout(rect);
-        if (self.expanded_pane) |expanded| {
-            if (!self.paneExists(expanded)) {
-                self.expanded_pane = null;
-            } else {
-                expanded.rect = self.part.contentRect();
-                expanded.layout();
-            }
+        if (self.part.maximized_group) |expanded| {
+            expanded.rect = self.part.contentRect();
+            expanded.layout();
         }
         self.syncTerminalSize();
     }
@@ -3983,7 +3973,7 @@ pub const Workbench = struct {
         if (pane.group.model.count() != 0 or self.service.count() <= 1) return;
         self.invalidateDragPane(pane);
         self.disposeInactiveBreadcrumbs(pane.group.id);
-        if (self.expanded_pane == pane) self.expanded_pane = null;
+        if (self.part.maximized_group == pane) self.part.setMaximizedGroup(null);
         _ = self.part.collapseView(pane);
     }
 
@@ -5897,7 +5887,7 @@ pub const Workbench = struct {
         if (!tab.isMarkdown() or tab.markdown_preview != null) return;
         const source = tab.file_input orelse return;
         const direction = self.preferredSideBySideDirection();
-        self.expanded_pane = null;
+        self.part.setMaximizedGroup(null);
         const adjacent = if (beside) self.findAdjacentPane(direction, false) else pane;
         const target = adjacent orelse try self.part.splitGroup(pane, if (direction == .DOWN) .vertical else .horizontal, false);
         errdefer if (adjacent == null and target.isEmpty()) self.collapseEmptyPane(target);
@@ -5958,7 +5948,7 @@ pub const Workbench = struct {
     pub fn markdownPreviewTick(self: *Workbench, now_ms: i64) bool {
         var changed = false;
         for (self.part.group_views.items) |pane| {
-            if (self.expanded_pane != null and self.expanded_pane != pane) continue;
+            if (self.part.maximized_group != null and self.part.maximized_group != pane) continue;
             if (pane.activeTab()) |tab| {
                 if (tab.onMarkdownPreviewTick(now_ms)) changed = true;
             }
@@ -5969,7 +5959,7 @@ pub const Workbench = struct {
     pub fn markdownPreviewTimeout(self: *Workbench, now_ms: i64) ?u32 {
         var earliest: ?u32 = null;
         for (self.part.group_views.items) |pane| {
-            if (self.expanded_pane != null and self.expanded_pane != pane) continue;
+            if (self.part.maximized_group != null and self.part.maximized_group != pane) continue;
             if (pane.activeTab()) |tab| {
                 if (tab.markdownPreviewTimeout(now_ms)) |timeout| earliest = @min(earliest orelse timeout, timeout);
             }
@@ -7195,7 +7185,7 @@ pub const Workbench = struct {
     }
 
     pub fn switchGroup(self: *Workbench, delta: isize) !void {
-        self.expanded_pane = null;
+        self.part.setMaximizedGroup(null);
         const groups = try self.service.getGroups(self.allocator, .CREATION_TIME);
         defer self.allocator.free(groups);
         if (groups.len <= 1) return;
@@ -7351,7 +7341,7 @@ pub const Workbench = struct {
     /// Port of `workbench.action.newGroupLeft/Right/Above/Below`: add an empty
     /// group and activate it.
     pub fn newEmptyGroup(self: *Workbench, direction: editor_groups.GroupDirection) !*GroupPane {
-        self.expanded_pane = null;
+        self.part.setMaximizedGroup(null);
         self.part.active_sash = null;
         const source = self.activePane() orelse return error.NoActivePane;
         const orientation: SplitDirection = switch (direction) {
@@ -7484,7 +7474,7 @@ pub const Workbench = struct {
 
     /// Port of `workbench.action.moveActiveEditorGroupLeft/Right/Up/Down`.
     pub fn moveActiveGroup(self: *Workbench, direction: editor_groups.GroupDirection) !void {
-        self.expanded_pane = null;
+        self.part.setMaximizedGroup(null);
         self.part.active_sash = null;
         self.layoutAll();
         const source = self.activePane() orelse return;
@@ -7517,7 +7507,7 @@ pub const Workbench = struct {
     /// Port of `workbench.action.duplicateActiveEditorGroupLeft/Right/Up/Down`:
     /// create a group beside the active one and copy every editor into it.
     pub fn duplicateActiveGroup(self: *Workbench, direction: editor_groups.GroupDirection) !void {
-        self.expanded_pane = null;
+        self.part.setMaximizedGroup(null);
         self.part.active_sash = null;
         self.layoutAll();
         const source = self.activePane() orelse return;
@@ -7570,17 +7560,17 @@ pub const Workbench = struct {
     /// Port of `workbench.action.maximizeEditor`: expand the active group.
     pub fn maximizeActiveGroup(self: *Workbench) void {
         const pane = self.activePane() orelse return;
-        if (self.expanded_pane == pane) return;
+        if (self.part.maximized_group == pane) return;
         self.service.activateGroup(pane.group);
         pane.syncActivePane();
-        self.expanded_pane = pane;
+        self.part.setMaximizedGroup(pane);
         self.layoutAll();
         self.breadcrumbs_dirty = true;
     }
 
     pub fn minimizeActiveGroup(self: *Workbench) void {
-        if (self.expanded_pane == null) return;
-        self.expanded_pane = null;
+        if (self.part.maximized_group == null) return;
+        self.part.setMaximizedGroup(null);
         self.layoutAll();
         self.breadcrumbs_dirty = true;
     }
@@ -7778,7 +7768,7 @@ pub const Workbench = struct {
     /// keep independent view state.
     pub fn splitActiveInDirection(self: *Workbench, direction: editor_groups.GroupDirection) !void {
         self.part.active_sash = null;
-        self.expanded_pane = null;
+        self.part.setMaximizedGroup(null);
         self.clearTabDrag();
         const source = self.activePane() orelse return;
         const tab = source.activeTab() orelse return;
@@ -8303,7 +8293,7 @@ pub const Workbench = struct {
 
         if (self.tabCount() == 0) return;
 
-        if (self.expanded_pane == pane and pane.tabs.items.len == 0) self.expanded_pane = null;
+        if (self.part.maximized_group == pane and pane.tabs.items.len == 0) self.part.setMaximizedGroup(null);
 
         if (pane.tabs.items.len == 0) {
             const groups = try self.service.getGroups(self.allocator, .MOST_RECENTLY_ACTIVE);
@@ -8334,12 +8324,12 @@ pub const Workbench = struct {
     /// editor area; its siblings keep their grid rects and return unchanged
     /// when the expanded group is toggled off.
     fn toggleExpandGroup(self: *Workbench, pane: *GroupPane) void {
-        if (self.expanded_pane == pane) {
-            self.expanded_pane = null;
+        if (self.part.maximized_group == pane) {
+            self.part.setMaximizedGroup(null);
         } else {
             self.service.activateGroup(pane.group);
             pane.syncActivePane();
-            self.expanded_pane = pane;
+            self.part.setMaximizedGroup(pane);
         }
         self.layoutAll();
         self.breadcrumbs_dirty = true;
@@ -9054,7 +9044,7 @@ pub const Workbench = struct {
     }
 
     fn paneAt(self: *Workbench, x: usize, y: usize) ?*GroupPane {
-        if (self.expanded_pane) |pane| {
+        if (self.part.maximized_group) |pane| {
             if (x >= ui.cell.snap(pane.rect.x) and x < ui.cell.snap(pane.rect.right()) and
                 y >= ui.cell.snap(pane.rect.y) and y < ui.cell.snap(pane.rect.bottom()))
             {
@@ -9098,7 +9088,7 @@ pub const Workbench = struct {
             }
         }
         if (self.layout.workbench_grid.activeSash() != null) return self.handleWorkbenchSashMouse(event);
-        if (if (self.expanded_pane == null) self.part.active_sash else null) |split| {
+        if (if (self.part.maximized_group == null) self.part.active_sash else null) |split| {
             switch (event.kind) {
                 .move => {
                     // Upstream's sash owns pointer capture, so motion while
@@ -9140,7 +9130,7 @@ pub const Workbench = struct {
                 }
             }
         }
-        if (self.expanded_pane != null or self.quick_access.isOpen()) return false;
+        if (self.part.maximized_group != null or self.quick_access.isOpen()) return false;
         if (event.kind != .down or event.button != .left) {
             // Keep the editor from treating a click on the sash as a caret
             // placement; hover motion over the line is also consumed.
@@ -9709,7 +9699,7 @@ pub const Workbench = struct {
                 const orientation = editor_drop_target.orientation(overlay.zone);
                 const first = editor_drop_target.newFirst(overlay.zone);
                 const close_empty_groups = self.editorDragSetting("workbench.editor.closeEmptyGroups", true);
-                self.expanded_pane = null;
+                self.part.setMaximizedGroup(null);
                 if (!copy and (event.source.tab == null or
                     (tabs.len == 1 and source.tabs.items.len == 1 and close_empty_groups)))
                 {
@@ -10940,9 +10930,6 @@ pub const Workbench = struct {
     }
 
     fn synchronizeEditorDom(self: *Workbench) !*ui.Surface {
-        if (self.expanded_pane) |pane| {
-            if (!self.paneExists(pane)) self.expanded_pane = null;
-        }
         if (self.editor_surface == null) {
             self.editor_surface = try ui.Surface.init(self.allocator, .{
                 .cols = self.cols,
@@ -10969,7 +10956,7 @@ pub const Workbench = struct {
         surface.border_capabilities = self.part.cell_border_capabilities;
         const show_tips = self.part.count() == 1 and self.findBoolSetting(editor_group_watermark.settings_key, true);
         for (self.part.group_views.items) |pane| {
-            const visible = self.expanded_pane == null or self.expanded_pane == pane;
+            const visible = self.part.maximized_group == null or self.part.maximized_group == pane;
             const active = pane.activeTab();
             const suppress_breadcrumbs = if (active) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
             if (pane.breadcrumbs_suppressed != suppress_breadcrumbs) {
@@ -11214,14 +11201,9 @@ pub const Workbench = struct {
         }
 
         self.renderCenteredLayoutMargins();
-        if (self.expanded_pane) |expanded| {
-            if (self.paneExists(expanded)) {
-                try self.renderPane(expanded);
-            } else {
-                self.expanded_pane = null;
-            }
-        }
-        if (self.expanded_pane == null) {
+        if (self.part.maximized_group) |expanded| {
+            try self.renderPane(expanded);
+        } else {
             for (self.part.group_views.items) |pane| {
                 try self.renderPane(pane);
             }
@@ -11229,7 +11211,7 @@ pub const Workbench = struct {
         try editor_surface.paintInto(&self.frame.next);
         try self.renderSearchEditorQueries();
         self.renderEditorFrame();
-        if (self.expanded_pane == null) self.renderDividers(self.part.root);
+        if (self.part.maximized_group == null) self.renderDividers(self.part.root);
         if (self.drag_target) |target| {
             target.paint(&self.frame.next, self.theme_palette, self.part.cell_borders, self.animateEditorDrop(), time_compat.milliTimestamp());
         }
@@ -11322,7 +11304,7 @@ pub const Workbench = struct {
         const bg = self.themeColor("editor.background", .{ 30, 30, 33 });
         const fg = self.themeColor("editor.foreground", .{ 210, 210, 210 });
         for (self.part.group_views.items) |pane| {
-            if (self.expanded_pane != null and self.expanded_pane != pane) continue;
+            if (self.part.maximized_group != null and self.part.maximized_group != pane) continue;
             const tab = pane.activeTab() orelse continue;
             const input = tab.search_editor_input orelse continue;
             const query = input.search_editor;
@@ -12007,47 +11989,37 @@ pub const Workbench = struct {
         }
     }
 
-    /// Port of `centerMainEditorLayout`. The requested state (the layout
-    /// service runtime value) is kept separately from the effective centered
-    /// layout, which is disabled when `centeredLayoutAutoResize` is on and the
-    /// workbench has multiple groups or a complex editor.
     pub fn centerMainEditorLayout(self: *Workbench, active: bool, skip_layout: bool) void {
-        self.layout.setMainEditorCentered(active);
-        self.recomputeCenteredEditorLayout();
-        if (!skip_layout) self.layoutAll();
-        self.updateContextKeys();
-        self.layout.fireMainEditorCenteredChanged() catch {};
+        const side_by_side = self.configurationBool("diffEditor.renderSideBySide", true);
+        const complex = for (self.part.group_views.items) |view| {
+            const input = view.group.model.activeEditor() orelse continue;
+            if (std.mem.eql(u8, input.type_id, @import("../common/editor/diffEditorInput.zig").ID)) {
+                if (side_by_side) break true;
+            } else if (input.hasCapability(editor_mod.EditorInputCapabilities.MultipleEditors)) break true;
+        } else false;
+        self.layout.centerMainEditorLayout(active, .{
+            .auto_resize = self.configurationBool(layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize, true),
+            .multiple_columns = self.part.hasMoreThanOneColumn(),
+            .maximized_group = self.part.maximized_group != null,
+            .complex_editor = complex,
+        }, skip_layout) catch {};
+    }
+
+    fn centeredLayoutEditorChanged(_: ?*EditorInput, self: *Workbench) anyerror!void {
+        self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
+    }
+
+    fn centeredLayoutGroupChanged(_: *GroupPane, self: *Workbench) anyerror!void {
+        self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
+    }
+
+    fn centeredLayoutMaximizedChanged(_: bool, self: *Workbench) anyerror!void {
+        self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
     }
 
     pub fn toggleCenteredLayout(self: *Workbench) void {
         self.centerMainEditorLayout(!self.layout.isMainEditorCentered(), false);
         if (self.activeTab()) |tab| tab.focusEditor();
-    }
-
-    fn recomputeCenteredEditorLayout(self: *Workbench) void {
-        var effective = self.layout.isMainEditorCentered();
-        if (effective) {
-            const auto_resize = self.configurationBool(
-                layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize,
-                true,
-            );
-            if (auto_resize and self.hasComplexEditor()) effective = false;
-            if (auto_resize and self.groupCount() > 1 and self.expanded_pane == null) effective = false;
-        }
-        self.layout.setMainEditorCenteredEffective(effective);
-    }
-
-    /// Upstream `mainVisibleEditors.some(editor => isEditorComplex(editor))`:
-    /// a side-by-side diff editor carries `MultipleEditors`. The terminal has
-    /// no split-in-group editors, so the diff editor is the only complex one.
-    fn hasComplexEditor(self: *Workbench) bool {
-        const side_by_side = self.configurationBool("diffEditor.renderSideBySide", true);
-        if (!side_by_side) return false;
-        for (self.part.group_views.items) |pane| {
-            const tab = pane.activeTab() orelse continue;
-            if (tab.isDiff()) return true;
-        }
-        return false;
     }
 
     fn configurationBool(self: *const Workbench, key: []const u8, default: bool) bool {
@@ -12456,7 +12428,7 @@ pub const Workbench = struct {
         if (self.outline_view) |view| view.setBorderRendering(enabled);
         if (self.part.cell_borders == enabled) return;
         self.part.setCellBorders(enabled);
-        if (self.sidebarShown() or self.panelShown() or self.expanded_pane != null) self.layoutAll();
+        if (self.sidebarShown() or self.panelShown() or self.part.maximized_group != null) self.layoutAll();
     }
 
     pub fn setCellBorderCapabilities(self: *Workbench, capabilities: ?ui.cell_border.Capabilities) void {
