@@ -903,7 +903,7 @@ grid's row/column indices for the cells that remain.
 the cell pixel size. Hosts flush it before the frame body inside the same
 synchronized update (`Workbench.render` opens `CSI ? 2026 h`,
 writes image commands and the frame diff, then closes it). A view keeps a
-`tui/terminalImage.zig` handle: the encoded payload stays in memory so a resize
+`vs/workbench/contrib/mediaPreview/browser/terminalImage.zig` handle: the encoded payload stays in memory so a resize
 or `CSI 2J` can invalidate and re-upload the image; zooming only changes the
 virtual placement. Image ids are 24-bit because the foreground color carries
 them, and placements are capped to the diacritic table's 297 rows/columns.
@@ -924,7 +924,7 @@ validates the path pattern and LFS pointers, `mediaPreview/common/mediaImage.zig
 decodes with the pinned `zigimg` package (PNG passes through; JPEG/GIF/BMP/TIFF
 are converted to RGBA and encoded as PNG for the terminal), `imageViewer.zig`
 and `imagePreviewEditor.zig` hold fit/zoom/scroll/load state, and
-`src/tui/imagePreview.zig` paints the message chrome through a `Surface` and the
+`src/vs/workbench/contrib/mediaPreview/browser/imagePreviewPane.zig` paints the message chrome through a `Surface` and the
 image through placeholder cells. Browser-only behavior (clipboard image copy,
 context menus, pinch zoom, CSS scrollbars, pixelated rendering) is omitted as
 documented in `README.md`.

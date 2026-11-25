@@ -1,4 +1,6 @@
 // Port of `src/vs/editor/common/core/cursorColumns.ts`.
+// Terminal adaptation: measureCodepoint projects the same visible-column rules
+// to the width callback required by ui.Surface.
 const std = @import("std");
 const strings = @import("../../../base/common/strings.zig");
 const grapheme = @import("../../../base/common/graphemeBreak.zig");
@@ -7,6 +9,13 @@ const grapheme = @import("../../../base/common/graphemeBreak.zig");
 /// helpers work with a "visible column": a rough approximation of the screen
 /// position of a column.
 pub const CursorColumns = struct {
+    /// Terminal cell measurement uses the same visible-column rules as the
+    /// editor; a single displayed codepoint occupies one or two cells.
+    pub fn measureCodepoint(cp: u21) u2 {
+        const next = nextVisibleColumn(cp, 0, 1);
+        return @intCast(@min(next, 2));
+    }
+
     pub fn nextVisibleColumn(codePoint: u21, visibleColumn: usize, tabSize: usize) usize {
         if (codePoint == '\t') return nextRenderTabStop(visibleColumn, tabSize);
         if (strings.isFullWidthCharacter(codePoint) or isEmojiImprecise(codePoint)) return visibleColumn + 2;

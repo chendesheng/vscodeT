@@ -1647,6 +1647,8 @@ Markdown:
 
 Markdown preview:
 
+The preview view and renderer worker are owned by `src/vs/workbench/contrib/markdown/browser/`; the host provides the terminal surface and image capabilities.
+
 - `Markdown: Open Preview to the Side` (`Ctrl-K V`) and the `◫⌕` title
   action open a focused `Preview <filename>` tab in the neighboring editor
   group. The workbench reuses that group and its ordinary draggable divider.
@@ -1684,6 +1686,8 @@ Markdown preview:
   sessions.
 
 Image preview:
+
+The image preview pane and its terminal image handle are owned by `src/vs/workbench/contrib/mediaPreview/browser/`.
 
 - Opening a file that matches the image preview pattern
   (`*.{jpg,jpe,jpeg,png,bmp,gif,ico,webp,avif,svg}`) creates a read-only image

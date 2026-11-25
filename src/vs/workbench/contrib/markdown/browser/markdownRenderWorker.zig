@@ -13,7 +13,7 @@ pub const Renderer = struct {
     version: ?u32 = null,
     cache: std.StringHashMapUnmanaged(?[]u8) = .empty,
     job: ?*Job = null,
-    delivery: ?*@import("../vs/base/common/windowDispatch.zig").Task = null,
+    delivery: ?*@import("../../../../base/common/windowDispatch.zig").Task = null,
 
     const Job = struct {
         source: []u8,
@@ -21,7 +21,7 @@ pub const Renderer = struct {
         allocator: Allocator,
         io: Io,
         done: std.atomic.Value(bool) = .init(false),
-        delivery: ?*@import("../vs/base/common/windowDispatch.zig").Task = null,
+        delivery: ?*@import("../../../../base/common/windowDispatch.zig").Task = null,
         future: Io.Future(?[]u8) = undefined,
     };
 

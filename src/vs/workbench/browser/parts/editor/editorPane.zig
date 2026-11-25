@@ -47,11 +47,11 @@ const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable
 const WebviewInput = @import("../../../contrib/webviewPanel/browser/webviewEditorInput.zig").WebviewInput;
 const groups = @import("../../../services/editor/common/editorGroupsService.zig");
 const topmost = @import("../../../contrib/markdown/browser/topmostLineMonitor.zig");
-const MarkdownPreview = @import("../../../../../tui/markdownPreview.zig").MarkdownPreview;
+const MarkdownPreview = @import("../../../contrib/markdown/browser/markdownPreview.zig").MarkdownPreview;
 const MarkdownPreviewConfig = @import("../../../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
 const StickyScrollHost = @import("../../../../../tui/stickyScrollHost.zig").StickyScrollHost;
 const StickyScrollController = @import("../../../../editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController;
-const ImagePreviewPane = @import("../../../../../tui/imagePreview.zig").ImagePreviewPane;
+const ImagePreviewPane = @import("../../../contrib/mediaPreview/browser/imagePreviewPane.zig").ImagePreviewPane;
 const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 
 const SearchEditorInput = @import("../../../contrib/searchEditor/browser/searchEditorInput.zig").SearchEditorInput;
@@ -536,7 +536,7 @@ pub const Tab = struct {
         return pane.statusInfo();
     }
 
-    pub fn handleImageKey(self: *Tab, event: *const ui.KeyEvent) @import("../../../../../tui/imagePreview.zig").Action {
+    pub fn handleImageKey(self: *Tab, event: *const ui.KeyEvent) @import("../../../contrib/mediaPreview/browser/imagePreviewPane.zig").Action {
         const pane = self.image_preview orelse return .none;
         return pane.handleKey(event);
     }
@@ -545,7 +545,7 @@ pub const Tab = struct {
         self: *Tab,
         event: *const ui.MouseEvent,
         focus_gained: bool,
-    ) @import("../../../../../tui/imagePreview.zig").Action {
+    ) @import("../../../contrib/mediaPreview/browser/imagePreviewPane.zig").Action {
         const pane = self.image_preview orelse return .none;
         return pane.handleMouse(event, focus_gained);
     }

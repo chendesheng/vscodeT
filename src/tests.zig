@@ -299,9 +299,9 @@ comptime {
     _ = @import("./vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
     _ = @import("./vs/editor/browser/widget/codeEditor/terminalViewHost.zig");
     _ = @import("./tui/editorView.zig");
-    _ = @import("./tui/markdownPreview.zig");
-    _ = @import("./tui/terminalImage.zig");
-    _ = @import("./tui/imagePreview.zig");
+    _ = @import("vs/workbench/contrib/markdown/browser/markdownPreview.zig");
+    _ = @import("vs/workbench/contrib/mediaPreview/browser/terminalImage.zig");
+    _ = @import("vs/workbench/contrib/mediaPreview/browser/imagePreviewPane.zig");
     _ = @import("./vs/base/common/deadlineTimer.zig");
     _ = @import("./vs/editor/browser/controller/mouseHandler.zig");
     _ = @import("./vs/workbench/services/language/common/bundledLanguages.zig");

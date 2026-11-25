@@ -1,4 +1,4 @@
-//! Terminal image preview pane.
+//! View adaptation of imagePreviewEditor.ts and imageViewer.ts.
 //!
 //! The browser view (`imageViewer.ts` + `imagePreviewEditor.ts` + their CSS) is
 //! replaced by a `ui.Surface` for the message/background chrome and by kitty
@@ -22,14 +22,14 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const ui = @import("ui");
-const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
-const media_preview = @import("../vs/workbench/contrib/mediaPreview/common/mediaPreview.zig");
-const mediaImage = @import("../vs/workbench/contrib/mediaPreview/common/mediaImage.zig");
-const image_preview_editor = @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewEditor.zig");
-const viewer_mod = @import("../vs/workbench/contrib/mediaPreview/browser/imageViewer.zig");
-const media_status = @import("../vs/workbench/contrib/mediaPreview/browser/mediaPreviewStatusBar.zig");
-const TerminalImage = @import("./terminalImage.zig").TerminalImage;
-const cellMetrics = @import("./cellMetrics.zig");
+const theme_colors_mod = @import("../../../browser/themeColors.zig");
+const media_preview = @import("../common/mediaPreview.zig");
+const mediaImage = @import("../common/mediaImage.zig");
+const image_preview_editor = @import("imagePreviewEditor.zig");
+const viewer_mod = @import("imageViewer.zig");
+const media_status = @import("mediaPreviewStatusBar.zig");
+const TerminalImage = @import("terminalImage.zig").TerminalImage;
+const cellMetrics = @import("../../../../editor/common/core/cursorColumns.zig").CursorColumns;
 
 const ImagePreviewEditor = image_preview_editor.ImagePreviewEditor;
 const ImageViewer = viewer_mod.ImageViewer;
@@ -46,7 +46,7 @@ const fallback_button_border = ui.Color{ .r = 70, .g = 70, .b = 70 };
 /// What the pane wants the workbench to do after an input event.
 pub const Action = enum { none, changed, open_text };
 
-const dispatch = @import("../vs/base/common/windowDispatch.zig");
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const ImageLoadJob = struct {
     pane: *ImagePreviewPane,
     future: Io.Future(image_preview_editor.LoadedImage),
@@ -667,7 +667,7 @@ test "imagePreview: async load reads and decodes off the caller thread" {
     try std.testing.expect(pane.hasPendingLoad());
 
     var waited: usize = 0;
-    while (!window.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp()) and waited < 2000) : (waited += 1) {
+    while (!window.dispatch(@import("../../../../base/common/timeCompat.zig").milliTimestamp()) and waited < 2000) : (waited += 1) {
         async_io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(pane.editor.hasImage());

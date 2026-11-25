@@ -5,7 +5,7 @@
 // clipboard, pinch/zoom listeners and pixelation classes. The terminal port
 // keeps the state and the geometry rules (fit, natural size, the predefined
 // zoom levels, center-preserving zoom and scroll clamping) and leaves painting,
-// input and status rendering to `src/tui/imagePreview.zig`. Scroll offsets are
+// input and status rendering to `src/vs/workbench/contrib/mediaPreview/browser/imagePreviewPane.zig`. Scroll offsets are
 // terminal cells instead of CSS pixels; the scale itself still means "1 is the
 // image's natural pixel size".
 //

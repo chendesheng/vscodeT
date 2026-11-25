@@ -126,7 +126,7 @@ fn grid_attr_italic(grid: *const ui.CellGrid, col: usize, row: usize) bool {
     return grid.attrs[row * grid.cols + col] & ui.cell.Attr.italic != 0;
 }
 
-fn paneTextAlloc(allocator: Allocator, pane: *@import("imagePreview.zig").ImagePreviewPane) ![]u8 {
+fn paneTextAlloc(allocator: Allocator, pane: *@import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewPane.zig").ImagePreviewPane) ![]u8 {
     const surface = &(pane.surface orelse return allocator.alloc(u8, 0));
     var text = std.array_list.Managed(u8).init(allocator);
     errdefer text.deinit();
@@ -4918,7 +4918,7 @@ test "Workbench: a capable terminal uploads and paints the image" {
     // Zoomed clicks change the pane's scale too.
     var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = 2, .y = 2 };
     try std.testing.expectEqual(
-        @import("imagePreview.zig").Action.changed,
+        @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewPane.zig").Action.changed,
         tab.handleImageMouse(&click, false),
     );
 }

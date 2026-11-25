@@ -13,7 +13,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const ui = @import("ui");
-const mediaImage = @import("../vs/workbench/contrib/mediaPreview/common/mediaImage.zig");
+const mediaImage = @import("../common/mediaImage.zig");
 
 pub const TerminalImage = struct {
     allocator: Allocator,

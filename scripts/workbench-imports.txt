@@ -11,8 +11,6 @@ src/vs/workbench/api/browser/builtinExtensionHost.zig -> src/tui/editorInputDisp
 src/vs/workbench/api/browser/extensionHostAdapter.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorInputDispatch.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorView.zig
-src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/imagePreview.zig
-src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/markdownPreview.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/stickyScrollHost.zig
 src/vs/workbench/browser/parts/editor/textDiffEditor.zig -> src/tui/editorView.zig
 src/vs/workbench/contrib/searchEditor/browser/searchEditor.zig -> src/tui/editorView.zig

@@ -4,7 +4,7 @@
 // `http`/`https` modules and returns a `Promise<IRequestContext>`. The terminal
 // implementation uses `std.http.Client` with the `Io` it is given; callers that
 // need the request off the TUI thread wrap `request` in `Io.async` (see
-// `tui/markdownPreview.zig`). Response bodies are buffered because the port has
+// `vs/workbench/contrib/markdown/browser/markdownPreview.zig`). Response bodies are buffered because the port has
 // no stream/back-pressure abstraction yet.
 //
 // Deliberate omissions (documented in README): the Node proxy agent, shell-env

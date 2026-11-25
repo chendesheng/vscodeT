@@ -1,4 +1,4 @@
-//! Markdown document preview pane for the terminal workbench.
+//! Terminal adaptation of the Markdown preview contribution.
 //!
 //! Async terminal adaptation: local image reads/decodes and remote http(s)
 //! fetches run on the workbench `async_io` as per-preview jobs; the preview
@@ -19,28 +19,28 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const ui = @import("ui");
-const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
-const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const Position = @import("../vs/editor/common/core/position.zig").Position;
-const time_compat = @import("../vs/base/common/timeCompat.zig");
-const dispatch = @import("../vs/base/common/windowDispatch.zig");
-const DeadlineTimer = @import("../vs/base/common/deadlineTimer.zig").DeadlineTimer;
-const ModelContentChanged = @import("../vs/editor/common/textModelEvents.zig").InternalModelContentChangeEvent;
-const viewEvents = @import("../vs/editor/common/viewEvents.zig");
-const ViewEventHandler = @import("../vs/editor/common/viewEventHandler.zig").ViewEventHandler;
-const markdown = @import("../vs/editor/common/markdown/markdownTerminalRenderer.zig");
-const preview_doc = @import("../vs/workbench/contrib/markdown/browser/markdownPreviewDocument.zig");
-const scroll_sync = @import("../vs/workbench/contrib/markdown/browser/scrollSync.zig");
-const topmost = @import("../vs/workbench/contrib/markdown/browser/topmostLineMonitor.zig");
-const scrolling = @import("../vs/workbench/contrib/markdown/browser/scrolling.zig");
-const preview_config = @import("../vs/workbench/contrib/markdown/browser/markdownPreviewConfig.zig");
-const mediaImage = @import("../vs/workbench/contrib/mediaPreview/common/mediaImage.zig");
-const TerminalImage = @import("./terminalImage.zig").TerminalImage;
-const cellMetrics = @import("./cellMetrics.zig");
-const RequestService = @import("../vs/platform/request/node/requestService.zig").RequestService;
+const theme_colors_mod = @import("../../../browser/themeColors.zig");
+const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const Position = @import("../../../../editor/common/core/position.zig").Position;
+const time_compat = @import("../../../../base/common/timeCompat.zig");
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
+const DeadlineTimer = @import("../../../../base/common/deadlineTimer.zig").DeadlineTimer;
+const ModelContentChanged = @import("../../../../editor/common/textModelEvents.zig").InternalModelContentChangeEvent;
+const viewEvents = @import("../../../../editor/common/viewEvents.zig");
+const ViewEventHandler = @import("../../../../editor/common/viewEventHandler.zig").ViewEventHandler;
+const markdown = @import("../../../../editor/common/markdown/markdownTerminalRenderer.zig");
+const preview_doc = @import("markdownPreviewDocument.zig");
+const scroll_sync = @import("scrollSync.zig");
+const topmost = @import("topmostLineMonitor.zig");
+const scrolling = @import("scrolling.zig");
+const preview_config = @import("markdownPreviewConfig.zig");
+const mediaImage = @import("../../mediaPreview/common/mediaImage.zig");
+const TerminalImage = @import("../../mediaPreview/browser/terminalImage.zig").TerminalImage;
+const cellMetrics = @import("../../../../editor/common/core/cursorColumns.zig").CursorColumns;
+const RequestService = @import("../../../../platform/request/node/requestService.zig").RequestService;
 
 /// Upper bound for image reads/fetches in flight per preview. Completed jobs
-/// rebuild the document, which queues the next batch on the following tick.
+/// rebuild the document, which queues the next batch from the completion event.
 const max_concurrent_image_jobs = 4;
 
 const base_preview_background = ui.Color{ .r = 30, .g = 30, .b = 33 };
@@ -112,7 +112,7 @@ fn loadMarkdownLocalImage(allocator: Allocator, io: Io, path: []const u8) Markdo
 
 fn loadMarkdownRemoteImage(preview: *MarkdownPreview, url: []const u8) MarkdownImageResult {
     const service = if (preview.request_service) |*value| value else return .failed;
-    const options = @import("../vs/base/parts/request/common/request.zig").IRequestOptions{
+    const options = @import("../../../../base/parts/request/common/request.zig").IRequestOptions{
         .url = url,
         .call_site = "markdownPreview.image",
         .timeout = 30_000,
