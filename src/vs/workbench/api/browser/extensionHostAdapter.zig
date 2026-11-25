@@ -182,6 +182,7 @@ pub const Extensions = struct {
     terminal_completions: ?@import("terminalCompletionSession.zig").Session = null,
     secret_state: @import("mainThreadSecretState.zig").SecretState = .{},
     accounts: @import("mainThreadAuthentication.zig").Accounts = undefined,
+    task_service: @import("../../contrib/tasks/browser/abstractTaskService.zig").AbstractTaskService = undefined,
     task_actor: @import("mainThreadTask.zig").MainThreadTask = undefined,
     commands_actor: ?MainThreadCommands = null,
     configuration_actor: ?MainThreadConfiguration = null,
@@ -304,7 +305,13 @@ pub const Extensions = struct {
         } };
         try self.accounts.init(workbench, self.host, self.descriptions);
         errdefer self.accounts.deinit();
-        try self.task_actor.init(workbench, self.host, self.descriptions);
+        try self.task_service.init(allocator, &workbench.commands, workbench.quick_access.inputService(), self.descriptions, .{
+            .context = self,
+            .activate = activateTaskType,
+            .run_terminal = runTaskInTerminal,
+        });
+        errdefer self.task_service.deinit();
+        self.task_actor = .{ .allocator = allocator, .host = self.host, .service = self.task_service.interface() };
         errdefer self.task_actor.deinit();
         for (self.descriptions) |extension| {
             if (!std.ascii.eqlIgnoreCase(extension.identifier, "vscode.terminal-suggest")) continue;
@@ -328,6 +335,7 @@ pub const Extensions = struct {
         self.secret_state.deinit(self.allocator);
         self.accounts.deinit();
         self.task_actor.deinit();
+        self.task_service.deinit();
         self.inline_completions.deinit();
         self.setScrollListener(null);
         self.setContentListener(null);
@@ -1462,6 +1470,16 @@ fn applyFoldCommand(editor: *Editor, command: []const u8, args: []const std.json
         return false;
     }
     return true;
+}
+
+fn activateTaskType(context: *anyopaque, arena: Allocator, event: []const u8) !void {
+    const self: *Extensions = @ptrCast(@alignCast(context));
+    _ = try self.host.requestSync(arena, proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostExtensionService), "$activateByEvent", &.{ .{ .json = .{ .string = event } }, .{ .json = .{ .integer = 0 } } }, null, 5000);
+}
+
+fn runTaskInTerminal(context: *anyopaque, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !void {
+    const self: *Extensions = @ptrCast(@alignCast(context));
+    _ = try self.workbench.launchTerminalProcess(name, executable, args, cwd);
 }
 
 fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: std.json.Value, arena: Allocator) anyerror!?std.json.Value {

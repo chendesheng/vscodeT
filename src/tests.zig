@@ -767,3 +767,6 @@ comptime {
     _ = @import("./vs/platform/request/node/requestService.zig");
     _ = @import("./vs/platform/request/test/node/requestService.test.zig");
 }
+comptime {
+    _ = @import("./vs/workbench/contrib/tasks/test/browser/abstractTaskService.test.zig");
+}

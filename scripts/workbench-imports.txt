@@ -17,7 +17,6 @@ src/vs/workbench/api/browser/inlineCompletionSession.zig -> src/tui/editorView.z
 src/vs/workbench/api/browser/inlineCompletionSession.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/api/browser/mainThreadAuthentication.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/api/browser/mainThreadMessageService.zig -> src/vs/workbench/browser/workbench.zig
-src/vs/workbench/api/browser/mainThreadTask.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/api/browser/terminalCompletionSession.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorInputDispatch.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorView.zig

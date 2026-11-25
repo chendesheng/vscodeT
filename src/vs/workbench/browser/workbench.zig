@@ -3117,10 +3117,6 @@ pub const Workbench = struct {
         }
     }
 
-    pub fn runTaskInTerminal(self: *Workbench, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !void {
-        _ = try self.launchTerminalProcess(name, executable, args, cwd);
-    }
-
     pub fn launchTerminalProcess(self: *Workbench, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !*terminal_service_mod.TerminalInstance {
         const service = try self.ensureTerminalService();
         const instance = try service.createForTask(.{ .path = executable, .args = args, .profile_name = name }, cwd);
@@ -14184,7 +14180,7 @@ fn commandGithubPublish(context: *anyopaque) anyerror!void {
         return;
     };
     defer self.allocator.free(executable);
-    try self.runTaskInTerminal("Publish to GitHub", executable, &.{ "repo", "create" }, folder);
+    _ = try self.launchTerminalProcess("Publish to GitHub", executable, &.{ "repo", "create" }, folder);
 }
 
 fn commandOpenBrowser(context: *anyopaque) anyerror!void {
