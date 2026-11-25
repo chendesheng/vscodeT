@@ -35,6 +35,33 @@ pub const GroupDirection = enum { UP, DOWN, LEFT, RIGHT };
 pub const GroupLocation = enum { first, last, next, previous };
 pub const IFindGroupScope = union(enum) { direction: GroupDirection, location: GroupLocation };
 
+pub const IEditorGroup = struct {
+    context: *anyopaque,
+    id: GroupIdentifier,
+    focus_fn: *const fn (*anyopaque) void,
+
+    pub fn focus(self: IEditorGroup) void {
+        self.focus_fn(self.context);
+    }
+};
+
+const instantiation = @import("../../../../platform/instantiation/common/instantiation.zig");
+pub const editor_groups_service_id = instantiation.ServiceIdentifier(IEditorGroupsService, "editorGroupsService");
+
+pub const IEditorGroupsService = struct {
+    context: *anyopaque,
+    active_group: *const fn (*anyopaque) ?IEditorGroup,
+    find_group: *const fn (*anyopaque, IFindGroupScope, GroupIdentifier, bool) anyerror!?IEditorGroup,
+
+    pub fn activeGroup(self: IEditorGroupsService) ?IEditorGroup {
+        return self.active_group(self.context);
+    }
+
+    pub fn findGroup(self: IEditorGroupsService, scope: IFindGroupScope, source: IEditorGroup, wrap: bool) !?IEditorGroup {
+        return self.find_group(self.context, scope, source.id, wrap);
+    }
+};
+
 pub const OpenOptions = struct {
     /// Mirrors the `workbench.editor.revealIfOpen` setting. The terminal
     /// workbench defaults to revealing across groups, matching the editor

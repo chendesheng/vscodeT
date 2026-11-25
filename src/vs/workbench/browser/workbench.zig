@@ -494,6 +494,7 @@ pub const Workbench = struct {
     window_views: WindowViews,
     views_api: views_service.IViewsService,
     code_editor_api: code_editor_service.ICodeEditorService,
+    editor_groups_api: editor_groups.IEditorGroupsService,
     allocator: Allocator,
     io: Io,
     /// Io used to run interactive file/dir/network work off the TUI thread.
@@ -908,6 +909,7 @@ pub const Workbench = struct {
     }
 
     fn registerListeners(self: *Workbench) !void {
+        _ = try self.part.on_did_focus.listen(self, onEditorPartFocus);
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
     }
@@ -919,6 +921,8 @@ pub const Workbench = struct {
         self.window_views = .{ .workbench = self };
         self.views_api = self.window_views.interface();
         _ = try self.services.set(views_service.views_service_id, &self.views_api);
+        self.editor_groups_api = self.part.interface();
+        _ = try self.services.set(editor_groups.editor_groups_service_id, &self.editor_groups_api);
         self.code_editors = .{ .part = self.part };
         self.code_editor_api = self.code_editors.interface();
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
@@ -1338,7 +1342,7 @@ pub const Workbench = struct {
         const status = self.editor_status.?;
         try self.commands.register(.{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen });
         try self.commands.registerAction(&self.instantiation, @import("../contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
-        const editor_commands = [_]commands_mod.CommandInfo{
+        const before_group_focus = [_]commands_mod.CommandInfo{
             .{ .id = editor_status_mod.goto_line_command, .label = "Go to Line/Column...", .category = "Go", .context = status, .run = editor_status_mod.commandGotoLine },
             .{ .id = editor_status_mod.change_indentation_command, .label = "Change Indentation", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeIndentation },
             .{ .id = editor_status_mod.change_encoding_command, .label = "Change File Encoding", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeEncoding },
@@ -1380,15 +1384,10 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.splitEditorRight", .label = "Split Editor Right", .category = "View", .context = self, .run = commandSplitEditorRight },
             .{ .id = "workbench.action.splitEditorUp", .label = "Split Editor Up", .category = "View", .context = self, .run = commandSplitEditorUp },
             .{ .id = "workbench.action.splitEditorDown", .label = "Split Editor Down", .category = "View", .context = self, .run = commandSplitEditorDown },
-            .{ .id = "workbench.action.focusActiveEditorGroup", .label = "Focus Active Editor Group", .category = "View", .context = self, .run = commandFocusActiveGroup },
-            .{ .id = "workbench.action.focusFirstEditorGroup", .label = "Focus First Editor Group", .category = "View", .context = self, .run = commandFocusFirstGroup },
-            .{ .id = "workbench.action.focusLastEditorGroup", .label = "Focus Last Editor Group", .category = "View", .context = self, .run = commandFocusLastGroup },
-            .{ .id = "workbench.action.focusNextGroup", .label = "Focus Next Editor Group", .category = "View", .context = self, .run = commandFocusNextGroup },
-            .{ .id = "workbench.action.focusPreviousGroup", .label = "Focus Previous Editor Group", .category = "View", .context = self, .run = commandFocusPreviousGroup },
-            .{ .id = "workbench.action.focusLeftGroup", .label = "Focus Left Editor Group", .category = "View", .context = self, .run = commandFocusLeftGroup },
-            .{ .id = "workbench.action.focusRightGroup", .label = "Focus Right Editor Group", .category = "View", .context = self, .run = commandFocusRightGroup },
-            .{ .id = "workbench.action.focusAboveGroup", .label = "Focus Editor Group Above", .category = "View", .context = self, .run = commandFocusAboveGroup },
-            .{ .id = "workbench.action.focusBelowGroup", .label = "Focus Editor Group Below", .category = "View", .context = self, .run = commandFocusBelowGroup },
+        };
+        for (before_group_focus) |command| try self.commands.register(command);
+        for (@import("parts/editor/editorActions.zig").focus_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        const editor_commands = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.newGroupLeft", .label = "New Editor Group to the Left", .category = "View", .context = self, .run = commandNewGroupLeft },
             .{ .id = "workbench.action.newGroupRight", .label = "New Editor Group to the Right", .category = "View", .context = self, .run = commandNewGroupRight },
             .{ .id = "workbench.action.newGroupAbove", .label = "New Editor Group Above", .category = "View", .context = self, .run = commandNewGroupAbove },
@@ -6537,14 +6536,16 @@ pub const Workbench = struct {
         return self.part.findGroup(.{ .direction = direction }, self.activePane() orelse return null, wrap);
     }
 
-    fn focusPane(self: *Workbench, pane: *GroupPane) !void {
-        self.service.activateGroup(pane.group);
+    fn focusPane(_: *Workbench, pane: *GroupPane) !void {
+        if (pane.activeTab()) |tab| try tab.ensureControllers();
+        pane.focus();
+    }
+
+    fn onEditorPartFocus(_: void, self: *Workbench) !void {
+        const pane = self.activePane() orelse return;
         pane.syncActivePane();
         self.layoutAll();
-        if (self.activeTab()) |tab| {
-            try tab.ensureControllers();
-            tab.focusEditor();
-        }
+        if (pane.activeTab()) |tab| try tab.ensureControllers();
         self.focusEditor();
         self.revealActiveEditor();
     }
@@ -12117,51 +12118,6 @@ fn commandSplitEditorUp(context: *anyopaque) anyerror!void {
 fn commandSplitEditorDown(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try runSplitCommand(self, .DOWN);
-}
-
-fn commandFocusActiveGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusActiveGroup();
-}
-
-fn commandFocusFirstGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusGroupLocation(.first);
-}
-
-fn commandFocusLastGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusGroupLocation(.last);
-}
-
-fn commandFocusNextGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusGroupLocation(.next);
-}
-
-fn commandFocusPreviousGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusGroupLocation(.previous);
-}
-
-fn commandFocusLeftGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusGroupDirection(.LEFT);
-}
-
-fn commandFocusRightGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusGroupDirection(.RIGHT);
-}
-
-fn commandFocusAboveGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusGroupDirection(.UP);
-}
-
-fn commandFocusBelowGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.focusGroupDirection(.DOWN);
 }
 
 fn commandNewGroupLeft(context: *anyopaque) anyerror!void {

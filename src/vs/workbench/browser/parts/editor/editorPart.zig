@@ -51,6 +51,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         when_restored: @import("../../../../base/common/async.zig").Barrier = .{},
         maximized_group: ?*GroupView = null,
         on_did_change_group_maximized: Emitter(bool),
+        on_did_focus: Emitter(void),
         on_did_add_group: Emitter(*GroupView),
         on_did_remove_group: Emitter(*GroupView),
         on_did_move_group: Emitter(*GroupView),
@@ -84,6 +85,7 @@ pub fn EditorPart(comptime GroupView: type) type {
 
             self.* = .{
                 .on_did_change_group_maximized = .init(allocator),
+                .on_did_focus = .init(allocator),
                 .on_did_add_group = .init(allocator),
                 .on_did_remove_group = .init(allocator),
                 .on_did_move_group = .init(allocator),
@@ -146,6 +148,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         pub fn deinit(self: *Self) void {
             self.when_restored.deinit(self.allocator);
             self.on_did_change_group_maximized.deinit();
+            self.on_did_focus.deinit();
             self.on_did_add_group.deinit();
             self.on_did_remove_group.deinit();
             self.on_did_move_group.deinit();
@@ -182,6 +185,24 @@ pub fn EditorPart(comptime GroupView: type) type {
 
         pub fn activeView(self: *const Self) ?*GroupView {
             return self.viewForGroup(self.service.activeGroup());
+        }
+
+        pub fn interface(self: *Self) editor_groups.IEditorGroupsService {
+            return .{ .context = self, .active_group = activeGroup, .find_group = findGroupView };
+        }
+
+        fn activeGroup(context: *anyopaque) ?editor_groups.IEditorGroup {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const view = self.activeView() orelse return null;
+            return view.interface();
+        }
+
+        fn findGroupView(context: *anyopaque, scope: editor_groups.IFindGroupScope, source: editor_mod.GroupIdentifier, wrap: bool) !?editor_groups.IEditorGroup {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const group = self.service.getGroup(source) orelse return error.ViewNotFound;
+            const source_view = self.viewForGroup(group) orelse return error.ViewNotFound;
+            const target = try self.findGroup(scope, source_view, wrap) orelse return null;
+            return target.interface();
         }
 
         pub fn findGroup(self: *Self, scope: editor_groups.IFindGroupScope, source: *GroupView, wrap: bool) !?*GroupView {
@@ -483,6 +504,7 @@ pub fn EditorPart(comptime GroupView: type) type {
 
         fn onGroupDidFocus(view: *GroupView, self: *Self) anyerror!void {
             self.service.activateGroup(view.group);
+            try self.on_did_focus.fire({});
         }
 
         fn findDivider(
@@ -701,11 +723,23 @@ test "EditorPart: a focused group becomes the active group" {
     const second = try part.splitGroup(first, .horizontal, false);
     try std.testing.expectEqual(second, part.activeView().?);
 
+    const Observer = struct {
+        part: *TestPart,
+        seen: ?*TestView = null,
+
+        fn didFocus(_: void, observer: *@This()) !void {
+            observer.seen = observer.part.activeView();
+        }
+    };
+    var observer = Observer{ .part = part };
+    _ = try part.on_did_focus.listen(&observer, Observer.didFocus);
     first.focus();
+    try std.testing.expectEqual(first, observer.seen.?);
     try std.testing.expectEqual(first.group, service.activeGroup());
     try std.testing.expectEqual(first, part.activeView().?);
 
     second.focus();
+    try std.testing.expectEqual(second, observer.seen.?);
     try std.testing.expectEqual(second.group, service.activeGroup());
     try std.testing.expectEqual(second, part.activeView().?);
 }

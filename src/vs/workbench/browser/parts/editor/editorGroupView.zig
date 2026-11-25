@@ -310,6 +310,15 @@ pub fn EditorGroupView(comptime View: type) type {
             if (pane != previous) self.group.service.on_did_visible_editors_change.fire({}) catch {};
         }
 
+        pub fn interface(self: *Self) editor_groups.IEditorGroup {
+            return .{ .context = self, .id = self.group.id, .focus_fn = struct {
+                fn focus(context: *anyopaque) void {
+                    const view: *Self = @ptrCast(@alignCast(context));
+                    view.focus();
+                }
+            }.focus };
+        }
+
         /// Upstream `EditorGroupView.focus()`: pass focus to the active editor
         /// pane, then fire `onDidFocus`. An empty group focuses its container
         /// upstream; the terminal group has no focusable container, so only the

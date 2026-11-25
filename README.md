@@ -1316,7 +1316,8 @@ console API for raw mode, sizing and input polling.
 - Startup creates the main terminal document and the editor part before the first frame.
   Editor groups mount their active panes beneath the editor part’s grid. Directional
   focus chooses the most recently active group sharing the requested edge. At the
-  outside edge, focus wraps within the same row or column.
+  outside edge, focus wraps within the same row or column. The group focus actions
+  register Ctrl+1 and the Ctrl+K, Ctrl+Arrow chords with the keybinding service.
 - An empty editor group centers a cell-art watermark. The sole empty group
   also shows Show All Commands, Toggle Terminal, and Find in Files with the
   current terminal keybindings. Click a row or use Tab, the arrow keys, and

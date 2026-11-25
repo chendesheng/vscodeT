@@ -778,6 +778,15 @@ test "Workbench: editor group focus, new group and close group commands" {
     try std.testing.expect(second != first);
     try std.testing.expect(second.activeTab() == null);
 
+    const first_group = ui.KeyEvent{ .key = .{ .char = '1' }, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&first_group));
+    try std.testing.expectEqual(first, workbench.activePane().?);
+    const chord = ui.KeyEvent{ .key = .{ .char = 'k' }, .mods = .{ .ctrl = true } };
+    const right = ui.KeyEvent{ .key = .right, .mods = .{ .ctrl = true } };
+    try std.testing.expect(try workbench.handleGlobalKey(&chord));
+    try std.testing.expect(try workbench.handleGlobalKey(&right));
+    try std.testing.expectEqual(second, workbench.activePane().?);
+
     _ = try workbench.commands.execute("workbench.action.focusLeftGroup");
     try std.testing.expect(workbench.activePane().? == first);
     _ = try workbench.commands.execute("workbench.action.focusRightGroup");
