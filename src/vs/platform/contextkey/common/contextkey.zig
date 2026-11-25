@@ -1572,6 +1572,7 @@ pub const ContextKeyService = struct {
     keys: std.array_list.Managed(*KeyHandle),
     listeners: std.array_list.Managed(StoredListener),
     onDidChangeContext: Emitter(ContextKeyChangeEvent),
+    configuration_context: ?IContext = null,
 
     const KeyHandle = struct {
         service: *ContextKeyService,
@@ -1632,6 +1633,7 @@ pub const ContextKeyService = struct {
     }
 
     pub fn getValue(self: *ContextKeyService, key: []const u8) ContextKeyValue {
+        if (std.mem.startsWith(u8, key, "config.")) if (self.configuration_context) |context| return context.getValue(key);
         return self.values.get(key) orelse .{ .undefined_value = {} };
     }
 

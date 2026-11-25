@@ -1,4 +1,4 @@
-// Port of the centered layout and editor view resize actions from src/vs/workbench/browser/actions/layoutActions.ts.
+// Port of the centered layout, editor view resize and Zen Mode tab actions from src/vs/workbench/browser/actions/layoutActions.ts.
 const actions = @import("../../../platform/actions/common/actions.zig");
 const ServicesAccessor = @import("../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const layout = @import("../../services/layout/browser/layoutService.zig");
@@ -33,4 +33,35 @@ pub const resize_actions = [_]actions.Action2{
     resizeAction("workbench.action.decreaseViewWidth", "Decrease Editor Width", -4, 0),
     resizeAction("workbench.action.increaseViewHeight", "Increase Editor Height", 0, 2),
     resizeAction("workbench.action.decreaseViewHeight", "Decrease Editor Height", 0, -2),
+};
+
+const configuration = @import("../../../platform/configuration/common/configuration.zig");
+const Expr = @import("../../../platform/contextkey/common/contextkey.zig").Expr;
+const zen = @import("../workbench.zenMode.contribution.zig");
+const in_zen_mode = Expr{ .Defined = "inZenMode" };
+
+/// AbstractSetShowTabsAction: only offer a different tab mode while Zen
+/// Mode is active. The config.* keys are provided by the context service.
+fn zenTabsAction(comptime id: []const u8, comptime title: []const u8, comptime description: []const u8, comptime mode: layout.EditorTabsMode) actions.Action2 {
+    const Condition = struct {
+        const differs = Expr{ .NotEquals = .{ .key = "config." ++ layout.ZenModeSettings.show_tabs, .value = .{ .string = zen.showTabsValue(mode) } } };
+        const expr = Expr{ .And = @constCast(&[_]*const Expr{ &in_zen_mode, &differs }) };
+    };
+    return .{
+        .command = .{ .id = id, .title = title, .category = zen.category, .tooltip = description, .precondition = &Condition.expr },
+        .f1 = true,
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, accessor: ServicesAccessor) !void {
+                const service = try accessor.get(configuration.configuration_service_id);
+                try service.updateValue(layout.ZenModeSettings.show_tabs, .{ .string = zen.showTabsValue(mode) }, .USER);
+            }
+        }.run,
+    };
+}
+
+pub const zen_tabs_actions = [_]actions.Action2{
+    zenTabsAction(zen.zen_hide_editor_tabs_id, zen.zen_hide_editor_tabs_label, zen.zen_hide_editor_tabs_description, .none),
+    zenTabsAction(zen.zen_show_multiple_editor_tabs_id, zen.zen_show_multiple_editor_tabs_label, zen.zen_show_multiple_editor_tabs_description, .multiple),
+    zenTabsAction(zen.zen_show_single_editor_tab_id, zen.zen_show_single_editor_tab_label, zen.zen_show_single_editor_tab_description, .single),
 };

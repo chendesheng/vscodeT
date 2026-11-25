@@ -2061,27 +2061,29 @@ test "Workbench: zen tab actions are only available in zen mode" {
     try workbench.setUserSettingsPaths(&.{settings_path});
     workbench.ensureConfigurationReady();
 
-    const hide = workbench.commands.get(zen_mode_contribution.zen_hide_editor_tabs_id).?;
-    const multiple = workbench.commands.get(zen_mode_contribution.zen_show_multiple_editor_tabs_id).?;
-    const single = workbench.commands.get(zen_mode_contribution.zen_show_single_editor_tab_id).?;
-    try std.testing.expect(!hide.precondition.?(hide.context));
-    try std.testing.expect(!multiple.precondition.?(multiple.context));
-    try std.testing.expect(!single.precondition.?(single.context));
+    const menu_id = @import("../vs/platform/actions/common/actions.zig").menu_ids.CommandPalette;
+    const keys = try workbench.ensureContextKeys();
+    const hide = workbench.commands.menus.getMenuItemPtr(menu_id, zen_mode_contribution.zen_hide_editor_tabs_id).?;
+    const multiple = workbench.commands.menus.getMenuItemPtr(menu_id, zen_mode_contribution.zen_show_multiple_editor_tabs_id).?;
+    const single = workbench.commands.menus.getMenuItemPtr(menu_id, zen_mode_contribution.zen_show_single_editor_tab_id).?;
+    try std.testing.expect(!keys.contextMatchesRules(hide.command.precondition.?));
+    try std.testing.expect(!keys.contextMatchesRules(multiple.command.precondition.?));
+    try std.testing.expect(!keys.contextMatchesRules(single.command.precondition.?));
 
     try workbench.toggleZenMode(false, false);
-    try std.testing.expect(hide.precondition.?(hide.context));
-    try std.testing.expect(!multiple.precondition.?(multiple.context));
-    try std.testing.expect(single.precondition.?(single.context));
+    try std.testing.expect(keys.contextMatchesRules(hide.command.precondition.?));
+    try std.testing.expect(!keys.contextMatchesRules(multiple.command.precondition.?));
+    try std.testing.expect(keys.contextMatchesRules(single.command.precondition.?));
 
     try workbench.commands.execute(zen_mode_contribution.zen_hide_editor_tabs_id);
-    try std.testing.expect(!hide.precondition.?(hide.context));
-    try std.testing.expect(multiple.precondition.?(multiple.context));
-    try std.testing.expect(single.precondition.?(single.context));
+    try std.testing.expect(!keys.contextMatchesRules(hide.command.precondition.?));
+    try std.testing.expect(keys.contextMatchesRules(multiple.command.precondition.?));
+    try std.testing.expect(keys.contextMatchesRules(single.command.precondition.?));
 
     try workbench.commands.execute(zen_mode_contribution.zen_show_single_editor_tab_id);
-    try std.testing.expect(hide.precondition.?(hide.context));
-    try std.testing.expect(multiple.precondition.?(multiple.context));
-    try std.testing.expect(!single.precondition.?(single.context));
+    try std.testing.expect(keys.contextMatchesRules(hide.command.precondition.?));
+    try std.testing.expect(keys.contextMatchesRules(multiple.command.precondition.?));
+    try std.testing.expect(!keys.contextMatchesRules(single.command.precondition.?));
 }
 
 test "Workbench: zen mode keybindings toggle and exit" {
@@ -9377,4 +9379,39 @@ test "Editor close event records the actual sequential index for reopen history"
     try std.testing.expectEqual(@as(usize, 2), closed.index);
     try std.testing.expect(wb.reopenLastClosedEditor());
     try std.testing.expectEqualStrings("a.txt", pane.group.model.getEditorByIndex(2).?.getName());
+}
+
+test "Zen tab actions derive palette preconditions from configuration context events" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try seedFile(allocator, io, &tmp, "sample.txt", "sample");
+    defer allocator.free(file);
+    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{}");
+    defer allocator.free(settings);
+    const replacement = try seedFile(allocator, io, &tmp, "replacement.json", "{\"zenMode.showTabs\":\"single\"}");
+    defer allocator.free(replacement);
+    const window = try TestWindow.init(allocator, io, &.{file}, 80, 20);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    const keys = try wb.ensureContextKeys();
+    const config_key = "config.zenMode.showTabs";
+    try std.testing.expectEqualStrings("multiple", keys.getValue(config_key).string);
+    const zen = @import("../vs/workbench/browser/workbench.zenMode.contribution.zig");
+    const menu_id = @import("../vs/platform/actions/common/actions.zig").menu_ids.CommandPalette;
+    const hide = wb.commands.menus.getMenuItemPtr(menu_id, zen.zen_hide_editor_tabs_id).?;
+    const multiple = wb.commands.menus.getMenuItemPtr(menu_id, zen.zen_show_multiple_editor_tabs_id).?;
+    try std.testing.expect(!keys.contextMatchesRules(hide.command.precondition));
+    try wb.toggleZenMode(false, false);
+    try std.testing.expect(keys.contextMatchesRules(hide.command.precondition));
+    try std.testing.expect(!keys.contextMatchesRules(multiple.command.precondition));
+    try wb.commands.execute(zen.zen_hide_editor_tabs_id);
+    try std.testing.expectEqualStrings("none", keys.getValue(config_key).string);
+    try std.testing.expect(!keys.contextMatchesRules(hide.command.precondition));
+    try std.testing.expect(keys.contextMatchesRules(multiple.command.precondition));
+    try wb.setUserSettingsPaths(&.{replacement});
+    try std.testing.expectEqualStrings("single", keys.getValue(config_key).string);
+    try std.testing.expect(keys.contextMatchesRules(hide.command.precondition));
 }

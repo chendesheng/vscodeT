@@ -420,7 +420,12 @@ pub const ConfigurationService = struct {
     }
 
     pub fn interface(self: *ConfigurationService) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValueForInterface };
+        return .{ .context = self, .get_value = getValueForInterface, .update_value = updateValueForInterface, .on_did_change_configuration = &self.change_emitter };
+    }
+
+    fn updateValueForInterface(context: *anyopaque, key: []const u8, value: ?Value, target: configuration.ConfigurationTarget) !void {
+        const self: *ConfigurationService = @ptrCast(@alignCast(context));
+        try self.updateValue(key, value, target);
     }
 
     fn getValueForInterface(context: *anyopaque, key: []const u8) ?*const Value {
@@ -700,6 +705,55 @@ pub const ConfigurationService = struct {
 
     fn readSettingsFile(self: *ConfigurationService, path: []const u8) !?[]u8 {
         return readSettingsFileOpt(self.allocator, self.io, path);
+    }
+};
+
+/// The terminal can replace the workspace/profile settings source while a
+/// window is open. Keep the IConfigurationService identity and event stable
+/// for contributed commands and context consumers, as in VS Code.
+pub const ConfigurationServiceBinding = struct {
+    service: ?*ConfigurationService = null,
+    listener: ?event.SignalSubscription = null,
+    on_did_change_configuration: Emitter(configuration.Change),
+
+    pub fn init(allocator: Allocator) ConfigurationServiceBinding {
+        return .{ .on_did_change_configuration = .init(allocator) };
+    }
+
+    pub fn deinit(self: *ConfigurationServiceBinding) void {
+        if (self.listener) |listener| listener.dispose();
+        self.on_did_change_configuration.deinit();
+    }
+
+    pub fn bind(self: *ConfigurationServiceBinding, service: ?*ConfigurationService) !void {
+        if (self.service == service) return;
+        if (self.listener) |listener| listener.dispose();
+        self.listener = null;
+        self.service = service;
+        if (service) |current| self.listener = try current.change_emitter.listenDisposable(self, forwardChange);
+        // Replacing the full settings model invalidates config context values
+        // the same way an upstream default-configuration reset does.
+        self.on_did_change_configuration.fire(.{ .source = .DEFAULT, .keys = &.{} }) catch {};
+    }
+
+    pub fn interface(self: *ConfigurationServiceBinding) configuration.IConfigurationService {
+        return .{ .context = self, .get_value = getValue, .update_value = updateValue, .on_did_change_configuration = &self.on_did_change_configuration };
+    }
+
+    fn getValue(context: *anyopaque, key: []const u8) ?*const Value {
+        const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
+        const service = self.service orelse return null;
+        return service.getValue(key, .{});
+    }
+
+    fn updateValue(context: *anyopaque, key: []const u8, value: ?Value, target: configuration.ConfigurationTarget) !void {
+        const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
+        const service = self.service orelse return error.ConfigurationUnavailable;
+        try service.updateValue(key, value, target);
+    }
+
+    fn forwardChange(change: configuration.Change, self: *ConfigurationServiceBinding) !void {
+        try self.on_did_change_configuration.fire(change);
     }
 };
 

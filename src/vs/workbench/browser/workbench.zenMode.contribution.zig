@@ -10,8 +10,8 @@
 // - `zenMode.fullScreen` has no terminal equivalent: the TUI cannot full-screen
 //   its host terminal window. `zenMode.centerLayout` is implemented as a
 //   centered cell layout in `Layout` (upstream's `CenteredViewLayout` ratio
-//   adapted to whole cells). `zenMode.silentNotifications` has no effect because
-//   the terminal workbench has no notification service.
+//   adapted to whole cells). The notification service honors
+//   zenMode.silentNotifications with the upstream exit-info ownership rule.
 // - Workspace layout storage preserves zen mode and its exit information.
 
 const std = @import("std");

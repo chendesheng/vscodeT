@@ -87,11 +87,21 @@ pub const ConfigurationValue = struct {
     override_identifiers: []const []const u8 = &.{},
 };
 
-/// The portable subset of upstream `IConfigurationService`: reading the
-/// effective value of a settings key. Concrete services expose `interface()`.
+/// The portable subset of upstream IConfigurationService: read/update a
+/// setting and observe its change event. Read-only test adapters may omit
+/// editing and notification operations.
+pub const configuration_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(IConfigurationService, "configurationService");
+
 pub const IConfigurationService = struct {
     context: *anyopaque,
     get_value: *const fn (context: *anyopaque, key: []const u8) ?*const Value,
+    update_value: ?*const fn (*anyopaque, []const u8, ?Value, ConfigurationTarget) anyerror!void = null,
+    on_did_change_configuration: ?*@import("../../../base/common/event.zig").Emitter(Change) = null,
+
+    pub fn updateValue(self: IConfigurationService, key: []const u8, value: ?Value, target: ConfigurationTarget) !void {
+        const update = self.update_value orelse return error.ConfigurationReadOnly;
+        try update(self.context, key, value, target);
+    }
 
     pub fn getValue(self: IConfigurationService, key: []const u8) ?*const Value {
         return self.get_value(self.context, key);

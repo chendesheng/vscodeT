@@ -423,6 +423,8 @@ pub const TerminalWorkbench = struct {
     range_highlights: ?*RangeHighlightDecorations = null,
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
+    configuration_binding: configuration_mod.ConfigurationServiceBinding,
+    configuration_api: @import("../vs/platform/configuration/common/configuration.zig").IConfigurationService,
     settings_watcher: ?*SettingsWatcher = null,
     /// Window file service shared by workspace and configuration watchers.
     file_watcher_service: ?*FileWatcherService = null,
@@ -442,6 +444,7 @@ pub const TerminalWorkbench = struct {
     global_service: ?*keybinding_service.KeybindingService,
     statusbar_service: ?*keybinding_service.KeybindingService,
     context_keys: ?*context_key_mod.ContextKeyService,
+    configuration_context: @import("../vs/platform/contextkey/browser/contextKeyService.zig").ConfigAwareContextValuesContainer,
     workbench_context: @import("../vs/workbench/browser/contextkeys.zig").WorkbenchContextKeysHandler,
     terminal_context: @import("../vs/workbench/contrib/terminal/browser/terminalContextKeys.zig").TerminalContextKeysHandler,
     terminal_action_services: terminal_actions.TerminalActionServices,
@@ -611,6 +614,8 @@ pub const TerminalWorkbench = struct {
         self.workspace = try WorkspaceContextService.initEmpty(allocator, "workspace");
         errdefer self.workspace.deinit();
         self.configuration = null;
+        self.configuration_binding = .init(allocator);
+        errdefer self.configuration_binding.deinit();
         self.settings_watcher = null;
         self.file_watcher_service = null;
         self.workspace_watcher = null;
@@ -1116,6 +1121,8 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/services/preferences/common/preferences.zig").preferences_service_id, &self.preferences_api);
         self.dialog_api = self.dialog_service.interface();
         _ = try self.services.set(dialogs.dialog_service_id, &self.dialog_api);
+        self.configuration_api = self.configuration_binding.interface();
+        _ = try self.services.set(@import("../vs/platform/configuration/common/configuration.zig").configuration_service_id, &self.configuration_api);
         self.host_api = self.host_service.interface();
         self.storage_api = self.notification_storage.interface();
         _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
@@ -1552,36 +1559,7 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.toggle_action);
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.exit_action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/actions/layoutActions.zig").toggle_centered_layout_action);
-        const before_scm = [_]commands_mod.CommandInfo{
-            .{
-                .id = zen_mode_contribution.zen_hide_editor_tabs_id,
-                .label = zen_mode_contribution.zen_hide_editor_tabs_label,
-                .category = zen_mode_contribution.category,
-                .description = zen_mode_contribution.zen_hide_editor_tabs_description,
-                .precondition = zenTabsHideAvailable,
-                .context = self,
-                .run = commandZenHideEditorTabs,
-            },
-            .{
-                .id = zen_mode_contribution.zen_show_multiple_editor_tabs_id,
-                .label = zen_mode_contribution.zen_show_multiple_editor_tabs_label,
-                .category = zen_mode_contribution.category,
-                .description = zen_mode_contribution.zen_show_multiple_editor_tabs_description,
-                .precondition = zenTabsMultipleAvailable,
-                .context = self,
-                .run = commandZenShowMultipleEditorTabs,
-            },
-            .{
-                .id = zen_mode_contribution.zen_show_single_editor_tab_id,
-                .label = zen_mode_contribution.zen_show_single_editor_tab_label,
-                .category = zen_mode_contribution.category,
-                .description = zen_mode_contribution.zen_show_single_editor_tab_description,
-                .precondition = zenTabsSingleAvailable,
-                .context = self,
-                .run = commandZenShowSingleEditorTab,
-            },
-        };
-        for (before_scm) |command| try self.commands.register(command);
+        for (@import("../vs/workbench/browser/actions/layoutActions.zig").zen_tabs_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (panel_actions.focus_and_switch_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.git_commands.refreshActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const scm_menus = [_]commands_mod.CommandInfo{
@@ -1776,6 +1754,7 @@ pub const TerminalWorkbench = struct {
         if (self.statusbar_service) |service| service.deinit();
         self.user_keybindings.destroy();
         if (self.context_keys) |service| {
+            self.configuration_context.deinit();
             service.deinit();
             self.allocator.destroy(service);
         }
@@ -1804,6 +1783,7 @@ pub const TerminalWorkbench = struct {
         }
         self.contributions.deinit();
         self.lifecycle.deinit();
+        self.configuration_binding.deinit();
         if (self.configuration) |configuration| configuration.deinit();
         freeOwnedPaths(self.allocator, self.user_settings_paths);
         self.workspace.deinit();
@@ -1991,6 +1971,7 @@ pub const TerminalWorkbench = struct {
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             if (self.core.notification_controller) |controller| try controller.attachConfiguration(null);
+            try self.configuration_binding.bind(null);
             configuration.deinit();
             self.configuration = null;
         }
@@ -2030,8 +2011,7 @@ pub const TerminalWorkbench = struct {
     /// is created. The app derives them from the VS Code profile and the
     /// terminal's own config directory; later layers override earlier ones.
     pub fn setUserConfigurationValue(self: *TerminalWorkbench, key: []const u8, value: ?std.json.Value) !void {
-        const configuration = self.configuration orelse return error.ConfigurationUnavailable;
-        try configuration.updateValue(key, value, @import("../vs/platform/configuration/common/configuration.zig").ConfigurationTarget.USER);
+        try self.configuration_api.updateValue(key, value, .USER);
     }
 
     pub fn setUserSettingsPaths(self: *TerminalWorkbench, paths: []const []const u8) !void {
@@ -2054,6 +2034,7 @@ pub const TerminalWorkbench = struct {
             self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             if (self.core.notification_controller) |controller| try controller.attachConfiguration(null);
+            try self.configuration_binding.bind(null);
             configuration.deinit();
             self.configuration = null;
             try self.ensureConfiguration();
@@ -2093,6 +2074,7 @@ pub const TerminalWorkbench = struct {
                 },
             },
         );
+        try self.configuration_binding.bind(self.configuration);
         const themes = try self.ensureThemeService();
         try themes.setConfiguration(self.configuration.?);
         try self.git_model.setConfiguration(self.configuration);
@@ -3965,6 +3947,9 @@ pub const TerminalWorkbench = struct {
         errdefer self.allocator.destroy(service);
         service.* = context_key_mod.ContextKeyService.init(self.allocator);
         errdefer service.deinit();
+        self.configuration_context = .init(self.allocator, service, self.configuration_api);
+        errdefer self.configuration_context.deinit();
+        try self.configuration_context.registerListeners();
         try self.workbench_context.init(service.interface(), self.layout.interface(), &self.working_copy_service);
         errdefer self.workbench_context.deinit();
         try self.terminal_context.init(service.interface(), self.part, &self.panel_part, self.layout.interface());
@@ -5270,41 +5255,6 @@ fn commandViewScm(context: *anyopaque) anyerror!void {
     if (!try self.showActivityById("scm")) return;
     self.focusSidebar();
     if (self.scm.changes) |view| view.refresh();
-}
-
-fn zenTabsHideAvailable(context: *anyopaque) bool {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    return self.layout.isZenModeActive() and self.zenModeConfiguration().show_tabs != .none;
-}
-
-fn zenTabsMultipleAvailable(context: *anyopaque) bool {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    return self.layout.isZenModeActive() and self.zenModeConfiguration().show_tabs != .multiple;
-}
-
-fn zenTabsSingleAvailable(context: *anyopaque) bool {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    return self.layout.isZenModeActive() and self.zenModeConfiguration().show_tabs != .single;
-}
-
-fn commandZenSetEditorTabs(context: *anyopaque, mode: layout_service_mod.EditorTabsMode) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.setUserConfigurationValue(
-        layout_service_mod.ZenModeSettings.show_tabs,
-        .{ .string = zen_mode_contribution.showTabsValue(mode) },
-    );
-}
-
-fn commandZenHideEditorTabs(context: *anyopaque) anyerror!void {
-    try commandZenSetEditorTabs(context, .none);
-}
-
-fn commandZenShowMultipleEditorTabs(context: *anyopaque) anyerror!void {
-    try commandZenSetEditorTabs(context, .multiple);
-}
-
-fn commandZenShowSingleEditorTab(context: *anyopaque) anyerror!void {
-    try commandZenSetEditorTabs(context, .single);
 }
 
 fn commandScmMenu(context: *anyopaque) anyerror!void {

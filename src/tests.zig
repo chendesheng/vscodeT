@@ -624,6 +624,7 @@ comptime {
     _ = @import("./vs/platform/contextkey/test/common/scanner.test.zig");
     _ = @import("./vs/platform/contextkey/test/common/parser.test.zig");
     _ = @import("./vs/platform/contextkey/test/common/contextkey.test.zig");
+    _ = @import("./vs/platform/contextkey/test/browser/contextkey.test.zig");
     _ = @import("./vs/editor/common/languages/languageConfigurationRegistry.zig");
     _ = @import("./vs/editor/browser/view/renderingContext.zig");
     _ = @import("./vs/editor/browser/view.zig");
