@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const layout_mod = @import("../../browser/layout.zig");
-const LayoutModel = layout_mod.LayoutModel;
+const LayoutModel = layout_mod.Layout;
 const Parts = layout_mod.Parts;
 const Position = layout_mod.Position;
 
@@ -22,11 +22,11 @@ test "LayoutModel: defaults and part visibility" {
     try std.testing.expect(layout.isVisible(.statusbar));
     try std.testing.expectEqual(Position.left, layout.sidebarPosition());
 
-    try layout.setVisible(.sidebar, false);
+    try layout.setPartHidden(true, .sidebar);
     try std.testing.expect(!layout.isVisible(.sidebar));
-    try layout.setVisible(.sidebar, false);
+    try layout.setPartHidden(true, .sidebar);
     try std.testing.expect(!layout.isVisible(.sidebar));
-    try layout.setVisible(.sidebar, true);
+    try layout.setPartHidden(false, .sidebar);
     try std.testing.expect(layout.isVisible(.sidebar));
 }
 
@@ -87,4 +87,43 @@ test "LayoutModel: zen mode and centered layout state fire their events" {
     try std.testing.expect(layout.isMainEditorCentered());
     try std.testing.expect(layout.isMainEditorCenteredEffective());
     try std.testing.expectEqual(@as(usize, 1), centered_changes);
+}
+
+test "registered panel changes reach layout listeners in grid notification order" {
+    const PanelPart = @import("../../browser/parts/panel/panelPart.zig").PanelPart;
+    const service = @import("../../services/layout/browser/layoutService.zig");
+    var layout = layout_mod.Layout.init(std.testing.allocator);
+    defer layout.deinit();
+    const api = layout.interface();
+    var panel = PanelPart.init(std.testing.allocator);
+    var panel_alive = true;
+    defer if (panel_alive) panel.deinit();
+    try panel.base.register(api);
+    try layout.createWorkbenchLayout();
+    try std.testing.expectEqual(&panel.base, try layout.getPart(.panel));
+    const Trace = struct {
+        layout: *layout_mod.Layout,
+        events: [4]u8 = undefined,
+        count: usize = 0,
+        fn visibility(event: service.IPartVisibilityChangeEvent, self: *@This()) !void {
+            try std.testing.expectEqual(Parts.panel, event.part_id);
+            try std.testing.expectEqual(event.visible, self.layout.isVisible(.panel));
+            self.events[self.count] = if (event.visible) 'V' else 'H';
+            self.count += 1;
+        }
+        fn changed(_: void, self: *@This()) !void {
+            self.events[self.count] = 'L';
+            self.count += 1;
+        }
+    };
+    var trace = Trace{ .layout = &layout };
+    _ = try api.on_did_change_part_visibility.listen(&trace, Trace.visibility);
+    _ = try layout.on_did_change.listen(&trace, Trace.changed);
+    try api.setPartHidden(false, .panel);
+    try api.setPartHidden(false, .panel);
+    try panel.setVisible(false);
+    try std.testing.expectEqualStrings("VLHL", trace.events[0..trace.count]);
+    panel.deinit();
+    panel_alive = false;
+    try std.testing.expectError(error.UnknownPart, layout.getPart(.panel));
 }

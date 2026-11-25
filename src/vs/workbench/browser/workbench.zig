@@ -73,7 +73,7 @@ const sidebar_part_mod = @import("./parts/sidebar/sidebarPart.zig");
 const SidebarPart = sidebar_part_mod.SidebarPart;
 const layout_service_mod = @import("../services/layout/browser/layoutService.zig");
 const workbench_layout = @import("./layout.zig");
-const LayoutModel = workbench_layout.LayoutModel;
+const Layout = workbench_layout.Layout;
 const WorkbenchGrid = workbench_layout.WorkbenchGrid;
 const statusbar_mod = @import("./parts/statusbar/statusbarPart.zig");
 const statusbar_actions = @import("./parts/statusbar/statusbarActions.zig");
@@ -617,7 +617,7 @@ pub const Workbench = struct {
     explorer_panes: ?[]view_pane_container_mod.Pane = null,
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
-    layout_model: LayoutModel,
+    layout: Layout,
     /// Zen mode's temporary `editor.lineNumbers: off` override. Upstream
     /// applies `updateOptions({ lineNumbers })` to every visible editor and
     /// resets it from configuration when zen mode exits. The terminal applies
@@ -1063,8 +1063,8 @@ pub const Workbench = struct {
         self.range_highlights = null;
         self.zen_hide_line_numbers = false;
         self.zen_applied_config = null;
-        self.layout_model = LayoutModel.init(self.allocator);
-        errdefer self.layout_model.deinit();
+        self.layout = Layout.init(self.allocator);
+        errdefer self.layout.deinit();
         self.activity_bar_part = ActivityBarPart.init(self.allocator);
         errdefer self.activity_bar_part.deinit();
         self.sidebar_part = SidebarPart.init(self.allocator);
@@ -1072,6 +1072,10 @@ pub const Workbench = struct {
         self.sidebar_part.attachActivityBar(&self.activity_bar_part);
         self.panel_part = PanelPart.init(self.allocator);
         errdefer self.panel_part.deinit();
+        const layout_service = self.layout.interface();
+        try self.sidebar_part.base.register(layout_service);
+        try self.panel_part.base.register(layout_service);
+        try self.activity_bar_part.base.register(layout_service);
         self.view_containers_registry = views_mod.ViewContainersRegistry.init(self.allocator);
         errdefer self.view_containers_registry.deinit();
         self.view_descriptor_service = ViewDescriptorService.init(self.allocator, &self.view_containers_registry);
@@ -1080,13 +1084,12 @@ pub const Workbench = struct {
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
         self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
+        try self.statusbar.main_part.base.register(layout_service);
+        try self.layout.createWorkbenchLayout();
         self.activity_service = ActivityService.init(self.allocator);
         errdefer self.activity_service.deinit();
 
         try self.setSidebarWidth(28);
-        try self.layout_model.setVisible(.sidebar, false);
-        try self.layout_model.setVisible(.activitybar, true);
-        try self.layout_model.setVisible(.statusbar, true);
 
         for (activity_bar_mod.default_activities) |activity| {
             try self.activity_bar_part.addActivity(activity);
@@ -1304,7 +1307,7 @@ pub const Workbench = struct {
         self.view_descriptor_service.deinit();
         self.view_containers_registry.deinit();
         self.activity_bar_part.deinit();
-        self.layout_model.deinit();
+        self.layout.deinit();
     }
 
     fn initQuickAccess(self: *Workbench) !void {
@@ -1982,23 +1985,15 @@ pub const Workbench = struct {
     }
 
     pub fn statusBarVisible(self: *const Workbench) bool {
-        return self.layout_model.isVisible(.statusbar) and self.rows >= 2;
+        return self.layout.statusBarVisible(self.rows);
     }
 
-    /// The workbench status row in global cells. It spans the full window,
-    /// including under the sidebar and activity bar.
     pub fn statusBarRect(self: *const Workbench) ui.Rect {
-        if (!self.statusBarVisible()) return .{};
-        return .{
-            .x = 0,
-            .y = @floatFromInt(self.rows - 1),
-            .w = @floatFromInt(self.cols),
-            .h = 1,
-        };
+        return self.layout.statusBarRect(self.cols, self.rows);
     }
 
     fn workbenchRows(self: *const Workbench) usize {
-        return if (self.statusBarVisible()) self.rows - 1 else self.rows;
+        return self.layout.workbenchRows(self.rows);
     }
 
     /// The bottom panel is visible with an active container. `hideIfEmpty`
@@ -2037,7 +2032,7 @@ pub const Workbench = struct {
         return std.math.clamp(wanted, limits.minimum, limits.maximum);
     }
 
-    fn workbenchGridLayout(self: *const Workbench) WorkbenchGrid.Layout {
+    fn workbenchGridLayout(self: *const Workbench) WorkbenchGrid.Rects {
         return WorkbenchGrid.layout(.{
             .w = @floatFromInt(self.cols),
             .h = @floatFromInt(self.workbenchRows()),
@@ -2090,7 +2085,7 @@ pub const Workbench = struct {
     }
 
     fn sidebarWidth(self: *const Workbench) usize {
-        return self.clampSidebarWidth(self.layout_model.size(.sidebar));
+        return self.clampSidebarWidth(self.layout.size(.sidebar));
     }
 
     fn sidebarMinimum(self: *const Workbench) usize {
@@ -2120,19 +2115,18 @@ pub const Workbench = struct {
     }
 
     fn sidebarShown(self: *const Workbench) bool {
-        return self.layout_model.isVisible(.sidebar) and self.sidebar != null and
+        return self.layout.isVisible(.sidebar) and self.sidebar != null and
             self.cols > self.activityBarWidth() + self.sidebarMinimum();
     }
 
     fn setSidebarVisible(self: *Workbench, visible: bool) !void {
-        try self.layout_model.setVisible(.sidebar, visible);
-        try self.sidebar_part.setVisible(visible);
+        try self.layout.setPartHidden(!visible, .sidebar);
         if (visible) try self.syncActivityBarVisibility();
     }
 
     fn setSidebarWidth(self: *Workbench, width: usize) !void {
         try self.sidebar_part.setWidth(width);
-        try self.layout_model.setSize(.sidebar, self.sidebar_part.width);
+        try self.layout.setSize(.sidebar, self.sidebar_part.width);
     }
 
     /// Port of the composite action collection: the active side bar view
@@ -2826,7 +2820,7 @@ pub const Workbench = struct {
             self.focus = .sidebar;
             return;
         }
-        const visible = !self.layout_model.isVisible(.sidebar);
+        const visible = !self.layout.isVisible(.sidebar);
         try self.setSidebarVisible(visible);
         self.focus = if (visible) .sidebar else .editor;
         self.statusbar.main_part.clearFocus();
@@ -2944,7 +2938,7 @@ pub const Workbench = struct {
     /// `TogglePanelAction`.
     pub fn hidePanel(self: *Workbench) void {
         self.panel_part.setHovered(null);
-        self.panel_part.setVisible(false) catch {};
+        self.layout.setPartHidden(true, .panel) catch {};
         if (self.focus == .terminal or self.focus == .problems) {
             self.focus = .editor;
         }
@@ -3883,7 +3877,7 @@ pub const Workbench = struct {
 
     fn editorLayoutRect(self: *const Workbench) ui.Rect {
         const base = self.editorAreaRect();
-        if (!self.layout_model.isMainEditorCenteredEffective()) return base;
+        if (!self.layout.isMainEditorCenteredEffective()) return base;
         const width = ui.cell.snap(base.w);
         const margin = @as(usize, @intFromFloat(@floor(@as(f64, @floatFromInt(width)) * centered_layout_margin_ratio)));
         if (width <= margin * 2 + centered_layout_min_width) return base;
@@ -3896,7 +3890,7 @@ pub const Workbench = struct {
     }
 
     fn renderCenteredLayoutMargins(self: *Workbench) void {
-        if (!self.layout_model.isMainEditorCenteredEffective()) return;
+        if (!self.layout.isMainEditorCenteredEffective()) return;
         const area = self.editorAreaRect();
         const centered = self.editorLayoutRect();
         if (centered.x <= area.x and centered.w >= area.w) return;
@@ -3934,15 +3928,16 @@ pub const Workbench = struct {
 
     fn layoutAll(self: *Workbench) void {
         self.hovered_sash = null;
-        if (self.layout_model.workbench_grid.activeSash()) |sash| {
+        if (self.layout.workbench_grid.activeSash()) |sash| {
             const visible = switch (sash) {
                 .sidebar => self.sidebar != null, // A snapped sidebar keeps pointer capture.
                 .panel => self.panelShown(),
             };
-            if (!visible) self.layout_model.workbench_grid.onSashEnd();
+            if (!visible) self.layout.workbench_grid.onSashEnd();
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
-        if (self.layout_model.isMainEditorCentered()) self.recomputeCenteredEditorLayout();
+        if (self.layout.isMainEditorCentered()) self.recomputeCenteredEditorLayout();
+        self.layout.layout(self.workbenchGridLayout(), self.statusBarRect());
         const rect = self.editorLayoutRect();
         for (self.part.group_views.items) |pane| {
             const suppress_breadcrumbs = if (pane.activeTab()) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
@@ -5745,7 +5740,7 @@ pub const Workbench = struct {
         // Port of `enforcePartOptions({ showTabs })` for zen mode: while zen
         // mode is active the zen configuration supplies the tab mode and the
         // regular `workbench.editor.showTabs` value is restored on exit.
-        if (self.layout_model.isZenModeActive()) {
+        if (self.layout.isZenModeActive()) {
             if (self.zen_applied_config) |config| return config.show_tabs;
             return self.zenModeConfiguration().show_tabs;
         }
@@ -8443,8 +8438,8 @@ pub const Workbench = struct {
         keys.tree_find_open.set(.{ .boolean = false });
         keys.resource_scheme.set(.{ .string = if (terminal_editor_active) "vscode-terminal" else "file" });
         keys.editor_read_only.set(.{ .boolean = if (self.activeTab()) |tab| tab.editor.read_only else false });
-        keys.in_zen_mode.set(.{ .boolean = self.layout_model.isZenModeActive() });
-        keys.is_centered_layout.set(.{ .boolean = self.layout_model.isMainEditorCentered() });
+        keys.in_zen_mode.set(.{ .boolean = self.layout.isZenModeActive() });
+        keys.is_centered_layout.set(.{ .boolean = self.layout.isMainEditorCentered() });
     }
 
     fn getFileIconTheme(self: *const Workbench) file_icon.FileIconThemeData {
@@ -9086,7 +9081,7 @@ pub const Workbench = struct {
     }
 
     pub fn cancelSashDrag(self: *Workbench) bool {
-        const grid = &self.layout_model.workbench_grid;
+        const grid = &self.layout.workbench_grid;
         var sidebar_drag = false;
         if (self.activeSidebarViewContainer()) |container| {
             sidebar_drag = container.header_press != null or container.sash_dragging != null or container.sash_hovered != null;
@@ -9117,7 +9112,7 @@ pub const Workbench = struct {
                 }
             }
         }
-        if (self.layout_model.workbench_grid.activeSash() != null) return self.handleWorkbenchSashMouse(event);
+        if (self.layout.workbench_grid.activeSash() != null) return self.handleWorkbenchSashMouse(event);
         if (if (self.expanded_pane == null) self.part.active_sash else null) |split| {
             switch (event.kind) {
                 .move => {
@@ -9185,7 +9180,7 @@ pub const Workbench = struct {
             self.cols <= self.activityBarWidth() + self.sidebarMinimum()) return false;
         if (!self.sidebarShown()) {
             // The collapsed sash shares the first editor cell beside the rail.
-            return x == self.activityBarWidth() and !self.layout_model.isZenModeActive();
+            return x == self.activityBarWidth() and !self.layout.isZenModeActive();
         }
         if (self.clampSidebarWidth(self.sidebar_part.maximum_width) == self.sidebar_part.minimum_width) return false;
         const frame = self.sidebarFrameRect();
@@ -9255,7 +9250,7 @@ pub const Workbench = struct {
     }
 
     fn workbenchSashHighlighted(self: *const Workbench, sash: WorkbenchGrid.Sash) bool {
-        if (self.layout_model.workbench_grid.activeSash() == sash) return true;
+        if (self.layout.workbench_grid.activeSash() == sash) return true;
         const hovered = self.hovered_sash orelse return false;
         return hovered == .workbench and hovered.workbench == sash;
     }
@@ -9263,7 +9258,7 @@ pub const Workbench = struct {
     /// Mouse adapter for the workbench grid's SplitView boundaries.
     fn handleWorkbenchSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (self.quick_access.isOpen() or event.kind == .wheel) return false;
-        const grid = &self.layout_model.workbench_grid;
+        const grid = &self.layout.workbench_grid;
         if (grid.activeSash()) |sash| {
             if (event.kind == .down) return true;
             if (grid.drag.?.click_y != event.y) grid.drag.?.click_y = null;
@@ -9276,7 +9271,7 @@ pub const Workbench = struct {
             switch (sash) {
                 .sidebar => {
                     const visible = size != 0;
-                    const changed = self.layout_model.isVisible(.sidebar) != visible;
+                    const changed = self.layout.isVisible(.sidebar) != visible;
                     if (changed) {
                         // ViewItem.setVisible caches the size at pointer-down.
                         if (!visible) {
@@ -9286,7 +9281,7 @@ pub const Workbench = struct {
                         self.setSidebarVisible(visible) catch return true;
                     }
                     const width = size -| self.sidebarFrameInset();
-                    if (visible and width != self.layout_model.size(.sidebar)) {
+                    if (visible and width != self.layout.size(.sidebar)) {
                         self.setSidebarWidth(width) catch return true;
                         self.layoutAll();
                     } else if (changed) self.layoutAll();
@@ -9331,7 +9326,7 @@ pub const Workbench = struct {
             .sidebar => .{ .minimum = self.sidebarMinimum(), .maximum = self.sidebar_part.maximum_width +| self.sidebarFrameInset() },
             .panel => self.panelHeightLimits(),
         };
-        self.layout_model.workbench_grid.onSashStart(sash, coordinate, self.workbenchGridLayout(), limits, if (sash == .sidebar) self.editorColumnMinimum() else 0, alt);
+        self.layout.workbench_grid.onSashStart(sash, coordinate, self.workbenchGridLayout(), limits, if (sash == .sidebar) self.editorColumnMinimum() else 0, alt);
     }
 
     fn orderedTabAt(self: *Workbench, pane: *GroupPane, index: usize) ?*Tab {
@@ -10032,7 +10027,7 @@ pub const Workbench = struct {
             .escape => {
                 // Keep upstream's Escape Escape exit chord reachable when the
                 // terminal status bar owns focus in zen mode.
-                if (self.layout_model.isZenModeActive()) return false;
+                if (self.layout.isZenModeActive()) return false;
                 if (part.focusedHandle() != null) {
                     part.clearFocus();
                 } else {
@@ -10107,7 +10102,7 @@ pub const Workbench = struct {
 
         // Let the global Escape Escape chord exit zen mode when the side bar
         // was reopened while zen mode is active.
-        if (event.key == .escape and self.layout_model.isZenModeActive()) return false;
+        if (event.key == .escape and self.layout.isZenModeActive()) return false;
         if (event.key == .escape) {
             if (self.activeSidebarViewContainer()) |container| {
                 if (container.header_press != null) {
@@ -10552,7 +10547,7 @@ pub const Workbench = struct {
         if (event.key == .escape) {
             // Let the global Escape Escape chord exit zen mode when the panel
             // was reopened while zen mode is active.
-            if (self.layout_model.isZenModeActive()) return false;
+            if (self.layout.isZenModeActive()) return false;
             self.focusEditor();
             if (self.activeTab()) |tab| tab.focusEditor();
             return true;
@@ -11843,7 +11838,7 @@ pub const Workbench = struct {
     /// composite bar lives and whether the activity bar is shown at all.
     fn applyLayoutSettings(self: *Workbench) void {
         const values = layout_service_mod.LayoutSettingsValues.load(self.configuration, self.workspaceRoot());
-        if (!self.layout_model.isZenModeActive()) self.layout_model.setVisible(.statusbar, values.status_bar_visible) catch {};
+        if (!self.layout.isZenModeActive()) self.layout.setPartHidden(!values.status_bar_visible, .statusbar) catch {};
         self.activity_bar_part.setCompact(values.activity_bar_compact) catch {};
         self.sidebar_part.setLayoutSettings(values) catch {};
         self.syncActivityBarVisibility() catch {};
@@ -11854,10 +11849,9 @@ pub const Workbench = struct {
     /// while the side bar does not host the composite bar. Zen mode hides the
     /// rail independently of the configured location.
     fn syncActivityBarVisibility(self: *Workbench) !void {
-        const hidden_by_zen = self.layout_model.isZenModeActive() and self.zenModeConfiguration().hide_activity_bar;
+        const hidden_by_zen = self.layout.isZenModeActive() and self.zenModeConfiguration().hide_activity_bar;
         const show = !hidden_by_zen and self.sidebar_part.shouldShowActivityBar();
-        try self.activity_bar_part.setVisible(show);
-        try self.layout_model.setVisible(.activitybar, show);
+        try self.layout.setPartHidden(!show, .activitybar);
     }
 
     /// Port of `getZenModeConfiguration` in `layout.ts`.
@@ -11874,43 +11868,42 @@ pub const Workbench = struct {
     /// full-screen service; those branches are documented omissions.
     pub fn toggleZenMode(self: *Workbench, skip_layout: bool, restoring: bool) !void {
         const focused_before = self.focus;
-        const active = !self.layout_model.isZenModeActive();
-        self.layout_model.setZenModeActive(active);
+        const active = !self.layout.isZenModeActive();
+        self.layout.setZenModeActive(active);
 
         const config = self.zenModeConfiguration();
-        var exit_info = self.layout_model.zenModeExitInfo();
+        var exit_info = self.layout.zenModeExitInfo();
 
         if (active) {
             if (!restoring) {
                 exit_info = .{
-                    .transitioned_to_centered_editor_layout = !self.layout_model.isMainEditorCentered() and config.center_layout,
+                    .transitioned_to_centered_editor_layout = !self.layout.isMainEditorCentered() and config.center_layout,
                     // No terminal equivalent for `hostService.toggleFullScreen`.
                     .transitioned_to_full_screen = false,
                     // The terminal workbench has no notification filters.
                     .handle_notifications_do_not_disturb_mode = false,
                     .was_visible = .{
-                        .side_bar = self.layout_model.isVisible(.sidebar),
+                        .side_bar = self.layout.isVisible(.sidebar),
                         .panel = self.panel_part.isVisible(),
                         // No auxiliary bar part in the terminal workbench.
                         .auxiliary_bar = false,
-                        .status_bar = self.layout_model.isVisible(.statusbar),
+                        .status_bar = self.layout.isVisible(.statusbar),
                     },
                 };
             }
-            self.layout_model.setZenModeExitInfo(exit_info);
+            self.layout.setZenModeExitInfo(exit_info);
 
             // `setPanelHidden(true, true)` / `setAuxiliaryBarHidden(true, true)`
             // / `setSideBarHidden(true)`.
-            try self.panel_part.setVisible(false);
+            try self.layout.setPartHidden(true, .panel);
             try self.setSidebarVisible(false);
 
             if (config.hide_activity_bar) {
-                try self.activity_bar_part.setVisible(false);
-                try self.layout_model.setVisible(.activitybar, false);
+                try self.layout.setPartHidden(true, .activitybar);
             }
 
             if (config.hide_status_bar) {
-                try self.layout_model.setVisible(.statusbar, false);
+                try self.layout.setPartHidden(true, .statusbar);
             }
 
             // Upstream `setLineNumbers('off')`; the visible-editor listener is
@@ -11926,7 +11919,7 @@ pub const Workbench = struct {
             self.zen_applied_config = config;
         } else {
             if (exit_info.was_visible.panel) {
-                try self.panel_part.setVisible(true);
+                try self.layout.setPartHidden(false, .panel);
             }
             if (exit_info.was_visible.side_bar) {
                 try self.setSidebarVisible(true);
@@ -11934,7 +11927,7 @@ pub const Workbench = struct {
             // Upstream falls back to the configured activity-bar location.
             try self.syncActivityBarVisibility();
             if (exit_info.was_visible.status_bar) {
-                try self.layout_model.setVisible(.statusbar, true);
+                try self.layout.setPartHidden(false, .statusbar);
             }
 
             const had_line_numbers_override = self.zen_hide_line_numbers;
@@ -11959,14 +11952,14 @@ pub const Workbench = struct {
         // The terminal context key is set directly (upstream binds it to the
         // layout-service event); update it before notifying listeners.
         self.updateContextKeys();
-        try self.layout_model.fireZenModeChanged();
+        try self.layout.fireZenModeChanged();
     }
 
     /// Port of the zen-mode branch of the `onDidChangeConfiguration` listener
     /// inside `toggleZenMode`. The terminal edits configuration through the
     /// settings watcher, so `onSettingsReloaded` runs the same decisions.
     fn applyZenModeConfigurationChange(self: *Workbench) void {
-        if (!self.layout_model.isZenModeActive()) return;
+        if (!self.layout.isZenModeActive()) return;
         const config = self.zenModeConfiguration();
         const previous = self.zen_applied_config orelse {
             self.zen_applied_config = config;
@@ -11977,15 +11970,14 @@ pub const Workbench = struct {
         // affected by the configuration change.
         if (previous.hide_activity_bar != config.hide_activity_bar) {
             if (config.hide_activity_bar) {
-                self.activity_bar_part.setVisible(false) catch {};
-                self.layout_model.setVisible(.activitybar, false) catch {};
+                self.layout.setPartHidden(true, .activitybar) catch {};
             } else {
                 self.syncActivityBarVisibility() catch {};
             }
         }
 
         if (previous.hide_status_bar != config.hide_status_bar) {
-            self.layout_model.setVisible(.statusbar, !config.hide_status_bar) catch {};
+            self.layout.setPartHidden(config.hide_status_bar, .statusbar) catch {};
         }
 
         if (previous.center_layout != config.center_layout) {
@@ -12042,20 +12034,20 @@ pub const Workbench = struct {
     /// layout, which is disabled when `centeredLayoutAutoResize` is on and the
     /// workbench has multiple groups or a complex editor.
     pub fn centerMainEditorLayout(self: *Workbench, active: bool, skip_layout: bool) void {
-        self.layout_model.setMainEditorCentered(active);
+        self.layout.setMainEditorCentered(active);
         self.recomputeCenteredEditorLayout();
         if (!skip_layout) self.layoutAll();
         self.updateContextKeys();
-        self.layout_model.fireMainEditorCenteredChanged() catch {};
+        self.layout.fireMainEditorCenteredChanged() catch {};
     }
 
     pub fn toggleCenteredLayout(self: *Workbench) void {
-        self.centerMainEditorLayout(!self.layout_model.isMainEditorCentered(), false);
+        self.centerMainEditorLayout(!self.layout.isMainEditorCentered(), false);
         if (self.activeTab()) |tab| tab.focusEditor();
     }
 
     fn recomputeCenteredEditorLayout(self: *Workbench) void {
-        var effective = self.layout_model.isMainEditorCentered();
+        var effective = self.layout.isMainEditorCentered();
         if (effective) {
             const auto_resize = self.configurationBool(
                 layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize,
@@ -12064,7 +12056,7 @@ pub const Workbench = struct {
             if (auto_resize and self.hasComplexEditor()) effective = false;
             if (auto_resize and self.groupCount() > 1 and self.expanded_pane == null) effective = false;
         }
-        self.layout_model.setMainEditorCenteredEffective(effective);
+        self.layout.setMainEditorCenteredEffective(effective);
     }
 
     /// Upstream `mainVisibleEditors.some(editor => isEditorComplex(editor))`:
@@ -12898,7 +12890,7 @@ fn runTabMenuAction(self: *Workbench, menu: *WorkbenchMenu, id: []const u8) anye
 fn runStatusbarMenuAction(self: *Workbench, _: *WorkbenchMenu, id: []const u8) anyerror!void {
     if (std.mem.eql(u8, id, "hide-bar")) {
         try self.setUserConfigurationValue(layout_service_mod.LayoutSettings.status_bar_visible, .{ .bool = false });
-        try self.layout_model.setVisible(.statusbar, false);
+        try self.layout.setPartHidden(true, .statusbar);
         if (self.focus == .statusbar) self.focusEditor();
         self.layoutAll();
         return;
@@ -13229,7 +13221,7 @@ fn commandToggleZenMode(context: *anyopaque) anyerror!void {
 
 fn commandExitZenMode(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.layout_model.isZenModeActive()) try self.toggleZenMode(false, false);
+    if (self.layout.isZenModeActive()) try self.toggleZenMode(false, false);
 }
 
 fn commandToggleCenteredLayout(context: *anyopaque) anyerror!void {
@@ -13239,17 +13231,17 @@ fn commandToggleCenteredLayout(context: *anyopaque) anyerror!void {
 
 fn zenTabsHideAvailable(context: *anyopaque) bool {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.layout_model.isZenModeActive() and self.zenModeConfiguration().show_tabs != .none;
+    return self.layout.isZenModeActive() and self.zenModeConfiguration().show_tabs != .none;
 }
 
 fn zenTabsMultipleAvailable(context: *anyopaque) bool {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.layout_model.isZenModeActive() and self.zenModeConfiguration().show_tabs != .multiple;
+    return self.layout.isZenModeActive() and self.zenModeConfiguration().show_tabs != .multiple;
 }
 
 fn zenTabsSingleAvailable(context: *anyopaque) bool {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.layout_model.isZenModeActive() and self.zenModeConfiguration().show_tabs != .single;
+    return self.layout.isZenModeActive() and self.zenModeConfiguration().show_tabs != .single;
 }
 
 fn commandZenSetEditorTabs(context: *anyopaque, mode: layout_service_mod.EditorTabsMode) anyerror!void {
@@ -15929,7 +15921,7 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
     try std.testing.expect(workbench.handleSashMouse(&drag));
     try std.testing.expectEqual(workbench.panel_part.minimum_height, workbench.panelHeight());
     try std.testing.expect(workbench.cancelSashDrag());
-    try std.testing.expect(workbench.layout_model.workbench_grid.activeSash() == null);
+    try std.testing.expect(workbench.layout.workbench_grid.activeSash() == null);
 }
 
 test "Workbench: dragging the sidebar divider resizes the side bar" {
@@ -15955,7 +15947,7 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
 
     const down = ui.MouseEvent{ .kind = .down, .x = divider, .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&down));
-    try std.testing.expectEqual(WorkbenchGrid.Sash.sidebar, workbench.layout_model.workbench_grid.activeSash().?);
+    try std.testing.expectEqual(WorkbenchGrid.Sash.sidebar, workbench.layout.workbench_grid.activeSash().?);
 
     const move = ui.MouseEvent{ .kind = .move, .x = divider + 4, .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&move));
@@ -15963,7 +15955,7 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
 
     const up = ui.MouseEvent{ .kind = .up, .x = divider + 4, .y = 2, .button = .left };
     try std.testing.expect(workbench.handleSashMouse(&up));
-    try std.testing.expect(workbench.layout_model.workbench_grid.activeSash() == null);
+    try std.testing.expect(workbench.layout.workbench_grid.activeSash() == null);
 
     // The editor minimum, not a fraction of the window, stops the sash.
     const far = ui.MouseEvent{ .kind = .down, .x = workbench.activityBarWidth() + workbench.sidebarWidth(), .y = 2, .button = .left };
@@ -16091,32 +16083,32 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
 
     const pane = workbench.activePane().?;
     const tab = workbench.activeTab().?;
-    try std.testing.expect(workbench.layout_model.isVisible(.sidebar));
+    try std.testing.expect(workbench.layout.isVisible(.sidebar));
     try std.testing.expect(workbench.panelShown());
     try std.testing.expect(workbench.activity_bar_part.visible);
     try std.testing.expect(workbench.statusBarVisible());
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.On, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.editorShowTabs());
-    try std.testing.expect(!workbench.layout_model.isMainEditorCentered());
+    try std.testing.expect(!workbench.layout.isMainEditorCentered());
 
     var zen_events: usize = 0;
-    try workbench.layout_model.on_did_change_zen_mode.event(&zen_events, struct {
+    try workbench.layout.on_did_change_zen_mode.event(&zen_events, struct {
         fn callback(_: bool, context: *usize) !void {
             context.* += 1;
         }
     }.callback);
 
     try workbench.commands.execute(zen_mode_contribution.toggle_zen_mode_id);
-    try std.testing.expect(workbench.layout_model.isZenModeActive());
+    try std.testing.expect(workbench.layout.isZenModeActive());
     try std.testing.expectEqual(@as(usize, 1), zen_events);
-    try std.testing.expect(!workbench.layout_model.isVisible(.sidebar));
+    try std.testing.expect(!workbench.layout.isVisible(.sidebar));
     try std.testing.expect(!workbench.panelShown());
     try std.testing.expect(!workbench.activity_bar_part.visible);
     try std.testing.expect(!workbench.statusBarVisible());
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     // The default `zenMode.centerLayout` centers the single editor group.
-    try std.testing.expect(workbench.layout_model.isMainEditorCentered());
-    try std.testing.expect(workbench.layout_model.isMainEditorCenteredEffective());
+    try std.testing.expect(workbench.layout.isMainEditorCentered());
+    try std.testing.expect(workbench.layout.isMainEditorCenteredEffective());
     try std.testing.expect(workbench.editorLayoutRect().w < workbench.editorAreaRect().w);
     try std.testing.expectEqual(Focus.editor, workbench.focus);
     var rendered: std.Io.Writer.Allocating = .init(allocator);
@@ -16134,15 +16126,15 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
     try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.editorShowTabs());
 
     try workbench.commands.execute(zen_mode_contribution.exit_zen_mode_id);
-    try std.testing.expect(!workbench.layout_model.isZenModeActive());
+    try std.testing.expect(!workbench.layout.isZenModeActive());
     try std.testing.expectEqual(@as(usize, 2), zen_events);
-    try std.testing.expect(workbench.layout_model.isVisible(.sidebar));
+    try std.testing.expect(workbench.layout.isVisible(.sidebar));
     try std.testing.expect(workbench.panelShown());
     try std.testing.expect(workbench.activity_bar_part.visible);
     try std.testing.expect(workbench.statusBarVisible());
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.On, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.editorShowTabs());
-    try std.testing.expect(!workbench.layout_model.isMainEditorCentered());
+    try std.testing.expect(!workbench.layout.isMainEditorCentered());
     try std.testing.expectEqual(Focus.editor, workbench.focus);
 }
 
@@ -16174,7 +16166,7 @@ test "Workbench: zen mode applies configuration changes while active" {
 
     try workbench.toggleZenMode(false, false);
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
-    try std.testing.expect(workbench.layout_model.isMainEditorCentered());
+    try std.testing.expect(workbench.layout.isMainEditorCentered());
     try std.testing.expect(!workbench.statusBarVisible());
     try std.testing.expect(!workbench.activity_bar_part.visible);
 
@@ -16192,10 +16184,10 @@ test "Workbench: zen mode applies configuration changes while active" {
 
     try workbench.setUserConfigurationValue("zenMode.centerLayout", .{ .bool = false });
     workbench.applyZenModeConfigurationChange();
-    try std.testing.expect(!workbench.layout_model.isMainEditorCenteredEffective());
+    try std.testing.expect(!workbench.layout.isMainEditorCenteredEffective());
 
     try workbench.toggleZenMode(false, false);
-    try std.testing.expect(!workbench.layout_model.isZenModeActive());
+    try std.testing.expect(!workbench.layout.isZenModeActive());
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expect(workbench.statusBarVisible());
     try std.testing.expect(workbench.activity_bar_part.visible);
@@ -16215,8 +16207,8 @@ test "Workbench: centered layout narrows and centers the editor part" {
 
     const area = workbench.editorAreaRect();
     try workbench.commands.execute("workbench.action.toggleCenteredLayout");
-    try std.testing.expect(workbench.layout_model.isMainEditorCentered());
-    try std.testing.expect(workbench.layout_model.isMainEditorCenteredEffective());
+    try std.testing.expect(workbench.layout.isMainEditorCentered());
+    try std.testing.expect(workbench.layout.isMainEditorCenteredEffective());
     const centered = workbench.editorLayoutRect();
     try std.testing.expect(centered.w < area.w);
     try std.testing.expect(centered.x > area.x);
@@ -16228,7 +16220,7 @@ test "Workbench: centered layout narrows and centers the editor part" {
     try std.testing.expect(pane_rect.x + pane_rect.w <= centered.x + centered.w);
 
     try workbench.commands.execute("workbench.action.toggleCenteredLayout");
-    try std.testing.expect(!workbench.layout_model.isMainEditorCentered());
+    try std.testing.expect(!workbench.layout.isMainEditorCentered());
     try std.testing.expectEqual(area.w, workbench.editorLayoutRect().w);
 }
 

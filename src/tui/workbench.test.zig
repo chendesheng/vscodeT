@@ -1539,9 +1539,9 @@ test "Workbench: sidebar renders and opens a file" {
 
     const ctrl_b = ui.KeyEvent{ .key = .{ .char = 'b' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
-    try std.testing.expect(!workbench.layout_model.isVisible(.sidebar));
+    try std.testing.expect(!workbench.layout.isVisible(.sidebar));
     try std.testing.expect(try workbench.handleSidebarKey(&ctrl_b));
-    try std.testing.expect(workbench.layout_model.isVisible(.sidebar));
+    try std.testing.expect(workbench.layout.isVisible(.sidebar));
 }
 
 test "Workbench: workspace search streams results and opens a match" {
@@ -1816,13 +1816,13 @@ test "Workbench: zen mode restores a status bar that was hidden before" {
 
     const workbench = try Workbench.init(allocator, io, &.{path}, 70, 12);
     defer workbench.deinit();
-    try workbench.layout_model.setVisible(.statusbar, false);
+    try workbench.layout.setPartHidden(true, .statusbar);
     try std.testing.expect(!workbench.statusBarVisible());
 
     try workbench.toggleZenMode(false, false);
     try std.testing.expect(!workbench.statusBarVisible());
     try workbench.toggleZenMode(false, false);
-    try std.testing.expect(!workbench.layout_model.isZenModeActive());
+    try std.testing.expect(!workbench.layout.isZenModeActive());
     try std.testing.expect(!workbench.statusBarVisible());
 }
 
@@ -1878,12 +1878,12 @@ test "Workbench: zen mode keybindings toggle and exit" {
     try std.testing.expect(try workbench.handleGlobalKey(&ctrl_k));
     const z = ui.KeyEvent{ .key = .{ .char = 'z' } };
     try std.testing.expect(try workbench.handleGlobalKey(&z));
-    try std.testing.expect(workbench.layout_model.isZenModeActive());
+    try std.testing.expect(workbench.layout.isZenModeActive());
 
     const escape = ui.KeyEvent{ .key = .escape };
     try std.testing.expect(try workbench.handleGlobalKey(&escape));
     try std.testing.expect(try workbench.handleGlobalKey(&escape));
-    try std.testing.expect(!workbench.layout_model.isZenModeActive());
+    try std.testing.expect(!workbench.layout.isZenModeActive());
 }
 
 test "Workbench: Problems panel, status count and range highlight" {

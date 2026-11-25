@@ -24,7 +24,10 @@ pub const Activity = struct {
     visible: bool = true,
 };
 
+const Part = @import("../../part.zig").Part;
+
 pub const ActivityBarPart = struct {
+    base: Part,
     allocator: Allocator,
     activities: std.array_list.Managed(Activity),
     active_id: ?[]const u8 = null,
@@ -39,6 +42,7 @@ pub const ActivityBarPart = struct {
 
     pub fn init(allocator: Allocator) ActivityBarPart {
         return .{
+            .base = Part.init(allocator, .activitybar, ActivityBarPart),
             .allocator = allocator,
             .activities = std.array_list.Managed(Activity).init(allocator),
             .on_did_change = Emitter(void).init(allocator),
@@ -46,6 +50,7 @@ pub const ActivityBarPart = struct {
     }
 
     pub fn deinit(self: *ActivityBarPart) void {
+        self.base.deinit();
         self.on_did_change.deinit();
         self.activities.deinit();
     }
@@ -73,6 +78,7 @@ pub const ActivityBarPart = struct {
     pub fn setVisible(self: *ActivityBarPart, visible: bool) !void {
         if (self.visible == visible) return;
         self.visible = visible;
+        try self.base.setVisible(visible);
         try self.on_did_change.fire({});
     }
 

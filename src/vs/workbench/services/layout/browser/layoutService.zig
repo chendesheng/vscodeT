@@ -1,19 +1,33 @@
-// Port of the portable enums and settings in
-// `src/vs/workbench/services/layout/browser/layoutService.ts`.
-//
-// The browser `IWorkbenchLayoutService` owns the workbench grid, part
-// instances, DOM sashes and the floating/panel layout experiments. The
-// terminal keeps the portable state in `src/vs/workbench/browser/layout.zig`
-// (visible parts and part sizes) and this file holds the enums and setting ids
-// both layers share, matching upstream's file split.
-//
-// Terminal adaptation: only the settings the terminal shell reacts to are
-// declared. Grid, panel alignment/maximization and floating-panel settings are
-// not ported; see `README.md`.
-
+// Port of the single-window part registration, visibility and settings contracts
+// from `src/vs/workbench/services/layout/browser/layoutService.ts`.
+// A terminal uses cell geometry and one main window for every part.
 const std = @import("std");
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const ConfigurationService = @import("../../configuration/browser/configurationService.zig").ConfigurationService;
+
+const Part = @import("../../../browser/part.zig").Part;
+const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
+
+pub const IPartVisibilityChangeEvent = struct { part_id: Parts, visible: bool };
+
+pub const IWorkbenchLayoutService = struct {
+    context: *anyopaque,
+    register_part: *const fn (*anyopaque, *Part) anyerror!IDisposable,
+    set_part_hidden: *const fn (*anyopaque, bool, Parts) anyerror!void,
+    is_visible: *const fn (*anyopaque, Parts) bool,
+    on_did_change_part_visibility: *Emitter(IPartVisibilityChangeEvent),
+
+    pub fn registerPart(self: @This(), part: *Part) !IDisposable {
+        return self.register_part(self.context, part);
+    }
+    pub fn setPartHidden(self: @This(), hidden: bool, part: Parts) !void {
+        try self.set_part_hidden(self.context, hidden, part);
+    }
+    pub fn isVisible(self: @This(), part: Parts) bool {
+        return self.is_visible(self.context, part);
+    }
+};
 
 /// Horizontal workbench constraints use the sidebar's 170 px / 10 columns
 /// scale. Round minimums up so a fractional column still reserves space.

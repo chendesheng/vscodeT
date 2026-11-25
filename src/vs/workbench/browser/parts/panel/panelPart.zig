@@ -31,7 +31,10 @@ pub const Position = layout_mod.Position;
 /// workbench passes the Problems error/warning counts here.
 pub const Badge = pane.Badge;
 
+const Part = @import("../../part.zig").Part;
+
 pub const PanelPart = struct {
+    base: Part,
     allocator: Allocator,
     pane: pane.PaneCompositePart,
     visible: bool = false,
@@ -62,6 +65,7 @@ pub const PanelPart = struct {
 
     pub fn init(allocator: Allocator) PanelPart {
         return .{
+            .base = Part.init(allocator, .panel, PanelPart),
             .allocator = allocator,
             .pane = pane.PaneCompositePart.init(
                 allocator,
@@ -75,6 +79,7 @@ pub const PanelPart = struct {
     }
 
     pub fn deinit(self: *PanelPart) void {
+        self.base.deinit();
         if (self.title_surface) |*surface| surface.deinit();
         self.title_surface = null;
         self.title_nodes.deinit();
@@ -85,6 +90,7 @@ pub const PanelPart = struct {
     pub fn setVisible(self: *PanelPart, visible: bool) !void {
         if (self.visible == visible) return;
         self.visible = visible;
+        try self.base.setVisible(visible);
         try self.on_did_change.fire({});
     }
 
@@ -129,7 +135,10 @@ pub const PanelPart = struct {
     pub fn openPaneComposite(self: *PanelPart, id: []const u8) !bool {
         const opened = try self.pane.openPaneComposite(id, true);
         if (opened == null) return false;
-        self.visible = true;
+        if (!self.visible) {
+            self.visible = true;
+            try self.base.setVisible(true);
+        }
         try self.on_did_change.fire({});
         return true;
     }
@@ -140,7 +149,10 @@ pub const PanelPart = struct {
 
     pub fn hideActivePaneComposite(self: *PanelPart) !void {
         try self.pane.hideActivePaneComposite();
-        self.visible = false;
+        if (self.visible) {
+            self.visible = false;
+            try self.base.setVisible(false);
+        }
         self.hovered_id = null;
         try self.on_did_change.fire({});
     }

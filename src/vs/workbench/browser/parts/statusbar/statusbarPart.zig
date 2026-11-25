@@ -118,7 +118,12 @@ const NodeEntry = struct {
     text_x: usize = 0,
 };
 
+const Part = @import("../../part.zig").Part;
+
 pub const StatusbarPart = struct {
+    base: Part,
+    visible: bool = true,
+
     allocator: Allocator,
     model: StatusbarModel,
     surface: ui.Surface,
@@ -135,6 +140,12 @@ pub const StatusbarPart = struct {
     /// this nor the model revision, width or focus state changed.
     render_revision: u64 = 0,
     render_signature: ?u64 = null,
+
+    pub fn setVisible(self: *StatusbarPart, visible: bool) !void {
+        if (self.visible == visible) return;
+        self.visible = visible;
+        try self.base.setVisible(visible);
+    }
 
     pub fn setThemeColors(self: *StatusbarPart, palette: ?*const theme_colors_mod.ThemeColors) void {
         if (self.theme == palette) return;
@@ -160,6 +171,7 @@ pub const StatusbarPart = struct {
         });
         errdefer surface.deinit();
         return .{
+            .base = Part.init(allocator, .statusbar, StatusbarPart),
             .allocator = allocator,
             .model = StatusbarModel.init(allocator),
             .surface = surface,
@@ -171,6 +183,7 @@ pub const StatusbarPart = struct {
     }
 
     pub fn deinit(self: *StatusbarPart) void {
+        self.base.deinit();
         self.nodes.deinit();
         self.style_overrides.deinit();
         self.entry_overrides.deinit();

@@ -43,7 +43,10 @@ pub const CompositeBarPosition = pane.CompositeBarPosition;
 const ViewPaneContainer = @import("../views/viewPaneContainer.zig").ViewPaneContainer;
 const DropDestination = @import("../views/viewPaneContainer.zig").DropDestination;
 
+const Part = @import("../../part.zig").Part;
+
 pub const SidebarPart = struct {
+    base: Part,
     allocator: Allocator,
     view_pane_containers: std.StringHashMapUnmanaged(*ViewPaneContainer) = .empty,
     pane: pane.PaneCompositePart,
@@ -97,6 +100,7 @@ pub const SidebarPart = struct {
 
     pub fn init(allocator: Allocator) SidebarPart {
         return .{
+            .base = Part.init(allocator, .sidebar, SidebarPart),
             .allocator = allocator,
             .pane = pane.PaneCompositePart.init(
                 allocator,
@@ -141,6 +145,7 @@ pub const SidebarPart = struct {
     }
 
     pub fn deinit(self: *SidebarPart) void {
+        self.base.deinit();
         self.view_pane_containers.deinit(self.allocator);
         if (self.title_surface) |*surface| surface.deinit();
         self.title_surface = null;
@@ -162,6 +167,7 @@ pub const SidebarPart = struct {
         if (self.visible == visible) return;
         self.visible = visible;
         try self.pane.setVisible(visible);
+        try self.base.setVisible(visible);
         try self.on_did_change.fire({});
     }
 
@@ -248,6 +254,7 @@ pub const SidebarPart = struct {
         if (opened == null) return false;
         if (!self.visible) {
             self.visible = true;
+            try self.base.setVisible(true);
             try self.on_did_change.fire({});
         }
         return true;
@@ -260,6 +267,7 @@ pub const SidebarPart = struct {
     pub fn hideActivePaneComposite(self: *SidebarPart) !void {
         if (self.visible) {
             self.visible = false;
+            try self.base.setVisible(false);
             try self.on_did_change.fire({});
         }
         try self.pane.hideActivePaneComposite();
