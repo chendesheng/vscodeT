@@ -313,22 +313,6 @@ const LayoutNode = grid_mod.Node(*GroupPane);
 /// the cell rectangle it occupies.
 pub const GroupPane = editor_group_view.EditorGroupView(*Tab);
 
-const ScmDiscardDialog = struct {
-    workbench: *Workbench,
-    request: ScmDiscardRequest,
-};
-
-const ScmDiscardRequest = struct {
-    root: []u8,
-    path: []u8,
-    untracked: bool,
-
-    fn deinit(self: ScmDiscardRequest, allocator: std.mem.Allocator) void {
-        allocator.free(self.root);
-        allocator.free(self.path);
-    }
-};
-
 const editor_mod = @import("../common/editor.zig");
 
 const text_files = @import("../services/textfile/common/textFileService.zig");
@@ -3247,7 +3231,7 @@ pub const Workbench = struct {
             .history_host = .{
                 .context = self,
                 .open_change = historyOpenChange,
-                .open_changes = historyOpenChanges,
+                .status = scmViewStatus,
                 .focus_editor = scmFocusEditor,
             },
         });
@@ -3353,12 +3337,6 @@ pub const Workbench = struct {
         self.focusEditor();
     }
 
-    fn openScmChange(self: *Workbench, provider: *repository_mod.Repository, resource: *repository_mod.GitScmResource) !void {
-        if (provider.diffRefsForResource(resource)) |refs| {
-            try self.openDiff(resource.absolute_path, refs.left, refs.right);
-        } else try self.openPath(resource.absolute_path);
-    }
-
     fn gitDisabled(context: ?*anyopaque, reason: []const u8) void {
         const raw_context = context orelse return;
         const self: *Workbench = @ptrCast(@alignCast(raw_context));
@@ -3367,124 +3345,20 @@ pub const Workbench = struct {
 
     fn providerOpenChange(context: *anyopaque, provider: *repository_mod.Repository, resource: *repository_mod.GitScmResource) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        return self.openScmChange(provider, resource);
+        return self.gitCommandsFor(provider).openChange(resource);
     }
 
-    fn scmOpenChange(context: *anyopaque, resource: *scm_common.ISCMResource) anyerror!void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const provider = self.git_model.repository orelse return;
-        const git_resource = @as(*repository_mod.GitScmResource, @ptrCast(@alignCast(resource.context)));
-        return self.openScmChange(provider, git_resource);
-    }
-
-    fn scmViewOpen(context: *anyopaque, resource: *scm_common.ISCMResource) anyerror!void {
-        return scmOpenChange(context, resource);
+    fn scmViewOpen(_: *anyopaque, resource: *scm_common.ISCMResource) !void {
+        try resource.open(false);
     }
 
     fn scmViewResourceAction(context: *anyopaque, action: scm_view_mod.ResourceAction, resource: *scm_common.ISCMResource) anyerror!void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        self.runScmResourceAction(action, resource) catch |err| self.setStatusHint("Source Control action failed: {s}", .{@errorName(err)});
-    }
-
-    fn runScmResourceAction(self: *Workbench, action: scm_view_mod.ResourceAction, resource: *scm_common.ISCMResource) !void {
-        const git_resource: *repository_mod.GitScmResource = @ptrCast(@alignCast(resource.context));
-        const provider = git_resource.provider;
-        switch (action) {
-            .open_file => {
-                if (git_resource.status == 'D') {
-                    try self.openScmChange(provider, git_resource);
-                } else {
-                    try self.openPath(git_resource.absolute_path);
-                    self.focusEditor();
-                }
-            },
-            .open_change => try self.openScmChange(provider, git_resource),
-            .stage, .unstage => {
-                const git = provider.git orelse return error.NoGit;
-                const head = provider.repository.stateRef().head;
-                const has_head = if (head) |branch| branch.ref.commit != null else false;
-                const operation: git_mod.Git.ResourceAction = if (action == .stage) .stage else if (has_head) .unstage else .unstage_unborn;
-                var paths = [_][]const u8{ git_resource.relative_path, "" };
-                var count: usize = 1;
-                if (git_resource.status == 'R') {
-                    if (git_resource.original_path) |path| {
-                        paths[1] = path;
-                        count += 1;
-                    }
-                }
-                try git.runResourceAction(provider.root, operation, paths[0..count]);
-                scmRefresh(self);
-            },
-            .discard => try self.confirmScmDiscard(git_resource),
-        }
-    }
-
-    fn confirmScmDiscard(self: *Workbench, resource: *const repository_mod.GitScmResource) !void {
-        if (self.isDialogOpen()) return error.DialogAlreadyOpen;
-        if (resource.kind != .working and resource.kind != .untracked) return error.InvalidScmResource;
-        const untracked = resource.kind == .untracked;
-        const message = try std.fmt.allocPrint(self.allocator, "{s} {s}?", .{
-            if (untracked) "Permanently delete the untracked file" else "Discard working tree changes to",
-            resource.relative_path,
-        });
-        defer self.allocator.free(message);
-        const root = try self.allocator.dupe(u8, resource.provider.root);
-        errdefer self.allocator.free(root);
-        const path = try self.allocator.dupe(u8, resource.relative_path);
-        errdefer self.allocator.free(path);
-        const pending = try self.allocator.create(ScmDiscardDialog);
-        errdefer self.allocator.destroy(pending);
-        pending.* = .{ .workbench = self, .request = .{ .root = root, .path = path, .untracked = untracked } };
-        _ = try self.dialog_service.confirm(.{
-            .message = message,
-            .detail = if (untracked) "This deletes the file from disk." else "This restores the file from the Git index.",
-            .primary_button = if (untracked) "Delete" else "Discard",
-            .initial_focus = 1,
-        }, .{ .context = pending, .complete = onScmDiscardConfirmed, .dispose = disposeScmDiscardDialog });
-    }
-
-    fn onScmDiscardConfirmed(context: *anyopaque, result: dialogs.IConfirmationResult) void {
-        const pending: *ScmDiscardDialog = @ptrCast(@alignCast(context));
-        if (result.confirmed) pending.workbench.resolveScmDiscard(pending.request) catch |err|
-            pending.workbench.setStatusHint("Discard failed: {s}", .{@errorName(err)});
-    }
-
-    fn disposeScmDiscardDialog(context: *anyopaque) void {
-        const pending: *ScmDiscardDialog = @ptrCast(@alignCast(context));
-        const allocator = pending.workbench.allocator;
-        pending.request.deinit(allocator);
-        allocator.destroy(pending);
-    }
-
-    fn resolveScmDiscard(self: *Workbench, request: ScmDiscardRequest) !void {
-        const provider = self.git_model.repository orelse return error.NoRepository;
-        if (!std.mem.eql(u8, provider.root, request.root)) return error.RepositoryChanged;
-        const git = provider.git orelse return error.NoGit;
-        const absolute = try std.fs.path.join(self.allocator, &.{ request.root, request.path });
-        defer self.allocator.free(absolute);
-        defer scmRefresh(self);
-        var state = try git.status(request.root);
-        defer state.deinit(git.allocator);
-        const candidates = if (request.untracked) state.untracked_changes else state.working_tree_changes;
-        const change = for (candidates) |candidate| {
-            if (std.mem.eql(u8, candidate.path, request.path)) break candidate;
-        } else return error.ChangeNoLongerAvailable;
-        if (request.untracked) {
-            // A single-file unlink also refuses a directory that replaced the
-            // file while the confirmation was open.
-            try Io.Dir.cwd().deleteFile(self.io, absolute);
-            self.requestFrame();
+        const commands = self.gitCommands() catch |err| {
+            self.setStatusHint("Source Control action failed: {s}", .{@errorName(err)});
             return;
-        }
-        if (change.status == 'R' and change.original_path != null) {
-            try git.runResourceAction(request.root, .restore, &.{ request.path, change.original_path.? });
-            const original = try std.fs.path.join(self.allocator, &.{ request.root, change.original_path.? });
-            defer self.allocator.free(original);
-            self.handleFileChanges(&.{.{ .type = .UPDATED, .resource = original }});
-        } else {
-            try git.runResourceAction(request.root, .restore, &.{request.path});
-        }
-        self.handleFileChanges(&.{.{ .type = .UPDATED, .resource = absolute }});
+        };
+        commands.runResourceAction(action, resource) catch |err| self.setStatusHint("Source Control action failed: {s}", .{@errorName(err)});
     }
 
     fn scmRefresh(context: *anyopaque) void {
@@ -3539,11 +3413,56 @@ pub const Workbench = struct {
     }
 
     fn gitCommands(self: *Workbench) !@import("../../../extensions/git/src/commands.zig").Commands {
+        return self.gitCommandsFor(self.git_model.repository orelse return error.NoRepository);
+    }
+
+    fn gitCommandsFor(self: *Workbench, provider: *repository_mod.Repository) @import("../../../extensions/git/src/commands.zig").Commands {
         return .{
             .allocator = self.allocator,
-            .repository = self.git_model.repository orelse return error.NoRepository,
+            .repository = provider,
             .configuration = if (self.configuration) |config| config.interface() else null,
-            .host = .{ .context = self, .report_status = scmViewStatus, .did_run_remote_action = onScmRemoteAction },
+            .host = .{
+                .context = self,
+                .report_status = scmViewStatus,
+                .did_run_remote_action = onScmRemoteAction,
+                .resources = .{
+                    .io = self.io,
+                    .dialogs = self.dialog_api,
+                    .resolve_repository = struct {
+                        fn run(context: *anyopaque) ?*repository_mod.Repository {
+                            const host: *Workbench = @ptrCast(@alignCast(context));
+                            return host.git_model.repository;
+                        }
+                    }.run,
+                    .open_path = struct {
+                        fn run(context: *anyopaque, path: []const u8) !void {
+                            const host: *Workbench = @ptrCast(@alignCast(context));
+                            try host.openPath(path);
+                        }
+                    }.run,
+                    .open_diff = struct {
+                        fn run(context: *anyopaque, path: []const u8, left: DiffRef, right: DiffRef) !void {
+                            const host: *Workbench = @ptrCast(@alignCast(context));
+                            try host.openDiff(path, left, right);
+                        }
+                    }.run,
+                    .open_ref_diff = struct {
+                        fn run(context: *anyopaque, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {
+                            const host: *Workbench = @ptrCast(@alignCast(context));
+                            try host.openRefDiff(path, original_path, left, right, left_label, right_label);
+                        }
+                    }.run,
+                    .focus_editor = scmFocusEditor,
+                    .refresh = scmRefresh,
+                    .files_changed = struct {
+                        fn run(context: *anyopaque, changes: []const @import("../../platform/files/common/files.zig").FileChange) void {
+                            const host: *Workbench = @ptrCast(@alignCast(context));
+                            host.handleFileChanges(changes);
+                        }
+                    }.run,
+                    .request_frame = requestWorkbenchFrame,
+                },
+            },
         };
     }
 
@@ -3621,108 +3540,10 @@ pub const Workbench = struct {
         return view.titleActions();
     }
 
-    fn historyOpenChange(
-        context: *anyopaque,
-        history_item: *const scm_common_history.ISCMHistoryItem,
-        change: *const scm_common_history.ISCMHistoryItemChange,
-    ) anyerror!void {
+    fn historyOpenChange(context: *anyopaque, item: *const scm_common_history.ISCMHistoryItem, change: *const scm_common_history.ISCMHistoryItemChange) !void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        const revision = if (self.scm.history) |view| view.itemRevision(history_item.*) else history_item.id;
-        const display = if (std.mem.eql(u8, revision, history_item.id))
-            history_item.display_id orelse history_item.id
-        else
-            revision[0..@min(revision.len, 7)];
-        if (history_item.parent_ids.len > 0) {
-            const parent = history_item.parent_ids[0];
-            const parent_label = if (history_item.display_id) |id|
-                parent[0..@min(parent.len, id.len)]
-            else
-                parent;
-            return self.openRefDiff(
-                change.path,
-                change.original_path,
-                parent,
-                revision,
-                parent_label,
-                display,
-            );
-        }
-        return self.openRefDiff(
-            change.path,
-            change.original_path,
-            null,
-            revision,
-            "Empty",
-            display,
-        );
-    }
-
-    const HistoryChangesPick = struct {
-        workbench: *Workbench,
-        arena: std.heap.ArenaAllocator,
-        item: scm_common_history.ISCMHistoryItem,
-        changes: []scm_common_history.ISCMHistoryItemChange,
-    };
-
-    fn historyOpenChanges(
-        context: *anyopaque,
-        item: *const scm_common_history.ISCMHistoryItem,
-        changes: []const scm_common_history.ISCMHistoryItemChange,
-    ) anyerror!void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        self.showHistoryChanges(item, changes) catch |err| self.setStatusHint("Open Changes failed: {s}", .{@errorName(err)});
-    }
-
-    fn showHistoryChanges(self: *Workbench, item: *const scm_common_history.ISCMHistoryItem, changes: []const scm_common_history.ISCMHistoryItemChange) !void {
-        if (changes.len == 0) {
-            self.setStatusHint("No file changes in this history item", .{});
-            return;
-        }
-        if (changes.len == 1) return historyOpenChange(self, item, &changes[0]);
-
-        const state = try self.allocator.create(HistoryChangesPick);
-        errdefer self.allocator.destroy(state);
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        errdefer arena.deinit();
-        const allocator = arena.allocator();
-        const saved_changes = try allocator.alloc(scm_common_history.ISCMHistoryItemChange, changes.len);
-        const items = try allocator.alloc(QuickPickItem, changes.len);
-        for (changes, saved_changes, items, 0..) |change, *saved, *entry, index| {
-            saved.* = try change.clone(allocator);
-            entry.* = .{ .item = .{
-                .id = try std.fmt.allocPrint(allocator, "{d}", .{index}),
-                .label = std.fs.path.basename(saved.path),
-                .description = std.fs.path.dirname(saved.path) orelse "",
-            } };
-        }
-        var saved_item = try item.clone(allocator);
-        if (self.scm.history) |view| {
-            const revision = view.itemRevision(item.*);
-            if (!std.mem.eql(u8, revision, item.id)) {
-                saved_item.id = try allocator.dupe(u8, revision);
-                saved_item.display_id = saved_item.id[0..@min(saved_item.id.len, 7)];
-            }
-        }
-        state.* = .{ .workbench = self, .arena = arena, .item = saved_item, .changes = saved_changes };
-        try self.quick_access.inputService().showPick(items, .{
-            .placeholder = "Open Changes",
-            .cleanup = freeHistoryChangesPick,
-            .cleanup_context = state,
-        }, onHistoryChangesPick, state);
-    }
-
-    fn freeHistoryChangesPick(context: *anyopaque) void {
-        const state: *HistoryChangesPick = @ptrCast(@alignCast(context));
-        const allocator = state.arena.child_allocator;
-        state.arena.deinit();
-        allocator.destroy(state);
-    }
-
-    fn onHistoryChangesPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-        const state: *HistoryChangesPick = @ptrCast(@alignCast(context));
-        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
-        const index = try std.fmt.parseInt(usize, item.id, 10);
-        if (index < state.changes.len) try historyOpenChange(state.workbench, &state.item, &state.changes[index]);
+        const revision = if (self.scm.history) |view| view.itemRevision(item.*) else item.id;
+        try (try self.gitCommands()).openHistoryChange(item, change, revision);
     }
 
     const ShowTabs = layout_service_mod.EditorTabsMode;
@@ -6838,9 +6659,7 @@ fn commandGitOpenChange(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const view = self.scm.changes orelse return;
     const resource = view.selectedResource() orelse return;
-    const provider = self.git_model.repository orelse return;
-    const git_resource: *repository_mod.GitScmResource = @ptrCast(@alignCast(resource.context));
-    try self.openScmChange(provider, git_resource);
+    try resource.open(false);
 }
 
 fn commandGitOpenFile(context: *anyopaque) anyerror!void {

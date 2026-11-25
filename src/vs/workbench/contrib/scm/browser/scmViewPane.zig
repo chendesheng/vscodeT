@@ -90,23 +90,16 @@ pub fn appendSecondary(menu: *Menu, service: *MenuService, parent: keys.IContext
 }
 
 pub const CommitAction = @import("../common/scm.zig").CommitAction;
-pub const ResourceAction = enum {
-    open_file,
-    open_change,
-    discard,
-    stage,
-    unstage,
-
-    fn glyph(self: ResourceAction) u21 {
-        return switch (self) {
-            .open_file => '⇥',
-            .open_change => '▤',
-            .discard => '↶',
-            .stage => '+',
-            .unstage => '−',
-        };
-    }
-};
+pub const ResourceAction = scm.ResourceAction;
+fn resourceActionGlyph(action: ResourceAction) u21 {
+    return switch (action) {
+        .open_file => '⇥',
+        .open_change => '▤',
+        .discard => '↶',
+        .stage => '+',
+        .unstage => '−',
+    };
+}
 pub const BranchAction = scm.BranchAction;
 
 pub const ISCMService = scm.ISCMService;
@@ -1686,7 +1679,7 @@ pub const SCMViewPane = struct {
                 false;
             const bg = ui.cell.packColor(if (hovered) palette.toolbar_hover else background);
             if (hovered) grid.fillRect(@floatFromInt(x + start), @floatFromInt(y), css.inline_action_width, 1, .{ .bg = bg });
-            grid.putCodepoint(x + start + css.inline_action_width / 2, y, action.glyph(), 1, .{
+            grid.putCodepoint(x + start + css.inline_action_width / 2, y, resourceActionGlyph(action), 1, .{
                 .fg = ui.cell.packColor(palette.icon_foreground),
                 .bg = bg,
             });

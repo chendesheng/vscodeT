@@ -105,6 +105,7 @@ pub const Host = struct {
         changes: []const history.ISCMHistoryItemChange,
     ) anyerror!void = null,
     focus_editor: *const fn (context: *anyopaque) void,
+    status: ?*const fn (*anyopaque, []const u8) void = null,
 };
 
 const FilterKind = enum { auto, all, selected };
@@ -916,7 +917,13 @@ pub const SCMHistoryViewPane = struct {
         if (over_action) {
             const vm = self.rows.items[row_index].history_item;
             const changes = self.ensureChanges(vm);
-            if (self.host.open_changes) |run| try run(self.host.context, &self.view_models[vm].history_item, changes);
+            const item = &self.view_models[vm].history_item;
+            if (self.host.open_changes) |run| {
+                try run(self.host.context, item, changes);
+            } else self.showHistoryChanges(item, changes) catch |err| {
+                var buffer: [256]u8 = undefined;
+                if (self.host.status) |status| status(self.host.context, std.fmt.bufPrint(&buffer, "Open Changes failed: {s}", .{@errorName(err)}) catch "Open Changes failed");
+            };
             return true;
         }
         // Upstream opens the Load More element on click (`onDidOpen`), so the
@@ -941,8 +948,60 @@ pub const SCMHistoryViewPane = struct {
         return true;
     }
 
+    // The native Graph opens a picker for multiple changes instead of the
+    // browser's multi-diff editor. Own the history item and revision until
+    // the picker is accepted or dismissed; the graph can refresh meanwhile.
+    const HistoryChangesPick = struct {
+        host: Host,
+        arena: std.heap.ArenaAllocator,
+        item: history.ISCMHistoryItem,
+        changes: []history.ISCMHistoryItemChange,
+    };
+
+    fn showHistoryChanges(self: *SCMHistoryViewPane, item: *const history.ISCMHistoryItem, changes: []const history.ISCMHistoryItemChange) !void {
+        if (changes.len == 0) {
+            if (self.host.status) |status| status(self.host.context, "No file changes in this history item");
+            return;
+        }
+        if (changes.len == 1) return self.host.open_change(self.host.context, item, &changes[0]);
+        const input = self.quick_input orelse return;
+        const state = try self.allocator.create(HistoryChangesPick);
+        errdefer self.allocator.destroy(state);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const allocator = arena.allocator();
+        const saved_changes = try allocator.alloc(history.ISCMHistoryItemChange, changes.len);
+        const items = try allocator.alloc(QuickPickItem, changes.len);
+        for (changes, saved_changes, items, 0..) |change, *saved, *entry, index| {
+            saved.* = try change.clone(allocator);
+            entry.* = .{ .item = .{ .id = try std.fmt.allocPrint(allocator, "{d}", .{index}), .label = std.fs.path.basename(saved.path), .description = std.fs.path.dirname(saved.path) orelse "" } };
+        }
+        var saved_item = try item.clone(allocator);
+        const revision = self.itemRevision(item.*);
+        if (!std.mem.eql(u8, revision, item.id)) {
+            saved_item.id = try allocator.dupe(u8, revision);
+            saved_item.display_id = saved_item.id[0..@min(saved_item.id.len, 7)];
+        }
+        state.* = .{ .host = self.host, .arena = arena, .item = saved_item, .changes = saved_changes };
+        try input.showPick(items, .{ .placeholder = "Open Changes", .cleanup = freeHistoryChangesPick, .cleanup_context = state }, onHistoryChangesPick, state);
+    }
+
+    fn freeHistoryChangesPick(context: *anyopaque) void {
+        const state: *HistoryChangesPick = @ptrCast(@alignCast(context));
+        const allocator = state.arena.child_allocator;
+        state.arena.deinit();
+        allocator.destroy(state);
+    }
+
+    fn onHistoryChangesPick(context: *anyopaque, picker: *QuickPick) !void {
+        const state: *HistoryChangesPick = @ptrCast(@alignCast(context));
+        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+        const index = try std.fmt.parseInt(usize, item.id, 10);
+        if (index < state.changes.len) try state.host.open_change(state.host.context, &state.item, &state.changes[index]);
+    }
+
     fn actionSlot(self: *const SCMHistoryViewPane, row_index: usize, width: usize) ?usize {
-        if (self.host.open_changes == null or row_index >= self.rows.items.len) return null;
+        if ((self.host.open_changes == null and self.quick_input == null) or row_index >= self.rows.items.len) return null;
         const row = self.rows.items[row_index];
         if (row != .history_item) return null;
         const graph_width = scm_history.graphWidth(&self.view_models[row.history_item]) + 1;

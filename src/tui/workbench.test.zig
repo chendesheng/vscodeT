@@ -8966,3 +8966,49 @@ test "HistoryService records active editor changes before a frame and detaches o
     try first.editor.insertText("z");
     try std.testing.expectEqualStrings(second.editor.path, workbench.history.default_stacks.edits.current().?.path);
 }
+
+test "Git resource actions stage unstage and resolve discard confirmation against the current repository" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
+    if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
+    _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "resource.txt", .data = "base\n" });
+    if (!try runGitTest(allocator, root, &.{ "add", "resource.txt" })) return error.SkipZigTest;
+    if (!try runGitTest(allocator, root, &.{ "-c", "commit.gpgsign=false", "commit", "-m", "initial" })) return error.SkipZigTest;
+    try tmp.dir.writeFile(io, .{ .sub_path = "resource.txt", .data = "changed\n" });
+    const window = try TestWindow.init(allocator, io, &.{}, 80, 20);
+    defer window.deinit();
+    const workbench = window.workbench;
+    try workbench.initSidebar(root);
+    pumpSidebarForTests(workbench);
+    try workbench.initGit();
+    const provider = workbench.git_model.repository orelse return error.TestExpectedRepository;
+    const host = workbench.scm.changes.?.host;
+    try std.testing.expectEqual(@as(usize, 1), provider.groups[2].resources.items.len);
+    try host.resource_action.?(host.context, .stage, &provider.groups[2].resources.items[0].iface);
+    try std.testing.expectEqual(@as(usize, 1), provider.groups[1].resources.items.len);
+    try std.testing.expectEqual(@as(usize, 0), provider.groups[2].resources.items.len);
+    try host.resource_action.?(host.context, .unstage, &provider.groups[1].resources.items[0].iface);
+    try std.testing.expectEqual(@as(usize, 1), provider.groups[2].resources.items.len);
+    try host.resource_action.?(host.context, .discard, &provider.groups[2].resources.items[0].iface);
+    try std.testing.expect(workbench.isDialogOpen());
+    var escape: ui.KeyEvent = .{ .key = .escape };
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &escape));
+    const unchanged = try tmp.dir.readFileAlloc(io, "resource.txt", allocator, .limited(1024));
+    defer allocator.free(unchanged);
+    try std.testing.expectEqualStrings("changed\n", unchanged);
+    try host.resource_action.?(host.context, .discard, &provider.groups[2].resources.items[0].iface);
+    var left: ui.KeyEvent = .{ .key = .left };
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &left));
+    var enter: ui.KeyEvent = .{ .key = .enter };
+    try std.testing.expect(terminal_workbench.handleDialogKey(workbench, &enter));
+    const restored = try tmp.dir.readFileAlloc(io, "resource.txt", allocator, .limited(1024));
+    defer allocator.free(restored);
+    try std.testing.expectEqualStrings("base\n", restored);
+    try std.testing.expectEqual(@as(usize, 0), provider.groups[2].resources.items.len);
+}

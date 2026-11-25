@@ -49,6 +49,8 @@ pub const ISCMResourceDecorations = struct {
 
 /// A changed resource in a resource group. The terminal resource rows paint the
 /// relative path and open the diff through `open`.
+pub const ResourceAction = enum { open_file, open_change, discard, stage, unstage };
+
 pub const ISCMResource = struct {
     context: *anyopaque,
     resource_group: *ISCMResourceGroup,
