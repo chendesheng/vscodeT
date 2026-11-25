@@ -53,6 +53,21 @@ const widget_mod = @import("../../platform/quickinput/browser/quickInputList.zig
 const theme_colors_mod = @import("./themeColors.zig");
 const QuickPickWidget = widget_mod.QuickPickWidget;
 
+pub fn keycaps(arena: Allocator, binding: @import("../../base/common/keybindings.zig").ResolvedKeybinding) ![]const []const u8 {
+    const labels = @import("../../base/common/keybindingLabels.zig").UILabelProvider.labelsFor(@import("../services/keybinding/browser/keybindingService.zig").bindingOS());
+    var keys = std.array_list.Managed([]const u8).init(arena);
+    for (binding.getChords()) |chord| {
+        if (chord.ctrl_key) try keys.append(labels.ctrl_key);
+        if (chord.shift_key) try keys.append(labels.shift_key);
+        if (chord.alt_key) try keys.append(labels.alt_key);
+        if (chord.meta_key) try keys.append(labels.meta_key);
+        if (chord.key_label) |key| {
+            if (key.len != 0) try keys.append(try arena.dupe(u8, key));
+        }
+    }
+    return keys.items;
+}
+
 pub const Host = struct {
     open_file_to_side: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
     configure_keybinding: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
@@ -227,6 +242,16 @@ pub const QuickAccessService = struct {
         return self.input;
     }
 
+    pub fn interface(self: *QuickAccessService) @import("../../platform/quickinput/common/quickInput.zig").IQuickInputService {
+        return .{ .quick_access = .{ .context = self, .show_fn = showQuickAccess } };
+    }
+
+    fn showQuickAccess(context: *anyopaque, value: []const u8) anyerror!void {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        if (self.input.isVisible()) self.input.hide();
+        try self.controller.show(value, .{});
+    }
+
     pub fn showFilePicker(self: *QuickAccessService) !void {
         if (self.input.isVisible()) self.input.hide();
         self.startFileSession();
@@ -237,8 +262,7 @@ pub const QuickAccessService = struct {
     }
 
     pub fn showCommandPicker(self: *QuickAccessService) !void {
-        if (self.input.isVisible()) self.input.hide();
-        try self.controller.show(CommandsQuickAccessProvider.PREFIX, .{});
+        try self.interface().quick_access.show(CommandsQuickAccessProvider.PREFIX);
     }
 
     pub fn handleKey(self: *QuickAccessService, event: *ui.KeyEvent) !bool {

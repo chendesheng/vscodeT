@@ -5526,6 +5526,23 @@ test "Workbench: breadcrumb symbol filtering survives editor group focus changes
     }
 }
 
+test "terminal F1 executes ShowAllCommandsAction through quick input" {
+    const workbench = try Workbench.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
+    defer workbench.deinit();
+    var pending = try ui.input.decodeWithRemainder(std.testing.allocator, "\x1bO");
+    defer pending.items.deinit(std.testing.allocator);
+    try std.testing.expectEqual(0, pending.consumed);
+    for ([_][]const u8{ "\x1bOP", "\x1b[11~" }) |sequence| {
+        var decoded = try ui.input.decodeKeys(std.testing.allocator, sequence);
+        defer decoded.deinit(std.testing.allocator);
+        try std.testing.expectEqual(1, decoded.items.len);
+        try std.testing.expect(try workbench.handleGlobalKey(&decoded.items[0]));
+        try std.testing.expect(workbench.isQuickAccessOpen());
+        try std.testing.expectEqualStrings(">", workbench.quick_access.controller.pickerRef().value.items);
+        workbench.quick_access.controller.hide();
+    }
+}
+
 test "command palette preserves registration order, metadata and editor preconditions" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

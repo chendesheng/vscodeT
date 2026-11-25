@@ -1,10 +1,15 @@
 // Portable subset of `src/vs/platform/quickinput/common/quickInput.ts`.
 //
-// Only the quick-pick data model used by quick access is ported: pick items,
-// separators, activation modes and the options that affect pick ownership.
+// Exposes quick access through IQuickInputService. The quick-pick data model
+// includes items, separators, activation modes and pick ownership options.
 // Items can also carry row actions and resolved shortcut keycaps.
 
 const std = @import("std");
+
+pub const IQuickInputService = struct {
+    quick_access: @import("quickAccess.zig").IQuickAccessController,
+};
+pub const quick_input_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(IQuickInputService, "quickInputService");
 
 /// Matched ranges borrowed from the pick provider. Mirrors upstream
 /// `IQuickPickItemHighlights` for the two fields the terminal renders.

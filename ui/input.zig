@@ -52,6 +52,7 @@ pub fn decodeWithRemainder(allocator: std.mem.Allocator, input: []const u8) !Dec
     for (tokenized.tokens.items) |token| {
         switch (token) {
             .string => |text| try decodeString(allocator, &result, text),
+            .key => |key| try result.append(allocator, .{ .key = key }),
             .csi => |csi| try decodeCsi(allocator, &result, csi),
         }
     }
@@ -127,6 +128,7 @@ fn decodeString(
 const Token = union(enum) {
     string: []const u8,
     csi: Csi,
+    key: KeyEvent,
 
     const Csi = struct {
         parameters: []const u8,
@@ -158,6 +160,7 @@ const State = enum {
     normal,
     esc,
     esc_parameter,
+    ss3,
     esc_parameter_intermediate,
     esc_intermediate,
     bracketed_paste,
@@ -199,6 +202,8 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
                 if (chr == '[') {
                     state = .esc_parameter;
                     last_pos = pos + 1;
+                } else if (chr == 'O') {
+                    state = .ss3;
                 } else if (chr == 'P' and
                     pos + 15 < input.len and
                     std.mem.startsWith(u8, input[pos + 1 ..], "1+bcell-border;"))
@@ -214,6 +219,10 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
                     // Only swallow kitty graphics replies (`ESC _ G`); a bare
                     // `ESC _` is Alt+Shift+- and must stay a key event.
                     state = .apc;
+                    last_pos = pos + 1;
+                } else if (chr == 'P') {
+                    try result.append(allocator, .{ .key = .{ .key = .{ .char = 'P' }, .mods = .{ .alt = true } } });
+                    state = .normal;
                     last_pos = pos + 1;
                 } else if (chr == '/') {
                     // Terminals send `ESC /` for Alt+/; `/` is otherwise an
@@ -233,6 +242,18 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
                 } else {
                     state = .normal;
                 }
+            },
+            .ss3 => {
+                if (chr == 'P') {
+                    try result.append(allocator, .{ .key = .{ .key = .f1 } });
+                    last_pos = pos + 1;
+                } else {
+                    // The terminal may also send ESC O for Alt+Shift+O.
+                    try result.append(allocator, .{ .key = .{ .key = .{ .char = 'O' }, .mods = .{ .alt = true } } });
+                    last_pos = pos;
+                    pos -= 1;
+                }
+                state = .normal;
             },
             .esc_parameter => {
                 if (isIntermediateChar(chr)) {
@@ -326,7 +347,7 @@ fn tokenize(allocator: std.mem.Allocator, input: []const u8) !Tokenized {
         // A trailing partial sequence must be decoded again when the rest of
         // its bytes arrive. Typing its tail as text would turn a split SGR
         // mouse report such as `ESC [ <35;...M` into `<35;...M` in the editor.
-        .esc_parameter, .esc_parameter_intermediate, .esc_intermediate, .dcs, .osc, .apc => {
+        .ss3, .esc_parameter, .esc_parameter_intermediate, .esc_intermediate, .dcs, .osc, .apc => {
             consumed = sequence_start orelse input.len;
         },
         else => {
@@ -357,6 +378,7 @@ fn parseLast(params: []const u8) ?usize {
 }
 
 fn parseModifiers(params: []const u8) Modifiers {
+    if (std.mem.indexOfScalar(u8, params, ';') == null) return .{};
     const encoded = parseLast(params) orelse return .{};
     if (encoded < 2) return .{};
     const bits = encoded - 1;
@@ -387,6 +409,7 @@ fn decodeCsi(
     }
     const mods = parseModifiers(csi.parameters);
     switch (csi.final) {
+        'P' => try result.append(allocator, .{ .key = .{ .key = .f1, .mods = mods } }),
         'A' => try result.append(allocator, .{ .key = .{ .key = .up, .mods = mods } }),
         'B' => try result.append(allocator, .{ .key = .{ .key = .down, .mods = mods } }),
         'C' => try result.append(allocator, .{ .key = .{ .key = .right, .mods = mods } }),
@@ -403,6 +426,7 @@ fn decodeCsi(
                 3 => try result.append(allocator, .{ .key = .{ .key = .delete, .mods = mods } }),
                 5 => try result.append(allocator, .{ .key = .{ .key = .page_up, .mods = mods } }),
                 6 => try result.append(allocator, .{ .key = .{ .key = .page_down, .mods = mods } }),
+                11 => try result.append(allocator, .{ .key = .{ .key = .f1, .mods = mods } }),
                 24 => try result.append(allocator, .{ .key = .{ .key = .f12, .mods = mods } }),
                 200 => try result.append(allocator, .{ .key = .{ .key = .paste_start } }),
                 201 => try result.append(allocator, .{ .key = .{ .key = .paste_end } }),
@@ -509,6 +533,7 @@ test "input: named keys and modifiers" {
     try std.testing.expect(events.items[3].key == .page_up);
     try std.testing.expect(events.items[4].key == .backtab);
     try std.testing.expect(events.items[5].key == .f12);
+    for ([_]usize{ 1, 3, 5 }) |i| try std.testing.expectEqual(Modifiers{}, events.items[i].mods);
 }
 
 test "input: comment shortcuts and alt characters" {

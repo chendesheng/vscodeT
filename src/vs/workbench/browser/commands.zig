@@ -10,6 +10,8 @@ const CommandPickSource = commands_quick_access.CommandPickSource;
 
 const actions = @import("../../platform/actions/common/actions.zig");
 const contextkey = @import("../../platform/contextkey/common/contextkey.zig");
+const KeybindingsRegistry = @import("../../platform/keybinding/common/keybindingsRegistry.zig").KeybindingsRegistry;
+const InstantiationService = @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService;
 const palette = actions.menu_ids.CommandPalette;
 
 pub const CommandInfo = struct {
@@ -21,6 +23,7 @@ pub const CommandInfo = struct {
     requires_editor: bool = false,
     show_in_palette: bool = true,
     precondition: ?*const fn (context: *anyopaque) bool = null,
+    registration: ?*actions.ActionRegistration = null,
     context: *anyopaque,
     run: *const fn (context: *anyopaque) anyerror!void,
 };
@@ -29,6 +32,7 @@ pub const CommandRegistry = struct {
     allocator: Allocator,
     infos: std.array_hash_map.String(CommandInfo) = .empty,
     menus: actions.MenuRegistry,
+    bindings: KeybindingsRegistry,
     context_keys: ?contextkey.IContextKeyService = null,
     platform: platform_commands.CommandRegistry,
     editor_available_context: ?*anyopaque = null,
@@ -38,11 +42,14 @@ pub const CommandRegistry = struct {
         return .{
             .allocator = allocator,
             .menus = actions.MenuRegistry.init(allocator),
+            .bindings = KeybindingsRegistry.init(allocator),
             .platform = platform_commands.CommandRegistry.init(allocator),
         };
     }
 
     pub fn deinit(self: *CommandRegistry) void {
+        for (self.infos.values()) |info| if (info.registration) |action| action.dispose();
+        self.bindings.deinit();
         self.platform.deinit();
         self.infos.deinit(self.allocator);
         self.menus.deinit();
@@ -55,6 +62,26 @@ pub const CommandRegistry = struct {
     ) void {
         self.editor_available_context = context;
         self.is_editor_available = callback;
+    }
+
+    pub fn registerAction(self: *CommandRegistry, instantiation: *InstantiationService, desc: actions.Action2) !void {
+        try self.infos.ensureUnusedCapacity(self.allocator, 1);
+        const registration = try actions.registerAction2(.{
+            .instantiation = instantiation,
+            .commands = &self.platform,
+            .menus = &self.menus,
+            .keybindings = &self.bindings,
+        }, desc);
+        const command = self.platform.get(desc.command.id).?;
+        self.infos.putAssumeCapacity(command.id, .{
+            .id = command.id,
+            .label = desc.command.title,
+            .category = desc.command.category orelse "",
+            .context = command.context,
+            .run = command.run,
+            .show_in_palette = desc.f1,
+            .registration = registration,
+        });
     }
 
     pub fn register(self: *CommandRegistry, info: CommandInfo) !void {
@@ -77,12 +104,23 @@ pub const CommandRegistry = struct {
         const command = actions.ICommandAction{ .id = info.id, .title = info.label, .category = info.category };
         if (info.show_in_palette) {
             if (was_visible) {
-                self.menus.getMenuItemPtr(palette, info.id).?.command = command;
+                const item = self.menus.getMenuItemPtr(palette, info.id).?;
+                item.command = command;
+                item.when = null;
                 self.menus.on_did_change.fire(.{ .menu = palette }) catch |err| std.log.err("Menu listener failed: {s}", .{@errorName(err)});
             } else {
                 try self.menus.appendMenuItem(palette, .{ .command = command });
             }
-        } else if (was_visible) self.removePaletteEntry(info.id);
+        } else if (was_visible) {
+            const item = self.menus.getMenuItemPtr(palette, info.id).?;
+            (actions.MenuRegistry.Registration{ .registry = &self.menus, .menu = palette, .command_id = info.id, .when = item.when }).dispose();
+        }
+        if (old_info) |old| if (old.registration) |registration| {
+            // The legacy replacement takes ownership of the explicit F1 row.
+            // Dispose the remaining menu, command and binding contributions.
+            registration.palette_item = null;
+            registration.dispose();
+        };
     }
 
     fn removePaletteEntry(self: *CommandRegistry, id: []const u8) void {
@@ -98,6 +136,7 @@ pub const CommandRegistry = struct {
     /// registry. Used by built-in extension disposal.
     pub fn unregister(self: *CommandRegistry, id: []const u8) void {
         const removed = self.infos.fetchOrderedRemove(id) orelse return;
+        if (removed.value.registration) |registration| return registration.dispose();
         self.platform.unregister(id);
         if (removed.value.show_in_palette) self.removePaletteEntry(id);
     }

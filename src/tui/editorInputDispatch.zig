@@ -60,7 +60,7 @@ pub fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool 
             return false;
         },
         .paste_end => return false,
-        .f12 => {},
+        .f1, .f12 => {},
         .text => |text| {
             var offset: usize = 0;
             while (offset < text.len) {

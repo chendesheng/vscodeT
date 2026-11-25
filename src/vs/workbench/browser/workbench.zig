@@ -711,6 +711,7 @@ pub const Workbench = struct {
     theme_scheme_host: TerminalColorSchemeHost,
     theme_palette: ?*theme_colors_mod.ThemeColors,
     quick_access: *QuickAccessService,
+    quick_input_api: @import("../../platform/quickinput/common/quickInput.zig").IQuickInputService,
     simple_browser: SimpleBrowserManager,
     outline_service: OutlineService,
     services: @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection,
@@ -1390,6 +1391,8 @@ pub const Workbench = struct {
             },
         );
         errdefer self.quick_access.deinit();
+        self.quick_input_api = self.quick_access.interface();
+        _ = try self.services.set(@import("../../platform/quickinput/common/quickInput.zig").quick_input_service_id, &self.quick_input_api);
 
         self.editor_status = try EditorStatus.init(
             self.allocator,
@@ -1419,9 +1422,9 @@ pub const Workbench = struct {
 
     fn registerDefaultCommands(self: *Workbench) !void {
         const status = self.editor_status.?;
+        try self.commands.register(.{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen });
+        try self.commands.registerAction(&self.instantiation, @import("../contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
         const commands = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen },
-            .{ .id = "workbench.action.showCommands", .label = "Show All Commands", .context = self, .run = commandShowCommands },
             .{ .id = editor_status_mod.goto_line_command, .label = "Go to Line/Column...", .category = "Go", .context = status, .run = editor_status_mod.commandGotoLine },
             .{ .id = editor_status_mod.change_indentation_command, .label = "Change Indentation", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeIndentation },
             .{ .id = editor_status_mod.change_encoding_command, .label = "Change File Encoding", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeEncoding },
@@ -8866,6 +8869,7 @@ pub const Workbench = struct {
         errdefer self.freeUserOverrides(overrides);
         const service = try keybinding_service.KeybindingService.initWithOptions(self.allocator, .{
             .rules = &global_keybinding_rules,
+            .contributions = &self.commands.bindings,
             .executor = .{ .context = self, .execute = executeGlobalCommand },
             .context = context,
             .overrides = overrides,
@@ -12980,18 +12984,7 @@ fn quickLookupKeycaps(context: *anyopaque, arena: Allocator, id: []const u8) any
         if (tab.isDiff()) return &.{};
         break :blk try tab.editor.lookupShortcut(id) orelse return &.{};
     };
-    const labels = @import("../../base/common/keybindingLabels.zig").UILabelProvider.labelsFor(keybinding_service.bindingOS());
-    var keys = std.array_list.Managed([]const u8).init(arena);
-    for (binding.getChords()) |chord| {
-        if (chord.ctrl_key) try keys.append(labels.ctrl_key);
-        if (chord.shift_key) try keys.append(labels.shift_key);
-        if (chord.alt_key) try keys.append(labels.alt_key);
-        if (chord.meta_key) try keys.append(labels.meta_key);
-        if (chord.key_label) |key| {
-            if (key.len != 0) try keys.append(try arena.dupe(u8, key));
-        }
-    }
-    return keys.items;
+    return @import("./quickaccess.zig").keycaps(arena, binding);
 }
 
 fn quickGetExcludes(context: *anyopaque, allocator: Allocator) anyerror![]glob.ExcludeEntry {
@@ -13042,11 +13035,6 @@ fn commandTab(context: *anyopaque) !*Tab {
 fn commandQuickOpen(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     return self.quick_access.showFilePicker();
-}
-
-fn commandShowCommands(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    return self.quick_access.showCommandPicker();
 }
 
 fn markerHighlightActiveResource(context: *anyopaque) ?[]const u8 {
@@ -15084,7 +15072,6 @@ const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     } },
     .{ .id = "workbench.action.splitEditorOrthogonal", .weight = 200, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash)) } },
     .{ .id = "workbench.action.quickOpen", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyP) } },
-    .{ .id = "workbench.action.showCommands", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyP) } },
     .{ .id = "workbench.action.findInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyF), .secondary = &.{key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.KeyF)} } },
     .{ .id = "workbench.action.replaceInFiles", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyH) } },
     .{ .id = "workbench.action.toggleSidebarVisibility", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyB) } },

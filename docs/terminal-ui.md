@@ -1171,8 +1171,9 @@ Library constraints:
   and paints the list rows directly into the workbench grid. The workbench
   composites it after every pane and the tab strip, and hides the hardware
   cursor while it is open. `Ctrl-P` opens Go to File, `>` switches to the
-  command provider, and `Alt-P` opens the command provider directly because a
-  terminal cannot distinguish `Ctrl-Shift-P`. While a picker is open,
+  command provider, and `F1` executes Show All Commands through the workbench
+  keybinding service. `Alt-P` also opens the palette on terminals where
+  `Ctrl-Shift-P` sends the same bytes as `Ctrl-P`. While a picker is open,
   `Ctrl-N`/`Ctrl-P` select the next/previous item (the terminal form of the
   macOS quick-pick bindings; arrows, pages and Ctrl-Home/End work as well), and
   the chord never reaches the filter input. Go to File uses a dedicated worker

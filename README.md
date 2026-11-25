@@ -1383,8 +1383,8 @@ console API for raw mode, sizing and input polling.
 - Quick open is wired through `src/vs/workbench/browser/quickaccess.zig`: `Ctrl-P` opens
   "Go to File" with recent editors first and workspace files as the query is
   typed, and typing `>` switches to the command selector. The command selector
-  is also bound to `Alt-P` because a plain terminal reports `Ctrl-Shift-P` as
-  `Ctrl-P`; the action metadata keeps the upstream command ids and labels.
+  opens with the upstream `F1` binding. The terminal also supports `Alt-P`
+  because a plain terminal reports `Ctrl-Shift-P` as `Ctrl-P`.
   Ctrl-N/Ctrl-P select the next/previous item (the terminal form of the macOS
   quick-pick bindings), Up/Down and PageUp/PageDown move by one or a page,
   Ctrl-Home/Ctrl-End jump to the ends, Enter accepts, Escape or

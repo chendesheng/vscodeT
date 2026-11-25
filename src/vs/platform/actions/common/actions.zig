@@ -336,7 +336,7 @@ pub const MenuRegistry = struct {
     allocator: Allocator,
     menus: std.StringHashMap(std.array_list.Managed(MenuEntry)),
     groups: std.StringHashMap(std.StringHashMap(std.array_list.Managed([]const u8))),
-    commands: std.StringHashMap(ICommandAction),
+    commands: std.array_hash_map.String(ICommandAction) = .empty,
     implicit_items: std.array_list.Managed(MenuEntry),
     get_menu_items_calls: std.StringHashMap(usize),
     on_did_change: Emitter(MenuChangeEvent),
@@ -346,7 +346,6 @@ pub const MenuRegistry = struct {
             .allocator = allocator,
             .menus = std.StringHashMap(std.array_list.Managed(MenuEntry)).init(allocator),
             .groups = std.StringHashMap(std.StringHashMap(std.array_list.Managed([]const u8))).init(allocator),
-            .commands = std.StringHashMap(ICommandAction).init(allocator),
             .implicit_items = std.array_list.Managed(MenuEntry).init(allocator),
             .get_menu_items_calls = std.StringHashMap(usize).init(allocator),
             .on_did_change = Emitter(MenuChangeEvent).init(allocator),
@@ -364,7 +363,7 @@ pub const MenuRegistry = struct {
             map.deinit();
         }
         self.groups.deinit();
-        self.commands.deinit();
+        self.commands.deinit(self.allocator);
         self.implicit_items.deinit();
         self.get_menu_items_calls.deinit();
         self.on_did_change.deinit();
@@ -505,8 +504,8 @@ pub const MenuRegistry = struct {
 
     /// Registers a command for implicit command-palette visibility.
     pub fn addCommand(self: *MenuRegistry, command: ICommandAction) !void {
-        try self.commands.put(command.id, command);
-        try self.on_did_change.fire(.{ .menu = menu_ids.CommandPalette });
+        try self.commands.put(self.allocator, command.id, command);
+        self.on_did_change.fire(.{ .menu = menu_ids.CommandPalette }) catch |err| std.log.err("Menu listener failed: {s}", .{@errorName(err)});
     }
 
     pub fn addCommandTracked(self: *MenuRegistry, command: ICommandAction) !Registration {
@@ -515,7 +514,7 @@ pub const MenuRegistry = struct {
     }
 
     pub fn removeCommand(self: *MenuRegistry, id: []const u8) void {
-        _ = self.commands.remove(id);
+        _ = self.commands.orderedRemove(id);
         self.on_did_change.fire(.{ .menu = menu_ids.CommandPalette }) catch {};
     }
 
@@ -597,6 +596,7 @@ pub const ActionRegistration = struct {
     context: *anyopaque,
     run_fn: ActionRun,
     menus: std.ArrayList(MenuRegistry.Registration) = .empty,
+    palette_item: ?MenuRegistry.Registration = null,
     keybindings: std.ArrayList(keybindings_registry.Registration) = .empty,
     exprs: contextkey.ContextKeyExpr,
 
@@ -613,6 +613,7 @@ pub const ActionRegistration = struct {
         if (self.commands.get(self.id)) |command| {
             if (command.context == @as(*anyopaque, @ptrCast(self))) self.commands.unregister(self.id);
         }
+        if (self.palette_item) |item| item.dispose();
         for (self.menus.items) |menu| menu.dispose();
         for (self.keybindings.items) |*rule| rule.dispose();
         self.menus.deinit(self.allocator);
@@ -640,7 +641,7 @@ pub fn registerAction2(registries: ActionRegistries, action2: Action2) !*ActionR
         .exprs = contextkey.ContextKeyExpr.init(allocator),
     };
     errdefer registration.dispose();
-    try registration.menus.ensureTotalCapacity(allocator, action2.menus.len + @as(usize, if (action2.f1) 2 else 0));
+    try registration.menus.ensureTotalCapacity(allocator, action2.menus.len + @as(usize, if (action2.f1) 1 else 0));
     try registration.keybindings.ensureTotalCapacity(allocator, action2.keybindings.len);
     try registries.commands.register(.{ .id = command.id, .context = registration, .run = ActionRegistration.run });
     for (action2.menus) |menu| {
@@ -655,10 +656,10 @@ pub fn registerAction2(registries: ActionRegistries, action2: Action2) !*ActionR
         }));
     }
     if (action2.f1) {
-        registration.menus.appendAssumeCapacity(try registries.menus.appendMenuItemTracked(menu_ids.CommandPalette, .{
+        registration.palette_item = try registries.menus.appendMenuItemTracked(menu_ids.CommandPalette, .{
             .command = command,
             .when = command.precondition,
-        }));
+        });
         registration.menus.appendAssumeCapacity(try registries.menus.addCommandTracked(command));
     }
     for (action2.keybindings) |binding| {

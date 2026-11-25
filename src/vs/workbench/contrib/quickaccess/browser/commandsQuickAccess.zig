@@ -5,15 +5,40 @@
 // to merge editor action picks with global menu actions. The TUI command
 // registry already contains both editor and workbench commands, so this
 // provider simply wraps the shared command picker with the `>` prefix.
-// The workbench supplies keybinding labels and handles command row actions.
+// ShowAllCommandsAction requests the command provider via IQuickInputService.
 
 const std = @import("std");
 const platform = @import("../../../../platform/quickinput/browser/commandsQuickAccess.zig");
 const quick_access = @import("../../../../platform/quickinput/common/quickAccess.zig");
 
+const actions = @import("../../../../platform/actions/common/actions.zig");
+const bindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
+const key_codes = @import("../../../../base/common/keyCodes.zig");
+const quick_input = @import("../../../../platform/quickinput/common/quickInput.zig");
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
 pub const ShowAllCommandsAction = struct {
     pub const ID = "workbench.action.showCommands";
     pub const label = "Show All Commands";
+    pub const descriptor = actions.Action2{
+        .command = .{ .id = ID, .title = label },
+        .f1 = true,
+        .keybindings = &.{.{
+            .id = ID,
+            .weight = @backingInt(bindings.KeybindingWeight.WorkbenchContrib),
+            .bindings = .{
+                .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.KeyP),
+                .secondary = &.{@backingInt(key_codes.KeyCode.F1)},
+            },
+        }},
+        .context = @constCast(&{}),
+        .run_fn = run,
+    };
+
+    fn run(_: *anyopaque, accessor: ServicesAccessor) anyerror!void {
+        const service = try accessor.get(quick_input.quick_input_service_id);
+        try service.quick_access.show(CommandsQuickAccessProvider.PREFIX);
+    }
 };
 
 pub const CommandsQuickAccessProvider = struct {

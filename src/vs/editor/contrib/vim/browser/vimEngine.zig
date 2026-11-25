@@ -465,7 +465,7 @@ pub const VimEngine = struct {
                 return true;
             },
             .insert => return false,
-            .f12 => return false,
+            .f1, .f12 => return false,
             .tab => return false,
             .backtab => return false,
             .paste_start, .paste_end => return false,
@@ -1477,7 +1477,7 @@ pub const VimEngine = struct {
             .home => try self.editor.setCursor(Position.init(self.editor.cursorPosition().lineNumber, 1)),
             .end => try self.editor.setCursor(self.lineEndPosition(self.editor.cursorPosition().lineNumber, false)),
             .insert => {},
-            .f12 => return false,
+            .f1, .f12 => return false,
             .page_up => _ = self.editor.scrollViewLines(-@as(isize, @intCast(self.editor.textHeight()))),
             .page_down => _ = self.editor.scrollViewLines(@intCast(self.editor.textHeight())),
             .paste_start, .paste_end => return false,

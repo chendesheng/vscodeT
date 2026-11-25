@@ -44,6 +44,7 @@ pub fn bindingOS() platform.OperatingSystem {
 
 pub const Options = struct {
     rules: []const registry_module.IKeybindingRule,
+    contributions: ?*const registry_module.KeybindingsRegistry = null,
     executor: abstract_mod.CommandExecutor,
     /// Shared workbench context key service. When null the service owns one
     /// (tests and standalone hosts).
@@ -80,6 +81,9 @@ pub const KeybindingService = struct {
         for (options.rules) |rule| {
             var registration = try registry.registerKeybindingRule(rule);
             registration.disposed = true;
+        }
+        if (options.contributions) |contributions| {
+            for (contributions.rules.items) |entry| _ = try registry.registerKeybindingRule(entry.rule);
         }
         // Decode the rules for the terminal's modifier model, not the host
         // GUI's. `getDefaultKeybindingsForOS` re-decodes the registered rules
@@ -248,6 +252,7 @@ pub fn keyCodeFor(event: input.KeyEvent) ?key_codes.KeyCode {
         .end => .End,
         .page_up => .PageUp,
         .page_down => .PageDown,
+        .f1 => .F1,
         .f12 => .F12,
         .char => |codepoint| charKeyCode(codepoint),
         .text, .paste_start, .paste_end => null,

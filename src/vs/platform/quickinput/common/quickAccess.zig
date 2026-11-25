@@ -2,8 +2,8 @@
 //
 // The registry maps a typed prefix to a provider. Upstream descriptors carry
 // a constructor and context-key `when` expressions resolved through the
-// instantiation service; the TUI has neither, so providers are registered as
-// live instances and context keys are not ported.
+// instantiation service. The terminal registry currently holds live providers
+// and chooses them by prefix.
 //
 // Upstream `provide()` registers listeners on the picker and returns a
 // disposable. The TUI keeps one persistent picker, so the host calls
@@ -15,6 +15,15 @@ const cancellation = @import("../../../base/common/cancellation.zig");
 const CancellationToken = cancellation.CancellationToken;
 const quick_input = @import("quickInput.zig");
 const QuickPick = @import("../browser/quickInput.zig").QuickPick;
+
+pub const IQuickAccessController = struct {
+    context: *anyopaque,
+    show_fn: *const fn (*anyopaque, []const u8) anyerror!void,
+
+    pub fn show(self: IQuickAccessController, value: []const u8) !void {
+        try self.show_fn(self.context, value);
+    }
+};
 
 pub const Provider = struct {
     context: *anyopaque,
