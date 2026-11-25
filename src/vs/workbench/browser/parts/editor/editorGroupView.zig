@@ -89,6 +89,7 @@ pub fn EditorGroupView(comptime View: type) type {
         /// Upstream `EditorGroupView.onDidFocus`. The part listens to this to
         /// make a focused group the active group (`doSetGroupActive`).
         on_did_focus: Emitter(*Self),
+        model_listener: ?usize = null,
 
         pub fn init(allocator: Allocator, group: *editor_groups.EditorGroup) Self {
             return .{
@@ -100,9 +101,32 @@ pub fn EditorGroupView(comptime View: type) type {
             };
         }
 
+        pub fn registerModelListeners(self: *Self) !void {
+            self.model_listener = try self.group.model.on_did_model_change.listen(self, onDidModelChange);
+        }
+
+        pub fn disposeModelListeners(self: *Self) void {
+            if (self.model_listener) |id| self.group.model.on_did_model_change.unlisten(id);
+            self.model_listener = null;
+        }
+
+        fn onDidModelChange(event: @import("../../../common/editor/editorGroupModel.zig").GroupModelChangeEvent, self: *Self) !void {
+            switch (event) {
+                .EDITOR_DIRTY => |change| try self.onDidChangeEditorDirty(change.editor),
+                else => {},
+            }
+        }
+
+        // Upstream always pins a dirty editor. The title control reads the
+        // group's model when it paints; it does not need a separate scan.
+        fn onDidChangeEditorDirty(self: *Self, input: *@import("../../../common/editor/editorInput.zig").EditorInput) !void {
+            _ = try self.group.model.pin(input);
+        }
+
         /// Disposes the tab views, like upstream `EditorGroupView.dispose()`
         /// disposing the group's editors, then frees the registries.
         pub fn deinit(self: *Self) void {
+            self.disposeModelListeners();
             if (self.dom) |dom| {
                 // A tab can already belong to another group before its editor
                 // instance is moved to the new group's container.

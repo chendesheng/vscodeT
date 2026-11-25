@@ -1828,6 +1828,7 @@ pub const Workbench = struct {
         self.history.deinit();
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
+        self.part.disposeGroupModelListeners();
         self.service.deinit();
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
@@ -6008,16 +6009,6 @@ pub const Workbench = struct {
         if (removed_active) pane.syncActivePane();
     }
 
-    fn pinDirtyPreviews(self: *Workbench) void {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (!tab.editor.isDirty()) continue;
-                if (pane.group.model.isPinned(.{ .editor = tab.input })) continue;
-                _ = pane.group.model.pin(tab.input) catch {};
-            }
-        }
-    }
-
     pub fn activateIndex(self: *Workbench, index: usize) !void {
         const pane = self.activePane() orelse return;
         var ordered = std.array_list.Managed(*Tab).init(self.allocator);
@@ -9402,7 +9393,6 @@ pub const Workbench = struct {
     /// upstream editor-status labels; the standard entries keep their
     /// quick-picker commands so a click opens the same action as upstream.
     pub fn refreshStatus(self: *Workbench) void {
-        self.pinDirtyPreviews();
         if (self.activeTab()) |tab| {
             if (tab.isImage()) {
                 if (self.editor_status) |status| status.update(null) catch {};

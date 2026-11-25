@@ -252,3 +252,33 @@ test "FindModel: replace and replace all" {
     state.change(.{ .search_string = "goodbye" }, false, true);
     try std.testing.expectEqual(@as(usize, 5), state.matches_count);
 }
+
+test "FindModel: content changes schedule search and explicit cursor changes set start position" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const editor = try Editor.createFromText(allocator, io, "one one", "test.txt", 80, 24);
+    defer {
+        editor.deinit();
+        allocator.destroy(editor);
+    }
+    var queue = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = io };
+    var state = FindReplaceState.init(allocator);
+    defer state.deinit();
+    const model = try FindModel.init(allocator, editor, &state, null, null);
+    defer model.deinit();
+    model.attachWindow(&queue);
+    state.change(.{ .search_string = "one", .is_revealed = true }, false, true);
+    try std.testing.expectEqual(@as(usize, 2), model.getDecorations().getCount());
+
+    try editor.replaceRange(Range.init(1, 1, 1, 4), "two");
+    const deadline = model.update_decorations_scheduler.deadline_ms.?;
+    try std.testing.expect(!queue.dispatch(deadline - 1));
+    try std.testing.expect(queue.dispatch(deadline));
+    try std.testing.expectEqual(@as(usize, 1), model.getDecorations().getCount());
+
+    try editor.setMouseSelection(Position.init(1, 2), Position.init(1, 2));
+    try std.testing.expectEqual(Position.init(1, 2), model.getDecorations().getStartPosition());
+    state.change(.{ .is_revealed = false }, false, true);
+    try editor.replaceRange(Range.init(1, 1, 1, 4), "one");
+    try std.testing.expect(!model.update_decorations_scheduler.isScheduled());
+}

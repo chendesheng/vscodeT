@@ -1,10 +1,9 @@
 // Port of `src/vs/editor/contrib/find/browser/findModel.ts`.
 //
 // Deliberate deviations, all caused by the terminal editor shape:
-// - The browser model is driven by editor events (`onDidChangeModelContent`,
-//   `onDidChangeCursorPosition`). The TUI calls `onContentChanged` after an
-//   edit instead; cursor changes only matter for the search start position,
-//   which is updated on every find move.
+// - The editor's cursor and model content events drive the same 100 ms
+//   update-decorations scheduler as upstream. A terminal window queue
+//   replaces the browser timer.
 // - `FindDecorations` keeps the match ranges and notifies the decoration
 //   sink, which materializes them as `TextModel` decorations with find class
 //   names.
@@ -33,6 +32,9 @@ const replace_pattern = @import("./replacePattern.zig");
 const ReplacePattern = replace_pattern.ReplacePattern;
 
 const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const async_mod = @import("../../../../base/common/async.zig");
+const ICursorPositionChangedEvent = @import("../../../common/cursorEvents.zig").ICursorPositionChangedEvent;
+const ModelContentChange = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
 
 pub const MATCHES_LIMIT = find_state.MATCHES_LIMIT;
 const UNLIMITED: usize = 2_147_483_647;
@@ -48,6 +50,10 @@ pub const FindModel = struct {
     cursor_move_on_type: bool = true,
     disposed: bool = false,
     researching: bool = false,
+    ignore_model_content_changed: bool = false,
+    update_decorations_scheduler: async_mod.RunOnceScheduler(*FindModel),
+    cursor_listener: usize = undefined,
+    content_listener: usize = undefined,
 
     pub fn init(
         allocator: Allocator,
@@ -64,14 +70,19 @@ pub const FindModel = struct {
             .editor = editor,
             .state = state,
             .decorations = FindDecorations.init(allocator, editor.modelCursorPosition()),
+            .update_decorations_scheduler = async_mod.RunOnceScheduler(*FindModel).init(self, onUpdateDecorations, 100),
             .decorations_context = decorations_context,
             .on_decorations_changed = on_decorations_changed,
         };
+        errdefer self.decorations.deinit();
         self.decorations.listener_context = self;
         self.decorations.on_change = notifyDecorations;
 
         self.state_listener_id = try state.on_find_replace_state_change.listen(self, onStateChanged);
         errdefer state.on_find_replace_state_change.unlisten(self.state_listener_id);
+        self.content_listener = try editor.model.onDidChangeContentWithContextId(self, onModelContentChanged);
+        errdefer editor.model.removeDidChangeContentListener(self.content_listener);
+        self.cursor_listener = try editor.on_did_change_cursor_position.listen(self, onCursorPositionChanged);
 
         self.research(false, .unset) catch |err| {
             editor.setMessage("find failed: {s}", .{@errorName(err)});
@@ -83,9 +94,38 @@ pub const FindModel = struct {
         if (!self.disposed) {
             self.disposed = true;
             self.state.on_find_replace_state_change.unlisten(self.state_listener_id);
+            self.editor.on_did_change_cursor_position.unlisten(self.cursor_listener);
+            self.editor.model.removeDidChangeContentListener(self.content_listener);
+            self.update_decorations_scheduler.cancel();
         }
         self.decorations.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn attachWindow(self: *FindModel, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.update_decorations_scheduler.attachWindow(window);
+    }
+
+    fn onCursorPositionChanged(event: ICursorPositionChangedEvent, self: *FindModel) !void {
+        if (!self.state.is_revealed or self.ignore_model_content_changed) return;
+        switch (event.reason) {
+            .Explicit, .Undo, .Redo => self.decorations.setStartPosition(self.editor.modelCursorPosition()),
+            else => {},
+        }
+    }
+
+    fn onModelContentChanged(event: ModelContentChange, self: *FindModel) !void {
+        if (!self.state.is_revealed or self.ignore_model_content_changed) return;
+        if (event.contentChangedEvent.isFlush) self.decorations.reset();
+        self.decorations.setStartPosition(self.editor.modelCursorPosition());
+        self.update_decorations_scheduler.schedule(async_mod.nowMs(), null);
+    }
+
+    fn onUpdateDecorations(self: *FindModel) void {
+        if (!self.state.is_revealed) return;
+        self.research(false, .unset) catch |err| {
+            self.editor.setMessage("find failed: {s}", .{@errorName(err)});
+        };
     }
 
     pub fn getDecorations(self: *FindModel) *FindDecorations {
@@ -98,6 +138,7 @@ pub const FindModel = struct {
 
     fn handleStateChanged(self: *FindModel, event: FindReplaceStateChangedEvent) !void {
         if (self.disposed) return;
+        if (event.is_revealed and !self.state.is_revealed) self.update_decorations_scheduler.cancel();
         if (!(event.search_string or event.is_replace_revealed or event.is_regex or
             event.whole_word or event.match_case or event.search_scope))
         {
@@ -443,7 +484,11 @@ pub const FindModel = struct {
             );
             defer self.allocator.free(replacement);
 
-            try self.editor.replaceRange(selection_range, replacement);
+            {
+                self.ignore_model_content_changed = true;
+                defer self.ignore_model_content_changed = false;
+                try self.editor.replaceRange(selection_range, replacement);
+            }
             self.decorations.start_position = Position.init(
                 selection.startLineNumber,
                 selection.startColumn + replacement.len,
@@ -488,7 +533,11 @@ pub const FindModel = struct {
 
         const selection = self.editor.modelSelection();
         var command = ReplaceAllCommand.init(selection, ranges, replacements);
-        try self.editor.executeCommand(command.interface());
+        {
+            self.ignore_model_content_changed = true;
+            defer self.ignore_model_content_changed = false;
+            try self.editor.executeCommand(command.interface());
+        }
 
         try self.research(false, .unset);
     }
@@ -532,15 +581,6 @@ pub const FindModel = struct {
         }
 
         try self.editor.setSelections(selections);
-    }
-
-    /// Re-runs the search after the document changed. The TUI calls this after
-    /// every edit key because the editor has no content-changed event yet.
-    pub fn onContentChanged(self: *FindModel) void {
-        if (self.state.search_string.len == 0) return;
-        self.research(false, .unset) catch |err| {
-            self.editor.setMessage("find failed: {s}", .{@errorName(err)});
-        };
     }
 
     fn findMatches(self: *FindModel, scopes: ?[]Range, capture_matches: bool, limit: usize) !std.array_list.Managed(FindMatch) {

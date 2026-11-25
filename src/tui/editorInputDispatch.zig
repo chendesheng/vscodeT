@@ -11,7 +11,6 @@ const input = @import("ui").input;
 const View = @import("./editorView.zig").View;
 const ContentHoverController = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
 const WordHighlighterContribution = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
-const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
 const SuggestController = @import("../vs/editor/contrib/suggest/browser/suggestController.zig").SuggestController;
 
 /// Returns true when Ctrl+Q should terminate the host (the TUI handles it,
@@ -160,7 +159,6 @@ pub fn handleKeyEvent(
     view: *View,
     hover: *ContentHoverController,
     word_highlighter: *WordHighlighterContribution,
-    find: *FindController,
     suggest: ?*SuggestController,
     editor: *Editor,
     event: *input.KeyEvent,
@@ -185,10 +183,7 @@ pub fn handleKeyEvent(
             }
         }
     }
-    if (word_highlighter.handleKey(event)) {
-        find.onEditorChanged();
-        return false;
-    }
+    if (word_highlighter.handleKey(event)) return false;
     if (view.dispatchKey(event)) return false;
     if (suggest) |controller| {
         switch (event.key) {
@@ -203,7 +198,6 @@ pub fn handleKeyEvent(
         }
         _ = try controller.onEditorChanged();
     }
-    find.onEditorChanged();
     return false;
 }
 

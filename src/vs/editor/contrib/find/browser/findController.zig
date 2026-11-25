@@ -214,12 +214,8 @@ pub const FindController = struct {
         self.find_widget.close();
     }
 
-    /// The editor content changed. The TUI has no content-changed event yet, so
-    /// the app calls this after edit commands.
-    pub fn onEditorChanged(self: *FindController) void {
-        if (self.state.is_revealed) {
-            self.model.onContentChanged();
-        }
+    pub fn attachWindow(self: *FindController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.model.attachWindow(window);
     }
 
     fn onClose(context: ?*anyopaque) void {

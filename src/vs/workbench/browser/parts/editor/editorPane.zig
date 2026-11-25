@@ -336,7 +336,6 @@ pub const Tab = struct {
             self.view,
             controllers.hover,
             controllers.word_highlighter,
-            controllers.find,
             controllers.suggest,
             self.editor,
             event,
@@ -349,7 +348,6 @@ pub const Tab = struct {
     pub fn onEditorChanged(self: *Tab, _: i64) void {
         if (self.diff != null) return;
         if (self.controllers) |controllers| {
-            controllers.find.onEditorChanged();
             _ = controllers.suggest.onEditorChanged() catch {};
         }
     }
@@ -1033,6 +1031,7 @@ pub const Controllers = struct {
     }
 
     fn attachWindow(self: *Controllers, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.find.attachWindow(window);
         self.hover.attachWindow(window);
         self.word_highlighter.attachWindow(window);
         self.sticky.attachWindow(window);

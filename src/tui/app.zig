@@ -930,7 +930,6 @@ pub fn main(init: std.process.Init) !void {
                     handleMouseEvent(
                         current.view,
                         tab_controllers.hover,
-                        tab_controllers.find,
                         tab_controllers.suggest,
                         current.editor,
                         adjusted,
@@ -989,7 +988,6 @@ fn dispatchExtensionKey(workbench: *Workbench, host: anytype, event: *ui.KeyEven
 fn handleMouseEvent(
     view: *View,
     hover: *ContentHoverController,
-    find: *FindController,
     suggest: ?*SuggestController,
     editor: *Editor,
     event: *input.MouseEvent,
@@ -1029,7 +1027,7 @@ fn handleMouseEvent(
         if (suggest) |controller| controller.cancel();
     }
     const top_before = editor.topViewLine();
-    if (try view.dispatchMouse(event)) find.onEditorChanged();
+    _ = try view.dispatchMouse(event);
     if (event.kind == .wheel and !event.default_prevented) {
         hover.onEditorScrollChanged(editor.topViewLine() != top_before);
     }
@@ -1449,7 +1447,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var open_events = try ui.input.decodeKeys(allocator, "\x06");
     defer open_events.deinit(allocator);
     for (open_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, null, editor, event, &pasting, 0, null));
+        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, null, editor, event, &pasting, 0, null));
     }
 
     try std.testing.expect(find.isOpen());
@@ -1469,7 +1467,7 @@ test "app: Ctrl-F opens the find bar through the byte decoder" {
     var close_events = try ui.input.decodeKeys(allocator, "\x1b");
     defer close_events.deinit(allocator);
     for (close_events.items) |*event| {
-        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, find, null, editor, event, &pasting, 0, null));
+        try std.testing.expect(!try handleKeyEvent(view, hover, word_highlighter, null, editor, event, &pasting, 0, null));
     }
     try std.testing.expect(!find.isOpen());
 
@@ -1966,7 +1964,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     for (items.items) |*item| {
         switch (item.*) {
             .key, .focus => return error.TestUnexpectedResult,
-            .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
+            .mouse => |*mouse| try handleMouseEvent(view, hover, null, editor, mouse),
         }
     }
 
@@ -1985,7 +1983,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     for (drag_items.items) |*item| {
         switch (item.*) {
             .key, .focus => return error.TestUnexpectedResult,
-            .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
+            .mouse => |*mouse| try handleMouseEvent(view, hover, null, editor, mouse),
         }
     }
     const selection = editor.modelSelection();
@@ -1998,7 +1996,7 @@ test "app: decoded clicks, drags and wheel reach the editor" {
     for (wheel_items.items) |*item| {
         switch (item.*) {
             .key, .focus => return error.TestUnexpectedResult,
-            .mouse => |*mouse| try handleMouseEvent(view, hover, find, null, editor, mouse),
+            .mouse => |*mouse| try handleMouseEvent(view, hover, null, editor, mouse),
         }
     }
     try std.testing.expectEqual(@as(usize, 4), editor.topViewLine());

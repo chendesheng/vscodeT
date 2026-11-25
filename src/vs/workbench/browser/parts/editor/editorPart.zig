@@ -146,6 +146,15 @@ pub fn EditorPart(comptime GroupView: type) type {
             try self.when_restored.open(self.allocator);
         }
 
+        /// The terminal destroys group models before tab inputs (their
+        /// listeners refer to those inputs). Detach group-view listeners
+        /// before the groups service releases the models.
+        pub fn disposeGroupModelListeners(self: *Self) void {
+            if (@hasDecl(GroupView, "disposeModelListeners")) {
+                for (self.group_views.items) |view| view.disposeModelListeners();
+            }
+        }
+
         pub fn deinit(self: *Self) void {
             self.when_restored.deinit(self.allocator);
             self.on_did_change_group_maximized.deinit();
@@ -363,6 +372,7 @@ pub fn EditorPart(comptime GroupView: type) type {
             if (self.maximized_group == view) self.setMaximizedGroup(null);
             self.on_did_remove_group.fire(view) catch {};
             self.service.on_did_visible_editors_change.fire({}) catch {};
+            if (@hasDecl(GroupView, "disposeModelListeners")) view.disposeModelListeners();
             self.service.removeGroup(view.group) catch {};
             view.deinit();
             self.allocator.destroy(view);
@@ -528,6 +538,7 @@ pub fn EditorPart(comptime GroupView: type) type {
             view.* = GroupView.init(self.allocator, group);
             if (@hasDecl(GroupView, "attachWindow")) if (self.window) |window| view.attachWindow(window);
             errdefer view.deinit();
+            if (@hasDecl(GroupView, "registerModelListeners")) try view.registerModelListeners();
             // Upstream `doCreateGroupView`: a focused group becomes the active
             // group (`doSetGroupActive`); the group view owns the focus event.
             _ = try view.on_did_focus.listen(self, onGroupDidFocus);

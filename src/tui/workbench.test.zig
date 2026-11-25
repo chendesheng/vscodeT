@@ -4304,7 +4304,6 @@ test "Workbench: preview replacement and dirty pin" {
 
     try workbench.activeTab().?.ensureControllers();
     try workbench.activeTab().?.editor.insertText("x");
-    workbench.refreshStatus();
     try std.testing.expect(workbench.activePane().?.group.model.isPinned(.{ .editor = workbench.activeTab().?.input }));
 
     try workbench.openPreviewPath(path_a);
