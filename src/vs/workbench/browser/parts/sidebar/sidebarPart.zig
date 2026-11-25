@@ -29,6 +29,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
+const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
 const pane = @import("../paneCompositePart.zig");
 const activity_bar_mod = @import("../activitybar/activitybarPart.zig");
 const layout_service = @import("../../../services/layout/browser/layoutService.zig");
@@ -48,7 +49,7 @@ const Part = @import("../../part.zig").Part;
 pub const SidebarPart = struct {
     base: Part,
     allocator: Allocator,
-    view_pane_containers: std.StringHashMapUnmanaged(*ViewPaneContainer) = .empty,
+    view_pane_containers: std.StringHashMapUnmanaged(ContainerRegistration) = .empty,
     pane: pane.PaneCompositePart,
     /// Layout visibility, like `layoutService.isVisible(Parts.SIDEBAR_PART)`.
     visible: bool = false,
@@ -83,6 +84,8 @@ pub const SidebarPart = struct {
     title_signature: ?u64 = null,
     bar_signature: ?u64 = null,
 
+    const ContainerRegistration = struct { container: *ViewPaneContainer, title_listener: SignalSubscription };
+
     /// A painted title element: a title action or a composite-bar item.
     pub const TitleNode = struct {
         id: []const u8,
@@ -116,13 +119,16 @@ pub const SidebarPart = struct {
     }
 
     pub fn registerViewPaneContainer(self: *SidebarPart, container: *ViewPaneContainer) !void {
-        try self.view_pane_containers.putNoClobber(self.allocator, container.model.container.id, container);
+        const listener = try container.on_title_area_update.listenSignal(self, onTitleAreaUpdate);
+        errdefer listener.dispose();
+        try self.view_pane_containers.putNoClobber(self.allocator, container.model.container.id, .{ .container = container, .title_listener = listener });
         container.setVisible(self.visible and self.pane.active_id != null and std.mem.eql(u8, self.pane.active_id.?, container.model.container.id));
+        self.updateTitleArea();
     }
 
     pub fn unregisterViewPaneContainer(self: *SidebarPart, container: *ViewPaneContainer) void {
         container.setVisible(false);
-        _ = self.view_pane_containers.remove(container.model.container.id);
+        if (self.view_pane_containers.fetchRemove(container.model.container.id)) |registration| registration.value.title_listener.dispose();
     }
 
     /// Mounts the view model and its native view-pane container together.
@@ -156,7 +162,7 @@ pub const SidebarPart = struct {
     }
 
     pub fn getViewPaneContainer(self: *const SidebarPart, id: []const u8) ?*ViewPaneContainer {
-        return self.view_pane_containers.get(id);
+        return if (self.view_pane_containers.get(id)) |registration| registration.container else null;
     }
 
     pub fn dropDestination(self: *const SidebarPart, sidebar_rect: ui.Rect, activity_rect: ui.Rect, x: usize, y: usize) ?DropDestination {
@@ -179,6 +185,8 @@ pub const SidebarPart = struct {
 
     pub fn deinit(self: *SidebarPart) void {
         self.base.deinit();
+        var registrations = self.view_pane_containers.valueIterator();
+        while (registrations.next()) |registration| registration.title_listener.dispose();
         self.view_pane_containers.deinit(self.allocator);
         if (self.title_surface) |*surface| surface.deinit();
         self.title_surface = null;
@@ -326,7 +334,20 @@ pub const SidebarPart = struct {
         }
         self.setActiveContainerVisible(true);
         self.focusActiveContainer(self.focused);
+        self.updateTitleArea();
         return true;
+    }
+
+    fn onTitleAreaUpdate(self: *SidebarPart) !void {
+        self.updateTitleArea();
+    }
+
+    /// ViewPaneContainer.onTitleAreaUpdate updates the active composite's
+    /// toolbar. Standalone composites (such as Search) own their toolbar.
+    pub fn updateTitleArea(self: *SidebarPart) void {
+        const container = self.getViewPaneContainer(self.pane.active_id orelse return) orelse return;
+        const primary = container.mergedTitleActions() catch null;
+        self.pane.setTitleActions(primary orelse &.{}, if (container.container_menu_action) |action| &.{action} else &.{}) catch {};
     }
 
     pub fn activePaneComposite(self: *const SidebarPart) ?pane.PaneCompositeDescriptor {
@@ -1040,7 +1061,6 @@ pub const SidebarViewMenus = struct {
     host: struct {
         context: *anyopaque,
         anchor: *const fn (*anyopaque, []const u8) MenuAnchor,
-        on_change: *const fn (*anyopaque) void,
     },
 
     const ActionContext = struct {
@@ -1052,7 +1072,7 @@ pub const SidebarViewMenus = struct {
     fn otherContainer(self: *SidebarViewMenus, container: *ViewPaneContainer) ?*ViewPaneContainer {
         var it = self.sidebar.view_pane_containers.valueIterator();
         while (it.next()) |candidate| {
-            if (candidate.* != container) return candidate.*;
+            if (candidate.container != container) return candidate.container;
         }
         return null;
     }
@@ -1143,7 +1163,6 @@ pub const SidebarViewMenus = struct {
         } else if (container.model.contains(id)) {
             container.model.toggleVisibility(id);
         } else return self.commands.execute(id);
-        self.host.on_change(self.host.context);
     }
 };
 

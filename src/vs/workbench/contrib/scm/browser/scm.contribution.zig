@@ -70,6 +70,7 @@ pub const SCMContribution = struct {
         self.view_descriptors = descriptors;
         self.container = container;
         self.view_model = model;
+        container.setContainerMenuAction(.{ .id = "workbench.scm.action.showMenu", .label = "More Actions", .glyph = '…' });
     }
 
     pub fn attachProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider, options: Options) !void {
@@ -166,6 +167,7 @@ pub const SCMContribution = struct {
             view.fresh_repository = provider.fresh_repository;
             view.refresh();
         }
+        if (self.container) |container| container.updateTitleArea();
     }
 
     /// Configure the view before mounting its history provider (initial query

@@ -1147,12 +1147,6 @@ pub const TerminalWorkbench = struct {
                         return host.sidebarMenuAnchor(id);
                     }
                 }.run,
-                .on_change = struct {
-                    fn run(context: *anyopaque) void {
-                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                        host.updateSidebarTitleActions();
-                    }
-                }.run,
             },
         };
         _ = try self.services.set(sidebar_part_mod.sidebar_view_menus_id, &self.sidebar_menus);
@@ -1357,6 +1351,7 @@ pub const TerminalWorkbench = struct {
             }.run,
             .handle_mouse = outlinePaneHandleMouse,
             .title_actions = outlinePaneTitleActions,
+            .overflow_action_id = OutlinePane.more_actions_id,
             .set_visible = outlinePaneViewVisible,
             .set_body_visible = outlinePaneBodyVisible,
             .append_secondary_actions = struct {
@@ -1380,6 +1375,7 @@ pub const TerminalWorkbench = struct {
             }.run,
             .handle_mouse = scmChangesHandleMouse,
             .title_actions = scmChangesTitleActions,
+            .overflow_action_id = scm_view_mod.CHANGES_MENU_ACTION_ID,
             .append_secondary_actions = struct {
                 fn run(context: *anyopaque, menu: *Menu, service: *@import("../vs/platform/actions/common/menuService.zig").MenuService, keys: @import("../vs/platform/contextkey/common/contextkey.zig").IContext) !void {
                     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -1401,6 +1397,7 @@ pub const TerminalWorkbench = struct {
             }.run,
             .handle_mouse = scmHistoryHandleMouse,
             .title_actions = scmHistoryTitleActions,
+            .overflow_action_id = scm_history_view_mod.GRAPH_MENU_ACTION_ID,
             .append_secondary_actions = struct {
                 fn run(context: *anyopaque, menu: *Menu, service: *@import("../vs/platform/actions/common/menuService.zig").MenuService, keys: @import("../vs/platform/contextkey/common/contextkey.zig").IContext) !void {
                     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -1868,38 +1865,6 @@ pub const TerminalWorkbench = struct {
         self.requestFrame();
     }
 
-    /// Port of the composite action collection: the active side bar view
-    /// container supplies the title toolbar actions.
-    pub fn updateSidebarTitleActions(self: *TerminalWorkbench) void {
-        const container = self.sidebar_part.pane.active_id orelse "";
-        if (std.mem.eql(u8, container, "search")) {
-            if (self.search_window.view) |view| view.updateTitleActions();
-        } else if (std.mem.eql(u8, container, "scm")) {
-            const merged = if (self.scm.container) |value|
-                value.mergedTitleActions(self.allocator) catch null
-            else
-                null;
-            // The container overflow includes a merged pane's secondary actions.
-            // Keep only its primary buttons in the shared title toolbar.
-            var primary = merged orelse &.{};
-            if (primary.len > 0) {
-                const last = primary[primary.len - 1].id;
-                if (std.mem.eql(u8, last, scm_view_mod.CHANGES_MENU_ACTION_ID) or
-                    std.mem.eql(u8, last, scm_history_view_mod.GRAPH_MENU_ACTION_ID) or
-                    std.mem.eql(u8, last, OutlinePane.more_actions_id))
-                    primary = primary[0 .. primary.len - 1];
-            }
-            self.sidebar_part.pane.setTitleActions(primary, &.{
-                .{ .id = "workbench.scm.action.showMenu", .label = "More Actions", .glyph = '…' },
-            }) catch {};
-        } else if (std.mem.eql(u8, container, "explorer")) {
-            const merged = if (self.explorer_container) |value| value.mergedTitleActions(self.allocator) catch null else null;
-            self.sidebar_part.pane.setTitleActions(merged orelse &.{}, &.{}) catch {};
-        } else {
-            self.sidebar_part.pane.setTitleActions(&.{}, &.{}) catch {};
-        }
-    }
-
     fn sidebarMenuAnchor(self: *TerminalWorkbench, id: []const u8) MenuAnchor {
         if (self.sidebar_action_anchor) |anchor| return anchor;
         if (self.activeSidebarViewContainer()) |container| {
@@ -2001,7 +1966,6 @@ pub const TerminalWorkbench = struct {
             if (self.explorer_view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
             if (self.scm.view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
             try self.restoreSidebarViewStates();
-            self.updateSidebarTitleActions();
         }
         try self.ensureConfiguration();
         if (self.terminal_service) |service| {
@@ -2223,7 +2187,6 @@ pub const TerminalWorkbench = struct {
         _ = try self.sidebar_part.openPaneComposite(self.activity_bar_part.activities.items[0].id);
         try self.setSidebarVisible(true);
         self.sidebar_part.setFocused(self.focus == .sidebar);
-        self.updateSidebarTitleActions();
         self.layoutAll();
     }
 
@@ -2243,7 +2206,6 @@ pub const TerminalWorkbench = struct {
         _ = try self.sidebar_part.openPaneComposite(id);
         try self.setSidebarVisible(true);
         try self.syncActivityBarVisibility();
-        self.updateSidebarTitleActions();
         if (focus) {
             self.setFocus(.sidebar);
             self.statusbar.main_part.clearFocus();
@@ -3149,7 +3111,6 @@ pub const TerminalWorkbench = struct {
         if (self.view_state_storage) |old| old.deinit();
         self.view_state_storage = state;
         try self.restoreSidebarViewStates();
-        self.updateSidebarTitleActions();
     }
 
     fn restoreSidebarViewStates(self: *TerminalWorkbench) !void {
@@ -4006,7 +3967,6 @@ pub const TerminalWorkbench = struct {
         const destination = self.sidebar_part.getViewPaneContainer(change.to.container.id) orelse return;
         _ = try self.showActivityById(change.to.container.id);
         destination.setActive(change.views[0]);
-        self.updateSidebarTitleActions();
         try self.saveSidebarViewStates();
     }
 
@@ -4173,7 +4133,6 @@ pub const TerminalWorkbench = struct {
         }
         if (focus) self.focusSidebar();
         if (focus) if (self.outline_view) |view| view.setPaneFocused(true);
-        self.updateSidebarTitleActions();
     }
 
     fn ensureOutlineView(self: *TerminalWorkbench) !*OutlinePane {
@@ -4187,7 +4146,7 @@ pub const TerminalWorkbench = struct {
             .title_actions_changed = struct {
                 fn changed(context: *anyopaque) void {
                     const workbench: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                    workbench.updateSidebarTitleActions();
+                    workbench.sidebar_part.updateTitleArea();
                 }
             }.changed,
             .focus_editor = outlineFocusEditor,

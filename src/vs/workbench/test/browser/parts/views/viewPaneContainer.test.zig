@@ -397,3 +397,44 @@ test "ViewPaneContainer: body visibility follows collapse, descriptor and compos
     container.setVisible(true);
     try testing.expect(second.visible and second.body);
 }
+
+test "ViewPaneContainer: merged title actions follow descriptor and title area events" {
+    const allocator = testing.allocator;
+    const SidebarPart = @import("../../../../browser/parts/sidebar/sidebarPart.zig").SidebarPart;
+    var sidebar = SidebarPart.init(allocator);
+    defer sidebar.deinit();
+    try sidebar.pane.addPaneComposite(.{ .id = "test", .name = "Views", .order = 1 });
+    var model = model_mod.ViewContainerModel.init(allocator, .{ .id = "test", .title = "Views", .icon = "" });
+    defer model.deinit();
+    try model.addView(.{ .id = "first", .name = "First", .order = 0 });
+    try model.addView(.{ .id = "second", .name = "Second", .order = 1 });
+    var first = TestPane{ .actions_list = &.{
+        .{ .id = "first.refresh", .label = "Refresh", .glyph = 'R' },
+        .{ .id = "first.overflow", .label = "More", .glyph = '…' },
+    } };
+    var second = TestPane{};
+    const panes = [_]container_mod.Pane{
+        .{ .id = "first", .title = "First", .context = &first, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions, .overflow_action_id = "first.overflow" },
+        .{ .id = "second", .title = "Second", .context = &second, .render_body = TestPane.render, .handle_key = TestPane.key, .handle_mouse = TestPane.mouse, .title_actions = TestPane.actions },
+    };
+    const container = try container_mod.ViewPaneContainer.init(allocator, &model, &panes);
+    defer {
+        container.deinit();
+        allocator.destroy(container);
+    }
+    try sidebar.registerViewPaneContainer(container);
+    defer sidebar.unregisterViewPaneContainer(container);
+    container.setContainerMenuAction(.{ .id = "test.overflow", .label = "More", .glyph = '…' });
+    try testing.expect(try sidebar.openPaneComposite("test"));
+    try testing.expectEqual(@as(usize, 0), sidebar.pane.primary_actions.items.len);
+    try testing.expectEqualStrings("test.overflow", sidebar.pane.secondary_actions.items[0].id);
+    model.setVisible("second", false);
+    try testing.expectEqual(@as(usize, 1), sidebar.pane.primary_actions.items.len);
+    try testing.expectEqualStrings("first.refresh", sidebar.pane.primary_actions.items[0].id);
+    first.actions_list = &.{.{ .id = "first.collapse", .label = "Collapse", .glyph = 'C' }};
+    container.updateTitleArea();
+    try testing.expectEqualStrings("first.collapse", sidebar.pane.primary_actions.items[0].id);
+    model.setVisible("second", true);
+    try testing.expectEqual(@as(usize, 0), sidebar.pane.primary_actions.items.len);
+    try testing.expectEqualStrings("test.overflow", sidebar.pane.secondary_actions.items[0].id);
+}

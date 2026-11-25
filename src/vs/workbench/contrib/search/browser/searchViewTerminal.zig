@@ -155,6 +155,7 @@ pub const SearchView = struct {
     configuration: *ConfigurationService,
     configuration_listener: ?usize = null,
     title_pane: ?*PaneCompositePart = null,
+    title_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     host: Host,
     controller: *Controller,
     model: *SearchModel,
@@ -273,6 +274,7 @@ pub const SearchView = struct {
     }
 
     pub fn deinit(self: *SearchView) void {
+        if (self.title_listener) |listener| listener.dispose();
         self.list_focus.deinit();
         self.detachConfiguration();
         self.detachActivity();
@@ -655,8 +657,15 @@ pub const SearchView = struct {
         self.rebuildRows();
     }
 
-    pub fn attachTitleActions(self: *SearchView, pane: *PaneCompositePart) void {
+    pub fn attachTitleActions(self: *SearchView, pane: *PaneCompositePart) !void {
+        if (self.title_listener) |listener| listener.dispose();
+        self.title_listener = null;
         self.title_pane = pane;
+        self.title_listener = try pane.on_did_pane_composite_open.listenSignal(self, onCompositeOpened);
+        self.updateTitleActions();
+    }
+
+    fn onCompositeOpened(self: *SearchView) !void {
         self.updateTitleActions();
     }
 
@@ -2139,7 +2148,7 @@ pub const SearchWindow = struct {
         errdefer view.deinit();
         try view.registerList(self.lists);
         try view.attachActivity(self.activity_service);
-        view.attachTitleActions(self.title_pane);
+        try view.attachTitleActions(self.title_pane);
         view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = self.window };
         _ = try view.on_did_change_focus.listenSignal(self, onSearchFocusChanged);
         self.service = service;

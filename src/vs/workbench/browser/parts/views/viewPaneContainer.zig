@@ -16,6 +16,7 @@ const theme_colors_mod = @import("../../themeColors.zig");
 const Menu = @import("../../../../platform/contextview/browser/contextMenuHandler.zig").Menu;
 const MenuService = @import("../../../../platform/actions/common/menuService.zig").MenuService;
 const IContext = @import("../../../../platform/contextkey/common/contextkey.zig").IContext;
+const Emitter = @import("../../../../base/common/event.zig").Emitter;
 const SignalSubscription = @import("../../../../base/common/event.zig").SignalSubscription;
 
 pub const Pane = struct {
@@ -30,6 +31,7 @@ pub const Pane = struct {
     append_secondary_actions: ?*const fn (*anyopaque, *Menu, *MenuService, IContext) anyerror!void = null,
     handle_mouse: *const fn (context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) anyerror!bool,
     title_actions: *const fn (context: *anyopaque) []const views.TitleAction,
+    overflow_action_id: ?[]const u8 = null,
     show_actions: view_pane.ShowActions = .default,
     run_title_action: ?*const fn (context: *anyopaque, id: []const u8) void = null,
 };
@@ -103,6 +105,8 @@ pub const ViewPaneContainer = struct {
     visible: bool = false,
     visibility: []PaneVisibility,
     model_listeners: [5]?SignalSubscription = @splat(null),
+    on_title_area_update: Emitter(void),
+    container_menu_action: ?views.TitleAction = null,
     merge_view_with_container_when_single_view: bool = true,
     always_show_header_actions: bool = false,
     focused_header: ?[]const u8 = null,
@@ -136,6 +140,7 @@ pub const ViewPaneContainer = struct {
             .model = model,
             .panes = panes,
             .visibility = visibility,
+            .on_title_area_update = .init(allocator),
             .headers = std.array_list.Managed(view_pane.Header).init(allocator),
             .sections = std.array_list.Managed(Section).init(allocator),
         };
@@ -143,6 +148,7 @@ pub const ViewPaneContainer = struct {
             for (self.headers.items) |*header| header.deinit();
             self.headers.deinit();
             self.sections.deinit();
+            self.on_title_area_update.deinit();
             for (self.model_listeners) |listener| if (listener) |value| value.dispose();
         }
         for (panes) |pane| {
@@ -162,6 +168,7 @@ pub const ViewPaneContainer = struct {
     pub fn deinit(self: *ViewPaneContainer) void {
         self.setVisible(false);
         for (self.model_listeners) |listener| if (listener) |value| value.dispose();
+        self.on_title_area_update.deinit();
         self.allocator.free(self.visibility);
         for (self.headers.items) |*header| header.deinit();
         self.headers.deinit();
@@ -184,6 +191,16 @@ pub const ViewPaneContainer = struct {
     fn onModelVisibilityChanged(self: *ViewPaneContainer) !void {
         self.updateBodyVisibility();
         self.updateFocusedBody();
+        self.updateTitleArea();
+    }
+
+    pub fn updateTitleArea(self: *ViewPaneContainer) void {
+        self.on_title_area_update.fire({}) catch {};
+    }
+
+    pub fn setContainerMenuAction(self: *ViewPaneContainer, action: ?views.TitleAction) void {
+        self.container_menu_action = action;
+        self.updateTitleArea();
     }
 
     fn updateBodyVisibility(self: *ViewPaneContainer) void {
@@ -773,13 +790,20 @@ pub const ViewPaneContainer = struct {
         if (pane.append_secondary_actions) |append| try append(pane.context, menu, service, context);
     }
 
-    pub fn mergedTitleActions(self: *const ViewPaneContainer, allocator: Allocator) !?[]const views.TitleAction {
-        _ = allocator;
+    pub fn mergedTitleActions(self: *const ViewPaneContainer) !?[]const views.TitleAction {
         const visible = try self.model.visibleViews(self.allocator);
         defer self.allocator.free(visible);
         if (visible.len != 1 or !self.merge_view_with_container_when_single_view) return null;
         const index = self.paneIndex(visible[0].id) orelse return null;
         const pane = self.panes[index];
-        return pane.title_actions(pane.context);
+        const actions = pane.title_actions(pane.context);
+        // A container menu includes the merged pane secondary actions. Its
+        // own overflow button replaces the pane overflow, not primary actions.
+        if (self.container_menu_action != null and actions.len > 0) {
+            if (pane.overflow_action_id) |id| {
+                if (std.mem.eql(u8, actions[actions.len - 1].id, id)) return actions[0 .. actions.len - 1];
+            }
+        }
+        return actions;
     }
 };

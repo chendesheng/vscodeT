@@ -110,7 +110,9 @@ The terminal, built-in extension and Node extension-host service factories now l
 
 OutlinePane now subscribes to active/visible-editor, outline-creator and marker events while its body is visible. ViewContainerModel descriptor/collapse events and SidebarPart composite visibility drive ViewPaneContainer body visibility; the native render and input paths no longer synchronize the outline by reading editor state.
 
-The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,616 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+ViewPaneContainer emits title-area updates from its descriptor and pane events. SidebarPart collects the merged view toolbar and registered container overflow; Search owns its title updates on composite open. SCM registers its own overflow rather than the native window filtering feature-specific command IDs.
+
+The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,575 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
