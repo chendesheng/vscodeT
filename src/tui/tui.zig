@@ -433,6 +433,7 @@ pub fn pollInput(timeout_ms: i32) !bool {
 pub const PollResult = struct {
     input: bool,
     extra: bool,
+    worker: bool = false,
 };
 
 /// Polls stdin plus an optional extra POSIX fd (the file watcher's
@@ -447,10 +448,10 @@ pub fn pollInputWithFd(extra_fd: ?i32, timeout_ms: i32) !PollResult {
 }
 
 /// Windows variant of `pollInputWithFd`, using the watcher's native handle.
-pub fn pollInputWithHandle(extra_handle: ?windows.HANDLE, timeout_ms: i32) !PollResult {
+pub fn pollInputWithHandles(extra_handle: ?windows.HANDLE, worker_handle: windows.HANDLE, timeout_ms: i32) !PollResult {
     if (!is_windows) return pollInputWithFd(null, timeout_ms);
 
-    var handles: [2]windows.HANDLE = undefined;
+    var handles: [3]windows.HANDLE = undefined;
     const stdin = GetStdHandle(STD_INPUT_HANDLE);
     if (stdin == windows.INVALID_HANDLE_VALUE) {
         return .{ .input = false, .extra = false };
@@ -462,6 +463,9 @@ pub fn pollInputWithHandle(extra_handle: ?windows.HANDLE, timeout_ms: i32) !Poll
         count = 2;
     }
 
+    const worker_index = count;
+    handles[count] = worker_handle;
+    count += 1;
     const milliseconds: windows.DWORD = if (timeout_ms < 0) INFINITE else @intCast(timeout_ms);
     const result = WaitForMultipleObjects(count, &handles, .FALSE, milliseconds);
     if (result == WAIT_TIMEOUT or result == WAIT_FAILED) {
@@ -469,6 +473,7 @@ pub fn pollInputWithHandle(extra_handle: ?windows.HANDLE, timeout_ms: i32) !Poll
     }
     return .{
         .input = result == WAIT_OBJECT_0,
-        .extra = count == 2 and result == WAIT_OBJECT_0 + 1,
+        .extra = extra_handle != null and result == WAIT_OBJECT_0 + 1,
+        .worker = result == WAIT_OBJECT_0 + worker_index,
     };
 }

@@ -1287,7 +1287,7 @@ console API for raw mode, sizing and input polling.
   builder. Workspace files are searched by `rg --json`
   (`src/vs/workbench/services/search/node/ripgrepTextSearchEngine.zig` and
   `textSearchWorker.zig`): one bounded worker streams matches from each
-  workspace folder while the event loop stays responsive, and open/dirty editor
+  workspace folder and wakes the window for progress and completion. Open/dirty editor
   buffers are searched synchronously with the editor matcher and suppress the
   stale on-disk result for the same path. `rg` must be installed and on `PATH`;
   a missing binary is reported in the panel. `surroundingContext` /

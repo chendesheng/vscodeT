@@ -1703,7 +1703,10 @@ Library constraints:
   through the host callback and the ported regex/word matcher, then delegates
   workspace files to `ripgrepTextSearchEngine.zig`/`textSearchWorker.zig`
   (`rg --json`) on one bounded worker thread. The worker streams per-file
-  matches and surrounding-context rows; the main thread applies query filters
+  matches and surrounding-context rows. A POSIX pipe or Windows event wakes the
+  window when results or completion are ready. The requesting sidebar or Search
+  Editor receives its batch on the main thread. Debounced edits set a deadline
+  in the same wait loop. The main thread applies query filters
   and publishes owned results. `glob.zig` provides the pattern language used by
   the query filter: `**`, `?`, `{}` groups, `[...]` character classes,
   `trimForExclusions`, `ignoreCase` and `!` exceptions. `.gitignore`/`.ignore`

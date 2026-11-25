@@ -106,6 +106,7 @@ const TextSearchJob = struct {
 
     open_results: []SearchFileResult = &.{},
     open_index: usize = 0,
+    progress: ?search.SearchProgressListener = null,
     open_paths: std.StringHashMap(void),
     seen_paths: std.StringHashMap(void),
     sibling_root: []const u8 = "",
@@ -182,10 +183,18 @@ const TextSearchJob = struct {
     fn interface(self: *TextSearchJob) ISearchJob {
         return .{
             .context = self,
+            .set_progress_listener = setProgressListener,
             .step = stepCallback,
             .cancel = cancelCallback,
             .deinit = deinitCallback,
         };
+    }
+
+    fn setProgressListener(context: *anyopaque, listener: search.SearchProgressListener) void {
+        const self: *TextSearchJob = @ptrCast(@alignCast(context));
+        self.progress = listener;
+        if (self.worker) |worker| worker.setProgressListener(listener);
+        if (self.open_results.len > 0 or self.worker == null) listener.notify(listener.context);
     }
 
     fn stepCallback(context: *anyopaque, allocator: Allocator, max_files: usize) anyerror!SearchStep {
@@ -254,7 +263,7 @@ const TextSearchJob = struct {
         }
 
         if (self.worker) |worker| {
-            _ = worker.waitForWork(1);
+            if (self.progress == null) _ = worker.waitForWork(1);
             const items = try worker.takeBatch(allocator, max_files -| results.items.len);
             defer allocator.free(items);
             for (items) |item_value| {
@@ -265,10 +274,10 @@ const TextSearchJob = struct {
                 if (self.limit_hit) worker.cancel();
             }
             if (self.limit_hit) self.done = true;
-            if (!self.done and worker.isFinished() and !worker.hasQueued()) {
+            if (!self.done and self.open_index == self.open_results.len and worker.isFinished() and !worker.hasQueued()) {
                 self.done = true;
             }
-            if (self.done or worker.isFinished()) {
+            if (self.done) {
                 const worker_messages = try worker.takeMessages(allocator);
                 defer self.allocator.free(worker_messages);
                 for (worker_messages) |message| try messages.append(message);
@@ -277,6 +286,9 @@ const TextSearchJob = struct {
             self.done = true;
         }
 
+        if (!self.done and (self.open_index < self.open_results.len or (self.worker != null and self.worker.?.hasQueued()))) {
+            if (self.progress) |listener| listener.notify(listener.context);
+        }
         return .{
             .results = try results.toOwnedSlice(),
             .done = self.done,

@@ -698,7 +698,7 @@ pub fn main(init: std.process.Init) !void {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.pollFileWatcher(now_ms)) needs_render = true;
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
-        if (workbench.pollSearch(now_ms)) needs_render = true;
+        if (workbench.search_events.dispatch(now_ms)) needs_render = true;
         if (workbench.pollGit(now_ms)) needs_render = true;
         if (workbench.markdownPreviewTick(now_ms)) needs_render = true;
         if (workbench.tickEditorDrag(now_ms)) needs_render = true;
@@ -741,7 +741,7 @@ pub fn main(init: std.process.Init) !void {
             timeout = @min(timeout, @as(i32, @intCast(@min(preview_timeout, 250))));
         }
         timeout = workbench.quick_access.pollTimeout(now_ms, timeout);
-        if (workbench.searchWantsTick()) timeout = 0;
+        timeout = workbench.search_events.nextTimeout(time_compat.milliTimestamp(), timeout);
         if (workbench.fileWatcherTimeout(now_ms)) |watcher_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(watcher_timeout, 250))));
         }

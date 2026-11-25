@@ -1647,6 +1647,40 @@ test "Search palette actions open the named view after the activity bar changes"
     try std.testing.expectEqual(.tree, workbench.search_view.?.controller.view_mode);
 }
 
+// Exercise the same deadlines and native worker wakeups as an idle window.
+fn waitForSearch(workbench: *Workbench) !void {
+    const Signal = @import("wakeSignal.zig").Signal;
+    const clock = @import("../vs/base/common/timeCompat.zig");
+    var signal = try Signal.init();
+    defer signal.deinit();
+    workbench.search_events.setWake(.{ .context = &signal, .signal = Signal.notify });
+    defer workbench.search_events.setWake(null);
+    const end = clock.milliTimestamp() + 5000;
+    while (true) {
+        const sidebar_busy = if (workbench.search_view) |view| view.isSearchPending() else false;
+        const tab = workbench.activeTab();
+        const editor_busy = if (tab != null and tab.?.search_editor_input != null) tab.?.search_editor_input.?.search_editor.isSearchPending() else false;
+        if (!sidebar_busy and !editor_busy) return;
+        const now = clock.milliTimestamp();
+        if (now >= end) return error.SearchCompletionTimeout;
+        const timeout = workbench.search_events.nextTimeout(now, @intCast(end - now));
+        if (timeout > 0) {
+            if (@import("builtin").os.tag == .windows) {
+                const native = struct {
+                    extern "kernel32" fn WaitForSingleObject(handle: std.os.windows.HANDLE, milliseconds: u32) callconv(.winapi) u32;
+                };
+                if (native.WaitForSingleObject(signal.handles, @intCast(timeout)) == 0xffffffff) return error.SearchWaitFailed;
+            } else {
+                var fds = [_]std.posix.pollfd{.{ .fd = signal.handles[0], .events = std.posix.POLL.IN, .revents = 0 }};
+                if (try std.posix.poll(&fds, timeout) > 0) signal.drain();
+            }
+        }
+        const ready_at = clock.milliTimestamp();
+        if (ready_at >= end) return error.SearchCompletionTimeout;
+        _ = workbench.search_events.dispatch(ready_at);
+    }
+}
+
 test "Workbench: workspace search streams results and opens a match" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -1668,10 +1702,7 @@ test "Workbench: workspace search streams results and opens a match" {
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
-    var guard: usize = 0;
-    while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -1703,10 +1734,7 @@ test "Workbench: opening a search match selects its range" {
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
-    var guard: usize = 0;
-    while (view.model.isSearching() and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     try std.testing.expect(view.rows.items.len > 0);
 
     var match_row: ?usize = null;
@@ -1758,10 +1786,7 @@ test "Workbench: opening a search result from another file does not restart the 
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
-    var guard: usize = 0;
-    while (view.model.isSearching() and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
 
     var second_row: ?usize = null;
@@ -1785,7 +1810,7 @@ test "Workbench: opening a search result from another file does not restart the 
     // The app reports the newly active editor after the click. Switching to
     // another file is not a content change, so it must not schedule a query.
     workbench.onSearchEditorChanged();
-    _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp() + 600);
+    _ = workbench.search_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp() + 600);
     try std.testing.expect(!view.model.isSearching());
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
 }
@@ -1828,10 +1853,7 @@ test "Workbench: search chevron and replace all confirmation update an open edit
     try view.widget.setValue(.replace, "omega");
     view.model.setReplaceString("omega") catch {};
     try view.startSearch();
-    var guard: usize = 0;
-    while (view.model.isSearching() and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
     try renderFrame(workbench, &out.writer);
     const replace_all = view.widget.controlRect(.replace_all).?;
@@ -2796,10 +2818,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
 
     try view.widget.setValue(.search, "zzz-not-found");
     try view.startSearch();
-    var guard: usize = 0;
-    while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -2807,10 +2826,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
 
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
-    guard = 0;
-    while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
     try renderFrame(workbench, &rendered.writer);
@@ -2847,18 +2863,9 @@ test "Workbench: search editor shows query controls and reruns with independent 
     const sidebar = workbench.search_view.?;
     try sidebar.widget.setValue(.search, "alpha");
     try sidebar.startSearch();
-    const wait = struct {
-        fn run(owner: *Workbench) !void {
-            var guard: usize = 0;
-            while (owner.searchWantsTick() and guard < 1000) : (guard += 1) {
-                _ = owner.pollSearch(@import("../vs/base/common/timeCompat.zig").milliTimestamp() + 1000);
-            }
-            try std.testing.expect(!owner.searchWantsTick());
-        }
-    }.run;
-    try wait(workbench);
+    try waitForSearch(workbench);
     try sidebar.openInEditor();
-    try wait(workbench);
+    try waitForSearch(workbench);
     const tab = workbench.activeTab().?;
     const input = tab.search_editor_input.?;
     const query = input.search_editor;
@@ -2897,7 +2904,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     try query.form.setValue(.search, "beta");
     var enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
-    try wait(workbench);
+    try waitForSearch(workbench);
     try std.testing.expect(workbench.activeTab() == tab);
     try std.testing.expectEqualStrings("Search: beta", input.base.getName());
     try std.testing.expectEqualStrings("alpha", sidebar.widget.value(.search));
@@ -2912,7 +2919,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
         .x = ui.cell.snap(pane.rect.x + toggle.x),
         .y = ui.cell.snap(pane.rect.y + toggle.y) + pane.chromeHeight(),
     }));
-    try wait(workbench);
+    try waitForSearch(workbench);
     var no_context = try tab.editor.model.getValue(null, false);
     defer no_context.deinit();
     try std.testing.expect(std.mem.indexOf(u8, no_context.items, "  4: beta") != null);
@@ -2923,7 +2930,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     query.form.focusField(.includes);
     try query.form.setValue(.includes, "*.zig");
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
-    try wait(workbench);
+    try waitForSearch(workbench);
     try renderFrame(workbench, &rendered.writer);
     tab.view.invalidate();
     try renderFrame(workbench, &rendered.writer);
@@ -2933,7 +2940,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     try std.testing.expect(std.mem.indexOf(u8, no_results_row, "No Results") != null);
     try query.form.setValue(.includes, "");
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
-    try wait(workbench);
+    try waitForSearch(workbench);
 
     query.query_focused = false;
     try tab.editor.setCursorPosition(.{ .lineNumber = 4, .column = 6 });
@@ -2948,7 +2955,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     workbench.onSearchEditorChanged();
     try query.form.setValue(.search, "");
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
-    try wait(workbench);
+    try waitForSearch(workbench);
     workbench.onSearchEditorChanged();
     try std.testing.expect(sidebar.controller.refresh_at == null);
     try std.testing.expectEqualStrings("alpha", sidebar.widget.value(.search));
@@ -2976,11 +2983,11 @@ test "Workbench: typing a search query restarts results without stale collapse k
 
     for ([_][]const u8{ "t", "te", "tes", "test" }) |query| {
         try view.widget.setValue(.search, query);
-        try view.startSearch();
-        var guard: usize = 0;
-        while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
-            _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-        }
+        const deadline = view.controller.debounce_at orelse return error.MissingSearchDebounce;
+        try std.testing.expectEqual(@as(i32, 1), workbench.search_events.nextTimeout(deadline - 1, 250));
+        try std.testing.expect(!workbench.search_events.dispatch(deadline - 1));
+        try std.testing.expect(!view.model.isSearching());
+        try waitForSearch(workbench);
     }
 
     var saw_file = false;
@@ -3037,10 +3044,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
-    var guard: usize = 0;
-    while ((view.wantsTick() or view.model.isSearching()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -7209,10 +7213,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
-    var guard: usize = 0;
-    while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     try std.testing.expect(view.rows.items.len > 0);
     const details_before = view.widget.details_visible;
 
@@ -7272,10 +7273,7 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
     const view = workbench.search_view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
-    var guard: usize = 0;
-    while ((view.model.isSearching() or view.wantsTick()) and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     try std.testing.expectEqual(@as(usize, 2), view.matchCount());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -7365,10 +7363,7 @@ test "Workbench: search aligns nested guides and keeps the link inline at the re
     view.commandViewAsTree(true);
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
-    var guard: usize = 0;
-    while (view.wantsTick() and guard < 100) : (guard += 1) {
-        _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
-    }
+    try waitForSearch(workbench);
     try std.testing.expect(view.model.limitHit());
     try std.testing.expectEqual(@as(usize, 2), view.matchCount());
 

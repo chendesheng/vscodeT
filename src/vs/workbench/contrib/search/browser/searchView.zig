@@ -271,6 +271,7 @@ pub const SearchView = struct {
     /// Debounced entry point for input changes when `search.searchOnType` is
     /// enabled. The replace field only refreshes the replace preview.
     pub fn onQueryInputChanged(self: *SearchView, field: Field) void {
+        defer self.scheduleDeadline();
         if (field == .replace) {
             self.model.setReplaceString(self.widget.value(self.widget.context, .replace)) catch {};
             self.viewer.refreshView();
@@ -292,9 +293,12 @@ pub const SearchView = struct {
     }
 
     pub fn triggerQueryChange(self: *SearchView, preserve_focus: bool, triggered_on_type: bool) !void {
+        defer self.scheduleDeadline();
         // A new query supersedes any pending refresh scheduled by an earlier
         // editor/content or configuration change.
         self.refresh_at = null;
+        self.state = .idle;
+        self.search_started_at = null;
         const pattern = std.mem.trim(u8, self.widget.value(self.widget.context, .search), " \t\r\n");
         if (pattern.len == 0) {
             self.clearResults(false);
@@ -355,8 +359,6 @@ pub const SearchView = struct {
         _ = triggered_on_type;
     }
 
-    /// Advances the incremental job and timers. Returns true when the TUI
-    /// should repaint.
     fn searchErrorMessage(err: anyerror) []const u8 {
         return switch (err) {
             error.InvalidSearchPattern => "Invalid regular expression",
@@ -365,7 +367,17 @@ pub const SearchView = struct {
         };
     }
 
-    pub fn tick(self: *SearchView, now: i64) !bool {
+    fn scheduleDeadline(self: *SearchView) void {
+        var next = self.debounce_at;
+        if (self.refresh_at) |at| next = @min(next orelse at, at);
+        if (self.state == .searching) {
+            if (self.search_started_at) |start| next = @min(next orelse (start + 2000), start + 2000);
+        }
+        self.model.delivery.timer.schedule(next);
+    }
+
+    pub fn dispatch(self: *SearchView, now: i64, progress: bool) !bool {
+        defer self.scheduleDeadline();
         var changed = false;
         if (self.debounce_at) |deadline| {
             if (now >= deadline) {
@@ -387,15 +399,14 @@ pub const SearchView = struct {
         }
 
         if (self.state == .searching and self.search_started_at != null and
-            now - self.search_started_at.? > 2000)
+            now - self.search_started_at.? >= 2000)
         {
             self.state = .slow_search;
             changed = true;
         }
 
-        if (self.model.isSearching()) {
-            const was_searching = true;
-            const step_changed = self.model.poll(16) catch |err| blk: {
+        if (progress and self.model.isSearching()) {
+            const step_changed = self.model.onSearchProgress(16) catch |err| blk: {
                 _ = self.model.cancelSearch();
                 self.setSingleMessage(searchErrorMessage(err), .err);
                 break :blk true;
@@ -405,7 +416,7 @@ pub const SearchView = struct {
                 self.viewer.refreshView();
                 changed = true;
             }
-            if (was_searching and !self.model.isSearching()) {
+            if (!self.model.isSearching()) {
                 self.state = .idle;
                 self.search_started_at = null;
                 self.finalizeSearch();
@@ -424,12 +435,13 @@ pub const SearchView = struct {
         return changed;
     }
 
-    pub fn wantsTick(self: *const SearchView) bool {
+    pub fn isSearchPending(self: *const SearchView) bool {
         return self.debounce_at != null or self.refresh_at != null or
             self.model.isSearching() or self.state == .searching or self.state == .slow_search;
     }
 
     pub fn cancelSearch(self: *SearchView) bool {
+        defer self.scheduleDeadline();
         self.debounce_at = null;
         self.refresh_at = null;
         const cancelled = self.model.cancelSearch();
@@ -443,6 +455,7 @@ pub const SearchView = struct {
     }
 
     pub fn clearResults(self: *SearchView, clear_input: bool) void {
+        defer self.scheduleDeadline();
         _ = self.model.cancelSearch();
         self.model.clear();
         self.state = .idle;
@@ -619,6 +632,7 @@ pub const SearchView = struct {
     }
 
     pub fn executeReplaceAll(self: *SearchView) !void {
+        defer self.scheduleDeadline();
         const pattern = self.model.replacePattern() orelse return;
         const files = try self.model.result.matches(self.allocator);
         defer self.allocator.free(files);
@@ -677,6 +691,7 @@ pub const SearchView = struct {
     }
 
     pub fn onEditorChanged(self: *SearchView, info: ?EditorInfo) void {
+        defer self.scheduleDeadline();
         const current = info orelse return;
         const same_path = std.mem.eql(u8, self.last_editor_path.items, current.path);
         if (same_path and current.version == self.last_editor_version) return;
@@ -698,6 +713,7 @@ pub const SearchView = struct {
     }
 
     pub fn onConfigurationChanged(self: *SearchView) void {
+        defer self.scheduleDeadline();
         if (self.model.query != null) {
             self.refresh_at = time_compat.milliTimestamp();
         }

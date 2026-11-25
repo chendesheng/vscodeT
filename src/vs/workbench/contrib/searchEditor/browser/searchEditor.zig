@@ -11,7 +11,7 @@ const SearchModel = @import("../../search/browser/searchTreeModel/searchModel.zi
 const widget = @import("../../search/browser/searchWidget.zig");
 const Range = @import("../../../../editor/common/core/range.zig").Range;
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const View = @import("../../../../../tui/editorView.zig").View;
+pub const View = @import("../../../../../tui/editorView.zig").View;
 const editor_browser = @import("../../../../editor/browser/editorBrowser.zig");
 const serialization = @import("searchEditorSerialization.zig");
 
@@ -96,10 +96,11 @@ pub const SearchEditor = struct {
     pub fn triggerSearch(self: *SearchEditor, delay_ms: i64, reset_cursor: bool) void {
         _ = self.model.cancelSearch();
         self.pending_at = time.milliTimestamp() + delay_ms;
+        self.model.delivery.timer.schedule(self.pending_at);
         self.reset_cursor = reset_cursor;
     }
 
-    pub fn wantsTick(self: *const SearchEditor) bool {
+    pub fn isSearchPending(self: *const SearchEditor) bool {
         return self.pending_at != null or self.model.isSearching();
     }
 
@@ -112,6 +113,7 @@ pub const SearchEditor = struct {
         }
         if (event.key == .escape) {
             self.pending_at = null;
+            self.model.delivery.timer.schedule(null);
             _ = self.model.cancelSearch();
             self.query_focused = false;
             return true;
@@ -124,17 +126,19 @@ pub const SearchEditor = struct {
         return self.form.handleKey(event) or (!event.mods.ctrl and !event.mods.alt);
     }
 
-    pub fn poll(
+    pub fn dispatch(
         self: *SearchEditor,
         now_ms: i64,
         configuration: *ConfigurationService,
         workspace: *WorkspaceContextService,
         extras: []const []const u8,
         view: *View,
+        progress: bool,
     ) !bool {
         if (self.pending_at) |deadline| {
             if (now_ms < deadline) return false;
             self.pending_at = null;
+            self.model.delivery.timer.schedule(null);
             const value = self.form.value(.search);
             if (value.len == 0) {
                 self.model.clear();
@@ -162,8 +166,8 @@ pub const SearchEditor = struct {
                 return true;
             }
         }
-        if (!self.model.isSearching()) return false;
-        _ = try self.model.poll(32);
+        if (!progress or !self.model.isSearching()) return false;
+        _ = try self.model.onSearchProgress(32);
         if (self.model.takeMessage()) |message| {
             defer self.allocator.free(message.text);
             view.editor.setMessage("{s}", .{message.text});
@@ -234,6 +238,7 @@ pub const SearchEditor = struct {
         const self: *SearchEditor = @ptrCast(@alignCast(context));
         _ = self.model.cancelSearch();
         self.pending_at = null;
+        self.model.delivery.timer.schedule(null);
         if (self.search_on_type) self.triggerSearch(self.debounce, true);
     }
 

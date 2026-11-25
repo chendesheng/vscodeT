@@ -328,12 +328,13 @@ pub const SearchView = struct {
         return self.panel_focused;
     }
 
-    pub fn wantsTick(self: *const SearchView) bool {
-        return self.controller.wantsTick();
+    pub fn isSearchPending(self: *const SearchView) bool {
+        return self.controller.isSearchPending();
     }
 
-    pub fn tick(self: *SearchView, now: i64) bool {
-        const changed = self.controller.tick(now) catch false;
+    pub fn dispatchSearch(context: *anyopaque, now: i64, progress: bool) bool {
+        const self: *SearchView = @ptrCast(@alignCast(context));
+        const changed = self.controller.dispatch(now, progress) catch false;
         if (changed) self.rebuildRows();
         return changed;
     }
@@ -1119,7 +1120,7 @@ pub const SearchView = struct {
         var status_buffer: [240]u8 = undefined;
         var status = self.controller.messageText(&status_buffer);
         if (status.len == 0) {
-            if (self.controller.wantsTick()) {
+            if (self.controller.isSearchPending()) {
                 status = "Searching...";
             } else if (self.model.result.count() == 0 and self.workspace.getWorkspace().folders.items.len == 0) {
                 status = "No workspace folder";

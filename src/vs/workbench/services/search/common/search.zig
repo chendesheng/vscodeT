@@ -739,8 +739,15 @@ pub const SearchStep = struct {
     messages: []SearchMessage = &.{},
 };
 
+pub const SearchProgressListener = struct {
+    context: *anyopaque,
+    notify: *const fn (*anyopaque) void,
+};
+
 pub const ISearchJob = struct {
     context: *anyopaque,
+    /// Signals when a batch or completion is ready, including work available before registration.
+    set_progress_listener: *const fn (*anyopaque, SearchProgressListener) void,
     step: *const fn (context: *anyopaque, allocator: Allocator, max_files: usize) anyerror!SearchStep,
     cancel: *const fn (context: *anyopaque) void,
     deinit: *const fn (context: *anyopaque) void,

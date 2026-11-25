@@ -1,8 +1,7 @@
 // Port of `src/vs/workbench/contrib/search/browser/searchTreeModel/searchModel.ts`.
 //
-// Terminal adaptation: the service returns an incremental `ISearchJob` instead
-// of a promise, and `poll` advances it from the app loop. The result tree and
-// replacement state follow upstream.
+// Worker progress and completion are delivered to the owning view on the
+// window thread. Each delivery adds a bounded batch to the result tree.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -18,6 +17,7 @@ const Emitter = @import("../../../../../base/common/event.zig").Emitter;
 pub const SearchModel = struct {
     allocator: Allocator,
     service: ISearchService,
+    delivery: @import("../../../../services/search/common/searchDispatch.zig").Delivery = .{},
     result: *SearchResult,
     query: ?TextQuery = null,
     current_job: ?ISearchJob = null,
@@ -44,6 +44,7 @@ pub const SearchModel = struct {
 
     pub fn deinit(self: *SearchModel) void {
         _ = self.cancelSearch();
+        self.delivery.timer.schedule(null);
         if (self.query) |*query| query.deinit();
         if (self.replace_pattern) |*pattern| pattern.deinit();
         if (self.pending_message) |message| self.allocator.free(message.text);
@@ -116,12 +117,16 @@ pub const SearchModel = struct {
             if (err == error.InvalidSearchPattern) return false;
             return err;
         };
+        if (self.delivery.progress.queue != null) {
+            const job = self.current_job.?;
+            job.set_progress_listener(job.context, .{ .context = &self.delivery, .notify = @TypeOf(self.delivery).notify });
+        }
         return true;
     }
 
     /// Advances the current job by at most `max_files` files. Returns true when
     /// the result tree changed and the view should rebuild.
-    pub fn poll(self: *SearchModel, max_files: usize) !bool {
+    pub fn onSearchProgress(self: *SearchModel, max_files: usize) !bool {
         const job = self.current_job orelse return false;
         const step: SearchStep = try job.step(job.context, self.allocator, max_files);
         var transferred: usize = 0;
@@ -150,6 +155,7 @@ pub const SearchModel = struct {
             self.current_limit_hit = step.limit_hit;
             job.deinit(job.context);
             self.current_job = null;
+            self.delivery.progress.schedule(null);
         }
         return step.results.len > 0 or step.done or failed;
     }
@@ -174,6 +180,7 @@ pub const SearchModel = struct {
             job.cancel(job.context);
             job.deinit(job.context);
             self.current_job = null;
+            self.delivery.progress.schedule(null);
             return true;
         }
         return false;

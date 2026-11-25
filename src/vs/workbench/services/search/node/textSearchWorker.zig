@@ -74,6 +74,7 @@ pub const TextSearchWorker = struct {
     condition: Io.Condition = .init,
     thread: ?std.Thread = null,
     finished: bool = false,
+    progress: ?search.SearchProgressListener = null,
 
     queue: std.array_list.Managed(Item),
     messages: std.array_list.Managed(search.SearchMessage),
@@ -148,10 +149,17 @@ pub const TextSearchWorker = struct {
         return result.toOwnedSlice();
     }
 
+    pub fn setProgressListener(self: *TextSearchWorker, listener: search.SearchProgressListener) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.progress = listener;
+        if (self.finished or self.queue.items.len > 0) listener.notify(listener.context);
+    }
+
     pub fn isFinished(self: *TextSearchWorker) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        return self.finished or self.failure.load(.acquire);
+        return self.finished;
     }
 
     pub fn hasQueued(self: *TextSearchWorker) bool {
@@ -192,15 +200,12 @@ pub const TextSearchWorker = struct {
         self.work() catch |err| {
             self.addMessageFmt("Text search failed: {s}", .{@errorName(err)}) catch {};
             self.failure.store(true, .release);
-            self.mutex.lockUncancelable(self.io);
-            self.condition.broadcast(self.io);
-            self.mutex.unlock(self.io);
-            return;
         };
         self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.finished = true;
         self.condition.broadcast(self.io);
-        self.mutex.unlock(self.io);
+        if (self.progress) |listener| listener.notify(listener.context);
     }
 
     fn work(self: *TextSearchWorker) !void {
@@ -413,6 +418,7 @@ pub const TextSearchWorker = struct {
             mutable.deinit();
             return error.OutOfMemory;
         };
+        if (self.progress) |listener| listener.notify(listener.context);
         self.condition.broadcast(self.io);
     }
 

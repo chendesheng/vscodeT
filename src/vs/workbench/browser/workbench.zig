@@ -172,7 +172,8 @@ const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 
 const search_editor = @import("../contrib/searchEditor/browser/searchEditor.zig");
 const search_editor_serialization = @import("../contrib/searchEditor/browser/searchEditorSerialization.zig");
-const SearchEditorInput = @import("../contrib/searchEditor/browser/searchEditorInput.zig").SearchEditorInput;
+const search_editor_input_mod = @import("../contrib/searchEditor/browser/searchEditorInput.zig");
+const SearchEditorInput = search_editor_input_mod.SearchEditorInput;
 const search_command_ids = @import("../contrib/search/common/constants.zig").SearchCommandIds;
 const search_view_mod = @import("../contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
@@ -538,6 +539,7 @@ pub const Workbench = struct {
     explorer_container: ?*view_pane_container_mod.ViewPaneContainer = null,
     explorer_view_model: ?*view_container_model_mod.ViewContainerModel = null,
     explorer_panes: ?[]view_pane_container_mod.Pane = null,
+    search_events: @import("../services/search/common/searchDispatch.zig").Queue,
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
     layout: Layout,
@@ -811,6 +813,7 @@ pub const Workbench = struct {
         self.explorer_container = null;
         self.explorer_view_model = null;
         self.explorer_panes = null;
+        self.search_events = .{ .io = self.async_io };
         self.search_view = null;
         self.search_service = null;
         try self.initShellModels();
@@ -1708,39 +1711,6 @@ pub const Workbench = struct {
 
     pub fn isQuickAccessOpen(self: *const Workbench) bool {
         return self.quick_access.isOpen();
-    }
-
-    pub fn pollSearch(self: *Workbench, now_ms: i64) bool {
-        var changed = if (self.search_view) |view| view.tick(now_ms) else false;
-        const configuration = self.configuration orelse return changed;
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                const input = tab.search_editor_input orelse continue;
-                if (!input.search_editor.wantsTick()) continue;
-                const pending = input.search_editor.pending_at;
-                if (pending != null and now_ms < pending.?) continue;
-                const extras = if (pending != null) searchExtraFiles(self, self.allocator) catch null else null;
-                defer if (extras) |paths| searchFreePaths(self, self.allocator, paths);
-                const updated = input.search_editor.poll(now_ms, configuration, self.workspace, extras orelse &.{}, tab.view) catch |err| blk: {
-                    _ = input.search_editor.model.cancelSearch();
-                    tab.editor.setMessage("Search failed: {s}", .{@errorName(err)});
-                    break :blk true;
-                };
-                if (updated) input.updateName() catch {};
-                changed = changed or updated;
-            }
-        }
-        return changed;
-    }
-
-    pub fn searchWantsTick(self: *const Workbench) bool {
-        if (self.search_view) |view| if (view.wantsTick()) return true;
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.search_editor_input) |input| if (input.search_editor.wantsTick()) return true;
-            }
-        }
-        return false;
     }
 
     pub fn onSearchEditorChanged(self: *Workbench) void {
@@ -2701,6 +2671,7 @@ pub const Workbench = struct {
         );
         errdefer view.deinit();
         self.search_service = service;
+        view.model.delivery.attach(&self.search_events, view, SearchView.dispatchSearch);
         self.search_view = view;
     }
 
@@ -12954,6 +12925,11 @@ fn startSearchEditorJob(context: *anyopaque, query: *const search_types.TextQuer
     return self.search_service.?.startTextSearch(query);
 }
 
+fn searchEditorEnvironment(context: *anyopaque) ?search_editor_input_mod.Environment {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    return .{ .workspace = self.workspace, .configuration = self.configuration orelse return null };
+}
+
 fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot: search_editor_serialization.Snapshot) !void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const pane = self.activePane() orelse return error.GroupPaneMissing;
@@ -12973,6 +12949,7 @@ fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot
     try tab.view.setStatusBarVisible(false);
     try search_editor.SearchEditor.setMatchRanges(self.allocator, tab.view, snapshot);
     try query.setLocations(snapshot.files);
+    input.attach(&self.search_events, tab.view, .{ .context = self, .environment = searchEditorEnvironment, .extra_files = searchExtraFiles, .free_paths = searchFreePaths });
     try pane.tabs.ensureUnusedCapacity(1);
     _ = try pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
     try pane.addTab(tab);

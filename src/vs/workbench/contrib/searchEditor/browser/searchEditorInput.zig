@@ -6,13 +6,52 @@ const std = @import("std");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
+const View = @import("searchEditor.zig").View;
 const SearchEditor = @import("searchEditor.zig").SearchEditor;
+
+const Queue = @import("../../../services/search/common/searchDispatch.zig").Queue;
+const Workspace = @import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService;
+const Configuration = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
+
+pub const Environment = struct { workspace: *Workspace, configuration: *Configuration };
+pub const Host = struct {
+    context: *anyopaque,
+    environment: *const fn (*anyopaque) ?Environment,
+    extra_files: *const fn (*anyopaque, std.mem.Allocator) anyerror![][]u8,
+    free_paths: *const fn (*anyopaque, std.mem.Allocator, [][]u8) void,
+};
 
 pub const SearchEditorInput = struct {
     base: editor_input.EditorInput,
     editor: *Editor,
     name: []const u8,
     search_editor: *SearchEditor,
+    host: Host = undefined,
+    view: *View = undefined,
+
+    pub fn attach(self: *SearchEditorInput, queue: *Queue, view: *View, host: Host) void {
+        self.host = host;
+        self.view = view;
+        self.search_editor.model.delivery.attach(queue, self, deliver);
+    }
+
+    fn deliver(context: *anyopaque, now: i64, progress: bool) bool {
+        const self: *SearchEditorInput = @ptrCast(@alignCast(context));
+        const query = self.search_editor;
+        const env = self.host.environment(self.host.context) orelse return false;
+        const extras = if (query.pending_at != null and query.pending_at.? <= now)
+            self.host.extra_files(self.host.context, query.allocator) catch null
+        else
+            null;
+        defer if (extras) |paths| self.host.free_paths(self.host.context, query.allocator, paths);
+        const changed = query.dispatch(now, env.configuration, env.workspace, extras orelse &.{}, self.view, progress) catch |err| {
+            _ = query.model.cancelSearch();
+            self.editor.setMessage("Search failed: {s}", .{@errorName(err)});
+            return true;
+        };
+        if (changed) self.updateName() catch {};
+        return changed;
+    }
 
     pub fn init(
         allocator: std.mem.Allocator,
