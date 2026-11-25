@@ -1,24 +1,19 @@
 // Port of `src/vs/workbench/browser/workbench.zenMode.contribution.ts`.
 //
-// The browser contribution registers the `zenMode.*` configuration, the
-// `Action2` classes and the Appearance menu entry, and wires the toggle/exit
-// commands through `IWorkbenchLayoutService`. The terminal workbench has no
-// `Action2`/menu registry, so this file owns the portable pieces: the
-// configuration defaults, the resolved zen-mode configuration and the action
-// metadata the workbench command table and keybindings consume. The layout
-// transition itself lives on `Workbench` (`toggleZenMode`) because it needs the
-// terminal parts, editor tabs and configuration service.
+// The toggle action, Appearance menu item and Escape Escape keybinding use
+// IWorkbenchLayoutService. Layout owns the transition and emits the event
+// after restoring focus.
 //
 // Terminal adaptations:
 // - `workbench.zenMode.contribution.ts` has no tests; the portable values and
 //   the command metadata are tested here and through the workbench shell tests.
 // - `zenMode.fullScreen` has no terminal equivalent: the TUI cannot full-screen
 //   its host terminal window. `zenMode.centerLayout` is implemented as a
-//   centered cell layout in `Workbench` (upstream's `CenteredViewLayout` ratio
+//   centered cell layout in `Layout` (upstream's `CenteredViewLayout` ratio
 //   adapted to whole cells). `zenMode.silentNotifications` has no effect because
 //   the terminal workbench has no notification service.
 // - `zenMode.restore` is read but has no effect: the terminal has no
-//   session-surviving layout state storage.
+//   saved zen-mode state in the workspace session.
 
 const std = @import("std");
 const configuration = @import("../../platform/configuration/common/configuration.zig");
@@ -28,6 +23,39 @@ const ConfigurationService = @import("../services/configuration/browser/configur
 
 pub const EditorTabsMode = layout_service.EditorTabsMode;
 pub const ZenModeSettings = layout_service.ZenModeSettings;
+
+const actions = @import("../../platform/actions/common/actions.zig");
+const key_codes = @import("../../base/common/keyCodes.zig");
+const bindings = @import("../../platform/keybinding/common/keybindingsRegistry.zig");
+const Expr = @import("../../platform/contextkey/common/contextkey.zig").Expr;
+const ServicesAccessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const in_zen_mode = Expr{ .Defined = "inZenMode" };
+
+pub const toggle_action = actions.Action2{
+    .command = .{ .id = toggle_zen_mode_id, .title = toggle_zen_mode_label, .category = category, .toggled = &in_zen_mode, .precondition = &.{ .Not = "isAuxiliaryWindowFocusedContext" } },
+    .f1 = true,
+    .menus = &.{.{ .id = actions.menu_ids.MenubarAppearanceMenu, .group = "1_toggle_view", .order = 2, .when = &.{ .Not = "isSessionsWindow" } }},
+    .keybindings = &.{.{ .id = toggle_zen_mode_id, .weight = @backingInt(bindings.KeybindingWeight.WorkbenchContrib), .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), @backingInt(key_codes.KeyCode.KeyZ)) } }},
+    .context = @constCast(&{}),
+    .run_fn = toggle,
+};
+
+pub const exit_action = actions.Action2{
+    .command = .{ .id = exit_zen_mode_id, .title = exit_zen_mode_label, .category = category },
+    .keybindings = &.{.{ .id = exit_zen_mode_id, .weight = @backingInt(bindings.KeybindingWeight.EditorContrib) - 1000, .when = &in_zen_mode, .bindings = .{ .primary = key_codes.KeyChord(@backingInt(key_codes.KeyCode.Escape), @backingInt(key_codes.KeyCode.Escape)) } }},
+    .context = @constCast(&{}),
+    .run_fn = exit,
+};
+
+fn toggle(_: *anyopaque, accessor: ServicesAccessor) anyerror!void {
+    const layout = try accessor.get(layout_service.layout_service_id);
+    try layout.toggleZenMode();
+}
+
+fn exit(_: *anyopaque, accessor: ServicesAccessor) anyerror!void {
+    const layout = try accessor.get(layout_service.layout_service_id);
+    if (layout.is_zen_mode_active(layout.context)) try layout.toggleZenMode();
+}
 
 /// Port of the configuration registered by
 /// `registerZenModeConfiguration` in `workbench.zenMode.contribution.ts`.

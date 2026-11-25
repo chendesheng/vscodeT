@@ -9,6 +9,8 @@ const Allocator = std.mem.Allocator;
 const Emitter = @import("../../base/common/event.zig").Emitter;
 const grid = @import("../../base/browser/ui/grid/grid.zig");
 const split_view = @import("../../base/browser/ui/splitview/splitview.zig");
+const config_keys = @import("../../platform/configuration/common/configuration.zig");
+const zen = @import("workbench.zenMode.contribution.zig");
 const layout_service = @import("../services/layout/browser/layoutService.zig");
 
 const Part = @import("part.zig").Part;
@@ -103,10 +105,7 @@ pub const PartState = struct {
     size: usize = 0,
 };
 
-/// Port of `LayoutStateKeys.ZEN_MODE_EXIT_INFO`. The browser state model only
-/// tracks the side bar, panel and auxiliary bar; the terminal also records the
-/// status bar because the terminal workbench has no separate hidden-state key
-/// to fall back to when leaving zen mode.
+/// Port of `LayoutStateKeys.ZEN_MODE_EXIT_INFO`.
 pub const ZenModeExitInfo = struct {
     transitioned_to_centered_editor_layout: bool = false,
     transitioned_to_full_screen: bool = false,
@@ -115,7 +114,6 @@ pub const ZenModeExitInfo = struct {
         side_bar: bool = false,
         panel: bool = false,
         auxiliary_bar: bool = false,
-        status_bar: bool = false,
     } = .{},
 };
 
@@ -145,6 +143,9 @@ pub const Layout = struct {
     sidebar_position: Position = .left,
     workbench_grid: WorkbenchGrid = .{},
     /// Port of `LayoutStateKeys.ZEN_MODE_ACTIVE` / `ZEN_MODE_EXIT_INFO`.
+    zen_host: ?ZenModeHost = null,
+    configured_statusbar_visible: bool = true,
+    zen_hide_line_numbers: bool = false,
     zen_mode_active: bool = false,
     zen_mode_exit_info: ZenModeExitInfo = .{},
     /// Port of `LayoutStateKeys.MAIN_EDITOR_CENTERED`. The requested state is
@@ -176,7 +177,7 @@ pub const Layout = struct {
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .is_main_editor_centered = mainEditorCentered };
+        return .{ .context = self, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered };
     }
 
     fn zenMode(context: *anyopaque) bool {
@@ -261,7 +262,13 @@ pub const Layout = struct {
         binding.part.layout(rect.w, rect.h, rect.y, rect.x);
     }
 
+    pub fn setStatusBarConfiguration(self: *Layout, visible: bool) !void {
+        self.configured_statusbar_visible = visible;
+        if (!self.isZenModeActive()) try self.setPartHidden(!visible, .statusbar);
+    }
+
     pub fn setPartHidden(self: *Layout, hidden: bool, part: Parts) !void {
+        if (part == .statusbar and !self.isZenModeActive()) self.configured_statusbar_visible = !hidden;
         if (self.parts.get(part)) |binding| {
             try binding.part.apply_visible(binding.part, !hidden);
             return;
@@ -318,12 +325,77 @@ pub const Layout = struct {
         self.zen_mode_active = active;
     }
 
-    pub fn zenModeExitInfo(self: *const Layout) ZenModeExitInfo {
-        return self.zen_mode_exit_info;
+    /// The host supplies terminal focus, configured part visibility and the
+    /// editor option overrides. Layout orders part and editor transitions.
+    pub const ZenModeHost = struct {
+        context: *anyopaque,
+        get_configuration: *const fn (*anyopaque) zen.ZenModeConfiguration,
+        get_centered_options: *const fn (*anyopaque) CenteredEditorOptions,
+        configured_visible: *const fn (*anyopaque, Parts) bool,
+        get_focused_part: *const fn (*anyopaque) Parts,
+        focus_part: *const fn (*anyopaque, Parts) void,
+        apply_line_numbers: *const fn (*anyopaque, bool) void,
+    };
+
+    fn toggleZenModeContext(context: *anyopaque) anyerror!void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        try self.toggleZenMode(false, false);
     }
 
-    pub fn setZenModeExitInfo(self: *Layout, info: ZenModeExitInfo) void {
-        self.zen_mode_exit_info = info;
+    pub fn toggleZenMode(self: *Layout, skip_layout: bool, restoring: bool) !void {
+        const host = self.zen_host orelse return error.LayoutNotInitialized;
+        const focused = host.get_focused_part(host.context);
+        self.setZenModeActive(!self.isZenModeActive());
+        const config = host.get_configuration(host.context);
+        if (self.isZenModeActive()) {
+            if (!restoring) self.zen_mode_exit_info = .{
+                .transitioned_to_centered_editor_layout = !self.isMainEditorCentered() and config.center_layout,
+                .was_visible = .{ .panel = self.isVisible(.panel), .side_bar = self.isVisible(.sidebar) },
+            };
+            try self.setPartHidden(true, .panel);
+            try self.setPartHidden(true, .sidebar);
+            if (config.hide_activity_bar) try self.setPartHidden(true, .activitybar);
+            if (config.hide_status_bar) try self.setPartHidden(true, .statusbar);
+            if (config.hide_line_numbers) self.setZenLineNumbers(host, true);
+            if (config.center_layout) try self.centerMainEditorLayout(true, host.get_centered_options(host.context), true);
+        } else {
+            const info = self.zen_mode_exit_info;
+            if (info.was_visible.panel) try self.setPartHidden(false, .panel);
+            if (info.was_visible.side_bar) try self.setPartHidden(false, .sidebar);
+            try self.setPartHidden(!host.configured_visible(host.context, .activitybar), .activitybar);
+            try self.setPartHidden(!self.configured_statusbar_visible, .statusbar);
+            if (info.transitioned_to_centered_editor_layout) try self.centerMainEditorLayout(false, host.get_centered_options(host.context), true);
+            self.setZenLineNumbers(host, false);
+        }
+        if (!skip_layout) try self.on_did_change.fire({});
+        host.focus_part(host.context, if (self.isVisible(focused)) focused else .editor);
+        try self.fireZenModeChanged();
+    }
+
+    fn setZenLineNumbers(self: *Layout, host: ZenModeHost, hidden: bool) void {
+        self.zen_hide_line_numbers = hidden;
+        host.apply_line_numbers(host.context, hidden);
+    }
+
+    /// A replacement configuration service applies every setting. Individual
+    /// updates take the same affectsConfiguration branches as layout.ts.
+    pub fn onZenModeConfigurationChange(self: *Layout, change: ?config_keys.Change) !void {
+        if (!self.isZenModeActive()) return;
+        const host = self.zen_host orelse return error.LayoutNotInitialized;
+        const config = host.get_configuration(host.context);
+        const settings = layout_service.ZenModeSettings;
+        if (affects(change, settings.hide_activity_bar) or affects(change, layout_service.LayoutSettings.activity_bar_location))
+            try self.setPartHidden(config.hide_activity_bar or !host.configured_visible(host.context, .activitybar), .activitybar);
+        if (affects(change, settings.hide_status_bar)) try self.setPartHidden(config.hide_status_bar, .statusbar);
+        if (affects(change, settings.center_layout))
+            try self.centerMainEditorLayout(config.center_layout, host.get_centered_options(host.context), true);
+        if (affects(change, settings.hide_line_numbers)) self.setZenLineNumbers(host, config.hide_line_numbers);
+        // Tabs are enforced by the editor part when the grid lays out.
+        try self.on_did_change.fire({});
+    }
+
+    fn affects(change: ?config_keys.Change, key: []const u8) bool {
+        return if (change) |event| config_keys.affectsConfiguration(event, key) else true;
     }
 
     pub fn fireZenModeChanged(self: *Layout) !void {

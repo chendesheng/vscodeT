@@ -618,18 +618,6 @@ pub const Workbench = struct {
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
     layout: Layout,
-    /// Zen mode's temporary `editor.lineNumbers: off` override. Upstream
-    /// applies `updateOptions({ lineNumbers })` to every visible editor and
-    /// resets it from configuration when zen mode exits. The terminal applies
-    /// the override through `applyEditorSettingsToTab`, which is also the path
-    /// used for editors created while zen mode is active.
-    zen_hide_line_numbers: bool = false,
-    /// Last zen-mode configuration applied while active. The terminal learns
-    /// about settings changes through the settings watcher, which does not pass
-    /// the upstream `IConfigurationChangeEvent`; comparing the previous zen
-    /// configuration lets `applyZenModeConfigurationChange` apply the same
-    /// per-setting decisions as upstream's affected-configuration checks.
-    zen_applied_config: ?zen_mode_contribution.ZenModeConfiguration = null,
     activity_bar_part: ActivityBarPart,
     sidebar_part: SidebarPart,
     panel_part: PanelPart,
@@ -1082,9 +1070,16 @@ pub const Workbench = struct {
         self.marker_listener = null;
         self.markers_status = null;
         self.range_highlights = null;
-        self.zen_hide_line_numbers = false;
-        self.zen_applied_config = null;
         self.layout = Layout.init(self.allocator);
+        self.layout.zen_host = .{
+            .context = self,
+            .get_configuration = readZenModeConfiguration,
+            .get_centered_options = centeredEditorOptions,
+            .configured_visible = configuredPartVisible,
+            .get_focused_part = focusedLayoutPart,
+            .focus_part = focusLayoutPart,
+            .apply_line_numbers = applyZenLineNumbers,
+        };
         errdefer self.layout.deinit();
         self.activity_bar_part = ActivityBarPart.init(self.allocator);
         errdefer self.activity_bar_part.deinit();
@@ -1402,7 +1397,7 @@ pub const Workbench = struct {
         const status = self.editor_status.?;
         try self.commands.register(.{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen });
         try self.commands.registerAction(&self.instantiation, @import("../contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
-        const commands = [_]commands_mod.CommandInfo{
+        const editor_commands = [_]commands_mod.CommandInfo{
             .{ .id = editor_status_mod.goto_line_command, .label = "Go to Line/Column...", .category = "Go", .context = status, .run = editor_status_mod.commandGotoLine },
             .{ .id = editor_status_mod.change_indentation_command, .label = "Change Indentation", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeIndentation },
             .{ .id = editor_status_mod.change_encoding_command, .label = "Change File Encoding", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeEncoding },
@@ -1508,8 +1503,11 @@ pub const Workbench = struct {
             .{ .id = markers_common.Markers.SHOW_MARKERS_VIEW_ACTION_ID, .label = "View: Show Problems", .category = "View", .context = self, .run = commandShowProblems },
             .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .label = "View: Toggle Problems", .category = "View", .context = self, .run = commandToggleProblems },
             .{ .id = "workbench.action.togglePanel", .label = "View: Toggle Panel Visibility", .category = "View", .context = self, .run = commandTogglePanel },
-            .{ .id = zen_mode_contribution.toggle_zen_mode_id, .label = zen_mode_contribution.toggle_zen_mode_label, .category = zen_mode_contribution.category, .context = self, .run = commandToggleZenMode },
-            .{ .id = zen_mode_contribution.exit_zen_mode_id, .label = zen_mode_contribution.exit_zen_mode_label, .category = zen_mode_contribution.category, .show_in_palette = false, .context = self, .run = commandExitZenMode },
+        };
+        for (editor_commands) |command| try self.commands.register(command);
+        try self.commands.registerAction(&self.instantiation, zen_mode_contribution.toggle_action);
+        try self.commands.registerAction(&self.instantiation, zen_mode_contribution.exit_action);
+        const commands = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.toggleCenteredLayout", .label = "Toggle Centered Layout", .category = zen_mode_contribution.category, .context = self, .run = commandToggleCenteredLayout },
             .{
                 .id = zen_mode_contribution.zen_hide_editor_tabs_id,
@@ -2384,7 +2382,7 @@ pub const Workbench = struct {
             self.configuration = null;
             try self.ensureConfiguration();
             self.configureJsonLanguage();
-            self.applyZenModeConfigurationChange();
+            try self.layout.onZenModeConfigurationChange(null);
             self.applyEditorSettingsToAllTabs();
             self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
             self.disposeBreadcrumbs();
@@ -2437,15 +2435,15 @@ pub const Workbench = struct {
             watcher.setExtraPaths(self.keybindings_paths) catch {};
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
-        self.applyLayoutSettings();
+        self.applyLayoutSettings(null);
         self.applyScmConfig();
     }
 
     fn onWorkbenchConfigurationChange(change: configuration_mod.Change, self: *Workbench) !void {
         const config = @import("../../platform/configuration/common/configuration.zig");
         if (config.affectsConfiguration(change, "workbench") or config.affectsConfiguration(change, "zenMode")) {
-            self.applyLayoutSettings();
-            self.applyZenModeConfigurationChange();
+            self.applyLayoutSettings(change);
+            try self.layout.onZenModeConfigurationChange(change);
         }
         if (config.affectsConfiguration(change, "scm") or config.affectsConfiguration(change, "git") or
             config.affectsConfiguration(change, "explorer.decorations") or config.affectsConfiguration(change, "workbench.tree.renderIndentGuides"))
@@ -2484,7 +2482,7 @@ pub const Workbench = struct {
 
     fn applyEditorSettingsToTab(self: *Workbench, tab: *Tab) void {
         if (tab.isDiff()) {
-            if (self.zen_hide_line_numbers) self.applyLineNumbersOverrideToTab(tab, .Off);
+            if (self.layout.zen_hide_line_numbers) self.applyLineNumbersOverrideToTab(tab, .Off);
             return;
         }
         const reader = self.editorSettingsReader();
@@ -2499,7 +2497,7 @@ pub const Workbench = struct {
         if (tab.search_editor_input) |input| {
             if (self.configuration) |configuration| input.search_editor.configure(configuration);
             tab.view.applyLineNumbersOverride(.Off) catch {};
-        } else if (self.zen_hide_line_numbers and !tab.isImage()) {
+        } else if (self.layout.zen_hide_line_numbers and !tab.isImage()) {
             tab.view.applyLineNumbersOverride(.Off) catch {};
         }
         if (self.theme_palette) |palette| tab.view.setThemeColors(palette);
@@ -11678,9 +11676,10 @@ pub const Workbench = struct {
     /// Port of the `workbench.activityBar.location` / `.autoHide` /
     /// `.compact` configuration listener: the side bar part decides where its
     /// composite bar lives and whether the activity bar is shown at all.
-    fn applyLayoutSettings(self: *Workbench) void {
+    fn applyLayoutSettings(self: *Workbench, change: ?configuration_mod.Change) void {
         const values = layout_service_mod.LayoutSettingsValues.load(self.configuration, self.workspaceRoot());
-        if (!self.layout.isZenModeActive()) self.layout.setPartHidden(!values.status_bar_visible, .statusbar) catch {};
+        if (change == null or @import("../../platform/configuration/common/configuration.zig").affectsConfiguration(change.?, layout_service_mod.LayoutSettings.status_bar_visible))
+            self.layout.setStatusBarConfiguration(values.status_bar_visible) catch {};
         self.activity_bar_part.setCompact(values.activity_bar_compact) catch {};
         self.sidebar_part.setLayoutSettings(values) catch {};
         self.syncActivityBarVisibility() catch {};
@@ -11701,173 +11700,60 @@ pub const Workbench = struct {
         return zen_mode_contribution.load(self.configuration, self.workspaceRoot());
     }
 
-    /// Port of `toggleZenMode` in `layout.ts`, adapted to the terminal parts.
-    ///
-    /// Upstream hides the panel, auxiliary bar and side bar, then applies the
-    /// zen-mode activity-bar/status-bar/line-number/tab/centered-layout
-    /// configuration. Leaving zen restores only the parts that were visible
-    /// before the transition. The terminal has no auxiliary bar and no host
-    /// full-screen service; those branches are documented omissions.
     pub fn toggleZenMode(self: *Workbench, skip_layout: bool, restoring: bool) !void {
-        const focused_before = self.focus;
-        const active = !self.layout.isZenModeActive();
-        self.layout.setZenModeActive(active);
-
-        const config = self.zenModeConfiguration();
-        var exit_info = self.layout.zenModeExitInfo();
-
-        if (active) {
-            if (!restoring) {
-                exit_info = .{
-                    .transitioned_to_centered_editor_layout = !self.layout.isMainEditorCentered() and config.center_layout,
-                    // No terminal equivalent for `hostService.toggleFullScreen`.
-                    .transitioned_to_full_screen = false,
-                    // The terminal workbench has no notification filters.
-                    .handle_notifications_do_not_disturb_mode = false,
-                    .was_visible = .{
-                        .side_bar = self.layout.isVisible(.sidebar),
-                        .panel = self.panel_part.isVisible(),
-                        // No auxiliary bar part in the terminal workbench.
-                        .auxiliary_bar = false,
-                        .status_bar = self.layout.isVisible(.statusbar),
-                    },
-                };
-            }
-            self.layout.setZenModeExitInfo(exit_info);
-
-            // `setPanelHidden(true, true)` / `setAuxiliaryBarHidden(true, true)`
-            // / `setSideBarHidden(true)`.
-            try self.layout.setPartHidden(true, .panel);
-            try self.setSidebarVisible(false);
-
-            if (config.hide_activity_bar) {
-                try self.layout.setPartHidden(true, .activitybar);
-            }
-
-            if (config.hide_status_bar) {
-                try self.layout.setPartHidden(true, .statusbar);
-            }
-
-            // Upstream `setLineNumbers('off')`; the visible-editor listener is
-            // covered by applying the override to every tab (including tabs
-            // opened later) through `applyEditorSettingsToTab`.
-            self.zen_hide_line_numbers = config.hide_line_numbers;
-            if (config.hide_line_numbers) self.applyEditorSettingsToAllTabs();
-
-            // `enforcePartOptions({ showTabs })` is represented by
-            // `editorShowTabs` reading the zen configuration while active.
-
-            if (config.center_layout) self.centerMainEditorLayout(true, true);
-            self.zen_applied_config = config;
-        } else {
-            if (exit_info.was_visible.panel) {
-                try self.layout.setPartHidden(false, .panel);
-            }
-            if (exit_info.was_visible.side_bar) {
-                try self.setSidebarVisible(true);
-            }
-            // Upstream falls back to the configured activity-bar location.
-            try self.syncActivityBarVisibility();
-            if (exit_info.was_visible.status_bar) {
-                try self.layout.setPartHidden(false, .statusbar);
-            }
-
-            const had_line_numbers_override = self.zen_hide_line_numbers;
-            self.zen_hide_line_numbers = false;
-            if (had_line_numbers_override) {
-                self.applyEditorSettingsToAllTabs();
-                self.restoreLineNumbersFromConfiguration();
-            }
-
-            if (exit_info.transitioned_to_centered_editor_layout) {
-                self.centerMainEditorLayout(false, true);
-            }
-            self.zen_applied_config = null;
-        }
-
-        if (!skip_layout) self.layoutAll();
-
-        // Restore focus if the previously focused part is still visible,
-        // otherwise fall back to the editor.
-        self.restoreFocusAfterZen(focused_before);
-
-        // The terminal context key is set directly (upstream binds it to the
-        // layout-service event); update it before notifying listeners.
-        self.updateContextKeys();
-        try self.layout.fireZenModeChanged();
+        try self.layout.toggleZenMode(skip_layout, restoring);
     }
 
-    /// Port of the zen-mode branch of the `onDidChangeConfiguration` listener
-    /// inside `toggleZenMode`. The terminal edits configuration through the
-    /// settings watcher, so `onSettingsReloaded` runs the same decisions.
-    fn applyZenModeConfigurationChange(self: *Workbench) void {
-        if (!self.layout.isZenModeActive()) return;
-        const config = self.zenModeConfiguration();
-        const previous = self.zen_applied_config orelse {
-            self.zen_applied_config = config;
-            return;
+    fn readZenModeConfiguration(context: *anyopaque) zen_mode_contribution.ZenModeConfiguration {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return self.zenModeConfiguration();
+    }
+
+    fn centeredEditorOptions(context: *anyopaque) Layout.CenteredEditorOptions {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return .fromEditorPart(self.part, self.configuration);
+    }
+
+    fn configuredPartVisible(context: *anyopaque, part: layout_service_mod.Parts) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return switch (part) {
+            .activitybar => self.sidebar_part.shouldShowActivityBar(),
+            else => self.layout.isVisible(part),
         };
-
-        // Upstream applies each branch only when the matching setting is
-        // affected by the configuration change.
-        if (previous.hide_activity_bar != config.hide_activity_bar) {
-            if (config.hide_activity_bar) {
-                self.layout.setPartHidden(true, .activitybar) catch {};
-            } else {
-                self.syncActivityBarVisibility() catch {};
-            }
-        }
-
-        if (previous.hide_status_bar != config.hide_status_bar) {
-            self.layout.setPartHidden(config.hide_status_bar, .statusbar) catch {};
-        }
-
-        if (previous.center_layout != config.center_layout) {
-            self.centerMainEditorLayout(config.center_layout, true);
-        }
-
-        if (previous.hide_line_numbers != config.hide_line_numbers) {
-            self.zen_hide_line_numbers = config.hide_line_numbers;
-            self.applyEditorSettingsToAllTabs();
-            if (!self.zen_hide_line_numbers) self.restoreLineNumbersFromConfiguration();
-        }
-
-        self.zen_applied_config = config;
-        // `showTabs` and the updated part visibility feed the next layout.
-        self.layoutAll();
     }
 
-    /// Restores the focused part after a zen-mode transition when it is still
-    /// visible. Upstream maps focused parts to `focusPart`; the terminal has
-    /// terminal/problems as its two panel focus targets.
-    fn restoreFocusAfterZen(self: *Workbench, previous: Focus) void {
-        switch (previous) {
-            .sidebar => {
-                if (self.sidebarShown()) self.focusSidebar() else self.focusEditor();
-            },
-            .terminal => {
-                if (self.panelShown() and std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID)) {
-                    self.focus = .terminal;
-                    self.statusbar.main_part.clearFocus();
-                    if (self.search_view) |view| view.blur();
-                } else {
-                    self.focusEditor();
-                }
-            },
-            .problems => {
+    fn applyZenLineNumbers(context: *anyopaque, hidden: bool) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.applyEditorSettingsToAllTabs();
+        if (!hidden) self.restoreLineNumbersFromConfiguration();
+    }
+
+    fn focusedLayoutPart(context: *anyopaque) layout_service_mod.Parts {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return switch (self.focus) {
+            .sidebar => .sidebar,
+            .terminal, .problems => .panel,
+            .statusbar => .statusbar,
+            .breadcrumbs, .editor => .editor,
+        };
+    }
+
+    fn focusLayoutPart(context: *anyopaque, part: layout_service_mod.Parts) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        switch (part) {
+            .sidebar => if (self.sidebarShown()) self.focusSidebar() else self.focusEditor(),
+            .panel => {
                 if (self.problemsVisible()) {
                     self.focus = .problems;
-                    self.statusbar.main_part.clearFocus();
-                    if (self.search_view) |view| view.blur();
                     self.updateProblemsHighlight();
-                } else {
-                    self.focusEditor();
-                }
+                } else if (self.terminalVisible()) {
+                    self.focus = .terminal;
+                } else return self.focusEditor();
+                self.statusbar.main_part.clearFocus();
+                if (self.search_view) |view| view.blur();
             },
-            .statusbar => {
-                if (self.statusBarVisible()) self.focusStatusBar() else self.focusEditor();
-            },
-            .breadcrumbs, .editor => self.focusEditor(),
+            .statusbar => if (self.statusBarVisible()) self.focusStatusBar() else self.focusEditor(),
+            else => self.focusEditor(),
         }
     }
 
@@ -13003,16 +12889,6 @@ fn commandTogglePanel(context: *anyopaque) anyerror!void {
     }
     const id = self.defaultPanelContainerId() orelse return;
     _ = try self.openPanelContainer(id);
-}
-
-fn commandToggleZenMode(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.toggleZenMode(false, false);
-}
-
-fn commandExitZenMode(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.layout.isZenModeActive()) try self.toggleZenMode(false, false);
 }
 
 fn commandToggleCenteredLayout(context: *anyopaque) anyerror!void {
@@ -14926,14 +14802,9 @@ const Expr = context_key_mod.Expr;
 const markdown_language_when = Expr{ .Regex = .{ .key = "editorLangId", .source = "^(markdown|prompt|instructions|chatagent|skill)$", .flags = "" } };
 const markdown_source_when = Expr{ .And = @constCast(&[_]*const Expr{ &.{ .Defined = "editorFocus" }, &markdown_language_when }) };
 const markdown_toggle_when = Expr{ .Or = @constCast(&[_]*const Expr{ &markdown_source_when, &.{ .Equals = .{ .key = "activeCustomEditorId", .value = .{ .string = "vscode.markdown.preview.editor" } } } }) };
-const zen_mode_when = context_key_mod.Expr{ .Defined = "inZenMode" };
 
 const global_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
     .{ .id = "workbench.action.splitEditor", .weight = 200, .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash) } },
-    .{ .id = zen_mode_contribution.toggle_zen_mode_id, .weight = 200, .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), @backingInt(key_codes.KeyCode.KeyZ)) } },
-    // Upstream registers Escape Escape with `EditorContrib - 1000` so editor
-    // bindings keep precedence; only the zen-mode context makes it reachable.
-    .{ .id = zen_mode_contribution.exit_zen_mode_id, .weight = @backingInt(keybinding_registry.KeybindingWeight.EditorContrib) - 1000, .when = &zen_mode_when, .bindings = .{ .primary = key_codes.KeyChord(@backingInt(key_codes.KeyCode.Escape), @backingInt(key_codes.KeyCode.Escape)) } },
     .{ .id = terminal_common.TerminalCommandId.split, .weight = 201, .when = &terminal_focus_when, .bindings = .{
         .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.Backslash),
         .secondary = &.{key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Shift | @backingInt(key_codes.KeyCode.Digit5)},

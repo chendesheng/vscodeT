@@ -6127,6 +6127,13 @@ test "Workbench: zen mode applies configuration changes while active" {
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expect(workbench.statusBarVisible());
     try std.testing.expect(workbench.activity_bar_part.visible);
+
+    // Exiting zen uses the current workbench preference, including an edit
+    // made after entry while the status bar was temporarily hidden.
+    try workbench.commands.execute(zen_mode_contribution.toggle_zen_mode_id);
+    try workbench.setUserConfigurationValue("workbench.statusBar.visible", .{ .bool = false });
+    try workbench.commands.execute(zen_mode_contribution.exit_zen_mode_id);
+    try std.testing.expect(!workbench.statusBarVisible());
 }
 
 test "Workbench: centered layout narrows and centers the editor part" {
