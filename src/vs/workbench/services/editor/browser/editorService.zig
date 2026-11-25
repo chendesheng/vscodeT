@@ -20,6 +20,8 @@ const IVisibleEditorPane = @import("../../../common/editor.zig").IVisibleEditorP
 const Event = @import("../../../../base/common/event.zig").Emitter(void);
 
 pub const OpenOptions = @import("../common/editorService.zig").OpenOptions;
+const EditorTarget = @import("../common/editorService.zig").EditorTarget;
+const GroupActions = @import("../../../browser/parts/editor/editorActions.zig").GroupActions;
 
 pub const OpenedTextEditor = struct {
     pane: *GroupView,
@@ -204,6 +206,13 @@ pub const EditorService = struct {
                     try opening.openPathWithOptions(resource, options);
                 }
             }.open,
+            .request_open_editor = struct {
+                fn open(context: *anyopaque, resource: []const u8, options: OpenOptions, target: EditorTarget) !void {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    const opening = service.opening orelse return error.EditorOpeningUnavailable;
+                    try opening.requestOpenEditor(resource, options, target);
+                }
+            }.open,
             .on_did_active_editor_change = self.onDidActiveEditorChange(),
             .on_did_visible_editors_change = self.onDidVisibleEditorsChange(),
             .on_did_close_editor = &self.part.on_did_close_editor,
@@ -264,6 +273,7 @@ pub const EditorOpening = struct {
 
     allocator: Allocator,
     part: *EditorPart,
+    group_actions: *GroupActions,
     io: std.Io,
     view_factory: editor_pane.EditorViewFactory,
     images: *ui.image.Runtime,
@@ -430,6 +440,33 @@ pub const EditorOpening = struct {
         const size = (self.part.activeView() orelse return error.GroupPaneMissing).contentDimensions();
         const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative.*, self.json_client.*, .{ .reserve_scrollbar = true });
         try self.openCreatedTextEditor(path, editor, options);
+    }
+
+    /// The quick access SIDE_GROUP target uses the configured split direction,
+    /// reuses an existing group when available, then opens there. An already
+    /// resolved input shares its model via EditorGroupView.copyEditor.
+    pub fn requestOpenEditor(self: *EditorOpening, path: []const u8, options: OpenOptions, target: EditorTarget) !void {
+        if (target == .side) {
+            self.group_actions.transfer.layout(self.group_actions.transfer.copy.context);
+            const source = self.part.activeView() orelse return;
+            const direction = self.group_actions.preferredSideBySideDirection();
+            const destination = try self.part.findGroup(.{ .direction = direction }, source, false) orelse try self.group_actions.newEmptyGroup(direction);
+            for (self.part.group_views.items) |pane| {
+                for (pane.tabs.items) |tab| {
+                    const resource = if (tab.file_input) |input| input.editor.path else tab.imagePath() orelse continue;
+                    if (!self.samePath(resource, path)) continue;
+                    const copy = if (pane == destination) tab else try destination.copyEditor(tab, .{ .pinned = options.pinned, .active = true }, self.group_actions.transfer.copy);
+                    try destination.activateTab(copy);
+                    if (destination.activeTab()) |active| try active.ensureControllers();
+                    destination.focus();
+                    try self.history.add(path);
+                    return;
+                }
+            }
+            if (destination.activeTab()) |active| try active.ensureControllers();
+            destination.focus();
+        }
+        self.requestOpenPathWithOptions(path, options);
     }
 
     pub fn requestOpenPathWithOptions(self: *EditorOpening, path: []const u8, options: OpenOptions) void {

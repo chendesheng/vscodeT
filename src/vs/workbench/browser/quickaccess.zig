@@ -73,12 +73,12 @@ const dispatch = @import("../../base/common/windowDispatch.zig");
 
 pub const Host = struct {
     window: ?*dispatch.Queue = null,
-    open_file_to_side: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+    editor_service: ?*const @import("../services/editor/common/editorService.zig").IEditorService = null,
     preferences: ?*const @import("../services/preferences/common/preferences.zig").IPreferencesService = null,
     code_editors: ?*const @import("../../editor/browser/services/codeEditorService.zig").ICodeEditorService = null,
     lookup_keycaps: ?platform_commands_quick_access.LookupKeycaps = null,
     context: *anyopaque,
-    open_file: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
+    open_file: ?*const fn (context: *anyopaque, path: []const u8) anyerror!void = null,
     report_error: *const fn (context: *anyopaque, message: []const u8) void,
     cancel_popups: *const fn (context: *anyopaque) void,
     /// `files.exclude` + `search.exclude`, owned by the caller.
@@ -507,7 +507,8 @@ pub const QuickAccessService = struct {
 
     fn openFile(context: *anyopaque, path: []const u8) anyerror!void {
         const self: *QuickAccessService = @ptrCast(@alignCast(context));
-        return self.host.open_file(self.host.context, path);
+        if (self.host.editor_service) |service| return service.requestOpenEditor(path, .{}, .active);
+        if (self.host.open_file) |open| return open(self.host.context, path);
     }
 
     fn lookupKeycaps(context: *anyopaque, arena: Allocator, id: []const u8) anyerror![]const []const u8 {
@@ -534,15 +535,15 @@ pub const QuickAccessService = struct {
                 }
             },
             .open_side, .configure_keybinding => {
-                if (action == .open_side and self.host.open_file_to_side == null) return;
+                if (action == .open_side and self.host.editor_service == null) return;
                 if (action == .configure_keybinding and self.host.preferences == null) return;
                 const owned = try self.allocator.dupe(u8, id);
                 defer self.allocator.free(owned);
                 picker.hide();
                 switch (action) {
                     .open_side => {
-                        const callback = self.host.open_file_to_side orelse return;
-                        try callback(self.host.context, owned);
+                        const service = self.host.editor_service orelse return;
+                        try service.requestOpenEditor(owned, .{}, .side);
                     },
                     .configure_keybinding => try self.configureKeybinding(owned),
                     else => unreachable,

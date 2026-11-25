@@ -298,9 +298,9 @@ pub const GroupActions = struct {
     dialog_service: *const dialogs.IDialogService,
     history: *HistoryService,
 
-    const GroupTarget = enum { first, last, previous, next, left, right, up, down };
+    pub const GroupTarget = enum { first, last, previous, next, left, right, up, down };
 
-    fn preferredSideBySideDirection(self: *GroupActions) groups.GroupDirection {
+    pub fn preferredSideBySideDirection(self: *GroupActions) groups.GroupDirection {
         return groups.preferredSideBySideGroupDirection(if (self.configuration.*) |configuration| configuration.interface() else null);
     }
 
@@ -350,7 +350,7 @@ pub const GroupActions = struct {
 
     /// Resolves the target group for move/copy-editor commands. Directional
     /// commands create the missing group, matching `moveCopyEditorsToGroup`.
-    fn resolveGroupTarget(
+    pub fn resolveGroupTarget(
         self: *GroupActions,
         source: *GroupView,
         target: GroupTarget,

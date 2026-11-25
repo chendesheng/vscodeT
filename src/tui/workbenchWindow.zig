@@ -817,6 +817,7 @@ pub const TerminalWorkbench = struct {
         self.editor_opening = .{
             .allocator = allocator,
             .part = self.part,
+            .group_actions = &self.group_actions,
             .io = self.io,
             .view_factory = self.view_factory,
             .images = &self.images,
@@ -1374,8 +1375,7 @@ pub const TerminalWorkbench = struct {
             .{
                 .context = self,
                 .window = &self.window_events,
-                .open_file = quickOpenFile,
-                .open_file_to_side = quickOpenToSide,
+                .editor_service = &self.editor_api,
                 .preferences = &self.preferences_api,
                 .code_editors = &self.code_editor_api,
                 .lookup_keycaps = quickLookupKeycaps,
@@ -3542,33 +3542,8 @@ pub const TerminalWorkbench = struct {
         try self.group_actions.revertAndCloseActiveEditor();
     }
 
-    /// Port of `moveActiveEditor` for `:tabmove`.
     pub fn moveActiveEditor(self: *TerminalWorkbench, to: []const u8, by: []const u8, value: usize) !void {
-        if (!std.mem.eql(u8, by, "tab")) return;
-        const pane = self.activePane() orelse return;
-        const tab = pane.activeTab() orelse return;
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try pane.orderedTabs(self.allocator, &ordered);
-        const current = pane.activeIndex(ordered.items);
-        const count = ordered.items.len;
-        if (count == 0) return;
-
-        const target: usize = if (std.mem.eql(u8, to, "first"))
-            0
-        else if (std.mem.eql(u8, to, "last"))
-            count - 1
-        else if (std.mem.eql(u8, to, "left"))
-            current -| 1
-        else if (std.mem.eql(u8, to, "right"))
-            @min(current + 1, count - 1)
-        else if (std.mem.eql(u8, to, "position"))
-            @min(value -| 1, count - 1)
-        else
-            return;
-        _ = try pane.group.model.moveEditor(tab.input, @intCast(target));
-        pane.syncActivePane();
-        self.layoutAll();
+        try @import("../vs/workbench/browser/parts/editor/editorCommands.zig").moveActiveEditor(&self.group_actions, to, by, value);
     }
 
     pub fn showExplorer(self: *TerminalWorkbench) !void {
@@ -3593,13 +3568,6 @@ pub const TerminalWorkbench = struct {
 
     pub fn splitActiveInDirection(self: *TerminalWorkbench, direction: editor_groups.GroupDirection) !void {
         try self.group_actions.splitActiveInDirection(direction);
-    }
-
-    /// Copies `tab` into `target`, port of `EditorGroupView.copyEditor` plus
-    /// the new editor pane the target group opens. File inputs share one
-    /// `EditorDocument`; image previews get a new read-only pane.
-    fn copyTabIntoPane(self: *TerminalWorkbench, target: *GroupPane, tab: *Tab) !*Tab {
-        return self.copyTabIntoPaneWithOptions(target, tab, .{ .pinned = true, .active = true });
     }
 
     fn copyTabIntoPaneWithOptions(self: *TerminalWorkbench, target: *GroupPane, tab: *Tab, options: group_mod.EditorOpenOptions) !*Tab {
@@ -4835,30 +4803,6 @@ fn itemIndex(id: []const u8, prefix: []const u8) ?usize {
 fn hasActiveEditor(context: *anyopaque) bool {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     return self.activeTab() != null;
-}
-
-fn quickOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    self.requestOpenPath(path);
-}
-
-fn quickOpenToSide(context: *anyopaque, path: []const u8) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const direction = self.preferredSideBySideDirection();
-    const target = try self.findAdjacentPane(direction, false) orelse try self.group_actions.newEmptyGroup(direction);
-    for (self.part.group_views.items) |pane| {
-        for (pane.tabs.items) |tab| {
-            const resource = if (tab.file_input) |input| input.editor.path else tab.imagePath() orelse continue;
-            if (!self.samePath(resource, path)) continue;
-            const copy = if (pane == target) tab else try self.copyTabIntoPane(target, tab);
-            try target.activateTab(copy);
-            try self.focusPane(target);
-            try self.history.add(path);
-            return;
-        }
-    }
-    try self.focusPane(target);
-    self.requestOpenPath(path);
 }
 
 fn quickLookupKeycaps(context: *anyopaque, arena: Allocator, id: []const u8) anyerror![]const []const u8 {

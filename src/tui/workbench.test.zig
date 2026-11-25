@@ -2457,6 +2457,41 @@ test "Workbench: switching tabs reveals the active file" {
     try std.testing.expectEqualStrings("a.txt", workbench.sidebar.?.selectedNode().?.name);
 }
 
+test "Workbench: moveActiveEditor honors counts, center and selected tabs across groups" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = try seedFile(allocator, io, &tmp, "move-a.txt", "a");
+    defer allocator.free(a);
+    const b = try seedFile(allocator, io, &tmp, "move-b.txt", "b");
+    defer allocator.free(b);
+    const c = try seedFile(allocator, io, &tmp, "move-c.txt", "c");
+    defer allocator.free(c);
+    const d = try seedFile(allocator, io, &tmp, "move-d.txt", "d");
+    defer allocator.free(d);
+    const window = try TestWindow.init(allocator, io, &.{ a, b, c, d }, 90, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.activateIndex(0);
+    const input = wb.activeTab().?.input;
+    const source = wb.activePane().?;
+    try wb.moveActiveEditor("right", "tab", 2);
+    try std.testing.expectEqual(@as(usize, 2), source.group.model.indexOf(.{ .input = input }).?);
+    try wb.moveActiveEditor("center", "tab", 1);
+    try std.testing.expectEqual(@as(usize, 1), source.group.model.indexOf(.{ .input = input }).?);
+    const other = source.group.model.getEditorByIndex(2).?;
+    try source.group.model.setSelection(input, &.{other});
+    try wb.moveActiveEditor("right", "group", 1);
+    try std.testing.expectEqual(@as(usize, 2), wb.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), source.group.model.count());
+    const target = wb.activePane().?;
+    try std.testing.expect(target != source);
+    try std.testing.expectEqual(@as(usize, 2), target.group.model.count());
+    try std.testing.expect(target.group.model.activeEditor() == input);
+    try std.testing.expect(target.group.model.indexOf(.{ .input = other }) != null);
+}
+
 test "Workbench: quick access row buttons open to the side, configure shortcuts and remove history" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
