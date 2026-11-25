@@ -188,6 +188,7 @@ pub const Extensions = struct {
     accounts: @import("mainThreadAuthentication.zig").Accounts = undefined,
     task_service: @import("../../contrib/tasks/browser/abstractTaskService.zig").AbstractTaskService = undefined,
     task_actor: @import("mainThreadTask.zig").MainThreadTask = undefined,
+    message_service: @import("mainThreadMessageService.zig").MainThreadMessageService = undefined,
     commands_actor: ?MainThreadCommands = null,
     configuration_actor: ?MainThreadConfiguration = null,
     documents_actor: ?MainThreadDocuments = null,
@@ -278,6 +279,8 @@ pub const Extensions = struct {
         };
         errdefer self.inline_completions.deinit();
 
+        self.message_service = .{ .allocator = allocator, .notification_service = workbench.notification_api, .quick_input = workbench.quick_access.inputService() };
+        errdefer self.message_service.deinit();
         self.storage_actor = try MainThreadStorage.init(allocator);
         self.statusbar_actor = try MainThreadStatusBar.init(allocator, &workbench.statusbar, .{
             .context = workbench,
@@ -352,6 +355,7 @@ pub const Extensions = struct {
 
     pub fn deinit(self: *Extensions) void {
         if (self.workbench.quick_access.isOpen()) self.workbench.quick_access.inputService().hide();
+        self.message_service.deinit();
         if (self.terminal_completions) |*session| session.deinit();
         self.secret_state.deinit(self.allocator);
         self.accounts.deinit();
@@ -609,19 +613,7 @@ pub const Extensions = struct {
             if (components.authority.len == 0) return false;
             const url = try std_uri.resourceKeyFromComponents(a, components);
             for (url) |byte| if (byte < 32 or byte == 127) return false;
-            const opener = switch (@import("builtin").os.tag) {
-                .macos => "/usr/bin/open",
-                .linux => try @import("../../../platform/terminal/node/terminalProfiles.zig").findTerminalExecutable(self.allocator, self.io, "xdg-open") orelse return false,
-                else => return false,
-            };
-            defer if (@import("builtin").os.tag == .linux) self.allocator.free(opener);
-            const result = std.process.run(a, self.io, .{
-                .argv = &.{ opener, url },
-                .stdout_limit = .limited(4096),
-                .stderr_limit = .limited(4096),
-                .timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
-            }) catch return false;
-            return result.term.success();
+            return @import("../../../platform/opener/common/opener.zig").openExternal(self.allocator, self.io, url) catch false;
         }
         if (!std.mem.eql(u8, scheme.string, "file")) return false;
         const path = uriPath(uri) orelse return false;
@@ -1049,7 +1041,7 @@ pub const Extensions = struct {
         if (std.mem.eql(u8, method, "$showMessage")) {
             const self: *Extensions = @ptrCast(@alignCast(context));
             self.needs_render = true;
-            return @import("mainThreadMessageService.zig").Prompt.show(self.allocator, self.workbench.quick_access.inputService(), self.workbench, showStatusHint, args);
+            return self.message_service.showMessage(args);
         }
         if (std.mem.eql(u8, method, "$startFileSearch")) {
             const self: *Extensions = @ptrCast(@alignCast(context));

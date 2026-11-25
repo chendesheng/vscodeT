@@ -687,6 +687,7 @@ comptime {
     _ = @import("./vs/workbench/browser/quickaccess.zig");
     _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadDiagnostics.test.zig");
+    _ = @import("./vs/workbench/api/test/browser/mainThreadMessageService.test.zig");
     _ = @import("./vs/workbench/api/common/keyInput.zig");
     _ = @import("./vs/workbench/api/common/extensionApi.zig");
     _ = @import("./vs/workbench/api/common/builtinExtension.zig");
