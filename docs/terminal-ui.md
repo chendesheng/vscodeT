@@ -1882,7 +1882,7 @@ can block read from it:
 
 - `Workbench.requestOpenPath` reads, BOM-detects, decodes and canonicalizes the
   file in a job; the TUI thread only builds the editor from `LoadedText` when
-  the completion flag is set.
+  the worker posts its completion to the window.
 - Explorer expansion is driven by the ported async data tree. Each stale node
   returns a pending `ExplorerDataSource` request; `Sidebar.pollLoad` drains
   completed requests and the node is expanded/rendered on the poll tick.
@@ -1897,12 +1897,11 @@ can block read from it:
   request layer; callers wrap it in `Io.async` when they need the TUI thread
   free.
 
-Each owner keeps a heap job holding `Io.Future(T)`, an atomic `done` flag and
-the request data. `Workbench.pollAsyncReads` (open/image previews),
-`pollFileWatcher` (explorer) and `markdownPreviewTick` (Markdown images) apply
-completed results on the TUI thread. `Workbench.hasLatencySensitiveReads`
-clamps the input poll timeout to 4 ms while a short read is pending; remote
-network jobs are not latency-sensitive and complete on the next regular tick.
+File reads, image tab decodes, keybindings and color themes post a completion
+callback to the window queue. A POSIX pipe or Windows event wakes terminal
+input waiting on another thread. The window thread consumes the completed
+future. Explorer and Markdown still have their own completion checks. The 4 ms
+input timeout applies to Explorer and local Markdown image loads.
 Shutdown cancels and joins every job before the async `Io.Threaded` and the
 services/panes that own the results are freed. Background workers (search,
 watcher JSON server, extension host) continue to use dedicated threads, which
@@ -1915,8 +1914,8 @@ reload callback. `Workbench.onSettingsReloaded` then starts asynchronous
 user-keybindings and color-theme loads: `UserKeybindings.load` runs on the
 worker, and `ThemeService.prepareTheme` reads the theme plus its `include`
 chain into a detached `ColorThemeData` that `applyPreparedTheme` installs on the
-event loop. Clean-editor external changes use `Editor.readReloadedContent` on
-the worker and `applyReloadedContent` on the poll tick; the tab is resolved by
+event loop. Clean-editor external changes use `TextFileService.resolve` on
+the worker and `applyReloadedContent` on window delivery. The tab is resolved by
 path again at completion, so closing it during the read is safe.
 
 Known boundaries: provider methods remain synchronous and are only called from

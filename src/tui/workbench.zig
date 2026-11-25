@@ -20,7 +20,7 @@ pub fn initWindowSurface(surface: *ui.Surface, allocator: std.mem.Allocator, col
 const WakeSignal = @import("wakeSignal.zig").Signal;
 
 pub const TerminalWorkbench = struct {
-    search_wake: *WakeSignal,
+    worker_wake: *WakeSignal,
     workbench: *Workbench,
     output: *std.Io.Writer,
     input_buffer: std.array_list.Managed(u8),
@@ -29,7 +29,7 @@ pub const TerminalWorkbench = struct {
 
     const Watch = struct {
         descriptor: if (builtin.os.tag == .windows) void else std.posix.pollfd,
-        source: union(enum) { input, watcher, search_progress, terminal_output: usize, terminal_exit: usize },
+        source: union(enum) { input, watcher, worker_completion, terminal_output: usize, terminal_exit: usize },
     };
 
     pub fn init(workbench: *Workbench, output: *std.Io.Writer, border_probe_bytes: ?[]const u8, image_probe_bytes: ?[]const u8) !TerminalWorkbench {
@@ -40,8 +40,8 @@ pub const TerminalWorkbench = struct {
         const wake = try workbench.allocator.create(WakeSignal);
         errdefer workbench.allocator.destroy(wake);
         wake.* = try WakeSignal.init();
-        workbench.search_events.setWake(.{ .context = wake, .signal = WakeSignal.notify });
-        return .{ .search_wake = wake, .workbench = workbench, .output = output, .input_buffer = buffer };
+        workbench.window_events.setWake(.{ .context = wake, .signal = WakeSignal.notify });
+        return .{ .worker_wake = wake, .workbench = workbench, .output = output, .input_buffer = buffer };
     }
 
     pub fn scheduleFrames(self: *TerminalWorkbench, needs_render: *bool) void {
@@ -54,9 +54,9 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn deinit(self: *TerminalWorkbench) void {
-        self.workbench.search_events.setWake(null);
-        self.search_wake.deinit();
-        self.workbench.allocator.destroy(self.search_wake);
+        self.workbench.window_events.setWake(null);
+        self.worker_wake.deinit();
+        self.workbench.allocator.destroy(self.worker_wake);
         self.workbench.frame_scheduler = null;
         self.watched.deinit(self.workbench.allocator);
         self.input_buffer.deinit();
@@ -72,9 +72,9 @@ pub const TerminalWorkbench = struct {
         const workbench = self.workbench;
         var result = Readiness{};
         if (builtin.os.tag == .windows) {
-            const polled = try tui.pollInputWithHandles(workbench.fileWatcherHandle(), self.search_wake.handles, timeout);
+            const polled = try tui.pollInputWithHandles(workbench.fileWatcherHandle(), self.worker_wake.handles, timeout);
             result.input = polled.input;
-            if (polled.worker) result.redraw = workbench.search_events.dispatch(time_compat.milliTimestamp());
+            if (polled.worker) result.redraw = workbench.window_events.dispatch(time_compat.milliTimestamp());
             if (polled.extra) {
                 if (workbench.pollFileWatcher(time_compat.milliTimestamp())) result.redraw = true;
             }
@@ -89,7 +89,7 @@ pub const TerminalWorkbench = struct {
         const workbench = self.workbench;
         self.watched.len = 0;
         try self.watch(posix.STDIN_FILENO, posix.POLL.IN, .input);
-        try self.watch(self.search_wake.handles[0], posix.POLL.IN, .search_progress);
+        try self.watch(self.worker_wake.handles[0], posix.POLL.IN, .worker_completion);
         if (workbench.fileWatcherFd()) |fd| try self.watch(fd, posix.POLL.IN, .watcher);
         if (workbench.terminal_service) |service| {
             for (0..service.instanceCount()) |index| {
@@ -107,9 +107,9 @@ pub const TerminalWorkbench = struct {
             if (descriptor.revents == 0) continue;
             switch (source) {
                 .input => result.input = true,
-                .search_progress => {
-                    self.search_wake.drain();
-                    if (workbench.search_events.dispatch(time_compat.milliTimestamp())) result.redraw = true;
+                .worker_completion => {
+                    self.worker_wake.drain();
+                    if (workbench.window_events.dispatch(time_compat.milliTimestamp())) result.redraw = true;
                 },
                 .watcher => if (workbench.pollFileWatcher(time_compat.milliTimestamp())) {
                     result.redraw = true;

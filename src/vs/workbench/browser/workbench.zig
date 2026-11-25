@@ -26,17 +26,9 @@
 //! follows `workbench.editor.openSideBySideDirection`; the Left/Right/Up/Down
 //! command variants place the copy on the requested side.
 //!
-//! Async terminal adaptation: interactive read paths (`requestOpenPath`,
-//! explorer expansion, image/Markdown previews and remote Markdown images) run
-//! on the workbench's dedicated `std.Io.Threaded` via `Io.async`. No generic
-//! Task/Promise type is introduced: each owner keeps an `Io.Future` plus a
-//! completion flag, and `pollAsyncReads`/`pollFileWatcher`/`markdownPreviewTick`
-//! apply results on the TUI thread. Watcher-triggered settings/keybindings/
-//! theme reloads and clean-editor external changes use the same model:
-//! `SettingsWatcher` reads sources off-thread, theme preparation returns a
-//! detached `ColorThemeData`, and reload jobs resolve the tab by path when the
-//! result lands. `openPath` stays synchronous for startup, session restore and
-//! tests.
+//! Text reads, color themes, keybindings and image previews post completion
+//! to the window thread. Startup and session restore can open files synchronously.
+//! Explorer and Markdown workers still have separate completion paths.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -385,9 +377,9 @@ const editor_widget = @import("../../editor/browser/widget/codeEditor/codeEditor
 
 const text_files = @import("../services/textfile/common/textFileService.zig");
 const TextFileRead = text_files.TextFileRead;
+const WindowTask = @import("../../base/common/windowDispatch.zig").Task;
 const OpenJob = struct {
     read: *TextFileRead,
-    generation: u64,
     options: Workbench.OpenOptions,
 };
 
@@ -397,18 +389,18 @@ const ThemeLoadOutcome = union(enum) {
 };
 
 /// One worker-thread color-theme load. The prepared theme is installed on the
-/// TUI thread by `pollThemeJob`.
+/// TUI thread when the window receives its completion.
 const ThemeLoadJob = struct {
     allocator: Allocator,
     io: Io,
     service: *theme_service_mod.ThemeService,
     future: Io.Future(ThemeLoadOutcome),
-    done: std.atomic.Value(bool) = .init(false),
+    completion: WindowTask,
     request: theme_service_mod.ThemeService.PrepareRequest,
 };
 
 fn runThemeLoadJob(job: *ThemeLoadJob) ThemeLoadOutcome {
-    defer job.done.store(true, .release);
+    defer job.completion.post();
     const theme = theme_service_mod.ThemeService.prepareTheme(
         job.allocator,
         job.service.colors,
@@ -427,7 +419,7 @@ const KeybindingsJob = struct {
     allocator: Allocator,
     io: Io,
     future: Io.Future(KeybindingsOutcome),
-    done: std.atomic.Value(bool) = .init(false),
+    completion: WindowTask,
     paths: [][]u8,
 
     fn deinit(self: *KeybindingsJob, allocator: Allocator) void {
@@ -438,7 +430,7 @@ const KeybindingsJob = struct {
 };
 
 fn runKeybindingsJob(job: *KeybindingsJob) KeybindingsOutcome {
-    defer job.done.store(true, .release);
+    defer job.completion.post();
     var path_views = std.array_list.Managed([]const u8).init(job.allocator);
     defer path_views.deinit();
     for (job.paths) |path| path_views.append(path) catch return .{ .err = error.OutOfMemory };
@@ -513,7 +505,6 @@ pub const Workbench = struct {
     /// The single interactive open currently in flight. A newer request
     /// supersedes it; the generation is checked again when the result lands.
     pending_open: ?OpenJob = null,
-    open_generation: u64 = 0,
     reload_jobs: std.array_list.Managed(*TextFileRead),
     theme_job: ?*ThemeLoadJob = null,
     keybindings_job: ?*KeybindingsJob = null,
@@ -539,7 +530,7 @@ pub const Workbench = struct {
     explorer_container: ?*view_pane_container_mod.ViewPaneContainer = null,
     explorer_view_model: ?*view_container_model_mod.ViewContainerModel = null,
     explorer_panes: ?[]view_pane_container_mod.Pane = null,
-    search_events: @import("../services/search/common/searchDispatch.zig").Queue,
+    window_events: @import("../../base/common/windowDispatch.zig").Queue,
     search_view: ?*SearchView = null,
     search_service: ?*SearchService = null,
     layout: Layout,
@@ -745,7 +736,6 @@ pub const Workbench = struct {
         self.text_file_service = .init(allocator, &self.disk_files);
         errdefer self.text_file_service.deinit();
         self.pending_open = null;
-        self.open_generation = 0;
         self.reload_jobs = std.array_list.Managed(*TextFileRead).init(allocator);
         self.theme_job = null;
         self.theme_candidates = .{ null, null, null };
@@ -813,7 +803,7 @@ pub const Workbench = struct {
         self.explorer_container = null;
         self.explorer_view_model = null;
         self.explorer_panes = null;
-        self.search_events = .{ .io = self.async_io };
+        self.window_events = .{ .io = self.async_io };
         self.search_view = null;
         self.search_service = null;
         try self.initShellModels();
@@ -2535,7 +2525,6 @@ pub const Workbench = struct {
 
     pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
         var changed = false;
-        if (self.pollReloadJobs()) changed = true;
         if (self.sidebar) |sidebar| {
             if (sidebar.pollLoad()) changed = true;
         }
@@ -2658,9 +2647,9 @@ pub const Workbench = struct {
             },
         );
         errdefer view.deinit();
-        view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = &self.search_events };
+        view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = &self.window_events };
         self.search_service = service;
-        view.model.delivery.attach(&self.search_events, view, SearchView.dispatchSearch);
+        view.model.delivery.attach(&self.window_events, view, SearchView.dispatchSearch);
         self.search_view = view;
     }
 
@@ -5657,7 +5646,7 @@ pub const Workbench = struct {
         self.pruneTabs(pane);
     }
 
-    fn openImagePath(self: *Workbench, path: []const u8, options: OpenOptions, async_io: ?Io) !void {
+    fn openImagePath(self: *Workbench, path: []const u8, options: OpenOptions, window: ?*@import("../../base/common/windowDispatch.zig").Queue) !void {
         const input = try ImagePreviewEditorInput.init(self.allocator, path);
         errdefer input.deinit();
 
@@ -5682,7 +5671,7 @@ pub const Workbench = struct {
             return;
         }
 
-        const tab = try Tab.initImageFromInput(self.allocator, self.io, input, self.cols, self.editorContentHeight(), &self.images, async_io);
+        const tab = try Tab.initImageFromInput(self.allocator, self.io, input, self.cols, self.editorContentHeight(), &self.images, window);
         try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
         self.applyEditorSettingsToTab(tab);
@@ -5783,7 +5772,7 @@ pub const Workbench = struct {
     }
 
     /// Interactive open: reads/decodes on the async Io and applies the result
-    /// from `pollAsyncReads`. The synchronous `openPath` remains for startup,
+    /// on read completion. The synchronous `openPath` remains for startup,
     /// session restore, tests and callers that already run off the TUI thread.
     pub fn requestOpenPath(self: *Workbench, path: []const u8) void {
         self.requestOpenPathWithOptions(path, .{});
@@ -5803,7 +5792,7 @@ pub const Workbench = struct {
                 return;
             }
             self.recordNavigation();
-            self.openImagePath(path, options, self.async_io) catch |err| {
+            self.openImagePath(path, options, &self.window_events) catch |err| {
                 self.setStatusHint("Open failed: {s}", .{@errorName(err)});
             };
             return;
@@ -5816,12 +5805,11 @@ pub const Workbench = struct {
             return;
         }
 
-        const read = TextFileRead.start(&self.text_file_service, path, true) catch |err| {
+        const read = TextFileRead.startWithListener(&self.text_file_service, path, true, .{ .context = self, .queue = &self.window_events, .run = openReadCompleted }) catch |err| {
             self.setStatusHint("Open failed: {s}", .{@errorName(err)});
             return;
         };
-        self.open_generation += 1;
-        self.pending_open = .{ .read = read, .generation = self.open_generation, .options = options };
+        self.pending_open = .{ .read = read, .options = options };
         self.setStatusHint("Opening {s}...", .{std.fs.path.basename(path)});
     }
 
@@ -5832,39 +5820,25 @@ pub const Workbench = struct {
     }
 
     /// Starts one external-change reload per path. Results are applied by
-    /// `pollReloadJobs` after resolving the tab again.
+    /// the completion handler after resolving the tab again.
     fn requestFileReload(self: *Workbench, path: []const u8) void {
         for (self.reload_jobs.items) |job| {
             if (self.samePath(job.path, path)) return;
         }
-        const read = TextFileRead.start(&self.text_file_service, path, false) catch return;
+        const read = TextFileRead.startWithListener(&self.text_file_service, path, false, .{ .context = self, .queue = &self.window_events, .run = reloadCompleted }) catch return;
         self.reload_jobs.append(read) catch read.cancel();
     }
 
-    fn pollReloadJobs(self: *Workbench) bool {
-        var changed = false;
-        var index = self.reload_jobs.items.len;
-        while (index > 0) {
-            index -= 1;
-            const job = self.reload_jobs.items[index];
-            if (!job.done.load(.acquire)) continue;
-            const result = job.awaitResult();
-            _ = self.reload_jobs.orderedRemove(index);
-            defer job.destroy();
-            if (result) |content_value| {
-                var content = content_value;
-                defer content.deinit(self.allocator);
-                if (self.findOpenInput(job.path)) |input| {
-                    if (input.editor.isDirty()) {
-                        input.editor.markConflict();
-                    } else {
-                        input.editor.applyReloadedContent(content.text, content.encoding) catch {};
-                    }
-                    changed = true;
-                }
-            } else |_| {}
-        }
-        return changed;
+    fn reloadCompleted(context: *anyopaque, job: *TextFileRead) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const index = std.mem.indexOfScalar(*TextFileRead, self.reload_jobs.items, job).?;
+        _ = self.reload_jobs.swapRemove(index);
+        defer job.destroy();
+        var content = job.awaitResult() catch return false;
+        defer content.deinit(self.allocator);
+        const input = self.findOpenInput(job.path) orelse return false;
+        if (input.editor.isDirty()) input.editor.markConflict() else input.editor.applyReloadedContent(content.text, content.encoding) catch {};
+        return true;
     }
 
     fn cancelReloadJobs(self: *Workbench) void {
@@ -5933,71 +5907,30 @@ pub const Workbench = struct {
 
     /// Drains completed async reads on the TUI thread. Returns true when a
     /// result was applied and a repaint is needed.
-    pub fn pollAsyncReads(self: *Workbench) bool {
-        var changed = false;
-        if (self.pending_open) |job| {
-            if (job.read.done.load(.acquire)) {
-                const outcome = job.read.awaitResult();
-                self.pending_open = null;
-                const path = job.read.path;
-                const options = job.options;
-                const generation = job.generation;
-                defer job.read.destroy();
-                if (generation != self.open_generation) {
-                    if (outcome) |resolved| {
-                        var loaded = resolved;
-                        loaded.deinit(self.allocator);
-                    } else |_| {}
-                    return true;
-                }
-                if (outcome) |value| {
-                    var loaded = value;
-                    defer loaded.deinit(self.allocator);
-                    self.recordNavigation();
-                    self.openLoadedTextEditor(path, &loaded, options) catch |err| {
-                        self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-                        return true;
-                    };
-                    self.clearStatusHint();
-                } else |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-                changed = true;
-            }
-        }
-        if (self.pollImagePreviews()) changed = true;
-        if (self.pollThemeJob()) changed = true;
-        if (self.pollKeybindingsJob()) changed = true;
-        return changed;
-    }
-
-    fn pollImagePreviews(self: *Workbench) bool {
-        var changed = false;
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.image_preview) |preview| {
-                    if (preview.poll()) changed = true;
-                }
-            }
-        }
-        return changed;
-    }
-
-    fn hasPendingImageLoads(self: *const Workbench) bool {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.image_preview) |preview| {
-                    if (preview.hasPendingLoad()) return true;
-                }
-            }
-        }
-        return false;
+    fn openReadCompleted(context: *anyopaque, read: *TextFileRead) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const job = self.pending_open.?;
+        std.debug.assert(job.read == read);
+        self.pending_open = null;
+        defer read.destroy();
+        var loaded = read.awaitResult() catch |err| {
+            self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+            return true;
+        };
+        defer loaded.deinit(self.allocator);
+        self.recordNavigation();
+        self.openLoadedTextEditor(read.path, &loaded, job.options) catch |err| {
+            self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+            return true;
+        };
+        self.clearStatusHint();
+        return true;
     }
 
     /// True while a short read is in flight. The main loop clamps its input
     /// poll timeout so the result is applied promptly without busy-spinning
     /// the idle maintenance work.
     pub fn hasLatencySensitiveReads(self: *Workbench) bool {
-        if (self.pending_open != null or self.reload_jobs.items.len != 0 or self.theme_job != null or
-            self.keybindings_job != null or self.hasPendingImageLoads()) return true;
         if (self.sidebar) |sidebar| {
             if (sidebar.hasPendingLoad()) return true;
         }
@@ -7058,7 +6991,7 @@ pub const Workbench = struct {
                 dims.width,
                 dims.height,
                 &self.images,
-                self.async_io,
+                &self.window_events,
             );
             tab_owned = copied;
             input_owned = false;
@@ -7733,6 +7666,7 @@ pub const Workbench = struct {
         job.* = .{
             .allocator = self.allocator,
             .io = self.async_io,
+            .completion = .{ .queue = &self.window_events, .context = self, .run = applyLoadedKeybindings, .progress = true },
             .future = undefined,
             .paths = paths,
         };
@@ -7740,9 +7674,9 @@ pub const Workbench = struct {
         self.keybindings_job = job;
     }
 
-    fn pollKeybindingsJob(self: *Workbench) bool {
-        const job = self.keybindings_job orelse return false;
-        if (!job.done.load(.acquire)) return false;
+    fn applyLoadedKeybindings(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const job = self.keybindings_job.?;
         const result = job.future.await(self.async_io);
         self.keybindings_job = null;
         switch (result) {
@@ -7766,6 +7700,7 @@ pub const Workbench = struct {
         const job = self.keybindings_job orelse return;
         self.keybindings_job = null;
         const result = job.future.cancel(job.io);
+        job.completion.schedule(null);
         if (result == .bindings) {
             result.bindings.deinit();
         }
@@ -7849,7 +7784,7 @@ pub const Workbench = struct {
 
     /// Watcher-triggered variant: resolves the same candidate sequence as
     /// `applyThemeSettings`, loads the selected theme on the async Io and
-    /// installs it from `pollThemeJob`. Mirrors upstream's asynchronous
+    /// installs it on completion. Mirrors upstream's asynchronous
     /// `workbenchThemeService` reload.
     pub fn applyThemeSettingsAsync(self: *Workbench) void {
         self.ensureConfiguration() catch {};
@@ -7902,6 +7837,7 @@ pub const Workbench = struct {
                 .allocator = self.allocator,
                 .io = self.async_io,
                 .service = service,
+                .completion = .{ .queue = &self.window_events, .context = self, .run = applyLoadedTheme, .progress = true },
                 .future = undefined,
                 .request = request,
             };
@@ -7914,9 +7850,9 @@ pub const Workbench = struct {
     }
 
     /// Drains a completed theme load and installs it on the TUI thread.
-    fn pollThemeJob(self: *Workbench) bool {
-        const job = self.theme_job orelse return false;
-        if (!job.done.load(.acquire)) return false;
+    fn applyLoadedTheme(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const job = self.theme_job.?;
         const result = job.future.await(self.async_io);
         self.theme_job = null;
         const service = self.theme_service orelse return false;
@@ -7947,6 +7883,7 @@ pub const Workbench = struct {
         if (self.theme_job) |job| {
             self.theme_job = null;
             const result = job.future.cancel(job.io);
+            job.completion.schedule(null);
             switch (result) {
                 .theme => |theme_value| {
                     var theme = theme_value;
@@ -9607,7 +9544,7 @@ pub const Workbench = struct {
             if (sidebar.handleClickPreview(event.x, event.y) catch null) |path| {
                 // A single Explorer click opens a preview through the async
                 // text-open job, like Enter. The status hint reports a failed
-                // read when `pollAsyncReads` applies the result.
+                // read when the read completes.
                 self.requestOpenPathWithOptions(path, .{ .pinned = false });
                 self.focus = .editor;
             }
@@ -12938,7 +12875,7 @@ fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot
     try tab.view.setStatusBarVisible(false);
     try search_editor.SearchEditor.setMatchRanges(self.allocator, tab.view, snapshot);
     try query.setLocations(snapshot.files);
-    input.attach(&self.search_events, tab.view, .{ .context = self, .environment = searchEditorEnvironment, .extra_files = searchExtraFiles, .free_paths = searchFreePaths });
+    input.attach(&self.window_events, tab.view, .{ .context = self, .environment = searchEditorEnvironment, .extra_files = searchExtraFiles, .free_paths = searchFreePaths });
     try pane.tabs.ensureUnusedCapacity(1);
     _ = try pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
     try pane.addTab(tab);

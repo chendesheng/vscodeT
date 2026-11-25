@@ -106,16 +106,11 @@ keeps its immutable text while edits invalidate the tree’s reference.
   owns a dedicated `std.Io.Threaded` instance (passed explicitly as `async_io`)
   and starts work with `Io.async`: opening a file (read + BOM decode +
   canonical path), expanding an explorer directory, loading image tabs and
-  Markdown images, and fetching remote Markdown images. Each feature owns its
-  `Io.Future` plus a completion flag; the event loop polls those flags, applies
-  results on the TUI thread and clamps the input timeout while a short read is
-  pending. Background workers (search, watcher, JSON server, extension host)
-  keep their own threads, matching upstream's worker model. The synchronous
-  `openPath` remains for startup/session restore and tests. Watcher-triggered
-  settings, user-keybindings, color-theme and clean-editor external-change
-  reloads also read their files on the async Io: configuration sources,
-  keybindings, theme files and editor contents are prepared on a worker and
-  installed on the TUI poll tick, matching upstream's asynchronous
+  Markdown images, and fetching remote Markdown images. File opens, external file
+  reloads, image tabs, themes and keybindings wake the window on completion.
+  The window thread installs each result. Explorer and Markdown still check
+  pending work in the host loop. Startup and session restore use synchronous
+  file opens. Settings changes initiate the asynchronous
   configuration/theme/text-file reload flows. Startup scans and extension-host
   `openPath` calls still use the synchronous path; Explorer single clicks use
   the async preview open.

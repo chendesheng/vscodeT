@@ -9,7 +9,7 @@ const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorW
 const View = @import("searchEditor.zig").View;
 const SearchEditor = @import("searchEditor.zig").SearchEditor;
 
-const Queue = @import("../../../services/search/common/searchDispatch.zig").Queue;
+const Queue = @import("../../../../base/common/windowDispatch.zig").Queue;
 const Workspace = @import("../../../services/workspaces/common/workspaceContextService.zig").WorkspaceContextService;
 const Configuration = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
 

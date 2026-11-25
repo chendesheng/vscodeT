@@ -211,11 +211,11 @@ pub const Tab = struct {
         width: usize,
         height: usize,
         runtime: *ui.image.Runtime,
-        async_io: ?Io,
+        window: ?*@import("../../../../base/common/windowDispatch.zig").Queue,
     ) !*Tab {
         const input = try ImagePreviewEditorInput.init(allocator, path);
         errdefer input.deinit();
-        return initImageFromInput(allocator, io, input, width, height, runtime, async_io);
+        return initImageFromInput(allocator, io, input, width, height, runtime, window);
     }
 
     pub fn initImageFromInput(
@@ -225,7 +225,7 @@ pub const Tab = struct {
         width: usize,
         height: usize,
         runtime: *ui.image.Runtime,
-        async_io: ?Io,
+        window: ?*@import("../../../../base/common/windowDispatch.zig").Queue,
     ) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
@@ -240,8 +240,8 @@ pub const Tab = struct {
         const view = try View.init(allocator, editor);
         errdefer view.deinit();
 
-        const pane = if (async_io) |load_io|
-            try ImagePreviewPane.initAsync(allocator, io, load_io, runtime, image_input.path)
+        const pane = if (window) |events|
+            try ImagePreviewPane.initAsync(allocator, io, events, runtime, image_input.path)
         else
             try ImagePreviewPane.init(allocator, io, runtime, image_input.path);
         errdefer pane.deinit();

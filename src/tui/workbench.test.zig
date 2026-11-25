@@ -133,7 +133,7 @@ fn paneTextAlloc(allocator: Allocator, pane: *@import("imagePreview.zig").ImageP
 fn pumpOpenForTests(workbench: *Workbench) void {
     var guard: usize = 0;
     while (workbench.pending_open != null and guard < 1000) : (guard += 1) {
-        _ = workbench.pollAsyncReads();
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         if (workbench.pending_open != null) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
     }
 }
@@ -1653,8 +1653,8 @@ fn waitForSearch(workbench: *Workbench) !void {
     const clock = @import("../vs/base/common/timeCompat.zig");
     var signal = try Signal.init();
     defer signal.deinit();
-    workbench.search_events.setWake(.{ .context = &signal, .signal = Signal.notify });
-    defer workbench.search_events.setWake(null);
+    workbench.window_events.setWake(.{ .context = &signal, .signal = Signal.notify });
+    defer workbench.window_events.setWake(null);
     const end = clock.milliTimestamp() + 5000;
     while (true) {
         const sidebar_busy = if (workbench.search_view) |view| view.isSearchPending() else false;
@@ -1663,7 +1663,7 @@ fn waitForSearch(workbench: *Workbench) !void {
         if (!sidebar_busy and !editor_busy) return;
         const now = clock.milliTimestamp();
         if (now >= end) return error.SearchCompletionTimeout;
-        const timeout = workbench.search_events.nextTimeout(now, @intCast(end - now));
+        const timeout = workbench.window_events.nextTimeout(now, @intCast(end - now));
         if (timeout > 0) {
             if (@import("builtin").os.tag == .windows) {
                 const native = struct {
@@ -1677,7 +1677,7 @@ fn waitForSearch(workbench: *Workbench) !void {
         }
         const ready_at = clock.milliTimestamp();
         if (ready_at >= end) return error.SearchCompletionTimeout;
-        _ = workbench.search_events.dispatch(ready_at);
+        _ = workbench.window_events.dispatch(ready_at);
     }
 }
 
@@ -1807,7 +1807,7 @@ test "Workbench: opening a search result from another file does not restart the 
     try std.testing.expectEqual(@as(@TypeOf(view.handleKey(&enter)), .handled), view.handleKey(&enter));
 
     // Navigating to the match leaves the current search intact.
-    _ = workbench.search_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp() + 600);
+    _ = workbench.window_events.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp() + 600);
     try std.testing.expect(!view.model.isSearching());
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
 }
@@ -1844,12 +1844,12 @@ test "Workbench: an inactive result model updates only its file and can regain m
     try std.testing.expect(w.activeTab().?.editor != editor);
     try editor.applyTextEdits(&.{.{ .range = .init(1, 1, 1, 6), .text = "beta" }}, &.{});
     const deadline = edited.scheduler.at orelse return error.MissingFileMatchUpdate;
-    try std.testing.expect(!w.search_events.dispatch(deadline - 1));
+    try std.testing.expect(!w.window_events.dispatch(deadline - 1));
     try std.testing.expectEqual(2, view.matchCount());
-    try std.testing.expect(w.search_events.dispatch(deadline));
+    try std.testing.expect(w.window_events.dispatch(deadline));
     try std.testing.expectEqual(1, view.matchCount());
     try editor.applyTextEdits(&.{.{ .range = .init(1, 1, 1, 5), .text = "alpha alpha" }}, &.{});
-    try std.testing.expect(w.search_events.dispatch(edited.scheduler.at.?));
+    try std.testing.expect(w.window_events.dispatch(edited.scheduler.at.?));
     try std.testing.expectEqual(3, view.matchCount());
     try std.testing.expect(other.matches()[0] == original_match);
     try std.testing.expect(!view.model.isSearching());
@@ -2288,7 +2288,7 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     try std.testing.expect(!workbench.isQuickAccessOpen());
     var open_guard: usize = 0;
     while (workbench.tabCount() == 0 and open_guard < 2000) : (open_guard += 1) {
-        _ = workbench.pollAsyncReads();
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
@@ -3021,8 +3021,8 @@ test "Workbench: typing a search query restarts results without stale collapse k
     for ([_][]const u8{ "t", "te", "tes", "test" }) |query| {
         try view.widget.setValue(.search, query);
         const deadline = view.controller.debounce_at orelse return error.MissingSearchDebounce;
-        try std.testing.expectEqual(@as(i32, 1), workbench.search_events.nextTimeout(deadline - 1, 250));
-        try std.testing.expect(!workbench.search_events.dispatch(deadline - 1));
+        try std.testing.expectEqual(@as(i32, 1), workbench.window_events.nextTimeout(deadline - 1, 250));
+        try std.testing.expect(!workbench.window_events.dispatch(deadline - 1));
         try std.testing.expect(!view.model.isSearching());
         try waitForSearch(workbench);
     }
@@ -3603,6 +3603,7 @@ test "Workbench: AfterRestored watcher reloads a clean editor" {
     const ready_deadline = time_compat.milliTimestamp() + 3000;
     while (time_compat.milliTimestamp() < ready_deadline and !service.isReady()) {
         _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         io.sleep(.fromMilliseconds(10), .awake) catch {};
     }
     try std.testing.expect(service.isReady());
@@ -3613,6 +3614,7 @@ test "Workbench: AfterRestored watcher reloads a clean editor" {
     var reloaded = false;
     while (time_compat.milliTimestamp() < deadline and !reloaded) {
         _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         var value = tab.editor.model.getValue(.TextDefined, true) catch break;
         reloaded = std.mem.eql(u8, value.items, "after");
         value.deinit();
@@ -5046,7 +5048,7 @@ test "Workbench: interactive open reads on the async Io" {
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
     var waited: usize = 0;
-    while (!workbench.pollAsyncReads() and waited < 2000) : (waited += 1) {
+    while (!workbench.window_events.dispatch(time_compat.milliTimestamp()) and waited < 2000) : (waited += 1) {
         std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
@@ -6579,6 +6581,7 @@ test "Workbench: external file changes reload clean editors only" {
     var reload_guard: usize = 0;
     while (workbench.reload_jobs.items.len != 0 and reload_guard < 2000) : (reload_guard += 1) {
         _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(reload_guard < 2000);

@@ -143,20 +143,37 @@ pub const TextFileRead = struct {
     path: []u8,
     allow_missing: bool,
     future: Io.Future(anyerror!ResolvedTextFile),
-    done: std.atomic.Value(bool) = .init(false),
+    completion: @import("../../../../base/common/windowDispatch.zig").Task,
+    listener: ?Listener,
+
+    pub const Listener = struct {
+        context: *anyopaque,
+        queue: *@import("../../../../base/common/windowDispatch.zig").Queue,
+        run: *const fn (*anyopaque, *TextFileRead) bool,
+    };
 
     pub fn start(service: *TextFileService, path: []const u8, allow_missing: bool) !*TextFileRead {
+        return startWithListener(service, path, allow_missing, null);
+    }
+
+    pub fn startWithListener(service: *TextFileService, path: []const u8, allow_missing: bool, listener: ?Listener) !*TextFileRead {
         const allocator = service.allocator;
         const self = try allocator.create(TextFileRead);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .service = service, .path = try allocator.dupe(u8, path), .allow_missing = allow_missing, .future = undefined };
+        self.* = .{ .allocator = allocator, .service = service, .path = try allocator.dupe(u8, path), .allow_missing = allow_missing, .future = undefined, .listener = listener, .completion = .{ .queue = if (listener) |l| l.queue else null, .context = self, .run = complete, .progress = true } };
         self.future = service.files.io.async(run, .{self});
         return self;
     }
 
     fn run(self: *TextFileRead) anyerror!ResolvedTextFile {
-        defer self.done.store(true, .release);
+        defer self.completion.post();
         return self.service.resolve(self.path, self.allow_missing);
+    }
+
+    fn complete(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *TextFileRead = @ptrCast(@alignCast(context));
+        const listener = self.listener.?;
+        return listener.run(listener.context, self);
     }
 
     pub fn awaitResult(self: *TextFileRead) !ResolvedTextFile {
@@ -164,6 +181,7 @@ pub const TextFileRead = struct {
     }
 
     pub fn destroy(self: *TextFileRead) void {
+        self.completion.schedule(null);
         self.allocator.free(self.path);
         self.allocator.destroy(self);
     }

@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,347 lines and has no inline tests. It has no direct imports from `src/tui`. Seven files import the shell. All 151 baseline
+The browser shell is 13,284 lines and has no inline tests. It has no direct imports from `src/tui`. Seven files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -39,11 +39,12 @@ Show All Commands resolves the quick input service through its Action2 handler.
   sharing the requested grid edge. Wrapping preserves the row or column span.
   The nine group focus actions resolve IEditorGroupsService and focus the returned
   group. EditorPart emits its focus event after updating the active group.
-* Search progress wakes the window and dispatches a batch to the sidebar or Search Editor that requested it. Debouncing uses an explicit deadline. Edits to a bound model schedule its FileMatch update after 250 ms. Eleven `poll*` methods remain in the shell.
+* Search progress wakes the window and dispatches a batch to the sidebar or Search Editor that requested it. Debouncing uses an explicit deadline. Edits to a bound model schedule its FileMatch update after 250 ms. Six `poll*` methods remain in the shell.
 * Twenty Search commands are registered as Action2 contributions by the search action
   modules. Find and result navigation open Search by view ID. Toggles and toolbar
   actions use the active view through IViewsService. The palette keeps its
   existing command IDs, labels and visibility.
+* File opens, external reloads, image decodes, theme loads and keybindings loads wake the window on completion. Closing an owner cancels its future and retracts its queued callback.
 * TextFileService reads and decodes editor inputs for synchronous opens, interactive opens
   and watcher reloads. A missing input opens empty. A missing watched file reports a
   failed reload and preserves the open model. Closing or superseding a request cancels

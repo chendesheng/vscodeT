@@ -749,7 +749,7 @@ pub const SearchResult = struct {
     pub const ModelHost = struct {
         context: *anyopaque,
         get: *const fn (*anyopaque, []const u8) ?*TextModel,
-        queue: *@import("../../../../services/search/common/searchDispatch.zig").Queue,
+        queue: *@import("../../../../../base/common/windowDispatch.zig").Queue,
     };
 
     pub fn create(allocator: Allocator) !*SearchResult {

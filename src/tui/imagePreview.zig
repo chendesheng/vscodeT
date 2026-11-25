@@ -8,7 +8,7 @@
 //! hit testing, scroll/zoom input and the terminal image handle.
 //!
 //! Async terminal adaptation: `initAsync` starts the read/decode on the
-//! workbench `async_io`; `poll` applies the result and uploads the terminal
+//! window worker pool. Completion applies the result and uploads the terminal
 //! image on the TUI thread. The synchronous `init`/`reload` path remains for
 //! startup and tests.
 //!
@@ -46,17 +46,18 @@ const fallback_button_border = ui.Color{ .r = 70, .g = 70, .b = 70 };
 /// What the pane wants the workbench to do after an input event.
 pub const Action = enum { none, changed, open_text };
 
+const dispatch = @import("../vs/base/common/windowDispatch.zig");
 const ImageLoadJob = struct {
     pane: *ImagePreviewPane,
     future: Io.Future(image_preview_editor.LoadedImage),
-    done: std.atomic.Value(bool) = .init(false),
+    completion: dispatch.Task,
     load_id: u32,
     path: []u8,
 };
 
 fn runImageLoad(job: *ImageLoadJob) image_preview_editor.LoadedImage {
-    defer job.done.store(true, .release);
-    return ImagePreviewEditor.loadContent(job.pane.allocator, job.pane.async_io.?, job.path);
+    defer job.completion.post();
+    return ImagePreviewEditor.loadContent(job.pane.allocator, job.pane.window.?.io, job.path);
 }
 
 pub const ImagePreviewPane = struct {
@@ -64,7 +65,7 @@ pub const ImagePreviewPane = struct {
     io: Io,
     /// Io used for interactive/reload loads. Null keeps the synchronous
     /// host-read path used by startup and tests.
-    async_io: ?Io = null,
+    window: ?*dispatch.Queue = null,
     load_job: ?*ImageLoadJob = null,
     runtime: *ui.image.Runtime,
     editor: *ImagePreviewEditor,
@@ -97,18 +98,18 @@ pub const ImagePreviewPane = struct {
     }
 
     /// Creates a pane whose image is read and decoded on `async_io` instead of
-    /// on the TUI thread. The placeholder is rendered until `poll` applies the
+    /// on the TUI thread. The placeholder is rendered until the window applies the
     /// result.
     pub fn initAsync(
         allocator: Allocator,
         io: Io,
-        async_io: Io,
+        window: *dispatch.Queue,
         runtime: *ui.image.Runtime,
         path: []const u8,
     ) !*ImagePreviewPane {
         const self = try allocator.create(ImagePreviewPane);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .io = io, .async_io = async_io, .runtime = runtime, .editor = undefined };
+        self.* = .{ .allocator = allocator, .io = io, .window = window, .runtime = runtime, .editor = undefined };
         self.editor = try ImagePreviewEditor.initDeferred(allocator, .{
             .context = self,
             .read = hostRead,
@@ -133,7 +134,7 @@ pub const ImagePreviewPane = struct {
     /// Starts an async load (or falls back to the synchronous path when the
     /// pane has no async Io). Stale results are discarded by load id.
     pub fn requestLoad(self: *ImagePreviewPane, preserve_view_state: bool) void {
-        const async_io = self.async_io orelse {
+        const window = self.window orelse {
             if (preserve_view_state) self.editor.reload() else self.editor.load(false);
             self.dirty = true;
             return;
@@ -145,8 +146,8 @@ pub const ImagePreviewPane = struct {
             self.allocator.free(path);
             return;
         };
-        job.* = .{ .pane = self, .future = undefined, .load_id = load_id, .path = path };
-        job.future = async_io.async(runImageLoad, .{job});
+        job.* = .{ .pane = self, .completion = .{ .queue = window, .context = self, .run = applyLoaded, .progress = true }, .future = undefined, .load_id = load_id, .path = path };
+        job.future = window.io.async(runImageLoad, .{job});
         self.load_job = job;
         self.editor.message = image_preview_editor.message_loading;
         self.fileSizeChanged();
@@ -154,10 +155,10 @@ pub const ImagePreviewPane = struct {
 
     /// Drains a completed async load on the TUI thread. Returns true when the
     /// pane changed and needs a repaint.
-    pub fn poll(self: *ImagePreviewPane) bool {
-        const job = self.load_job orelse return false;
-        if (!job.done.load(.acquire)) return false;
-        const async_io = self.async_io.?;
+    fn applyLoaded(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *ImagePreviewPane = @ptrCast(@alignCast(context));
+        const job = self.load_job.?;
+        const async_io = self.window.?.io;
         const loaded = job.future.await(async_io);
         self.load_job = null;
         const load_id = job.load_id;
@@ -175,8 +176,9 @@ pub const ImagePreviewPane = struct {
     pub fn cancelLoad(self: *ImagePreviewPane) void {
         const job = self.load_job orelse return;
         self.load_job = null;
-        const async_io = self.async_io.?;
+        const async_io = self.window.?.io;
         const loaded = job.future.cancel(async_io);
+        job.completion.schedule(null);
         if (loaded == .image) {
             var decoded = loaded.image.decoded;
             decoded.deinit(self.allocator);
@@ -226,7 +228,7 @@ pub const ImagePreviewPane = struct {
     }
 
     pub fn reload(self: *ImagePreviewPane) void {
-        if (self.async_io != null) {
+        if (self.window != null) {
             self.requestLoad(true);
             return;
         }
@@ -659,12 +661,13 @@ test "imagePreview: async load reads and decodes off the caller thread" {
     runtime.setProtocol(.unicode_placeholders);
     runtime.setCellSize(8, 16);
 
-    const pane = try ImagePreviewPane.initAsync(allocator, io, async_io, &runtime, path);
+    var window = dispatch.Queue{ .io = async_io };
+    const pane = try ImagePreviewPane.initAsync(allocator, io, &window, &runtime, path);
     defer pane.deinit();
     try std.testing.expect(pane.hasPendingLoad());
 
     var waited: usize = 0;
-    while (!pane.poll() and waited < 2000) : (waited += 1) {
+    while (!window.dispatch(@import("../vs/base/common/timeCompat.zig").milliTimestamp()) and waited < 2000) : (waited += 1) {
         async_io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
     try std.testing.expect(pane.editor.hasImage());
