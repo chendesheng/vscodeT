@@ -691,7 +691,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }.now },
     };
-    workbench.restore(&restore_timer, saved_layout) catch |err| report(log_service, "workbench restore failed: {s}", .{@errorName(err)});
+    workbench.core.provideRestoreState(&restore_timer, saved_layout) catch |err| report(log_service, "workbench restore failed: {s}", .{@errorName(err)});
     infoLog(log_service, "workbench ready: {d} tab(s)", .{workbench.tabCount()});
     if (workbench.activeTab()) |active| try active.view.refresh();
     try terminal_host.render();

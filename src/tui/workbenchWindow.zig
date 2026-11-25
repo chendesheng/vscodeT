@@ -334,7 +334,6 @@ const WindowViews = struct {
 };
 
 pub const TerminalWorkbench = struct {
-    const WindowTimer = @import("../vs/base/common/async.zig").WindowTimer;
     core: workbench_core.Workbench,
     host_service: @import("../vs/workbench/services/host/browser/browserHostService.zig").BrowserHostService,
     host_api: @import("../vs/workbench/services/host/browser/host.zig").IHostService,
@@ -578,7 +577,6 @@ pub const TerminalWorkbench = struct {
         self.search_window.service = null;
         try self.initShellModels(parent, options, state != null);
         errdefer self.deinitShellModels();
-        self.layout.reset_layout = options.reset_layout;
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
         self.home_path = readHomePath(allocator);
@@ -1145,10 +1143,6 @@ pub const TerminalWorkbench = struct {
         try self.part.restoreEditors(panes);
     }
 
-    pub fn restore(self: *TerminalWorkbench, timer: *WindowTimer, saved: ?Layout.WorkspaceState) !void {
-        try self.core.restore(timer, saved);
-    }
-
     pub fn createFileSerializer(self: *TerminalWorkbench) FileEditorSerializer {
         return FileEditorSerializer.init(self.allocator, self.io, self.cols, self.editorContentHeight());
     }
@@ -1524,13 +1518,7 @@ pub const TerminalWorkbench = struct {
         for (self.group_actions.joinActions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (editor_actions.move_group_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.group_actions.transferActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        const after_move_groups = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.navigateLeft", .label = "Focus Group Left", .category = "View", .context = self, .run = commandNavigateLeft },
-            .{ .id = "workbench.action.navigateRight", .label = "Focus Group Right", .category = "View", .context = self, .run = commandNavigateRight },
-            .{ .id = "workbench.action.navigateUp", .label = "Focus Group Up", .category = "View", .context = self, .run = commandNavigateUp },
-            .{ .id = "workbench.action.navigateDown", .label = "Focus Group Down", .category = "View", .context = self, .run = commandNavigateDown },
-        };
-        for (after_move_groups) |command| try self.commands.register(command);
+        for (@import("../vs/workbench/browser/actions/navigationActions.zig").navigation_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, editor_actions.navigate_between_groups_action);
         try self.commands.registerAction(self.instantiation, editor_actions.reset_group_sizes_action);
         for (@import("../vs/workbench/browser/actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(self.instantiation, action);
@@ -5015,26 +5003,6 @@ fn focusWindowEditor(context: *anyopaque) void {
 fn commandImageOpenInTextEditor(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     try self.openActiveImageAsText();
-}
-
-fn commandNavigateLeft(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.navigateGroup(.left);
-}
-
-fn commandNavigateRight(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.navigateGroup(.right);
-}
-
-fn commandNavigateUp(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.navigateGroup(.up);
-}
-
-fn commandNavigateDown(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.navigateGroup(.down);
 }
 
 fn commandMaximizeEditor(context: *anyopaque) anyerror!void {

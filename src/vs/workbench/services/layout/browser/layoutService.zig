@@ -16,9 +16,12 @@ pub const IPartVisibilityChangeEvent = struct { part_id: Parts, visible: bool };
 
 pub const layout_service_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(IWorkbenchLayoutService, "layoutService");
 
+pub const Direction = @import("../../../../base/browser/ui/grid/grid.zig").Direction;
+
 pub const IWorkbenchLayoutService = struct {
     context: *anyopaque,
     get_side_bar_position: *const fn (*anyopaque) Position,
+    get_visible_neighbor_part: *const fn (*anyopaque, Parts, Direction) ?Parts,
     get_container: *const fn (*anyopaque, ?Parts) ?*ui.Node,
     get_size: *const fn (*anyopaque, Parts) IViewSize,
     set_size: *const fn (*anyopaque, Parts, IViewSize) anyerror!void,
@@ -38,6 +41,10 @@ pub const IWorkbenchLayoutService = struct {
 
     pub fn getSideBarPosition(self: @This()) Position {
         return self.get_side_bar_position(self.context);
+    }
+
+    pub fn getVisibleNeighborPart(self: @This(), part: Parts, direction: Direction) ?Parts {
+        return self.get_visible_neighbor_part(self.context, part, direction);
     }
 
     pub fn getContainer(self: @This(), part: ?Parts) ?*ui.Node {

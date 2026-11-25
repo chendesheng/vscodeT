@@ -185,6 +185,14 @@ fn getBoxBoundary(box: ui.Rect, direction: Direction) Boundary {
     };
 }
 
+/// Shared edge/interval test used when the grid boxes have already been
+/// materialized by their layout owner.
+pub fn boxesAdjacent(source: ui.Rect, target: ui.Rect, direction: Direction) bool {
+    const boundary = getBoxBoundary(source, direction);
+    const edge = getBoxBoundary(target, direction.opposite());
+    return edge.offset == boundary.offset and edge.start < boundary.end and boundary.start < edge.end;
+}
+
 /// The glyph fallback reserves a cell for a sash. Extend its first child to the
 /// second child's leading edge when comparing boundaries, so both share the
 /// same edge as in the browser grid. Painting still uses each node's own rect.

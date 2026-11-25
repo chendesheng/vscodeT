@@ -6711,6 +6711,13 @@ test "Workbench: closing the side bar keeps the activity bar" {
     try std.testing.expectEqualStrings("search", workbench.sidebar_part.activePaneComposite().?.id);
     try std.testing.expect(workbench.sidebar_part.isVisible());
     try std.testing.expectEqual(Focus.sidebar, workbench.focus);
+
+    // The owner navigation actions use Layout's visible grid neighbors; they
+    // leave an editor group at the outer edge and return to its last focus.
+    try workbench.commands.execute("workbench.action.navigateRight");
+    try std.testing.expectEqual(Focus.editor, workbench.focus);
+    try workbench.commands.execute("workbench.action.navigateLeft");
+    try std.testing.expectEqual(Focus.sidebar, workbench.focus);
 }
 
 test "Workbench: status bar escape clears the hover tooltip" {
@@ -8683,7 +8690,12 @@ test "workbench restores after editor completion or two seconds and eventually w
         if (slow) wb.part.when_restored = .{};
         var clock = Clock{};
         var timer = WindowTimer{ .clock = .{ .context = &clock, .now = Clock.now } };
-        try wb.restore(&timer, null);
+        // Workbench.startup has already initiated restore and attached its
+        // continuation, while native profile/storage input is still pending.
+        try std.testing.expectEqual(@as(usize, 1), wb.core.restore_state_ready.pending.items.len);
+        try std.testing.expect(!wb.layout.when_ready.is_open);
+        try wb.core.provideRestoreState(&timer, null);
+        try std.testing.expectError(error.WorkbenchAlreadyRestoring, wb.core.provideRestoreState(&timer, null));
         try std.testing.expect(wb.layout.when_ready.is_open);
         try std.testing.expectEqual(!slow, wb.layout.isRestored());
         if (slow) {
@@ -8735,7 +8747,7 @@ test "workbench shutdown cancels outstanding restore and idle callbacks" {
                 return time.*;
             }
         }.now } };
-        try wb.restore(&timer, null);
+        try wb.core.provideRestoreState(&timer, null);
         now_ms = 2500;
         if (!restoring) try timer.dispatch(false);
         try wb.lifecycle.shutdown(.quit);

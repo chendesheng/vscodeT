@@ -264,7 +264,26 @@ pub const Layout = struct {
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .get_container = getContainerContext, .get_size = getSizeContext, .set_size = setSizeContext, .resize_part = resizePartContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
+        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .get_visible_neighbor_part = getVisibleNeighborPartContext, .get_container = getContainerContext, .get_size = getSizeContext, .set_size = setSizeContext, .resize_part = resizePartContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
+    }
+
+    fn getVisibleNeighborPartContext(context: *anyopaque, part: Parts, direction: grid.Direction) ?Parts {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.getVisibleNeighborPart(part, direction);
+    }
+
+    pub fn getVisibleNeighborPart(self: *Layout, part: Parts, direction: grid.Direction) ?Parts {
+        if (!self.grid_ready or !self.isVisible(part)) return null;
+        const source = (self.getPart(part) catch return null).bounds orelse return null;
+        // The terminal grid already materializes the same part boundaries,
+        // including the sash cells. Find the neighbor in upstream part order.
+        for ([_]Parts{ .activitybar, .editor, .panel, .auxiliarybar, .sidebar, .statusbar, .titlebar }) |candidate| {
+            if (candidate == part or !self.isVisible(candidate)) continue;
+            const target = (self.getPart(candidate) catch continue).bounds orelse continue;
+            if (target.w == 0 or target.h == 0) continue;
+            if (grid.boxesAdjacent(source, target, direction)) return candidate;
+        }
+        return null;
     }
 
     fn hasFocusContext(context: *anyopaque, part: Parts) bool {

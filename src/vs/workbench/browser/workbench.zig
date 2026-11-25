@@ -18,7 +18,8 @@ const InstantiationService = @import("../../platform/instantiation/common/instan
 const ServicesAccessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
 const Emitter = @import("../../base/common/event.zig").Emitter;
-const WindowTimer = @import("../../base/common/async.zig").WindowTimer;
+const async = @import("../../base/common/async.zig");
+const WindowTimer = async.WindowTimer;
 const IContextKeyService = @import("../../platform/contextkey/common/contextkey.zig").IContextKeyService;
 const Notifications = @import("parts/notifications/notificationsCommands.zig");
 
@@ -50,12 +51,16 @@ pub const Workbench = struct {
     on_did_shutdown: Emitter(void),
     listeners: [6]?SignalSubscription = @splat(null),
     restore_timer: ?*WindowTimer = null,
+    restore_state_ready: async.Barrier = .{},
+    saved_layout: ?Layout.WorkspaceState = null,
     notification_controller: ?*Notifications.NotificationsController = null,
 
     pub fn init(allocator: Allocator, parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool) Workbench {
+        var layout = Layout.init(allocator);
+        layout.reset_layout = options.reset_layout;
         return .{
             .allocator = allocator,
-            .layout = Layout.init(allocator),
+            .layout = layout,
             .on_will_shutdown = .init(allocator),
             .on_did_shutdown = .init(allocator),
             .startup_window = .{ .parent = parent, .options = options, .has_previous_state = has_previous_state },
@@ -67,15 +72,11 @@ pub const Workbench = struct {
         self.startup_window = null;
         self.host = host;
         try self.initServices(services);
-        try self.instantiation.invokeFunction(startWorkbench, .{ self, window.parent, window.options });
-        if (window.has_previous_state) {
-            try host.restore_editors(host.context);
-            host.layout(host.context);
-        } else try host.part.when_restored.open(self.allocator);
+        try self.instantiation.invokeFunction(startWorkbench, .{ self, window.parent, window.options, window.has_previous_state });
         return &self.instantiation;
     }
 
-    fn startWorkbench(accessor: ServicesAccessor, self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
+    fn startWorkbench(accessor: ServicesAccessor, self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool) !void {
         const host = self.host;
         // Layout
         try self.layout.initLayout(host.part);
@@ -91,6 +92,8 @@ pub const Workbench = struct {
         // Workbench Layout
         try self.layout.createWorkbenchLayout();
         host.layout(host.context);
+        // Restore
+        try self.restore(has_previous_state);
     }
 
     fn initServices(self: *Workbench, services: *ServiceCollection) !void {
@@ -192,11 +195,27 @@ pub const Workbench = struct {
         self.notification_controller = controller;
     }
 
-    pub fn restore(self: *Workbench, timer: *WindowTimer, saved: ?Layout.WorkspaceState) !void {
-        if (self.restore_timer != null or self.host.lifecycle.will_shutdown) return error.WorkbenchAlreadyRestoring;
-        self.listeners[5] = try self.host.lifecycle.on_will_shutdown.listenDisposable(self, stopRestoration);
+    fn restore(self: *Workbench, has_previous_state: bool) !void {
+        self.listeners[5] = try self.lifecycle_api.on_will_shutdown.listenDisposable(self, stopRestoration);
+        if (has_previous_state) {
+            try self.host.restore_editors(self.host.context);
+            self.host.layout(self.host.context);
+        } else try self.host.part.when_restored.open(self.allocator);
+        // Native storage/profile initialization completes asynchronously
+        // after startup. Await that input before restoring layout parts.
+        try self.restore_state_ready.wait(self.allocator, .{ .context = self, .run = onRestoreStateReady });
+    }
+
+    pub fn provideRestoreState(self: *Workbench, timer: *WindowTimer, saved: ?Layout.WorkspaceState) !void {
+        if (self.startup_window != null or self.restore_state_ready.is_open or self.host.lifecycle.will_shutdown) return error.WorkbenchAlreadyRestoring;
         self.restore_timer = timer;
-        const restoring = self.layout.restoreParts(saved, &self.host.part.when_restored);
+        self.saved_layout = saved;
+        try self.restore_state_ready.open(self.allocator);
+    }
+
+    fn onRestoreStateReady(context: *anyopaque) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const restoring = self.layout.restoreParts(self.saved_layout, &self.host.part.when_restored);
         try self.layout.when_ready.wait(self.allocator, .{ .context = self, .run = onLayoutReady });
         restoring catch |err| std.log.scoped(.workbench).err("restore failed: {s}", .{@errorName(err)});
     }
@@ -206,6 +225,7 @@ pub const Workbench = struct {
     }
 
     pub fn cancelRestoreTimer(self: *Workbench) void {
+        self.restore_state_ready.cancelWait(.{ .context = self, .run = onRestoreStateReady });
         if (self.restore_timer) |timer| {
             timer.callback = null;
             self.layout.when_ready.cancelWait(.{ .context = self, .run = onLayoutReady });
@@ -263,6 +283,7 @@ pub const Workbench = struct {
         self.disposeListeners();
         self.disposeNotifications();
         self.disposeInstantiation();
+        self.restore_state_ready.deinit(self.allocator);
         self.on_will_shutdown.deinit();
         self.on_did_shutdown.deinit();
         self.layout.deinit();
