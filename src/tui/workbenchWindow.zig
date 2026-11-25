@@ -1490,7 +1490,7 @@ pub const TerminalWorkbench = struct {
 
     fn registerDefaultCommands(self: *TerminalWorkbench) !void {
         const status = self.editor_status.?;
-        try self.commands.register(.{ .id = "workbench.action.quickOpen", .label = "Go to File...", .category = "File", .context = self, .run = commandQuickOpen });
+        try self.commands.registerAction(self.instantiation, quick_access_mod.quick_open_action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
         const before_group_focus = [_]commands_mod.CommandInfo{
             .{ .id = editor_status_mod.goto_line_command, .label = "Go to Line/Column...", .category = "Go", .context = status, .run = editor_status_mod.commandGotoLine },
@@ -1498,8 +1498,10 @@ pub const TerminalWorkbench = struct {
             .{ .id = editor_status_mod.change_encoding_command, .label = "Change File Encoding", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeEncoding },
             .{ .id = editor_status_mod.change_eol_command, .label = "Change End of Line Sequence", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeEOL },
             .{ .id = editor_status_mod.change_language_mode_command, .label = "Change Language Mode", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeLanguageMode },
-            .{ .id = "workbench.action.files.save", .label = "Save", .category = "File", .context = self, .run = commandSave },
-            .{ .id = "workbench.action.files.revert", .label = "Revert File", .category = "File", .context = self, .run = commandRevert },
+        };
+        for (before_group_focus) |command| try self.commands.register(command);
+        for (@import("../vs/workbench/contrib/files/browser/fileCommands.zig").editor_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        const after_file_actions = [_]commands_mod.CommandInfo{
             .{ .id = "list.focusUp", .label = "Focus Previous Item", .category = "List", .context = self, .run = commandListFocusUp },
             .{ .id = "list.focusDown", .label = "Focus Next Item", .category = "List", .context = self, .run = commandListFocusDown },
             .{ .id = "list.focusFirst", .label = "Focus First Item", .category = "List", .context = self, .run = commandListFocusFirst },
@@ -1520,7 +1522,7 @@ pub const TerminalWorkbench = struct {
             .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
             .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
         };
-        for (before_group_focus) |command| try self.commands.register(command);
+        for (after_file_actions) |command| try self.commands.register(command);
         const outline_actions = @import("../vs/workbench/contrib/outline/browser/outlineActions.zig");
         try self.commands.registerAction(self.instantiation, outline_actions.focus_action);
         try self.commands.register(.{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions });
@@ -1633,11 +1635,7 @@ pub const TerminalWorkbench = struct {
         for (search_contribution.search_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.search_window.factory.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
         for (search_contribution.result_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        const editor_commands_1 = [_]commands_mod.CommandInfo{
-            .{ .id = "actions.find", .label = "Find", .context = self, .requires_editor = true, .run = commandFind },
-            .{ .id = "editor.action.startFindReplaceAction", .label = "Replace", .context = self, .requires_editor = true, .run = commandReplace },
-        };
-        for (editor_commands_1) |command| try self.commands.register(command);
+        for (@import("../vs/editor/contrib/find/browser/findController.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         for (@import("../vs/editor/contrib/comment/browser/comment.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         for (@import("../vs/editor/contrib/linesOperations/browser/linesOperations.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         for (@import("../vs/editor/contrib/linesOperations/browser/linesOperations.zig").indent_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
@@ -1648,20 +1646,12 @@ pub const TerminalWorkbench = struct {
         for (@import("../vs/editor/contrib/smartSelect/browser/smartSelect.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         for (@import("../vs/editor/contrib/format/browser/formatActions.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         for (@import("../vs/editor/contrib/indentation/browser/indentation.zig").conversion_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        const editor_commands_2 = [_]commands_mod.CommandInfo{
-            .{ .id = "editor.action.wordHighlight.trigger", .label = "Trigger Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightTrigger },
-        };
-        for (editor_commands_2) |command| try self.commands.register(command);
+        try self.commands.registerEditorAction(self.instantiation, @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").trigger_action);
         for (@import("../vs/editor/contrib/inPlaceReplace/browser/inPlaceReplace.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         for (@import("../vs/editor/contrib/indentation/browser/indentation.zig").reindent_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         for (@import("../vs/editor/contrib/folding/browser/folding.zig").editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        const editor_commands_3 = [_]commands_mod.CommandInfo{
-            .{ .id = sticky_actions.toggle_sticky_scroll.id, .label = sticky_actions.toggle_sticky_scroll.label, .category = "View", .context = self, .requires_editor = true, .run = commandToggleStickyScroll },
-            .{ .id = sticky_actions.focus_sticky_scroll.id, .label = sticky_actions.focus_sticky_scroll.label, .category = "View", .context = self, .requires_editor = true, .run = commandFocusStickyScroll },
-            .{ .id = "editor.action.wordHighlight.next", .label = "Go to Next Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightNext },
-            .{ .id = "editor.action.wordHighlight.prev", .label = "Go to Previous Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightPrevious },
-        };
-        for (editor_commands_3) |command| try self.commands.register(command);
+        for (sticky_actions.editor_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
+        for (@import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").navigation_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
 
         try self.builtin_host.registerPortActions();
         try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
@@ -5493,16 +5483,6 @@ fn quickCancelPopups(context: *anyopaque) void {
     }
 }
 
-fn commandTab(context: *anyopaque) !*Tab {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    return self.activeTab() orelse error.NoActiveEditor;
-}
-
-fn commandQuickOpen(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    return self.quick_access.showFilePicker();
-}
-
 fn problemsWorkspaceRoot(context: *anyopaque) ?[]const u8 {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     return self.workspaceFolderPath();
@@ -5692,18 +5672,6 @@ fn diffRefFromLabel(label: []const u8) DiffRef {
     if (std.mem.eql(u8, label, "Index")) return .index;
     if (std.mem.eql(u8, label, "Working Tree")) return .working;
     return .empty;
-}
-
-fn commandSave(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    if (tab.isDiff() or tab.isImage()) return;
-    try tab.editor.save();
-}
-
-fn commandRevert(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    if (tab.isDiff() or tab.isImage()) return;
-    try tab.editor.reloadFromDisk();
 }
 
 fn commandFocusAndSelectBreadcrumbs(context: *anyopaque) anyerror!void {
@@ -6021,48 +5989,6 @@ fn executeStatusbarCommand(context: *anyopaque, command: statusbar_types.Statusb
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     if (statusbar_types.isTooltipCommand(command)) return;
     _ = try self.commands.platform.execute(command.id);
-}
-
-fn commandFind(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.ensureControllers();
-    try tab.controllers.?.find.startFind();
-}
-
-fn commandReplace(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.ensureControllers();
-    try tab.controllers.?.find.startReplace();
-}
-
-fn commandToggleStickyScroll(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.ensureControllers();
-    if (tab.controllers) |controllers| controllers.sticky.toggle();
-}
-
-fn commandFocusStickyScroll(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.ensureControllers();
-    if (tab.controllers) |controllers| controllers.sticky.focus();
-}
-
-fn commandWordHighlightTrigger(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.ensureControllers();
-    tab.controllers.?.word_highlighter.trigger();
-}
-
-fn commandWordHighlightNext(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.ensureControllers();
-    tab.controllers.?.word_highlighter.moveNext();
-}
-
-fn commandWordHighlightPrevious(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.ensureControllers();
-    tab.controllers.?.word_highlighter.moveBack();
 }
 
 const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{

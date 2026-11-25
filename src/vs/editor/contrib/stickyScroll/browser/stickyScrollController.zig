@@ -53,6 +53,7 @@ pub const IStickyScrollController = struct {
 
 /// Port of `StickyScrollController`.
 pub const StickyScrollController = struct {
+    pub const ID = "store.contrib.stickyScrollController";
     allocator: Allocator,
     editor: *Editor,
     host: StickyHost,

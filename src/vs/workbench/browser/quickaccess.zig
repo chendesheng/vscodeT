@@ -277,6 +277,7 @@ pub const QuickAccessService = struct {
 
     fn showQuickAccess(context: *anyopaque, value: []const u8) anyerror!void {
         const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        if (value.len == 0) return self.showFilePicker();
         if (self.input.isVisible()) self.input.hide();
         try self.controller.show(value, .{});
     }
@@ -1070,3 +1071,16 @@ test "QuickAccessService: missing rg reports a picker error instead of hanging" 
     try std.testing.expect(std.mem.indexOf(u8, state.reported[0..state.reported_len], "ripgrep") != null);
     try std.testing.expect(!service.file_search.isBusy());
 }
+
+/// Default Quick Access action (the empty provider prefix).
+pub const quick_open_action: @import("../../platform/actions/common/actions.zig").Action2 = .{
+    .command = .{ .id = "workbench.action.quickOpen", .title = "Go to File...", .category = "File" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = struct {
+        fn run(_: *anyopaque, accessor: @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor) !void {
+            const service = try accessor.get(quick_input.quick_input_service_id);
+            try service.quick_access.show("");
+        }
+    }.run,
+};

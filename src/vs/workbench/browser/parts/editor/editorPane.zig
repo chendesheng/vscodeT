@@ -1046,6 +1046,12 @@ pub const Controllers = struct {
 
         self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
         try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
+        errdefer view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
+        try editor.registerContribution(FindController, self.find);
+        errdefer editor.unregisterContribution(FindController, self.find);
+        try editor.registerContribution(StickyScrollController, self.sticky);
+        errdefer editor.unregisterContribution(StickyScrollController, self.sticky);
+        try editor.registerContribution(WordHighlighterContribution, self.word_highlighter);
         return self;
     }
 
@@ -1069,6 +1075,9 @@ pub const Controllers = struct {
         self.suggest.attachWindow(window);
     }
     pub fn deinit(self: *Controllers) void {
+        self.editor.unregisterContribution(FindController, self.find);
+        self.editor.unregisterContribution(StickyScrollController, self.sticky);
+        self.editor.unregisterContribution(WordHighlighterContribution, self.word_highlighter);
         // The sink context points at this controller; detach before it dies.
         self.editor.setSearchHighlightSink(null);
         self.view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });

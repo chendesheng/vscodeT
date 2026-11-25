@@ -1,8 +1,8 @@
 // Port of the action metadata in
 // `src/vs/editor/contrib/stickyScroll/browser/stickyScrollActions.ts`.
 //
-// Terminal adaptation: the TUI has no context-key/action registry, so the
-// metadata is kept as plain values. The workbench registers the toggle and
+// Portable actions resolve the registered editor contribution. The metadata
+// for the remaining commands stays available until their view behavior is ported. The toggle and
 // focus command ids; the focused-widget keys are handled by the sticky widget
 // itself (Up/Down/Enter/Escape), matching the upstream keybindings.
 
@@ -82,4 +82,22 @@ test "sticky scroll action ids stay upstream-shaped" {
     try testing.expectEqualStrings("editor.action.selectPreviousStickyScrollLine", select_previous_sticky_scroll_line.id);
     try testing.expectEqualStrings("editor.action.goToFocusedStickyScrollLine", go_to_sticky_scroll_line.id);
     try testing.expectEqualStrings("editor.action.selectEditor", select_editor.id);
+}
+
+const EditorCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const platform_actions = @import("../../../../platform/actions/common/actions.zig");
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const StickyScrollController = @import("stickyScrollController.zig").StickyScrollController;
+
+pub const editor_actions = [_]platform_actions.Action2{
+    EditorCommand.action(.{ .id = toggle_sticky_scroll.id, .title = toggle_sticky_scroll.label, .category = "View" }, false, toggleAction),
+    EditorCommand.action(.{ .id = focus_sticky_scroll.id, .title = focus_sticky_scroll.label, .category = "View" }, false, focusAction),
+};
+
+fn toggleAction(editor: *Editor) !void {
+    if (editor.getContribution(StickyScrollController)) |controller| controller.toggle();
+}
+
+fn focusAction(editor: *Editor) !void {
+    if (editor.getContribution(StickyScrollController)) |controller| controller.focus();
 }

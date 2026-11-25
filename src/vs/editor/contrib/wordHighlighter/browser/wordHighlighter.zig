@@ -344,6 +344,7 @@ pub const WordHighlighter = struct {
 
 /// Port of `WordHighlighterContribution`, reduced to the single-model TUI.
 pub const WordHighlighterContribution = struct {
+    pub const ID = "editor.contrib.wordHighlighter";
     allocator: Allocator,
     word_highlighter: ?*WordHighlighter,
 
@@ -412,3 +413,24 @@ pub const WordHighlighterContribution = struct {
         if (self.word_highlighter) |highlighter| highlighter.restore(delay_ms);
     }
 };
+
+const EditorCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const platform_actions = @import("../../../../platform/actions/common/actions.zig");
+
+pub const trigger_action = EditorCommand.action(.{ .id = "editor.action.wordHighlight.trigger", .title = "Trigger Symbol Highlight", .category = "Go" }, false, triggerAction);
+pub const navigation_actions = [_]platform_actions.Action2{
+    EditorCommand.action(.{ .id = "editor.action.wordHighlight.next", .title = "Go to Next Symbol Highlight", .category = "Go" }, false, nextAction),
+    EditorCommand.action(.{ .id = "editor.action.wordHighlight.prev", .title = "Go to Previous Symbol Highlight", .category = "Go" }, false, previousAction),
+};
+
+fn triggerAction(editor: *Editor) !void {
+    if (editor.getContribution(WordHighlighterContribution)) |controller| controller.trigger();
+}
+
+fn nextAction(editor: *Editor) !void {
+    if (editor.getContribution(WordHighlighterContribution)) |controller| controller.moveNext();
+}
+
+fn previousAction(editor: *Editor) !void {
+    if (editor.getContribution(WordHighlighterContribution)) |controller| controller.moveBack();
+}

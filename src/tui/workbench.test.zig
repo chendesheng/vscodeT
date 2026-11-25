@@ -9105,3 +9105,24 @@ test "Workbench: context keys follow language read-only and search focus events 
     try std.testing.expect(!keys.getContextKeyValue("inputFocus").boolean);
     try std.testing.expect(keys.getContextKeyValue("listFocus").boolean);
 }
+
+test "Editor actions resolve the same mounted contribution through getContribution" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "contributions.txt", "alpha beta alpha\n");
+    defer allocator.free(path);
+    const window = try TestWindow.init(allocator, io, &.{path}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const tab = wb.activeTab().?;
+    const Find = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
+    const Sticky = @import("../vs/editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController;
+    const Words = @import("../vs/editor/contrib/wordHighlighter/browser/wordHighlighter.zig").WordHighlighterContribution;
+    try std.testing.expectEqual(tab.controllers.?.find, tab.editor.getContribution(Find).?);
+    try std.testing.expectEqual(tab.controllers.?.sticky, tab.editor.getContribution(Sticky).?);
+    try std.testing.expectEqual(tab.controllers.?.word_highlighter, tab.editor.getContribution(Words).?);
+    try wb.commands.execute("actions.find");
+    try std.testing.expect(tab.controllers.?.find.state.is_revealed);
+}

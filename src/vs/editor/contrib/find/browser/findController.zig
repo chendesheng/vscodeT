@@ -29,6 +29,7 @@ pub const SeedSearchString = EditorFindOptions.SeedSearchString;
 pub const AutoFindInSelection = EditorFindOptions.AutoFindInSelection;
 
 pub const FindController = struct {
+    pub const ID = "editor.contrib.findController";
     allocator: Allocator,
     editor: *Editor,
     state: *FindReplaceState,
@@ -228,3 +229,19 @@ pub const FindController = struct {
         if (self.sink.set) |set| set(self.sink.context, decorations);
     }
 };
+
+const EditorCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const platform_actions = @import("../../../../platform/actions/common/actions.zig");
+
+pub const editor_actions = [_]platform_actions.Action2{
+    EditorCommand.action(.{ .id = "actions.find", .title = "Find" }, false, startFindAction),
+    EditorCommand.action(.{ .id = "editor.action.startFindReplaceAction", .title = "Replace" }, false, startReplaceAction),
+};
+
+fn startFindAction(editor: *Editor) !void {
+    if (editor.getContribution(FindController)) |controller| try controller.startFind();
+}
+
+fn startReplaceAction(editor: *Editor) !void {
+    if (editor.getContribution(FindController)) |controller| try controller.startReplace();
+}

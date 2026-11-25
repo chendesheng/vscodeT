@@ -612,6 +612,7 @@ pub const Editor = struct {
     /// but every text mutation and save is rejected with `error.ReadOnly`.
     read_only: bool,
     on_did_change_read_only: Emitter(bool),
+    contributions: std.StringHashMapUnmanaged(*anyopaque) = .empty,
     /// Rightmost columns reserved by the view for the overview ruler and
     /// scrollbar. Zero for the read-only preview and for editors used without
     /// the TUI view.
@@ -1728,6 +1729,7 @@ pub const Editor = struct {
         self.on_will_type.deinit();
         self.on_did_type.deinit();
         self.on_did_change_read_only.deinit();
+        self.contributions.deinit(self.allocator);
         self.view_event_dispatcher.deinit();
         self.view_layout.deinit();
         self.view_lines.deinit();
@@ -2027,6 +2029,24 @@ pub const Editor = struct {
         }
         if (view_line > self.viewLineCount()) return null;
         return self.modelLineNumber(view_line);
+    }
+
+    /// Native contribution registration for CodeEditorWidget.getContribution.
+    /// The controller's owning editor pane disposes it and unregisters the
+    /// borrowed pointer before the controller is destroyed.
+    pub fn registerContribution(self: *Editor, comptime Contribution: type, value: *Contribution) !void {
+        if (self.contributions.contains(Contribution.ID)) return error.DuplicateEditorContribution;
+        try self.contributions.put(self.allocator, Contribution.ID, value);
+    }
+
+    pub fn getContribution(self: *Editor, comptime Contribution: type) ?*Contribution {
+        const value = self.contributions.get(Contribution.ID) orelse return null;
+        return @ptrCast(@alignCast(value));
+    }
+
+    pub fn unregisterContribution(self: *Editor, comptime Contribution: type, value: *Contribution) void {
+        const registered = self.getContribution(Contribution) orelse return;
+        if (registered == value) _ = self.contributions.remove(Contribution.ID);
     }
 
     pub fn setReadOnly(self: *Editor, read_only: bool) void {
