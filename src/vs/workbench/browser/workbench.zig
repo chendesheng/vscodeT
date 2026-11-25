@@ -609,7 +609,6 @@ pub const Workbench = struct {
     terminal_service: ?*TerminalService = null,
     terminal_input: terminal_input_mod.Encoder = .{},
     terminal_tabbed_view: terminal_panel.TerminalTabbedView = .{},
-    terminal_rename_id: ?usize = null,
     suppress_global_command: bool = false,
     git_model: git_model_mod.Model,
     scm: SCMContribution,
@@ -673,7 +672,6 @@ pub const Workbench = struct {
         self.terminal_tabbed_view = .{ .on_list_focus = .{ .context = self, .changed = onTerminalListFocus } };
         self.terminal_focus_subscription = null;
         self.focus_subscriptions = .{ null, null, null, null };
-        self.terminal_rename_id = null;
         self.suppress_global_command = false;
         self.git_model = git_model_mod.Model.init(allocator);
         self.scm = SCMContribution.init(allocator);
@@ -2931,10 +2929,8 @@ pub const Workbench = struct {
         const self: *Workbench = @ptrCast(@alignCast(context));
         const pane = self.activePane() orelse return error.GroupPaneMissing;
         const service = try self.ensureTerminalService();
-        const instance = try service.createInstanceWithProfile(profile);
-        errdefer instance.deinit();
-        try instance.rename(profile.profile_name);
-        _ = try self.openTerminalEditor(pane, service, instance);
+        _ = try service.createEditorWithProfile(self.view_factory, pane, profile, true);
+        self.revealTerminalEditor();
     }
 
     fn newTerminalEditor(self: *Workbench) !void {
@@ -2944,69 +2940,40 @@ pub const Workbench = struct {
 
     pub fn createTerminalInEditor(self: *Workbench, pane: *GroupPane, parent: ?*terminal_service_mod.TerminalInstance) !*Tab {
         const service = try self.ensureTerminalService();
-        const instance = try service.createInstance(parent);
-        errdefer instance.deinit();
-        return self.openTerminalEditor(pane, service, instance);
-    }
-
-    fn openTerminalEditor(self: *Workbench, pane: *GroupPane, service: *TerminalService, instance: *terminal_service_mod.TerminalInstance) !*Tab {
-        const tab = try Tab.initTerminal(self.view_factory, self.allocator, self.io, instance);
-        errdefer tab.deinit();
-        try pane.tabs.ensureUnusedCapacity(1);
-        try service.editor.instances.ensureUnusedCapacity(1);
-        _ = try pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
-        try pane.addTab(tab);
-        tab.terminal_input.?.registerInstance(&service.editor);
-        self.service.activateGroup(pane.group);
-        self.layoutAll();
-        self.focusEditor();
+        const tab = try service.createEditor(self.view_factory, pane, parent);
+        self.revealTerminalEditor();
         return tab;
     }
 
+    fn revealTerminalEditor(self: *Workbench) void {
+        self.layoutAll();
+        self.focusEditor();
+    }
+
     pub fn openTerminalEditorToSide(self: *Workbench, parent: ?*terminal_service_mod.TerminalInstance) !void {
-        const source = self.activePane() orelse return error.GroupPaneMissing;
-        const direction = self.preferredSideBySideDirection();
-        if (try self.findAdjacentPane(direction, false)) |target| {
-            _ = try self.createTerminalInEditor(target, parent);
-            return;
-        }
-        const pane = try self.part.splitGroup(source, if (direction == .DOWN) .vertical else .horizontal, false);
-        errdefer _ = self.part.removeView(pane);
-        _ = try self.createTerminalInEditor(pane, parent);
+        const service = try self.ensureTerminalService();
+        self.layoutAll();
+        _ = try service.createEditorToSide(self.view_factory, self.part, self.preferredSideBySideDirection(), parent);
+        self.revealTerminalEditor();
     }
 
     fn moveTerminalToEditor(self: *Workbench, index: usize) !void {
         const service = self.terminal_service orelse return;
-        const instance = service.at(index) orelse return;
         const pane = self.activePane() orelse return error.GroupPaneMissing;
-        try self.movePanelInstanceToEditor(service, pane, index, instance);
+        try self.movePanelInstanceToEditor(service, pane, index);
     }
 
-    fn movePanelInstanceToEditor(self: *Workbench, service: *TerminalService, pane: *GroupPane, index: usize, instance: *terminal_service_mod.TerminalInstance) !void {
-        _ = try self.openTerminalEditor(pane, service, instance);
-        _ = service.group.detach(index);
+    fn movePanelInstanceToEditor(self: *Workbench, service: *TerminalService, pane: *GroupPane, index: usize) !void {
+        try service.moveToEditor(self.view_factory, pane, index);
         if (service.count() == 0 and self.terminalPanelActive()) self.hidePanel();
         try self.syncPanelContainerVisibility();
-        self.layoutAll();
-        self.focusEditor();
+        self.revealTerminalEditor();
     }
 
     fn moveTerminalToPanel(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
-        const input = tab.terminal_input orelse return;
+        if (tab.terminal_input == null) return;
         const service = self.terminal_service orelse return;
-        try service.group.instances.ensureUnusedCapacity(1);
-        try service.editor.instances.ensureUnusedCapacity(1);
-        const instance = input.detachInstance();
-        self.performCloseTab(pane, tab) catch |err| {
-            // A close can report an error after removing the tab.
-            if (self.paneExists(pane) and pane.indexOfTab(tab) != null) {
-                input.registerInstance(&service.editor);
-                return err;
-            }
-            try service.group.add(instance);
-            return err;
-        };
-        try service.group.add(instance);
+        try service.moveToTerminalView(pane, tab, self.closeEditorHost());
         try self.showTerminal();
     }
 
@@ -3049,6 +3016,10 @@ pub const Workbench = struct {
     fn killPanelTerminal(self: *Workbench, index: usize) !void {
         const service = self.terminal_service orelse return;
         service.kill(index);
+        try self.onPanelTerminalsRemoved(service);
+    }
+
+    fn onPanelTerminalsRemoved(self: *Workbench, service: *TerminalService) !void {
         if (service.count() == 0) {
             if (self.terminalPanelActive() and self.terminalConfig().hide_on_last_closed) self.hidePanel();
             try self.syncPanelContainerVisibility();
@@ -3246,8 +3217,8 @@ pub const Workbench = struct {
             .move_to_editor => |source| {
                 const pane = self.part.viewAt(event.x, event.y) orelse return false;
                 const service = self.terminal_service orelse return false;
-                const instance = service.at(source) orelse return false;
-                self.movePanelInstanceToEditor(service, pane, source, instance) catch {};
+                if (service.at(source) == null) return false;
+                self.movePanelInstanceToEditor(service, pane, source) catch {};
             },
             .kill_panel => |index| self.killPanelTerminal(index) catch {},
             .tab_menu => |index| self.showTerminalTabMenu(index, event) catch {},
@@ -3264,23 +3235,14 @@ pub const Workbench = struct {
 
     fn splitTerminalTabs(self: *Workbench, index: usize) !void {
         const service = self.terminal_service orelse return;
-        if (!(service.at(index) orelse return).tab_selected) return self.splitPanelTerminal(index);
-        var source = service.count();
-        while (source > 0) {
-            source -= 1;
-            if (service.at(source).?.tab_selected) try self.splitPanelTerminal(source);
-        }
-        service.group.clearTabSelection();
+        try service.splitSelectedTabs(index);
+        try self.showTerminal();
     }
 
     fn killTerminalTabs(self: *Workbench, index: usize) !void {
         const service = self.terminal_service orelse return;
-        if (!(service.at(index) orelse return).tab_selected) return self.killPanelTerminal(index);
-        var source = service.count();
-        while (source > 0) {
-            source -= 1;
-            if (service.at(source).?.tab_selected) try self.killPanelTerminal(source);
-        }
+        service.killSelectedTabs(index);
+        try self.onPanelTerminalsRemoved(service);
     }
 
     fn showTerminalPicker(self: *Workbench) !void {
@@ -3325,21 +3287,9 @@ pub const Workbench = struct {
         try self.showContextMenu(menu, MenuAnchor.mouse(event));
     }
 
-    fn joinTerminalTabs(self: *Workbench, service: *TerminalService) !void {
-        var selected: std.array_list.Managed(*terminal_service_mod.TerminalInstance) = .init(self.allocator);
-        defer selected.deinit();
-        for (service.group.instances.items) |instance| {
-            if (instance.tab_selected) try selected.append(instance);
-        }
-        try service.group.joinInstances(selected.items);
-        try self.showTerminal();
-    }
-
     fn showTerminalRename(self: *Workbench, instance: *terminal_service_mod.TerminalInstance) !void {
-        self.terminal_rename_id = instance.id;
-        const input = self.quick_access.inputService();
-        try input.showPick(&.{}, .{ .placeholder = "Terminal Name", .allow_free_input = true }, onTerminalRename, self);
-        try input.picker.setValue(instance.static_title orelse instance.displayTitle());
+        const service = self.terminal_service orelse return;
+        try terminal_actions.showRenamePicker(service, self.quick_access.inputService(), instance);
     }
 
     fn routeTerminalMouse(self: *Workbench, instance: *terminal_service_mod.TerminalInstance, content: ui.Rect, event: *const ui.MouseEvent) bool {
@@ -9578,69 +9528,43 @@ fn onTerminalMenu(self: *Workbench, _: *MenuActionContext, id: []const u8) anyer
     try runTerminalAction(self, id);
 }
 
-fn runTerminalAction(self: *Workbench, action_id: []const u8) anyerror!void {
+fn runTerminalAction(self: *Workbench, action_id: []const u8) !void {
     const service = self.terminal_service orelse return;
-    const separator = std.mem.indexOfScalar(u8, action_id, ':') orelse return;
-    const action = action_id[0..separator];
-    if (std.mem.eql(u8, action, "tabs")) {
-        const setting = action_id[separator + 1 ..];
-        if (std.mem.eql(u8, setting, "hide")) {
-            try self.setUserConfigurationValue("terminal.integrated.tabs.enabled", .{ .bool = false });
-        } else {
-            try self.setUserConfigurationValue("terminal.integrated.tabs.location", .{ .string = setting });
-        }
-        self.layoutAll();
-        return;
-    }
-    if (std.mem.eql(u8, action, "editor-profile")) {
-        var segments = std.mem.splitScalar(u8, action_id[separator + 1 ..], ':');
-        const group_id = std.fmt.parseUnsigned(editor_mod.GroupIdentifier, segments.next() orelse return, 10) catch return;
-        const profile_index = std.fmt.parseUnsigned(usize, segments.next() orelse return, 10) catch return;
-        if (profile_index >= service.profiles.items.len) return;
-        const group = self.service.getGroup(group_id) orelse return;
-        const pane = self.paneForGroup(group) orelse return;
-        const instance = try service.createInstanceWithProfile(service.profiles.items[profile_index]);
-        errdefer instance.deinit();
-        _ = try self.openTerminalEditor(pane, service, instance);
-        return;
-    }
-    const id = std.fmt.parseUnsigned(usize, action_id[separator + 1 ..], 10) catch return;
-    if (std.mem.eql(u8, action, "profile")) {
-        if (id >= service.profiles.items.len) return;
-        _ = try service.createWithProfile(service.profiles.items[id]);
-        try self.showTerminal();
-        return;
-    }
-    for (0..service.count()) |index| {
-        if (service.at(index).?.id != id) continue;
-        if (std.mem.eql(u8, action, "split")) return self.splitTerminalTabs(index);
-        if (std.mem.eql(u8, action, "unsplit")) {
-            try service.group.unsplitInstance(index);
-            try self.showTerminal();
-            return;
-        }
-        if (std.mem.eql(u8, action, "join")) return self.joinTerminalTabs(service);
-        if (std.mem.eql(u8, action, "move")) return self.moveTerminalToEditor(index);
-        if (std.mem.eql(u8, action, "rename")) return self.showTerminalRename(service.at(index).?);
-        if (std.mem.eql(u8, action, "kill")) return self.killTerminalTabs(index);
-        _ = service.setActive(index);
-        try self.showTerminal();
-        return;
-    }
-}
-
-fn onTerminalRename(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const id = self.terminal_rename_id orelse return;
-    self.terminal_rename_id = null;
-    const service = self.terminal_service orelse return;
-    for (0..service.instanceCount()) |index| {
-        const instance = service.instanceAt(index).?;
-        if (instance.id == id) {
-            try instance.rename(picker.value.items);
-            return;
-        }
-    }
+    try terminal_actions.runMenuAction(service, .{
+        .context = self,
+        .part = self.part,
+        .view_factory = self.view_factory,
+        .quick_input = self.quick_access.inputService(),
+        .set_user_configuration = struct {
+            fn run(context: *anyopaque, key: []const u8, value: std.json.Value) !void {
+                const host: *Workbench = @ptrCast(@alignCast(context));
+                try host.setUserConfigurationValue(key, value);
+                host.layoutAll();
+            }
+        }.run,
+        .reveal_panel = struct {
+            fn run(context: *anyopaque) !void {
+                const host: *Workbench = @ptrCast(@alignCast(context));
+                try host.showTerminal();
+            }
+        }.run,
+        .reveal_editor = struct {
+            fn run(context: *anyopaque, moved: bool) !void {
+                const host: *Workbench = @ptrCast(@alignCast(context));
+                if (moved) {
+                    if (host.terminal_service.?.count() == 0 and host.terminalPanelActive()) host.hidePanel();
+                    try host.syncPanelContainerVisibility();
+                }
+                host.revealTerminalEditor();
+            }
+        }.run,
+        .panel_instances_removed = struct {
+            fn run(context: *anyopaque) !void {
+                const host: *Workbench = @ptrCast(@alignCast(context));
+                try host.onPanelTerminalsRemoved(host.terminal_service.?);
+            }
+        }.run,
+    }, action_id);
 }
 
 fn commandKillTerminalEditor(context: *anyopaque) anyerror!void {

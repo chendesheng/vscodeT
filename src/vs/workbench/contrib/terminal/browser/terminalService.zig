@@ -20,6 +20,12 @@ const ui = @import("ui");
 const configuration_mod = @import("../common/terminalConfiguration.zig");
 const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
 
+const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
+const EditorViewFactory = @import("../../../browser/parts/editor/editorPane.zig").EditorViewFactory;
+const GroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
+const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(GroupView);
+const GroupDirection = @import("../../../services/editor/common/editorGroupsService.zig").GroupDirection;
+
 pub const TerminalInstance = instance_mod.TerminalInstance;
 pub const TerminalGroup = group_mod.TerminalGroup;
 
@@ -115,6 +121,82 @@ pub const TerminalService = struct {
 
     pub fn createInstance(self: *TerminalService, parent: ?*TerminalInstance) !*TerminalInstance {
         return self.launchInstance(parent, self.profiles.defaultProfile(), null);
+    }
+
+    pub fn createEditor(self: *TerminalService, factory: EditorViewFactory, pane: *GroupView, parent: ?*TerminalInstance) !*Tab {
+        const instance = try self.createInstance(parent);
+        errdefer instance.deinit();
+        return self.editor.openEditor(self.allocator, self.io, factory, pane, instance);
+    }
+
+    pub fn createEditorWithProfile(self: *TerminalService, factory: EditorViewFactory, pane: *GroupView, profile: terminal.ITerminalProfile, rename: bool) !*Tab {
+        const instance = try self.createInstanceWithProfile(profile);
+        errdefer instance.deinit();
+        if (rename) try instance.rename(profile.profile_name);
+        return self.editor.openEditor(self.allocator, self.io, factory, pane, instance);
+    }
+
+    pub fn createEditorToSide(self: *TerminalService, factory: EditorViewFactory, part: *EditorPart, direction: GroupDirection, parent: ?*TerminalInstance) !*Tab {
+        const source = part.activeView() orelse return error.GroupPaneMissing;
+        if (try part.findGroup(.{ .direction = direction }, source, false)) |target| {
+            return self.createEditor(factory, target, parent);
+        }
+        const pane = try part.splitGroup(source, if (direction == .DOWN) .vertical else .horizontal, false);
+        errdefer _ = part.removeView(pane);
+        return self.createEditor(factory, pane, parent);
+    }
+
+    /// Transfer the resource without disposing its PTY. Open before detach
+    /// so allocation failure cannot orphan the panel instance.
+    pub fn moveToEditor(self: *TerminalService, factory: EditorViewFactory, pane: *GroupView, index: usize) !void {
+        const instance = self.at(index) orelse return;
+        _ = try self.editor.openEditor(self.allocator, self.io, factory, pane, instance);
+        _ = self.group.detach(index);
+    }
+
+    pub fn moveToTerminalView(self: *TerminalService, pane: *GroupView, tab: *Tab, host: GroupView.CloseHost) !void {
+        const input = tab.terminal_input orelse return;
+        try self.group.instances.ensureUnusedCapacity(1);
+        try self.editor.instances.ensureUnusedCapacity(1);
+        const instance = input.detachInstance();
+        host.close_tab(host.context, pane, tab) catch |err| {
+            // A close can report an allocation failure after removing the tab.
+            if (host.is_alive(host.context, pane, tab)) {
+                input.registerInstance(&self.editor);
+                return err;
+            }
+            try self.group.add(instance);
+            return err;
+        };
+        try self.group.add(instance);
+    }
+
+    pub fn splitSelectedTabs(self: *TerminalService, index: usize) !void {
+        if (!(self.at(index) orelse return).tab_selected) return self.split(index);
+        var source = self.count();
+        while (source > 0) {
+            source -= 1;
+            if (self.at(source).?.tab_selected) try self.split(source);
+        }
+        self.group.clearTabSelection();
+    }
+
+    pub fn killSelectedTabs(self: *TerminalService, index: usize) void {
+        if (!(self.at(index) orelse return).tab_selected) return self.kill(index);
+        var source = self.count();
+        while (source > 0) {
+            source -= 1;
+            if (self.at(source).?.tab_selected) self.kill(source);
+        }
+    }
+
+    pub fn joinSelectedTabs(self: *TerminalService) !void {
+        var selected: std.ArrayList(*TerminalInstance) = .empty;
+        defer selected.deinit(self.allocator);
+        for (self.group.instances.items) |instance| {
+            if (instance.tab_selected) try selected.append(self.allocator, instance);
+        }
+        try self.group.joinInstances(selected.items);
     }
 
     pub fn createForTask(self: *TerminalService, profile: terminal.ITerminalProfile, cwd: ?[]const u8) !*TerminalInstance {

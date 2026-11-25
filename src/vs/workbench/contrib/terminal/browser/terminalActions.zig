@@ -1,8 +1,8 @@
 // Port of the terminal instance/tab/profile actions from
 // `src/vs/workbench/contrib/terminal/browser/terminalActions.ts` and
 // `terminalTabsList.ts`. Native pickers and context menus replace browser
-// action-view items. The remaining service actions are still wired by the
-// terminal workbench until the editor/location services are ported.
+// action-view items. TerminalService owns instance/location changes; the
+// terminal adapter supplies panel reveal, cell layout and focus callbacks.
 
 const std = @import("std");
 const TerminalService = @import("./terminalService.zig").TerminalService;
@@ -85,4 +85,111 @@ pub fn appendTabListActions(config: Config, menu: *Menu) !void {
     const move_left = config.tabs_location == .right;
     try menu.add(if (move_left) "tabs:left" else "tabs:right", .{ .label = if (move_left) "Move Tabs Left" else "Move Tabs Right" });
     try menu.add("tabs:hide", .{ .label = "Hide Tabs" });
+}
+
+const TerminalInstance = @import("terminalInstance.zig").TerminalInstance;
+const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
+const EditorViewFactory = @import("../../../browser/parts/editor/editorPane.zig").EditorViewFactory;
+const GroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
+const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(GroupView);
+const QuickPick = @import("../../../../platform/quickinput/browser/quickInput.zig").QuickPick;
+
+/// Terminal input-box adaptation of RenameTerminalAction. Resolve the chosen
+/// instance by its stable ID when the picker is accepted, not a stale pointer.
+pub fn showRenamePicker(service: *TerminalService, input: *quick_input.QuickInputService, instance: *TerminalInstance) !void {
+    const state = try service.allocator.create(RenameState);
+    state.* = .{ .service = service, .id = instance.id };
+    input.showPick(&.{}, .{ .placeholder = "Terminal Name", .allow_free_input = true, .cleanup = RenameState.dispose, .cleanup_context = state }, RenameState.accept, state) catch |err| {
+        RenameState.dispose(state);
+        return err;
+    };
+    input.picker.setValue(instance.static_title orelse instance.displayTitle()) catch |err| {
+        input.hide();
+        return err;
+    };
+}
+
+const RenameState = struct {
+    service: *TerminalService,
+    id: usize,
+
+    fn accept(context: *anyopaque, picker: *QuickPick) !void {
+        const self: *RenameState = @ptrCast(@alignCast(context));
+        for (0..self.service.instanceCount()) |index| {
+            const instance = self.service.instanceAt(index).?;
+            if (instance.id == self.id) return instance.rename(picker.value.items);
+        }
+    }
+
+    fn dispose(context: *anyopaque) void {
+        const self: *RenameState = @ptrCast(@alignCast(context));
+        self.service.allocator.destroy(self);
+    }
+};
+
+pub const MenuActionHost = struct {
+    context: *anyopaque,
+    part: *EditorPart,
+    view_factory: EditorViewFactory,
+    quick_input: *quick_input.QuickInputService,
+    set_user_configuration: *const fn (*anyopaque, []const u8, std.json.Value) anyerror!void,
+    reveal_panel: *const fn (*anyopaque) anyerror!void,
+    reveal_editor: *const fn (*anyopaque, bool) anyerror!void,
+    panel_instances_removed: *const fn (*anyopaque) anyerror!void,
+};
+
+/// The native menus encode the upstream action's instance/profile arguments
+/// in their item IDs. Resolve them and execute the terminal service action.
+pub fn runMenuAction(service: *TerminalService, host: MenuActionHost, action_id: []const u8) !void {
+    const separator = std.mem.indexOfScalar(u8, action_id, ':') orelse return;
+    const action = action_id[0..separator];
+    const argument = action_id[separator + 1 ..];
+    if (std.mem.eql(u8, action, "tabs")) {
+        if (std.mem.eql(u8, argument, "hide")) {
+            try host.set_user_configuration(host.context, "terminal.integrated.tabs.enabled", .{ .bool = false });
+        } else {
+            try host.set_user_configuration(host.context, "terminal.integrated.tabs.location", .{ .string = argument });
+        }
+        return;
+    }
+    if (std.mem.eql(u8, action, "editor-profile")) {
+        var segments = std.mem.splitScalar(u8, argument, ':');
+        const group_id = std.fmt.parseUnsigned(GroupIdentifier, segments.next() orelse return, 10) catch return;
+        const index = std.fmt.parseUnsigned(usize, segments.next() orelse return, 10) catch return;
+        if (index >= service.profiles.items.len) return;
+        const group = host.part.service.getGroup(group_id) orelse return;
+        const pane = host.part.viewForGroup(group) orelse return;
+        _ = try service.createEditorWithProfile(host.view_factory, pane, service.profiles.items[index], false);
+        return host.reveal_editor(host.context, false);
+    }
+    const id = std.fmt.parseUnsigned(usize, argument, 10) catch return;
+    if (std.mem.eql(u8, action, "profile")) {
+        if (id >= service.profiles.items.len) return;
+        _ = try service.createWithProfile(service.profiles.items[id]);
+        return host.reveal_panel(host.context);
+    }
+    for (0..service.count()) |index| {
+        const instance = service.at(index).?;
+        if (instance.id != id) continue;
+        if (std.mem.eql(u8, action, "move")) {
+            const pane = host.part.activeView() orelse return error.GroupPaneMissing;
+            try service.moveToEditor(host.view_factory, pane, index);
+            return host.reveal_editor(host.context, true);
+        }
+        if (std.mem.eql(u8, action, "rename")) return showRenamePicker(service, host.quick_input, instance);
+        if (std.mem.eql(u8, action, "kill")) {
+            service.killSelectedTabs(index);
+            return host.panel_instances_removed(host.context);
+        }
+        if (std.mem.eql(u8, action, "split")) {
+            try service.splitSelectedTabs(index);
+        } else if (std.mem.eql(u8, action, "unsplit")) {
+            try service.group.unsplitInstance(index);
+        } else if (std.mem.eql(u8, action, "join")) {
+            try service.joinSelectedTabs();
+        } else {
+            _ = service.setActive(index);
+        }
+        return host.reveal_panel(host.context);
+    }
 }
