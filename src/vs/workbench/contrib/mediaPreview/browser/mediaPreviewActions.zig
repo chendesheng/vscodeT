@@ -95,3 +95,20 @@ pub const zoom_actions = [_]actions.Action2{
     .{ .command = .{ .id = zoom_out_id, .title = zoom_out_title, .category = category }, .f1 = true, .context = @constCast(&{}), .run_fn = zoomOut },
     .{ .command = .{ .id = select_zoom_level_id, .title = select_zoom_level_title, .category = category }, .f1 = true, .context = @constCast(&{}), .run_fn = selectZoomLevel },
 };
+
+pub fn reopenActiveImageAsText(editors: editor_service.IEditorService) !void {
+    if (getImageViewer(editors) == null) return;
+    const input = editors.activeEditor() orelse return;
+    try @import("mediaPreviewErrors.zig").reopenInTextEditor(input, editors);
+}
+
+fn openInTextEditor(_: *anyopaque, accessor: ServicesAccessor) !void {
+    try reopenActiveImageAsText((try accessor.get(editor_service.editor_service_id)).*);
+}
+
+pub const open_in_text_action: actions.Action2 = .{
+    .command = .{ .id = open_in_text_id, .title = open_in_text_title, .category = category },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = openInTextEditor,
+};

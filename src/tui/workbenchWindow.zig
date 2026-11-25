@@ -78,7 +78,6 @@ const commands_mod = @import("../vs/workbench/browser/commands.zig");
 const CommandRegistry = commands_mod.CommandRegistry;
 const SimpleBrowserManager = @import("../extensions/simple-browser/src/simpleBrowserManager.zig").SimpleBrowserManager;
 const terminal_platform = @import("../vs/platform/terminal/common/terminal.zig");
-const terminal_profiles = @import("../vs/platform/terminal/node/terminalProfiles.zig");
 const quick_access_mod = @import("../vs/workbench/browser/quickaccess.zig");
 const QuickAccessService = quick_access_mod.QuickAccessService;
 const editor_status_mod = @import("../vs/workbench/browser/parts/editor/editorStatus.zig");
@@ -500,6 +499,7 @@ pub const TerminalWorkbench = struct {
     terminal_tabbed_view: terminal_panel.TerminalTabbedView = .{},
     suppress_global_command: bool = false,
     git_model: git_model_mod.Model,
+    github_publish: @import("../extensions/github/src/commands.zig").PublishCommand,
     git_commands: @import("../extensions/git/src/commands.zig").CommandContribution,
     scm: SCMContribution,
     /// Set when the quit confirmation commits to closing the window.
@@ -1141,6 +1141,15 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
         _ = try self.services.set(storage_mod.storage_service_id, &self.storage_api);
         self.terminal_action_services = terminal_actions.TerminalActionServices.bind(self);
+        self.github_publish = .{
+            .allocator = self.allocator,
+            .io = self.io,
+            .repository = &self.git_model.repository,
+            .workspace = &self.workspace,
+            .terminal = &self.terminal_action_services,
+            .status_context = self,
+            .report_status = scmViewStatus,
+        };
         _ = try self.services.set(terminal_actions.terminal_action_services_id, &self.terminal_action_services);
         _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
         _ = try self.services.set(@import("../vs/platform/notification/common/notification.zig").notification_service_id, &self.notification_api);
@@ -1527,7 +1536,7 @@ pub const TerminalWorkbench = struct {
         for (self.editor_status.?.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/contrib/files/browser/fileCommands.zig").editor_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/browser/actions/listCommands.zig").list_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.register(.{ .id = "github.publish", .label = "Publish to GitHub", .category = "GitHub", .context = self, .run = commandGithubPublish });
+        try self.commands.registerAction(self.instantiation, self.github_publish.descriptor());
         for (self.simple_browser.actions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/contrib/preferences/browser/preferences.contribution.zig").preferences_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.group_actions.closeAndReopenActions()) |action| try self.commands.registerAction(self.instantiation, action);
@@ -1580,7 +1589,7 @@ pub const TerminalWorkbench = struct {
         for (terminal_actions.terminal_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.markdown_previews.registerCommands(&self.commands);
         for (media_actions.zoom_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
-        try self.commands.register(.{ .id = media_actions.open_in_text_id, .label = media_actions.open_in_text_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageOpenInTextEditor });
+        try self.commands.registerEditorAction(self.instantiation, media_actions.open_in_text_action);
         const search_contribution = @import("../vs/workbench/contrib/search/browser/search.contribution.zig");
         for (search_contribution.search_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.search_window.factory.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
@@ -2471,12 +2480,7 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn launchTerminalProcess(self: *TerminalWorkbench, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !*terminal_service_mod.TerminalInstance {
-        const service = try self.ensureTerminalService();
-        const instance = try service.createForTask(.{ .path = executable, .args = args, .profile_name = name }, cwd);
-        self.terminal_tabbed_view.setListFocused(false);
-        _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
-        self.revealActiveTerminalTab();
-        return instance;
+        return self.terminal_action_services.launchProcess(name, executable, args, cwd);
     }
 
     pub fn newPanelTerminal(self: *TerminalWorkbench) !void {
@@ -3300,19 +3304,8 @@ pub const TerminalWorkbench = struct {
         }
     }
 
-    /// Replaces the active image preview tab with a text editor for the same
-    /// file. This backs the message button and the
-    /// `imagePreview.openInTextEditor` command (upstream exposes the same
-    /// action as a button, and only as a command for SVG).
     pub fn openActiveImageAsText(self: *TerminalWorkbench) !void {
-        const pane = self.activePane() orelse return;
-        const tab = pane.activeTab() orelse return;
-        const input = tab.image_input orelse return;
-        const path = try self.allocator.dupe(u8, input.path);
-        defer self.allocator.free(path);
-        const pinned = pane.group.model.isPinned(.{ .editor = tab.input });
-        try self.openPathWithOptions(path, .{ .force_text = true, .pinned = pinned });
-        try self.performCloseTab(pane, tab);
+        try media_actions.reopenActiveImageAsText(self.editor_api);
     }
 
     /// Opens the first definition target for the cursor. Ports the action
@@ -3739,11 +3732,6 @@ pub const TerminalWorkbench = struct {
 
     fn performCloseTab(self: *TerminalWorkbench, pane: *GroupPane, tab: *Tab) !void {
         self.editor_drop_target.invalidateDragTab(pane, tab);
-        if (self.context_menu_service.current) |menu| {
-            if (menu.getActionsContext(MenuActionContext)) |context| {
-                if (std.mem.indexOfScalar(*Tab, context.tabs, tab) != null) self.context_menu_service.hideContextMenu();
-            }
-        }
         try self.part.closeEditor(pane, tab, self.groupTransferHost());
     }
 
@@ -4041,6 +4029,11 @@ pub const TerminalWorkbench = struct {
     /// Destroys a tab view that lost to an already-open editor, detaching the
     /// workbench registrations that keep raw pointers into it.
     fn discardTab(self: *TerminalWorkbench, tab: *Tab) void {
+        if (self.context_menu_service.current) |menu| {
+            if (menu.getActionsContext(MenuActionContext)) |context| {
+                if (std.mem.indexOfScalar(*Tab, context.tabs, tab) != null) self.context_menu_service.hideContextMenu();
+            }
+        }
         if (self.hovered_tab == tab) self.hovered_tab = null;
         self.history.detachHistoryTab(tab);
         self.unregisterWorkingCopy(tab);
@@ -4918,25 +4911,6 @@ fn commandOutlineMoreActions(context: *anyopaque) anyerror!void {
 fn focusWindowEditor(context: *anyopaque) void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     self.focusEditor();
-}
-
-fn commandImageOpenInTextEditor(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.openActiveImageAsText();
-}
-
-fn commandGithubPublish(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const folder = if (self.git_model.repository) |provider| provider.root else self.workspaceFolderPath() orelse {
-        self.setStatusHint("Open a folder to publish to GitHub", .{});
-        return;
-    };
-    const executable = try terminal_profiles.findTerminalExecutable(self.allocator, self.io, "gh") orelse {
-        self.setStatusHint("Install GitHub CLI and add gh to PATH to publish a repository", .{});
-        return;
-    };
-    defer self.allocator.free(executable);
-    _ = try self.launchTerminalProcess("Publish to GitHub", executable, &.{ "repo", "create" }, folder);
 }
 
 fn reportEditorMessage(context: *anyopaque, message: []const u8) bool {

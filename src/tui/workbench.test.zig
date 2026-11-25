@@ -5114,6 +5114,20 @@ test "Workbench: image files reload on change and open in a text editor" {
     const text_tab = workbench.activeTab().?;
     try std.testing.expect(!text_tab.isImage());
     try std.testing.expectEqualStrings("logo.png", text_tab.input.getName());
+
+    // The typed replacement targets its own group even when the text model
+    // is already open in another group, instead of revealing that group.
+    const source = workbench.activePane().?;
+    _ = try workbench.group_actions.newEmptyGroup(.RIGHT);
+    const target = workbench.activePane().?;
+    try workbench.openPath(path);
+    try std.testing.expect(workbench.activeTab().?.isImage());
+    try workbench.commands.execute("imagePreview.openInTextEditor");
+    try std.testing.expect(workbench.activePane().? == target);
+    try std.testing.expect(!workbench.activeTab().?.isImage());
+    try std.testing.expectEqual(@as(usize, 1), target.group.model.count());
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expect(source.activeTab().?.editor.model == workbench.activeTab().?.editor.model);
 }
 
 test "Workbench: session serialization restores image tabs" {

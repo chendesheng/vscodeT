@@ -307,6 +307,14 @@ pub const TerminalActionServices = struct {
         };
     }
 
+    pub fn launchProcess(self: *TerminalActionServices, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !*TerminalInstance {
+        const service = try self.ensure_service(self.context);
+        const instance = try service.createForTask(.{ .path = executable, .args = args, .profile_name = name }, cwd);
+        self.tabbed_view.setListFocused(false);
+        try self.reveal_panel(self.context);
+        return instance;
+    }
+
     pub fn newPanelTerminal(self: *TerminalActionServices) !void {
         const service = try self.ensure_service(self.context);
         _ = try service.create();

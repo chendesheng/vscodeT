@@ -512,8 +512,12 @@ pub fn EditorPart(comptime GroupView: type) type {
         /// editor pane and publish the close event while its input is alive.
         /// A native callback releases the actual view and terminal resources.
         pub fn closeEditor(self: *Self, pane: *GroupView, tab: anytype, host: TransferHost) !void {
+            try self.closeEditorWithContext(pane, tab, .UNKNOWN, host);
+        }
+
+        pub fn closeEditorWithContext(self: *Self, pane: *GroupView, tab: anytype, context: editor_mod.EditorCloseContext, host: TransferHost) !void {
             const pinned = pane.group.model.isPinned(.{ .editor = tab.input });
-            const result = try pane.group.model.closeEditor(tab.input, .UNKNOWN, true) orelse return;
+            const result = try pane.group.model.closeEditor(tab.input, context, true) orelse return;
             _ = pane.removeTab(tab);
             pane.syncActivePane();
             self.on_did_close_editor.fire(.{

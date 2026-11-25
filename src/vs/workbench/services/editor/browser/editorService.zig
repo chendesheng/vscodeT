@@ -21,6 +21,9 @@ const Event = @import("../../../../base/common/event.zig").Emitter(void);
 
 pub const OpenOptions = @import("../common/editorService.zig").OpenOptions;
 const EditorTarget = @import("../common/editorService.zig").EditorTarget;
+const EditorReplacement = @import("../common/editorService.zig").EditorReplacement;
+const IEditorIdentifier = @import("../common/editorService.zig").IEditorIdentifier;
+const GroupIdentifier = @import("../../../common/editor.zig").GroupIdentifier;
 const GroupActions = @import("../../../browser/parts/editor/editorActions.zig").GroupActions;
 
 pub const OpenedTextEditor = struct {
@@ -213,10 +216,36 @@ pub const EditorService = struct {
                     try opening.requestOpenEditor(resource, options, target);
                 }
             }.open,
+            .get_editors = struct {
+                fn get(context: *anyopaque, allocator: std.mem.Allocator) ![]IEditorIdentifier {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    return service.getEditors(allocator);
+                }
+            }.get,
+            .replace_editors = struct {
+                fn replace(context: *anyopaque, replacements: []const EditorReplacement, group_id: GroupIdentifier) !void {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    const opening = service.opening orelse return error.EditorOpeningUnavailable;
+                    try opening.replaceEditors(replacements, group_id);
+                }
+            }.replace,
             .on_did_active_editor_change = self.onDidActiveEditorChange(),
             .on_did_visible_editors_change = self.onDidVisibleEditorsChange(),
             .on_did_close_editor = &self.part.on_did_close_editor,
         };
+    }
+
+    pub fn getEditors(self: EditorService, allocator: std.mem.Allocator) ![]IEditorIdentifier {
+        const views = try self.part.orderedViews(allocator);
+        defer allocator.free(views);
+        var result: std.ArrayList(IEditorIdentifier) = .empty;
+        errdefer result.deinit(allocator);
+        for (views) |pane| {
+            for (0..pane.group.model.count()) |index| {
+                try result.append(allocator, .{ .editor = pane.group.model.getEditorByIndex(index).?, .group_id = pane.group.id });
+            }
+        }
+        return result.toOwnedSlice(allocator);
     }
 
     pub fn tabCount(self: EditorService) usize {
@@ -440,6 +469,48 @@ pub const EditorOpening = struct {
         const size = (self.part.activeView() orelse return error.GroupPaneMissing).contentDimensions();
         const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative.*, self.json_client.*, .{ .reserve_scrollbar = true });
         try self.openCreatedTextEditor(path, editor, options);
+    }
+
+    /// Portable resource replacement for the default text-editor override.
+    /// Open the replacement in the nominated group before closing the old
+    /// input, preserving its sequential index and REPLACE close context.
+    pub fn replaceEditors(self: *EditorOpening, replacements: []const EditorReplacement, group_id: GroupIdentifier) !void {
+        const group = self.part.service.getGroup(group_id) orelse return;
+        const destination = self.part.viewForGroup(group) orelse return;
+        for (replacements) |item| {
+            if (!item.options.force_text) return error.ReplacementNotSupported;
+            const old = destination.tabForInput(item.editor) orelse continue;
+            const index = group.model.indexOf(.{ .input = item.editor }) orelse continue;
+            const sticky = group.model.isSticky(.{ .editor = item.editor });
+            self.part.service.activateGroup(group);
+            var replacement: ?*Tab = null;
+            // A resolved text input may already be open in another group.
+            // Copy its mounted view, not the input pointer without a pane.
+            outer: for (self.part.group_views.items) |pane| {
+                for (pane.tabs.items) |tab| {
+                    const input = tab.file_input orelse continue;
+                    if (!self.samePath(input.editor.path, item.resource)) continue;
+                    replacement = if (pane == destination) tab else try destination.copyEditor(tab, .{ .pinned = item.options.pinned, .active = true }, self.group_actions.transfer.copy);
+                    break :outer;
+                }
+            }
+            if (replacement) |tab| {
+                try destination.activateTab(tab);
+                if (item.options.pinned) _ = try group.model.pin(tab.input);
+                try self.history.add(item.resource);
+            } else {
+                try self.openPathWithOptions(item.resource, item.options);
+                replacement = destination.activeTab();
+            }
+            const tab = replacement orelse return error.EditorOpeningUnavailable;
+            if (tab == old or tab.file_input == null) return error.ReplacementNotSupported;
+            self.group_actions.transfer.move.will_move(self.group_actions.transfer.move.context, destination, old);
+            try self.part.closeEditorWithContext(destination, old, .REPLACE, self.group_actions.transfer);
+            if (sticky) _ = try group.model.stick(tab.input);
+            _ = try group.model.moveEditor(tab.input, @intCast(index));
+            destination.syncActivePane();
+            destination.focus();
+        }
     }
 
     /// The quick access SIDE_GROUP target uses the configured split direction,
