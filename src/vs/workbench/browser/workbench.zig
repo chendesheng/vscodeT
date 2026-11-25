@@ -1288,6 +1288,7 @@ pub const Workbench = struct {
             &self.commands,
             .{
                 .context = self,
+                .window = &self.window_events,
                 .open_file = quickOpenFile,
                 .open_file_to_side = quickOpenToSide,
                 .configure_keybinding = quickConfigureBinding,
@@ -1689,14 +1690,6 @@ pub const Workbench = struct {
     /// the host should leave the event loop.
     pub fn shouldQuit(self: *const Workbench) bool {
         return self.quit_requested;
-    }
-
-    pub fn pollQuickAccess(self: *Workbench, now_ms: i64) !bool {
-        return self.quick_access.poll(now_ms);
-    }
-
-    pub fn quickAccessWantsTick(self: *Workbench) bool {
-        return self.quick_access.wantsTick();
     }
 
     pub fn isQuickAccessOpen(self: *const Workbench) bool {

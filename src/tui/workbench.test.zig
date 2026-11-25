@@ -2278,8 +2278,9 @@ test "Workbench: Ctrl-P opens a file and Alt-P runs a command" {
     const picker = workbench.quick_access.controller.pickerRef();
     try picker.setValue("alp");
     var guard: usize = 0;
-    while (workbench.quickAccessWantsTick() and guard < 2000) : (guard += 1) {
-        _ = try workbench.pollQuickAccess(0);
+    while (picker.activeItem() == null and guard < 2000) : (guard += 1) {
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+        if (picker.activeItem() == null) time_compat.sleepMillis(1);
     }
     try std.testing.expectEqualStrings("alpha.txt", picker.activeItem().?.label);
 

@@ -68,7 +68,10 @@ pub fn keycaps(arena: Allocator, binding: @import("../../base/common/keybindings
     return keys.items;
 }
 
+const dispatch = @import("../../base/common/windowDispatch.zig");
+
 pub const Host = struct {
+    window: ?*dispatch.Queue = null,
     open_file_to_side: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
     configure_keybinding: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
     lookup_keycaps: ?platform_commands_quick_access.LookupKeycaps = null,
@@ -94,6 +97,8 @@ pub const QuickAccessService = struct {
     commands: *CommandRegistry,
     host: Host,
     file_search: *FileSearchWorker,
+    file_results: dispatch.Task,
+    animation: dispatch.Task,
     file_session_active: bool = false,
     registry: Registry,
     controller: *QuickAccessController,
@@ -133,7 +138,9 @@ pub const QuickAccessService = struct {
         self.host = host;
         self.file_session_active = false;
 
-        self.file_search = try FileSearchWorker.init(allocator, .{ .rg_path = options.rg_path });
+        self.animation = .{ .queue = host.window, .context = self, .run = animationFrame };
+        self.file_results = .{ .queue = host.window, .context = self, .run = fileSearchChanged, .progress = true };
+        self.file_search = try FileSearchWorker.init(allocator, .{ .rg_path = options.rg_path, .on_change = .{ .context = self, .notify = fileSearchReady } });
         errdefer self.file_search.deinit();
 
         self.widget = try QuickPickWidget.init(allocator);
@@ -204,6 +211,8 @@ pub const QuickAccessService = struct {
         self.registry.deinit();
         self.widget.deinit();
         self.file_search.deinit();
+        self.file_results.schedule(null);
+        self.animation.schedule(null);
         self.allocator.destroy(self);
     }
 
@@ -332,21 +341,21 @@ pub const QuickAccessService = struct {
         return true;
     }
 
-    /// Drains the background file-search result while the file picker is
-    /// open. The bounded wait keeps the event loop responsive. Returns true
-    /// when the visible list or busy state changed.
-    pub fn poll(self: *QuickAccessService, now_ms: i64) !bool {
-        const picker = self.visiblePicker() orelse return false;
-        var changed = false;
-        if (!self.input.isVisible() and self.isFilePickerActive()) {
-            const filter = std.mem.trim(u8, picker.value.items, " \t");
-            if (filter.len != 0 and self.file_search.waitForResult(1) and self.file_search.hasResult(filter)) {
-                try self.controller.refresh();
-                changed = true;
-            }
-            picker.setBusy(self.file_search.isBusy());
-        }
-        return changed or self.widget.needsAnimationFrame(picker, now_ms);
+    fn fileSearchReady(context: *anyopaque) void {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        self.file_results.post();
+    }
+
+    fn fileSearchChanged(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        if (self.input.isVisible() or !self.isFilePickerActive()) return false;
+        const picker = self.controller.pickerRef();
+        const filter = std.mem.trim(u8, picker.value.items, " \t");
+        const result_ready = filter.len != 0 and self.file_search.hasResult(filter);
+        const was_busy = picker.busy;
+        if (result_ready) self.controller.refresh() catch |err| self.host.report_error(self.host.context, @errorName(err));
+        picker.setBusy(self.file_search.isBusy());
+        return result_ready or was_busy != picker.busy;
     }
 
     fn visiblePicker(self: *QuickAccessService) ?*QuickPick {
@@ -354,27 +363,21 @@ pub const QuickAccessService = struct {
         return if (self.controller.isVisible()) self.controller.pickerRef() else null;
     }
 
-    pub fn pollTimeout(self: *QuickAccessService, now_ms: i64, maximum: i32) i32 {
-        const picker = self.visiblePicker() orelse return maximum;
-        if (self.wantsTick()) return @min(16, maximum);
-        return self.widget.animationTimeout(picker, now_ms, maximum);
-    }
-
-    pub fn wantsTick(self: *QuickAccessService) bool {
-        if (!self.isOpen() or !self.isFilePickerActive()) return false;
-        const picker = self.controller.pickerRef();
-        if (std.mem.trim(u8, picker.value.items, " \t").len == 0) return false;
-        return self.file_search.isBusy() or self.file_search.hasAnyResult();
+    fn animationFrame(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        return self.visiblePicker() != null;
     }
 
     pub fn render(self: *QuickAccessService, grid: *ui.CellGrid) !void {
-        if (self.input.isVisible()) {
-            _ = try self.widget.render(self.input.pickerRef(), grid);
+        const picker = self.visiblePicker() orelse {
+            self.animation.schedule(null);
             return;
-        }
-        if (!self.controller.isVisible()) return;
-        const picker = self.controller.pickerRef();
+        };
         _ = try self.widget.render(picker, grid);
+        const now = time_compat.milliTimestamp();
+        const limit = std.math.maxInt(i32);
+        const delay = self.widget.animationTimeout(picker, now, limit);
+        self.animation.schedule(if (delay < limit) now + delay else null);
     }
 
     fn isFilePickerActive(self: *const QuickAccessService) bool {
@@ -830,6 +833,7 @@ test "QuickAccessService: Ctrl-P stays responsive while rg lists files" {
         fn cancel(_: *anyopaque) void {}
     };
     var state = State{};
+    var window = dispatch.Queue{ .io = std.testing.io };
     const service = try QuickAccessService.initWithOptions(
         allocator,
         io,
@@ -838,6 +842,7 @@ test "QuickAccessService: Ctrl-P stays responsive while rg lists files" {
         &commands,
         .{
             .context = &state,
+            .window = &window,
             .open_file = State.openFile,
             .report_error = State.report,
             .cancel_popups = State.cancel,
@@ -861,7 +866,7 @@ test "QuickAccessService: Ctrl-P stays responsive while rg lists files" {
 
     var guard: usize = 0;
     while (guard < 1000) : (guard += 1) {
-        _ = try service.poll(0);
+        _ = window.dispatch(time_compat.milliTimestamp());
         if (picker.items.items.len > 0) break;
         time_compat.sleepMillis(2);
     }
@@ -1005,6 +1010,7 @@ test "QuickAccessService: missing rg reports a picker error instead of hanging" 
         fn cancel(_: *anyopaque) void {}
     };
     var state = State{};
+    var window = dispatch.Queue{ .io = std.testing.io };
     const service = try QuickAccessService.initWithOptions(
         allocator,
         io,
@@ -1013,6 +1019,7 @@ test "QuickAccessService: missing rg reports a picker error instead of hanging" 
         &commands,
         .{
             .context = &state,
+            .window = &window,
             .open_file = State.openFile,
             .report_error = State.report,
             .cancel_popups = State.cancel,
@@ -1030,7 +1037,7 @@ test "QuickAccessService: missing rg reports a picker error instead of hanging" 
     // usual first-result latency instead of failing on a short fixed window.
     const deadline = time_compat.milliTimestamp() + 10_000;
     while (state.reported_len == 0 and time_compat.milliTimestamp() < deadline) {
-        _ = try service.poll(0);
+        _ = window.dispatch(time_compat.milliTimestamp());
         time_compat.sleepMillis(2);
     }
     try std.testing.expect(state.reported_len > 0);

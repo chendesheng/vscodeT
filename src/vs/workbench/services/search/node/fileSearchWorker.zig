@@ -34,6 +34,7 @@ pub const DEFAULT_MAX_CACHED_FILES: usize = 200_000;
 pub const MISSING_RIPGREP_MESSAGE = "Go to File requires ripgrep (`rg`) on PATH";
 
 pub const Options = struct {
+    on_change: ?search.SearchProgressListener = null,
     /// Executable resolved from `PATH`. Tests inject a fake command here.
     rg_path: []const u8 = "rg",
     threads: ?usize = null,
@@ -172,6 +173,7 @@ pub const FileSearchWorker = struct {
     rg_path: []u8,
     threads: ?usize,
     max_cached_files: usize,
+    on_change: ?search.SearchProgressListener,
 
     mutex: Io.Mutex = .init,
     condition: Io.Condition = .init,
@@ -212,6 +214,7 @@ pub const FileSearchWorker = struct {
             .rg_path = try allocator.dupe(u8, options.rg_path),
             .threads = options.threads,
             .max_cached_files = options.max_cached_files,
+            .on_change = options.on_change,
             .cache_allocator = allocator,
         };
         errdefer allocator.free(self.rg_path);
@@ -438,6 +441,7 @@ pub const FileSearchWorker = struct {
                     listing.error_message = null;
                     listing.arena = null;
                 }
+                if (self.on_change) |listener| listener.notify(listener.context);
                 self.condition.broadcast(self.io);
                 continue;
             }
@@ -455,6 +459,7 @@ pub const FileSearchWorker = struct {
                     self.mutex.lockUncancelable(self.io);
                     self.computing = false;
                     self.allocator.free(filter);
+                    if (self.on_change) |listener| listener.notify(listener.context);
                     self.condition.broadcast(self.io);
                     continue;
                 }
