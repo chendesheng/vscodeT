@@ -176,7 +176,17 @@ pub const Layout = struct {
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility };
+        return .{ .context = self, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .is_main_editor_centered = mainEditorCentered };
+    }
+
+    fn zenMode(context: *anyopaque) bool {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.isZenModeActive();
+    }
+
+    fn mainEditorCentered(context: *anyopaque) bool {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.isMainEditorCentered();
     }
 
     fn registerPartContext(context: *anyopaque, part: *Part) !IDisposable {

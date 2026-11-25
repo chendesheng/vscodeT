@@ -7682,3 +7682,26 @@ fn launchTestTerminal(service: *TerminalService, allocator: Allocator) anyerror!
     service.next_id += 1;
     return instance;
 }
+
+test "workbench context keys observe part visibility and dirty working copies between input events" {
+    const allocator = std.testing.allocator;
+    const io = time_compat.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "context.txt", "one");
+    defer allocator.free(path);
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 16);
+    defer workbench.deinit();
+    const keys = try workbench.ensureContextKeys();
+    try std.testing.expect(keys.getValue("mainEditorAreaVisible").boolean);
+    try std.testing.expect(!keys.getValue("dirtyWorkingCopies").boolean);
+    try workbench.layout.setPartHidden(false, .panel);
+    try std.testing.expect(keys.getValue("panelVisible").boolean);
+    try workbench.layout.setPartHidden(true, .panel);
+    try std.testing.expect(!keys.getValue("panelVisible").boolean);
+    const editor = workbench.activeTab().?.editor;
+    try editor.insertText("two");
+    try std.testing.expect(keys.getValue("dirtyWorkingCopies").boolean);
+    try editor.save();
+    try std.testing.expect(!keys.getValue("dirtyWorkingCopies").boolean);
+}

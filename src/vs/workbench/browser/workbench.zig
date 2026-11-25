@@ -271,7 +271,6 @@ const ContextKeyHandles = struct {
     status_bar_focus: context_key_mod.IContextKey,
     terminal_focus: context_key_mod.IContextKey,
     panel_focus: context_key_mod.IContextKey,
-    panel_visible: context_key_mod.IContextKey,
     active_panel: context_key_mod.IContextKey,
     in_quick_open: context_key_mod.IContextKey,
     in_files_picker: context_key_mod.IContextKey,
@@ -287,8 +286,6 @@ const ContextKeyHandles = struct {
     tree_find_open: context_key_mod.IContextKey,
     resource_scheme: context_key_mod.IContextKey,
     editor_read_only: context_key_mod.IContextKey,
-    in_zen_mode: context_key_mod.IContextKey,
-    is_centered_layout: context_key_mod.IContextKey,
 };
 
 /// Terminal host color scheme. The terminal has no portable OS color-scheme
@@ -699,6 +696,7 @@ pub const Workbench = struct {
     statusbar_service: ?*keybinding_service.KeybindingService,
     context_keys: ?*context_key_mod.ContextKeyService,
     context_key_handles: ?ContextKeyHandles,
+    workbench_context: @import("contextkeys.zig").WorkbenchContextKeysHandler,
     user_keybindings: ?*user_keybindings_mod.UserKeybindings,
     /// Filtered user bindings passed to the global host; owned by the workbench.
     global_user_overrides: []const *const resolved_keybinding_item.ResolvedKeybindingItem,
@@ -1874,6 +1872,7 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        if (self.context_keys != null) self.workbench_context.deinit();
         self.saveSidebarViewStates() catch {};
         if (self.view_state_storage) |path| self.allocator.free(path);
         self.view_state_storage = null;
@@ -8376,6 +8375,8 @@ pub const Workbench = struct {
         errdefer self.allocator.destroy(service);
         service.* = context_key_mod.ContextKeyService.init(self.allocator);
         errdefer service.deinit();
+        try self.workbench_context.init(service.interface(), self.layout.interface(), &self.working_copy_service);
+        errdefer self.workbench_context.deinit();
         self.context_key_handles = .{
             .editor_focus = try service.createKey("editorFocus", .{ .boolean = false }),
             .editor_lang_id = try service.createKey("editorLangId", .{ .string = "" }),
@@ -8387,7 +8388,6 @@ pub const Workbench = struct {
             .status_bar_focus = try service.createKey("statusBarFocus", .{ .boolean = false }),
             .terminal_focus = try service.createKey("terminalFocus", .{ .boolean = false }),
             .panel_focus = try service.createKey("panelFocus", .{ .boolean = false }),
-            .panel_visible = try service.createKey("panelVisible", .{ .boolean = false }),
             .active_panel = try service.createKey("activePanel", .{ .string = "" }),
             .in_quick_open = try service.createKey("inQuickOpen", .{ .boolean = false }),
             .in_files_picker = try service.createKey("inFilesPicker", .{ .boolean = false }),
@@ -8403,8 +8403,6 @@ pub const Workbench = struct {
             .tree_find_open = try service.createKey("treeFindOpen", .{ .boolean = false }),
             .resource_scheme = try service.createKey("resourceScheme", .{ .string = "file" }),
             .editor_read_only = try service.createKey("editorReadOnly", .{ .boolean = false }),
-            .in_zen_mode = try service.createKey("inZenMode", .{ .boolean = false }),
-            .is_centered_layout = try service.createKey("isCenteredLayout", .{ .boolean = false }),
         };
         self.context_keys = service;
         self.updateContextKeys();
@@ -8434,7 +8432,6 @@ pub const Workbench = struct {
         keys.status_bar_focus.set(.{ .boolean = self.focus == .statusbar });
         keys.terminal_focus.set(.{ .boolean = self.terminalFocused() });
         keys.panel_focus.set(.{ .boolean = (self.focus == .terminal or self.focus == .problems) and self.panelShown() });
-        keys.panel_visible.set(.{ .boolean = self.panelShown() });
         keys.active_panel.set(.{ .string = if (self.panelShown()) self.activePanelId() else "" });
         keys.in_quick_open.set(.{ .boolean = self.quick_access.isOpen() });
         keys.in_files_picker.set(.{ .boolean = self.quick_access.isOpen() and !self.quick_access.isPickOpen() });
@@ -8452,8 +8449,6 @@ pub const Workbench = struct {
         keys.tree_find_open.set(.{ .boolean = false });
         keys.resource_scheme.set(.{ .string = if (terminal_editor_active) "vscode-terminal" else "file" });
         keys.editor_read_only.set(.{ .boolean = if (self.activeTab()) |tab| tab.editor.read_only else false });
-        keys.in_zen_mode.set(.{ .boolean = self.layout.isZenModeActive() });
-        keys.is_centered_layout.set(.{ .boolean = self.layout.isMainEditorCentered() });
     }
 
     fn getFileIconTheme(self: *const Workbench) file_icon.FileIconThemeData {

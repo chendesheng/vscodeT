@@ -19,6 +19,10 @@ pub const IWorkbenchLayoutService = struct {
     set_part_hidden: *const fn (*anyopaque, bool, Parts) anyerror!void,
     is_visible: *const fn (*anyopaque, Parts) bool,
     on_did_change_part_visibility: *Emitter(IPartVisibilityChangeEvent),
+    on_did_change_zen_mode: *Emitter(bool),
+    on_did_change_main_editor_centered: *Emitter(bool),
+    is_zen_mode_active: *const fn (*anyopaque) bool,
+    is_main_editor_centered: *const fn (*anyopaque) bool,
 
     pub fn registerPart(self: @This(), part: *Part) !IDisposable {
         return self.register_part(self.context, part);
