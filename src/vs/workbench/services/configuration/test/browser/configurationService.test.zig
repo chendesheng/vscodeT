@@ -79,6 +79,11 @@ test "ConfigurationService: workspace settings override user settings" {
 
     const file_path = try std.fmt.allocPrint(allocator, "{s}/main.zig", .{root});
     defer allocator.free(file_path);
+    var binding = service_mod.ConfigurationServiceBinding.init(allocator);
+    defer binding.deinit();
+    try binding.bind(service);
+    try std.testing.expectEqual(@as(i64, 2), binding.interface().getValue("editor.tabSize").?.integer);
+    try std.testing.expectEqual(@as(i64, 4), binding.interface().getValueWithOverrides("editor.tabSize", .{ .resource = file_path }).?.integer);
     const inspected = service.inspect("editor.tabSize", .{ .resource = file_path });
     try std.testing.expectEqual(@as(i64, 2), inspected.user.?.integer);
     try std.testing.expect(inspected.workspace == null);

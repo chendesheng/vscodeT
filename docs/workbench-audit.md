@@ -114,7 +114,9 @@ ViewPaneContainer emits title-area updates from its descriptor and pane events. 
 
 ViewsService now resolves registered view IDs, their descriptor containers, active composites and visible bodies through the view descriptor, layout and pane-composite services. The native window registers borrowed view slots instead of branching on contribution IDs; open and close use the same view-container path for moved views. The upstream alternate-window layout modes/auxiliary-bar keybinding test remains unported because neither has a terminal part.
 
-The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,517 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+ExplorerView now handles active-editor reveal through the editor service event and its body-visibility callback. Resource-scoped autoReveal configuration follows IConfigurationService, including configuration-source replacements; the editor opening service and native navigation no longer call Explorer directly. View theme changes are applied on creation and theme events instead of reassigning the palette on every paint.
+
+The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,497 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

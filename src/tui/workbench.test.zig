@@ -2461,6 +2461,14 @@ test "Workbench: switching tabs reveals the active file" {
     try workbench.switchTab(-1);
     try std.testing.expectEqualStrings("a.txt", workbench.activeTab().?.input.getName());
     try std.testing.expectEqualStrings("a.txt", workbench.sidebar.?.selectedNode().?.name);
+
+    // Editor service events reveal resources even when another sidebar
+    // composite is open; no native tab-switch or render hook is required.
+    _ = try workbench.showActivityById("search");
+    try workbench.editor_api.openEditor(path_b, .{});
+    try std.testing.expectEqualStrings("b.txt", workbench.sidebar.?.selectedNode().?.name);
+    _ = try workbench.showActivityById("explorer");
+    try std.testing.expectEqualStrings("b.txt", workbench.sidebar.?.selectedNode().?.name);
 }
 
 test "Workbench: moveActiveEditor honors counts, center and selected tabs across groups" {

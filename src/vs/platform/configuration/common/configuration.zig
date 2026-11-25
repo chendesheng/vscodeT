@@ -95,6 +95,7 @@ pub const configuration_service_id = @import("../../instantiation/common/instant
 pub const IConfigurationService = struct {
     context: *anyopaque,
     get_value: *const fn (context: *anyopaque, key: []const u8) ?*const Value,
+    get_value_with_overrides: ?*const fn (*anyopaque, []const u8, Overrides) ?*const Value = null,
     update_value: ?*const fn (*anyopaque, []const u8, ?Value, ConfigurationTarget) anyerror!void = null,
     on_did_change_configuration: ?*@import("../../../base/common/event.zig").Emitter(Change) = null,
 
@@ -105,6 +106,10 @@ pub const IConfigurationService = struct {
 
     pub fn getValue(self: IConfigurationService, key: []const u8) ?*const Value {
         return self.get_value(self.context, key);
+    }
+
+    pub fn getValueWithOverrides(self: IConfigurationService, key: []const u8, overrides: Overrides) ?*const Value {
+        return if (self.get_value_with_overrides) |get| get(self.context, key, overrides) else self.getValue(key);
     }
 
     pub fn getBool(self: IConfigurationService, key: []const u8, default: bool) bool {

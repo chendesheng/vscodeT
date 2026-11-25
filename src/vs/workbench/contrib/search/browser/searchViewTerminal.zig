@@ -2029,7 +2029,13 @@ pub const SearchWindow = struct {
     },
     service: ?*NativeSearchService = null,
     view: ?*SearchView = null,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
     factory: SearchEditorFactory = undefined,
+
+    pub fn setThemeColors(self: *SearchWindow, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+        if (self.view) |view| view.setThemeColors(palette);
+    }
 
     /// The CLI can replace the workspace context service when it switches
     /// folders. Both the view's next search and existing Search Editor
@@ -2146,6 +2152,7 @@ pub const SearchWindow = struct {
             },
         );
         errdefer view.deinit();
+        view.setThemeColors(self.theme);
         try view.registerList(self.lists);
         try view.attachActivity(self.activity_service);
         try view.attachTitleActions(self.title_pane);

@@ -806,14 +806,6 @@ pub const TerminalWorkbench = struct {
             .reload_jobs = .init(allocator),
             .host = .{
                 .context = self,
-                .reveal = struct {
-                    fn reveal(context: *anyopaque, path: []const u8) void {
-                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                        if (host.autoRevealEnabled(path)) {
-                            if (host.sidebar) |sidebar| sidebar.revealPath(path) catch {};
-                        }
-                    }
-                }.reveal,
                 .configure_editor = struct {
                     fn configure(context: *anyopaque, editor: *Editor) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -946,7 +938,6 @@ pub const TerminalWorkbench = struct {
                     fn reveal(context: *anyopaque) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
                         host.focusEditor();
-                        host.revealActiveEditor();
                     }
                 }.reveal,
             },
@@ -1289,6 +1280,7 @@ pub const TerminalWorkbench = struct {
             }.run,
             .handle_mouse = explorerPaneHandleMouse,
             .title_actions = explorerPaneTitleActions,
+            .set_body_visible = explorerPaneBodyVisible,
         };
         panes[1] = .{
             .id = "outline",
@@ -1704,6 +1696,8 @@ pub const TerminalWorkbench = struct {
         self.git_commands.deinit();
         self.deinitGit();
         self.search_window.destroy();
+        if (self.sidebar) |sidebar| sidebar.deinit();
+        self.sidebar = null;
         self.deinitShellModels();
         if (self.tab_service) |service| service.deinit();
         if (self.global_service) |service| {
@@ -1730,7 +1724,6 @@ pub const TerminalWorkbench = struct {
         self.part.disposeGroupModelListeners();
         self.markdown_previews.deinit();
         self.service.deinit();
-        if (self.sidebar) |sidebar| sidebar.deinit();
         if (self.settings_watcher) |watcher| watcher.deinit();
         if (self.workspace_watcher) |watcher| {
             watcher.deinit();
@@ -2097,23 +2090,6 @@ pub const TerminalWorkbench = struct {
         std.log.scoped(.file_watcher).warn("{s}", .{message});
     }
 
-    fn autoRevealEnabled(self: *const TerminalWorkbench, resource: []const u8) bool {
-        const configuration = self.configuration orelse return true;
-        const value = configuration.getValue("explorer.autoReveal", .{ .resource = resource }) orelse
-            return true;
-        return switch (value.*) {
-            .bool => |enabled| enabled,
-            else => true,
-        };
-    }
-
-    fn revealActiveEditor(self: *TerminalWorkbench) void {
-        const tab = self.activeTab() orelse return;
-        if (tab.isDiff() or tab.terminal_input != null) return;
-        if (!self.autoRevealEnabled(tab.editor.path)) return;
-        if (self.sidebar) |sidebar| sidebar.revealPath(tab.editor.path) catch {};
-    }
-
     /// Test/standalone helper: set a single-folder workspace and open the
     /// Explorer on it.
     pub fn initSidebar(self: *TerminalWorkbench, root_path: []const u8) !void {
@@ -2133,6 +2109,8 @@ pub const TerminalWorkbench = struct {
                 &self.window_events,
             );
             try self.sidebar.?.registerList(&self.lists, &self.editor_api);
+            try self.sidebar.?.attachEditorService(&self.editor_api, self.configuration_api);
+            self.sidebar.?.setThemeColors(self.theme_palette);
         }
         if (self.search_window.view == null) try self.search_window.initFromWorkspace();
         self.sidebar.?.theme_service = self.theme_service;
@@ -2792,7 +2770,10 @@ pub const TerminalWorkbench = struct {
             },
         });
         self.scm.attachHistoryProvider(provider.interface(), self.theme_palette);
-        if (self.scm.changes) |view| try view.registerList(&self.lists);
+        if (self.scm.changes) |view| {
+            try view.registerList(&self.lists);
+            view.setThemeColors(self.theme_palette);
+        }
         if (self.scm.history) |view| try view.registerList(&self.lists);
 
         const view_model = try self.allocator.create(view_container_model_mod.ViewContainerModel);
@@ -2983,7 +2964,6 @@ pub const TerminalWorkbench = struct {
     ) anyerror!void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         const view = self.scm.changes orelse return;
-        if (self.theme_palette) |palette| view.setThemeColors(palette);
         try view.render(grid, rect, focused, .{
             .show_header = false,
             .cell_borders = self.part.cell_borders,
@@ -3017,7 +2997,6 @@ pub const TerminalWorkbench = struct {
     ) anyerror!void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         const view = self.scm.history orelse return;
-        if (self.theme_palette) |palette| view.setThemeColors(palette);
         try view.render(grid, rect, focused);
     }
 
@@ -3224,7 +3203,6 @@ pub const TerminalWorkbench = struct {
             };
             if (self.activeTab()) |opened| opened.editor.setSelection(range) catch {};
         }
-        self.revealActiveEditor();
     }
 
     pub fn gotoSymbolInEditor(self: *TerminalWorkbench) !bool {
@@ -3298,7 +3276,6 @@ pub const TerminalWorkbench = struct {
             self.service.activateGroup(candidate);
             pane.syncActivePane();
             if (self.activeTab()) |tab| try tab.ensureControllers();
-            self.revealActiveEditor();
             return;
         }
     }
@@ -3326,7 +3303,6 @@ pub const TerminalWorkbench = struct {
         self.layoutAll();
         if (pane.activeTab()) |tab| try tab.ensureControllers();
         self.focusEditor();
-        self.revealActiveEditor();
     }
 
     /// `<C-w>h/j/k/l`: focus the nearest pane in a direction using the laid-out
@@ -3345,7 +3321,6 @@ pub const TerminalWorkbench = struct {
         }
         target.syncActivePane();
         if (self.activeTab()) |tab| try tab.ensureControllers();
-        self.revealActiveEditor();
     }
 
     /// Port of the `workbench.action.focus*Group` family. `wrap` matches
@@ -3727,7 +3702,7 @@ pub const TerminalWorkbench = struct {
     fn applyThemeToParts(self: *TerminalWorkbench, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.applyContextMenuTheme(palette);
         if (self.sidebar) |sidebar| sidebar.setThemeColors(palette);
-        if (self.search_window.view) |view| view.setThemeColors(palette);
+        self.search_window.setThemeColors(palette);
         if (self.scm.changes) |view| view.setThemeColors(palette);
         if (self.scm.history) |view| view.setThemeColors(palette);
         if (self.outline_view) |view| view.setThemeColors(palette);
@@ -4164,11 +4139,16 @@ pub const TerminalWorkbench = struct {
 fn explorerPaneRenderBody(context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) !void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const sidebar = self.sidebar orelse return;
-    if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
     try sidebar.render(grid, rect, focused, .{
         .show_header = false,
         .cell_borders = self.part.cell_borders,
     });
+}
+
+fn explorerPaneBodyVisible(context: *anyopaque, visible: bool) void {
+    if (!visible) return;
+    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+    if (self.sidebar) |sidebar| sidebar.selectActiveFile() catch {};
 }
 
 fn explorerPaneHandleKey(context: *anyopaque, event: *ui.KeyEvent) !bool {

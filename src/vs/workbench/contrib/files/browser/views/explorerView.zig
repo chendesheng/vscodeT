@@ -129,6 +129,8 @@ pub const RenderOptions = struct {
 };
 
 const list_service = @import("../../../../../platform/list/browser/listService.zig");
+const SignalSubscription = @import("../../../../../base/common/event.zig").SignalSubscription;
+const IConfigurationService = @import("../../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const IEditorService = @import("../../../../services/editor/common/editorService.zig").IEditorService;
 
 pub const Sidebar = struct {
@@ -141,6 +143,8 @@ pub const Sidebar = struct {
     tree: *AsyncTree,
     list_focus: list_service.ListFocus,
     list_editors: ?*const IEditorService = null,
+    editor_listener: ?SignalSubscription = null,
+    reveal_configuration: ?IConfigurationService = null,
     compression_enabled: bool = true,
     sort_order: explorer.SortOrder = .FilesFirst,
     show_roots: bool = false,
@@ -157,7 +161,7 @@ pub const Sidebar = struct {
     /// rows use terminal cell borders or the underline fallback.
     cell_borders: bool = false,
     /// Pending `explorer.autoReveal` target. The async tree loads ancestors on
-    /// demand; `pollLoad` resumes this walk after each applied listing.
+    /// demand; the children-resolved callback resumes the walk.
     pending_reveal: ?[]u8 = null,
 
     /// Test/standalone entry point: uses the caller's Io for both the model and
@@ -253,6 +257,7 @@ pub const Sidebar = struct {
     }
 
     pub fn deinit(self: *Sidebar) void {
+        if (self.editor_listener) |listener| listener.dispose();
         self.list_focus.deinit();
         self.cancelLoad();
         if (self.pending_reveal) |path| self.allocator.free(path);
@@ -330,6 +335,31 @@ pub const Sidebar = struct {
     pub fn registerList(self: *Sidebar, service: *list_service.ListService, editors: *const IEditorService) !void {
         self.list_editors = editors;
         try service.register(.{ .context = self, .focus = &self.list_focus, .run = runListCommand });
+    }
+
+    /// Upstream ExplorerView subscribes to active editor changes when its
+    /// tree is created. Resource override settings use the stable service,
+    /// including when the native configuration source is replaced.
+    pub fn attachEditorService(self: *Sidebar, editors: *const IEditorService, configuration: IConfigurationService) !void {
+        if (self.editor_listener) |listener| listener.dispose();
+        self.editor_listener = null;
+        self.list_editors = editors;
+        self.reveal_configuration = configuration;
+        self.editor_listener = try editors.on_did_active_editor_change.listenSignal(self, selectActiveFile);
+        try self.selectActiveFile();
+    }
+
+    pub fn selectActiveFile(self: *Sidebar) !void {
+        const editors = self.list_editors orelse return;
+        const input = editors.activeEditor() orelse return;
+        const resource = input.resource orelse return;
+        if (!self.model.context.isInsideWorkspace(resource)) return;
+        if (self.reveal_configuration) |configuration| {
+            if (configuration.getValueWithOverrides("explorer.autoReveal", .{ .resource = resource })) |value| {
+                if (value.* == .bool and !value.bool) return;
+            }
+        }
+        try self.revealPath(resource);
     }
 
     pub fn setPaneFocused(self: *Sidebar, focused: bool) void {

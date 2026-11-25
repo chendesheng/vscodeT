@@ -314,7 +314,6 @@ pub const EditorOpening = struct {
     language_features: *const ?*LanguageFeaturesService,
     host: struct {
         context: *anyopaque,
-        reveal: *const fn (*anyopaque, []const u8) void,
         configure_editor: *const fn (*anyopaque, *Editor) void,
         configure_tab: *const fn (*anyopaque, *Tab) void,
         register_working_copy: *const fn (*anyopaque, *Tab) void,
@@ -371,7 +370,6 @@ pub const EditorOpening = struct {
             .{ .open = .{ .pinned = options.pinned, .active = true } },
         );
         const pane = self.part.viewForGroup(opened.group) orelse return error.GroupPaneMissing;
-        self.host.reveal(self.host.context, path);
         if (pane.tabForInput(opened.result.editor)) |tab| {
             try pane.activateTab(tab);
             tab.setImageRuntime(self.images);
@@ -392,7 +390,6 @@ pub const EditorOpening = struct {
             .{ .open = .{ .pinned = options.pinned, .active = true } },
         );
         const pane = self.part.viewForGroup(opened.group) orelse return error.GroupPaneMissing;
-        self.host.reveal(self.host.context, path);
         if (!opened.result.is_new) {
             if (pane.tabForInput(opened.result.editor)) |tab| {
                 try pane.activateTab(tab);
@@ -440,7 +437,6 @@ pub const EditorOpening = struct {
     }
 
     fn finishTextEditorOpen(self: *EditorOpening, path: []const u8, opened: OpenedTextEditor, options: OpenOptions) !void {
-        self.host.reveal(self.host.context, path);
         if (opened.tab) |tab| {
             tab.setImageRuntime(self.images);
             if (opened.is_new) {

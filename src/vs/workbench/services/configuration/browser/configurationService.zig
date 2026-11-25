@@ -420,7 +420,7 @@ pub const ConfigurationService = struct {
     }
 
     pub fn interface(self: *ConfigurationService) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValueForInterface, .update_value = updateValueForInterface, .on_did_change_configuration = &self.change_emitter };
+        return .{ .context = self, .get_value = getValueForInterface, .get_value_with_overrides = getValueWithOverridesForInterface, .update_value = updateValueForInterface, .on_did_change_configuration = &self.change_emitter };
     }
 
     fn updateValueForInterface(context: *anyopaque, key: []const u8, value: ?Value, target: configuration.ConfigurationTarget) !void {
@@ -431,6 +431,11 @@ pub const ConfigurationService = struct {
     fn getValueForInterface(context: *anyopaque, key: []const u8) ?*const Value {
         const self: *ConfigurationService = @ptrCast(@alignCast(context));
         return self.getValue(key, .{});
+    }
+
+    fn getValueWithOverridesForInterface(context: *anyopaque, key: []const u8, overrides: configuration.Overrides) ?*const Value {
+        const self: *ConfigurationService = @ptrCast(@alignCast(context));
+        return self.getValue(key, overrides);
     }
 
     /// Returns the effective value for `section`, or a folder-specific value
@@ -737,13 +742,19 @@ pub const ConfigurationServiceBinding = struct {
     }
 
     pub fn interface(self: *ConfigurationServiceBinding) configuration.IConfigurationService {
-        return .{ .context = self, .get_value = getValue, .update_value = updateValue, .on_did_change_configuration = &self.on_did_change_configuration };
+        return .{ .context = self, .get_value = getValue, .get_value_with_overrides = getValueWithOverrides, .update_value = updateValue, .on_did_change_configuration = &self.on_did_change_configuration };
     }
 
     fn getValue(context: *anyopaque, key: []const u8) ?*const Value {
         const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
         const service = self.service orelse return null;
         return service.getValue(key, .{});
+    }
+
+    fn getValueWithOverrides(context: *anyopaque, key: []const u8, overrides: configuration.Overrides) ?*const Value {
+        const self: *ConfigurationServiceBinding = @ptrCast(@alignCast(context));
+        const service = self.service orelse return null;
+        return service.getValue(key, overrides);
     }
 
     fn updateValue(context: *anyopaque, key: []const u8, value: ?Value, target: configuration.ConfigurationTarget) !void {

@@ -336,7 +336,6 @@ fn paintSidebarContents(self: *Workbench) !void {
             container.always_show_header_actions = if (self.configuration) |config| config.getBool("workbench.view.alwaysShowHeaderActions", false) else false;
             try container.render(&self.frame.next, content, focused, self.theme_palette);
         } else if (self.sidebar) |sidebar| {
-            if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
             try sidebar.render(&self.frame.next, content, focused, .{
                 .show_header = false,
                 .cell_borders = self.part.cell_borders,
@@ -346,7 +345,6 @@ fn paintSidebarContents(self: *Workbench) !void {
         }
     } else if (std.mem.eql(u8, active_id, "search")) {
         if (self.search_window.view) |view| {
-            if (self.theme_palette) |palette| view.setThemeColors(palette);
             try view.render(&self.frame.next, content, .{
                 .show_header = false,
                 .cell_borders = self.part.cell_borders,
@@ -361,7 +359,6 @@ fn paintSidebarContents(self: *Workbench) !void {
             container.always_show_header_actions = if (self.configuration) |config| config.getBool("workbench.view.alwaysShowHeaderActions", false) else false;
             try container.render(&self.frame.next, content, focused, self.theme_palette);
         } else if (self.scm.changes) |view| {
-            if (self.theme_palette) |palette| view.setThemeColors(palette);
             try view.render(&self.frame.next, content, focused, .{ .show_header = false });
         } else {
             renderPlaceholder(self, content, focused);
@@ -385,7 +382,6 @@ fn paintEditorGroups(self: *Workbench, editor_surface: *ui.Surface) !void {
 
 fn paintOverlaysAndStatus(self: *Workbench) !void {
     if (self.geometry().statusBarVisible()) {
-        if (self.theme_palette) |palette| self.statusbar.main_part.setThemeColors(palette);
         try self.statusbar.main_part.render(&self.frame.next, self.geometry().statusBarRect(), .{
             .no_folder = self.workspace.getWorkbenchState() == .EMPTY,
             .part_focused = self.focus == .statusbar,
