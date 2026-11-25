@@ -17,6 +17,8 @@ const Storage = @import("../../../../platform/storage/common/storage.zig").InMem
 const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
 const EditorService = @import("../../../services/editor/browser/editorService.zig").EditorService;
 const ThemeColors = @import("../../../browser/themeColors.zig").ThemeColors;
+const SCMActiveRepositoryController = @import("activity.zig").SCMActiveRepositoryController;
+const ActivityService = @import("../../../services/activity/browser/activityService.zig").ActivityService;
 const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
 
 pub const SCMContribution = struct {
@@ -28,6 +30,7 @@ pub const SCMContribution = struct {
     quick_diff_controller: ?*QuickDiffWorkbenchController = null,
     changes: ?*scm_view.SCMViewPane = null,
     history: ?*scm_history.SCMHistoryViewPane = null,
+    activity: ?*SCMActiveRepositoryController = null,
 
     pub fn init(allocator: Allocator) SCMContribution {
         return .{ .allocator = allocator };
@@ -35,6 +38,7 @@ pub const SCMContribution = struct {
 
     pub const Options = struct {
         editors: EditorService,
+        activity_service: *ActivityService,
         window: *WindowQueue,
         configuration: ?*ConfigurationService,
         changes_host: scm_view.Host,
@@ -50,6 +54,7 @@ pub const SCMContribution = struct {
         service.* = SCMService.init(allocator);
         self.service = service;
         _ = try service.registerSCMProvider(provider);
+        self.activity = try SCMActiveRepositoryController.create(allocator, provider, options.activity_service, options.configuration);
 
         const storage = try allocator.create(Storage);
         storage.* = Storage.init(allocator);
@@ -79,6 +84,16 @@ pub const SCMContribution = struct {
         history.quick_input = options.quick_input;
     }
 
+    pub fn detachConfiguration(self: *SCMContribution) void {
+        if (self.activity) |activity| activity.detachConfiguration();
+        if (self.quick_diff_controller) |controller| controller.detachConfiguration();
+    }
+
+    pub fn setConfiguration(self: *SCMContribution, service: ?*ConfigurationService) !void {
+        if (self.activity) |activity| try activity.setConfiguration(service);
+        if (self.quick_diff_controller) |controller| try controller.setConfiguration(service);
+    }
+
     /// Configure the view before mounting its history provider (initial query
     /// uses the configured filter and graph options).
     pub fn attachHistoryProvider(self: *SCMContribution, provider: *const scm.ISCMProvider, theme: ?*const ThemeColors) void {
@@ -91,6 +106,7 @@ pub const SCMContribution = struct {
     /// destroy all views and services before the extension releases them.
     pub fn deinit(self: *SCMContribution) void {
         const allocator = self.allocator;
+        if (self.activity) |activity| activity.destroy();
         if (self.history) |view| {
             view.deinit();
             allocator.destroy(view);

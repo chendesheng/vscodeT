@@ -699,8 +699,6 @@ pub const Workbench = struct {
     scm_container: ?*view_pane_container_mod.ViewPaneContainer = null,
     git_status_accessor: ?EntryAccessor = null,
     git_status_buf: [96]u8 = undefined,
-    git_badge_buf: [32]u8 = undefined,
-    git_badge_count: usize = 0,
     /// Set when the quit confirmation commits to closing the window.
     quit_requested: bool = false,
     /// The modal save confirmation, if one is open.
@@ -773,7 +771,6 @@ pub const Workbench = struct {
         self.scm_view_model = null;
         self.scm_container = null;
         self.git_status_accessor = null;
-        self.git_badge_count = 0;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -2230,7 +2227,7 @@ pub const Workbench = struct {
         }
         if (self.configuration) |configuration| {
             if (self.terminal_service) |service| service.options.configuration = null;
-            if (self.scm.quick_diff_controller) |controller| controller.detachConfiguration();
+            self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             if (self.notification_controller) |controller| try controller.attachConfiguration(null);
             configuration.deinit();
@@ -2290,7 +2287,7 @@ pub const Workbench = struct {
                 self.settings_watcher = null;
             }
             if (self.terminal_service) |service| service.options.configuration = null;
-            if (self.scm.quick_diff_controller) |controller| controller.detachConfiguration();
+            self.scm.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             if (self.notification_controller) |controller| try controller.attachConfiguration(null);
             configuration.deinit();
@@ -2340,7 +2337,7 @@ pub const Workbench = struct {
         );
         const themes = try self.ensureThemeService();
         try themes.setConfiguration(self.configuration.?);
-        if (self.scm.quick_diff_controller) |controller| try controller.setConfiguration(self.configuration);
+        try self.scm.setConfiguration(self.configuration);
         if (self.notification_controller) |controller| try controller.attachConfiguration(self.configuration);
         try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
@@ -3835,6 +3832,7 @@ pub const Workbench = struct {
         const quick_providers = provider.quickDiffProviders();
         try self.scm.attachProvider(provider.interface(), &quick_providers, .{
             .editors = .{ .part = self.part },
+            .activity_service = &self.activity_service,
             .window = &self.window_events,
             .configuration = self.configuration,
             .changes_host = .{
@@ -3888,7 +3886,6 @@ pub const Workbench = struct {
         }, "workbench.scm.branch", .left, .{ .number = 100 });
         if (self.file_watcher_service) |files_service| provider.watch(files_service) catch {};
         self.syncGitStatus();
-        self.syncGitActivity();
         if (self.scm.changes) |view| view.refresh();
     }
 
@@ -3908,7 +3905,6 @@ pub const Workbench = struct {
             if (self.scm.history) |view| view.onHistoryItemRefsChanged(true);
         }
         self.syncGitStatus();
-        self.syncGitActivity();
     }
 
     fn syncGitStatus(self: *Workbench) void {
@@ -3938,40 +3934,6 @@ pub const Workbench = struct {
         else
             std.fmt.bufPrint(&self.git_status_buf, "\u{2387} (detached) ({d})", .{provider.count()}) catch "Git";
         accessor.update(.{ .name = "Source Control", .text = text, .tooltip = "workbench.view.scm" });
-    }
-
-    fn syncGitActivity(self: *Workbench) void {
-        const provider = self.git_model.repository orelse return;
-        var badge_mode: []const u8 = "all";
-        if (self.configuration) |configuration| {
-            if (configuration.getValue("scm.countBadge", .{})) |value| {
-                switch (value.*) {
-                    .string => |text| badge_mode = text,
-                    else => {},
-                }
-            }
-        }
-        const scm_visible = self.sidebarShown() and std.mem.eql(
-            u8,
-            self.activity_bar_part.active_id orelse "",
-            "scm",
-        );
-        const count = if (std.mem.eql(u8, badge_mode, "off") or
-            (std.mem.eql(u8, badge_mode, "focused") and !scm_visible))
-            0
-        else
-            provider.count();
-        if (self.git_badge_count == count) return;
-        self.git_badge_count = count;
-        if (count == 0) {
-            self.activity_service.removeActivity("scm", "scm.changes");
-            return;
-        }
-        const text = std.fmt.bufPrint(&self.git_badge_buf, "{d}", .{count}) catch "?";
-        self.activity_service.setViewContainerActivity("scm", .{
-            .id = "scm.changes",
-            .badge = .{ .description = text },
-        }) catch {};
     }
 
     /// Opens a diff between two refs of `path`. `working` uses the open buffer
