@@ -1526,8 +1526,10 @@ Library constraints:
   `src/vs/workbench/browser/parts/editor/editorPart.zig` owns the group
   registry, grid and sash resize; `editorGroupView.zig` maps model editors to
   tab views and drives the active pane; `editorPanes.zig` keeps the active pane
-  and page position. `src/vs/workbench/browser/workbench.zig` keeps the terminal rendering and
-  input adaptation. `EditorGroupModel` owns
+  and page position. `src/tui/workbench.zig` composites the parts, paints cell
+  borders and sashes, and sends image data, the ANSI frame and the hardware cursor
+  position to the terminal. Part-specific painting and input routing still live
+  in `src/vs/workbench/browser/workbench.zig`. `EditorGroupModel` owns
   tab order/MRU/preview/pinned/sticky state, `FileEditorInput` exposes each
   editor's path/dirty/save state, and `Tab` keeps one persistent
   view/contribution set per file. The terminal grid gives each split leaf an

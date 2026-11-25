@@ -2057,9 +2057,8 @@ Editor contributions:
   `src/vs/workbench/browser/parts/editor/editorPart.zig` (group registry,
   oriented grid, branch demotion, sash resize), `editorGroupView.zig`
   (model-to-tab mapping, active tab, pane activation) and `editorPanes.zig`
-  (active pane, page position, size constraints); `src/vs/workbench/browser/workbench.zig` is
-  the terminal adapter that renders the split tree with a tab row per group
-  and composites every pane into one frame. Cell-edge borders draw the editor
+  (active pane, page position, size constraints). Each group has a tab row.
+  `src/tui/workbench.zig` composites the panes into one frame and writes it to the terminal. Cell-edge borders draw the editor
   frame and the draggable sashes without consuming rows or columns.
   Drag selected tabs or the empty background of a tab strip
   to reorder tabs, move or copy editors, split panes, or move, copy or merge

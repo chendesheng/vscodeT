@@ -13,6 +13,7 @@
 //! testing allocator does. They are diagnostics, not assertions: only the
 //! structural checks (viewport tokenization, unattached model) assert.
 
+const renderFrame = @import("workbench.zig").renderFrame;
 const std = @import("std");
 const ui = @import("ui");
 const build_options = @import("build_options");
@@ -398,7 +399,7 @@ test "benchmark: workbench scroll frame" {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try tab.view.refresh();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     out.clearRetainingCapacity();
     while (tab.editor.pollBackgroundTokenization()) {}
 
@@ -420,7 +421,7 @@ test "benchmark: workbench scroll frame" {
 
         const render_start = nowUs(io);
         workbench.refreshStatus();
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         render_us_total += nowUs(io) - render_start;
         out.clearRetainingCapacity();
 
@@ -464,7 +465,7 @@ test "benchmark: explorer sidebar scroll" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     out.clearRetainingCapacity();
 
     const rect = sidebar.last_rect;
@@ -478,7 +479,7 @@ test "benchmark: explorer sidebar scroll" {
         const wheel = ui.MouseEvent{ .kind = .wheel, .x = x, .y = y, .delta_y = 1 };
         _ = workbench.handleSidebarMouse(&wheel);
         workbench.refreshStatus();
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         out.clearRetainingCapacity();
         const elapsed = nowUs(io) - start;
         total_us += elapsed;

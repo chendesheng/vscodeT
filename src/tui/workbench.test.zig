@@ -1,4 +1,5 @@
 // Terminal workbench integration tests, driven through the host and service APIs.
+const renderFrame = @import("workbench.zig").renderFrame;
 const shell = @import("../vs/workbench/browser/workbench.zig");
 const Focus = shell.Focus;
 const GroupPane = shell.GroupPane;
@@ -193,7 +194,7 @@ test "Workbench: empty editor renders the watermark and runs its shortcuts" {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
 
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const initial = try frameText(allocator, &workbench.frame);
     defer allocator.free(initial);
     try std.testing.expect(std.mem.indexOf(u8, initial, "▟████▙▄  ▗▄████████▀▘▐██████") != null);
@@ -231,11 +232,11 @@ test "Workbench: empty editor renders the watermark and runs its shortcuts" {
     try std.testing.expectEqualStrings("search", workbench.activity_bar_part.active_id.?);
 
     try workbench.openPath(path);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expectEqual(ui.style.Display.none, watermark.root.declaredDisplay());
     try std.testing.expect(workbench.activeTab() != null);
     _ = try workbench.closeActive();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expectEqual(ui.style.Display.block, watermark.root.declaredDisplay());
 }
 
@@ -258,11 +259,11 @@ test "Workbench: watermark tips respond to resized panes, settings, and keybindi
     try workbench.setUserSettingsPaths(&.{settings_path});
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     try workbench.setKeybindingsPaths(&.{path});
     try workbench.resize(90, 12);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const short = try frameText(allocator, &workbench.frame);
     defer allocator.free(short);
     try std.testing.expect(std.mem.indexOf(u8, short, "Ctrl+Alt+G") != null);
@@ -273,7 +274,7 @@ test "Workbench: watermark tips respond to resized panes, settings, and keybindi
     workbench.ensureConfigurationReady();
     try workbench.setUserConfigurationValue(editor_group_watermark.settings_key, .{ .bool = false });
     try workbench.resize(90, 32);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const inactive = try frameText(allocator, &workbench.frame);
     defer allocator.free(inactive);
     try std.testing.expect(std.mem.indexOf(u8, inactive, "▗▄██▙▄▖") != null);
@@ -326,7 +327,7 @@ test "Workbench: sticky scroll paints scope headers" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const text = try frameText(allocator, &workbench.frame);
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "async function stickyScope") != null);
@@ -384,7 +385,7 @@ test "Workbench: opens two files, switches tabs and closes them" {
     try workbench.activeTab().?.ensureControllers();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "a.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "b.txt") != null);
     try std.testing.expectEqual(@as(usize, 2), workbench.cursorCell().?.row);
@@ -469,7 +470,7 @@ test "Workbench: opening a new file rebuilds its view once" {
     try std.testing.expectEqual(@as(usize, 0), tab.view.renderCount());
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expectEqual(@as(usize, 1), tab.view.renderCount());
 }
 
@@ -491,7 +492,7 @@ test "Workbench: markdown preview toggle changes the current editor in place" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const hit = pane.title_action_hit orelse return error.TestUnexpectedResult;
     const row = ui.cell.snap(pane.rect.y);
     const grid = &workbench.frame.prev;
@@ -507,7 +508,7 @@ test "Workbench: markdown preview toggle changes the current editor in place" {
     try std.testing.expect(tab.markdown_preview == null);
     try std.testing.expect(try workbench.handleGlobalKey(&close_key));
     try std.testing.expect(tab.markdown_preview != null);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "Title") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "world") != null);
 
@@ -539,7 +540,7 @@ test "Workbench: markdown preview title action is absent for plain text" {
     const pane = workbench.activePane().?;
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(pane.title_action_hit == null);
     try workbench.toggleMarkdownPreview(pane);
     try std.testing.expect(pane.activeTab().?.markdown_preview == null);
@@ -607,7 +608,7 @@ test "Workbench: split duplicates the active editor and shares its buffer" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     // Both panes paint the shared buffer; tab labels may be clipped.
     try std.testing.expect(std.mem.count(u8, out.written(), "beta") >= 2);
 
@@ -656,20 +657,20 @@ test "Workbench: split copy shares rendered edits after changing focus" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     // Let sticky scroll complete its initial update before changing focus.
     const inactive = right.activeTab().?;
     _ = inactive.controllers.?.sticky.onTick(std.math.maxInt(i64));
     _ = try workbench.commands.execute("workbench.action.focusLeftGroup");
     try std.testing.expectEqual(left, workbench.activePane().?);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const active = workbench.activeTab().?;
     try std.testing.expect(!inactive.view.needsRender());
     try active.editor.deleteRight();
     // The input loop refreshes the active view before painting the workbench.
     try active.view.refresh();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const grid = &workbench.frame.prev;
     for ([_]*GroupPane{ left, right }) |pane| {
@@ -710,7 +711,7 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(right_tab.view.isFocused());
     const surface = &workbench.editor_surface.?;
     try std.testing.expectEqual(surface.document(), left_tab.view.root_node.?.document);
@@ -728,7 +729,7 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
     try std.testing.expectEqual(left_tab, target.tab);
     const hit = (try surface.elementFromPoint(x, y)) orelse return error.TestExpectedWheelTarget;
     surface.document().dispatchMouse(hit, &wheel);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     try std.testing.expectEqual(@as(usize, 4), left_tab.editor.topViewLine());
     try std.testing.expectEqual(@as(usize, 1), right_tab.editor.topViewLine());
@@ -776,7 +777,7 @@ test "Workbench: editor group focus, new group and close group commands" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     _ = try workbench.commands.execute("workbench.action.closeGroup");
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
@@ -848,7 +849,7 @@ test "Workbench: move and duplicate editor group commands" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 }
 
 test "Workbench: move editor into group and split editor into group" {
@@ -1062,7 +1063,7 @@ test "Workbench: tabs and editor content resolve pointer shapes" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.activePane().?;
     const tab = pane.activeTab().?;
@@ -1107,21 +1108,21 @@ test "Workbench: render emits OSC 22 only when the pointer changes" {
     defer out.deinit();
 
     // The initial default shape adds no bytes to the first frame.
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
 
     out.clearRetainingCapacity();
     workbench.setPointer(.pointer);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;pointer\x1b\\") != null);
 
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;") == null);
 
     out.clearRetainingCapacity();
     workbench.setPointer(.default);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b]22;default\x1b\\") != null);
 }
 
@@ -1166,7 +1167,7 @@ test "Workbench: dragging a tab into a pane moves it there" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const source = workbench.part.group_views.items[1];
     const target = workbench.part.group_views.items[0];
@@ -1210,7 +1211,7 @@ test "Workbench: dragging over a tab strip previews the insertion and reorders o
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     const tab_y = ui.cell.snap(pane.rect.y);
@@ -1233,7 +1234,7 @@ test "Workbench: dragging over a tab strip previews the insertion and reorders o
     try std.testing.expectEqual(@as(usize, 2), workbench.drag_tab_drop.?.index);
 
     // The strip paints upstream's drop-target-right line at the last tab edge.
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const last = pane.hits.items[pane.hits.items.len - 1];
     const border = workbench.frame.prev.borderSetAt(last.end - 1, tab_y);
     try std.testing.expect(border.strokeAt(ui.cell_border.Segment.right) != null);
@@ -1279,7 +1280,7 @@ test "Workbench: dropping a tab on another strip inserts at the previewed index"
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const source_y = ui.cell.snap(source.rect.y);
     var down = ui.MouseEvent{ .kind = .down, .x = source.hits.items[0].start, .y = source_y, .button = .left };
@@ -1330,7 +1331,7 @@ test "Workbench: editor drag moves, copies, and merges a whole group" {
     defer workbench.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const original = workbench.activePane().?;
     const y = ui.cell.snap(original.rect.y);
@@ -1342,7 +1343,7 @@ test "Workbench: editor drag moves, copies, and merges a whole group" {
     const group = workbench.activePane().?;
     const id = group.group.id;
     const original_left = ui.cell.snap(original.rect.x);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     try sendDragMouse(workbench, 0, ui.cell.snap(group.rect.right()) - 2, ui.cell.snap(group.rect.y), false);
     try sendDragMouse(workbench, 32, original_left, center_y, false);
@@ -1350,7 +1351,7 @@ test "Workbench: editor drag moves, copies, and merges a whole group" {
     try sendDragMouse(workbench, 0, original_left, center_y, true);
     try std.testing.expectEqual(id, workbench.activePane().?.group.id);
     try std.testing.expect(group.rect.x < original.rect.x);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const copy_mod: usize = if (builtin.os.tag == .macos) 8 else 16;
     try sendDragMouse(workbench, 0, ui.cell.snap(group.rect.right()) - 2, ui.cell.snap(group.rect.y), false);
@@ -1360,7 +1361,7 @@ test "Workbench: editor drag moves, copies, and merges a whole group" {
     try std.testing.expect(copied.group.id != id and copied != original);
     try std.testing.expectEqual(@as(usize, 3), workbench.groupCount());
     try std.testing.expect(copied.activeTab().?.editor.model == group.activeTab().?.editor.model);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const center_x = ui.cell.snap(original.rect.x + original.rect.w / 2);
     try sendDragMouse(workbench, 0, ui.cell.snap(copied.rect.right()) - 2, ui.cell.snap(copied.rect.y), false);
@@ -1383,7 +1384,7 @@ test "Workbench: editor drag opens the hovered tab only after its deadline" {
     defer workbench.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const pane = workbench.activePane().?;
     const y = ui.cell.snap(pane.rect.y);
 
@@ -1455,7 +1456,7 @@ test "Workbench: serialize and restore a group" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try restored.render(&out.writer);
+    try renderFrame(restored, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "restore_a.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "restore_b.txt") != null);
 
@@ -1517,7 +1518,7 @@ test "Workbench: serialize and restore multiple groups" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try restored.render(&out.writer);
+    try renderFrame(restored, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "part_a.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "part_b.txt") != null);
 }
@@ -1548,7 +1549,7 @@ test "Workbench: sidebar renders and opens a file" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXPLORER") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "side_open.txt") != null);
 
@@ -1595,7 +1596,7 @@ test "Workbench: workspace search streams results and opens a match" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const rendered = out.written();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "SEARCH") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "alpha") != null);
@@ -1727,7 +1728,7 @@ test "Workbench: search chevron and replace all confirmation update an open edit
     const view = workbench.search_view.?;
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const x = ui.cell.snap(view.last_rect.x);
     const y = ui.cell.snap(view.last_rect.y) + view.header_rows;
     const control = view.widget.controlRect(.toggle_replace).?;
@@ -1749,7 +1750,7 @@ test "Workbench: search chevron and replace all confirmation update an open edit
         _ = view.tick(@import("../vs/base/common/timeCompat.zig").milliTimestamp());
     }
     try std.testing.expectEqual(@as(usize, 2), view.model.result.count());
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const replace_all = view.widget.controlRect(.replace_all).?;
     const click = ui.MouseEvent{
         .kind = .down,
@@ -1798,7 +1799,7 @@ test "Workbench: activity bar switches view containers" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "SEARCH") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "No results") != null or std.mem.indexOf(u8, out.written(), "Search") != null);
 
@@ -1806,7 +1807,7 @@ test "Workbench: activity bar switches view containers" {
     try std.testing.expect(workbench.handleSidebarMouse(&scm_click));
     try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "Source Control") != null);
 
     // Upstream has no Settings view container: its activity bar gear is the
@@ -1950,7 +1951,7 @@ test "Workbench: Problems panel, status count and range highlight" {
     try std.testing.expectEqual(Focus.problems, workbench.focus);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "PROBLEMS") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "diag.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "boom") != null);
@@ -2040,7 +2041,7 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const problems_index = std.mem.indexOf(u8, out.written(), "PROBLEMS") orelse return error.TestUnexpectedResult;
     const terminal_index = std.mem.indexOf(u8, out.written(), "TERMINAL") orelse return error.TestUnexpectedResult;
     try std.testing.expect(problems_index < terminal_index);
@@ -2050,7 +2051,7 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
     try service.changeOne("test", resource, &.{}, null);
     try std.testing.expect(!workbench.panel_part.pane.bar.findItemConst(PROBLEMS_CONTAINER_ID).?.visible);
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "TERMINAL") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "PROBLEMS") == null);
 }
@@ -2080,7 +2081,7 @@ test "Workbench: opens a folder workspace with no initial tabs" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "EXPLORER") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "folder_file.txt") != null);
 
@@ -2255,7 +2256,7 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try quick.showFilePicker();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const layout = quick.widget.layout;
     const right = layout.x + layout.width - layout.inset - 1;
     var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = right - 5, .y = layout.y + layout.inset + 1 };
@@ -2265,7 +2266,7 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
     try std.testing.expectEqualStrings("CPU.hs", workbench.activeTab().?.input.getName());
 
     try quick.showFilePicker();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     click.x = right - 2;
     try std.testing.expect(workbench.handleQuickAccessMouse(&click));
     try std.testing.expect(quick.isOpen());
@@ -2277,7 +2278,7 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
     try quick.showCommandPicker();
     const picker = quick.controller.pickerRef();
     try picker.setValue(">" ++ command);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const keys = picker.activeItem().?.keycaps;
     try std.testing.expectEqual(@as(usize, 3), keys.len);
     try std.testing.expectEqualStrings("Ctrl", keys[0]);
@@ -2286,7 +2287,7 @@ test "Workbench: quick access row buttons open to the side, configure shortcuts 
     try std.testing.expect(workbench.handleQuickAccessMouse(&click));
     try std.testing.expect(quick.isOpen());
     try std.testing.expectEqual(@as(?usize, null), quick.commands_provider.base.history.rank(command));
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     var tab_key = ui.KeyEvent{ .key = .tab };
     var enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(try workbench.handleQuickAccessKey(&tab_key));
@@ -2318,7 +2319,7 @@ test "Workbench: quick open renders and an outside click only closes it" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "Search files") != null);
 
     var click = ui.MouseEvent{ .kind = .down, .x = 0, .y = 9 };
@@ -2609,7 +2610,7 @@ test "Workbench: editor settings apply to open editors and reload" {
     // computed-options store: the open editor renders middle dots for spaces.
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
-    try workbench.render(&rendered.writer);
+    try renderFrame(workbench, &rendered.writer);
     const frame = try frameText(allocator, &workbench.frame);
     defer allocator.free(frame);
     try std.testing.expect(std.mem.indexOf(u8, frame, "\u{00B7}") != null);
@@ -2660,7 +2661,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     }
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "No results found") != null);
 
     try view.widget.setValue(.search, "alpha");
@@ -2671,7 +2672,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     }
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
-    try workbench.render(&rendered.writer);
+    try renderFrame(workbench, &rendered.writer);
     const grid = workbench.frame.present();
     const y = ui.cell.snap(view.last_rect.y) + view.results_y + 1;
     const row = try grid.rowText(allocator, y);
@@ -2725,7 +2726,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
 
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
-    try workbench.render(&rendered.writer);
+    try renderFrame(workbench, &rendered.writer);
     try std.testing.expect(query.form.controlRect(.toggle_replace) == null);
     try std.testing.expect(query.form.controlRect(.context_lines) != null);
     try std.testing.expect(workbench.activePane().?.breadcrumbs_suppressed);
@@ -2746,7 +2747,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
         var target = workbench.editorMouseEvent(fold_click).?;
         try std.testing.expect(try target.tab.view.dispatchMouse(&target.event));
         try std.testing.expectEqual(visible, tab.editor.isModelLineVisible(4));
-        try workbench.render(&rendered.writer);
+        try renderFrame(workbench, &rendered.writer);
     }
     try std.testing.expect(workbench.activeTab() == tab);
     query.query_focused = true;
@@ -2776,14 +2777,14 @@ test "Workbench: search editor shows query controls and reruns with independent 
     try std.testing.expect(std.mem.indexOf(u8, no_context.items, "between") == null);
 
     query.form.setDetailsVisible(true);
-    try workbench.render(&rendered.writer);
+    try renderFrame(workbench, &rendered.writer);
     query.form.focusField(.includes);
     try query.form.setValue(.includes, "*.zig");
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
     try wait(workbench);
-    try workbench.render(&rendered.writer);
+    try renderFrame(workbench, &rendered.writer);
     tab.view.invalidate();
-    try workbench.render(&rendered.writer);
+    try renderFrame(workbench, &rendered.writer);
     const results_y = ui.cell.snap(pane.rect.y) + pane.chromeHeight() + query.headerRows();
     const no_results_row = try workbench.frame.present().rowText(allocator, results_y);
     defer allocator.free(no_results_row);
@@ -2860,7 +2861,7 @@ test "Workbench: typing a search query restarts results without stale collapse k
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "test") != null);
 }
 
@@ -2899,7 +2900,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(view.rows.items.len > view.visible_rows);
 
     const selected_before = view.selected;
@@ -2913,7 +2914,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
 
     var after: std.Io.Writer.Allocating = .init(allocator);
     defer after.deinit();
-    try workbench.render(&after.writer);
+    try renderFrame(workbench, &after.writer);
     try std.testing.expect(view.scroll > scroll_before);
 }
 
@@ -2938,7 +2939,7 @@ test "Workbench: search input focus follows presses, not hover" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(view.panel_focused);
     try std.testing.expectEqual(search_widget_mod.Field.replace, view.widget.focus_field);
     try std.testing.expect(!view.widget.search.focused);
@@ -2953,7 +2954,7 @@ test "Workbench: search input focus follows presses, not hover" {
     try std.testing.expect(view.panel_focused);
     try std.testing.expectEqual(search_widget_mod.Field.replace, view.widget.focus_field);
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(!view.widget.search.focused);
     try std.testing.expect(view.widget.replace.focused);
 
@@ -2962,7 +2963,7 @@ test "Workbench: search input focus follows presses, not hover" {
     try std.testing.expect(workbench.handleSidebarMouse(&down));
     try std.testing.expectEqual(search_widget_mod.Field.search, view.widget.focus_field);
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(view.widget.search.focused);
     try std.testing.expect(!view.widget.replace.focused);
 
@@ -2970,7 +2971,7 @@ test "Workbench: search input focus follows presses, not hover" {
     // flag, so the caret does not keep looking focused behind the editor.
     workbench.focusEditor();
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(!view.panel_focused);
     try std.testing.expect(!view.widget.search.focused);
     try std.testing.expect(!view.widget.replace.focused);
@@ -3020,7 +3021,7 @@ test "Workbench: duplicate tab labels show their directories" {
     defer workbench.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     const row = try workbench.frame.prev.rowText(allocator, ui.cell.snap(pane.rect.y));
@@ -3052,7 +3053,7 @@ test "Workbench: status bar spans the window and shows editor state" {
     workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const status = try workbench.frame.prev.rowText(allocator, 9);
     defer allocator.free(status);
@@ -3131,7 +3132,7 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
     workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const y = ui.cell.snap(workbench.statusBarRect().y);
     var hit_x: ?usize = null;
@@ -3169,7 +3170,7 @@ test "Workbench: status values open the matching pickers" {
     workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.indentation"));
     try std.testing.expect(workbench.quick_access.isPickOpen());
@@ -3211,7 +3212,7 @@ test "Workbench: EOL and language pickers update the editor" {
     workbench.refreshStatus();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     try std.testing.expect(try clickStatusEntry(workbench, "status.editor.encoding"));
     var down = ui.KeyEvent{ .key = .down };
@@ -3493,7 +3494,7 @@ test "Workbench: decoded divider drag resizes the split" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const first = workbench.part.root.kind.split.first;
     try std.testing.expect(!workbench.part.cell_borders);
@@ -3544,7 +3545,7 @@ test "Workbench: sash follows drag motion without button bits" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const first = workbench.part.root.kind.split.first;
     const boundary = ui.cell.snap(first.rect.right());
@@ -3583,7 +3584,7 @@ test "Workbench: decoded divider drag resizes a vertical split" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const first = workbench.part.root.kind.split.first;
     try std.testing.expectEqual(@as(usize, 6), ui.cell.snap(first.rect.bottom()));
@@ -3625,7 +3626,7 @@ test "Workbench: tab context menu closes the tab" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     var down = ui.MouseEvent{
@@ -3664,7 +3665,7 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.activePane().?;
     try std.testing.expectEqual(@as(usize, 2), pane.chromeHeight());
@@ -3718,7 +3719,7 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     const rounded = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
     for ([_]?ui.cell_border.Capabilities{ null, rounded }) |caps| {
         workbench.setCellBorderCapabilities(caps);
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         const left = ui.cell.snap(picker.rect.x);
         const right = ui.cell.snap(picker.rect.right()) - 1;
         const top = ui.cell.snap(picker.rect.y);
@@ -3799,7 +3800,7 @@ test "Workbench: breadcrumb symbols come from a registered outline provider" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const row = try workbench.frame.prev.rowText(allocator, 1);
     defer allocator.free(row);
@@ -3821,7 +3822,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     try workbench.activeTab().?.ensureControllers();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.activePane().?;
     const hit = pane.hits.items[0];
@@ -3838,7 +3839,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     try workbench.openPath(path);
     try workbench.activeTab().?.ensureControllers();
     try workbench.activeTab().?.editor.insertText("x");
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const pane2 = workbench.activePane().?;
     var click2 = ui.MouseEvent{
         .kind = .down,
@@ -3850,7 +3851,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expect(workbench.isDialogOpen());
 
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const dialog_text = try frameText(allocator, &workbench.frame);
     defer allocator.free(dialog_text);
     try std.testing.expect(std.mem.indexOf(u8, dialog_text, "Do you want to save the changes") != null);
@@ -3866,7 +3867,7 @@ test "Workbench: closing a dirty tab asks, cancel keeps it and save closes it" {
     try std.testing.expect(workbench.activeTab().?.editor.isDirty());
 
     // Enter activates the focused primary button, saves, then closes.
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const pane3 = workbench.activePane().?;
     var click3 = ui.MouseEvent{
         .kind = .down,
@@ -3902,7 +3903,7 @@ test "Workbench: don't save closes a dirty tab without writing" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const pane = workbench.activePane().?;
     var click = ui.MouseEvent{
         .kind = .down,
@@ -3972,7 +3973,7 @@ test "Workbench: Ctrl-Q quits clean and confirms one dirty tab" {
     try std.testing.expect(workbench.isDialogOpen());
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const dialog_text = try frameText(allocator, &workbench.frame);
     defer allocator.free(dialog_text);
@@ -4022,7 +4023,7 @@ test "Workbench: Ctrl-Q lists every dirty tab and don't save closes all" {
     try std.testing.expect(workbench.isDialogOpen());
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const dialog_text = try frameText(allocator, &workbench.frame);
     defer allocator.free(dialog_text);
@@ -4100,7 +4101,7 @@ test "Workbench: disabling breadcrumbs removes the row and shifts content" {
     try workbench.activeTab().?.ensureControllers();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.activePane().?;
     try std.testing.expectEqual(@as(usize, 1), pane.chromeHeight());
@@ -4123,7 +4124,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.activePane().?;
     const hit = pane.hits.items[0];
@@ -4143,7 +4144,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     try std.testing.expect(workbench.part.maximized_group == null);
 
     // The UI repaints the now-pinned label without italics.
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const hit_after = pane.hits.items[0];
     var col = hit_after.start;
     while (col < hit_after.end) : (col += 1) {
@@ -4158,7 +4159,7 @@ test "Workbench: double click pins a preview tab and toggles a pinned group" {
     try std.testing.expect(workbench.part.maximized_group == pane);
 
     // And another double click restores the split layout.
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     var fifth = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
     try std.testing.expect(workbench.handleTabMouse(&fifth));
     var sixth = ui.MouseEvent{ .kind = .down, .x = x, .y = y, .button = .left };
@@ -4182,7 +4183,7 @@ test "Workbench: double click still pins after a jittery drag starts" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.activePane().?;
     const hit = pane.hits.items[0];
@@ -4613,7 +4614,7 @@ test "Workbench: image files open in an image preview tab without touching the f
     // No kitty support: the pane renders the message instead of alt/binary text.
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const message_text = try paneTextAlloc(allocator, tab.image_preview.?);
     defer allocator.free(message_text);
     try std.testing.expect(std.mem.indexOf(u8, message_text, "kitty graphics") != null);
@@ -4643,7 +4644,7 @@ test "Workbench: a capable terminal uploads and paints the image" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b_Ga=t,f=100") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\u{10EEEE}") != null);
     var saw_placeholder = false;
@@ -4746,7 +4747,7 @@ test "Workbench: markdown preview shows displayable images" {
     // loaded into the document.
     var plain: std.Io.Writer.Allocating = .init(allocator);
     defer plain.deinit();
-    try workbench.render(&plain.writer);
+    try renderFrame(workbench, &plain.writer);
     try std.testing.expectEqual(@as(usize, 0), tab.markdown_preview.?.document.?.images.len);
     var saw_alt = false;
     const preview_surface = &tab.markdown_preview.?.surface.?;
@@ -4765,7 +4766,7 @@ test "Workbench: markdown preview shows displayable images" {
     // The workbench loads preview images on its background I/O pool.
     for (0..2000) |_| {
         _ = workbench.markdownPreviewTick(time_compat.milliTimestamp());
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         if (std.mem.indexOf(u8, out.written(), "\u{10EEEE}") != null) break;
         io.sleep(.fromMilliseconds(1), .awake) catch {};
     }
@@ -4789,14 +4790,14 @@ test "Workbench: closing an image tab releases the terminal image" {
     workbench.setImageProtocol(.unicode_placeholders);
     var first: std.Io.Writer.Allocating = .init(allocator);
     defer first.deinit();
-    try workbench.render(&first.writer);
+    try renderFrame(workbench, &first.writer);
     try std.testing.expect(std.mem.indexOf(u8, first.written(), "a=t,f=100") != null);
 
     try workbench.commands.execute("workbench.action.closeActiveEditor");
     try std.testing.expect(workbench.images.hasPending());
     var second: std.Io.Writer.Allocating = .init(allocator);
     defer second.deinit();
-    try workbench.render(&second.writer);
+    try renderFrame(workbench, &second.writer);
     try std.testing.expect(std.mem.indexOf(u8, second.written(), "a=d,d=I") != null);
 }
 
@@ -4872,7 +4873,7 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const rect = sidebar.last_rect;
     const left = ui.cell.snap(rect.x);
     const top = ui.cell.snap(rect.y) + sidebar.header_rows;
@@ -4907,7 +4908,7 @@ test "Workbench: Explorer expands a directory symlink and opens a file inside" {
 
     // A single click on the child opens it through the link path and reads the
     // target, so files inside a linked directory have their real content.
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const inner_click = ui.MouseEvent{
         .kind = .down,
         .x = left + 2,
@@ -4957,7 +4958,7 @@ test "Workbench: explorer sticky headers pin the folder ancestors" {
 
     var first_frame: std.Io.Writer.Allocating = .init(allocator);
     defer first_frame.deinit();
-    try workbench.render(&first_frame.writer);
+    try renderFrame(workbench, &first_frame.writer);
 
     const sidebar = workbench.sidebar.?;
     const deep = try std.fmt.allocPrint(allocator, "{s}/aaa/bbb/ccc/f11.txt", .{root});
@@ -4967,7 +4968,7 @@ test "Workbench: explorer sticky headers pin the folder ancestors" {
 
     var frame: std.Io.Writer.Allocating = .init(allocator);
     defer frame.deinit();
-    try workbench.render(&frame.writer);
+    try renderFrame(workbench, &frame.writer);
 
     try std.testing.expectEqual(@as(usize, 3), sidebar.tree.stickyScrollNodes().len);
     const explorer_body = workbench.explorer_container.?.bodyRect("explorer").?;
@@ -5014,7 +5015,7 @@ test "Workbench: right click on a tab neither closes nor activates it" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     const tab_x = pane.hits.items[0].start + 1;
@@ -5055,11 +5056,11 @@ test "Workbench: inactive breadcrumbs reuse a persistent control" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expectEqual(@as(usize, 1), workbench.breadcrumbs_inactive.count());
     const first = workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?;
 
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expectEqual(@as(usize, 1), workbench.breadcrumbs_inactive.count());
     try std.testing.expectEqual(first, workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?);
 }
@@ -5106,7 +5107,7 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const rendered = try frameText(allocator, &workbench.frame);
     defer allocator.free(rendered);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "boom") != null);
@@ -5116,7 +5117,7 @@ test "Workbench: content widgets show diagnostics in a rounded hover" {
     }
 
     workbench.setCellBorderCapabilities(ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const native = &workbench.frame.prev;
     var joints: u8 = 0;
     for (0..native.rows) |y| {
@@ -5148,7 +5149,7 @@ test "Workbench: tab overflow lists clipped tabs" {
     defer workbench.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     try std.testing.expect(pane.hits.items.len > 0);
@@ -5191,7 +5192,7 @@ test "Workbench: tab context menu closes to the right" {
     defer workbench.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     var down = ui.MouseEvent{
@@ -5224,7 +5225,7 @@ test "Workbench: tab context menu splits the captured tab" {
     try workbench.activateIndex(1);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     var down = ui.MouseEvent{
@@ -5258,7 +5259,7 @@ test "Workbench: tab context menu closes saved tabs" {
     defer workbench.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     var down = ui.MouseEvent{
@@ -5294,7 +5295,7 @@ test "Workbench: close saved keeps dirty tabs" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     var down = ui.MouseEvent{
@@ -5332,7 +5333,7 @@ test "Workbench: hiding the tab row reclaims it for content" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const row = try workbench.frame.prev.rowText(allocator, ui.cell.snap(pane.rect.y));
     defer allocator.free(row);
@@ -5357,7 +5358,7 @@ test "Workbench: the find bar reserves a view-zone row" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     const top = ui.cell.snap(pane.rect.y) + pane.chromeHeight();
@@ -5368,7 +5369,7 @@ test "Workbench: the find bar reserves a view-zone row" {
 
     _ = tab.editor.scrollViewLines(3);
     tab.view.invalidate();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     try std.testing.expectEqual(@as(usize, 0), tab.top_view_zone_rows);
 }
 
@@ -5403,7 +5404,7 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
         const source = source_group.activeTab().?;
         var out: std.Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
-        try wb.render(&out.writer);
+        try renderFrame(wb, &out.writer);
         const action = source_group.title_action_hit.?;
         var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = action.start, .y = ui.cell.snap(source_group.rect.y) };
         try std.testing.expect(wb.handleTabMouse(&click));
@@ -5422,14 +5423,14 @@ test "Workbench: markdown preview to the side uses an ordinary editor group and 
         try std.testing.expect(wb.handleSashMouse(&.{ .kind = .move, .x = boundary + 6, .y = y }));
         try std.testing.expect(wb.handleSashMouse(&.{ .kind = .up, .x = boundary + 6, .y = y }));
         try std.testing.expectEqual(boundary + 6, ui.cell.snap(source_group.rect.right()));
-        try wb.render(&out.writer);
+        try renderFrame(wb, &out.writer);
         try std.testing.expectEqual(ui.cell.snap(target.rect.w), preview.markdown_preview.?.width);
 
         try wb.showMarkdownSource();
         try std.testing.expectEqual(source_group, wb.activePane().?);
         try source.editor.insertText("LiveEdit");
         _ = wb.markdownPreviewTick(time_compat.milliTimestamp() + 350);
-        try wb.render(&out.writer);
+        try renderFrame(wb, &out.writer);
         const rendered = try preview.markdown_preview.?.surface.?.grid().rowText(allocator, 0);
         defer allocator.free(rendered);
         try std.testing.expect(std.mem.indexOf(u8, rendered, "LiveEdit") != null);
@@ -5535,7 +5536,7 @@ test "Workbench: breadcrumb symbol filtering survives editor group focus changes
     for ([_]*GroupPane{ second, first }) |pane| {
         try workbench.cycleGroup();
         try std.testing.expectEqual(pane, workbench.activePane().?);
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         const row = try workbench.frame.prev.rowText(allocator, 1);
         defer allocator.free(row);
         try std.testing.expect(std.mem.indexOf(u8, row, "VisibleClass") != null);
@@ -5616,7 +5617,7 @@ test "Workbench: clicking a pane body focuses its group" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const first = workbench.part.group_views.items[0];
     const second = workbench.part.group_views.items[1];
@@ -5686,7 +5687,7 @@ test "Workbench: cell borders remove the split gutter" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const grid = &workbench.frame.prev;
     const left_edge = ui.cell.snap(first.rect.right()) - 1;
@@ -5721,7 +5722,7 @@ test "Workbench: mixed editor splits join inside a single rounded frame" {
 
     for ([_]?ui.cell_border.Capabilities{ null, basic, rounded }) |caps| {
         workbench.setCellBorderCapabilities(caps);
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         const outer = workbench.part.base.bounds.?;
         const x = ui.cell.snap(outer.x);
         const right = ui.cell.snap(outer.right()) - 1;
@@ -5802,7 +5803,7 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         workbench.setCellBorders(borders);
         const x = ui.cell.snap(split.first.rect.x) + 10;
         const y = ui.cell.snap(split.first.rect.bottom());
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         const cells = &workbench.frame.prev;
         const at = cells.index(x, y);
         const background_at = cells.index(x, if (borders) y - 1 else y);
@@ -5816,7 +5817,7 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         workbench.beginMousePointer();
         try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = y }));
         try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointerShape());
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         try std.testing.expectEqual(expected_highlight, cells.bg[background_at]);
         if (borders) {
             const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
@@ -5827,7 +5828,7 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         }
 
         try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = y, .button = .left }));
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         try std.testing.expectEqual(expected_highlight, cells.bg[background_at]);
         if (borders) {
             const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
@@ -5842,7 +5843,7 @@ test "Workbench: stacked editor dividers use the editor background and sash colo
         workbench.beginMousePointer();
         try std.testing.expect(!workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = y - 2 }));
         try std.testing.expectEqual(ui.Pointer.default, workbench.pointerShape());
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         try std.testing.expectEqual(idle_background, cells.bg[background_at]);
         if (borders) {
             const stroke = cells.borderSetAt(x, y).strokeAt(ui.cell_border.Segment.top) orelse return error.MissingSashStroke;
@@ -5872,7 +5873,7 @@ test "Workbench: dropping a tab on a pane edge tiles a new pane" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.part.group_views.items[0];
     const tab_x = pane.hits.items[0].start;
@@ -5920,7 +5921,7 @@ test "Workbench: editor drag paints all four destinations and uses the release c
         workbench.setCellBorders(borders);
         var out: std.Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
 
         const pane = workbench.activePane().?;
         const left = ui.cell.snap(pane.rect.x);
@@ -5949,7 +5950,7 @@ test "Workbench: editor drag paints all four destinations and uses the release c
         const overlay = workbench.drag_target orelse return error.MissingDropOverlay;
         try std.testing.expectEqual(zone, overlay.zone);
         try std.testing.expect(workbench.editor_drag.data_transfer.image != null);
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
 
         const sample_x = ui.cell.snap(overlay.rect.x + overlay.rect.w / 3);
         const sample_y = ui.cell.snap(overlay.rect.y + overlay.rect.h / 3);
@@ -5990,7 +5991,7 @@ test "Workbench: editor drag keeps range selection and cancels on source removal
     defer workbench.deinit();
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const pane = workbench.activePane().?;
     const y = ui.cell.snap(pane.rect.y);
@@ -6014,7 +6015,7 @@ test "Workbench: editor drag keeps range selection and cancels on source removal
     try std.testing.expectEqualStrings("b.txt", destination.tabAtIndex(allocator, 1).?.input.getName());
 
     workbench.last_tab_click = null;
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const source_tab = destination.tabAtIndex(allocator, 0).?;
     const hit = destination.hits.items[0];
     try sendDragMouse(workbench, 0, hit.start, ui.cell.snap(destination.rect.y), false);
@@ -6038,7 +6039,7 @@ test "Workbench: bottom panel has a rounded outline with and without cell border
     const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
     for ([_]bool{ false, true }) |native| {
         workbench.setCellBorderCapabilities(if (native) caps else null);
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
 
         const cells = &workbench.frame.prev;
         const left = ui.cell.snap(workbench.part.base.bounds.?.x);
@@ -6072,7 +6073,7 @@ test "Workbench: bottom panel has a rounded outline with and without cell border
 
     workbench.setCellBorderCapabilities(null);
     try workbench.resize(90, 7);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const title = try workbench.frame.prev.rowText(allocator, ui.cell.snap(workbench.part.base.bounds.?.h));
     defer allocator.free(title);
     try std.testing.expect(std.mem.indexOf(u8, title, "PROBLEMS") != null);
@@ -6157,7 +6158,7 @@ test "Workbench: centered layout narrows and centers the editor part" {
     try std.testing.expect(centered.x > area.x);
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
-    try workbench.render(&rendered.writer);
+    try renderFrame(workbench, &rendered.writer);
     const pane_rect = workbench.activePane().?.rect;
     try std.testing.expect(pane_rect.x >= centered.x);
     try std.testing.expect(pane_rect.x + pane_rect.w <= centered.x + centered.w);
@@ -6205,7 +6206,7 @@ test "Workbench: activity bar top moves the composite bar into the side bar" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     // Row 0 is the composite bar, row 1 the title label, row 2 the content.
     const grid = workbench.frame.present();
     try std.testing.expectEqual(@as(u32, '\u{f07b}'), grid.cluster[grid.index(1, 0)]);
@@ -6228,7 +6229,7 @@ test "Workbench: activity bar top moves the composite bar into the side bar" {
     try std.testing.expectEqual(@as(usize, 1), workbench.activeActivity());
 
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const search_title = try workbench.frame.present().rowText(allocator, 1);
     defer allocator.free(search_title);
     try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
@@ -6252,7 +6253,7 @@ test "Workbench: closing the side bar keeps the activity bar" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const grid = workbench.frame.present();
     try std.testing.expectEqual(@as(u32, '\u{f07b}'), grid.cluster[grid.index(1, 1)]);
 
@@ -6263,7 +6264,7 @@ test "Workbench: closing the side bar keeps the activity bar" {
     // The activity bar stays visible and clickable while the side bar is
     // closed; an entry click reveals the side bar again.
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const closed_grid = workbench.frame.present();
     try std.testing.expectEqual(@as(u32, '\u{f07b}'), closed_grid.cluster[closed_grid.index(1, 1)]);
     const rail_click = ui.MouseEvent{ .kind = .down, .x = 1, .y = 1 };
@@ -6452,7 +6453,7 @@ test "Workbench: terminal editor moves the live instance between hosts and close
     try std.testing.expect(workbench.terminalAcceptsPaste());
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const line = try workbench.frame.prev.rowText(allocator, ui.cell.snap(pane.rect.y) + pane.chromeHeight());
     defer allocator.free(line);
     try std.testing.expect(std.mem.indexOf(u8, line, "session state") != null);
@@ -6487,7 +6488,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
         workbench.setCellBorderCapabilities(if (native) caps else null);
         try workbench.layout.setPartHidden(false, .sidebar);
 
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         const side = workbench.sidebar_part.base.bounds.?;
         const side_x = ui.cell.snap(side.x);
         const side_right = ui.cell.snap(side.right()) - 1;
@@ -6511,11 +6512,11 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
             const border_x = x - cell;
             const background_at = grid_cells.index(border_x, 3);
             workbench.beginMousePointer();
-            try workbench.render(&out.writer);
+            try renderFrame(workbench, &out.writer);
             const idle_background = grid_cells.bg[background_at];
             try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .move, .x = x, .y = 3 }));
             try std.testing.expectEqual(ui.Pointer.ew_resize, workbench.pointerShape());
-            try workbench.render(&out.writer);
+            try renderFrame(workbench, &out.writer);
             const highlight = ui.cell.packColor(sash_css.hoverStyle(if (workbench.theme_palette) |theme| theme.sashHoverBorder() else null).background.?);
             try std.testing.expectEqual(highlight, grid_cells.bg[background_at]);
             if (native) {
@@ -6524,7 +6525,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
             }
             workbench.beginMousePointer();
             try std.testing.expect(!workbench.handleSashMouse(&.{ .kind = .move, .x = x + 4, .y = 3 }));
-            try workbench.render(&out.writer);
+            try renderFrame(workbench, &out.writer);
             try std.testing.expectEqual(idle_background, grid_cells.bg[background_at]);
 
             try std.testing.expect(workbench.handleSashMouse(&.{ .kind = .down, .x = x, .y = 3, .button = .left }));
@@ -6551,7 +6552,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
 
         try workbench.layout.setPartHidden(true, .sidebar);
 
-        try workbench.render(&out.writer);
+        try renderFrame(workbench, &out.writer);
         const editor_x = ui.cell.snap(workbench.activity_bar_part.base.bounds.?.w);
         const editor_right = workbench.cols - 1;
         const editor = workbench.activePane().?;
@@ -6581,7 +6582,7 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
         for (0..2) |inset| {
             try workbench.layout.setSize(.panel, 10);
 
-            try workbench.render(&output.writer);
+            try renderFrame(workbench, &output.writer);
             const panel = workbench.panel_part.base.bounds.?;
             const x = ui.cell.snap(panel.x + panel.w / 2);
             const y = ui.cell.snap(panel.y) - inset;
@@ -6589,7 +6590,7 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
             workbench.beginMousePointer();
             try std.testing.expect(workbench.handleSashMouse(&event));
             try std.testing.expectEqual(ui.Pointer.ns_resize, workbench.pointer);
-            try workbench.render(&output.writer);
+            try renderFrame(workbench, &output.writer);
             const grid = &workbench.frame.prev;
             try std.testing.expectEqual(ui.cell.packColor(sash_css.hoverStyle(if (workbench.theme_palette) |theme| theme.sashHoverBorder() else null).background.?), grid.bg[grid.index(x, ui.cell.snap(panel.y))]);
 
@@ -6718,7 +6719,7 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     // Double-click measures the full label even while its paint is clipped.
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
-    try workbench.render(&output.writer);
+    try renderFrame(workbench, &output.writer);
     const click_x = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1;
     for (0..2) |_| {
         try sidebarMouseForTest(workbench, .down, click_x);
@@ -6820,7 +6821,7 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
     try std.testing.expectEqual(Focus.editor, workbench.focus);
     var rendered: std.Io.Writer.Allocating = .init(allocator);
     defer rendered.deinit();
-    try workbench.render(&rendered.writer);
+    try renderFrame(workbench, &rendered.writer);
 
     // The zen tab actions write `zenMode.showTabs` and take effect while zen
     // mode is active, without touching `workbench.editor.showTabs`.
@@ -6863,7 +6864,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     // The title row belongs to the side bar part and the label is uppercased.
     const explorer_title = try workbench.frame.present().rowText(allocator, 0);
@@ -6901,7 +6902,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
     const details_before = view.widget.details_visible;
 
     out.clearRetainingCapacity();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const search_title = try workbench.frame.present().rowText(allocator, 0);
     defer allocator.free(search_title);
     try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
@@ -6963,7 +6964,7 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const x = ui.cell.snap(view.last_rect.x);
     const y = ui.cell.snap(view.last_rect.y) + view.results_y + 1;
     const end = ui.cell.snap(view.last_rect.right());
@@ -6976,7 +6977,7 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
 
     const move = ui.MouseEvent{ .kind = .move, .x = x + 4, .y = y };
     try std.testing.expect(workbench.handleSidebarMouse(&move));
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const hovered = workbench.frame.present();
     try std.testing.expectEqual(@as(u32, '│'), hovered.cluster[hovered.index(x, y)]);
     try std.testing.expect(hovered.cluster[hovered.index(end - 2, y)] != '│');
@@ -6990,7 +6991,7 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
     try std.testing.expect(std.mem.indexOf(u8, status, "2 results in 1 file - Open in editor") != null);
     try std.testing.expect(workbench.handleSidebarMouse(&.{ .kind = .move, .x = link_x, .y = link_y }));
     try std.testing.expectEqual(ui.Pointer.pointer, workbench.pointer);
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const after_hover = workbench.frame.present();
     try std.testing.expectEqual(@as(u32, ' '), after_hover.cluster[after_hover.index(x, y)]);
 
@@ -7056,7 +7057,7 @@ test "Workbench: search aligns nested guides and keeps the link inline at the re
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const x = ui.cell.snap(view.last_rect.x);
     const y = ui.cell.snap(view.last_rect.y) + view.results_y;
     const grid = workbench.frame.present();
@@ -7071,7 +7072,7 @@ test "Workbench: search aligns nested guides and keeps the link inline at the re
     try std.testing.expectEqual(@as(u32, '⌄'), grid.cluster[grid.index(file_col, y + 1)]);
     const move = ui.MouseEvent{ .kind = .move, .x = x + 5, .y = y + 2 };
     try std.testing.expect(workbench.handleSidebarMouse(&move));
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const hovered = workbench.frame.present();
     try std.testing.expect(hovered.borderSetAt(folder_col, y + 1).strokeAt(ui.cell_border.Segment.v_top) != null);
     try std.testing.expect(hovered.borderSetAt(folder_col, y + 2).strokeAt(ui.cell_border.Segment.v_top) != null);
@@ -7365,7 +7366,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(workbench.scm_view_model.?.isCollapsed("graph"));
     var scm_frame: std.Io.Writer.Allocating = .init(allocator);
     defer scm_frame.deinit();
-    try workbench.render(&scm_frame.writer);
+    try renderFrame(workbench, &scm_frame.writer);
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Source Control") != null);
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "Graph") != null);
     // Changes renders the staged and working groups and their file names.
@@ -7406,7 +7407,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     }
 
     // Dragging the separator increases Changes and leaves the Graph expanded.
-    try workbench.render(&scm_frame.writer);
+    try renderFrame(workbench, &scm_frame.writer);
     const scm_container = workbench.scm_container.?;
     const sash = scm_container.sashes.items[0].rect;
     const before = scm_container.bodyRect("changes").?.h;
@@ -7422,7 +7423,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(workbench.handleSashMouse(&drag_sash));
     drag_sash.kind = .up;
     try std.testing.expect(workbench.handleSashMouse(&drag_sash));
-    try workbench.render(&scm_frame.writer);
+    try renderFrame(workbench, &scm_frame.writer);
     try std.testing.expectEqual(before + 2, scm_container.bodyRect("changes").?.h);
     try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("graph"));
 
@@ -7431,7 +7432,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // hovered title action.
     var hover_frame: std.Io.Writer.Allocating = .init(allocator);
     defer hover_frame.deinit();
-    try workbench.render(&hover_frame.writer);
+    try renderFrame(workbench, &hover_frame.writer);
     const graph_body = workbench.scm_container.?.bodyRect("graph") orelse return error.TestExpectedGraphBody;
     var body_move = ui.MouseEvent{ .kind = .move, .x = ui.cell.snap(graph_body.x) + 2, .y = ui.cell.snap(graph_body.y) };
     try std.testing.expect(workbench.handleSidebarMouse(&body_move));
@@ -7448,7 +7449,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
     for ([_]bool{ false, true }) |native| {
         workbench.setCellBorderCapabilities(if (native) caps else null);
-        try workbench.render(&hovered_frame.writer);
+        try renderFrame(workbench, &hovered_frame.writer);
         const hover_surface = &(workbench.scm_hover_surface orelse return error.TestExpectedHoverSurface);
         const hover_grid = hover_surface.grid();
         try std.testing.expect(hover_grid.cols >= 12 and hover_grid.rows >= 5);
@@ -7495,7 +7496,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     var diff_frame: std.Io.Writer.Allocating = .init(allocator);
     defer diff_frame.deinit();
     workbench.focusEditor();
-    try workbench.render(&diff_frame.writer);
+    try renderFrame(workbench, &diff_frame.writer);
     try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "HEAD") != null);
     try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "Working Tree") != null);
     try std.testing.expect(workbench.cursorCell() != null);
@@ -7667,7 +7668,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const container = workbench.scm_container orelse return error.TestExpectedScmContainer;
 
@@ -7754,12 +7755,12 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     var header_click = ui.MouseEvent{ .kind = .click, .x = header_start + 1, .y = graph_header_y, .button = .left };
     try std.testing.expect(workbench.handleSidebarMouse(&header_click));
     try std.testing.expect(container.model.isCollapsed("graph"));
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
     const collapsed_y = ui.cell.snap(container.sections.items[1].header_rect.y);
     var expand_click = ui.MouseEvent{ .kind = .click, .x = header_start + 1, .y = collapsed_y, .button = .left };
     try std.testing.expect(workbench.handleSidebarMouse(&expand_click));
     try std.testing.expect(!container.model.isCollapsed("graph"));
-    try workbench.render(&out.writer);
+    try renderFrame(workbench, &out.writer);
 
     const body = container.bodyRect("graph") orelse return error.TestExpectedGraphBody;
     try std.testing.expect(ui.cell.snap(body.h) >= 3);
@@ -8147,13 +8148,13 @@ test "workbench startup creates the live editor part and applies extraClasses be
     try std.testing.expectEqual(part.content_area.?, wb.part.grid_element.?.parent.?);
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try wb.render(&out.writer);
+    try renderFrame(wb, &out.writer);
     try std.testing.expectEqual(wb.part.grid_element.?, wb.activePane().?.dom.?.split_view.parent.?);
     const tree = wb.editor_surface.?.box_tree;
     try std.testing.expectEqual(part.bounds.?, tree.find(editor).?.rect);
     try std.testing.expectEqual(wb.activePane().?.rect, tree.find(wb.activePane().?.dom.?.split_view).?.rect);
     try wb.resize(95, 30);
-    try wb.render(&out.writer);
+    try renderFrame(wb, &out.writer);
     try std.testing.expectEqual(@as(f64, 95), tree.find(main).?.rect.w);
     try std.testing.expectEqual(@as(f64, 30), tree.find(main).?.rect.h);
     try std.testing.expectEqual(part.bounds.?, tree.find(editor).?.rect);

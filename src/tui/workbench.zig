@@ -6,7 +6,8 @@ const ui = @import("ui");
 const tui = @import("tui.zig");
 const terminal_input = @import("../vs/workbench/contrib/terminal/browser/terminalInput.zig");
 const time_compat = @import("../vs/base/common/timeCompat.zig");
-pub const Workbench = @import("../vs/workbench/browser/workbench.zig").Workbench;
+const shell = @import("../vs/workbench/browser/workbench.zig");
+pub const Workbench = shell.Workbench;
 
 pub const TerminalWorkbench = struct {
     workbench: *Workbench,
@@ -154,8 +155,393 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn render(self: *TerminalWorkbench) !void {
-        try self.workbench.render(self.output);
-        try self.workbench.syncCursor(self.output);
+        try renderFrame(self.workbench, self.output);
+        try syncCursor(self.workbench, self.output);
         try self.output.flush();
     }
 };
+
+const ViewPaneContainer = @import("../vs/workbench/browser/parts/views/viewPaneContainer.zig").ViewPaneContainer;
+const LayoutNode = @import("../vs/base/browser/ui/grid/grid.zig").Node(*shell.GroupPane);
+const sash_css = @import("../vs/base/browser/ui/sash/sash_css.zig");
+const frame_border_width: u8 = 32;
+const divider_width: u8 = 16;
+const sash_highlight_width: u8 = 64;
+
+/// Composite the registered parts in terminal paint order, then present the
+/// resulting frame. The benchmark and host integration tests use this path.
+pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
+    if (workbench.pointer_shapes) try workbench.pointer_state.update(writer, workbench.pointer);
+    const editor_surface = try workbench.preparePartsForRender();
+    workbench.frame.begin();
+    if (workbench.theme_palette) |palette| {
+        workbench.frame.next.fillRect(
+            0,
+            0,
+            @floatFromInt(workbench.cols),
+            @floatFromInt(workbench.rows),
+            .{ .bg = ui.cell.packColor(palette.background) },
+        );
+    }
+    workbench.paintActivityBar();
+    if (workbench.sidebarShown()) {
+        try workbench.paintSidebarContents();
+        renderSidebarFrame(workbench);
+        if (workbench.activeSidebarViewContainer()) |container| {
+            if (container.drop_activity) |drop_rect| {
+                ViewPaneContainer.paintDropOverlay(&workbench.frame.next, drop_rect, workbench.theme_palette);
+            }
+        }
+    }
+    renderCenteredLayoutMargins(workbench);
+    try workbench.paintEditorGroups(editor_surface);
+    renderEditorFrame(workbench);
+    if (workbench.part.maximized_group == null) renderDividers(workbench, workbench.part.root);
+    if (workbench.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, workbench.animateEditorDrop(), time_compat.milliTimestamp());
+    if (workbench.panelShown()) {
+        try workbench.renderPanel();
+        renderPanelFrame(workbench);
+    }
+    if (!workbench.sidebarShown() and workbench.workbenchSashHighlighted(.sidebar)) {
+        const rail = workbench.workbenchGridLayout().activity_bar;
+        const x = ui.cell.snap(rail.w);
+        if (x < workbench.cols) for (0..ui.cell.snap(rail.h)) |y| {
+            paintSashBackground(&workbench.frame.next, x, y, ui.cell.packColor(sashHoverStyle(workbench).background.?));
+        };
+    }
+    try workbench.paintOverlaysAndStatus();
+    // Image uploads/placements must reach the terminal before the frame
+    // body, in the same synchronized update, so a frame never shows
+    // placeholder cells without their image data.
+    const image_output = workbench.images.hasPending();
+    if (image_output) try writer.writeAll("\x1b[?2026h");
+    try workbench.images.flush(writer);
+    const encoded = try ui.ansi.encode(
+        workbench.allocator,
+        if (workbench.frame.have_prev) &workbench.frame.prev else null,
+        &workbench.frame.next,
+        .{ .synchronized = !image_output },
+    );
+    defer workbench.allocator.free(encoded);
+    if (encoded.len > 0) try writer.writeAll(encoded);
+    if (image_output) try writer.writeAll("\x1b[?2026l");
+
+    workbench.frame.swap();
+}
+
+fn syncCursor(workbench: *Workbench, out: *std.Io.Writer) !void {
+    if (workbench.cursorCell()) |cell| {
+        try ui.screen.moveCursor(out, cell.row + 1, cell.col + 1);
+        try ui.screen.showCursor(out);
+    } else {
+        try ui.screen.hideCursor(out);
+    }
+}
+
+fn renderCenteredLayoutMargins(workbench: *Workbench) void {
+    if (!workbench.layout.isMainEditorCenteredEffective()) return;
+    const area = workbench.workbenchGridLayout().editor;
+    const centered = workbench.layout.centeredEditorRect(area);
+    if (centered.x <= area.x and centered.w >= area.w) return;
+    const editor_background = workbench.themeColor("editor.background", .{ 30, 30, 33 });
+    const background = if (workbench.theme_palette) |palette|
+        palette.colorOr("editorPane.background", editor_background)
+    else
+        editor_background;
+    const style = ui.cell.PaintStyle{ .bg = ui.cell.packColor(background) };
+    const centered_left = ui.cell.snap(centered.x);
+    const area_left = ui.cell.snap(area.x);
+    const area_width = ui.cell.snap(area.w);
+    const centered_width = ui.cell.snap(centered.w);
+    if (centered_left > area_left) {
+        workbench.frame.next.fillRect(
+            @floatFromInt(area_left),
+            area.y,
+            @floatFromInt(centered_left - area_left),
+            area.h,
+            style,
+        );
+    }
+    const right_start = centered_left + centered_width;
+    const area_right = area_left + area_width;
+    if (area_right > right_start) {
+        workbench.frame.next.fillRect(
+            @floatFromInt(right_start),
+            area.y,
+            @floatFromInt(area_right - right_start),
+            area.h,
+            style,
+        );
+    }
+}
+
+fn renderDividers(workbench: *Workbench, node: *LayoutNode) void {
+    switch (node.kind) {
+        .leaf => {},
+        .split => |split| {
+            renderSash(workbench, node);
+            renderDividers(workbench, split.first);
+            renderDividers(workbench, split.second);
+        },
+    }
+}
+
+/// Paints the sash.css hover or active highlight across one cell.
+fn renderSash(workbench: *Workbench, node: *LayoutNode) void {
+    const split = node.kind.split;
+    const cell_borders = workbench.part.cell_borders;
+    if (!cell_borders and workbench.part.gap(split.direction, node.rect) == 0) return;
+    const active = workbench.part.active_sash == node;
+    const hovered = if (workbench.hovered_sash) |sash| sash == .editor and sash.editor == node else false;
+    const highlighted = active or hovered;
+    const color = if (highlighted) sashHoverStyle(workbench).background.? else workbench.themeColor("editorGroup.border", .{ 70, 70, 70 });
+    const editor_bg = ui.cell.packColor(workbench.themeColor("editor.background", .{ 30, 30, 33 }));
+    const sash_color = ui.cell.packColor(color);
+    const style: ui.cell.PaintStyle = .{
+        .fg = if (highlighted) editor_bg else sash_color,
+        .bg = if (highlighted) sash_color else editor_bg,
+    };
+    const stroke: ui.cell_border.Stroke = .{
+        .width = if (highlighted) sash_highlight_width else divider_width,
+        .color = .{ .rgb = color },
+        .layer = if (highlighted) .above_text else .below_text,
+        .priority = if (highlighted) 3 else 0,
+    };
+    const edge = ui.cell_border.Segment;
+    const cells = &workbench.frame.next;
+    const left = ui.cell.snap(node.rect.x);
+    const right = ui.cell.snap(node.rect.right());
+    const top = ui.cell.snap(node.rect.y);
+    const bottom = ui.cell.snap(node.rect.bottom());
+    switch (split.direction) {
+        .horizontal => {
+            const x = ui.cell.snap(split.first.rect.right());
+            if (x <= left or x >= right or top == bottom) return;
+            for (top..bottom) |y| {
+                if (cell_borders) {
+                    cells.addBorder(x - 1, y, edge.right, stroke);
+                    cells.addBorder(x, y, edge.left, stroke);
+                    if (highlighted) paintSashBackground(cells, x - 1, y, sash_color);
+                } else {
+                    cells.putCodepoint(x, y, '│', 1, style);
+                }
+            }
+            if (!cell_borders) {
+                if (top > 0) joinGlyphSash(workbench, x, top - 1, .down);
+                joinGlyphSash(workbench, x, bottom, .up);
+            }
+        },
+        .vertical => {
+            const y = ui.cell.snap(split.first.rect.bottom());
+            if (y <= top or y >= bottom or left == right) return;
+            for (left..right) |x| {
+                if (cell_borders) {
+                    cells.addBorder(x, y - 1, edge.bottom, stroke);
+                    cells.addBorder(x, y, edge.top, stroke);
+                    if (highlighted) paintSashBackground(cells, x, y - 1, sash_color);
+                } else {
+                    cells.putCodepoint(x, y, '─', 1, style);
+                }
+            }
+            if (!cell_borders) {
+                if (left > 0) joinGlyphSash(workbench, left - 1, y, .right);
+                joinGlyphSash(workbench, right, y, .left);
+            }
+        },
+    }
+}
+
+/// The outer frame and parent sash are painted before their children.
+/// Add a stem at each end of a glyph sash that meets one of those lines.
+fn joinGlyphSash(workbench: *Workbench, x: usize, y: usize, stem: enum { up, right, down, left }) void {
+    const cells = &workbench.frame.next;
+    if (x >= cells.cols or y >= ui.cell.snap(workbench.part.viewport.bottom())) return;
+    if (x < ui.cell.snap(workbench.part.viewport.x)) return;
+    const at = cells.index(x, y);
+    const junction: u32 = switch (cells.cluster[at]) {
+        '─' => switch (stem) {
+            .up => '┴',
+            .down => '┬',
+            else => return,
+        },
+        '│' => switch (stem) {
+            .left => '┤',
+            .right => '├',
+            else => return,
+        },
+        '┬' => if (stem == .up) '┼' else return,
+        '┴' => if (stem == .down) '┼' else return,
+        '├' => if (stem == .left) '┼' else return,
+        '┤' => if (stem == .right) '┼' else return,
+        else => return,
+    };
+    // In a compact grid a zero-width split may have editor text here.
+    if (workbench.part.viewAt(x, y) != null) return;
+    cells.cluster[at] = junction;
+}
+
+fn paintSashBackground(cells: *ui.CellGrid, x: usize, y: usize, color: u32) void {
+    const at = cells.index(x, y);
+    cells.bg[at] = color;
+    // ANSI output writes a wide glyph with one style for both cells.
+    if (x + 1 < cells.cols and cells.widthAt(x, y) == 2) {
+        cells.bg[at + 1] = color;
+    } else if (x > 0 and cells.widthAt(x - 1, y) == 2) {
+        cells.bg[at - 1] = color;
+    }
+}
+
+fn sashHoverStyle(workbench: *const Workbench) ui.HoverStyle {
+    return sash_css.hoverStyle(if (workbench.theme_palette) |palette| palette.sashHoverBorder() else null);
+}
+
+fn renderSidebarFrame(workbench: *Workbench) void {
+    const rect = workbench.workbenchGridLayout().sidebar;
+    const color = workbench.themeColor("sideBar.border", .{ 70, 70, 70 });
+    const cells = &workbench.frame.next;
+    const right = ui.cell.snap(rect.right()) - 1;
+    const rows = ui.cell.snap(rect.h);
+    const highlighted = workbench.workbenchSashHighlighted(.sidebar);
+    const sash_color = if (highlighted) sashHoverStyle(workbench).background.? else color;
+    const sash_bg = ui.cell.packColor(sash_color);
+    if (workbench.part.cell_borders) {
+        paintPaneCompositeCellFrame(workbench, rect, color);
+        if (highlighted) {
+            for (0..rows) |row| {
+                cells.addBorder(right, row, ui.cell_border.Segment.right, .{
+                    .width = sash_highlight_width,
+                    .color = .{ .rgb = sash_color },
+                    .placement = .inside,
+                    .layer = .above_text,
+                    .priority = 3,
+                });
+                paintSashBackground(cells, right, row, sash_bg);
+            }
+        }
+        return;
+    }
+
+    const paint: ui.cell.PaintStyle = .{
+        .fg = ui.cell.packColor(color),
+        .bg = ui.cell.packColor(workbench.themeColor("sideBar.background", .{ 30, 30, 33 })),
+    };
+    const sash_paint: ui.cell.PaintStyle = if (highlighted) .{ .fg = paint.bg, .bg = sash_bg } else paint;
+    if (workbench.glyphSidebarFrame()) {
+        cells.paintRoundedFrame(rect, paint);
+        if (highlighted) {
+            for (0..rows) |row| {
+                const at = cells.index(right, row);
+                cells.fg[at] = sash_paint.fg;
+                cells.bg[at] = sash_paint.bg;
+            }
+        }
+    } else {
+        for (0..rows) |row| cells.putCodepoint(right, row, '│', 1, sash_paint);
+    }
+}
+
+fn renderPanelFrame(workbench: *Workbench) void {
+    const rect = workbench.workbenchGridLayout().panel;
+    const color = workbench.themeColor("panel.border", .{ 70, 70, 70 });
+    if (workbench.part.cell_borders) {
+        if (rect.w >= 2 and rect.h >= 2) paintPaneCompositeCellFrame(workbench, rect, color);
+    } else if (workbench.glyphPanelFrame(rect)) {
+        workbench.frame.next.paintRoundedFrame(rect, .{
+            .fg = ui.cell.packColor(color),
+            .bg = ui.cell.packColor(workbench.themeColor("panel.background", .{ 30, 30, 33 })),
+        });
+    }
+
+    if (!workbench.workbenchSashHighlighted(.panel)) return;
+    const sash_color = sashHoverStyle(workbench).background.?;
+    const background = ui.cell.packColor(sash_color);
+    const panel_background = ui.cell.packColor(workbench.themeColor("panel.background", .{ 30, 30, 33 }));
+    const cells = &workbench.frame.next;
+    const row = ui.cell.snap(rect.y);
+    const glyphs = workbench.glyphPanelFrame(rect);
+    for (ui.cell.snap(rect.x)..ui.cell.snap(rect.right())) |x| {
+        if (workbench.part.cell_borders) {
+            cells.addBorder(x, row, ui.cell_border.Segment.top, .{
+                .width = sash_highlight_width,
+                .color = .{ .rgb = sash_color },
+                .placement = .inside,
+                .layer = .above_text,
+                .priority = 3,
+            });
+        } else if (glyphs) {
+            cells.fg[cells.index(x, row)] = panel_background;
+        }
+        paintSashBackground(cells, x, row, background);
+    }
+}
+
+fn paintPaneCompositeCellFrame(workbench: *Workbench, rect: ui.Rect, color: ui.Color) void {
+    paintCellFrame(workbench, rect, .{
+        .width = if (workbench.part.cell_border_capabilities.has(.round)) 16 else frame_border_width,
+        .color = .{ .rgb = color },
+        .placement = .inside,
+    });
+}
+
+fn renderEditorFrame(workbench: *Workbench) void {
+    const color = workbench.themeColor("editorGroup.border", .{ 70, 70, 70 });
+    const rect = workbench.part.viewport;
+    if (!workbench.part.cell_borders) {
+        if (!workbench.part.glyphFrame()) return;
+        workbench.frame.next.paintRoundedFrame(rect, .{
+            .fg = ui.cell.packColor(color),
+            .bg = ui.cell.packColor(workbench.themeColor("editor.background", .{ 30, 30, 33 })),
+        });
+        return;
+    }
+    const rounded = workbench.part.cell_border_capabilities.has(.round);
+    paintCellFrame(workbench, rect, .{
+        .width = if (rounded) 16 else frame_border_width,
+        .color = .{ .rgb = color },
+        .placement = if (rounded) .inside else .centered,
+    });
+}
+
+fn paintCellFrame(workbench: *Workbench, rect: ui.Rect, stroke: ui.cell_border.Stroke) void {
+    const x0 = ui.cell.snap(rect.x);
+    const y0 = ui.cell.snap(rect.y);
+    const x1 = ui.cell.snap(rect.right());
+    const y1 = ui.cell.snap(rect.bottom());
+    if (x1 <= x0 or y1 <= y0) return;
+
+    var col = x0;
+    while (col < x1) : (col += 1) {
+        workbench.frame.next.addBorder(col, y0, ui.cell_border.Segment.top, stroke);
+        workbench.frame.next.addBorder(col, y1 - 1, ui.cell_border.Segment.bottom, stroke);
+    }
+    var row = y0;
+    while (row < y1) : (row += 1) {
+        workbench.frame.next.addBorder(x0, row, ui.cell_border.Segment.left, stroke);
+        workbench.frame.next.addBorder(x1 - 1, row, ui.cell_border.Segment.right, stroke);
+    }
+
+    if (!workbench.part.cell_border_capabilities.has(.round)) return;
+    const joint = ui.cell_border.Joint;
+    const outside_left: ?usize = if (x0 > 0) x0 - 1 else null;
+    const outside_right: ?usize = if (x1 < workbench.frame.next.cols) x1 else null;
+    roundFrameCorner(workbench, x0, y0, joint.top_left, outside_left);
+    roundFrameCorner(workbench, x1 - 1, y0, joint.top_right, outside_right);
+    roundFrameCorner(workbench, x0, y1 - 1, joint.bottom_left, outside_left);
+    roundFrameCorner(workbench, x1 - 1, y1 - 1, joint.bottom_right, outside_right);
+}
+
+fn roundFrameCorner(workbench: *Workbench, x: usize, y: usize, joint: u8, outside_x: ?usize) void {
+    const caps = workbench.part.cell_border_capabilities;
+    const cells = &workbench.frame.next;
+    if (x >= cells.cols or y >= cells.rows) return;
+    var round_style: ui.cell_border.RoundStyle = .{
+        .radius = if (caps.has(.radius)) 128 else null,
+    };
+    if (caps.has(.outside) and outside_x != null) {
+        const bg = cells.bg[cells.index(outside_x.?, y)];
+        round_style.outside = if (bg == 0) .terminal_background else .{ .rgb = ui.cell.unpackColor(bg) };
+    } else if (caps.has(.outside)) {
+        round_style.outside = .terminal_background;
+    }
+    cells.roundBorder(x, y, joint, round_style);
+}
