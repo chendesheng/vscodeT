@@ -1029,7 +1029,7 @@ pub const Extensions = struct {
         if (std.mem.eql(u8, method, "$showMessage")) {
             const self: *Extensions = @ptrCast(@alignCast(context));
             self.needs_render = true;
-            return @import("mainThreadMessageService.zig").Prompt.show(self.workbench, args);
+            return @import("mainThreadMessageService.zig").Prompt.show(self.allocator, self.workbench.quick_access.inputService(), self.workbench, showStatusHint, args);
         }
         if (std.mem.eql(u8, method, "$startFileSearch")) {
             const self: *Extensions = @ptrCast(@alignCast(context));
