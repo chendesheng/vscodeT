@@ -36,6 +36,23 @@ const letterpress =
 ;
 const letterpress_height = std.mem.count(u8, letterpress, "\n") + 1;
 
+pub fn letterpressColor(background: ui.Color, foreground: ui.Color) ui.Color {
+    // The letterpress is recessed on a dark theme and raised on a light
+    // theme. On pure black/white, use the foreground to retain contrast.
+    const brightness = @as(u16, background.r) + background.g + background.b;
+    const edge: u16 = if (brightness >= 384) 255 else 0;
+    if (brightness < 30 or brightness > 735) return .{
+        .r = @intCast((@as(u16, background.r) * 9 + foreground.r) / 10),
+        .g = @intCast((@as(u16, background.g) * 9 + foreground.g) / 10),
+        .b = @intCast((@as(u16, background.b) * 9 + foreground.b) / 10),
+    };
+    return .{
+        .r = @intCast((@as(u16, background.r) * 2 + edge) / 3),
+        .g = @intCast((@as(u16, background.g) * 2 + edge) / 3),
+        .b = @intCast((@as(u16, background.b) * 2 + edge) / 3),
+    };
+}
+
 pub const Colors = struct {
     background: ui.Color,
     foreground: ui.Color,

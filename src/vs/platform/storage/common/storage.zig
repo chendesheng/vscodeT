@@ -22,6 +22,27 @@ pub fn workspaceFolderStatePath(allocator: Allocator, root: []const u8, folders:
     return std.fs.path.join(allocator, &.{ root, id, filename });
 }
 
+/// Native file adapter for machine-local workspace and profile state.
+pub fn readStateFile(comptime T: type, allocator: Allocator, io: std.Io, path: []const u8) !?std.json.Parsed(T) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(64 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    return try std.json.parseFromSlice(T, allocator, bytes, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+}
+
+pub fn writeStateFile(allocator: Allocator, io: std.Io, path: []const u8, value: anytype) !void {
+    const bytes = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(bytes);
+    const cwd = std.Io.Dir.cwd();
+    if (std.fs.path.dirname(path)) |dir| try cwd.createDirPath(io, dir);
+    var atomic = try cwd.createFileAtomic(io, path, .{ .replace = true });
+    defer atomic.deinit(io);
+    try atomic.file.writeStreamingAll(io, bytes);
+    try atomic.replace(io);
+}
+
 pub const StorageScope = enum(i8) {
     application_shared = -2,
     application = -1,

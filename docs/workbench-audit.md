@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 14,816 lines and has no inline tests. All 151 baseline
+The browser shell is 14,810 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -48,7 +48,11 @@ Show All Commands resolves the quick input service through its Action2 handler.
   group and the capabilities of visible editors. Stacked groups share one
   column. Workbench context keys subscribe to layout and working-copy events.
 * The service collection and instantiation service support explicit lazy
-  factories. Contributions observe lifecycle phases and session saving runs
+  factories. Layout signals readiness after restoring part state and signals full
+  restoration after editor groups finish. Workbench races full restoration against
+  two seconds, then schedules Eventually after 2.5 seconds and a window idle
+  callback capped at another 2.5 seconds. The terminal host supplies monotonic
+  time and idle opportunities. Contributions observe lifecycle phases and session saving runs
   on shutdown. Document symbols use one shared outline-model service.
 * Task providers, authentication account choices, file-icon theme data and
   sidebar moves have service owners. Simple Browser uses its bundled command

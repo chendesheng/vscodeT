@@ -601,8 +601,10 @@ pub fn main(init: std.process.Init) !void {
     const LayoutStorage = @import("layoutStorage.zig").LayoutStorage;
     var layout_storage: ?LayoutStorage = if (profile.user_data_dir) |dir| try .init(workbench, dir, args.session) else null;
     defer if (layout_storage) |*storage| storage.deinit();
+    var saved_layout: ?@import("../vs/workbench/browser/layout.zig").Layout.WorkspaceState = null;
     if (layout_storage) |*storage| {
-        if (storage.load(false)) |_| {
+        if (storage.load(false)) |saved| {
+            saved_layout = saved;
             _ = try workbench.lifecycle.on_will_shutdown.listen(storage, LayoutStorage.save);
         } else |err| report(log_service, "layout restore failed: {s}", .{@errorName(err)});
     }
@@ -663,6 +665,15 @@ pub fn main(init: std.process.Init) !void {
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
 
+    var restore_timer = @import("../vs/base/common/async.zig").WindowTimer{
+        .clock = .{ .context = workbench, .now = struct {
+            fn now(ctx: *anyopaque) i64 {
+                const wb: *Workbench = @ptrCast(@alignCast(ctx));
+                return std.Io.Timestamp.now(wb.io, .awake).toMilliseconds();
+            }
+        }.now },
+    };
+    workbench.restore(&restore_timer, saved_layout) catch |err| report(log_service, "workbench restore failed: {s}", .{@errorName(err)});
     infoLog(log_service, "workbench ready: {d} tab(s)", .{workbench.tabCount()});
     workbench.refreshStatus();
     if (workbench.activeTab()) |active| try active.view.refresh();
@@ -673,20 +684,9 @@ pub fn main(init: std.process.Init) !void {
     });
 
     defer workbench.lifecycle.shutdown(.quit) catch |err| report(log_service, "shutdown failed: {s}", .{@errorName(err)});
-    // Match upstream's `WorkbenchPhase.AfterRestored`: the workspace watcher
-    // starts only after the restored UI has painted. `fileService.watch` is
-    // asynchronous, so the recursive scan runs on the watcher worker.
-    workbench.lifecycle.setPhase(.Restored) catch |err| {
-        report(log_service, "workspace watcher unavailable: {s}", .{@errorName(err)});
-    };
-    infoLog(log_service, "startup: after-restored={d}ms", .{
-        std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
-    });
-
     // Last frame that was only caused by a background-tokenization chunk.
     var last_token_render_ms: i64 = 0;
     const outline_models = try workbench.instantiation.invokeFunction(@import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").getOutlineModelService, .{});
-    var eventually_after: ?i64 = time_compat.milliTimestamp() + 2500;
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.pollFileWatcher(now_ms)) needs_render = true;
@@ -749,21 +749,12 @@ pub fn main(init: std.process.Init) !void {
 
         workbench.flushTerminals();
         if (workbench.hasPendingTerminalWrites()) timeout = @min(timeout, 20);
-        if (eventually_after) |after| {
-            const deadline = if (now_ms < after) after else after + 2500;
-            timeout = @min(timeout, @as(i32, @intCast(std.math.clamp(deadline - now_ms, 0, 2500))));
-        }
+        timeout = restore_timer.nextTimeout(timeout);
         const polled = try terminal_host.wait(if (needs_render) 0 else timeout);
         if (polled.redraw) needs_render = true;
         if (builtin.os.tag != .windows and workbench.pollTerminalExits()) needs_render = true;
         const ready = polled.input or terminal_host.hasBufferedInput();
-        if (eventually_after) |after| {
-            const now = time_compat.milliTimestamp();
-            if ((!ready and now >= after) or now >= after + 2500) {
-                eventually_after = null;
-                try workbench.lifecycle.setPhase(.Eventually);
-            }
-        }
+        try restore_timer.dispatch(!ready and !needs_render);
         const resized = try terminal_host.handleResize();
 
         if (workbench.drainBackgroundTokenization()) needs_render = true;

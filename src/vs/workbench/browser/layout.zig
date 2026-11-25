@@ -118,6 +118,8 @@ pub const ZenModeExitInfo = struct {
 };
 
 pub const Layout = struct {
+    const Barrier = @import("../../base/common/async.zig").Barrier;
+
     const Binding = struct {
         owner: *Layout,
         part: *Part,
@@ -135,6 +137,8 @@ pub const Layout = struct {
         }
     };
 
+    when_ready: Barrier = .{},
+    when_restored: Barrier = .{},
     parts: std.EnumArray(Parts, ?Binding) = .initFill(null),
     grid_ready: bool = false,
     on_did_change_part_visibility: Emitter(layout_service.IPartVisibilityChangeEvent),
@@ -169,6 +173,8 @@ pub const Layout = struct {
     }
 
     pub fn deinit(self: *Layout) void {
+        self.when_ready.deinit(self.allocator);
+        self.when_restored.deinit(self.allocator);
         for (&self.parts.values) |*entry| if (entry.*) |*binding| Binding.dispose(binding);
         self.on_did_change_part_visibility.deinit();
         self.on_did_change.deinit();
@@ -343,7 +349,7 @@ pub const Layout = struct {
 
     /// Apply the stored visibility before zen mode so leaving a restored zen
     /// session can reopen the panes recorded in ZEN_MODE_EXIT_INFO.
-    pub fn restoreParts(self: *Layout, state: WorkspaceState) !void {
+    fn restorePartState(self: *Layout, state: WorkspaceState) !void {
         const host = self.zen_host orelse return error.LayoutNotInitialized;
         if (state.@"workbench.sideBar.hidden") |hidden| try self.setPartHidden(hidden, .sidebar);
         if (state.@"workbench.panel.hidden") |hidden| try self.setPartHidden(hidden, .panel);
@@ -354,6 +360,25 @@ pub const Layout = struct {
             try self.toggleZenMode(false, true);
         }
         if (self.isMainEditorCentered()) try self.centerMainEditorLayout(true, host.get_centered_options(host.context), true);
+    }
+
+    pub fn restoreParts(self: *Layout, saved: ?WorkspaceState, editors_restored: *Barrier) !void {
+        const state_result = if (saved) |state| self.restorePartState(state) else {};
+        // The native layout builds group views and opens pane composites
+        // synchronously. Editor resolution has its own completion boundary.
+        const ready_result = self.when_ready.open(self.allocator);
+        try editors_restored.wait(self.allocator, .{ .context = self, .run = onEditorsRestored });
+        try ready_result;
+        try state_result;
+    }
+
+    fn onEditorsRestored(context: *anyopaque) !void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        try self.when_restored.open(self.allocator);
+    }
+
+    pub fn isRestored(self: *const Layout) bool {
+        return self.when_restored.is_open;
     }
 
     pub fn restorePartSizes(self: *Layout, state: ProfileState) !void {

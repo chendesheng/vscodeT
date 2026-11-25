@@ -48,6 +48,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         const SerializableGrid = grid.SerializableGrid(*GroupView, editor_mod.GroupIdentifier);
 
         base: Part,
+        when_restored: @import("../../../../base/common/async.zig").Barrier = .{},
         maximized_group: ?*GroupView = null,
         on_did_change_group_maximized: Emitter(bool),
         on_did_add_group: Emitter(*GroupView),
@@ -122,7 +123,13 @@ pub fn EditorPart(comptime GroupView: type) type {
             try self.base.setVisible(visible);
         }
 
+        pub fn restoreEditors(self: *Self, panes: anytype) !void {
+            for (self.group_views.items) |group| try group.restoreEditors(panes);
+            try self.when_restored.open(self.allocator);
+        }
+
         pub fn deinit(self: *Self) void {
+            self.when_restored.deinit(self.allocator);
             self.on_did_change_group_maximized.deinit();
             self.on_did_add_group.deinit();
             self.on_did_remove_group.deinit();

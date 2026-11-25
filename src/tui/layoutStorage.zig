@@ -1,6 +1,7 @@
 // Native workspace/profile storage for the LayoutStateKeys in layout.ts.
 // The terminal profile keeps machine-local layout values in atomic JSON files.
 const std = @import("std");
+const storage = @import("../vs/platform/storage/common/storage.zig");
 const Layout = @import("../vs/workbench/browser/layout.zig").Layout;
 const Workbench = @import("workbench.zig").Workbench;
 const WillShutdownEvent = @import("../vs/workbench/services/lifecycle/common/lifecycle.zig").WillShutdownEvent;
@@ -38,15 +39,15 @@ pub const LayoutStorage = struct {
         if (self.workspace_path) |path| self.workbench.allocator.free(path);
     }
 
-    pub fn load(self: *LayoutStorage, reset_layout: bool) !void {
-        if (reset_layout) return;
+    pub fn load(self: *LayoutStorage, reset_layout: bool) !?Layout.WorkspaceState {
+        if (reset_layout) return null;
         const wb = self.workbench;
-        if (try self.read(Layout.ProfileState, self.profile_path)) |profile| {
+        if (try storage.readStateFile(Layout.ProfileState, wb.allocator, wb.io, self.profile_path)) |profile| {
             defer profile.deinit();
             try wb.layout.restorePartSizes(profile.value);
         }
-        const path = self.workspace_path orelse return;
-        const workspace = (try self.read(Layout.WorkspaceState, path)) orelse return;
+        const path = self.workspace_path orelse return null;
+        const workspace = (try storage.readStateFile(Layout.WorkspaceState, wb.allocator, wb.io, path)) orelse return null;
         defer workspace.deinit();
         var state = workspace.value;
         if (state.@"workbench.panelpart.activepanelid") |id| {
@@ -59,37 +60,17 @@ pub const LayoutStorage = struct {
                 else => wb.focusEditor(),
             }
         }
-        try wb.layout.restoreParts(state);
+        // The panel composite owns the selected ID after opening.
+        state.@"workbench.panelpart.activepanelid" = null;
+        return state;
     }
 
     pub fn save(_: WillShutdownEvent, self: *LayoutStorage) !void {
         const wb = self.workbench;
-        if (self.workspace_path) |path| try self.write(path, wb.layout.workspaceState(wb.panel_part.pane.active_id));
-        try self.write(self.profile_path, Layout.ProfileState{
+        if (self.workspace_path) |path| try storage.writeStateFile(wb.allocator, wb.io, path, wb.layout.workspaceState(wb.panel_part.pane.active_id));
+        try storage.writeStateFile(wb.allocator, wb.io, self.profile_path, Layout.ProfileState{
             .@"workbench.sideBar.size" = wb.sidebar_part.width,
             .@"workbench.panel.size" = wb.panel_part.getSize(),
         });
-    }
-
-    fn read(self: *LayoutStorage, comptime T: type, path: []const u8) !?std.json.Parsed(T) {
-        const wb = self.workbench;
-        const bytes = std.Io.Dir.cwd().readFileAlloc(wb.io, path, wb.allocator, .limited(64 * 1024)) catch |err| switch (err) {
-            error.FileNotFound => return null,
-            else => return err,
-        };
-        defer wb.allocator.free(bytes);
-        return try std.json.parseFromSlice(T, wb.allocator, bytes, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
-    }
-
-    fn write(self: *LayoutStorage, path: []const u8, value: anytype) !void {
-        const wb = self.workbench;
-        const bytes = try std.json.Stringify.valueAlloc(wb.allocator, value, .{});
-        defer wb.allocator.free(bytes);
-        const cwd = std.Io.Dir.cwd();
-        try cwd.createDirPath(wb.io, std.fs.path.dirname(path).?);
-        var atomic = try cwd.createFileAtomic(wb.io, path, .{ .replace = true });
-        defer atomic.deinit(wb.io);
-        try atomic.file.writeStreamingAll(wb.io, bytes);
-        try atomic.replace(wb.io);
     }
 };

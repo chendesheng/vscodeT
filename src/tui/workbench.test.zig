@@ -7889,10 +7889,10 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
         try wb.setUserConfigurationValue("zenMode.restore", .{ .bool = restore_zen });
         var storage = try LayoutStorage.init(wb, root, null);
         defer storage.deinit();
-        try storage.load(true);
+        try std.testing.expect(try storage.load(true) == null);
         try std.testing.expect(!wb.layout.isZenModeActive());
         try std.testing.expectEqual(28, wb.sidebar_part.width);
-        try storage.load(false);
+        try wb.layout.restoreParts(try storage.load(false), &wb.part.when_restored);
         try std.testing.expectEqual(restore_zen, wb.layout.isZenModeActive());
         try std.testing.expectEqual(restore_zen, wb.layout.isMainEditorCentered());
         try std.testing.expectEqual(!restore_zen, wb.layout.isVisible(.sidebar));
@@ -7911,7 +7911,7 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
     defer wb.deinit();
     var storage = try LayoutStorage.init(wb, root, "other.session");
     defer storage.deinit();
-    try storage.load(false);
+    try wb.layout.restoreParts(try storage.load(false), &wb.part.when_restored);
     try std.testing.expect(!wb.layout.isZenModeActive());
     try std.testing.expect(!wb.panelShown());
     try std.testing.expectEqual(36, wb.sidebar_part.width);
@@ -7942,5 +7942,87 @@ test "terminal shutdown history preserves recent order, selection and closed edi
         try std.testing.expectEqual(9, entry.top_view_line);
         try std.testing.expectEqual(10, entry.selection.?.restore(.{}).selection.?.positionLineNumber);
         try HistoryStorage.save(.{ .reason = .quit }, &store);
+    }
+}
+
+test "workbench restores after editor completion or two seconds and eventually waits for idle" {
+    const allocator = std.testing.allocator;
+    const WindowTimer = @import("../vs/base/common/async.zig").WindowTimer;
+    const Phase = @import("../vs/workbench/services/lifecycle/common/lifecycle.zig").LifecyclePhase;
+    const Clock = struct {
+        ms: i64 = 0,
+
+        fn now(context: *anyopaque) i64 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return self.ms;
+        }
+    };
+    for ([_]bool{ false, true }) |slow| {
+        const wb = try Workbench.init(allocator, std.testing.io, &.{}, 80, 24);
+        defer wb.deinit();
+        // Model an editor group whose visible editor has not resolved yet.
+        if (slow) wb.part.when_restored = .{};
+        var clock = Clock{};
+        var timer = WindowTimer{ .clock = .{ .context = &clock, .now = Clock.now } };
+        try wb.restore(&timer, null);
+        try std.testing.expect(wb.layout.when_ready.is_open);
+        try std.testing.expectEqual(!slow, wb.layout.isRestored());
+        if (slow) {
+            try std.testing.expectEqual(Phase.Ready, wb.lifecycle.phase);
+            clock.ms = 1999;
+            try timer.dispatch(true);
+            try std.testing.expectEqual(Phase.Ready, wb.lifecycle.phase);
+            try std.testing.expectEqual(1, timer.nextTimeout(250));
+            clock.ms = 2000;
+            try timer.dispatch(false);
+        }
+        try std.testing.expectEqual(Phase.Restored, wb.lifecycle.phase);
+        if (slow) {
+            clock.ms += 200;
+            try wb.part.when_restored.open(allocator);
+            try std.testing.expect(wb.layout.isRestored());
+        }
+        clock.ms = if (slow) 4499 else 2499;
+        try timer.dispatch(true);
+        try std.testing.expectEqual(Phase.Restored, wb.lifecycle.phase);
+        clock.ms += 1;
+        try timer.dispatch(false);
+        try std.testing.expectEqual(Phase.Restored, wb.lifecycle.phase);
+        if (slow) {
+            clock.ms += 2499;
+            try timer.dispatch(false);
+            try std.testing.expectEqual(Phase.Restored, wb.lifecycle.phase);
+            clock.ms += 1;
+        }
+        try timer.dispatch(!slow);
+        try std.testing.expectEqual(Phase.Eventually, wb.lifecycle.phase);
+        try std.testing.expectEqual(250, timer.nextTimeout(250));
+    }
+}
+
+test "workbench shutdown cancels outstanding restore and idle callbacks" {
+    const allocator = std.testing.allocator;
+    const WindowTimer = @import("../vs/base/common/async.zig").WindowTimer;
+    const Phase = @import("../vs/workbench/services/lifecycle/common/lifecycle.zig").LifecyclePhase;
+    for ([_]bool{ false, true }) |restoring| {
+        const wb = try Workbench.init(allocator, std.testing.io, &.{}, 80, 24);
+        defer wb.deinit();
+        if (restoring) wb.part.when_restored = .{};
+        var now_ms: i64 = 0;
+        var timer = WindowTimer{ .clock = .{ .context = &now_ms, .now = struct {
+            fn now(ctx: *anyopaque) i64 {
+                const time: *i64 = @ptrCast(@alignCast(ctx));
+                return time.*;
+            }
+        }.now } };
+        try wb.restore(&timer, null);
+        now_ms = 2500;
+        if (!restoring) try timer.dispatch(false);
+        try wb.lifecycle.shutdown(.quit);
+        try wb.part.when_restored.open(allocator);
+        now_ms = 5000;
+        try timer.dispatch(true);
+        try std.testing.expect(timer.callback == null);
+        try std.testing.expectEqual(if (restoring) Phase.Ready else Phase.Restored, wb.lifecycle.phase);
     }
 }

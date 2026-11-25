@@ -14,6 +14,77 @@ pub fn nowMs() i64 {
     return std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toMilliseconds();
 }
 
+pub const Continuation = struct {
+    context: *anyopaque,
+    run: *const fn (*anyopaque) anyerror!void,
+
+    pub fn call(self: Continuation) !void {
+        try self.run(self.context);
+    }
+};
+
+/// Port of Barrier from async.ts. Callers waiting on the UI thread register a
+/// continuation, including after the barrier has opened.
+pub const Barrier = struct {
+    is_open: bool = false,
+    pending: std.ArrayList(Continuation) = .empty,
+
+    pub fn deinit(self: *Barrier, allocator: Allocator) void {
+        self.pending.deinit(allocator);
+    }
+
+    pub fn wait(self: *Barrier, allocator: Allocator, callback: Continuation) !void {
+        if (self.is_open) return callback.call();
+        try self.pending.append(allocator, callback);
+    }
+
+    pub fn open(self: *Barrier, allocator: Allocator) !void {
+        if (self.is_open) return;
+        self.is_open = true;
+        var callbacks = self.pending;
+        self.pending = .empty;
+        defer callbacks.deinit(allocator);
+        var first_error: ?anyerror = null;
+        for (callbacks.items) |callback| callback.call() catch |err| {
+            if (first_error == null) first_error = err;
+        };
+        if (first_error) |err| return err;
+    }
+};
+
+/// A single outstanding timeout or idle callback, driven by the native host.
+/// Callbacks can replace the timer, including from within a running callback.
+pub const WindowTimer = struct {
+    clock: struct { context: *anyopaque, now: *const fn (*anyopaque) i64 },
+    callback: ?Continuation = null,
+    deadline: i64 = 0,
+    idle: bool = false,
+
+    pub fn setTimeout(self: *WindowTimer, delay: i64, callback: Continuation) void {
+        self.deadline = self.clock.now(self.clock.context) + delay;
+        self.callback = callback;
+        self.idle = false;
+    }
+
+    pub fn runWhenIdle(self: *WindowTimer, timeout: i64, callback: Continuation) void {
+        self.setTimeout(timeout, callback);
+        self.idle = true;
+    }
+
+    pub fn nextTimeout(self: *const WindowTimer, maximum: i32) i32 {
+        if (self.callback == null) return maximum;
+        if (self.idle) return 0;
+        return @intCast(std.math.clamp(self.deadline - self.clock.now(self.clock.context), 0, maximum));
+    }
+
+    pub fn dispatch(self: *WindowTimer, idle: bool) !void {
+        const callback = self.callback orelse return;
+        if (!(self.idle and idle) and self.clock.now(self.clock.context) < self.deadline) return;
+        self.callback = null;
+        try callback.call();
+    }
+};
+
 /// Runs `runner` once after a delay. Scheduling again cancels the previous run.
 pub fn RunOnceScheduler(comptime Context: type) type {
     return struct {

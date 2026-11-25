@@ -30,6 +30,48 @@ pub const ViewState = struct {
     size: ?f64 = null,
 };
 
+/// Workspace view visibility, order, collapsed state and stored size. The
+/// terminal file adapter uses the existing views.state.json representation.
+pub const ViewDescriptorsState = struct {
+    const storage = @import("../../../../platform/storage/common/storage.zig");
+    const WorkspaceFolder = @import("../../../../platform/workspace/common/workspace.zig").WorkspaceFolder;
+
+    allocator: Allocator,
+    io: std.Io,
+    root: []const u8,
+
+    pub fn init(allocator: Allocator, io: std.Io, profile: []const u8) !ViewDescriptorsState {
+        return .{ .allocator = allocator, .io = io, .root = try std.fs.path.join(allocator, &.{ profile, "User", "workspaceStorage" }) };
+    }
+
+    pub fn deinit(self: ViewDescriptorsState) void {
+        self.allocator.free(self.root);
+    }
+
+    pub fn restore(self: ViewDescriptorsState, folders: []const WorkspaceFolder, models: []const ?*ViewContainerModel) !void {
+        const path = try storage.workspaceFolderStatePath(self.allocator, self.root, folders, "views.state.json");
+        defer self.allocator.free(path);
+        const saved = (storage.readStateFile([]ViewState, self.allocator, self.io, path) catch return) orelse return;
+        defer saved.deinit();
+        for (models) |entry| if (entry) |model| model.restoreState(saved.value);
+    }
+
+    pub fn save(self: ViewDescriptorsState, folders: []const WorkspaceFolder, models: []const ?*ViewContainerModel) !void {
+        const path = try storage.workspaceFolderStatePath(self.allocator, self.root, folders, "views.state.json");
+        defer self.allocator.free(path);
+        var states: std.ArrayList(ViewState) = .empty;
+        defer states.deinit(self.allocator);
+        for (models) |entry| {
+            const model = entry orelse continue;
+            for (model.views.items) |view| {
+                if (!view.in_container) continue;
+                try states.append(self.allocator, .{ .id = view.id, .container = model.container.id, .visible = view.visible, .collapsed = view.collapsed, .order = view.order, .size = view.size });
+            }
+        }
+        try storage.writeStateFile(self.allocator, self.io, path, states.items);
+    }
+};
+
 pub const ViewContainer = struct {
     id: []const u8,
     title: []const u8,

@@ -577,6 +577,8 @@ const WorkbenchMenu = struct {
 };
 
 pub const Workbench = struct {
+    const WindowTimer = @import("../../base/common/async.zig").WindowTimer;
+    restore_timer: ?*WindowTimer,
     allocator: Allocator,
     io: Io,
     /// Io used to run interactive file/dir/network work off the TUI thread.
@@ -670,7 +672,7 @@ pub const Workbench = struct {
     /// True while restoring a navigation entry; suppresses recording the
     /// restore as another navigation.
     history_navigating: bool = false,
-    view_state_storage: ?[]u8 = null,
+    view_state_storage: ?view_container_model_mod.ViewDescriptorsState = null,
     sidebar_action_anchor: ?WorkbenchMenu.Anchor = null,
     history_tab: ?*Tab = null,
     history_selection_listener: ?Tab.SelectionListener = null,
@@ -799,6 +801,7 @@ pub const Workbench = struct {
         errdefer self.deinit();
         try self.startup();
         for (paths) |path| try self.openPath(path);
+        try self.part.when_restored.open(allocator);
         return self;
     }
 
@@ -841,6 +844,7 @@ pub const Workbench = struct {
         errdefer allocator.destroy(self);
 
         self.* = undefined;
+        self.restore_timer = null;
         self.allocator = allocator;
         self.io = io;
         self.async_io_state = Io.Threaded.init(allocator, .{
@@ -1038,7 +1042,49 @@ pub const Workbench = struct {
             .history = &self.history,
             .working_copies = &self.working_copy_service,
         };
-        for (self.part.group_views.items) |group| try group.restoreEditors(panes);
+        try self.part.restoreEditors(panes);
+    }
+
+    pub fn restore(self: *Workbench, timer: *WindowTimer, saved: ?Layout.WorkspaceState) !void {
+        if (self.restore_timer != null or self.lifecycle.will_shutdown) return error.WorkbenchAlreadyRestoring;
+        _ = try self.lifecycle.on_will_shutdown.listen(self, stopRestoration);
+        self.restore_timer = timer;
+        const restoring = self.layout.restoreParts(saved, &self.part.when_restored);
+        try self.layout.when_ready.wait(self.allocator, .{ .context = self, .run = onLayoutReady });
+        try restoring;
+    }
+
+    fn stopRestoration(_: lifecycle_mod.WillShutdownEvent, self: *Workbench) !void {
+        self.cancelRestoreTimer();
+    }
+
+    fn cancelRestoreTimer(self: *Workbench) void {
+        if (self.restore_timer) |timer| timer.callback = null;
+        self.restore_timer = null;
+    }
+
+    fn onLayoutReady(context: *anyopaque) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        const callback = lifecycle_mod.Continuation{ .context = self, .run = onLayoutRestored };
+        self.restore_timer.?.setTimeout(2000, callback);
+        try self.layout.when_restored.wait(self.allocator, callback);
+    }
+
+    fn onLayoutRestored(context: *anyopaque) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        if (self.restore_timer == null or self.lifecycle.phase.reached(.Restored)) return;
+        defer self.restore_timer.?.setTimeout(2500, .{ .context = self, .run = scheduleEventually });
+        try self.lifecycle_api.setPhase(.Restored);
+    }
+
+    fn scheduleEventually(context: *anyopaque) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.restore_timer.?.runWhenIdle(2500, .{ .context = self, .run = onWindowIdle });
+    }
+
+    fn onWindowIdle(context: *anyopaque) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        try self.lifecycle_api.setPhase(.Eventually);
     }
 
     /// Stores group models, their grid layout and activation history.
@@ -1868,9 +1914,10 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        self.cancelRestoreTimer();
         if (self.context_keys != null) self.workbench_context.deinit();
         self.saveSidebarViewStates() catch {};
-        if (self.view_state_storage) |path| self.allocator.free(path);
+        if (self.view_state_storage) |state| state.deinit();
         self.view_state_storage = null;
         self.clearTabDrag();
         self.cancelAsyncJobs();
@@ -5849,57 +5896,21 @@ pub const Workbench = struct {
     }
 
     pub fn setSidebarViewStorage(self: *Workbench, user_data_dir: []const u8) !void {
-        const path = try std.fs.path.join(self.allocator, &.{ user_data_dir, "User", "workspaceStorage" });
-        if (self.view_state_storage) |old| self.allocator.free(old);
-        self.view_state_storage = path;
+        const state = try view_container_model_mod.ViewDescriptorsState.init(self.allocator, self.io, user_data_dir);
+        if (self.view_state_storage) |old| old.deinit();
+        self.view_state_storage = state;
         try self.restoreSidebarViewStates();
         self.updateSidebarTitleActions();
     }
 
-    fn sidebarViewStatePath(self: *Workbench) !?[]u8 {
-        const storage = self.view_state_storage orelse return null;
-        return try storage_mod.workspaceFolderStatePath(self.allocator, storage, self.workspace.getWorkspace().folders.items, "views.state.json");
-    }
-
     fn restoreSidebarViewStates(self: *Workbench) !void {
-        const path = (try self.sidebarViewStatePath()) orelse return;
-        defer self.allocator.free(path);
-        const bytes = Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(64 * 1024)) catch return;
-        defer self.allocator.free(bytes);
-        const state = std.json.parseFromSlice([]view_container_model_mod.ViewState, self.allocator, bytes, .{ .ignore_unknown_fields = true }) catch return;
-        defer state.deinit();
-        if (self.explorer_view_model) |model| model.restoreState(state.value);
-        if (self.scm_view_model) |model| model.restoreState(state.value);
+        const state = self.view_state_storage orelse return;
+        try state.restore(self.workspace.getWorkspace().folders.items, &.{ self.explorer_view_model, self.scm_view_model });
     }
 
     fn saveSidebarViewStates(self: *Workbench) !void {
-        const path = (try self.sidebarViewStatePath()) orelse return;
-        defer self.allocator.free(path);
-        var entries: std.ArrayList(view_container_model_mod.ViewState) = .empty;
-        defer entries.deinit(self.allocator);
-        for ([_]?*view_container_model_mod.ViewContainerModel{ self.explorer_view_model, self.scm_view_model }) |maybe_model| {
-            const model = maybe_model orelse continue;
-            for (model.views.items) |view| {
-                if (!view.in_container) continue;
-                try entries.append(self.allocator, .{
-                    .id = view.id,
-                    .container = model.container.id,
-                    .visible = view.visible,
-                    .collapsed = view.collapsed,
-                    .order = view.order,
-                    .size = view.size,
-                });
-            }
-        }
-        var out: Io.Writer.Allocating = .init(self.allocator);
-        defer out.deinit();
-        try std.json.Stringify.value(entries.items, .{}, &out.writer);
-        const cwd = Io.Dir.cwd();
-        if (std.fs.path.dirname(path)) |directory| try cwd.createDirPath(self.io, directory);
-        var atomic = try cwd.createFileAtomic(self.io, path, .{ .replace = true });
-        defer atomic.deinit(self.io);
-        try atomic.file.writeStreamingAll(self.io, out.written());
-        try atomic.replace(self.io);
+        const state = self.view_state_storage orelse return;
+        try state.save(self.workspace.getWorkspace().folders.items, &.{ self.explorer_view_model, self.scm_view_model });
     }
 
     /// Snapshots the active editor's pane selection into the ported editor
@@ -10651,27 +10662,10 @@ pub const Workbench = struct {
             .background = background,
             .foreground = foreground,
             .description = description,
-            .letterpress = watermarkTint(background, foreground),
+            .letterpress = editor_group_watermark.letterpressColor(background, foreground),
             .hover = self.themeColor("toolbar.hoverBackground", .{ 60, 60, 63 }),
             .key_foreground = self.themeColor("keybindingLabel.foreground", .{ description.r, description.g, description.b }),
             .key_background = self.themeColor("keybindingLabel.background", .{ 48, 48, 51 }),
-        };
-    }
-
-    fn watermarkTint(background: ui.Color, foreground: ui.Color) ui.Color {
-        // The letterpress is recessed on a dark theme and raised on a light
-        // theme. On pure black/white, use the foreground to retain contrast.
-        const brightness = @as(u16, background.r) + background.g + background.b;
-        const edge: u16 = if (brightness >= 384) 255 else 0;
-        if (brightness < 30 or brightness > 735) return .{
-            .r = @intCast((@as(u16, background.r) * 9 + foreground.r) / 10),
-            .g = @intCast((@as(u16, background.g) * 9 + foreground.g) / 10),
-            .b = @intCast((@as(u16, background.b) * 9 + foreground.b) / 10),
-        };
-        return .{
-            .r = @intCast((@as(u16, background.r) * 2 + edge) / 3),
-            .g = @intCast((@as(u16, background.g) * 2 + edge) / 3),
-            .b = @intCast((@as(u16, background.b) * 2 + edge) / 3),
         };
     }
 

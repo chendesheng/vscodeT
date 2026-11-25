@@ -17,10 +17,7 @@ pub const LifecyclePhase = enum(u8) {
 
 pub const ShutdownReason = enum(u8) { close = 1, quit, reload, load };
 pub const WillShutdownEvent = struct { reason: ShutdownReason };
-pub const Continuation = struct {
-    context: *anyopaque,
-    run: *const fn (*anyopaque) anyerror!void,
-};
+pub const Continuation = @import("../../../../base/common/async.zig").Continuation;
 
 pub const lifecycle_service_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(ILifecycleService, "lifecycleService");
 
