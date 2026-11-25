@@ -744,7 +744,10 @@ pub const Workbench = struct {
     } = null,
     pending_symbols: ?[]goto_symbol_quick_access.Entry = null,
     symbol_action_contexts: [go_to_commands.actions.len]SymbolActionContext = undefined,
-    breadcrumbs_dirty: bool = false,
+    frame_scheduler: ?struct {
+        context: *anyopaque,
+        request: *const fn (*anyopaque) void,
+    } = null,
     /// Anchored breadcrumb picker (upstream context-view tree). The popup
     /// borrows its item strings and symbol handles from `breadcrumbs_arena`.
     breadcrumb_popup: ?*breadcrumbs_picker.Picker = null,
@@ -952,7 +955,7 @@ pub const Workbench = struct {
         self.breadcrumbs_group = null;
         self.breadcrumbs_pane = null;
         self.breadcrumbs_input = null;
-        self.breadcrumbs_dirty = false;
+        self.frame_scheduler = null;
         self.breadcrumb_popup = null;
         self.context_menu = null;
         self.hovered_tab = null;
@@ -7548,14 +7551,14 @@ pub const Workbench = struct {
         pane.syncActivePane();
         self.part.setMaximizedGroup(pane);
         self.layoutAll();
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
     }
 
     pub fn minimizeActiveGroup(self: *Workbench) void {
         if (self.part.maximized_group == null) return;
         self.part.setMaximizedGroup(null);
         self.layoutAll();
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
     }
 
     pub fn closePanel(self: *Workbench) void {
@@ -8315,7 +8318,7 @@ pub const Workbench = struct {
             self.part.setMaximizedGroup(pane);
         }
         self.layoutAll();
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
     }
 
     pub fn ensureContextKeys(self: *Workbench) !*context_key_mod.ContextKeyService {
@@ -10588,7 +10591,7 @@ pub const Workbench = struct {
                         .h = 1,
                     }, true) catch {};
                     _ = control.click(event.x) catch {};
-                    self.breadcrumbs_dirty = true;
+                    self.requestFrame();
                 } else |_| {}
             }
             return true;
@@ -10642,7 +10645,7 @@ pub const Workbench = struct {
                             _ = pane.group.model.pin(previous.tab.input) catch {};
                         }
                         self.focusEditor();
-                        self.breadcrumbs_dirty = true;
+                        self.requestFrame();
                         return true;
                     }
                 }
@@ -12007,7 +12010,7 @@ pub const Workbench = struct {
             self.disposeAllInactiveBreadcrumbs();
         }
         self.layoutAll();
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
     }
 
     fn ensureBreadcrumbsControl(self: *Workbench, pane: *GroupPane) !*BreadcrumbsControl {
@@ -12152,7 +12155,7 @@ pub const Workbench = struct {
             .active_editor = outlineActiveEditor,
             .active_resource = outlineActiveResource,
             .current_position = outlineViewCurrentPosition,
-            .request_render = outlineRequestRender,
+            .request_render = requestWorkbenchFrame,
             .focus_editor = outlineFocusEditor,
             .is_symbol_visible = outlineSymbolVisible,
         }, &self.outline_service);
@@ -12174,10 +12177,8 @@ pub const Workbench = struct {
         if (view.editor != editor) try view.setEditor(editor);
     }
 
-    pub fn pollBreadcrumbs(self: *Workbench) bool {
-        if (!self.breadcrumbs_dirty) return false;
-        self.breadcrumbs_dirty = false;
-        return true;
+    fn requestFrame(self: *Workbench) void {
+        if (self.frame_scheduler) |scheduler| scheduler.request(scheduler.context);
     }
 
     pub fn focusBreadcrumbs(self: *Workbench, select: bool) bool {
@@ -12194,7 +12195,7 @@ pub const Workbench = struct {
             control.widget.setSelection(null);
             control.widget.setFocused(control.widget.itemCount() -| 1);
         }
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
         return true;
     }
 
@@ -12253,7 +12254,7 @@ pub const Workbench = struct {
             const directory = breadcrumbs_picker.inputDirectory(file);
             try picker.showFileDirectory(directory, file.path, pickerAnchor(anchor), anchor_y);
         }
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
     }
 
     /// Upstream `BreadcrumbsOutlinePicker`: input the outline tree and reveal
@@ -12268,7 +12269,7 @@ pub const Workbench = struct {
         _ = self.breadcrumbs_arena.reset(.retain_capacity);
         const picker = try self.ensureBreadcrumbPopup();
         try picker.showOutline(outline, element, pickerAnchor(anchor), self.breadcrumbAnchorY());
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
     }
 
     fn pickerAnchor(anchor: BreadcrumbsAnchor) breadcrumbs_picker.Anchor {
@@ -12297,13 +12298,13 @@ pub const Workbench = struct {
                 .arena = self.breadcrumbs_arena.allocator(),
                 .open_file = onBreadcrumbPickerOpenFile,
                 .file_icon = onBreadcrumbPickerFileIcon,
-                .request_render = onBreadcrumbPickerRequestRender,
+                .request_render = requestWorkbenchFrame,
             },
             .{
                 .context = self,
                 .arena = self.breadcrumbs_arena.allocator(),
                 .reveal = onBreadcrumbPickerReveal,
-                .request_render = onBreadcrumbPickerRequestRender,
+                .request_render = requestWorkbenchFrame,
             },
         );
         popup.setThemeColors(self.theme_palette);
@@ -12315,7 +12316,7 @@ pub const Workbench = struct {
         const popup = self.breadcrumb_popup orelse return false;
         if (!popup.isVisible()) return false;
         _ = popup.handleKey(event);
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
         return true;
     }
 
@@ -12323,7 +12324,7 @@ pub const Workbench = struct {
         const popup = self.breadcrumb_popup orelse return false;
         if (!popup.isVisible()) return false;
         _ = popup.handleMouse(event);
-        self.breadcrumbs_dirty = true;
+        self.requestFrame();
         return true;
     }
 
@@ -12592,7 +12593,10 @@ fn outlineViewCurrentPosition(context: *anyopaque) ?Position {
     return tab.editor.modelSelection().getStartPosition();
 }
 
-fn outlineRequestRender(_: *anyopaque) void {}
+fn requestWorkbenchFrame(context: *anyopaque) void {
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.requestFrame();
+}
 
 fn outlineFocusEditor(context: *anyopaque) void {
     const self: *Workbench = @ptrCast(@alignCast(context));
@@ -12716,7 +12720,7 @@ fn breadcrumbRevealElement(context: *anyopaque, outline: *outline_mod.IOutline, 
 
 fn breadcrumbRequestRender(context: *anyopaque) void {
     const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    self.workbench.breadcrumbs_dirty = true;
+    self.workbench.requestFrame();
 }
 
 fn breadcrumbFocusEditor(context: *anyopaque) void {
@@ -12798,7 +12802,7 @@ fn runTabMenuAction(self: *Workbench, menu: *WorkbenchMenu, id: []const u8) anye
         else
             .vertical);
     }
-    self.breadcrumbs_dirty = true;
+    self.requestFrame();
 }
 
 fn runStatusbarMenuAction(self: *Workbench, _: *WorkbenchMenu, id: []const u8) anyerror!void {
@@ -12849,11 +12853,6 @@ fn onBreadcrumbPickerFileIcon(context: *anyopaque, path: []const u8) file_icon.I
 fn onBreadcrumbPickerReveal(context: *anyopaque, outline: *outline_mod.IOutline, element: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.revealBreadcrumbElement(outline, element);
-}
-
-fn onBreadcrumbPickerRequestRender(context: *anyopaque) void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.breadcrumbs_dirty = true;
 }
 
 fn onReferencePick(context: *anyopaque, picker: *QuickPick) anyerror!void {

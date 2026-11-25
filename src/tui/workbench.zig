@@ -22,7 +22,17 @@ pub const TerminalWorkbench = struct {
         return .{ .workbench = workbench, .output = output, .input_buffer = buffer };
     }
 
+    pub fn scheduleFrames(self: *TerminalWorkbench, needs_render: *bool) void {
+        self.workbench.frame_scheduler = .{ .context = needs_render, .request = requestFrame };
+    }
+
+    fn requestFrame(context: *anyopaque) void {
+        const needs_render: *bool = @ptrCast(@alignCast(context));
+        needs_render.* = true;
+    }
+
     pub fn deinit(self: *TerminalWorkbench) void {
+        self.workbench.frame_scheduler = null;
         self.input_buffer.deinit();
     }
 

@@ -644,8 +644,10 @@ pub fn main(init: std.process.Init) !void {
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
 
+    var needs_render = false;
     var terminal_host = try TerminalWorkbench.init(workbench, out, border_probe.leftover, image_probe.leftover);
     defer terminal_host.deinit();
+    terminal_host.scheduleFrames(&needs_render);
 
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
@@ -670,7 +672,6 @@ pub fn main(init: std.process.Init) !void {
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
 
-    var needs_render = false;
     // Last frame that was only caused by a background-tokenization chunk.
     var last_token_render_ms: i64 = 0;
     const outline_models = try workbench.instantiation.invokeFunction(@import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").getOutlineModelService, .{});
@@ -678,7 +679,6 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.pollFileWatcher(now_ms)) needs_render = true;
-        if (workbench.pollBreadcrumbs()) needs_render = true;
         if (try workbench.pollQuickAccess(now_ms)) needs_render = true;
         if (workbench.pollSearch(now_ms)) needs_render = true;
         if (workbench.pollGit(now_ms)) needs_render = true;
@@ -715,7 +715,6 @@ pub fn main(init: std.process.Init) !void {
                     timeout = @min(timeout, @as(i32, @intCast(@min(sticky_timeout, 250))));
                 }
             }
-            if (needs_render) timeout = 0;
         }
         timeout = outline_models.dispatchTimers(now_ms, timeout);
         if (workbench.editorDragTimeout(now_ms)) |drag_timeout| timeout = @min(timeout, drag_timeout);
@@ -743,7 +742,7 @@ pub fn main(init: std.process.Init) !void {
             const deadline = if (now_ms < after) after else after + 2500;
             timeout = @min(timeout, @as(i32, @intCast(std.math.clamp(deadline - now_ms, 0, 2500))));
         }
-        const polled = try terminal_host.wait(timeout);
+        const polled = try terminal_host.wait(if (needs_render) 0 else timeout);
         if (polled.redraw) needs_render = true;
         if (builtin.os.tag != .windows and workbench.pollTerminalExits()) needs_render = true;
         const ready = polled.input or terminal_host.hasBufferedInput();
@@ -783,8 +782,8 @@ pub fn main(init: std.process.Init) !void {
                     try current.refresh();
                 }
                 workbench.refreshStatus();
-                try terminal_host.render();
                 needs_render = false;
+                try terminal_host.render();
                 if (token_maintenance) last_token_render_ms = now_ms;
             }
             continue;
@@ -1026,8 +1025,8 @@ pub fn main(init: std.process.Init) !void {
         }
         workbench.refreshStatus();
         try tui.hideCursor(out);
-        try terminal_host.render();
         needs_render = false;
+        try terminal_host.render();
     }
 }
 

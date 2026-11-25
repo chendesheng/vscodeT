@@ -3670,6 +3670,14 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     const control = workbench.breadcrumbs_control.?;
     try std.testing.expect(control.widget.itemCount() >= 2);
 
+    var needs_frame = false;
+    var host = try @import("workbench.zig").TerminalWorkbench.init(workbench, &out.writer, null, null);
+    defer host.deinit();
+    host.scheduleFrames(&needs_frame);
+    try control.model.?.refresh();
+    try std.testing.expect(needs_frame);
+    try host.render();
+
     // The tab header and the breadcrumb file segment use the Explorer's icon.
     const expected_icon = file_icon.file("http-proxy.js");
     const tab_row = ui.cell.snap(pane.rect.y);
