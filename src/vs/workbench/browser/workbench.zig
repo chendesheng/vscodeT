@@ -193,7 +193,6 @@ const hover_operation = @import("../../editor/contrib/hover/browser/hoverOperati
 const hover_types = @import("../../editor/contrib/hover/browser/hoverTypes.zig");
 const sticky_actions = @import("../../editor/contrib/stickyScroll/browser/stickyScrollActions.zig");
 const MarkdownPreviewManager = @import("../../../extensions/markdown-language-features/src/preview/previewManager.zig").MarkdownPreviewManager;
-const media_preview = @import("../contrib/mediaPreview/common/mediaPreview.zig");
 const ImagePreviewEditorInput = @import("../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 const ImagePreviewEditorInputSerializer = @import("../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInputSerializer;
 const MediaPreviewStatus = @import("../contrib/mediaPreview/browser/mediaPreviewStatusBar.zig").MediaPreviewStatus;
@@ -306,11 +305,6 @@ pub const GroupPane = editor_group_view.EditorGroupView(*Tab);
 const editor_mod = @import("../common/editor.zig");
 
 const text_files = @import("../services/textfile/common/textFileService.zig");
-const TextFileRead = text_files.TextFileRead;
-const OpenJob = struct {
-    read: *TextFileRead,
-    options: Workbench.OpenOptions,
-};
 
 const context_menus = @import("../../platform/contextview/browser/contextMenuService.zig");
 const Menu = context_menus.Menu;
@@ -393,10 +387,8 @@ pub const Workbench = struct {
     async_io: Io,
     disk_files: @import("../../platform/files/common/fileService.zig").DiskFileService,
     text_file_service: text_files.TextFileService,
-    /// The single interactive open currently in flight. A newer request
-    /// supersedes it; the generation is checked again when the result lands.
-    pending_open: ?OpenJob = null,
-    reload_jobs: std.array_list.Managed(*TextFileRead),
+    /// Native file opening and event-driven reload owner.
+    editor_opening: editor_service_mod.EditorOpening,
     cols: usize,
     rows: usize,
 
@@ -573,8 +565,6 @@ pub const Workbench = struct {
         errdefer self.disk_files.deinit();
         self.text_file_service = .init(allocator, &self.disk_files);
         errdefer self.text_file_service.deinit();
-        self.pending_open = null;
-        self.reload_jobs = std.array_list.Managed(*TextFileRead).init(allocator);
         self.editor_surface = surface;
         self.cols = surface.document().cols;
         self.tab_service = null;
@@ -785,6 +775,65 @@ pub const Workbench = struct {
         std.mem.swap(ServiceCollection, services, &self.services);
         errdefer self.services.deinit();
         try self.initQuickAccess();
+        self.editor_opening = .{
+            .allocator = allocator,
+            .part = self.part,
+            .io = self.io,
+            .view_factory = self.view_factory,
+            .images = &self.images,
+            .window_events = &self.window_events,
+            .text_file_service = &self.text_file_service,
+            .history = &self.history,
+            .declarative = &self.declarative,
+            .json_client = &self.json_client,
+            .language_features = &self.language_features,
+            .reload_jobs = .init(allocator),
+            .host = .{
+                .context = self,
+                .reveal = struct {
+                    fn reveal(context: *anyopaque, path: []const u8) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        if (host.autoRevealEnabled(path)) {
+                            if (host.sidebar) |sidebar| sidebar.revealPath(path) catch {};
+                        }
+                    }
+                }.reveal,
+                .configure_editor = struct {
+                    fn configure(context: *anyopaque, editor: *Editor) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.applyConfiguredLanguageAssociations(editor);
+                        if (host.language_features) |features| editor.attachLanguageServices(features, host.marker_service, host.marker_decorations);
+                    }
+                }.configure,
+                .configure_tab = struct {
+                    fn configure(context: *anyopaque, tab: *Tab) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.applyEditorSettingsToTab(tab);
+                    }
+                }.configure,
+                .register_working_copy = struct {
+                    fn register(context: *anyopaque, tab: *Tab) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.registerWorkingCopy(tab);
+                    }
+                }.register,
+                .discard_tab = discardTransferPane,
+                .focus_editor = focusWindowEditor,
+                .request_frame = requestWorkbenchFrame,
+                .show_status = struct {
+                    fn show(context: *anyopaque, message: []const u8) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.setStatusHint("{s}", .{message});
+                    }
+                }.show,
+                .image_dimensions = struct {
+                    fn dimensions(context: *anyopaque) editor_service_mod.EditorOpening.ImageDimensions {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        return .{ .width = host.cols, .height = host.editorContentHeight() };
+                    }
+                }.dimensions,
+            },
+        };
         self.symbol_navigation = .{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
@@ -1814,7 +1863,7 @@ pub const Workbench = struct {
             self.allocator.destroy(service);
         }
         self.frame.deinit();
-        self.reload_jobs.deinit();
+        self.editor_opening.deinit();
         self.text_file_service.deinit();
         self.disk_files.deinit();
         self.async_io_state.deinit();
@@ -2235,35 +2284,8 @@ pub const Workbench = struct {
         }
     }
 
-    /// Handles external file changes: clean open editors are reloaded, dirty
-    /// ones keep the user's in-memory content (upstream marks the conflict).
     pub fn handleFileChanges(self: *Workbench, changes: []const @import("../../platform/files/common/files.zig").FileChange) void {
-        for (changes) |change| {
-            if (change.type == .DELETED) continue;
-            // FSEvents can report a pre-existing path as ADDED on its first
-            // event because it has no initial directory snapshot. For an open
-            // editor that is a content change just like UPDATED.
-            self.requestFrame();
-            for (self.part.group_views.items) |pane| {
-                for (pane.tabs.items) |tab| {
-                    if (tab.isImage()) {
-                        const image_path = tab.imagePath() orelse continue;
-                        if (self.samePath(image_path, change.resource)) tab.reloadImage();
-                        continue;
-                    }
-                    if (tab.markdown_preview) |preview| {
-                        if (preview.usesImagePath(change.resource)) preview.refresh(false);
-                    }
-                    if (tab.isDiff()) continue;
-                    if (!self.samePath(tab.editor.path, change.resource)) continue;
-                    if (tab.editor.isDirty()) {
-                        tab.editor.markConflict();
-                        continue;
-                    }
-                    self.requestFileReload(change.resource);
-                }
-            }
-        }
+        self.editor_opening.handleFileChanges(changes);
     }
 
     pub fn workingCopyService(self: *Workbench) *WorkingCopyService {
@@ -3601,112 +3623,8 @@ pub const Workbench = struct {
         return (editor_service_mod.EditorService{ .part = self.part }).findOpenImageInput(self.io, path);
     }
 
-    fn openExistingImageInput(
-        self: *Workbench,
-        path: []const u8,
-        existing: *ImagePreviewEditorInput,
-        options: OpenOptions,
-    ) !void {
-        const opened = try self.service.openEditor(
-            &existing.base,
-            null,
-            .{ .open = .{ .pinned = options.pinned, .active = true } },
-        );
-        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
-        if (self.autoRevealEnabled(path)) {
-            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
-        }
-        if (pane.tabForInput(opened.result.editor)) |tab| {
-            try pane.activateTab(tab);
-            tab.setImageRuntime(&self.images);
-            if (!options.preserve_focus) tab.focusEditor();
-        }
-        try self.history.add(path);
-        self.pruneTabs(pane);
-    }
-
-    fn openImagePath(self: *Workbench, path: []const u8, options: OpenOptions, window: ?*@import("../../base/common/windowDispatch.zig").Queue) !void {
-        const input = try ImagePreviewEditorInput.init(self.allocator, path);
-        errdefer input.deinit();
-
-        const opened = try self.service.openEditor(
-            &input.base,
-            null,
-            .{ .open = .{ .pinned = options.pinned, .active = true } },
-        );
-        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
-        if (self.autoRevealEnabled(path)) {
-            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
-        }
-        if (!opened.result.is_new) {
-            input.deinit();
-            if (pane.tabForInput(opened.result.editor)) |tab| {
-                try pane.activateTab(tab);
-                tab.setImageRuntime(&self.images);
-                if (!options.preserve_focus) tab.focusEditor();
-            }
-            try self.history.add(path);
-            self.pruneTabs(pane);
-            return;
-        }
-
-        const tab = try Tab.initImageFromInput(self.view_factory, self.allocator, self.io, input, self.cols, self.editorContentHeight(), &self.images, window);
-        try tab.view.setStatusBarVisible(false);
-        try pane.addTab(tab);
-        self.applyEditorSettingsToTab(tab);
-        try pane.activateTab(tab);
-        if (!options.preserve_focus) {
-            self.focusEditor();
-            tab.focusEditor();
-        }
-        try self.history.add(path);
-        self.pruneTabs(pane);
-    }
-
-    fn openExistingInput(self: *Workbench, path: []const u8, existing: *FileEditorInput, options: OpenOptions) !void {
-        const service = editor_service_mod.EditorService{ .part = self.part };
-        try self.finishTextEditorOpen(path, try service.openExistingFileInput(existing, options), options);
-    }
-
-    fn openCreatedTextEditor(self: *Workbench, path: []const u8, editor: *Editor, options: OpenOptions) !void {
-        self.applyConfiguredLanguageAssociations(editor);
-        if (self.language_features) |features| editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        const service = editor_service_mod.EditorService{ .part = self.part };
-        try self.finishTextEditorOpen(path, try service.openTextEditor(self.view_factory, editor, options, &self.images), options);
-    }
-
-    fn finishTextEditorOpen(self: *Workbench, path: []const u8, opened: editor_service_mod.OpenedTextEditor, options: OpenOptions) !void {
-        if (self.autoRevealEnabled(path)) {
-            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
-        }
-        if (opened.tab) |tab| {
-            tab.setImageRuntime(&self.images);
-            if (opened.is_new) {
-                self.applyEditorSettingsToTab(tab);
-                self.registerWorkingCopy(tab);
-            }
-            if (self.language_features) |features| tab.attachLanguageRegistry(features);
-            try tab.ensureControllers();
-            if (!opened.is_new and !options.preserve_focus) tab.focusEditor();
-        }
-        try self.history.add(path);
-        self.pruneTabs(opened.pane);
-    }
-
     pub fn openPathWithOptions(self: *Workbench, path: []const u8, options: OpenOptions) !void {
-        self.recordNavigation();
-        if (!options.force_text and media_preview.opensInImagePreview(path)) {
-            if (self.findOpenImageInput(path)) |existing| {
-                return self.openExistingImageInput(path, existing, options);
-            }
-            return self.openImagePath(path, options, null);
-        }
-        if (self.findOpenInput(path)) |existing| {
-            return self.openExistingInput(path, existing, options);
-        }
-        const size = (self.activePane() orelse return error.GroupPaneMissing).contentDimensions();
-        const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative, self.json_client, .{ .reserve_scrollbar = true });
-        try self.openCreatedTextEditor(path, editor, options);
+        try self.editor_opening.openPathWithOptions(path, options);
     }
 
     /// The Io used for interactive reads and network work. Callers pass this
@@ -3724,109 +3642,7 @@ pub const Workbench = struct {
     }
 
     pub fn requestOpenPathWithOptions(self: *Workbench, path: []const u8, options: OpenOptions) void {
-        self.cancelPendingOpen();
-        self.clearStatusHint();
-        // Image tabs load their payload through `ImagePreviewPane.initAsync`;
-        // constructing the tab itself does no file I/O.
-        if (!options.force_text and media_preview.opensInImagePreview(path)) {
-            if (self.findOpenImageInput(path)) |existing| {
-                self.recordNavigation();
-                self.openExistingImageInput(path, existing, options) catch |err| {
-                    self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-                };
-                return;
-            }
-            self.recordNavigation();
-            self.openImagePath(path, options, &self.window_events) catch |err| {
-                self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-            };
-            return;
-        }
-        if (self.findOpenInput(path)) |existing| {
-            self.recordNavigation();
-            self.openExistingInput(path, existing, options) catch |err| {
-                self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-            };
-            return;
-        }
-
-        const read = TextFileRead.startWithListener(&self.text_file_service, path, true, .{ .context = self, .queue = &self.window_events, .run = openReadCompleted }) catch |err| {
-            self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-            return;
-        };
-        self.pending_open = .{ .read = read, .options = options };
-        self.setStatusHint("Opening {s}...", .{std.fs.path.basename(path)});
-    }
-
-    fn cancelPendingOpen(self: *Workbench) void {
-        const job = self.pending_open orelse return;
-        self.pending_open = null;
-        job.read.cancel();
-    }
-
-    /// Starts one external-change reload per path. Results are applied by
-    /// the completion handler after resolving the tab again.
-    fn requestFileReload(self: *Workbench, path: []const u8) void {
-        for (self.reload_jobs.items) |job| {
-            if (self.samePath(job.path, path)) return;
-        }
-        const read = TextFileRead.startWithListener(&self.text_file_service, path, false, .{ .context = self, .queue = &self.window_events, .run = reloadCompleted }) catch return;
-        self.reload_jobs.append(read) catch read.cancel();
-    }
-
-    fn reloadCompleted(context: *anyopaque, job: *TextFileRead) bool {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const index = std.mem.indexOfScalar(*TextFileRead, self.reload_jobs.items, job).?;
-        _ = self.reload_jobs.swapRemove(index);
-        defer job.destroy();
-        var content = job.awaitResult() catch return false;
-        defer content.deinit(self.allocator);
-        const input = self.findOpenInput(job.path) orelse return false;
-        if (input.editor.isDirty()) input.editor.markConflict() else input.editor.applyReloadedContent(content.text, content.encoding) catch {};
-        return true;
-    }
-
-    fn cancelReloadJobs(self: *Workbench) void {
-        for (self.reload_jobs.items) |job| job.cancel();
-        self.reload_jobs.clearRetainingCapacity();
-    }
-
-    fn openLoadedTextEditor(self: *Workbench, path: []const u8, loaded: *const text_files.ResolvedTextFile, options: OpenOptions) !void {
-        const size = (self.activePane() orelse return error.GroupPaneMissing).contentDimensions();
-        const editor = try Editor.createWithExtensionsFromLoadedText(
-            self.allocator,
-            self.io,
-            loaded,
-            path,
-            size.width,
-            size.height,
-            self.declarative,
-            self.json_client,
-            .{ .reserve_scrollbar = true },
-        );
-        try self.openCreatedTextEditor(path, editor, options);
-    }
-
-    /// Drains completed async reads on the TUI thread. Returns true when a
-    /// result was applied and a repaint is needed.
-    fn openReadCompleted(context: *anyopaque, read: *TextFileRead) bool {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const job = self.pending_open.?;
-        std.debug.assert(job.read == read);
-        self.pending_open = null;
-        defer read.destroy();
-        var loaded = read.awaitResult() catch |err| {
-            self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-            return true;
-        };
-        defer loaded.deinit(self.allocator);
-        self.recordNavigation();
-        self.openLoadedTextEditor(read.path, &loaded, job.options) catch |err| {
-            self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-            return true;
-        };
-        self.clearStatusHint();
-        return true;
+        self.editor_opening.requestOpenPathWithOptions(path, options);
     }
 
     pub fn setStatusHint(self: *Workbench, comptime fmt: []const u8, args: anytype) void {
@@ -3835,15 +3651,8 @@ pub const Workbench = struct {
         accessor.update(.{ .name = "Source Control", .text = text });
     }
 
-    fn clearStatusHint(self: *Workbench) void {
-        if (self.status_hint_accessor) |accessor| {
-            accessor.update(.{ .name = "Source Control", .text = "" });
-        }
-    }
-
     fn cancelAsyncJobs(self: *Workbench) void {
-        self.cancelPendingOpen();
-        self.cancelReloadJobs();
+        self.editor_opening.cancel();
         if (self.theme_service) |service| service.cancelColorThemeLoad();
         self.user_keybindings.cancelReload();
         if (self.sidebar) |sidebar| sidebar.cancelLoad();
@@ -3978,26 +3787,6 @@ pub const Workbench = struct {
             false,
         );
         return true;
-    }
-
-    /// Removes tab views whose input the group model no longer contains. This
-    /// is needed when a preview editor is replaced by the next preview.
-    fn pruneTabs(self: *Workbench, pane: *GroupPane) void {
-        var index = pane.tabs.items.len;
-        var removed_active = false;
-        while (index > 0) {
-            index -= 1;
-            const tab = pane.tabs.items[index];
-            if (pane.group.model.contains(.{ .input = tab.input }, .{})) continue;
-            if (pane.activeTab() == tab) removed_active = true;
-            _ = pane.removeTab(tab);
-
-            self.unregisterWorkingCopy(tab);
-            self.history.detachHistoryTab(tab);
-            self.detachTabViewHandlers(tab);
-            tab.deinit();
-        }
-        if (removed_active) pane.syncActivePane();
     }
 
     pub fn activateIndex(self: *Workbench, index: usize) !void {

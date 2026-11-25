@@ -142,9 +142,9 @@ fn paneTextAlloc(allocator: Allocator, pane: *@import("../vs/workbench/contrib/m
 
 fn pumpOpenForTests(workbench: *Workbench) void {
     var guard: usize = 0;
-    while (workbench.pending_open != null and guard < 1000) : (guard += 1) {
+    while (workbench.editor_opening.pending_open != null and guard < 1000) : (guard += 1) {
         _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-        if (workbench.pending_open != null) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
+        if (workbench.editor_opening.pending_open != null) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
     }
 }
 
@@ -5161,7 +5161,7 @@ test "Workbench: interactive open reads on the async Io" {
     defer workbench_window.deinit();
 
     workbench.requestOpenPath(path);
-    try std.testing.expect(workbench.pending_open != null);
+    try std.testing.expect(workbench.editor_opening.pending_open != null);
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 
     var waited: usize = 0;
@@ -6715,7 +6715,7 @@ test "Workbench: external file changes reload clean editors only" {
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "after" });
     workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
     var reload_guard: usize = 0;
-    while (workbench.reload_jobs.items.len != 0 and reload_guard < 2000) : (reload_guard += 1) {
+    while (workbench.editor_opening.reload_jobs.items.len != 0 and reload_guard < 2000) : (reload_guard += 1) {
         _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
     }
