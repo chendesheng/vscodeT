@@ -49,8 +49,8 @@ pub const TerminalEditorInput = struct {
     }
 
     pub fn registerInstance(self: *TerminalEditorInput, host: *TerminalEditorService) void {
-        host.instances.appendAssumeCapacity(self.instance);
         self.host = host;
+        host.registerInstance(self.instance);
     }
 
     pub fn detachInstance(self: *TerminalEditorInput) *TerminalInstance {

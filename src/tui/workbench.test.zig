@@ -5956,7 +5956,9 @@ test "command palette preserves registration order, metadata and editor precondi
     for (workbench.commands.infos.values()) |info| {
         const in_empty = empty_index < empty.len and std.mem.eql(u8, empty[empty_index].command_id, info.id);
         const in_editing = editing_index < editing.len and std.mem.eql(u8, editing[editing_index].command_id, info.id);
-        const entry = .{ info.id, info.label, info.category, info.description, info.show_in_palette, info.requires_editor, info.precondition != null, in_empty, in_editing };
+        const menu_item = workbench.commands.menus.getMenuItemPtr(@import("../vs/platform/actions/common/actions.zig").menu_ids.CommandPalette, info.id);
+        const has_precondition = info.precondition != null or (menu_item != null and menu_item.?.command.precondition != null);
+        const entry = .{ info.id, info.label, info.category, info.description, info.show_in_palette, info.requires_editor, has_precondition, in_empty, in_editing };
         try std.json.Stringify.value(entry, .{}, &snapshot.writer);
         try snapshot.writer.writeByte('\n');
         empty_index += @intFromBool(in_empty);
@@ -6745,6 +6747,8 @@ test "Workbench: terminal splits share one group and preserve panel geometry on 
     defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
     try workbench.attachTerminalService(service);
+    const keys = try workbench.ensureContextKeys();
+    try std.testing.expectEqual(@as(f64, 0), keys.getValue("terminalCount").number);
     workbench.commands.execute(terminal_ids.new) catch |err| switch (err) {
         error.PtyOpenFailed => return error.SkipZigTest,
         else => return err,
@@ -6753,6 +6757,16 @@ test "Workbench: terminal splits share one group and preserve panel geometry on 
     try workbench.commands.execute(terminal_ids.split);
     try std.testing.expectEqual(@as(usize, 1), service.group.groupCount());
     try std.testing.expectEqual(@as(usize, 2), service.count());
+    try std.testing.expectEqual(@as(f64, 2), keys.getValue("terminalCount").number);
+    try std.testing.expectEqual(@as(f64, 1), keys.getValue("terminalGroupCount").number);
+    try std.testing.expect(keys.getValue("terminalSplitPaneActive").boolean);
+    try std.testing.expect(keys.getValue("terminalViewShowing").boolean);
+    const source = workbench.commands.source();
+    const picks = try source.get_picks(source.context, allocator);
+    defer allocator.free(picks);
+    try std.testing.expect(for (picks) |pick| {
+        if (std.mem.eql(u8, pick.command_id, terminal_ids.focus_next_pane)) break true;
+    } else false);
     const view = &workbench.terminal_tabbed_view;
     const layout = view.layoutForService(workbench.panelRect(), service);
     const first = service.group.paneRect(layout.terminal, 0);
@@ -6773,6 +6787,8 @@ test "Workbench: terminal splits share one group and preserve panel geometry on 
     const second_instance = service.at(1).?;
     try service.group.unsplitInstance(1);
     try std.testing.expectEqual(@as(usize, 2), service.group.groupCount());
+    try std.testing.expectEqual(@as(f64, 2), keys.getValue("terminalGroupCount").number);
+    try std.testing.expect(!keys.getValue("terminalSplitPaneActive").boolean);
     try service.group.joinInstances(&.{ first_instance, second_instance });
     try std.testing.expectEqual(@as(usize, 1), service.group.groupCount());
     try std.testing.expectEqual(first_instance, service.active().?);
@@ -6880,6 +6896,10 @@ test "Workbench: terminal editor moves the live instance between hosts and close
     try std.testing.expectEqual(instance, tab.terminalInstance().?);
     try std.testing.expectEqual(@as(usize, 0), service.count());
     try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
+    const keys = try workbench.ensureContextKeys();
+    try std.testing.expect(keys.getValue("terminalEditorActive").boolean);
+    try std.testing.expectEqual(@as(f64, 1), keys.getValue("terminalCount").number);
+    try std.testing.expectEqual(@as(f64, 0), keys.getValue("terminalGroupCount").number);
     try std.testing.expect(workbench.terminalAcceptsPaste());
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();

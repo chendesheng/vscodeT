@@ -9,14 +9,16 @@ const TerminalInstance = @import("./terminalInstance.zig").TerminalInstance;
 
 pub const TerminalEditorService = struct {
     instances: std.array_list.Managed(*TerminalInstance),
+    on_did_change_instances: @import("../../../../base/common/event.zig").Emitter(void),
 
     pub fn init(allocator: std.mem.Allocator) TerminalEditorService {
-        return .{ .instances = .init(allocator) };
+        return .{ .instances = .init(allocator), .on_did_change_instances = .init(allocator) };
     }
 
     pub fn deinit(self: *TerminalEditorService) void {
         for (self.instances.items) |instance| instance.deinit();
         self.instances.deinit();
+        self.on_did_change_instances.deinit();
     }
 
     /// The terminal resource is represented by TerminalEditorInput. The
@@ -33,10 +35,16 @@ pub const TerminalEditorService = struct {
         return tab;
     }
 
+    pub fn registerInstance(self: *TerminalEditorService, instance: *TerminalInstance) void {
+        self.instances.appendAssumeCapacity(instance);
+        self.on_did_change_instances.fire({}) catch {};
+    }
+
     pub fn detachInstance(self: *TerminalEditorService, instance: *TerminalInstance) void {
         for (self.instances.items, 0..) |candidate, index| {
             if (candidate != instance) continue;
             _ = self.instances.orderedRemove(index);
+            self.on_did_change_instances.fire({}) catch {};
             return;
         }
     }

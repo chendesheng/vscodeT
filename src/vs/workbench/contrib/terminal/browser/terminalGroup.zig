@@ -12,12 +12,14 @@ pub const TerminalGroup = struct {
     instances: std.array_list.Managed(*TerminalInstance),
     active: usize = 0,
     on_did_change_active_instance: @import("../../../../base/common/event.zig").Emitter(?*TerminalInstance),
+    on_did_change_instances: @import("../../../../base/common/event.zig").Emitter(void),
 
     pub fn init(allocator: Allocator) TerminalGroup {
         return .{
             .allocator = allocator,
             .instances = std.array_list.Managed(*TerminalInstance).init(allocator),
             .on_did_change_active_instance = .init(allocator),
+            .on_did_change_instances = .init(allocator),
         };
     }
 
@@ -25,6 +27,7 @@ pub const TerminalGroup = struct {
         for (self.instances.items) |instance| instance.deinit();
         self.instances.deinit();
         self.on_did_change_active_instance.deinit();
+        self.on_did_change_instances.deinit();
     }
 
     pub fn add(self: *TerminalGroup, instance: *TerminalInstance) !void {
@@ -34,6 +37,7 @@ pub const TerminalGroup = struct {
         instance.panel_group_active = true;
         instance.split_weight = 1;
         _ = self.setActiveFrom(self.instances.items.len - 1, previous_instance);
+        self.on_did_change_instances.fire({}) catch {};
     }
 
     pub fn split(self: *TerminalGroup, parent: usize, instance: *TerminalInstance) !void {
@@ -42,6 +46,7 @@ pub const TerminalGroup = struct {
         instance.panel_group_id = self.instances.items[parent].panel_group_id;
         self.resetPaneSizes(parent);
         _ = self.setActiveFrom(parent + 1, previous_instance);
+        self.on_did_change_instances.fire({}) catch {};
     }
 
     pub fn detach(self: *TerminalGroup, index: usize) ?*TerminalInstance {
@@ -66,6 +71,7 @@ pub const TerminalGroup = struct {
         instance.tab_selected = false;
         _ = instance.setFocused(false);
         if (previous_instance != self.activeInstance()) self.on_did_change_active_instance.fire(self.activeInstance()) catch {};
+        self.on_did_change_instances.fire({}) catch {};
         return instance;
     }
 
