@@ -1,8 +1,8 @@
 src/extensions/references-view/referencesView.zig -> src/vs/workbench/browser/workbench.zig
 src/extensions/tunnel-forwarding/portForwarding.zig -> src/vs/workbench/browser/workbench.zig
-src/tests.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/app.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/benchmark.zig -> src/vs/workbench/browser/workbench.zig
+src/tui/workbench.test.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig -> src/tui/editorView.zig
 src/vs/editor/browser/widget/diffEditor/diffEditorWidget.zig -> src/tui/editorView.zig
 src/vs/editor/contrib/find/test/browser/findController.test.zig -> src/tui/editorView.zig
@@ -27,7 +27,6 @@ src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/stickyScrollHost
 src/vs/workbench/browser/parts/editor/textDiffEditor.zig -> src/tui/editorView.zig
 src/vs/workbench/browser/workbench.zig -> src/tui/cellMetrics.zig
 src/vs/workbench/browser/workbench.zig -> src/tui/editorView.zig
-src/vs/workbench/browser/workbench.zig -> src/tui/imagePreview.zig
 src/vs/workbench/browser/workbench.zig -> src/tui/problemsView.zig
 src/vs/workbench/browser/workbench.zig -> src/tui/quickDiffController.zig
 src/vs/workbench/contrib/helix/browser/helixRuntime.zig -> src/vs/workbench/browser/workbench.zig
