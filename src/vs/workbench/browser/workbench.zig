@@ -673,7 +673,7 @@ pub const Workbench = struct {
     /// upstream `AfterRestored` phase, after the first frame.
     workspace_watcher: ?*WorkspaceWatcher = null,
     contributions: contributions_mod.WorkbenchContributions,
-    after_restored_ran: bool = false,
+    lifecycle: @import("../services/lifecycle/common/lifecycleService.zig").LifecycleService,
     user_settings_paths: []const []const u8,
     /// User keybinding files (VS Code profile then TUI override). Watched by
     /// the settings watcher; reloaded with the rest of the configuration.
@@ -973,7 +973,8 @@ pub const Workbench = struct {
         self.file_watcher_service = null;
         self.workspace_watcher = null;
         self.contributions = contributions_mod.WorkbenchContributions.init(allocator);
-        self.after_restored_ran = false;
+        self.lifecycle = .init(allocator);
+        errdefer self.lifecycle.deinit();
         errdefer self.contributions.deinit();
         try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
         self.user_settings_paths = &.{};
@@ -989,6 +990,8 @@ pub const Workbench = struct {
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
+        try self.lifecycle.setPhase(.Ready);
+        try self.contributions.start(self.lifecycle.interface());
         try self.initQuickAccess();
         return self;
     }
@@ -1920,6 +1923,7 @@ pub const Workbench = struct {
             self.file_watcher_service = null;
         }
         self.contributions.deinit();
+        self.lifecycle.deinit();
         if (self.configuration) |configuration| configuration.deinit();
         freeOwnedPaths(self.allocator, self.user_settings_paths);
         freeOwnedPaths(self.allocator, self.keybindings_paths);
@@ -2316,7 +2320,7 @@ pub const Workbench = struct {
         self.disposeBreadcrumbs();
         self.layoutAll();
         try self.quick_access.setWorkspace(self.workspace);
-        if (self.after_restored_ran and self.workspace.getWorkspace().folders.items.len > 0) {
+        if (self.lifecycle.phase.reached(.Restored) and self.workspace.getWorkspace().folders.items.len > 0) {
             self.ensureWorkspaceWatcher() catch |err| {
                 std.log.scoped(.file_watcher).err("failed to start workspace watcher: {s}", .{@errorName(err)});
             };
@@ -2354,7 +2358,7 @@ pub const Workbench = struct {
             self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
             self.disposeBreadcrumbs();
             self.layoutAll();
-            if (self.after_restored_ran and self.workspace.getWorkspace().folders.items.len > 0) {
+            if (self.lifecycle.phase.reached(.Restored) and self.workspace.getWorkspace().folders.items.len > 0) {
                 self.ensureWorkspaceWatcher() catch |err| {
                     std.log.scoped(.file_watcher).err("failed to restart workspace watcher: {s}", .{@errorName(err)});
                 };
@@ -2579,15 +2583,6 @@ pub const Workbench = struct {
 
     fn unregisterWorkingCopy(self: *Workbench, tab: *Tab) void {
         _ = self.working_copy_service.unregisterWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor));
-    }
-
-    /// Runs the registered workbench contribution phase. The app calls
-    /// `after_restored` once after the first frame, matching the phase at
-    /// which upstream instantiates `WorkspaceWatcher`.
-    pub fn runContributionPhase(self: *Workbench, phase: contributions_mod.WorkbenchPhase) !void {
-        if (phase == .after_restored and self.after_restored_ran) return;
-        try self.contributions.run(phase);
-        if (phase == .after_restored) self.after_restored_ran = true;
     }
 
     fn initAfterRestoredWorkspaceWatcher(context: *anyopaque) !void {

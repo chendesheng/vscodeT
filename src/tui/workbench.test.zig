@@ -3301,7 +3301,7 @@ test "Workbench: starts a workspace file watcher for absolute folders" {
     defer workbench.deinit();
     try workbench.setWorkspaceFolders(&.{root});
     try std.testing.expect(workbench.workspace_watcher == null);
-    try workbench.runContributionPhase(.after_restored);
+    try workbench.lifecycle.setPhase(.Restored);
     try std.testing.expect(workbench.workspace_watcher != null);
     try std.testing.expect(workbench.file_watcher_service != null);
 }
@@ -3329,7 +3329,7 @@ test "Workbench: workspace watcher honors watcherExclude and watcherInclude" {
     const workbench = try Workbench.init(allocator, io, &.{}, 70, 14);
     defer workbench.deinit();
     try workbench.setWorkspaceFolders(&.{root});
-    try workbench.runContributionPhase(.after_restored);
+    try workbench.lifecycle.setPhase(.Restored);
 
     const service = workbench.file_watcher_service.?;
     const included = try std.fs.path.join(allocator, &.{ root, "included" });
@@ -3375,7 +3375,7 @@ test "Workbench: AfterRestored watcher reloads a clean editor" {
     const tab = workbench.activeTab().?;
 
     try workbench.setWorkspaceFolders(&.{root});
-    try workbench.runContributionPhase(.after_restored);
+    try workbench.lifecycle.setPhase(.Restored);
     const service = workbench.file_watcher_service.?;
 
     const ready_deadline = time_compat.milliTimestamp() + 3000;

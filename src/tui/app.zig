@@ -84,6 +84,27 @@ pub fn logStd(
 /// Mirrors the previous `std.debug.print` error reporting, now also written to
 /// the main log file. While the alternate screen is active the message goes to
 /// the log only: a direct stderr write would paint over the cell grid.
+const WillShutdownEvent = @import("../vs/workbench/services/lifecycle/common/lifecycle.zig").WillShutdownEvent;
+const SessionOnShutdown = struct {
+    workbench: *Workbench,
+    registry: *EditorFactoryRegistry,
+    path: []const u8,
+    log: ?log_module.ILogger,
+
+    fn save(_: WillShutdownEvent, self: *@This()) !void {
+        if (self.workbench.tabCount() == 0) return;
+        const allocator = self.workbench.allocator;
+        var data = self.workbench.serializePart(allocator, self.registry) catch |err| {
+            report(self.log, "session serialize failed: {s}", .{@errorName(err)});
+            return;
+        };
+        defer data.deinit(allocator);
+        session.savePart(allocator, self.workbench.io, self.path, &data) catch |err| {
+            report(self.log, "session save failed: {s}", .{@errorName(err)});
+        };
+    }
+};
+
 fn report(log_service: ?log_module.ILogger, comptime fmt: []const u8, args: anytype) void {
     var buffer: [1024]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, fmt, args) catch return;
@@ -564,20 +585,10 @@ pub fn main(init: std.process.Init) !void {
     });
     workbench.configureJsonLanguage();
 
+    var session_writer: SessionOnShutdown = undefined;
     if (args.session) |session_path| {
-        defer {
-            if (workbench.tabCount() > 0) {
-                if (workbench.serializePart(allocator, &registry.?)) |data| {
-                    var owned = data;
-                    defer owned.deinit(allocator);
-                    session.savePart(allocator, io, session_path, &data) catch |err| {
-                        report(log_service, "session save failed: {s}", .{@errorName(err)});
-                    };
-                } else |err| {
-                    report(log_service, "session serialize failed: {s}", .{@errorName(err)});
-                }
-            }
-        }
+        session_writer = .{ .workbench = workbench, .registry = &registry.?, .path = session_path, .log = log_service };
+        _ = try workbench.lifecycle.on_will_shutdown.listen(&session_writer, SessionOnShutdown.save);
     }
 
     workbench.initGit() catch {};
@@ -650,10 +661,11 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.activeTab()) |active| active.editor.view_lines.rebuildAllCount() else 0,
     });
 
+    defer workbench.lifecycle.shutdown(.quit) catch |err| report(log_service, "shutdown failed: {s}", .{@errorName(err)});
     // Match upstream's `WorkbenchPhase.AfterRestored`: the workspace watcher
     // starts only after the restored UI has painted. `fileService.watch` is
     // asynchronous, so the recursive scan runs on the watcher worker.
-    workbench.runContributionPhase(.after_restored) catch |err| {
+    workbench.lifecycle.setPhase(.Restored) catch |err| {
         report(log_service, "workspace watcher unavailable: {s}", .{@errorName(err)});
     };
     infoLog(log_service, "startup: after-restored={d}ms", .{
@@ -666,6 +678,7 @@ pub fn main(init: std.process.Init) !void {
     // A read can end in the middle of an escape sequence. Keep those bytes
     // and wait for the rest instead of decoding the tail as typed text.
     var awaiting_input_continuation = false;
+    var eventually_after: ?i64 = time_compat.milliTimestamp() + 2500;
     while (true) {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.pollFileWatcher(now_ms)) needs_render = true;
@@ -730,6 +743,10 @@ pub fn main(init: std.process.Init) !void {
 
         workbench.flushTerminals();
         if (workbench.hasPendingTerminalWrites()) timeout = @min(timeout, 20);
+        if (eventually_after) |after| {
+            const deadline = if (now_ms < after) after else after + 2500;
+            timeout = @min(timeout, @as(i32, @intCast(std.math.clamp(deadline - now_ms, 0, 2500))));
+        }
         var input_ready = false;
         if (builtin.os.tag == .windows) {
             const polled = try tui.pollInputWithHandle(workbench.fileWatcherHandle(), timeout);
@@ -774,6 +791,13 @@ pub fn main(init: std.process.Init) !void {
         }
         const ready = input_ready or
             (input_buffer.items.len != 0 and !awaiting_input_continuation);
+        if (eventually_after) |after| {
+            const now = time_compat.milliTimestamp();
+            if ((!ready and now >= after) or now >= after + 2500) {
+                eventually_after = null;
+                try workbench.lifecycle.setPhase(.Eventually);
+            }
+        }
         var resized = false;
         if (try tui.resizedSize()) |new_size| {
             size = new_size;
@@ -2294,4 +2318,47 @@ test "app: Helix and Vim modal runtimes disable each other" {
     try std.testing.expect(vim.isEnabled());
     try std.testing.expect(!helix.isEnabled());
     try std.testing.expect(!workbench.configuration.?.getBool("helix.enabled", true));
+}
+
+test "app: shutdown writes the current editor groups before didShutdown" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "one.txt", .data = "one" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "two.txt", .data = "two" });
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+    const one = try std.fs.path.join(allocator, &.{ root, "one.txt" });
+    defer allocator.free(one);
+    const two = try std.fs.path.join(allocator, &.{ root, "two.txt" });
+    defer allocator.free(two);
+    const path = try std.fs.path.join(allocator, &.{ root, "session.json" });
+    defer allocator.free(path);
+    const workbench = try Workbench.init(allocator, io, &.{one}, 60, 20);
+    defer workbench.deinit();
+    var serializers = EditorFactoryRegistry.init(allocator);
+    defer serializers.deinit();
+    var file = workbench.createFileSerializer();
+    try serializers.registerEditorSerializer(FileEditorInput.TYPE_ID, file.interface());
+    var writer = SessionOnShutdown{ .workbench = workbench, .registry = &serializers, .path = path, .log = null };
+    _ = try workbench.lifecycle.on_will_shutdown.listen(&writer, SessionOnShutdown.save);
+    const DidShutdown = struct {
+        writer: *SessionOnShutdown,
+        calls: u8 = 0,
+        fn check(_: void, self: *@This()) !void {
+            var restored = (try session.loadPart(self.writer.workbench.allocator, self.writer.workbench.io, self.writer.path)).?;
+            defer restored.deinit(self.writer.workbench.allocator);
+            try std.testing.expectEqual(@as(usize, 2), restored.groups[0].editors.len);
+            self.calls += 1;
+        }
+    };
+    var did = DidShutdown{ .writer = &writer };
+    _ = try workbench.lifecycle.on_did_shutdown.listen(&did, DidShutdown.check);
+    try workbench.openPath(two);
+    try std.testing.expect((try session.loadPart(allocator, io, path)) == null);
+    try workbench.lifecycle.shutdown(.quit);
+    try workbench.lifecycle.shutdown(.quit);
+    try std.testing.expectEqual(@as(u8, 1), did.calls);
 }

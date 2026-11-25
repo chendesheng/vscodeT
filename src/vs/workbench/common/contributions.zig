@@ -13,16 +13,28 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
+
 pub const WorkbenchPhase = enum {
     block_startup,
     block_restore,
     after_restored,
     eventually,
+
+    pub fn toLifecyclePhase(self: WorkbenchPhase) lifecycle_mod.LifecyclePhase {
+        return switch (self) {
+            .block_startup => .Starting,
+            .block_restore => .Ready,
+            .after_restored => .Restored,
+            .eventually => .Eventually,
+        };
+    }
 };
 
 pub const WorkbenchContributions = struct {
     allocator: Allocator,
     entries: std.array_list.Managed(Entry),
+    lifecycle: ?lifecycle_mod.ILifecycleService = null,
 
     const Entry = struct {
         phase: WorkbenchPhase,
@@ -47,6 +59,7 @@ pub const WorkbenchContributions = struct {
         context: *anyopaque,
         run_fn: *const fn (context: *anyopaque) anyerror!void,
     ) !void {
+        if (self.lifecycle) |service| return service.when(phase.toLifecyclePhase(), .{ .context = context, .run = run_fn });
         try self.entries.append(.{
             .phase = phase,
             .context = context,
@@ -54,10 +67,11 @@ pub const WorkbenchContributions = struct {
         });
     }
 
-    pub fn run(self: *WorkbenchContributions, phase: WorkbenchPhase) !void {
-        for (self.entries.items) |entry| {
-            if (entry.phase != phase) continue;
-            try entry.run_fn(entry.context);
+    pub fn start(self: *WorkbenchContributions, service: lifecycle_mod.ILifecycleService) !void {
+        self.lifecycle = service;
+        while (self.entries.items.len > 0) {
+            const entry = self.entries.orderedRemove(0);
+            try service.when(entry.phase.toLifecyclePhase(), .{ .context = entry.context, .run = entry.run_fn });
         }
     }
 };
