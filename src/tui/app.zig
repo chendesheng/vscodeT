@@ -698,7 +698,6 @@ pub fn main(init: std.process.Init) !void {
         const now_ms = time_compat.milliTimestamp();
         if (workbench.pollFileWatcher(now_ms)) needs_render = true;
         if (workbench.window_events.dispatch(now_ms)) needs_render = true;
-        if (workbench.pollGit(now_ms)) needs_render = true;
         if (workbench.markdownPreviewTick(now_ms)) needs_render = true;
         if (workbench.tickEditorDrag(now_ms)) needs_render = true;
         if (json_client) |client| {
@@ -734,7 +733,6 @@ pub fn main(init: std.process.Init) !void {
         }
         timeout = outline_models.dispatchTimers(now_ms, timeout);
         if (workbench.editorDragTimeout(now_ms)) |drag_timeout| timeout = @min(timeout, drag_timeout);
-        if (workbench.gitWantsTick()) timeout = @min(timeout, 200);
         if (workbench.markdownPreviewTimeout(now_ms)) |preview_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(preview_timeout, 250))));
         }
@@ -809,6 +807,7 @@ pub fn main(init: std.process.Init) !void {
             }
             switch (item.*) {
                 .focus => |focused| {
+                    if (workbench.repository) |repo| repo.onWindowFocus(focused);
                     if (!focused) {
                         if (workbench.context_menu_service.current != null) {
                             workbench.context_menu_service.hideContextMenu();

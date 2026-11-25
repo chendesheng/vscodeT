@@ -699,8 +699,6 @@ pub const Workbench = struct {
     git_status_buf: [96]u8 = undefined,
     git_badge_buf: [32]u8 = undefined,
     git_badge_count: usize = 0,
-    next_git_refresh: i64 = 0,
-    git_status_dirty: bool = true,
     /// Set when the quit confirmation commits to closing the window.
     quit_requested: bool = false,
     /// The modal save confirmation, if one is open.
@@ -781,8 +779,6 @@ pub const Workbench = struct {
         self.git_root = null;
         self.git_status_accessor = null;
         self.git_badge_count = 0;
-        self.next_git_refresh = 0;
-        self.git_status_dirty = true;
         self.quit_requested = false;
         self.dialog = null;
         self.pending_dialog = null;
@@ -2439,11 +2435,11 @@ pub const Workbench = struct {
     /// ones keep the user's in-memory content (upstream marks the conflict).
     pub fn handleFileChanges(self: *Workbench, changes: []const @import("../../platform/files/common/files.zig").FileChange) void {
         for (changes) |change| {
+            if (self.repository) |repo| repo.onFileChange(change.resource);
             if (change.type == .DELETED) continue;
             // FSEvents can report a pre-existing path as ADDED on its first
             // event because it has no initial directory snapshot. For an open
             // editor that is a content change just like UPDATED.
-            self.git_status_dirty = true;
             self.files_changed = true;
             for (self.part.group_views.items) |pane| {
                 for (pane.tabs.items) |tab| {
@@ -2506,6 +2502,7 @@ pub const Workbench = struct {
                 .{ .context = self, .callback = reportWatcherMessage },
             );
         }
+        if (self.repository) |provider| provider.watch(self.file_watcher_service.?) catch {};
     }
 
     fn onWorkspaceFileChanges(changes: []const @import("../../platform/files/common/files.zig").FileChange, self: *Workbench) !void {
@@ -4207,8 +4204,11 @@ pub const Workbench = struct {
             .{
                 .context = self,
                 .open_change = providerOpenChange,
+                .refresh = scmRefresh,
+                .auto_refresh = gitAutoRefresh,
             },
         );
+        provider.attachWindow(&self.window_events);
         self.repository = provider;
         _ = try scm_service.registerSCMProvider(provider.interface());
 
@@ -4223,7 +4223,7 @@ pub const Workbench = struct {
         }
 
         const controller = try self.allocator.create(QuickDiffWorkbenchController);
-        controller.* = QuickDiffWorkbenchController.init(self.allocator, quick_service);
+        controller.* = QuickDiffWorkbenchController.init(self.allocator, quick_service, &self.window_events);
         controller.resources_changed = provider.interface().on_did_change_resources;
         self.quick_diff_controller = controller;
         try controller.start(.{ .part = self.part }, self.configuration);
@@ -4296,7 +4296,7 @@ pub const Workbench = struct {
             .text = "",
             .command = .{ .id = "workbench.view.scm" },
         }, "workbench.scm.branch", .left, .{ .number = 100 });
-        self.next_git_refresh = time_compat.milliTimestamp();
+        if (self.file_watcher_service) |files_service| provider.watch(files_service) catch {};
         self.syncGitStatus();
         self.syncGitActivity();
         if (self.scm_view) |view| view.refresh();
@@ -4357,30 +4357,9 @@ pub const Workbench = struct {
         return options;
     }
 
-    /// Polls quick diff and the debounced SCM status refresh. Returns true when
-    /// the frame should be repainted.
-    pub fn pollGit(self: *Workbench, now_ms: i64) bool {
-        var changed = false;
-        if (self.quick_diff_controller) |controller| {
-            if (controller.poll(now_ms)) changed = true;
-        }
-        if (self.repository == null) return changed;
-        const scm_visible = self.sidebarShown() and std.mem.eql(
-            u8,
-            self.activity_bar_part.active_id orelse "",
-            "scm",
-        );
-        if (now_ms >= self.next_git_refresh and (self.git_status_dirty or scm_visible)) {
-            self.git_status_dirty = false;
-            self.next_git_refresh = now_ms + 5000;
-            self.refreshGitStatus();
-            changed = true;
-        }
-        return changed;
-    }
-
-    pub fn gitWantsTick(self: *const Workbench) bool {
-        return self.repository != null;
+    fn gitAutoRefresh(context: *anyopaque) bool {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return if (self.configuration) |config| config.getBool("git.autorefresh", true) else true;
     }
 
     /// Re-reads git status, the SCM rows, the quick-diff baselines, the
@@ -4809,7 +4788,6 @@ pub const Workbench = struct {
 
     fn scmRefresh(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        self.git_status_dirty = true;
         self.refreshGitStatus();
     }
 
@@ -4863,7 +4841,6 @@ pub const Workbench = struct {
         const provider = self.repository orelse return error.NoRepository;
         const git = provider.git orelse return error.NoGit;
         try git.runRemoteAction(provider.root, action, remote);
-        self.git_status_dirty = true;
         self.refreshGitStatus();
         if (self.scm_history_view) |view| view.refresh(.reload) catch {};
     }
@@ -11761,7 +11738,7 @@ fn commandSave(context: *anyopaque) anyerror!void {
     if (tab.isDiff() or tab.isImage()) return;
     try tab.editor.save();
     const self: *Workbench = @ptrCast(@alignCast(context));
-    self.git_status_dirty = true;
+    if (self.repository) |repo| repo.onFileChange(tab.editor.path);
 }
 
 fn commandRevert(context: *anyopaque) anyerror!void {

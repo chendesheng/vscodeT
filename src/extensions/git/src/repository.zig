@@ -29,7 +29,14 @@ pub const QuickDiffProvider = quick_diff.QuickDiffProvider;
 pub const GitHistoryProvider = history_provider_mod.GitHistoryProvider;
 pub const Original = quick_diff.Original;
 
+const dispatch = @import("../../../vs/base/common/windowDispatch.zig");
+const watchers = @import("../../../vs/platform/files/node/watcher/fileWatcherService.zig");
+const files = @import("../../../vs/platform/files/common/files.zig");
+const time = @import("../../../vs/base/common/timeCompat.zig");
+
 pub const Host = struct {
+    auto_refresh: ?*const fn (*anyopaque) bool = null,
+    refresh: ?*const fn (*anyopaque) void = null,
     context: *anyopaque,
     /// Opens the change represented by `resource` (usually a diff tab).
     open_change: *const fn (context: *anyopaque, provider: *Repository, resource: *GitScmResource) anyerror!void,
@@ -102,6 +109,15 @@ pub const Repository = struct {
     primary_quick_diff: QuickDiffProvider,
     secondary_quick_diff: QuickDiffProvider,
     history: ?*GitHistoryProvider = null,
+    file_service: ?*watchers.FileWatcherService = null,
+    root_watcher: ?*watchers.WatchHandle = null,
+    dot_git_watcher: ?*watchers.WatchHandle = null,
+    upstream_watcher: ?*watchers.WatchHandle = null,
+    dot_git: ?Git.DotGit = null,
+    status_timer: dispatch.Task = .{},
+    next_status_at: i64 = 0,
+    focused: bool = true,
+    refresh_when_focused: bool = false,
 
     pub fn create(
         allocator: Allocator,
@@ -220,8 +236,88 @@ pub const Repository = struct {
         return self;
     }
 
+    pub fn watch(self: *Repository, service: *watchers.FileWatcherService) !void {
+        if (self.file_service != null) return;
+        const git = self.git orelse return;
+        self.root_watcher = try service.watch(self.root, .{ .recursive = true });
+        self.file_service = service;
+        // A worktree's metadata can live outside its workspace.
+        self.dot_git = git.getRepositoryDotGit(self.root) catch return;
+        self.dot_git_watcher = try service.watch(self.dot_git.?.path, .{ .recursive = false });
+        self.updateUpstreamWatcher();
+    }
+
+    fn updateUpstreamWatcher(self: *Repository) void {
+        const service = self.file_service orelse return;
+        const dot = self.dot_git orelse return;
+        const head = self.repository.stateRef().head;
+        const upstream = if (head) |branch| branch.upstream else null;
+        const target = if (upstream) |u| std.fs.path.join(self.allocator, &.{ dot.common_path, "refs", "remotes", u.remote, u.name }) catch return else null;
+        defer if (target) |path| self.allocator.free(path);
+        if (self.upstream_watcher) |watcher| {
+            if (target != null and std.mem.eql(u8, watcher.path, target.?)) return;
+            watcher.dispose();
+            self.upstream_watcher = null;
+        }
+        if (target) |path| self.upstream_watcher = service.watch(path, .{ .recursive = false }) catch null;
+    }
+
+    pub fn attachWindow(self: *Repository, window: *dispatch.Queue) void {
+        self.status_timer = .{ .queue = window, .context = self, .run = updateWhenIdle };
+    }
+
+    pub fn onFileChange(self: *Repository, path: []const u8) void {
+        if (self.host.auto_refresh) |enabled| if (!enabled(self.host.context)) return;
+        const ignore_case = @import("builtin").os.tag == .windows;
+        const name = std.fs.path.basename(path);
+        if (std.mem.startsWith(u8, name, ".watchman-cookie-")) return;
+        const upstream = if (self.upstream_watcher) |w| std.mem.eql(u8, w.path, path) else false;
+        if (!upstream) {
+            if (self.dot_git) |dot| {
+                if (std.mem.eql(u8, path, dot.path)) return;
+                if (files.isParent(path, dot.path, ignore_case)) {
+                    if (!std.mem.eql(u8, std.fs.path.dirname(path) orelse return, dot.path) or std.mem.eql(u8, name, "index.lock")) return;
+                    self.scheduleStatus();
+                    return;
+                }
+            }
+            if (!files.isParent(path, self.root, ignore_case)) return;
+            var segments = std.mem.tokenizeAny(u8, path[self.root.len..], "/\\");
+            while (segments.next()) |part| if (std.mem.eql(u8, part, ".git")) return;
+        }
+        self.scheduleStatus();
+    }
+
+    fn scheduleStatus(self: *Repository) void {
+        self.status_timer.schedule(@max(time.milliTimestamp() + 1000, self.next_status_at));
+    }
+
+    pub fn onWindowFocus(self: *Repository, focused: bool) void {
+        self.focused = focused;
+        if (focused and self.refresh_when_focused) {
+            self.refresh_when_focused = false;
+            self.status_timer.schedule(@max(time.milliTimestamp(), self.next_status_at));
+        }
+    }
+
+    fn updateWhenIdle(ctx: *anyopaque, now: i64, _: bool) bool {
+        const self: *Repository = @ptrCast(@alignCast(ctx));
+        if (!self.focused) {
+            self.refresh_when_focused = true;
+            return false;
+        }
+        if (self.host.refresh) |refresh_status| refresh_status(self.host.context);
+        self.next_status_at = now + 5000;
+        return true;
+    }
+
     pub fn destroy(self: *Repository) void {
         const allocator = self.allocator;
+        self.status_timer.schedule(null);
+        if (self.upstream_watcher) |w| w.dispose();
+        if (self.dot_git_watcher) |w| w.dispose();
+        if (self.root_watcher) |w| w.dispose();
+        if (self.dot_git) |dot| dot.deinit(allocator);
         if (self.history) |history| history.destroy();
         self.history = null;
         allocator.free(@constCast(self.primary_quick_diff.id));
@@ -281,6 +377,7 @@ pub const Repository = struct {
             git.refresh(self.repository) catch {};
         }
         self.rebuild();
+        self.updateUpstreamWatcher();
         for (&self.groups) |*group| {
             group.resources_changed.fire({}) catch {};
             group.changed.fire({}) catch {};
@@ -686,4 +783,65 @@ test "repository: refresh rebuilds from the repository state" {
     const expected_staged = try std.fs.path.join(allocator, &.{ test_root, "only-staged.zig" });
     defer allocator.free(expected_staged);
     try testing.expectEqualStrings(expected_staged, groups[1].resources()[0].source_path);
+}
+
+test "repository: file changes debounce status, wait for focus and respect autorefresh" {
+    const allocator = testing.allocator;
+    var fake = FakeDelegate{};
+    fake.init();
+    const repository = try GitRepository.create(allocator, test_root, .{}, &fake.base);
+    defer repository.destroy();
+
+    const HostState = struct {
+        enabled: bool = true,
+        refreshes: usize = 0,
+        fn enabledForWindow(ctx: *anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.enabled;
+        }
+        fn refreshStatus(ctx: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.refreshes += 1;
+        }
+    };
+    var host = HostState{};
+    var window = dispatch.Queue{ .io = testing.io };
+    const provider = try Repository.create(allocator, null, repository, test_root, .{
+        .context = &host,
+        .open_change = TestHost.openChange,
+        .auto_refresh = HostState.enabledForWindow,
+        .refresh = HostState.refreshStatus,
+    });
+    defer provider.destroy();
+    provider.attachWindow(&window);
+    const index = try std.fs.path.join(allocator, &.{ test_root, ".git", "index" });
+    defer allocator.free(index);
+    const index_lock = try std.mem.concat(allocator, u8, &.{ index, ".lock" });
+    defer allocator.free(index_lock);
+    provider.dot_git = .{
+        .path = try allocator.dupe(u8, std.fs.path.dirname(index).?),
+        .common_path = try allocator.dupe(u8, std.fs.path.dirname(index).?),
+    };
+    provider.onFileChange(index_lock);
+    try testing.expect(provider.status_timer.at == null);
+    host.enabled = false;
+    provider.onFileChange(index);
+    try testing.expect(provider.status_timer.at == null);
+    host.enabled = true;
+    provider.onFileChange(index);
+    provider.onFileChange(index);
+    const due = provider.status_timer.at.?;
+    try testing.expect(!window.dispatch(due - 1));
+    provider.onWindowFocus(false);
+    try testing.expect(!window.dispatch(due));
+    try testing.expectEqual(@as(usize, 0), host.refreshes);
+    provider.onWindowFocus(true);
+    try testing.expect(window.dispatch(due));
+    try testing.expectEqual(@as(usize, 1), host.refreshes);
+    const deleted_file = try std.fs.path.join(allocator, &.{ test_root, "removed.txt" });
+    defer allocator.free(deleted_file);
+    provider.onFileChange(deleted_file);
+    try testing.expect(!window.dispatch(due + 4999));
+    try testing.expect(window.dispatch(due + 5000));
+    try testing.expectEqual(@as(usize, 2), host.refreshes);
 }

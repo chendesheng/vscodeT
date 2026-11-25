@@ -363,6 +363,27 @@ pub const Git = struct {
         return try self.allocator.dupe(u8, trimmed);
     }
 
+    pub const DotGit = struct {
+        path: []u8,
+        common_path: []u8,
+
+        pub fn deinit(self: DotGit, allocator: Allocator) void {
+            allocator.free(self.path);
+            allocator.free(self.common_path);
+        }
+    };
+
+    pub fn getRepositoryDotGit(self: *Git, root: []const u8) !DotGit {
+        var result = try self.run(&.{ self.exe, "rev-parse", "--git-dir", "--git-common-dir" }, root, discovery_output_limit);
+        defer self.allocator.free(result.stderr);
+        defer self.allocator.free(result.stdout);
+        if (!result.term.success()) return error.NoGit;
+        var paths = std.mem.tokenizeAny(u8, result.stdout, "\r\n");
+        const path = try std.fs.path.resolveAlloc(self.allocator, &.{ root, paths.next() orelse return error.NoGit });
+        errdefer self.allocator.free(path);
+        return .{ .path = path, .common_path = try std.fs.path.resolveAlloc(self.allocator, &.{ root, paths.next() orelse return error.NoGit }) };
+    }
+
     /// Resolves `start` to the absolute repository root, or null when git is
     /// unavailable / `start` is not inside a repository. Never panics.
     pub fn discover(self: *Git, start: []const u8) !?[]u8 {
@@ -457,6 +478,7 @@ pub const Git = struct {
             self.exe,
             "-c",
             "core.quotepath=false",
+            "--no-optional-locks",
             "status",
             "--porcelain=v2",
             "-z",

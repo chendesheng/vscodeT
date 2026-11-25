@@ -30,7 +30,8 @@ test "quickDiffController: attach, apply gutter width and detach" {
 
     var resources = ResourceEvent.init(allocator);
     defer resources.deinit();
-    var controller = QuickDiffWorkbenchController.init(allocator, &service);
+    var window = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = testing.io };
+    var controller = QuickDiffWorkbenchController.init(allocator, &service, &window);
     controller.resources_changed = &resources;
     defer controller.deinit();
 
@@ -38,10 +39,10 @@ test "quickDiffController: attach, apply gutter width and detach" {
     try testing.expectEqual(@as(usize, 1), controller.count());
     try testing.expectEqual(@as(usize, 1), editor.lineDecorationsWidth());
     const then = time.milliTimestamp() + 201;
-    try testing.expect(!controller.poll(then));
+    try testing.expect(!window.dispatch(then));
     try testing.expect(controller.entries.items[0].model.pending != null);
     controller.worker.waitForReply();
-    try testing.expect(controller.poll(then));
+    try testing.expect(window.dispatch(then));
     try testing.expect(editor.decorationGeneration() > 0);
     try testing.expect(controller.entries.items[0].model.due_at == null);
     try resources.fire({});
@@ -53,7 +54,7 @@ test "quickDiffController: attach, apply gutter width and detach" {
     try testing.expectEqual(@as(usize, 0), editor.lineDecorationsWidth());
 }
 
-test "quickDiffController: poll updates after an edit and config disables decorations" {
+test "quickDiffController: a scheduled diff updates after an edit and config disables decorations" {
     const allocator = testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var service = QuickDiffService.init(allocator, null);
@@ -71,17 +72,18 @@ test "quickDiffController: poll updates after an edit and config disables decora
         allocator.destroy(editor);
     }
 
-    var controller = QuickDiffWorkbenchController.init(allocator, &service);
+    var window = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = testing.io };
+    var controller = QuickDiffWorkbenchController.init(allocator, &service, &window);
     defer controller.deinit();
     try controller.attach(editor, "/repo/test.zig");
 
     try editor.typeCharacter("x");
     const due = controller.entries.items[0].model.due_at orelse return error.ExpectedContentEvent;
-    try testing.expect(!controller.poll(due - 1));
-    try testing.expect(!controller.poll(due));
+    try testing.expect(!window.dispatch(due - 1));
+    try testing.expect(!window.dispatch(due));
     try testing.expect(controller.entries.items[0].model.pending != null);
     controller.worker.waitForReply();
-    try testing.expect(controller.poll(due));
+    try testing.expect(window.dispatch(due));
 
     try controller.setConfig(.{ .decorations = .none });
     try testing.expectEqual(@as(usize, 0), editor.lineDecorationsWidth());

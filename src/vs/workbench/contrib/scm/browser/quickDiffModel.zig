@@ -5,8 +5,8 @@
 //   observables. Original content comes synchronously from the quick-diff
 //   provider as `Original { content, ref_label }`; the model diffs line arrays
 //   with the ported `LineDiffProvider` on a worker using an owned input.
-// - The 200 ms `ThrottledDelayer` becomes `triggerDiff(now)` + `runScheduledDiff(now)`,
-//   driven by the workbench main loop.
+// - Each model uses a window deadline for its 200 ms ThrottledDelayer.
+//   Worker replies wake the window to apply decorations on the UI thread.
 // - `getDiffEditorModel` returns the original content/ref label instead of two
 //   text models; diff snapshots are built by the workbench.
 // - Paths replace `URI` values, and suppressed secondary changes stay in
@@ -91,6 +91,7 @@ const DiffRequest = struct {
         defer self.destroy();
         const owner = self.owner orelse return false;
         owner.pending = null;
+        owner.scheduler.schedule(owner.due_at);
         if (!self.succeeded) return false;
         owner.applyDiff(self) catch return false;
         return true;
@@ -152,6 +153,8 @@ pub const QuickDiffModel = struct {
     changes_version_id: u32,
     on_did_change: Emitter(void),
     due_at: ?i64 = null,
+    scheduler: @import("../../../../base/common/windowDispatch.zig").Task = .{},
+    worker: ?*worker_service.EditorWorkerService = null,
     disposed: bool = false,
 
     pub fn init(
@@ -178,6 +181,7 @@ pub const QuickDiffModel = struct {
     }
 
     pub fn deinit(self: *QuickDiffModel) void {
+        self.scheduler.schedule(null);
         self.disposed = true;
         if (self.pending) |request| request.owner = null;
         self.clearChanges();
@@ -201,6 +205,17 @@ pub const QuickDiffModel = struct {
     pub fn triggerDiff(self: *QuickDiffModel, now_ms: i64) void {
         if (self.disposed) return;
         self.due_at = now_ms + 200;
+        if (self.pending == null) self.scheduler.schedule(self.due_at);
+    }
+
+    pub fn attachWindow(self: *QuickDiffModel, window: *@import("../../../../base/common/windowDispatch.zig").Queue, worker: *worker_service.EditorWorkerService) void {
+        self.worker = worker;
+        self.scheduler = .{ .queue = window, .context = self, .run = onDeadline };
+    }
+
+    fn onDeadline(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *QuickDiffModel = @ptrCast(@alignCast(context));
+        return self.runScheduledDiff(self.worker.?, now);
     }
 
     pub fn runScheduledDiff(self: *QuickDiffModel, worker: *worker_service.EditorWorkerService, now_ms: i64) bool {

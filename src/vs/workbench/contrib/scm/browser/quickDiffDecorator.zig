@@ -383,7 +383,9 @@ pub const Entry = struct {
     }
 };
 
+const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
 pub const QuickDiffWorkbenchController = struct {
+    window: *WindowQueue,
     allocator: Allocator,
     service: *QuickDiffService,
     worker: EditorWorkerService,
@@ -396,11 +398,12 @@ pub const QuickDiffWorkbenchController = struct {
     configuration_service: ?*ConfigurationService = null,
     configuration_listener: ?usize = null,
 
-    pub fn init(allocator: Allocator, service: *QuickDiffService) QuickDiffWorkbenchController {
+    pub fn init(allocator: Allocator, service: *QuickDiffService, window: *WindowQueue) QuickDiffWorkbenchController {
         return .{
             .allocator = allocator,
             .service = service,
             .worker = EditorWorkerService.init(),
+            .window = window,
             .entries = std.array_list.Managed(*Entry).init(allocator),
         };
     }
@@ -448,6 +451,8 @@ pub const QuickDiffWorkbenchController = struct {
             .decorator = undefined,
         };
         errdefer entry.model.deinit();
+        if (self.worker.replies_ready.queue == null) self.worker.attachWindow(self.window);
+        entry.model.attachWindow(self.window, &self.worker);
         entry.model.setIgnoreTrimWhitespace(self.ignore_trim_whitespace);
         entry.model.triggerDiff(time.milliTimestamp());
         entry.content_listener = try editor.model.onDidChangeContentWithContextId(entry, Entry.onContent);
@@ -481,15 +486,6 @@ pub const QuickDiffWorkbenchController = struct {
             if (self.entries.items.len == 0) self.worker.stopWorker();
             return;
         }
-    }
-
-    pub fn poll(self: *QuickDiffWorkbenchController, now_ms: i64) bool {
-        var changed = self.worker.dispatchReplies();
-        for (self.entries.items) |entry| {
-            if (entry.model.runScheduledDiff(&self.worker, now_ms)) changed = true;
-        }
-        self.worker.checkStopIdleWorker(now_ms);
-        return changed;
     }
 
     pub fn start(self: *QuickDiffWorkbenchController, editors: EditorService, config: ?*ConfigurationService) !void {

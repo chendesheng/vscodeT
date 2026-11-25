@@ -4,6 +4,8 @@
 // until the reply callback runs, including when the originating editor closes.
 const std = @import("std");
 
+const dispatch = @import("../../../base/common/windowDispatch.zig");
+
 pub const Request = struct {
     node: std.DoublyLinkedList.Node = .{},
     compute: *const fn (*Request) void,
@@ -21,9 +23,28 @@ pub const EditorWorkerService = struct {
     stopping: bool = false,
     last_used: i64 = 0,
     next_idle_check: i64 = 0,
+    replies_ready: dispatch.Task = .{},
+    idle_check: dispatch.Task = .{},
 
     pub fn init() EditorWorkerService {
         return .{ .io_state = std.Io.Threaded.init(std.heap.page_allocator, .{}) };
+    }
+
+    pub fn attachWindow(self: *EditorWorkerService, window: *dispatch.Queue) void {
+        self.replies_ready = .{ .queue = window, .context = self, .run = onReplies, .progress = true };
+        self.idle_check = .{ .queue = window, .context = self, .run = onIdleCheck };
+    }
+
+    fn onReplies(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *EditorWorkerService = @ptrCast(@alignCast(context));
+        return self.dispatchReplies();
+    }
+
+    fn onIdleCheck(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *EditorWorkerService = @ptrCast(@alignCast(context));
+        self.checkStopIdleWorker(now);
+        if (self.thread != null) self.idle_check.schedule(self.next_idle_check);
+        return false;
     }
 
     pub fn deinit(self: *EditorWorkerService) void {
@@ -40,8 +61,10 @@ pub const EditorWorkerService = struct {
                 // EditorWorkerClient falls back to a local worker when creation fails.
                 request.compute(request);
                 self.replies.append(&request.node);
+                self.replies_ready.post();
                 return;
             };
+            self.idle_check.schedule(self.next_idle_check);
         }
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -64,6 +87,7 @@ pub const EditorWorkerService = struct {
             request.compute(request);
             self.mutex.lockUncancelable(io);
             self.replies.append(node);
+            self.replies_ready.post();
             self.condition.broadcast(io);
         }
     }
@@ -106,6 +130,8 @@ pub const EditorWorkerService = struct {
             self.thread = null;
             self.stopping = false;
         }
+        self.idle_check.schedule(null);
+        self.replies_ready.schedule(null);
         _ = self.dispatchReplies();
     }
 };
