@@ -3,9 +3,9 @@
 Status: proposed design.
 
 The native host in `src/tui/workbench.zig` preserves partial input sequences
-across reads, waits on terminal and watcher handles, and flushes completed
-frames. Terminal cells supply part bounds and pointer input. The browser
-workbench still composes and paints the editor, sidebar and panel. Browser DOM
+across reads, waits on terminal and worker-completion handles, composites the
+editor, sidebar, panel, status bar and overlays, and flushes completed frames.
+Terminal cells supply part bounds and pointer input. Browser DOM
 font measurement, macOS font smoothing, auxiliary windows, floating panels,
 ARIA live regions and browser-managed text selection and IME lack equivalent
 host APIs here. [Workbench port audit](workbench-audit.md)
@@ -1534,8 +1534,8 @@ Library constraints:
   tab views and drives the active pane; `editorPanes.zig` keeps the active pane
   and page position. `src/tui/workbench.zig` composites the parts, paints cell
   borders and sashes, and sends image data, the ANSI frame and the hardware cursor
-  position to the terminal. Part-specific painting and input routing still live
-  in `src/vs/workbench/browser/workbench.zig`. `EditorGroupModel` owns
+  position to the terminal. The browser workbench still owns part input routing
+  and synchronizes the editor DOM. `EditorGroupModel` owns
   tab order/MRU/preview/pinned/sticky state, `FileEditorInput` exposes each
   editor's path/dirty/save state, and `Tab` keeps one persistent
   view/contribution set per file. The terminal grid gives each split leaf an

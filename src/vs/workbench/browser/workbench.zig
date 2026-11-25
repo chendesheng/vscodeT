@@ -1,10 +1,10 @@
 //! Terminal workbench composition root. This file currently owns feature wiring,
-//! host I/O and terminal rendering. See docs/workbench-audit.md for the mapping
-//! to the pinned workbench.ts, layout, contributions and terminal host.
+//! input routing and terminal DOM synchronization. See docs/workbench-audit.md
+//! for the mapping to the pinned workbench.ts, layout and contributions.
 //!
 //! Every group gets a tab row and an editor pane, groups are arranged in an
-//! oriented split tree, and the workbench composites all visible panes into one
-//! frame before encoding a single ANSI diff. Each
+//! oriented split tree, and src/tui/workbench.zig composites visible panes into
+//! one frame before encoding the ANSI diff. Each
 //! tab owns a persistent `View`, so switching tabs or groups keeps scroll
 //! position and decorations. The port keeps Grid's branch-demotion behavior
 //! when a group empties, its sash resize, and tab drag/drop into a group,
@@ -2001,7 +2001,7 @@ pub const Workbench = struct {
 
     /// Port of the composite action collection: the active side bar view
     /// container supplies the title toolbar actions.
-    fn updateSidebarTitleActions(self: *Workbench) void {
+    pub fn updateSidebarTitleActions(self: *Workbench) void {
         const container = self.sidebar_part.pane.active_id orelse "";
         if (std.mem.eql(u8, container, "search")) {
             const view = self.search_view orelse return;
@@ -2064,26 +2064,6 @@ pub const Workbench = struct {
         self.commands.execute(id) catch {};
     }
 
-    /// Badges for the side bar composite bar (activity bar top/bottom), built
-    /// from the same activity service the rail uses.
-    fn sidebarBadges(
-        self: *Workbench,
-        texts: *[8][24]u8,
-        badges: *[8]pane_composite_mod.Badge,
-    ) []const pane_composite_mod.Badge {
-        var count: usize = 0;
-        for (self.activity_bar_part.activities.items) |activity| {
-            if (count >= badges.len) break;
-            const description = self.activity_service.getContainerBadgeDescription(activity.id) orelse continue;
-            if (description.len == 0) continue;
-            const len = @min(description.len, texts[count].len);
-            @memcpy(texts[count][0..len], description[0..len]);
-            badges[count] = .{ .id = activity.id, .text = texts[count][0..len] };
-            count += 1;
-        }
-        return badges[0..count];
-    }
-
     pub fn activeActivity(self: *const Workbench) usize {
         return self.activity_bar_part.activeIndex() orelse 0;
     }
@@ -2128,7 +2108,7 @@ pub const Workbench = struct {
         return self.workbenchGridLayout().sidebar;
     }
 
-    fn sidebarRect(self: *const Workbench) ui.Rect {
+    pub fn sidebarRect(self: *const Workbench) ui.Rect {
         return SidebarPart.innerRect(self.sidebarFrameRect(), self.part.cell_borders, self.layout_api.getSideBarPosition());
     }
 
@@ -2802,20 +2782,6 @@ pub const Workbench = struct {
         self.updateProblemsHighlight();
         self.layoutAll();
         return true;
-    }
-
-    /// Builds the Problems badge for the panel title. The caller owns the
-    /// buffers, so the returned slice is valid for one render or hit test.
-    fn panelBadges(self: *Workbench, buf: *[48]u8, badges: *[1]panel_part_mod.Badge) []const panel_part_mod.Badge {
-        const service = self.marker_service orelse return &.{};
-        const stats = service.getStatistics();
-        if (stats.errors + stats.warnings + stats.infos == 0) return &.{};
-        const text = std.fmt.bufPrint(buf, "\u{2716} {d} \u{26A0} {d}", .{
-            stats.errors,
-            stats.warnings,
-        }) catch return &.{};
-        badges[0] = .{ .id = PROBLEMS_CONTAINER_ID, .text = text };
-        return badges[0..1];
     }
 
     /// Panel container used when the panel is revealed without an explicit
@@ -9946,231 +9912,6 @@ pub const Workbench = struct {
         return editor_surface;
     }
 
-    pub fn paintActivityBar(self: *Workbench) void {
-        // The activity bar is a part of its own: it stays visible when the
-        // side bar is hidden (default location) and moves into the side bar
-        // title area for the top/bottom locations.
-        if (self.activityBarWidth() > 0) {
-            activity_bar_mod.render(&self.activity_bar_part, &self.activity_service, &self.frame.next, self.activityRect(), self.activeActivity(), self.focus == .sidebar, self.theme_palette);
-        }
-    }
-
-    pub fn paintSidebarContents(self: *Workbench) !void {
-        const focused = self.focus == .sidebar;
-        const rect = self.sidebarRect();
-
-        // The side bar part paints its own title chrome and background;
-        // the active view pane container renders into the content area
-        // below the title, like upstream.
-        if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) self.updateSidebarTitleActions();
-        var badge_texts: [8][24]u8 = undefined;
-        var badges: [8]pane_composite_mod.Badge = undefined;
-        try sidebar_part_mod.render(
-            &self.sidebar_part,
-            &self.frame.next,
-            rect,
-            self.theme_palette,
-            self.sidebarBadges(&badge_texts, &badges),
-        );
-        const content = sidebar_part_mod.contentRect(&self.sidebar_part, rect);
-        const active_id = self.activity_bar_part.active_id orelse "";
-        if (std.mem.eql(u8, active_id, "explorer")) {
-            if (self.explorer_container) |container| {
-                container.native_outline = self.part.cell_borders and self.part.cell_border_capabilities.has(.rect);
-                container.always_show_header_actions = if (self.configuration) |config| config.getBool("workbench.view.alwaysShowHeaderActions", false) else false;
-                try container.render(&self.frame.next, content, focused, self.theme_palette);
-            } else if (self.sidebar) |sidebar| {
-                if (self.theme_palette) |palette| sidebar.setThemeColors(palette);
-                try sidebar.render(&self.frame.next, content, focused, .{
-                    .show_header = false,
-                    .cell_borders = self.part.cell_borders,
-                });
-            } else {
-                self.renderPlaceholder(content, focused);
-            }
-        } else if (std.mem.eql(u8, active_id, "search")) {
-            if (self.search_view) |view| {
-                if (self.theme_palette) |palette| view.setThemeColors(palette);
-                try view.render(&self.frame.next, content, .{
-                    .show_header = false,
-                    .cell_borders = self.part.cell_borders,
-                    .border_capabilities = self.part.cell_border_capabilities,
-                });
-            } else {
-                self.renderPlaceholder(content, focused);
-            }
-        } else if (std.mem.eql(u8, active_id, "scm")) {
-            if (self.scm_container) |container| {
-                container.native_outline = self.part.cell_borders and self.part.cell_border_capabilities.has(.rect);
-                container.always_show_header_actions = if (self.configuration) |config| config.getBool("workbench.view.alwaysShowHeaderActions", false) else false;
-                try container.render(&self.frame.next, content, focused, self.theme_palette);
-            } else if (self.scm_view) |view| {
-                if (self.theme_palette) |palette| view.setThemeColors(palette);
-                try view.render(&self.frame.next, content, focused, .{ .show_header = false });
-            } else {
-                self.renderPlaceholder(content, focused);
-            }
-        } else {
-            self.renderPlaceholder(content, focused);
-        }
-    }
-
-    pub fn paintEditorGroups(self: *Workbench, editor_surface: *ui.Surface) !void {
-        if (self.part.maximized_group) |expanded| {
-            try self.renderPane(expanded);
-        } else {
-            for (self.part.group_views.items) |pane| {
-                try self.renderPane(pane);
-            }
-        }
-        try editor_surface.paintInto(&self.frame.next);
-        try self.renderSearchEditorQueries();
-    }
-
-    pub fn paintOverlaysAndStatus(self: *Workbench) !void {
-        if (self.statusBarVisible()) {
-            if (self.theme_palette) |palette| self.statusbar.main_part.setThemeColors(palette);
-            try self.statusbar.main_part.render(&self.frame.next, self.statusBarRect(), .{
-                .no_folder = self.workspace.getWorkbenchState() == .EMPTY,
-                .part_focused = self.focus == .statusbar,
-            });
-        }
-        if (self.scm_history_view) |graph| try graph.renderHover(&self.frame.next, self.workbenchGridLayout().editor_column, self.layout_api.getSideBarPosition(), self.part.cell_borders, self.part.cell_border_capabilities);
-        if (self.quick_access.isOpen()) {
-            self.quick_access.widget.caps = if (self.part.cell_borders) self.part.cell_border_capabilities else .{};
-            self.quick_access.widget.open_to_bottom = self.preferredSideBySideDirection() == .DOWN;
-            try self.quick_access.render(&self.frame.next);
-        }
-        if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next, self.part.cell_border_capabilities);
-        if (self.context_menu_service.current) |menu| menu.popup.?.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
-        if (self.dialog) |dialog| dialog.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
-        try self.editor_drag.paintImage(&self.frame.next, self.drag_tab_drop != null);
-    }
-
-    /// Paints the panel title (composite bar) and the active container's
-    /// content. The terminal keeps its own tab strip inside the content area,
-    /// like the upstream panel's container hosting the terminal view.
-    pub fn renderPanel(self: *Workbench) !void {
-        const rect = self.panelRect();
-        const focused = self.focus == .terminal or self.focus == .problems;
-        var badge_buf: [48]u8 = undefined;
-        var badges: [1]panel_part_mod.Badge = undefined;
-        const badge_slice = self.panelBadges(&badge_buf, &badges);
-        try panel_part_mod.renderTitle(
-            &self.panel_part,
-            &self.frame.next,
-            rect,
-            focused,
-            self.theme_palette,
-            badge_slice,
-        );
-
-        const content = panel_part_mod.contentRect(rect);
-        const active_id = self.activePanelId();
-        if (std.mem.eql(u8, active_id, TERMINAL_CONTAINER_ID)) {
-            if (self.terminal_service) |service| {
-                try self.terminal_tabbed_view.render(&self.frame.next, service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), self.theme_palette);
-            } else {
-                self.renderPlaceholder(content, focused);
-            }
-        } else if (std.mem.eql(u8, active_id, PROBLEMS_CONTAINER_ID)) {
-            if (self.problems_view) |*view| {
-                try view.render(&self.frame.next, content, self.focus == .problems, .{ .show_header = false });
-            } else {
-                self.renderPlaceholder(content, focused);
-            }
-        } else {
-            self.renderPlaceholder(content, focused);
-        }
-    }
-
-    fn renderSearchEditorQueries(self: *Workbench) !void {
-        const palette = self.theme_palette;
-        const bg = self.themeColor("editor.background", .{ 30, 30, 33 });
-        const fg = self.themeColor("editor.foreground", .{ 210, 210, 210 });
-        for (self.part.group_views.items) |pane| {
-            if (self.part.maximized_group != null and self.part.maximized_group != pane) continue;
-            const tab = pane.activeTab() orelse continue;
-            const input = tab.search_editor_input orelse continue;
-            const query = input.search_editor;
-            const width = ui.cell.snap(pane.rect.w);
-            const height = ui.cell.snap(pane.rect.h) -| pane.chromeHeight();
-            if (width == 0 or height == 0) continue;
-            query.form.colors = search_view_mod.resolveWidgetColors(palette, bg, fg);
-            if (palette) |colors| query.form.colors.border = colors.colorOr("searchEditor.textInputBorder", query.form.colors.border);
-            query.form.cell_borders = self.part.cell_borders;
-            query.form.focused = self.focus == .editor and pane == self.activePane() and query.query_focused;
-            try query.form.render(width);
-            try self.frame.next.blit(
-                query.form.grid(),
-                ui.cell.snap(pane.rect.x),
-                ui.cell.snap(pane.rect.y) + pane.chromeHeight(),
-                width,
-                @min(height, query.headerRows()),
-            );
-        }
-    }
-
-    fn renderPane(self: *Workbench, pane: *GroupPane) !void {
-        const x = ui.cell.snap(pane.rect.x);
-        const y = ui.cell.snap(pane.rect.y);
-        const width = ui.cell.snap(pane.rect.w);
-        const height = ui.cell.snap(pane.rect.h);
-        if (width == 0 or height == 0) return;
-        if (pane.isEmpty()) {
-            pane.hits.clearRetainingCapacity();
-            pane.title_action_hit = null;
-            return;
-        }
-
-        const active_group = pane.group == self.service.activeGroup();
-        try tab_bar.redraw(pane, &self.frame.next, .{
-            .configuration = self.configuration,
-            .workspace = self.workspace.getWorkspace(),
-            .theme_service = self.theme_service,
-            .palette = self.theme_palette,
-            .group_active = active_group,
-            .hovered_tab = if (self.hovered_pane == pane) self.hovered_tab else null,
-            .title_hovered = self.hovered_title_action_pane == pane,
-            .drop_index = if (self.drag_tab_drop) |drop| (if (drop.pane == pane) drop.index else null) else null,
-            .cell_borders = self.part.cell_borders,
-        });
-        const chrome = pane.chromeHeight();
-        if (chrome > height) return;
-        if (chrome > pane.titleHeight()) {
-            try self.renderBreadcrumbs(pane, x, y + pane.titleHeight(), width, active_group);
-        }
-        if (pane.activeTab()) |active| {
-            try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
-        }
-    }
-
-    fn renderPlaceholder(self: *Workbench, rect: ui.Rect, focused: bool) void {
-        const x = ui.cell.snap(rect.x);
-        const y = ui.cell.snap(rect.y);
-        const width = ui.cell.snap(rect.w);
-        const height = ui.cell.snap(rect.h);
-        if (width == 0 or height == 0) return;
-
-        const bg = ui.cell.PaintStyle{
-            .fg = ui.cell.packColor(self.themeColor("sideBar.foreground", .{ 190, 190, 190 })),
-            .bg = ui.cell.packColor(self.themeColor("sideBar.background", .{ 30, 30, 33 })),
-        };
-        const active_id = self.activity_bar_part.active_id orelse "";
-        const title = if (std.mem.eql(u8, active_id, "scm"))
-            "Source Control is unavailable (no Git repository)"
-        else if (std.mem.eql(u8, active_id, "explorer") or std.mem.eql(u8, active_id, "search"))
-            // Both views are created with the workspace file tree.
-            "No folder is open"
-        else
-            "Nothing to show here";
-        self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), @floatFromInt(height), bg);
-        // The side bar title is painted by the part; the placeholder only
-        // renders the container content.
-        drawPlainText(&self.frame.next, x + 1, y, width -| 2, title, bg);
-        _ = focused;
-    }
-
     fn disposeBreadcrumbs(self: *Workbench) void {
         if (self.breadcrumbs_control) |control| {
             control.deinit();
@@ -10396,7 +10137,7 @@ pub const Workbench = struct {
         return control;
     }
 
-    fn renderBreadcrumbs(self: *Workbench, pane: *GroupPane, x: usize, y: usize, width: usize, active_group: bool) !void {
+    pub fn renderBreadcrumbs(self: *Workbench, pane: *GroupPane, x: usize, y: usize, width: usize, active_group: bool) !void {
         if (!self.breadcrumbsEnabled() or width == 0) return;
         const row_background = ui.cell.PaintStyle{
             .bg = ui.cell.packColor(self.themeColor("breadcrumb.background", .{ 37, 37, 38 })),
@@ -12933,19 +12674,6 @@ fn commandRerunSearchEditor(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const tab = self.activeTab() orelse return;
     if (tab.search_editor_input) |input| input.search_editor.triggerSearch(0, true);
-}
-
-fn drawPlainText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text: []const u8, paint: ui.cell.PaintStyle) void {
-    var col = x;
-    var offset: usize = 0;
-    while (offset < text.len and col < x + max_width) {
-        const decoded = ui.dom.decodeAt(text, offset);
-        const width = ui.dom.defaultMeasureWidth(decoded.cp);
-        if (col + width > x + max_width) break;
-        grid.putCodepoint(col, y, decoded.cp, width, paint);
-        col += width;
-        offset += decoded.len;
-    }
 }
 
 fn isCtrlChar(event: *const ui.KeyEvent, wanted: u21) bool {
