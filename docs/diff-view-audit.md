@@ -1,23 +1,89 @@
 # Diff view audit: terminal port vs VS Code 1.147.0
 
 **Status:** audit only. No source code was changed for this document.
-**Date:** 2026-11-25
+Re-audited after the 2026-11-26 source refactor.
+**Date:** 2026-11-25, re-audited 2026-11-26
+**Initial audit commit:** `cdde4cf8`
+**Re-audited local commit:** `90d001e9`
 **Upstream:** VS Code 1.147.0, `vscode/` pinned at
 `e31c2e52f563620846caab877103f630ea361b9c`
 **Local scope:** `src/vs/editor/browser/widget/diffEditor/**`,
 `src/vs/workbench/browser/parts/editor/textDiffEditor.zig`,
-`src/vs/workbench/common/editor/diffEditorInput.zig`, the workbench diff
-commands/open path, and the `src/tui/` glue that paints and routes input.
+`src/vs/workbench/browser/parts/editor/diffEditorCommands*.zig`,
+`src/vs/workbench/services/editor/browser/editorService.zig`,
+`src/extensions/git/src/{commands,git}.zig`,
+`src/vs/workbench/common/editor/diffEditorInput.zig`, and the `src/tui/`
+workbench/view glue that opens, paints and routes input.
 
 **Method:** read both implementations and their tests; trace the widget,
-workbench and TUI call paths; compare the upstream feature objects, options,
-commands and view state against the local composition. No profiler run was
-performed, so §4 separates confirmed code-level cost from a measurement plan.
+workbench, Git extension and TUI call paths; compare the upstream feature
+objects, options, commands and view state against the local composition. No
+profiler run was performed, so §4 separates confirmed code-level cost from a
+measurement plan.
 
 The reported symptoms are "the diff view seems slow" and "there are missing UI
 elements of the diff view". This audit confirms both. It also records several
 correctness gaps that are visible as missing or misplaced UI and that should be
 fixed together with the presentation work.
+
+---
+
+## 0. Re-audit update (2026-11-26)
+
+The source tree changed substantially after the first audit, mainly through the
+portable-workbench split (`src/tui/workbenchWindow.zig`,
+`src/vs/workbench/services/editor/browser/editorService.zig`,
+`src/extensions/git/src/commands.zig`) and the generic editor-view injection
+(`DiffEditorWidget(View)` / `DiffView(View)`). This revision re-checked every
+finding at commit `90d001e9` and updated the evidence paths.
+
+What changed:
+
+* The diff widget no longer imports `src/tui/editorView.zig`. It is a generic
+  `DiffEditorWidget(comptime View: type)`, and `textDiffEditor.zig` is generic
+  over the injected `View`; the composition root supplies the real terminal
+  view (`src/vs/workbench/browser/parts/editor/editorPane.zig:24`,
+  `src/vs/workbench/services/editor/browser/editorService.zig:109-170`). This
+  is an ownership/import-boundary refactor, not a behavior change to the
+  alignment, gutter, decorations or navigation logic.
+* Diff configuration moved from `Workbench` to
+  `textDiffEditor.computeConfiguration`
+  (`src/vs/workbench/browser/parts/editor/textDiffEditor.zig:27-80`). It is
+  still the same reduced option projection, read when the diff is opened or
+  refreshed.
+* Diff opening/snapshot resolution moved to
+  `EditorService.openSnapshotDiff` plus the Git extension
+  (`src/vs/workbench/services/editor/browser/editorService.zig:109-170`,
+  `src/extensions/git/src/commands.zig:458-485`,
+  `src/extensions/git/src/git.zig:534-562`). The reads remain synchronous on
+  the UI-thread path.
+* Normal editor keys now flow through the `CodeEditorWidget` input boundary
+  (`IEditorKeyTarget` / `codeEditorWidgetTerminalInput.zig`). The diff path was
+  not changed: it still calls `View.dispatchKey` directly and never invokes the
+  editor dispatcher, so the keyboard finding remains.
+* New upstream-path test files now exist
+  (`src/vs/editor/test/browser/widget/diffEditorWidget.test.zig`,
+  `src/vs/workbench/test/browser/parts/editor/textDiffEditor.test.zig`), but
+  they contain the same terminal helper/pane cases as before. The upstream
+  compact-disclosure, width-layout and `UnchangedRegion` tests are still not
+  ported.
+* `src/tui/editorView.zig` now resolves character backgrounds and moved-block
+  borders through the theme (`diffEditor.insertedTextBackground`,
+  `diffEditor.removedTextBackground`, `diffEditor.move*.border`). Diff views
+  still never receive the palette because both theme paths skip diff tabs, and
+  whole-line/filler backgrounds remain hard-coded.
+* No functional change was found in the gutter coordinate bug, the narrow
+  modified-only fallback, the hide-unchanged folding model, the synchronous
+  diff computation, the per-input double refresh, the filler-line explosion,
+  swap state, or command coverage. All findings below still apply.
+
+Verification note: the audit is documentation-only. At `90d001e9`,
+`zig build check-workbench` passes, and
+`zig build test-view --summary all` passes with 368/368 tests once Zig's global
+cache is redirected into the writable workspace
+(`ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache/global`); the default `/root/.cache/zig`
+write is denied by the sandbox. The findings below come from code-path reading
+plus the existing test sources.
 
 ---
 
@@ -47,7 +113,7 @@ Highest-impact findings:
 1. **Diff pane keyboard input is effectively disconnected from the editor.**
    The diff key path ends at `View.dispatchKey`, which only dispatches to a
    focused DOM widget and never invokes the editor command dispatcher. Normal
-   tabs call `editorInputDispatch.handleKeyEvent` (which does invoke it);
+   tabs call `codeEditorWidgetTerminalInput.handleKeyEvent` (which does invoke it);
    diff tabs do not. Arrow/Page/Home/End/selection/fold/copy/find keys are
    therefore no-ops unless a widget owns DOM focus. See §3.2.
 2. **Narrow widths lose deletions.** When the pane is narrower than the
@@ -72,9 +138,10 @@ Highest-impact findings:
    additionally invalidates the line-number map and navigation because folding
    changes view-line numbering without any conversion. See §5.
 6. **The diff view never receives the active theme or live editor settings.**
-   `applyThemeToParts` and `applyEditorSettingsToTab` explicitly skip diff tabs,
-   diff colors are hard-coded dark-theme constants, and the diff options are
-   only read when the widget is created. See §3.10.
+   `TextEditorConfiguration.applyToTab` and `TerminalWorkbench.applyThemeToParts`
+   skip diff tabs; whole-line/filler/gutter colors stay hard-coded dark-theme
+   constants and the newer themed character/moved-border mappings never receive
+   a palette. Diff options are only read when the widget is created. See §3.10.
 
 A short version of the verdict: the diff **model/decoration subset is partial**;
 the diff **view layer is an ad-hoc terminal painter**, and several visible
@@ -136,16 +203,18 @@ modified text buffer ─┘
               └─ hand-painted one-cell gutter + mouse split drag
 ```
 
-The local pipeline replaces upstream's **layout-time view zones** with
-**pre-materialized aligned text**. This is the root of both the missing UI
-(unrelated features have nothing to attach to) and several coordinate bugs
-(the view line no longer equals the model line).
+The concrete terminal view is injected by the composition root
+(`EditorService`/`editorPane`), and snapshot diff opening now lives in
+`EditorService.openSnapshotDiff`. The local pipeline replaces upstream's
+**layout-time view zones** with **pre-materialized aligned text**. This is the
+root of both the missing UI (unrelated features have nothing to attach to) and
+several coordinate bugs (the view line no longer equals the model line).
 
 ### 2.3 File/feature map
 
 | Upstream | Local | Status | Note |
 |---|---|---|---|
-| `diffEditorWidget.ts` | `diffEditorWidget.zig` | **Ad-hoc collapse** | One widget owns panes, decorations, gutter, input and layout. No `View`/view-part/feature lifecycle. |
+| `diffEditorWidget.ts` | `diffEditorWidget.zig` | **Ad-hoc collapse** | Generic `DiffEditorWidget(View)` with the terminal view injected by the composition root; one widget still owns panes, decorations, gutter, input and layout. No `View`/view-part/feature lifecycle. |
 | `diffEditorOptions.ts` | `diffEditorOptions.zig` | **Partial** | Small option subset; many upstream options are absent or ignored (§3.10). |
 | `diffEditorViewModel.ts` | `diffEditorViewModel.zig` | **Partial** | Compute/state/normalize only. No `isDiffUpToDate`, async/cancellation, incremental edits, unchanged regions, moved comparison or serialization. |
 | `diffEditorEditors.ts` | `diffEditorEditors.zig` | **Partial** | Pane-width math only. No full editor option sync or contributions. |
@@ -158,8 +227,8 @@ The local pipeline replaces upstream's **layout-time view zones** with
 | `revertButtonsFeature.ts` | absent | **Missing (read-only scope)** | Upstream also suppresses these for read-only diffs; local snapshots are always read-only. |
 | `diffEditorSash.ts` | inline in `dispatchMouse` | **Partial** | Invisible one-cell drag; no reset, min-width policy, disabled state or boundary sash. |
 | `accessibleDiffViewer.ts` | absent | **Missing** | No accessible review panel and no `onlyShowAccessibleDiffViewer`. |
-| `commands.ts` / `diffEditor.contribution.ts` | workbench commands + `handleTabKey` | **Partial** | Four commands only; no inline/whitespace/focus/open/collapse/accessible-viewer commands or title actions. |
-| `textDiffEditor.ts` | `textDiffEditor.zig` | **Partial** | Read-only snapshots; no view-state save/restore, live option application, model reuse or diff-editor contributions. |
+| `commands.ts` / `diffEditor.contribution.ts` | `diffEditorCommands.zig` + `diffEditorCommandsService.zig` + `src/tui/workbench.zig` | **Partial** | Four commands only; no inline/whitespace/focus/open/collapse/accessible-viewer commands or title actions. |
+| `textDiffEditor.ts` | `textDiffEditor.zig` | **Partial** | Read-only snapshots; `computeConfiguration` projects the option subset. No view-state save/restore, live option application, model reuse or diff-editor contributions. |
 
 ---
 
@@ -196,7 +265,7 @@ The local pipeline replaces upstream's **layout-time view zones** with
 | Diff editor title actions / toolbar | yes | **no** | No editor-title contribution for diff. |
 | Diff code lens | optional upstream | **no** | Option not represented. |
 | Word wrap (`diffEditor.wordWrap`) | yes | **no** | Option not represented; snapshots use the default wrap. |
-| Theme-aware diff colors | yes | **no** | Hard-coded dark RGB constants. |
+| Theme-aware diff colors | yes | **partial** | Character and moved-border colors resolve through `themedColor`, but diff views never receive the palette and whole-line/filler/gutter colors stay hard-coded dark. |
 | Live editor settings/options | yes (`updateOptions`) | **no** | Snapshot editors skip `applyEditorSettings`; diff options read only at create. |
 | View state persistence | yes (`saveViewState`/`restoreViewState`) | **no** | Refresh/reopen recreates the widget and loses scroll/split/current change. |
 | Editable modified side / revert | yes for writable workbench diffs | **not implemented** | Intentional read-only snapshot scope, not a terminal limitation. |
@@ -205,22 +274,22 @@ The local pipeline replaces upstream's **layout-time view zones** with
 
 Local path:
 
-* `src/tui/app.zig:951-953` sends every diff key to
+* `src/tui/app.zig:836-838` sends every diff key to
   `Tab.handleDiffKey`.
-* `src/vs/workbench/browser/parts/editor/editorPane.zig:466-469` calls
+* `src/vs/workbench/browser/parts/editor/editorPane.zig:503-506` calls
   `DiffView.handleKey`.
-* `src/vs/workbench/browser/parts/editor/textDiffEditor.zig:250-252` calls
+* `src/vs/workbench/browser/parts/editor/textDiffEditor.zig:312-314` calls
   `DiffEditorWidget.dispatchKey`.
-* `src/vs/editor/browser/widget/diffEditor/diffEditorWidget.zig:697-699`
+* `src/vs/editor/browser/widget/diffEditor/diffEditorWidget.zig:700-703`
   forwards to `View.dispatchKey`.
-* `src/tui/editorView.zig:989-995` only dispatches the event to the focused DOM
+* `src/tui/editorView.zig:895-901` only dispatches the event to the focused DOM
   element and returns false when there is none.
 
 The editor's real key path lives in
-`src/tui/editorInputDispatch.zig:159-231`: it calls the hover/suggest/find
+`src/vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminalInput.zig:159-189`: it calls the hover/suggest/find
 controllers, then `view.dispatchKey`, then `dispatch(editor, event, is_pasting)`.
 Diff tabs never reach the last step, and because `ensureControllers` returns
-early for diff tabs (`editorPane.zig:274-275`), none of the controllers exist.
+early for diff tabs (`editorPane.zig:324-325`), none of the controllers exist.
 The editor root also is not a focusable DOM node, so `View.dispatchKey` normally
 has no focused element and returns false.
 
@@ -232,9 +301,10 @@ Effects:
   registry; there is no find widget anyway.
 * Only workbench-level keys handled before the diff branch (`Alt+Down/Up`,
   Ctrl+W, group/tab shortcuts) and mouse input work.
-* The test suite only exercises `Alt+Down`/`Alt+Up` at the workbench level
-  (`src/vs/workbench/browser/workbench.zig:21705-21716`), so this gap is not
-  visible in CI.
+* The test suite exercises `Alt+Down`/`Alt+Up` through `handleTabKey` and a
+  code-editor command on the focused original pane
+  (`src/tui/workbench.test.zig:8359-8379`), but it never sends a plain
+  arrow/Ctrl+F key through the diff path, so this gap is not visible in CI.
 
 Upstream diff panes are ordinary `CodeEditorWidget`s
 (`diffEditorEditors.ts:64-65,103-139`), so every editor keybinding and
@@ -242,11 +312,11 @@ contribution applies automatically.
 
 ### 3.3 Width fallback and inline mode (critical)
 
-* `src/vs/editor/browser/widget/diffEditor/diffEditorWidget.zig:477-479`
+* `src/vs/editor/browser/widget/diffEditor/diffEditorWidget.zig:481-483`
   defines side-by-side as `render_side_by_side and width >= minimum_side_by_side_width`.
-* `:294` sets `inline_mode` once from `!render_side_by_side`; a width fallback
+* `:298` sets `inline_mode` once from `!render_side_by_side`; a width fallback
   does **not** enable inline mode.
-* `:624-640` paints only the modified pane when `sideBySide()` is false.
+* `:628-643` paints only the modified pane when `sideBySide()` is false.
 * `minimum_side_by_side_width` defaults to 50 cells
   (`diffEditorOptions.zig:34-35`) and is not read from configuration.
 * The upstream default is different: `useInlineViewWhenSpaceIsLimited: true`
@@ -260,24 +330,24 @@ README already documents the modified-only fallback, but this is a visible
 feature loss, not just a layout choice.
 
 The inline mode itself is also an approximation. `buildInlineDisplay`
-(`diffEditorWidget.zig:73-164`) interleaves full deleted and inserted rows in one
+(`diffEditorWidget.zig:72-163`) interleaves full deleted and inserted rows in one
 editor. Upstream's default inline view inserts the deleted code through view
 zones (`diffEditorViewZones.ts:190-286`) with its own deleted-code margin,
 wrapping, indicators, copy/context actions and overview-ruler zones; the
 optional true-inline view injects deleted text before the modified range
 (`diffEditorDecorations.ts:61-84`). Local inline mode has none of those
 affordances and, in addition, omits overview-ruler entries from its inline
-decorations (`diffEditorWidget.zig:180-185,402-407`).
+decorations (`diffEditorWidget.zig:179-184,406-407`).
 
 ### 3.4 Indicators, gutter tint and empty ranges
 
-* `diffEditorWidget.zig:353-354` calls `setLineDecorationsWidth(0)` on both
+* `diffEditorWidget.zig:357-358` calls `setLineDecorationsWidth(0)` on both
   snapshot editors.
 * `DiffEditorDecorations.createWholeLine` (`components/diffEditorDecorations.zig:291-299`)
   sets only `className`/`isWholeLine`; it never sets
   `linesDecorationsClassName` or `marginClassName`.
 * `render_indicators` is stored in the decoration config
-  (`diffEditorWidget.zig:380-383`) but `buildOptions`
+  (`diffEditorWidget.zig:384-388`) but `buildOptions`
   (`components/diffEditorDecorations.zig:124-134`) never reads it.
 * Upstream uses `diffLineAddDecorationBackgroundWithIndicator` /
   `...Delete...WithIndicator` and sets `lineDecorationsWidth: '2ch'`
@@ -297,7 +367,7 @@ decoration instead of the upstream `diff-range-empty` marker.
 
 ### 3.5 Center gutter/toolbar and current hunk
 
-`paintGutter` (`diffEditorWidget.zig:655-683`) paints one cell:
+`paintGutter` (`diffEditorWidget.zig:659-688`) paints one cell:
 
 * it scans all mappings for every visible row;
 * it uses `mapping.line_range_mapping.modified` (real model line numbers) and
@@ -319,7 +389,7 @@ The marker coordinate bug is detailed in §5.1.
 
 ### 3.6 Split sash
 
-`dispatchMouse` (`diffEditorWidget.zig:703-745`) treats the one gutter cell as
+`dispatchMouse` (`diffEditorWidget.zig:707-749`) treats the one gutter cell as
 the drag target and stores `split_ratio`. Missing compared with upstream
 `DiffEditorSash` / `SashLayout`
 (`components/diffEditorSash.ts:18-96`; used at `diffEditorWidget.ts:328-341`):
@@ -328,7 +398,7 @@ the drag target and stores `split_ratio`. Missing compared with upstream
 * no double-click/reset;
 * no upstream 100 px minimum editor width policy (local clamps the ratio only,
   `diffEditorOptions.zig:53-59`; drag clamps 0.2..0.8 at
-  `diffEditorWidget.zig:720-724`, upstream validates 0.1..0.9);
+  `diffEditorWidget.zig:723-727`, upstream validates 0.1..0.9);
 * no disabled-state handling when `enableSplitViewResizing` is false (the drag
   flag is still set);
 * no boundary sashes.
@@ -351,7 +421,7 @@ lanes (removed/inserted), a viewport slider, and click/wheel delegation
 * `diffEditor.renderOverviewRuler = false` removes decorations but the local
   view still reserves its normal two-cell scrollbar/overview column
   (`View.refresh`/`flush` always call `setScrollbarWidth(overviewRulerWidth(...))`
-  in `src/tui/editorView.zig:1906-1909`), so the pane does not regain the space
+  in `src/tui/editorView.zig:1855-1858`), so the pane does not regain the space
   upstream does.
 
 The file header documents the per-side choice as a terminal simplification. The
@@ -365,7 +435,7 @@ Only model decorations exist:
 * `DiffEditorDecorations.update` applies `movedOriginal` / `movedModified`
   block decorations (`components/diffEditorDecorations.zig:172-188`).
 * The inline path adds similar block decorations
-  (`diffEditorWidget.zig:825-896`).
+  (`diffEditorWidget.zig:851-902`).
 
 Missing:
 
@@ -374,8 +444,9 @@ Missing:
 * placeholder view zones/overlays at the moved ranges;
 * active/hover moved-block state and the "compare moved code" interaction
   (`activeMovedText`, `movedTextToCompare`);
-* `currentMove` class and themed `diffEditor.move.border` /
-  `diffEditor.moveActive.border` colors;
+* active `currentMove` state: `editorView` can paint a themed
+  `diffEditor.moveActive.border`/`diffEditor.move.border`, but no code ever
+  appends `currentMove` to the moved block class;
 * the side-by-side-only gating of `showMoves` (upstream
   `diffEditorOptions.ts:69`; local adds moved decorations in inline mode too,
   and its tests assert that).
@@ -388,7 +459,7 @@ representation, so they can be misplaced after any filler row.
 
 Local `hide_unchanged_regions` is implemented by adding collapsed user-defined
 folding ranges to the aligned snapshot models
-(`diffEditorWidget.zig:357-366,907-942`; inline variant `:762-804`). Upstream
+(`diffEditorWidget.zig:361-370,912-947`; inline variant `:766-809`). Upstream
 creates:
 
 * a 24 px collapsed-region widget per region with a disclosure toggle,
@@ -415,14 +486,18 @@ Local consequences:
 
 ### 3.10 Theme and live editor settings
 
-`Workbench.applyEditorSettingsToTab` returns immediately for diff tabs, apart
+`TextEditorConfiguration.applyToTab` returns immediately for diff tabs, apart
 from the zen-mode line-number override, which touches only that option
-(`src/vs/workbench/browser/workbench.zig:2774-2778`). Both
-`applyThemeToParts` (`:9200-9207`) and `refreshOpenViews` (`:9226-9232`) skip
-diff-tab views. The snapshot editors are created once with default options
-(`diffEditorWidget.zig:315-354`) and diff colors are hard-coded dark-theme
-constants (`src/tui/editorView.zig:357-366`;
-`components/diffEditorDecorations.zig:40-47`).
+(`src/vs/workbench/browser/parts/editor/textEditor.zig:140-160`).
+`TerminalWorkbench.applyThemeToParts`
+(`src/tui/workbenchWindow.zig:3527-3546`) and `refreshOpenViews` (`:3564-3570`)
+skip diff-tab views. The snapshot editors are created once with default options
+(`diffEditorWidget.zig:319-360`), and diff line/filler/gutter colors remain
+hard-coded dark-theme constants (`src/tui/editorView.zig:293-302`;
+`components/diffEditorDecorations.zig:40-47`). `editorView` does now route
+`diffEditor.insertedTextBackground`/`removedTextBackground` and
+`diffEditor.move*.border` through `themedColor` (`editorView.zig:2667-2670`,
+`1661-1664`), but diff views never get the palette.
 
 So a diff tab:
 
@@ -433,8 +508,10 @@ So a diff tab:
 * does not react to any `diffEditor.*` option change until the diff is reopened
   or `Refresh Diff` recreates the widget.
 
-`diffEditorOptions` is also a reduced projection: `renderIndicators` is passed
-but unused, `renderOverviewRuler` only removes model markers, and
+The workbench projection in `textDiffEditor.computeConfiguration`
+(`src/vs/workbench/browser/parts/editor/textDiffEditor.zig:27-80`) is also
+reduced: `renderIndicators` is passed but unused, `renderOverviewRuler` only
+removes model markers, and
 `renderMarginRevertIcon`, `renderGutterMenu`, `diffWordWrap`, `diffCodeLens`,
 `originalEditable`, `accessibilityVerbose`, `onlyShowAccessibleDiffViewer`,
 `renderSideBySideInlineBreakpoint`, `useInlineViewWhenSpaceIsLimited`,
@@ -448,7 +525,7 @@ widget.
 
 ### 3.11 Commands, title actions and context menu
 
-Only four diff commands are registered (`workbench.zig:1855-1858`):
+Only four diff commands are registered (`src/vs/workbench/browser/parts/editor/diffEditorCommands.zig:9-14`):
 
 * `workbench.action.compareEditor.nextChange`
 * `workbench.action.compareEditor.previousChange`
@@ -467,13 +544,19 @@ Missing from the upstream command set (`diffEditorCommands.ts:17-28,31-140`):
 * revert hunk/selection (not applicable while read-only, but also not exposed);
 * diff code lens.
 
+The terminal now has a Source Control `git.openFile` path that opens the
+modified side through `open_active_diff`
+(`src/tui/workbenchWindow.zig:793-800`), but there is no upstream
+`workbench.action.compareEditor.openSide` command or diff title action wired to
+it.
+
 There are also no diff editor-title actions or context menu entries
 (`diffEditor.contribution.ts:21-75`; title menu items for moved blocks and the
 accessible viewer). The command palette therefore cannot reach many features,
 and the tab/editor title exposes no diff action.
 
 The next/previous behavior is also different: local cycles an index
-(`diffEditorWidget.zig:544-562`), while upstream finds the next/previous change
+(`diffEditorWidget.zig:548-566`), while upstream finds the next/previous change
 relative to the modified cursor and plays accessibility signals
 (`diffEditorWidget.ts:724-756`). Moving the cursor does not update the local
 current change.
@@ -481,7 +564,7 @@ current change.
 ### 3.12 Swap, refresh and view state
 
 `DiffEditorWidget.swapSides`
-(`diffEditorWidget.zig:588-604`) swaps the editor/view pointers and widget
+(`diffEditorWidget.zig:592-608`) swaps the editor/view pointers and widget
 labels only. It does not:
 
 * update `DiffView.model` labels, `DiffEditorInput` name/description or the tab
@@ -497,11 +580,12 @@ Upstream swap replaces the workbench input with the swapped untyped diff
 together.
 
 `DiffView.replace`
-(`src/vs/workbench/browser/parts/editor/textDiffEditor.zig:213-231`) creates a
+(`src/vs/workbench/browser/parts/editor/textDiffEditor.zig:274-293`) creates a
 complete new widget before destroying the old one. It loses split ratio, scroll
 position, cursor, current change and any view state, and re-runs the synchronous
-diff and display-text construction. It is used by `Refresh Diff` and by
-re-opening an existing diff tab from SCM.
+diff and display-text construction. `EditorService.openSnapshotDiff` invokes it
+for both `Refresh Diff` and re-opening an existing diff tab from SCM
+(`src/vs/workbench/services/editor/browser/editorService.zig:120-129`).
 
 Upstream restores diff view state through
 `saveViewState`/`restoreViewState` and `TextDiffEditor.restoreTextDiffEditorViewState`
@@ -510,7 +594,7 @@ Upstream restores diff view state through
 ### 3.13 Read-only snapshots (scope divergence, not a terminal limitation)
 
 Both local snapshot editors are read-only
-(`diffEditorWidget.zig:347-350`). Upstream's working-tree diff has an editable
+(`diffEditorWidget.zig:351-354`). Upstream's working-tree diff has an editable
 modified side (subject to input readonly state) with revert buttons, code lens,
 editing, undo and context actions. This is a deliberate scope decision already
 documented in the README, but it explains why several upstream diff affordances
@@ -536,21 +620,21 @@ to establish which term dominates on the user's files.
 
 | Phase | Local evidence | Cost | Upstream |
 |---|---|---|---|
-| Text acquisition | `openDiff` -> `resolveDiffTexts` -> `diffTextFor` -> `git.readRef`/`readWorkingFile` (`workbench.zig:5238-5275`; `git.zig:500-567`) | Two sequential synchronous Git/file reads before the widget is created | Async editor input resolution |
-| Diff computation | `DiffEditorWidget.create` calls `diff_model.compute()` synchronously (`diffEditorWidget.zig:272-280`) | Blocks the TUI thread up to `maxComputationTime` (default 5000 ms; `0` = infinite, `defaultLinesDiffComputer.zig:119-125`) | Worker + cancellation + progress + cache (`diffProviderFactoryService.ts:44-170`, `diffEditorWidget.ts:458-469`) |
-| Text duplication | `splitOwnedLines` allocates every line (`:988-995`), `buildDisplayText` copies the whole side (`:1003-1014`), then two editor models are created (`:315-340`) | At least 3 explicit copies per side plus the model/piece tree; per-line allocation overhead | Existing text models; view zones do not copy text |
+| Text acquisition | `openDiff` -> `resolveDiffTexts` -> `diffTextFor` -> `git.readRef`/`readWorkingFile` (`src/extensions/git/src/commands.zig:461-477`; `git.zig:534-562`) | Two sequential synchronous Git/file reads before the widget is created | Async editor input resolution |
+| Diff computation | `DiffEditorWidget.create` calls `diff_model.compute()` synchronously (`diffEditorWidget.zig:276-284`) | Blocks the TUI thread up to `maxComputationTime` (default 5000 ms; `0` = infinite, `defaultLinesDiffComputer.zig:119-125`) | Worker + cancellation + progress + cache (`diffProviderFactoryService.ts:44-170`, `diffEditorWidget.ts:458-469`) |
+| Text duplication | `splitOwnedLines` allocates every line (`:993-1000`), `buildDisplayText` copies the whole side (`:1008-1019`), then two editor models are created (`:319-345`) | At least 3 explicit copies per side plus the model/piece tree; per-line allocation overhead | Existing text models; view zones do not copy text |
 | Alignment data | `computeAlignedRows` writes one entry per display row (`diffEditorViewZones.zig:75-188`) | O(total aligned lines), including N fillers for a whole-side change | One alignment/view zone per changed block/alignment (`diffEditorViewZones.ts:190-340`) |
 | Filler decorations | One `diff-filler` decoration per filler row (`diffEditorDecorations.zig:233-246,191-197`) | O(N) model decorations for an untracked/deleted file; interval-tree memory | Filler is layout (view zone), not a model decoration |
-| First render | `layout` + `selectInitialChange` refresh both views during `create` (`diffEditorWidget.zig:431-432,532-586`) | Two forced renders before the first workbench frame | Diff becomes visible after async diff; rendering is scheduled |
-| Per-input refresh | `app.zig:1090-1098` calls `Tab.refresh` after every input batch; diff branch force-refreshes both panes (`editorPane.zig:323-326`); `View.refresh` invalidates then renders immediately (`editorView.zig:1575-1578`) | Two full editor renders per input batch, even for ignored keys/mouse motion | View render scheduling/coalescing |
-| Per-frame gutter | `paintGutter` scans all mappings for each visible row (`diffEditorWidget.zig:665-683`) | O(visible rows × mappings) on every frame | Gutter items are laid out per hunk; current hunk found by cursor |
-| Refresh/reopen | `DiffView.replace` rebuilds the entire widget (`textDiffEditor.zig:215-229`) | Recompute + re-allocate + re-decorate + lose state | Model swap/update and view-state restore |
-| Theme/settings | Diff tabs are skipped (`workbench.zig:2774-2778,9200-9232`) | Avoids work, but requires reopen/refresh to see changes | `updateOptions` and theme-driven repaint |
+| First render | `layout` + `selectInitialChange` refresh both views during `create` (`diffEditorWidget.zig:435-436,536-590`) | Two forced renders before the first workbench frame | Diff becomes visible after async diff; rendering is scheduled |
+| Per-input refresh | `app.zig:959-967` calls `Tab.refresh` after every input batch; diff branch force-refreshes both panes (`editorPane.zig:363-366`); `View.refresh` invalidates then renders immediately (`editorView.zig:1477-1480`) | Two full editor renders per input batch, even for ignored keys/mouse motion | View render scheduling/coalescing |
+| Per-frame gutter | `paintGutter` scans all mappings for each visible row (`diffEditorWidget.zig:669-687`) | O(visible rows × mappings) on every frame | Gutter items are laid out per hunk; current hunk found by cursor |
+| Refresh/reopen | `DiffView.replace` rebuilds the entire widget (`textDiffEditor.zig:276-293`) | Recompute + re-allocate + re-decorate + lose state | Model swap/update and view-state restore |
+| Theme/settings | Diff tabs are skipped (`src/vs/workbench/browser/parts/editor/textEditor.zig:140-160; src/tui/workbenchWindow.zig:3538-3545`) | Avoids work, but requires reopen/refresh to see changes | `updateOptions` and theme-driven repaint |
 
 ### 4.2 Blocking diff computation (P0)
 
 `DiffView.create` calls `DiffEditorWidget.create`
-(`textDiffEditor.zig:134-146`), which runs `compute()` synchronously before the
+(`textDiffEditor.zig:193-207`), which runs `compute()` synchronously before the
 first frame. `maxComputationTime` is a UI freeze budget, not a background
 budget:
 
@@ -567,11 +651,14 @@ plausible explanation for general sluggishness on large files. The existing
 already provides the native worker/request/reply pattern used by quick diff; the
 diff widget does not use it.
 
-Before `create` even runs, `openDiff` resolves both sides synchronously through
-`git.readRef` (which spawns `git show --textconv`, capped by the configured
-timeout) or `readWorkingFile`. That adds up to two blocking Git/file operations
-on the same TUI-thread path. `readRefCached` exists but the diff open path uses
-`readRef`; a `Refresh Diff` repeats the reads and the computation.
+Before `create` even runs, `openDiff`
+(`src/extensions/git/src/commands.zig:461-477`) resolves both sides
+synchronously through `resolveDiffTexts`/`readRef`
+(`src/extensions/git/src/git.zig:539-562`; `git show --textconv`, capped by the
+configured timeout) or `readWorkingFile`. That adds up to two blocking
+Git/file operations on the same TUI-thread path. `readRefCached` exists but the
+diff open path uses `readRef`; a `Refresh Diff` repeats the reads and the
+computation.
 
 ### 4.3 Aligned-text/filler explosion (P0)
 
@@ -596,11 +683,11 @@ can multiply into hundreds of MB and long open times.
 ### 4.4 Per-input double render (P1, likely visible while moving the mouse)
 
 The TUI main loop calls `current.refresh()` after every input batch that reaches
-the editor, including mouse motion (`src/tui/app.zig:1090-1098`). For diff tabs,
+the editor, including mouse motion (`src/tui/app.zig:959-967`). For diff tabs,
 `Tab.refresh` calls
 `original_view.refresh()` and `modified_view.refresh()`
-(`editorPane.zig:323-326`). `View.refresh` performs `invalidate()` followed by an
-immediate render (`editorView.zig:1575-1578`). Therefore every mouse-motion
+(`editorPane.zig:363-366`). `View.refresh` performs `invalidate()` followed by an
+immediate render (`editorView.zig:1477-1480`). Therefore every mouse-motion
 batch and every keypress (including diff keys that are currently ignored)
 forces two complete view renders. Combined with the gutter scan and decoration
 overlays, this can dominate pointer/keyboard responsiveness on large diffs.
@@ -632,7 +719,7 @@ rather than rebuilding the pane.
 ### 4.7 Initial forced render (P2)
 
 `selectInitialChange` calls `refresh()` on both views during construction
-(`diffEditorWidget.zig:532-586`), so the first frame work happens inside the
+(`diffEditorWidget.zig:536-590`), so the first frame work happens inside the
 open call. This is useful for revealing the first change but can be folded into
 the first scheduled frame; it is secondary to the synchronous diff computation.
 
@@ -668,7 +755,7 @@ navigation in the current implementation.
 
 ### 5.1 Gutter uses real model lines as display rows
 
-`paintGutter` (`diffEditorWidget.zig:665-683`):
+`paintGutter` (`diffEditorWidget.zig:669-687`):
 
 ```zig
 const display_row = self.modified_editor.topViewLine() + row;
@@ -705,12 +792,12 @@ are uncovered.
 (`components/diffEditorDecorations.zig:172-188`). The target text is the aligned
 display text; after any filler, those real line numbers are not the display
 rows. The test only asserts that a decoration with a `movedOriginal*` class
-exists, not where it is (`diffEditorWidget.zig:1187-1215`).
+exists, not where it is (`src/vs/editor/test/browser/widget/diffEditorWidget.test.zig`).
 
 ### 5.3 Hide-unchanged folding breaks the display-row coordinate system
 
 The snapshot editors are built with a full `line_number_map` of aligned rows
-(`diffEditorWidget.zig:351-352`). `Editor.displayLineNumber` indexes that map
+(`diffEditorWidget.zig:355-356`). `Editor.displayLineNumber` indexes that map
 directly by the editor's **view line**
 (`codeEditorWidgetTerminal.zig:2031-2038`), and the margin uses it for the
 painted number (`margin.zig:348-354`). When a user-defined fold is collapsed,
@@ -729,7 +816,7 @@ The same mismatch affects:
 
 The inline hide-unchanged path has the same issue: it folds the interleaved
 display rows and keeps `inline_display.line_numbers` indexed by unfolded rows
-(`diffEditorWidget.zig:352,762-804`).
+(`diffEditorWidget.zig:356,766-809`).
 
 Upstream hidden areas are view-level and navigation uses model positions /
 `revealRangeInCenter` (`diffEditorWidget.ts:724-727`), so its line numbers and
@@ -738,8 +825,8 @@ navigation remain correct.
 ### 5.4 Keyboard scroll does not synchronize panes
 
 `dispatchKey` forwards only to the focused pane
-(`diffEditorWidget.zig:697-699`). `syncScrollFromPane` is called from
-`dispatchMouse` (`:747-752`) and `syncTopLines` from `layout` (`:489`), but no
+(`diffEditorWidget.zig:700-703`). `syncScrollFromPane` is called from
+`dispatchMouse` (`:751-756`) and `syncTopLines` from `layout` (`:493`), but no
 keyboard path synchronizes the other pane. Once the key path is fixed, PageUp/
 PageDown/arrow scrolling must also synchronize, or the two panes will drift and
 the gutter (based on modified top) will point at unrelated rows.
@@ -760,7 +847,7 @@ See §3.12. In particular, after `swapSides`:
 
 ### 5.6 Navigation is index-based, not cursor-based
 
-`nextChange`/`previousChange` (`diffEditorWidget.zig:544-562`) operate on
+`nextChange`/`previousChange` (`diffEditorWidget.zig:548-566`) operate on
 `current_change`, initialized to 0 at open. Upstream uses the modified cursor
 line and wraps only at the document end (`diffEditorWidget.ts:729-756`). If the
 user clicks/moves the cursor in a diff and then presses next/previous, the local
@@ -781,7 +868,7 @@ accessibility signal for deleted/inserted/modified lines.
 ### 5.8 Option-value divergences
 
 * Local split ratio clamp: 0.2..0.8 (`diffEditorOptions.zig:53-59`,
-  `diffEditorWidget.zig:720-724`); upstream validates 0.1..0.9
+  `diffEditorWidget.zig:723-727`); upstream validates 0.1..0.9
   (`diffEditorOptions.ts:205`).
 * Local minimum side-by-side width: 50 cells, hard-coded
   (`diffEditorOptions.zig:34-35`); upstream uses a pixel breakpoint (default
@@ -801,25 +888,28 @@ accessibility signal for deleted/inserted/modified lines.
 
 There are 29 test declarations across the diff editor files and the workbench
 diff-pane file (plus the separate workbench integration test), but they are
-concentrated on model/decorations/alignment helpers:
+concentrated on model/decorations/alignment helpers. The diff widget/pane
+tests now live at the upstream test paths, but their bodies are unchanged:
 
 * `diffEditorViewModel.zig`: 3 tests (identical, insert/delete encoding, max-column
   normalization).
 * `diffEditorViewZones.zig`: 5 tests (equal rows, insert/delete, top-of-file,
   line-number maps).
 * `diffEditorDecorations.zig`: 2 tests (classes exist, detach).
-* `diffEditorWidget.zig`: 12 tests (sizes, navigation index, read-only,
-  split drag, wheel sync, moved decorations exist, hide folds, inline basics).
+* `src/vs/editor/test/browser/widget/diffEditorWidget.test.zig`: 12 tests
+  (sizes, navigation index, read-only, split drag, wheel sync, moved
+  decorations exist, hide folds, inline basics).
 * `diffEditorEditors.zig`, `gutterFeature.zig`, `overviewRulerFeature.zig`,
-  `diffEditorOptions.zig`: helper-only tests.
-* `textDiffEditor.zig`: 2 tests (input identity, replace).
+  `diffEditorOptions.zig`: 5 helper-only tests.
+* `src/vs/workbench/test/browser/parts/editor/textDiffEditor.test.zig`: 2 tests
+  (input identity, replace).
 * Workbench integration: one large SCM test that renders the diff frame and
-  checks the labels/cursor, but not diff rows, gutter markers, theme or input.
+  checks the labels/cursor, focus switching and a copy command, but not diff
+  rows, gutter markers, theme or plain key dispatch.
 
-No local test port exists for
-`vscode/src/vs/editor/test/browser/widget/diffEditorWidget.test.ts` (compact
-disclosures, width-based layout, `UnchangedRegion` behavior). Missing
-regression coverage directly corresponding to the findings:
+The upstream `diffEditorWidget.test.ts` cases (compact disclosures, width-based
+layout, `UnchangedRegion` behavior) are still not ported. Missing regression
+coverage directly corresponding to the findings:
 
 1. Pure deletion paints a `-` gutter marker at the aligned block start.
 2. A change after an earlier filler paints its marker on the correct row.
@@ -846,7 +936,7 @@ which is why misplaced moved blocks and missing/misplaced gutter markers pass.
 
 The current docs overstate the port and/or contradict each other:
 
-* `docs/terminal-ui.md:1999-2002` still says "no inline diff/hidden-unchanged/
+* `docs/terminal-ui.md:2050-2052` still says "no inline diff/hidden-unchanged/
   moved blocks/peek/multi-diff/accessible viewer", while the code has inline,
   hide-unchanged and moved-block *models* and the README describes them.
 * `docs/view-audit.md:71` marks the diff editor **T** and says gutter/
@@ -854,8 +944,10 @@ The current docs overstate the port and/or contradict each other:
   29, and the view-level gutter/overview/accessible/contributions gaps in this
   audit are not represented.
 * `docs/git-diff-plan.md:3-5` still lists inline/hide-unchanged/moved-block
-  diff as follow-ups.
-* `README.md:1207-1233` describes aligned snapshots, moved block decorations,
+  diff as follow-ups; its test plan at `:531-534` calls the upstream-path test
+  file "adapted upstream assertions", although it only contains the earlier
+  terminal tests.
+* `README.md:1239-1265` describes aligned snapshots, moved block decorations,
   hide-unchanged folding and the 50-cell fallback, but does not call out the
   missing indicators, gutter controls, theme/settings behavior, keyboard
   routing, combined overview ruler, accessible viewer, moved-block connectors,
@@ -950,21 +1042,22 @@ prevents the current coordinate bugs from becoming entrenched in new UI work.
 
 | Concern | Local evidence |
 |---|---|
-| Synchronous create/compute | `diffEditorWidget.zig:272-280`; `textDiffEditor.zig:134-146,215-229` |
-| Text duplication/filler rows | `diffEditorWidget.zig:260-340,988-1014`; `diffEditorViewZones.zig:75-188`; `diffEditorDecorations.zig:233-254` |
-| One-cell gutter and scan | `diffEditorWidget.zig:655-683` |
-| Wrong gutter coordinates | `diffEditorWidget.zig:665-683` vs `AlignedRows.mappings` at `diffEditorViewZones.zig:134-138` |
-| Keyboard dead end | `editorPane.zig:466-469`; `textDiffEditor.zig:250-252`; `diffEditorWidget.zig:697-699`; `editorView.zig:989-995`; normal path `editorInputDispatch.zig:159-231` |
-| No controllers on diff tabs | `editorPane.zig:274-275` |
-| Indicators disabled | `diffEditorWidget.zig:353-354`; `diffEditorDecorations.zig:124-134,291-299` |
-| Hide-unchanged folding | `diffEditorWidget.zig:357-366,762-804,907-942` |
-| Line-number map indexing | `diffEditorWidget.zig:351-352`; `codeEditorWidgetTerminal.zig:2031-2038`; `margin.zig:348-354` |
-| Swap/refresh state | `diffEditorWidget.zig:588-604`; `textDiffEditor.zig:213-231` |
-| Theme/settings skip | `workbench.zig:2774-2778,9200-9232`; `src/tui/editorView.zig:357-366` |
-| Options subset | `diffEditorOptions.zig:24-60`; `diffEditorWidget.zig:272-280,380-383`; `workbench.zig:4931-4983` |
-| Commands | `workbench.zig:1855-1858`; `handleTabKey` at `:9315-9340` |
-| Read-only snapshot | `diffEditorWidget.zig:347-350` |
-| Per-input diff refresh | `app.zig:1090-1098`; `editorPane.zig:323-326`; `editorView.zig:1575-1578` |
+| Text acquisition | `src/extensions/git/src/commands.zig:461-477`; `src/extensions/git/src/git.zig:539-552` |
+| Synchronous create/compute | `diffEditorWidget.zig:276-284`; `textDiffEditor.zig:193-207,276-293` |
+| Text duplication/filler rows | `diffEditorWidget.zig:264-345,993-1019`; `diffEditorViewZones.zig:75-188`; `diffEditorDecorations.zig:233-254` |
+| One-cell gutter and scan | `diffEditorWidget.zig:659-688` |
+| Wrong gutter coordinates | `diffEditorWidget.zig:669-687` vs `AlignedRows.mappings` at `diffEditorViewZones.zig:134-138` |
+| Keyboard dead end | `editorPane.zig:503-506`; `textDiffEditor.zig:312-314`; `diffEditorWidget.zig:700-703`; `editorView.zig:895-901`; normal path `codeEditorWidgetTerminalInput.zig:159-189` |
+| No controllers on diff tabs | `editorPane.zig:324-325` |
+| Indicators disabled | `diffEditorWidget.zig:357-358`; `diffEditorDecorations.zig:124-134,291-299` |
+| Hide-unchanged folding | `diffEditorWidget.zig:361-370,766-809,912-947` |
+| Line-number map indexing | `diffEditorWidget.zig:355-356`; `codeEditorWidgetTerminal.zig:2031-2038`; `margin.zig:348-354` |
+| Swap/refresh state | `diffEditorWidget.zig:592-608`; `textDiffEditor.zig:274-293` |
+| Theme/settings skip | `src/vs/workbench/browser/parts/editor/textEditor.zig:140-160; src/tui/workbenchWindow.zig:3538-3545`; `src/tui/editorView.zig:293-302` |
+| Options subset | `diffEditorOptions.zig:24-60`; `diffEditorWidget.zig:276-284,384-388`; `src/vs/workbench/browser/parts/editor/textDiffEditor.zig:27-80` |
+| Commands | `src/vs/workbench/browser/parts/editor/diffEditorCommands.zig:9-14`; `src/tui/workbench.zig:1503-1526` |
+| Read-only snapshot | `diffEditorWidget.zig:351-354` |
+| Per-input diff refresh | `app.zig:959-967`; `editorPane.zig:363-366`; `editorView.zig:1477-1480` |
 
 ## Appendix B — upstream evidence index
 
