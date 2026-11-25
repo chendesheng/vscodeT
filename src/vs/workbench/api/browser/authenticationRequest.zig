@@ -44,7 +44,7 @@ pub const Request = struct {
         const create = flag(opts, "createIfNone") or force;
         if (accounts.pending != null) return if (create) error.AuthenticationInProgress else .empty;
 
-        const a = accounts.workbench.allocator;
+        const a = accounts.allocator;
         const self = try a.create(Request);
         self.* = .{ .accounts = accounts, .arena = .init(a), .provider = "", .extension = "", .scopes = .null, .options = .null };
         var retain = false;
@@ -121,7 +121,7 @@ pub const Request = struct {
         const self: *Request = @ptrCast(@alignCast(context));
         self.response_id = id;
         self.accounts.changed = true;
-        self.accounts.workbench.quick_access.inputService().showPick(self.items, .{
+        self.accounts.quick_input.showPick(self.items, .{
             .placeholder = self.prompt,
             .cleanup = dismissed,
             .cleanup_context = self,
@@ -181,6 +181,6 @@ pub const Request = struct {
         if (self.creating) |id| self.accounts.host.rpc.cancel(id);
         if (self.accounts.pending == self) self.accounts.pending = null;
         self.arena.deinit();
-        self.accounts.workbench.allocator.destroy(self);
+        self.accounts.allocator.destroy(self);
     }
 };

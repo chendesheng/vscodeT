@@ -303,7 +303,7 @@ pub const Extensions = struct {
             .on_did_activate = extensionServiceActivatedHost,
             .as_browser_uri = extensionServiceBrowserUriHost,
         } };
-        try self.accounts.init(workbench, self.host, self.descriptions);
+        try self.accounts.init(allocator, &workbench.commands, workbench.quick_access.inputService(), .{ .context = workbench, .show = showStatusHint }, self.host, self.descriptions);
         errdefer self.accounts.deinit();
         try self.task_service.init(allocator, &workbench.commands, workbench.quick_access.inputService(), self.descriptions, .{
             .context = self,
@@ -429,6 +429,11 @@ pub const Extensions = struct {
     fn diagnosticsNotify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void {
         const self: *Extensions = @ptrCast(@alignCast(context));
         try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDiagnostics), method, args);
+    }
+
+    fn showStatusHint(context: *anyopaque, message: []const u8) void {
+        const workbench: *Workbench = @ptrCast(@alignCast(context));
+        workbench.setStatusHint("{s}", .{message});
     }
 
     fn refreshWorkbenchStatus(context: *anyopaque) void {
