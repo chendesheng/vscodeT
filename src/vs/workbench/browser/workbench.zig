@@ -161,8 +161,7 @@ const pane_composite_mod = @import("./parts/paneCompositePart.zig");
 /// Upstream `Markers.MARKERS_CONTAINER_ID` and `TERMINAL_VIEW_ID`.
 const PROBLEMS_CONTAINER_ID = markers_common.Markers.MARKERS_CONTAINER_ID;
 const TERMINAL_CONTAINER_ID = "terminal";
-const problems_view_mod = @import("../../../tui/problemsView.zig");
-const ProblemsView = problems_view_mod.ProblemsView;
+const MarkersView = @import("../contrib/markers/browser/markersView.zig").MarkersView;
 const panel_part_mod = @import("./parts/panel/panelPart.zig");
 const PanelPart = panel_part_mod.PanelPart;
 const views_mod = @import("../common/views.zig");
@@ -575,7 +574,7 @@ pub const Workbench = struct {
     scm_placeholder_buf: [160]u8 = undefined,
     scm_hover_surface: ?ui.Surface = null,
     markers_status: ?*MarkersStatusBar = null,
-    problems_view: ?*ProblemsView = null,
+    problems_view: ?MarkersView = null,
     marker_listener: ?@import("../../base/common/event.zig").Emitter(MarkerChangeEvent).ListenerId = null,
     range_highlights: ?*RangeHighlightDecorations = null,
     search_badge_buf: [32]u8 = undefined,
@@ -1267,7 +1266,7 @@ pub const Workbench = struct {
     }
 
     fn deinitShellModels(self: *Workbench) void {
-        if (self.problems_view) |view| {
+        if (self.problems_view) |*view| {
             view.deinit();
             self.problems_view = null;
         }
@@ -2884,26 +2883,25 @@ pub const Workbench = struct {
     }
 
     fn ensureProblemsView(self: *Workbench) !void {
-        if (self.problems_view) |view| {
-            view.setService(self.marker_service);
-            return;
+        if (self.problems_view != null) return;
+        self.problems_view = MarkersView.init(self.allocator);
+        errdefer {
+            self.problems_view.?.deinit();
+            self.problems_view = null;
         }
-        const view = try ProblemsView.init(self.allocator, self.marker_service, .{
+        try self.problems_view.?.attach(self.marker_service, .{
             .context = self,
-            .preview_marker = problemsPreviewMarker,
-            .open_marker = problemsOpenMarker,
+            .open_editor = problemsOpenEditor,
             .selection_changed = problemsSelectionChanged,
             .workspace_root = problemsWorkspaceRoot,
             .focus_editor = problemsFocusEditor,
         });
-        self.problems_view = view;
     }
 
     /// Upstream `workbench.actions.view.problems`: open the Problems container
     /// in the panel and move focus to the list.
     pub fn showProblems(self: *Workbench) !void {
         try self.ensureProblemsView();
-        if (self.problems_view) |view| view.refresh();
         if (!try self.panel_part.openPaneComposite(PROBLEMS_CONTAINER_ID)) return;
         try self.syncPanelContainerVisibility();
         self.focus = .problems;
@@ -2963,7 +2961,6 @@ pub const Workbench = struct {
         try self.syncPanelContainerVisibility();
         if (std.mem.eql(u8, id, PROBLEMS_CONTAINER_ID)) {
             try self.ensureProblemsView();
-            if (self.problems_view) |view| view.refresh();
             self.focus = .problems;
         } else if (std.mem.eql(u8, id, TERMINAL_CONTAINER_ID)) {
             self.focus = .terminal;
@@ -3054,7 +3051,7 @@ pub const Workbench = struct {
             highlights.removeHighlightRange();
             return;
         }
-        const view = self.problems_view orelse {
+        const view = if (self.problems_view) |*view| view else {
             highlights.removeHighlightRange();
             return;
         };
@@ -3074,7 +3071,7 @@ pub const Workbench = struct {
             highlights.removeHighlightRange();
             return;
         }
-        highlights.highlightRange(tab.editor.path, markerEditorRange(tab.editor, marker));
+        highlights.highlightRange(tab.editor.path, tab.editor.model.validateRange(MarkersView.markerRange(marker)));
     }
 
     pub fn setTerminalProfileStorage(self: *Workbench, user_data_dir: []const u8) !void {
@@ -3965,6 +3962,7 @@ pub const Workbench = struct {
     pub const OpenOptions = struct {
         /// Preview editors are replaced by the next preview in the group.
         pinned: bool = true,
+        preserve_focus: bool = false,
         /// Open the file in a text editor even when its extension normally
         /// selects the image preview (the "Open in Text Editor" action).
         force_text: bool = false,
@@ -4014,7 +4012,7 @@ pub const Workbench = struct {
         self.word_completion_registration = words;
         self.marker_listener = listener;
         if (self.markers_status) |status| status.attach(marker_service);
-        if (self.problems_view) |view| view.setService(marker_service);
+        if (self.problems_view) |*view| view.setService(marker_service);
 
         for (self.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
@@ -4027,7 +4025,6 @@ pub const Workbench = struct {
 
     fn onMarkersChanged(_: MarkerChangeEvent, self: *Workbench) !void {
         try self.syncPanelContainerVisibility();
-        if (self.problems_view) |view| view.refresh();
         if (self.outline_view) |view| view.refresh() catch {};
     }
 
@@ -5802,7 +5799,7 @@ pub const Workbench = struct {
         if (pane.tabForInput(opened.result.editor)) |tab| {
             try pane.activateTab(tab);
             tab.setImageRuntime(&self.images);
-            tab.focusEditor();
+            if (!options.preserve_focus) tab.focusEditor();
         }
         try self.history.add(path);
         self.pruneTabs(pane);
@@ -5826,7 +5823,7 @@ pub const Workbench = struct {
             if (pane.tabForInput(opened.result.editor)) |tab| {
                 try pane.activateTab(tab);
                 tab.setImageRuntime(&self.images);
-                tab.focusEditor();
+                if (!options.preserve_focus) tab.focusEditor();
             }
             try self.history.add(path);
             self.pruneTabs(pane);
@@ -5838,8 +5835,10 @@ pub const Workbench = struct {
         try pane.addTab(tab);
         self.applyEditorSettingsToTab(tab);
         try pane.activateTab(tab);
-        self.focusEditor();
-        tab.focusEditor();
+        if (!options.preserve_focus) {
+            self.focusEditor();
+            tab.focusEditor();
+        }
         try self.history.add(path);
         self.pruneTabs(pane);
     }
@@ -5859,7 +5858,7 @@ pub const Workbench = struct {
             tab.setImageRuntime(&self.images);
             if (self.language_features) |features| tab.attachLanguageRegistry(features);
             try tab.ensureControllers();
-            tab.focusEditor();
+            if (!options.preserve_focus) tab.focusEditor();
         }
         try self.history.add(path);
         self.pruneTabs(pane);
@@ -5905,7 +5904,7 @@ pub const Workbench = struct {
                 try pane.activateTab(tab);
                 if (self.language_features) |features| tab.attachLanguageRegistry(features);
                 try tab.ensureControllers();
-                tab.focusEditor();
+                if (!options.preserve_focus) tab.focusEditor();
             }
             try self.history.add(path);
             self.pruneTabs(pane);
@@ -6119,7 +6118,7 @@ pub const Workbench = struct {
                 try pane.activateTab(tab);
                 if (self.language_features) |features| tab.attachLanguageRegistry(features);
                 try tab.ensureControllers();
-                tab.focusEditor();
+                if (!options.preserve_focus) tab.focusEditor();
             }
             try self.history.add(path);
             self.pruneTabs(pane);
@@ -9972,7 +9971,7 @@ pub const Workbench = struct {
                 self.updateProblemsHighlight();
             }
             const content = panel_part_mod.contentRect(rect);
-            if (self.problems_view) |view| _ = view.handleMouse(@constCast(event), content) catch false;
+            if (self.problems_view) |*view| _ = view.handleMouse(event, content, .{ .show_header = false }) catch false;
             return true;
         }
         return false;
@@ -9992,7 +9991,7 @@ pub const Workbench = struct {
             if (self.activeTab()) |tab| tab.focusEditor();
             return true;
         }
-        if (self.problems_view) |view| {
+        if (self.problems_view) |*view| {
             _ = view.handleKey(@constCast(event)) catch {};
         }
         return true;
@@ -10675,7 +10674,7 @@ pub const Workbench = struct {
                 self.renderPlaceholder(content, focused);
             }
         } else if (std.mem.eql(u8, active_id, PROBLEMS_CONTAINER_ID)) {
-            if (self.problems_view) |view| {
+            if (self.problems_view) |*view| {
                 try view.render(&self.frame.next, content, self.focus == .problems, .{ .show_header = false });
             } else {
                 self.renderPlaceholder(content, focused);
@@ -11889,26 +11888,17 @@ fn problemsWorkspaceRoot(context: *anyopaque) ?[]const u8 {
     return self.workspaceFolderPath();
 }
 
-fn problemsPreviewMarker(context: *anyopaque, marker: *const markers_mod.Marker) anyerror!void {
+fn problemsOpenEditor(context: *anyopaque, marker: *const markers_mod.Marker, preserve_focus: bool, pinned: bool) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    if (!std.mem.eql(u8, marker.resource.scheme, "file")) return;
-    try self.openPathWithOptions(marker.resource.path, .{ .pinned = false });
+    try self.openPathWithOptions(marker.resource.path, .{ .pinned = pinned, .preserve_focus = preserve_focus });
     const tab = self.activeTab() orelse return;
-    try tab.editor.setSelection(markerEditorRange(tab.editor, marker));
-    self.focusSidebar();
-    self.updateProblemsHighlight();
-}
-
-fn problemsOpenMarker(context: *anyopaque, marker: *const markers_mod.Marker) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (!std.mem.eql(u8, marker.resource.scheme, "file")) return;
-    try self.openPath(marker.resource.path);
-    if (self.activeTab()) |tab| {
-        try tab.editor.setSelection(markerEditorRange(tab.editor, marker));
-        tab.editor.ensureCursorVisible();
+    try tab.editor.setSelection(tab.editor.model.validateRange(MarkersView.markerRange(marker)));
+    if (preserve_focus) {
+        self.updateProblemsHighlight();
+    } else {
+        self.focusEditor();
+        tab.focusEditor();
     }
-    self.focusEditor();
-    if (self.activeTab()) |tab| tab.focusEditor();
 }
 
 fn problemsSelectionChanged(context: *anyopaque) void {
@@ -11920,22 +11910,6 @@ fn problemsFocusEditor(context: *anyopaque) void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     self.focusEditor();
     if (self.activeTab()) |tab| tab.focusEditor();
-}
-
-fn markerEditorRange(editor: *Editor, marker: *const markers_mod.Marker) Range {
-    const model = editor.model;
-    const line_count = @max(model.getLineCount(), 1);
-    const start_line = @min(@max(@as(usize, marker.start_line_number), 1), line_count);
-    const end_line = @min(@max(@as(usize, marker.end_line_number), start_line), line_count);
-    const start_column = @min(
-        @max(@as(usize, marker.start_column), 1),
-        model.getLineMaxColumn(start_line),
-    );
-    const end_column = @min(
-        @max(@as(usize, marker.end_column), 1),
-        model.getLineMaxColumn(end_line),
-    );
-    return Range.init(start_line, start_column, end_line, end_column);
 }
 
 fn commandViewScm(context: *anyopaque) anyerror!void {

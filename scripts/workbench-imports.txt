@@ -22,7 +22,6 @@ src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/stickyScrollHost
 src/vs/workbench/browser/parts/editor/textDiffEditor.zig -> src/tui/editorView.zig
 src/vs/workbench/browser/workbench.zig -> src/tui/cellMetrics.zig
 src/vs/workbench/browser/workbench.zig -> src/tui/editorView.zig
-src/vs/workbench/browser/workbench.zig -> src/tui/problemsView.zig
 src/vs/workbench/browser/workbench.zig -> src/tui/quickDiffController.zig
 src/vs/workbench/contrib/helix/browser/helixRuntime.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/contrib/helix/test/browser/helixExtension.test.zig -> src/vs/workbench/browser/workbench.zig

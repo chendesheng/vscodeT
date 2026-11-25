@@ -1940,6 +1940,7 @@ test "Workbench: Problems panel, status count and range highlight" {
             .end_line_number = 2,
             .end_column = 4,
         },
+        .{ .severity = markers_mod.MarkerSeverity.Warning, .message = "second", .start_line_number = 3, .end_line_number = 3 },
     }, null);
 
     const status = workbench.statusbar.main_part.model.findEntry("status.problems") orelse return error.TestUnexpectedResult;
@@ -1957,6 +1958,12 @@ test "Workbench: Problems panel, status count and range highlight" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "boom") != null);
     try std.testing.expect(workbench.range_highlights.?.highlighted);
 
+    const down = ui.KeyEvent{ .key = .down };
+    try std.testing.expect(try workbench.handlePanelKey(&down));
+    try std.testing.expectEqual(Focus.problems, workbench.focus);
+    try std.testing.expectEqual(@as(usize, 3), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+    try std.testing.expect(workbench.range_highlights.?.highlighted);
+    try std.testing.expect(try workbench.handlePanelKey(&.{ .key = .up }));
     const enter = ui.KeyEvent{ .key = .enter };
     try std.testing.expect(try workbench.handlePanelKey(&enter));
     try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
