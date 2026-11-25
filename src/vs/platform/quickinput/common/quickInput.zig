@@ -1,13 +1,31 @@
 // Portable subset of `src/vs/platform/quickinput/common/quickInput.ts`.
 //
-// Exposes quick access through IQuickInputService. The quick-pick data model
+// Exposes quick access and one-shot pick results and visibility events through
+// IQuickInputService. The quick-pick data model
 // includes items, separators, activation modes and pick ownership options.
 // Items can also carry row actions and resolved shortcut keycaps.
 
 const std = @import("std");
 
+pub const IPickOptions = struct {
+    placeholder: []const u8 = "",
+    active_id: ?[]const u8 = null,
+};
+
+/// Terminal Promise adaptation: a dismissed pick returns null, an accepted
+/// pick borrows its item until the result handler completes.
+pub const PickResultHandler = *const fn (*anyopaque, ?*const Item) anyerror!void;
+
 pub const IQuickInputService = struct {
     quick_access: @import("quickAccess.zig").IQuickAccessController,
+    context: *anyopaque,
+    pick_fn: *const fn (*anyopaque, []const QuickPickItem, IPickOptions, PickResultHandler, *anyopaque) anyerror!void,
+    on_show: *@import("../../../base/common/event.zig").Emitter(void),
+    on_hide: *@import("../../../base/common/event.zig").Emitter(void),
+
+    pub fn pick(self: IQuickInputService, items: []const QuickPickItem, options: IPickOptions, handler: PickResultHandler, context: *anyopaque) !void {
+        try self.pick_fn(self.context, items, options, handler, context);
+    }
 };
 pub const quick_input_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(IQuickInputService, "quickInputService");
 

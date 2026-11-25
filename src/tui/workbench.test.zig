@@ -4918,6 +4918,21 @@ test "Workbench: a capable terminal uploads and paints the image" {
     const scale = tagScale(workbench.media_status.?.last.scale.?);
     try std.testing.expect(scale > 1);
 
+    // The registered Action2 resolves the mounted image pane through the
+    // editor service and accepts a zoom value through IQuickInputService.
+    try workbench.commands.execute("imagePreview.selectZoomLevel");
+    const picker = workbench.quick_access.inputService().pickerRef();
+    var zoom_index: ?usize = null;
+    for (picker.items.items, 0..) |entry, index| {
+        if (entry == .item and std.mem.eql(u8, entry.item.id, "2")) {
+            zoom_index = index;
+            break;
+        }
+    }
+    picker.setActiveIndex(zoom_index orelse return error.TestExpectedZoomLevel);
+    picker.accept();
+    try std.testing.expectEqual(@as(f64, 2), tagScale(tab.image_preview.?.currentScale()));
+
     // Zoomed clicks change the pane's scale too.
     var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = 2, .y = 2 };
     try std.testing.expectEqual(

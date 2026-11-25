@@ -500,6 +500,24 @@ pub const Tab = struct {
 
     /// The tab's entry in the ported `EditorGroupModel`; the group view maps
     /// model editors to tab views through this accessor.
+    pub fn interface(self: *Tab) editor_common.IVisibleEditorPane {
+        return .{
+            .context = self,
+            .input = self.input,
+            .id = self.input.editor_id orelse self.input.type_id,
+            .get_control_fn = struct {
+                fn get(context: *anyopaque) ?*anyopaque {
+                    const tab: *Tab = @ptrCast(@alignCast(context));
+                    if (tab.image_preview) |pane| return pane;
+                    if (tab.markdown_preview) |pane| return pane;
+                    if (tab.diff) |diff| return diff.widget;
+                    if (tab.terminalInstance()) |instance| return instance;
+                    return tab.editor;
+                }
+            }.get,
+        };
+    }
+
     pub fn editorInput(self: *Tab) *EditorInput {
         return self.input;
     }

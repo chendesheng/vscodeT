@@ -81,3 +81,41 @@ test "quickinput: accept selects the active item and hides" {
     picker.hide();
     try std.testing.expect(!picker.visible);
 }
+
+test "QuickInputService pick resolves acceptance, cancellation and disposal exactly once" {
+    const QuickInputService = @import("../../browser/quickInputService.zig").QuickInputService;
+    const State = struct {
+        accepted: usize = 0,
+        cancelled: usize = 0,
+        fn show(_: *anyopaque, _: *QuickPick) !void {}
+        fn hide(_: *anyopaque) void {}
+        fn result(context: *anyopaque, item: ?*const quick_input.Item) !void {
+            const state: *@This() = @ptrCast(@alignCast(context));
+            if (item) |value| {
+                try std.testing.expectEqualStrings("b", value.id);
+                state.accepted += 1;
+            } else state.cancelled += 1;
+        }
+    };
+    var state = State{};
+    const service = try QuickInputService.init(std.testing.allocator, .{ .context = &state, .show = State.show, .hide = State.hide });
+    var disposed = false;
+    defer if (!disposed) service.deinit();
+    const values = items();
+    try service.pick(&values, .{ .active_id = "b" }, State.result, &state);
+    service.pickerRef().accept();
+    try std.testing.expectEqual(@as(usize, 1), state.accepted);
+    try std.testing.expectEqual(@as(usize, 0), state.cancelled);
+
+    try service.pick(&values, .{}, State.result, &state);
+    service.hide();
+    try std.testing.expectEqual(@as(usize, 1), state.cancelled);
+    service.hide();
+    try std.testing.expectEqual(@as(usize, 1), state.cancelled);
+
+    try service.pick(&values, .{}, State.result, &state);
+    service.deinit();
+    disposed = true;
+    try std.testing.expectEqual(@as(usize, 1), state.accepted);
+    try std.testing.expectEqual(@as(usize, 2), state.cancelled);
+}

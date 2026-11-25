@@ -72,6 +72,7 @@ pub const QuickInputService = struct {
     }
 
     pub fn deinit(self: *QuickInputService) void {
+        self.hide();
         self.filtered.deinit();
         self.master.deinit();
         self.picker.deinit();
@@ -84,6 +85,38 @@ pub const QuickInputService = struct {
 
     pub fn pickerRef(self: *QuickInputService) *QuickPick {
         return &self.picker;
+    }
+
+    const PickBridge = struct {
+        allocator: Allocator,
+        handler: quick_input.PickResultHandler,
+        context: *anyopaque,
+        accepted: bool = false,
+
+        fn invoke(context: *anyopaque, picker: *QuickPick) anyerror!void {
+            const state: *PickBridge = @ptrCast(@alignCast(context));
+            state.accepted = true;
+            try state.handler(state.context, picker.selectedItem());
+        }
+
+        fn cleanup(context: *anyopaque) void {
+            const state: *PickBridge = @ptrCast(@alignCast(context));
+            defer state.allocator.destroy(state);
+            if (!state.accepted) state.handler(state.context, null) catch {};
+        }
+    };
+
+    /// Service-facing pick() result, independent of the terminal picker widget.
+    pub fn pick(self: *QuickInputService, items: []const QuickPickItem, options: quick_input.IPickOptions, handler: quick_input.PickResultHandler, context: *anyopaque) !void {
+        const state = try self.allocator.create(PickBridge);
+        errdefer self.allocator.destroy(state);
+        state.* = .{ .allocator = self.allocator, .handler = handler, .context = context };
+        try self.showPick(items, .{
+            .placeholder = options.placeholder,
+            .active_id = options.active_id,
+            .cleanup = PickBridge.cleanup,
+            .cleanup_context = state,
+        }, PickBridge.invoke, state);
     }
 
     /// Shows a one-shot picker. Items are copied into the service; labels and

@@ -3,7 +3,7 @@
 //
 // It owns the provider registry, the file index, the two providers, the
 // controller, a one-shot picker for workbench selectors, and the terminal
-// widget, and routes keys/mouse/render/poll from the workbench. `Ctrl-P` opens
+// widget, and routes keys/mouse/render from the workbench. `Ctrl-P` opens
 // Go to File; typing `>` switches to the command palette; `Alt-P` opens the
 // command palette directly. While a picker is open, `Ctrl-N`/`Ctrl-P` select
 // the next/previous item (the terminal form of the macOS quick-pick bindings;
@@ -11,8 +11,8 @@
 // and Ctrl-Shift-P, so the latter cannot be used.
 //
 // File search is asynchronous: `showFilePicker` starts one `rg --files`
-// session in `FileSearchWorker`, `poll()` drains a bounded result wait, and the
-// provider only copies owned results into the picker arena. An outside click
+// session in `FileSearchWorker`. Worker completion wakes the window queue,
+// and the provider only copies owned results into the picker arena. An outside click
 // hides the picker and is consumed instead of being replayed to the widget
 // underneath.
 
@@ -48,7 +48,8 @@ const QuickAccessController = controller_mod.QuickAccessController;
 const quick_input_service_mod = @import("../../platform/quickinput/browser/quickInputService.zig");
 const QuickInputService = quick_input_service_mod.QuickInputService;
 const QuickPick = @import("../../platform/quickinput/browser/quickInput.zig").QuickPick;
-const QuickPickItem = @import("../../platform/quickinput/common/quickInput.zig").QuickPickItem;
+const quick_input = @import("../../platform/quickinput/common/quickInput.zig");
+const QuickPickItem = quick_input.QuickPickItem;
 const widget_mod = @import("../../platform/quickinput/browser/quickInputList.zig");
 const theme_colors_mod = @import("./themeColors.zig");
 const QuickPickWidget = widget_mod.QuickPickWidget;
@@ -259,8 +260,19 @@ pub const QuickAccessService = struct {
         return self.input;
     }
 
-    pub fn interface(self: *QuickAccessService) @import("../../platform/quickinput/common/quickInput.zig").IQuickInputService {
-        return .{ .quick_access = .{ .context = self, .show_fn = showQuickAccess } };
+    pub fn interface(self: *QuickAccessService) quick_input.IQuickInputService {
+        return .{
+            .quick_access = .{ .context = self, .show_fn = showQuickAccess },
+            .context = self.input,
+            .pick_fn = pick,
+            .on_show = &self.on_show,
+            .on_hide = &self.on_hide,
+        };
+    }
+
+    fn pick(context: *anyopaque, items: []const QuickPickItem, options: quick_input.IPickOptions, handler: quick_input.PickResultHandler, handler_context: *anyopaque) anyerror!void {
+        const input: *QuickInputService = @ptrCast(@alignCast(context));
+        try input.pick(items, options, handler, handler_context);
     }
 
     fn showQuickAccess(context: *anyopaque, value: []const u8) anyerror!void {

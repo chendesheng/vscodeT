@@ -14,6 +14,8 @@ const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").Edito
 const text_diff_editor_mod = @import("../../../browser/parts/editor/textDiffEditor.zig");
 const IConfigurationService = @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
+const IEditorService = @import("../common/editorService.zig").IEditorService;
+const IVisibleEditorPane = @import("../../../common/editor.zig").IVisibleEditorPane;
 const Event = @import("../../../../base/common/event.zig").Emitter(void);
 
 pub const OpenOptions = struct {
@@ -179,6 +181,27 @@ pub const EditorService = struct {
             }
         }
         return null;
+    }
+
+    pub fn interface(self: *EditorService) IEditorService {
+        return .{
+            .context = self,
+            .active_editor_pane_fn = struct {
+                fn get(context: *anyopaque) ?IVisibleEditorPane {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    const pane = service.activeEditorPane() orelse return null;
+                    return pane.interface();
+                }
+            }.get,
+            .active_editor_fn = struct {
+                fn get(context: *anyopaque) ?*EditorInput {
+                    const service: *EditorService = @ptrCast(@alignCast(context));
+                    return service.part.service.activeGroup().model.activeEditor();
+                }
+            }.get,
+            .on_did_active_editor_change = self.onDidActiveEditorChange(),
+            .on_did_visible_editors_change = self.onDidVisibleEditorsChange(),
+        };
     }
 
     pub fn activeEditorPane(self: EditorService) ?*Tab {

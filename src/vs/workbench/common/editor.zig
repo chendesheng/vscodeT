@@ -68,6 +68,24 @@ pub const EditorOptions = struct {
     center_selection_if_outside_viewport: bool = false,
 };
 
+/// Port of IVisibleEditorPane. The terminal's pane adapter supplies a typed
+/// input and editor ID; the control remains an opaque widget until the caller
+/// checks that ID, as the browser does with its editor-pane type guards.
+pub const IVisibleEditorPane = struct {
+    context: *anyopaque,
+    input: *@import("editor/editorInput.zig").EditorInput,
+    id: []const u8,
+    get_control_fn: *const fn (*anyopaque) ?*anyopaque,
+
+    pub fn getId(self: IVisibleEditorPane) []const u8 {
+        return self.id;
+    }
+
+    pub fn getControl(self: IVisibleEditorPane) ?*anyopaque {
+        return self.get_control_fn(self.context);
+    }
+};
+
 /// Port of upstream `IEditorPaneSelection`.
 pub const IEditorPaneSelection = struct {
     context: *anyopaque,

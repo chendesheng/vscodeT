@@ -499,6 +499,8 @@ pub const Workbench = struct {
     window_views: WindowViews,
     views_api: views_service.IViewsService,
     code_editor_api: code_editor_service.ICodeEditorService,
+    editors: editor_service_mod.EditorService,
+    editor_api: @import("../services/editor/common/editorService.zig").IEditorService,
     editor_groups_api: editor_groups.IEditorGroupsService,
     allocator: Allocator,
     io: Io,
@@ -934,8 +936,8 @@ pub const Workbench = struct {
         _ = try self.service.on_did_visible_editors_change.listen(self, onHistoryVisibleEditorsChanged);
         self.focus_subscriptions[0] = try self.service.on_did_active_editor_change.listenSignal(self, updatePartFocus);
         self.focus_subscriptions[1] = try self.service.on_did_visible_editors_change.listenSignal(self, updatePartFocus);
-        self.focus_subscriptions[2] = try self.quick_access.on_show.listenSignal(self, updatePartFocus);
-        self.focus_subscriptions[3] = try self.quick_access.on_hide.listenSignal(self, updatePartFocus);
+        self.focus_subscriptions[2] = try self.quick_input_api.on_show.listenSignal(self, updatePartFocus);
+        self.focus_subscriptions[3] = try self.quick_input_api.on_hide.listenSignal(self, updatePartFocus);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
         const editor_service = @import("../services/editor/browser/editorService.zig").EditorService{ .part = self.part };
         if (self.editor_status) |status| try status.bindActiveEditor(editor_service);
@@ -962,6 +964,9 @@ pub const Workbench = struct {
         self.code_editors = .{ .part = self.part };
         self.code_editor_api = self.code_editors.interface();
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
+        self.editors = .{ .part = self.part };
+        self.editor_api = self.editors.interface();
+        _ = try self.services.set(@import("../services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
         _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
         _ = try self.services.set(layout_service_mod.layout_service_id, &self.layout_api);
         _ = try self.services.set(@import("../../platform/notification/common/notification.zig").notification_service_id, &self.notification_api);
@@ -1629,12 +1634,10 @@ pub const Workbench = struct {
             .{ .id = "markdown.showPreviewToSide", .label = "Open Preview to the Side", .category = "Markdown", .requires_editor = true, .context = self, .run = commandShowMarkdownPreview },
             .{ .id = "markdown.togglePreview", .label = "Toggle Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandToggleMarkdownPreview },
             .{ .id = "markdown.preview.refresh", .label = "Refresh Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandRefreshMarkdownPreview },
-            .{ .id = media_actions.zoom_in_id, .label = media_actions.zoom_in_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageZoomIn },
-            .{ .id = media_actions.zoom_out_id, .label = media_actions.zoom_out_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageZoomOut },
-            .{ .id = media_actions.select_zoom_level_id, .label = media_actions.select_zoom_level_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageSelectZoomLevel },
-            .{ .id = media_actions.open_in_text_id, .label = media_actions.open_in_text_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageOpenInTextEditor },
         };
         for (before_search) |command| try self.commands.register(command);
+        for (media_actions.zoom_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        try self.commands.register(.{ .id = media_actions.open_in_text_id, .label = media_actions.open_in_text_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageOpenInTextEditor });
         const search_contribution = @import("../contrib/search/browser/search.contribution.zig");
         for (search_contribution.search_actions) |action| try self.commands.registerAction(&self.instantiation, action);
         const search_editor_commands = [_]commands_mod.CommandInfo{
@@ -10181,67 +10184,6 @@ fn commandToggleMarkdownPreview(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const pane = self.activePane() orelse return;
     try self.toggleMarkdownPreview(pane);
-}
-
-fn commandImageZoomIn(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return;
-    const pane = tab.image_preview orelse return;
-    pane.zoomIn();
-}
-
-fn commandImageZoomOut(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return;
-    const pane = tab.image_preview orelse return;
-    pane.zoomOut();
-}
-
-const image_zoom_pick_items = [_]QuickPickItem{
-    .{ .item = .{ .id = "10", .label = "1000%" } },
-    .{ .item = .{ .id = "5", .label = "500%" } },
-    .{ .item = .{ .id = "2", .label = "200%" } },
-    .{ .item = .{ .id = "1", .label = "100%" } },
-    .{ .item = .{ .id = "0.5", .label = "50%" } },
-    .{ .item = .{ .id = "0.2", .label = "20%" } },
-    .{ .item = .{ .id = "fit", .label = "Whole Image" } },
-};
-
-fn commandImageSelectZoomLevel(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return;
-    const pane = tab.image_preview orelse return;
-    const active_id = switch (pane.currentScale()) {
-        .fit => "fit",
-        .number => |value| blk: {
-            if (value == 10) break :blk "10";
-            if (value == 5) break :blk "5";
-            if (value == 2) break :blk "2";
-            if (value == 1) break :blk "1";
-            if (value == 0.5) break :blk "0.5";
-            if (value == 0.2) break :blk "0.2";
-            break :blk "";
-        },
-    };
-    try self.quick_access.inputService().showPick(
-        &image_zoom_pick_items,
-        .{ .placeholder = "Select zoom level", .active_id = if (active_id.len > 0) active_id else null },
-        onImageZoomLevelAccepted,
-        self,
-    );
-}
-
-fn onImageZoomLevelAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return;
-    const pane = tab.image_preview orelse return;
-    const item = picker.selectedItem() orelse return;
-    if (std.mem.eql(u8, item.id, "fit")) {
-        pane.setScale(.fit);
-    } else {
-        const value = std.fmt.parseFloat(f64, item.id) catch return;
-        pane.setScale(.{ .number = value });
-    }
 }
 
 fn commandImageOpenInTextEditor(context: *anyopaque) anyerror!void {
