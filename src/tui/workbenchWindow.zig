@@ -158,7 +158,6 @@ const ViewDescriptorService = view_descriptor_service_mod.ViewDescriptorService;
 const range_highlight_mod = @import("../vs/workbench/browser/codeeditor.zig");
 const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 
-const search_command_ids = @import("../vs/workbench/contrib/search/common/constants.zig").SearchCommandIds;
 const search_view_mod = @import("../vs/workbench/contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
 const search_widget_mod = @import("../vs/workbench/contrib/search/browser/searchWidget.zig");
@@ -346,6 +345,9 @@ const WindowViews = struct {
 pub const TerminalWorkbench = struct {
     const WindowTimer = @import("../vs/base/common/async.zig").WindowTimer;
     core: workbench_core.Workbench,
+    host_service: @import("../vs/workbench/services/host/browser/browserHostService.zig").BrowserHostService,
+    host_api: @import("../vs/workbench/services/host/browser/host.zig").IHostService,
+    storage_api: storage_mod.IStorageService,
     code_editors: CodeEditorService,
     window_views: WindowViews,
     views_api: views_service.IViewsService,
@@ -460,8 +462,6 @@ pub const TerminalWorkbench = struct {
     instantiation: *InstantiationService,
     layout_api: layout_service_mod.IWorkbenchLayoutService,
     lifecycle_api: lifecycle_mod.ILifecycleService,
-    on_will_shutdown: Emitter(lifecycle_mod.WillShutdownEvent),
-    on_did_shutdown: Emitter(void),
     /// Terminal Outline side panel (`outline` view container).
     outline_view: ?*OutlinePane = null,
     breadcrumbs: breadcrumbs_control_mod.BreadcrumbsControlCollection,
@@ -615,8 +615,6 @@ pub const TerminalWorkbench = struct {
         self.file_watcher_service = null;
         self.workspace_watcher = null;
         self.contributions = contributions_mod.WorkbenchContributions.init(allocator);
-        self.on_will_shutdown = .init(allocator);
-        self.on_did_shutdown = .init(allocator);
         self.lifecycle = .init(allocator);
         errdefer self.lifecycle.deinit();
         errdefer self.contributions.deinit();
@@ -885,6 +883,7 @@ pub const TerminalWorkbench = struct {
             .configuration = &self.configuration,
             .editor_opening = &self.editor_opening,
             .activity_service = &self.activity_service,
+            .title_pane = &self.sidebar_part.pane,
             .dialog_service = &self.dialog_service,
             .window = &self.window_events,
             .view_factory = self.view_factory,
@@ -985,8 +984,6 @@ pub const TerminalWorkbench = struct {
             .commands = &self.commands,
             .contributions = &self.contributions,
             .lifecycle = &self.lifecycle,
-            .will_shutdown = &self.on_will_shutdown,
-            .did_shutdown = &self.on_did_shutdown,
             .notification_service = self.notification_service,
             .statusbar = &self.statusbar,
             .window = &self.window_events,
@@ -1116,6 +1113,10 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/services/preferences/common/preferences.zig").preferences_service_id, &self.preferences_api);
         self.dialog_api = self.dialog_service.interface();
         _ = try self.services.set(dialogs.dialog_service_id, &self.dialog_api);
+        self.host_api = self.host_service.interface();
+        self.storage_api = self.notification_storage.interface();
+        _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
+        _ = try self.services.set(storage_mod.storage_service_id, &self.storage_api);
         self.terminal_action_services = terminal_actions.TerminalActionServices.bind(self);
         _ = try self.services.set(terminal_actions.terminal_action_services_id, &self.terminal_action_services);
         _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
@@ -1144,6 +1145,8 @@ pub const TerminalWorkbench = struct {
     }
 
     fn initShellModels(self: *TerminalWorkbench, parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool) !void {
+        self.host_service = .init(self.allocator);
+        errdefer self.host_service.deinit();
         self.dialog_service = .init(self.allocator);
         errdefer self.dialog_service.deinit();
         self.dialog_handler = try @import("../vs/workbench/browser/parts/dialogs/dialog.web.contribution.zig").DialogHandlerContribution.create(self.allocator, &self.dialog_service.model);
@@ -1303,6 +1306,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn deinitShellModels(self: *TerminalWorkbench) void {
+        self.core.disposeListeners();
         self.dialog_handler.destroy();
         self.dialog_service.deinit();
         if (self.problems_view) |*view| {
@@ -1330,9 +1334,9 @@ pub const TerminalWorkbench = struct {
             self.allocator.free(panes);
             self.explorer_panes = null;
         }
-        if (self.search_window.view) |view| view.detachActivity();
         self.activity_service.deinit();
         self.core.disposeNotifications();
+        self.host_service.deinit();
         self.statusbar.deinit();
         self.notification_service.deinit();
         self.notification_storage.deinit();
@@ -1771,6 +1775,7 @@ pub const TerminalWorkbench = struct {
         }
         self.git_commands.deinit();
         self.deinitGit();
+        self.search_window.destroy();
         self.deinitShellModels();
         if (self.tab_service) |service| service.deinit();
         if (self.global_service) |service| {
@@ -1796,7 +1801,6 @@ pub const TerminalWorkbench = struct {
         self.markdown_previews.deinit();
         self.service.deinit();
         if (self.sidebar) |sidebar| sidebar.deinit();
-        self.search_window.destroy();
         if (self.settings_watcher) |watcher| watcher.deinit();
         if (self.workspace_watcher) |watcher| {
             watcher.deinit();
@@ -1807,8 +1811,6 @@ pub const TerminalWorkbench = struct {
             self.file_watcher_service = null;
         }
         self.contributions.deinit();
-        self.on_will_shutdown.deinit();
-        self.on_did_shutdown.deinit();
         self.lifecycle.deinit();
         if (self.configuration) |configuration| configuration.deinit();
         freeOwnedPaths(self.allocator, self.user_settings_paths);
@@ -1890,24 +1892,7 @@ pub const TerminalWorkbench = struct {
     pub fn updateSidebarTitleActions(self: *TerminalWorkbench) void {
         const container = self.sidebar_part.pane.active_id orelse "";
         if (std.mem.eql(u8, container, "search")) {
-            const view = self.search_window.view orelse return;
-            const tree_mode = view.controller.viewMode() == .tree;
-            const expanded = view.hasExpandedResults();
-            const has_results = view.matchCount() != 0;
-            self.sidebar_part.pane.setTitleActions(&.{
-                .{ .id = search_command_ids.refresh_search_results, .label = "Refresh", .glyph = '↻', .enabled = view.widget.value(.search).len != 0 },
-                .{ .id = search_command_ids.clear_search_results, .label = "Clear Search Results", .glyph = '×', .enabled = has_results },
-                // Codicon.listFlat/listTree fit one cell. U+2637 (☷) is a
-                // wide character and displaces later glyphs and frame strokes.
-                if (tree_mode)
-                    .{ .id = search_command_ids.view_as_list, .label = "View as List", .glyph = 0xeb84 }
-                else
-                    .{ .id = search_command_ids.view_as_tree, .label = "View as Tree", .glyph = 0xeb86 },
-                if (expanded or !has_results)
-                    .{ .id = search_command_ids.collapse_search_results, .label = "Collapse All", .glyph = '⊟', .enabled = has_results }
-                else
-                    .{ .id = search_command_ids.expand_search_results, .label = "Expand All", .glyph = '⊞' },
-            }, &.{}) catch {};
+            if (self.search_window.view) |view| view.updateTitleActions();
         } else if (std.mem.eql(u8, container, "scm")) {
             const merged = if (self.scm.container) |value|
                 value.mergedTitleActions(self.allocator) catch null
@@ -3053,6 +3038,7 @@ pub const TerminalWorkbench = struct {
             .io = self.io,
             .configuration = self.configuration,
             .window = &self.window_events,
+            .host_service = self.host_api,
             .host = .{ .context = self, .open_change = providerOpenChange, .refresh = scmRefresh },
             .on_disabled = gitDisabled,
             .on_disabled_context = self,

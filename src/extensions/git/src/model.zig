@@ -34,6 +34,7 @@ pub const Model = struct {
         io: std.Io,
         configuration: ?*ConfigurationService = null,
         window: *WindowQueue,
+        host_service: ?@import("../../../vs/workbench/services/host/browser/host.zig").IHostService = null,
         host: repository_mod.Host,
         on_disabled: ?*const fn (?*anyopaque, []const u8) void = null,
         on_disabled_context: ?*anyopaque = null,
@@ -88,6 +89,7 @@ pub const Model = struct {
         const provider = try Repository.create(self.allocator, cli, concrete, root, open_options.host);
         provider.attachWindow(open_options.window);
         self.repository = provider;
+        if (open_options.host_service) |host| try provider.attachHostService(host);
         try provider.setConfiguration(open_options.configuration);
         return provider;
     }

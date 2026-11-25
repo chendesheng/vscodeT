@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// Disposable subscription to an emitter whose payload the listener ignores.
+/// Disposable subscription to an emitter.
 pub const SignalSubscription = struct {
     emitter: *anyopaque,
     listener_id: usize,
@@ -98,6 +98,17 @@ pub fn Emitter(comptime T: type) type {
             return self._listeners.items.len - 1;
         }
 
+        /// Upstream Event subscriptions return an IDisposable.
+        pub fn listenDisposable(self: *Self, ctx: anytype, comptime callback: fn (T, @TypeOf(ctx)) anyerror!void) !SignalSubscription {
+            const Adapter = struct {
+                fn remove(source: *anyopaque, id: usize) void {
+                    const emitter: *Self = @ptrCast(@alignCast(source));
+                    emitter.unlisten(id);
+                }
+            };
+            return .{ .emitter = self, .listener_id = try self.listen(ctx, callback), .remove = Adapter.remove };
+        }
+
         /// Port of Event.signal. Subscribe to the original emitter in its
         /// normal listener order, ignoring the event payload.
         pub fn listenSignal(self: *Self, ctx: anytype, comptime notify: fn (@TypeOf(ctx)) anyerror!void) !SignalSubscription {
@@ -105,13 +116,8 @@ pub fn Emitter(comptime T: type) type {
                 fn call(_: T, target: @TypeOf(ctx)) anyerror!void {
                     try notify(target);
                 }
-
-                fn remove(source: *anyopaque, id: usize) void {
-                    const emitter: *Self = @ptrCast(@alignCast(source));
-                    emitter.unlisten(id);
-                }
             };
-            return .{ .emitter = self, .listener_id = try self.listen(ctx, Adapter.call), .remove = Adapter.remove };
+            return self.listenDisposable(ctx, Adapter.call);
         }
 
         pub fn unlisten(self: *Self, id: ListenerId) void {

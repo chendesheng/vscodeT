@@ -60,6 +60,14 @@ pub const LayoutStorage = struct {
     }
 
     pub fn save(_: WillShutdownEvent, self: *LayoutStorage) !void {
+        try self.persist();
+    }
+
+    pub fn onWillSaveState(_: @import("../vs/platform/storage/common/storage.zig").IWillSaveStateEvent, self: *LayoutStorage) !void {
+        try self.persist();
+    }
+
+    fn persist(self: *LayoutStorage) !void {
         const wb = self.workbench;
         if (self.workspace_path) |path| try storage.writeStateFile(wb.allocator, wb.io, path, wb.layout.workspaceState(wb.pane_composite_api.getLastActivePaneCompositeId(.panel)));
         try storage.writeStateFile(wb.allocator, wb.io, self.profile_path, Layout.ProfileState{

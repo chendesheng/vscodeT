@@ -44,7 +44,16 @@ paths; PaneCompositePartService populates the registered parts in the same
 order. Problems commands resolve IViewsService and MarkersView owns
 the focused-marker range highlighting rule.
 
-The portable browser Workbench is 258 lines and has no inline tests. The native TerminalWorkbench window is 5,931 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+The portable Workbench now owns its shutdown emitters, subscribes to the
+host focus and dialog visibility events, and creates notifications before
+attaching the workbench container. Git and notifications subscribe to the
+same host focus event; storage flush saves layout, history and session on
+focus loss. Search toolbar state updates on query and tree/result events,
+not on frame painting. The portable budget grew by 12 lines solely to
+restore missing upstream composition behavior; the native budget shrank
+by 14, so the combined ratchet still decreases.
+
+The portable browser Workbench is 270 lines and has no inline tests. The native TerminalWorkbench window is 5,917 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

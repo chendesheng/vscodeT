@@ -143,12 +143,16 @@ pub const RenderOptions = struct {
     border_capabilities: ui.cell_border.Capabilities = .{},
 };
 
+const PaneCompositePart = @import("../../../browser/parts/paneCompositePart.zig").PaneCompositePart;
+const SearchCommandIds = @import("../common/constants.zig").SearchCommandIds;
+
 pub const SearchView = struct {
     pub const ID = @import("../../../services/search/common/search.zig").VIEW_ID;
     allocator: Allocator,
     workspace: *WorkspaceContextService,
     configuration: *ConfigurationService,
     configuration_listener: ?usize = null,
+    title_pane: ?*PaneCompositePart = null,
     host: Host,
     controller: *Controller,
     model: *SearchModel,
@@ -394,6 +398,7 @@ pub const SearchView = struct {
         _ = value;
         const self: *SearchView = @ptrCast(@alignCast(context orelse return));
         if (field == .search) self.setReplaceAllActionState(false);
+        defer self.updateTitleActions();
         self.controller.onQueryInputChanged(controllerField(field));
     }
 
@@ -632,7 +637,36 @@ pub const SearchView = struct {
         self.rebuildRows();
     }
 
+    pub fn attachTitleActions(self: *SearchView, pane: *PaneCompositePart) void {
+        self.title_pane = pane;
+        self.updateTitleActions();
+    }
+
+    /// The Search view owns its title toolbar state. Input and result/tree
+    /// events call this handler; rendering never recomputes command state.
+    pub fn updateTitleActions(self: *SearchView) void {
+        const pane = self.title_pane orelse return;
+        if (!std.mem.eql(u8, pane.active_id orelse "", "search")) return;
+        const tree_mode = self.controller.viewMode() == .tree;
+        const expanded = self.hasExpandedResults();
+        const has_results = self.matchCount() != 0;
+        pane.setTitleActions(&.{
+            .{ .id = SearchCommandIds.refresh_search_results, .label = "Refresh", .glyph = '↻', .enabled = self.widget.value(.search).len != 0 },
+            .{ .id = SearchCommandIds.clear_search_results, .label = "Clear Search Results", .glyph = '×', .enabled = has_results },
+            // Codicon.listFlat/listTree fit one terminal cell.
+            if (tree_mode)
+                .{ .id = SearchCommandIds.view_as_list, .label = "View as List", .glyph = 0xeb84 }
+            else
+                .{ .id = SearchCommandIds.view_as_tree, .label = "View as Tree", .glyph = 0xeb86 },
+            if (expanded or !has_results)
+                .{ .id = SearchCommandIds.collapse_search_results, .label = "Collapse All", .glyph = '⊟', .enabled = has_results }
+            else
+                .{ .id = SearchCommandIds.expand_search_results, .label = "Expand All", .glyph = '⊞' },
+        }, &.{}) catch {};
+    }
+
     fn rebuildRows(self: *SearchView) void {
+        defer self.updateTitleActions();
         self.updateReplaceAllActionState();
         self.rows.clearRetainingCapacity();
         self.depths.clearRetainingCapacity();
@@ -1528,6 +1562,7 @@ pub const SearchView = struct {
     }
 
     pub fn commandClear(self: *SearchView) void {
+        defer self.updateTitleActions();
         self.clearReplaceConfirmation();
         self.controller.clearResults(true);
         self.updateReplaceAllActionState();
@@ -1951,6 +1986,7 @@ pub const SearchWindow = struct {
     configuration: *const ?*ConfigurationService,
     editor_opening: *EditorOpening,
     activity_service: *ActivityService,
+    title_pane: *PaneCompositePart,
     dialog_service: *DialogService,
     window: *@import("../../../../base/common/windowDispatch.zig").Queue,
     view_factory: @import("../../../browser/parts/editor/editorPane.zig").EditorViewFactory,
@@ -2083,6 +2119,7 @@ pub const SearchWindow = struct {
         );
         errdefer view.deinit();
         try view.attachActivity(self.activity_service);
+        view.attachTitleActions(self.title_pane);
         view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = self.window };
         _ = try view.on_did_change_focus.listenSignal(self, onSearchFocusChanged);
         self.service = service;

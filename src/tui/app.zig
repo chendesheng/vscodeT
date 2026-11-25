@@ -105,6 +105,14 @@ const SessionOnShutdown = struct {
     log: ?log_module.ILogger,
 
     fn save(_: WillShutdownEvent, self: *@This()) !void {
+        try self.persist();
+    }
+
+    fn onWillSaveState(_: @import("../vs/platform/storage/common/storage.zig").IWillSaveStateEvent, self: *@This()) !void {
+        try self.persist();
+    }
+
+    fn persist(self: *@This()) !void {
         if (self.workbench.tabCount() == 0) return;
         const allocator = self.workbench.allocator;
         var data = self.workbench.part.createState(allocator, self.registry) catch |err| {
@@ -524,7 +532,8 @@ pub fn main(init: std.process.Init) !void {
     if (history_path) |path| {
         history_storage = .{ .history = &workbench.history, .allocator = allocator, .io = io, .path = path };
         try history_storage.load();
-        _ = try workbench.on_will_shutdown.listen(&history_storage, HistoryStorage.save);
+        _ = try workbench.core.on_will_shutdown.listen(&history_storage, HistoryStorage.save);
+        _ = try workbench.storage_api.on_will_save_state.listen(&history_storage, HistoryStorage.onWillSaveState);
     }
 
     if (folders.items.len > 0) {
@@ -600,7 +609,8 @@ pub fn main(init: std.process.Init) !void {
     var session_writer: SessionOnShutdown = undefined;
     if (args.session) |session_path| {
         session_writer = .{ .workbench = workbench, .registry = &registry.?, .path = session_path, .log = log_service };
-        _ = try workbench.on_will_shutdown.listen(&session_writer, SessionOnShutdown.save);
+        _ = try workbench.core.on_will_shutdown.listen(&session_writer, SessionOnShutdown.save);
+        _ = try workbench.storage_api.on_will_save_state.listen(&session_writer, SessionOnShutdown.onWillSaveState);
     }
 
     workbench.initGit() catch {};
@@ -612,7 +622,8 @@ pub fn main(init: std.process.Init) !void {
     if (layout_storage) |*storage| {
         if (storage.load(workbench.layout.reset_layout)) |saved| {
             saved_layout = saved;
-            _ = try workbench.on_will_shutdown.listen(storage, LayoutStorage.save);
+            _ = try workbench.core.on_will_shutdown.listen(storage, LayoutStorage.save);
+            _ = try workbench.storage_api.on_will_save_state.listen(storage, LayoutStorage.onWillSaveState);
         } else |err| report(log_service, "layout restore failed: {s}", .{@errorName(err)});
     }
     if (workbench.activeTab()) |active| {
@@ -739,8 +750,7 @@ pub fn main(init: std.process.Init) !void {
             }
             switch (item.*) {
                 .focus => |focused| {
-                    if (workbench.git_model.repository) |repo| repo.onWindowFocus(focused);
-                    if (workbench.core.notification_controller) |controller| controller.toasts.onWindowFocus(focused);
+                    try workbench.host_service.setFocus(focused);
                     if (!focused) {
                         if (workbench.context_menu_service.current != null) {
                             workbench.context_menu_service.hideContextMenu();
@@ -2181,7 +2191,7 @@ test "app: shutdown writes the current editor groups before didShutdown" {
     var file = workbench.createFileSerializer();
     try serializers.registerEditorSerializer(FileEditorInput.TYPE_ID, file.interface());
     var writer = SessionOnShutdown{ .workbench = workbench, .registry = &serializers, .path = path, .log = null };
-    _ = try workbench.on_will_shutdown.listen(&writer, SessionOnShutdown.save);
+    _ = try workbench.core.on_will_shutdown.listen(&writer, SessionOnShutdown.save);
     const DidShutdown = struct {
         writer: *SessionOnShutdown,
         will_calls: u8 = 0,
@@ -2199,8 +2209,8 @@ test "app: shutdown writes the current editor groups before didShutdown" {
         }
     };
     var did = DidShutdown{ .writer = &writer };
-    _ = try workbench.on_will_shutdown.listen(&did, DidShutdown.will);
-    _ = try workbench.on_did_shutdown.listen(&did, DidShutdown.check);
+    _ = try workbench.core.on_will_shutdown.listen(&did, DidShutdown.will);
+    _ = try workbench.core.on_did_shutdown.listen(&did, DidShutdown.check);
     try workbench.openPath(two);
     try std.testing.expect((try session.loadPart(allocator, io, path)) == null);
     try workbench.lifecycle.shutdown(.quit);

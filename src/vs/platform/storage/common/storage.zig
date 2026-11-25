@@ -87,6 +87,19 @@ pub const IWillSaveStateEvent = struct {
     reason: WillSaveStateReason,
 };
 
+/// Portable state-flush subset of IStorageService.
+pub const storage_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(IStorageService, "storageService");
+
+pub const IStorageService = struct {
+    context: *anyopaque,
+    flush_fn: *const fn (*anyopaque, WillSaveStateReason) anyerror!void,
+    on_will_save_state: *Emitter(IWillSaveStateEvent),
+
+    pub fn flush(self: IStorageService, reason: WillSaveStateReason) !void {
+        try self.flush_fn(self.context, reason);
+    }
+};
+
 pub const ParsedObject = std.json.Parsed(std.json.Value);
 
 const ScopeData = struct {
@@ -324,6 +337,19 @@ pub const InMemoryStorageService = struct {
 
     pub fn isNew(self: *InMemoryStorageService, scope: StorageScope) bool {
         return self.getBoolean("__$__isNewStorageMarker", scope, false) orelse false;
+    }
+
+    pub fn interface(self: *InMemoryStorageService) IStorageService {
+        return .{
+            .context = self,
+            .flush_fn = struct {
+                fn flush(context: *anyopaque, reason: WillSaveStateReason) !void {
+                    const service: *InMemoryStorageService = @ptrCast(@alignCast(context));
+                    try service.flush(reason);
+                }
+            }.flush,
+            .on_will_save_state = &self.onWillSaveState,
+        };
     }
 
     pub fn flush(self: *InMemoryStorageService, reason: WillSaveStateReason) !void {

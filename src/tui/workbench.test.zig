@@ -8579,7 +8579,7 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
         try std.testing.expect(wb.layout.isMainEditorCentered());
         var storage = try LayoutStorage.init(wb, root, null);
         defer storage.deinit();
-        _ = try wb.on_will_shutdown.listen(&storage, LayoutStorage.save);
+        _ = try wb.core.on_will_shutdown.listen(&storage, LayoutStorage.save);
         try wb.lifecycle.shutdown(.quit);
     }
 
@@ -9173,4 +9173,67 @@ test "Workbench: configuration events update a mounted markdown preview" {
     try std.testing.expect(!preview.options.scroll_preview_with_editor);
     try wb.setUserConfigurationValue("markdown.preview.scrollPreviewWithEditor", null);
     try std.testing.expect(preview.options.scroll_preview_with_editor);
+}
+
+test "Workbench listens to window focus and dialog visibility through services" {
+    const window = try TestWindow.init(std.testing.allocator, std.testing.io, &.{}, 60, 15);
+    defer window.deinit();
+    const wb = window.workbench;
+    const storage = @import("../vs/platform/storage/common/storage.zig");
+    const dialogs = @import("../vs/platform/dialogs/common/dialogs.zig");
+    const Listener = struct {
+        count: usize = 0,
+        fn saved(event: storage.IWillSaveStateEvent, self: *@This()) !void {
+            try std.testing.expectEqual(storage.WillSaveStateReason.none, event.reason);
+            self.count += 1;
+        }
+        fn confirmed(_: *anyopaque, _: dialogs.IConfirmationResult) void {}
+    };
+    var listener: Listener = .{};
+    const id = try wb.storage_api.on_will_save_state.listen(&listener, Listener.saved);
+    defer wb.storage_api.on_will_save_state.unlisten(id);
+    const toasts = wb.core.notification_controller.?.toasts;
+    try wb.host_service.setFocus(false);
+    try std.testing.expect(!toasts.window_focused);
+    try std.testing.expectEqual(@as(usize, 1), listener.count);
+    // Identical focus reports are not new window transitions.
+    try wb.host_service.setFocus(false);
+    try std.testing.expectEqual(@as(usize, 1), listener.count);
+    try wb.host_service.setFocus(true);
+    try std.testing.expect(toasts.window_focused);
+    try wb.host_service.setFocus(false);
+    try std.testing.expectEqual(@as(usize, 2), listener.count);
+
+    const main = wb.layout.main_container.?;
+    const class = editor_css.workbench.Class.modal_dialog_visible;
+    try std.testing.expect(!main.hasClass(class));
+    const handle = try wb.dialog_api.confirm(.{ .message = "Confirm" }, .{ .context = &listener, .complete = Listener.confirmed });
+    try std.testing.expect(main.hasClass(class));
+    handle.cancel();
+    try std.testing.expect(!main.hasClass(class));
+}
+
+test "Search title actions follow query and tree events before painting" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const window = try TestWindow.init(allocator, io, &.{}, 60, 15);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.initSidebar(root_buffer[0..root_len]);
+    try std.testing.expect(try wb.showActivityById("search"));
+    const view = wb.search_window.view.?;
+    const commands = @import("../vs/workbench/contrib/search/common/constants.zig").SearchCommandIds;
+    const pane = &wb.sidebar_part.pane;
+    try std.testing.expectEqualStrings(commands.refresh_search_results, pane.primary_actions.items[0].id);
+    try std.testing.expect(!pane.primary_actions.items[0].enabled);
+    try view.widget.setValue(.search, "alpha");
+    try std.testing.expect(pane.primary_actions.items[0].enabled);
+    view.commandViewAsTree(true);
+    try std.testing.expectEqualStrings(commands.view_as_list, pane.primary_actions.items[2].id);
+    view.commandClear();
+    try std.testing.expect(!pane.primary_actions.items[0].enabled);
 }

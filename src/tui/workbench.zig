@@ -316,7 +316,6 @@ fn paintSidebarContents(self: *Workbench) !void {
     // The side bar part paints its own title chrome and background;
     // the active view pane container renders into the content area
     // below the title, like upstream.
-    if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) self.updateSidebarTitleActions();
     var badge_texts: [8][24]u8 = undefined;
     var badges: [8]pane_composite_mod.Badge = undefined;
     try sidebar_part_mod.render(

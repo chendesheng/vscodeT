@@ -40,6 +40,7 @@ pub const NotificationsController = struct {
     position: model.NotificationsPosition = .bottom_right,
     configuration: ?*configuration_mod.ConfigurationService = null,
     configuration_listener: ?usize = null,
+    host_focus_listener: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     center_visibility: usize,
     toasts_visibility: usize,
     center_listener: usize,
@@ -75,7 +76,19 @@ pub const NotificationsController = struct {
         self.toasts_listener = try toasts.on_did_change.listen(self, changed);
         return self;
     }
+    pub fn attachHostService(self: *NotificationsController, host: @import("../../../services/host/browser/host.zig").IHostService) !void {
+        if (self.host_focus_listener) |listener| listener.dispose();
+        self.host_focus_listener = null;
+        self.host_focus_listener = try host.on_did_change_focus.listenDisposable(self, onWindowFocus);
+        self.toasts.onWindowFocus(host.hasFocus());
+    }
+
+    fn onWindowFocus(focused: bool, self: *NotificationsController) !void {
+        self.toasts.onWindowFocus(focused);
+    }
+
     pub fn deinit(self: *NotificationsController) void {
+        if (self.host_focus_listener) |listener| listener.dispose();
         self.attachConfiguration(null) catch {};
         self.center.on_did_change_visibility.unlisten(self.center_visibility);
         self.toasts.on_did_change_visibility.unlisten(self.toasts_visibility);

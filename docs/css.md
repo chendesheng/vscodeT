@@ -142,7 +142,7 @@ Rules:
   | `searchview.css` | `0x0090` | search-view, search-widgets-container, search-widget, search/replace containers, query details and file types |
   | `searchEditor.css` | `0x00a0` | search-editor, context line input and toggle |
   | `scm.css` | `0x00b0` | commit input and split action button, Graph labels and badges |
-  | Workbench `style.css` | `0x00c0` | main container and platform classes |
+  | Workbench `style.css` | `0x00c0` | main container, platform and modal-dialog visibility classes |
   | Workbench `part.css` | `0x00d0` | part containers, main window part names and position classes |
 
 - The editor registers every sheet once in `View.init` through

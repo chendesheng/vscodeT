@@ -17,20 +17,16 @@ const ServiceCollection = @import("../../platform/instantiation/common/serviceCo
 const InstantiationService = @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService;
 const ServicesAccessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
-const LifecycleService = @import("../services/lifecycle/common/lifecycleService.zig").LifecycleService;
 const Emitter = @import("../../base/common/event.zig").Emitter;
 const WindowTimer = @import("../../base/common/async.zig").WindowTimer;
 const IContextKeyService = @import("../../platform/contextkey/common/contextkey.zig").IContextKeyService;
-const ConfigurationService = @import("../services/configuration/browser/configurationService.zig").ConfigurationService;
-const Tab = @import("parts/editor/editorPane.zig").Tab;
-const GroupView = @import("parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
-const EditorPart = @import("parts/editor/editorPart.zig").EditorPart(GroupView);
-const CommandRegistry = @import("commands.zig").CommandRegistry;
-const WorkbenchContributions = @import("../common/contributions.zig").WorkbenchContributions;
-const NotificationService = @import("../services/notification/common/notificationService.zig").NotificationService;
-const StatusbarService = @import("parts/statusbar/statusbarPart.zig").StatusbarService;
 const Notifications = @import("parts/notifications/notificationsCommands.zig");
-const Queue = @import("../../base/common/windowDispatch.zig").Queue;
+
+const host_service = @import("../services/host/browser/host.zig");
+const storage_service = @import("../../platform/storage/common/storage.zig");
+const dialogs = @import("../../platform/dialogs/common/dialogs.zig");
+const SignalSubscription = @import("../../base/common/event.zig").SignalSubscription;
+const Host = @import("workbenchHost.zig").IWorkbenchHost;
 
 pub const IWorkbenchOptions = struct {
     /// Class IDs in the terminal document stylesheet.
@@ -38,41 +34,21 @@ pub const IWorkbenchOptions = struct {
     reset_layout: bool = false,
 };
 
-/// Native composition hooks, not a feature service locator. All browser
-/// Workbench ordering, layout registration, part creation, notifications
-/// and lifecycle deadlines belong to Workbench.
-pub const Host = struct {
-    context: *anyopaque,
-    part: *EditorPart,
-    commands: *CommandRegistry,
-    contributions: *WorkbenchContributions,
-    lifecycle: *LifecycleService,
-    will_shutdown: *Emitter(lifecycle_mod.WillShutdownEvent),
-    did_shutdown: *Emitter(void),
-    notification_service: *NotificationService,
-    statusbar: *StatusbarService,
-    window: *Queue,
-    configuration: *const ?*ConfigurationService,
-    notification_host: Notifications.NotificationsController.Host,
-    register_services: *const fn (*anyopaque) anyerror!void,
-    register_commands: *const fn (*anyopaque) anyerror!void,
-    context_keys: *const fn (*anyopaque) anyerror!IContextKeyService,
-    register_listeners: *const fn (*anyopaque) anyerror!void,
-    restore_editors: *const fn (*anyopaque) anyerror!void,
-    layout: *const fn (*anyopaque) void,
-};
-
 pub const Workbench = struct {
     allocator: Allocator,
     layout: Layout,
     startup_window: ?struct { parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool },
-    services: *ServiceCollection = undefined,
     instantiation: InstantiationService = undefined,
     instantiation_ready: bool = false,
     host: Host = undefined,
     layout_api: layout_service.IWorkbenchLayoutService = undefined,
     lifecycle_api: lifecycle_mod.ILifecycleService = undefined,
     context_keys: IContextKeyService = undefined,
+    host_service_api: host_service.IHostService = undefined,
+    storage_api: storage_service.IStorageService = undefined,
+    on_will_shutdown: Emitter(lifecycle_mod.WillShutdownEvent),
+    on_did_shutdown: Emitter(void),
+    listeners: [6]?SignalSubscription = @splat(null),
     restore_timer: ?*WindowTimer = null,
     notification_controller: ?*Notifications.NotificationsController = null,
 
@@ -80,6 +56,8 @@ pub const Workbench = struct {
         return .{
             .allocator = allocator,
             .layout = Layout.init(allocator),
+            .on_will_shutdown = .init(allocator),
+            .on_did_shutdown = .init(allocator),
             .startup_window = .{ .parent = parent, .options = options, .has_previous_state = has_previous_state },
         };
     }
@@ -87,9 +65,8 @@ pub const Workbench = struct {
     pub fn startup(self: *Workbench, services: *ServiceCollection, host: Host) !*InstantiationService {
         const window = self.startup_window orelse return error.WorkbenchAlreadyStarted;
         self.startup_window = null;
-        self.services = services;
         self.host = host;
-        try self.initServices();
+        try self.initServices(services);
         try self.instantiation.invokeFunction(startWorkbench, .{ self, window.parent, window.options });
         if (window.has_previous_state) {
             try host.restore_editors(host.context);
@@ -109,19 +86,18 @@ pub const Workbench = struct {
         // Context Keys
         self.context_keys = try host.context_keys(host.context);
         // Listeners, Parts and Notifications
-        try self.registerListeners();
+        try self.registerListeners(accessor);
         try self.renderWorkbench(parent, options);
-        try self.createNotificationsHandlers();
         // Workbench Layout
         try self.layout.createWorkbenchLayout();
         host.layout(host.context);
     }
 
-    fn initServices(self: *Workbench) !void {
+    fn initServices(self: *Workbench, services: *ServiceCollection) !void {
         self.layout_api = self.layout.interface();
-        _ = try self.services.set(layout_service.layout_service_id, &self.layout_api);
+        _ = try services.set(layout_service.layout_service_id, &self.layout_api);
         try self.host.register_services(self.host.context);
-        try self.instantiation.init(self.allocator, self.services);
+        try self.instantiation.init(self.allocator, services);
         self.instantiation_ready = true;
         self.lifecycle_api = try self.instantiation.invokeFunction(setServicesReady, .{});
     }
@@ -132,18 +108,37 @@ pub const Workbench = struct {
         return lifecycle;
     }
 
-    fn registerListeners(self: *Workbench) !void {
-        _ = try self.lifecycle_api.on_will_shutdown.listen(self, onWillShutdown);
-        _ = try self.lifecycle_api.on_did_shutdown.listen(self, onDidShutdown);
+    fn registerListeners(self: *Workbench, accessor: ServicesAccessor) !void {
+        self.listeners[0] = try self.lifecycle_api.on_will_shutdown.listenDisposable(self, onWillShutdown);
+        self.listeners[1] = try self.lifecycle_api.on_did_shutdown.listenDisposable(self, onDidShutdown);
+        self.host_service_api = (try accessor.get(host_service.host_service_id)).*;
+        self.storage_api = (try accessor.get(storage_service.storage_service_id)).*;
+        self.listeners[2] = try self.host_service_api.on_did_change_focus.listenDisposable(self, onWindowFocus);
+        const dialog = try accessor.get(dialogs.dialog_service_id);
+        self.listeners[3] = try dialog.on_will_show_dialog.listenDisposable(self, onWillShowDialog);
+        self.listeners[4] = try dialog.on_did_show_dialog.listenDisposable(self, onDidShowDialog);
         try self.host.register_listeners(self.host.context);
     }
 
     fn onWillShutdown(event: lifecycle_mod.WillShutdownEvent, self: *Workbench) !void {
-        try self.host.will_shutdown.fire(event);
+        try self.on_will_shutdown.fire(event);
     }
 
     fn onDidShutdown(_: void, self: *Workbench) !void {
-        try self.host.did_shutdown.fire({});
+        try self.on_did_shutdown.fire({});
+    }
+
+    fn onWindowFocus(focused: bool, self: *Workbench) !void {
+        if (!focused) self.storage_api.flush(.none) catch |err|
+            std.log.scoped(.workbench).err("failed to flush state: {s}", .{@errorName(err)});
+    }
+
+    fn onWillShowDialog(_: void, self: *Workbench) !void {
+        if (self.layout.main_container) |main| try main.addClass(editor_css.workbench.Class.modal_dialog_visible);
+    }
+
+    fn onDidShowDialog(_: void, self: *Workbench) !void {
+        if (self.layout.main_container) |main| main.removeClass(editor_css.workbench.Class.modal_dialog_visible);
     }
 
     fn renderWorkbench(self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
@@ -171,6 +166,7 @@ pub const Workbench = struct {
             const part = try self.layout.getPart(description[0]);
             try part.create(container);
         }
+        try self.createNotificationsHandlers();
         _ = try parent.appendChild(main);
     }
 
@@ -190,18 +186,19 @@ pub const Workbench = struct {
         const controller = try Notifications.NotificationsController.create(self.allocator, host.notification_service, host.statusbar, host.window, self.context_keys, host.notification_host);
         errdefer controller.deinit();
         try controller.attachConfiguration(host.configuration.*);
-        _ = try self.services.set(Notifications.controller_id, controller);
+        try controller.attachHostService(self.host_service_api);
+        _ = try self.instantiation.services.set(Notifications.controller_id, controller);
         try Notifications.registerNotificationCommands(host.commands, &self.instantiation);
         self.notification_controller = controller;
     }
 
     pub fn restore(self: *Workbench, timer: *WindowTimer, saved: ?Layout.WorkspaceState) !void {
         if (self.restore_timer != null or self.host.lifecycle.will_shutdown) return error.WorkbenchAlreadyRestoring;
-        _ = try self.host.lifecycle.on_will_shutdown.listen(self, stopRestoration);
+        self.listeners[5] = try self.host.lifecycle.on_will_shutdown.listenDisposable(self, stopRestoration);
         self.restore_timer = timer;
         const restoring = self.layout.restoreParts(saved, &self.host.part.when_restored);
         try self.layout.when_ready.wait(self.allocator, .{ .context = self, .run = onLayoutReady });
-        try restoring;
+        restoring catch |err| std.log.scoped(.workbench).err("restore failed: {s}", .{@errorName(err)});
     }
 
     fn stopRestoration(_: lifecycle_mod.WillShutdownEvent, self: *Workbench) !void {
@@ -209,33 +206,46 @@ pub const Workbench = struct {
     }
 
     pub fn cancelRestoreTimer(self: *Workbench) void {
-        if (self.restore_timer) |timer| timer.callback = null;
+        if (self.restore_timer) |timer| {
+            timer.callback = null;
+            self.layout.when_ready.cancelWait(.{ .context = self, .run = onLayoutReady });
+            self.layout.when_restored.cancelWait(.{ .context = self, .run = onLayoutRestored });
+        }
         self.restore_timer = null;
     }
 
     fn onLayoutReady(context: *anyopaque) !void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         const callback = lifecycle_mod.Continuation{ .context = self, .run = onLayoutRestored };
-        self.restore_timer.?.setTimeout(2000, callback);
+        const timer = self.restore_timer orelse return;
+        timer.setTimeout(2000, callback);
         try self.layout.when_restored.wait(self.allocator, callback);
     }
 
     fn onLayoutRestored(context: *anyopaque) !void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         if (self.restore_timer == null or self.lifecycle_api.phase().reached(.Restored)) return;
-        defer self.restore_timer.?.setTimeout(2500, .{ .context = self, .run = scheduleEventually });
+        defer if (self.restore_timer) |timer| timer.setTimeout(2500, .{ .context = self, .run = scheduleEventually });
         try self.lifecycle_api.setPhase(.Restored);
         if (self.notification_controller) |controller| try controller.toasts.start();
     }
 
     fn scheduleEventually(context: *anyopaque) !void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        self.restore_timer.?.runWhenIdle(2500, .{ .context = self, .run = onWindowIdle });
+        if (self.restore_timer) |timer| timer.runWhenIdle(2500, .{ .context = self, .run = onWindowIdle });
     }
 
     fn onWindowIdle(context: *anyopaque) !void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         try self.lifecycle_api.setPhase(.Eventually);
+    }
+
+    pub fn disposeListeners(self: *Workbench) void {
+        self.cancelRestoreTimer();
+        for (&self.listeners) |*subscription| {
+            if (subscription.*) |listener| listener.dispose();
+            subscription.* = null;
+        }
     }
 
     pub fn disposeNotifications(self: *Workbench) void {
@@ -250,9 +260,11 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
-        self.cancelRestoreTimer();
+        self.disposeListeners();
         self.disposeNotifications();
         self.disposeInstantiation();
+        self.on_will_shutdown.deinit();
+        self.on_did_shutdown.deinit();
         self.layout.deinit();
     }
 };

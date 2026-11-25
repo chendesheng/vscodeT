@@ -125,6 +125,7 @@ pub const Repository = struct {
     status_timer: dispatch.Task = .{},
     next_status_at: i64 = 0,
     focused: bool = true,
+    host_focus_listener: ?@import("../../../vs/base/common/event.zig").SignalSubscription = null,
     refresh_when_focused: bool = false,
 
     pub fn create(
@@ -317,6 +318,17 @@ pub const Repository = struct {
         self.status_timer.schedule(@max(time.milliTimestamp() + 1000, self.next_status_at));
     }
 
+    pub fn attachHostService(self: *Repository, host: @import("../../../vs/workbench/services/host/browser/host.zig").IHostService) !void {
+        if (self.host_focus_listener) |listener| listener.dispose();
+        self.host_focus_listener = null;
+        self.host_focus_listener = try host.on_did_change_focus.listenDisposable(self, onDidChangeWindowState);
+        self.onWindowFocus(host.hasFocus());
+    }
+
+    fn onDidChangeWindowState(focused: bool, self: *Repository) !void {
+        self.onWindowFocus(focused);
+    }
+
     pub fn onWindowFocus(self: *Repository, focused: bool) void {
         self.focused = focused;
         if (focused and self.refresh_when_focused) {
@@ -338,6 +350,7 @@ pub const Repository = struct {
 
     pub fn destroy(self: *Repository) void {
         const allocator = self.allocator;
+        if (self.host_focus_listener) |listener| listener.dispose();
         self.detachConfiguration();
         self.status_timer.schedule(null);
         if (self.file_listener) |listener| self.file_service.?.on_did_change.unlisten(listener);

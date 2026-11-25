@@ -50,6 +50,14 @@ pub const HistoryStorage = struct {
     };
 
     pub fn save(_: WillShutdownEvent, self: *HistoryStorage) !void {
+        try self.persist();
+    }
+
+    pub fn onWillSaveState(_: @import("../vs/platform/storage/common/storage.zig").IWillSaveStateEvent, self: *HistoryStorage) !void {
+        try self.persist();
+    }
+
+    fn persist(self: *HistoryStorage) !void {
         const path = self.path;
         if (std.fs.path.dirname(path)) |dir| try Io.Dir.cwd().createDirPath(self.io, dir);
         var navigation = std.array_list.Managed(HistoryNavigationDto).init(self.allocator);

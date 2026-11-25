@@ -3,11 +3,12 @@
 // supplies the cell viewport and the platform class at startup.
 const ui = @import("ui");
 pub const base: u16 = 0x00c0;
-pub const Class = enum(u16) { monaco_workbench = base, windows, linux, mac };
+pub const Class = enum(u16) { monaco_workbench = base, windows, linux, mac, modal_dialog_visible };
 const styles = [_]ui.Style{
     .{ .position = .relative, .overflow = .hidden, .z_index = 1 },
     .{},
     .{},
     .{},
+    .{}, // Modal dialog visibility; the terminal has no infinite CSS animation.
 };
 pub const sheet = ui.css.Sheet{ .base = base, .styles = &styles };
