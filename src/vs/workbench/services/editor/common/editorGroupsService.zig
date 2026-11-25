@@ -49,12 +49,16 @@ pub const OpenResult = struct {
     result: EditorOpenResult,
 };
 
+pub const SerializedGrid = @import("../../../../base/browser/ui/grid/grid.zig").SerializedGrid(GroupIdentifier);
+
 pub const SerializedEditorPart = struct {
+    serialized_grid: ?SerializedGrid = null,
     groups: []group_mod.SerializedEditorGroupModel,
     active_group: usize,
     most_recent_active_groups: []const GroupIdentifier = &.{},
 
     pub fn deinit(self: *SerializedEditorPart, allocator: Allocator) void {
+        if (self.serialized_grid) |saved| saved.root.deinit(allocator);
         allocator.free(self.most_recent_active_groups);
         for (self.groups) |*group| group.deinit(allocator);
         if (self.groups.len > 0) allocator.free(self.groups);

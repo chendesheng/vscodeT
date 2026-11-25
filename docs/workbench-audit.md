@@ -37,7 +37,8 @@ Show All Commands resolves the quick input service through its Action2 handler.
   its panes in model order and selects its active input. Restored inputs
   participate in the same active-editor events as newly opened inputs. Sessions
   save the active group ID and recent activation order. Closing the active
-  group selects the previously active group.
+  group selects the previously active group. EditorPart saves and restores the
+  SerializableGrid, including nested splits, proportions and the maximized leaf.
 * The layout service registers live parts and emits visibility, zen-mode and
   centering events. Centering considers the number of columns, the maximized
   group and the capabilities of visible editors. Stacked groups share one

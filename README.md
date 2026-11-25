@@ -2095,10 +2095,11 @@ Editor contributions:
   `src/vs/workbench/common/editor/editorFactory.zig` holds the editor
   serializer registry, `EditorGroupModel.serialize`/`deserialize` rebuilds the
   ordered group/MRU/preview/sticky state through registered serializers, and
-  `src/vs/workbench/browser/parts/editor/editorSession.zig` stores the group list and active group as JSON.
+  `src/vs/workbench/browser/parts/editor/editorSession.zig` stores the editor grid, active group ID and group activation order as JSON.
   `--session <file>` restores them on startup and writes them back on exit; a
-  missing file falls back to the given paths. Split positions are restored as
-  equal horizontal splits. Dirty working copies are not persisted by the
+  missing file falls back to the given paths. The grid restores split orientation,
+  order, proportional sizes and the maximized group. Sessions from before grid
+  persistence open their groups in horizontal splits. Dirty working copies are not persisted by the
   session format (the in-memory backup/history services are ported but not
   wired into session restore). Side-by-side/diff inputs exist at the workbench
   layer while the TUI tab strip remains single-editor; the Settings editor is

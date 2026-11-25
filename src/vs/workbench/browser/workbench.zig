@@ -991,7 +991,7 @@ pub const Workbench = struct {
         else
             try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
-        self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
+        self.part = try editor_part.EditorPart(GroupPane).initWithState(allocator, self.service, if (state) |previous| previous.data.serialized_grid else null);
         errdefer self.part.deinit();
         try self.part.base.register(self.layout.interface());
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
@@ -1054,13 +1054,13 @@ pub const Workbench = struct {
         for (self.part.group_views.items) |group| try group.restoreEditors(panes);
     }
 
-    /// Serializes every group and the active group index.
+    /// Stores group models, their grid layout and activation history.
     pub fn serializePart(
         self: *Workbench,
         allocator: Allocator,
         registry: *editor_factory.EditorFactoryRegistry,
     ) !editor_groups.SerializedEditorPart {
-        return self.service.serializePart(allocator, registry);
+        return self.part.createState(allocator, registry);
     }
 
     /// Serializes the active group.

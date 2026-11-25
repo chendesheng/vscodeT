@@ -12,6 +12,102 @@ const ui = @import("ui");
 
 pub const Orientation = enum { horizontal, vertical };
 
+/// The serialized form of a Grid uses alternating branch orientations.
+/// `size` is the extent in the parent SplitView. A leaf's data is supplied by
+/// the view serializer. The terminal measures the same extents in cells.
+pub fn SerializedNode(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        size: f64,
+        maximized: bool = false,
+        visible: bool = true,
+        data: union(enum) { leaf: T, branch: []Self },
+
+        // Leaf payloads are owned by the caller.
+        pub fn deinit(self: Self, allocator: Allocator) void {
+            if (self.data == .branch) {
+                for (self.data.branch) |child| child.deinit(allocator);
+                allocator.free(self.data.branch);
+            }
+        }
+
+        pub fn jsonStringify(self: Self, writer: *std.json.Stringify) std.json.Stringify.Error!void {
+            try writer.beginObject();
+            try writer.objectField("type");
+            try writer.write(@tagName(self.data));
+            try writer.objectField("data");
+            switch (self.data) {
+                .branch => |children| try writer.write(children),
+                .leaf => |value| try writer.write(value),
+            }
+            try writer.objectField("size");
+            try writer.write(self.size);
+            if (!self.visible) {
+                try writer.objectField("visible");
+                try writer.write(false);
+            } else if (self.maximized) {
+                try writer.objectField("maximized");
+                try writer.write(true);
+            }
+            try writer.endObject();
+        }
+
+        pub fn jsonParseFromValue(allocator: Allocator, value: std.json.Value, options: std.json.ParseOptions) std.json.ParseFromValueError!Self {
+            const Header = struct { type: enum { leaf, branch }, size: f64, maximized: bool = false, visible: bool = true };
+            var header_options = options;
+            header_options.ignore_unknown_fields = true;
+            const header = try std.json.innerParseFromValue(Header, allocator, value, header_options);
+            if (!std.math.isFinite(header.size) or header.size < 0) return error.InvalidNumber;
+            const data = value.object.get("data") orelse return error.MissingField;
+            return .{
+                .size = header.size,
+                .maximized = header.maximized,
+                .visible = header.visible,
+                .data = switch (header.type) {
+                    .leaf => .{ .leaf = try std.json.innerParseFromValue(T, allocator, data, options) },
+                    .branch => .{ .branch = try std.json.innerParseFromValue([]Self, allocator, data, options) },
+                },
+            };
+        }
+
+        fn map(self: Self, comptime U: type, allocator: Allocator, context: anytype, comptime convert: anytype) !SerializedNode(U) {
+            switch (self.data) {
+                .leaf => |value| return .{ .size = self.size, .maximized = self.maximized, .visible = self.visible, .data = .{ .leaf = try convert(context, value) } },
+                .branch => |children| {
+                    const nodes = try allocator.alloc(SerializedNode(U), children.len);
+                    errdefer allocator.free(nodes);
+                    var count: usize = 0;
+                    errdefer for (nodes[0..count]) |child| child.deinit(allocator);
+                    for (children) |child| {
+                        nodes[count] = try child.map(U, allocator, context, convert);
+                        count += 1;
+                    }
+                    return .{ .size = self.size, .visible = self.visible, .data = .{ .branch = nodes } };
+                },
+            }
+        }
+    };
+}
+
+pub fn SerializedGrid(comptime T: type) type {
+    return struct {
+        root: SerializedNode(T),
+        /// Upstream Orientation.VERTICAL = 0, HORIZONTAL = 1.
+        orientation: u1,
+        width: f64,
+        height: f64,
+
+        pub fn map(self: @This(), comptime U: type, allocator: Allocator, context: anytype, comptime convert: anytype) !SerializedGrid(U) {
+            return .{
+                .orientation = self.orientation,
+                .width = self.width,
+                .height = self.height,
+                .root = try self.root.map(U, allocator, context, convert),
+            };
+        }
+    };
+}
+
 pub fn Node(comptime T: type) type {
     comptime {
         if (@typeInfo(T) != .pointer) @compileError("Grid views must be pointer types");
@@ -41,9 +137,110 @@ pub fn Node(comptime T: type) type {
         pub const Split = struct {
             direction: Orientation,
             ratio: f64,
+            proportional_layout: bool = false,
             first: *Self,
             second: *Self,
         };
+    };
+}
+
+/// GridView uses n-ary branches. Flatten consecutive binary terminal splits on
+/// the same axis when saving and rebuild the equivalent SplitViews on restore.
+pub fn SerializableGrid(comptime View: type, comptime Data: type) type {
+    return struct {
+        const Tree = Node(View);
+        const Saved = SerializedNode(Data);
+
+        pub fn serialize(allocator: Allocator, root: *const Tree, maximized: ?View, context: anytype, comptime toJSON: anytype) !SerializedGrid(Data) {
+            const orientation = if (root.kind == .split) root.kind.split.direction else .vertical;
+            return .{
+                .width = root.rect.w,
+                .height = root.rect.h,
+                .orientation = @intFromBool(orientation == .horizontal),
+                .root = try serializeBranch(allocator, root, orientation, maximized, context, toJSON),
+            };
+        }
+
+        fn serializeBranch(allocator: Allocator, root: *const Tree, axis: Orientation, maximized: ?View, context: anytype, comptime toJSON: anytype) anyerror!Saved {
+            var children: std.ArrayList(Saved) = .empty;
+            errdefer {
+                for (children.items) |child| child.deinit(allocator);
+                children.deinit(allocator);
+            }
+            try appendChild(allocator, &children, root, axis, maximized, context, toJSON);
+            const visible = for (children.items) |child| {
+                if (child.visible) break true;
+            } else false;
+            return .{ .size = extent(root.rect, orthogonal(axis)), .visible = visible, .data = .{ .branch = try children.toOwnedSlice(allocator) } };
+        }
+
+        fn appendChild(allocator: Allocator, children: *std.ArrayList(Saved), node: *const Tree, axis: Orientation, maximized: ?View, context: anytype, comptime toJSON: anytype) anyerror!void {
+            switch (node.kind) {
+                .leaf => |view| try children.append(allocator, .{
+                    .size = extent(node.rect, axis),
+                    .maximized = view == maximized,
+                    .data = .{ .leaf = try toJSON(context, view) },
+                }),
+                .split => |split| {
+                    if (split.direction == axis) {
+                        try appendChild(allocator, children, split.first, axis, maximized, context, toJSON);
+                        try appendChild(allocator, children, split.second, axis, maximized, context, toJSON);
+                    } else {
+                        const child = try serializeBranch(allocator, node, split.direction, maximized, context, toJSON);
+                        errdefer child.deinit(allocator);
+                        try children.append(allocator, child);
+                    }
+                },
+            }
+        }
+
+        pub fn deserialize(allocator: Allocator, saved: SerializedGrid(Data), context: anytype, comptime fromJSON: anytype) !*Tree {
+            if (saved.root.data != .branch or !std.math.isFinite(saved.width) or !std.math.isFinite(saved.height) or saved.width < 0 or saved.height < 0)
+                return error.InvalidGrid;
+            const rect: ui.Rect = .{ .w = saved.width, .h = saved.height };
+            return restoreNode(allocator, saved.root, if (saved.orientation == 1) .horizontal else .vertical, rect, context, fromJSON);
+        }
+
+        fn restoreNode(allocator: Allocator, saved: Saved, axis: Orientation, rect: ui.Rect, context: anytype, comptime fromJSON: anytype) anyerror!*Tree {
+            switch (saved.data) {
+                .leaf => |value| return initNode(View, allocator, try fromJSON(context, value, saved.maximized)),
+                .branch => |children| {
+                    if (children.len == 0) return error.InvalidGrid;
+                    var total: f64 = 0;
+                    for (children) |child| {
+                        if (!std.math.isFinite(child.size) or child.size < 0) return error.InvalidGrid;
+                        total += child.size;
+                    }
+                    const gap = if (children.len == 1) 0 else @max(0, extent(rect, axis) - total) / @as(f64, @floatFromInt(children.len - 1));
+                    var prefix_size = children[0].size;
+                    var prefix = try restoreNode(allocator, children[0], orthogonal(axis), resized(rect, axis, prefix_size), context, fromJSON);
+                    errdefer deinitRoot(View, allocator, prefix);
+                    for (children[1..], 1..) |child, index| {
+                        const next = try restoreNode(allocator, child, orthogonal(axis), resized(rect, axis, child.size), context, fromJSON);
+                        errdefer deinitRoot(View, allocator, next);
+                        const parent = try allocator.create(Tree);
+                        const available = prefix_size + child.size;
+                        const ratio = if (available == 0) @as(f64, @floatFromInt(index)) / @as(f64, @floatFromInt(index + 1)) else prefix_size / available;
+                        parent.* = .{ .kind = .{ .split = .{ .first = prefix, .second = next, .direction = axis, .ratio = ratio, .proportional_layout = true } } };
+                        prefix_size = available + gap;
+                        prefix = parent;
+                    }
+                    return prefix;
+                },
+            }
+        }
+
+        fn extent(rect: ui.Rect, axis: Orientation) f64 {
+            return if (axis == .horizontal) rect.w else rect.h;
+        }
+
+        fn resized(rect: ui.Rect, axis: Orientation, size: f64) ui.Rect {
+            return if (axis == .horizontal) .{ .w = size, .h = rect.h } else .{ .w = rect.w, .h = size };
+        }
+
+        fn orthogonal(axis: Orientation) Orientation {
+            return if (axis == .horizontal) .vertical else .horizontal;
+        }
     };
 }
 
@@ -343,7 +540,9 @@ pub fn layoutNode(
         .leaf => {},
         .split => |split| {
             const gutter = gap(gap_context, split.direction, rect);
-            var positions = splitRects(rect, split.direction, split.ratio, gutter);
+            const extent = if (split.direction == .horizontal) rect.w else rect.h;
+            const share = @max(extent - gutter, 0) * split.ratio;
+            var positions = splitRectsAt(rect, split.direction, if (split.proportional_layout) @round(share) else @floor(share), gutter);
             if (leaf_minimum_width != 0 and split.direction == .horizontal) {
                 const first: f64 = @floatFromInt(split.first.minimumWidth(leaf_minimum_width, @intFromFloat(gutter)));
                 const second: f64 = @floatFromInt(split.second.minimumWidth(leaf_minimum_width, @intFromFloat(gutter)));

@@ -8,7 +8,7 @@
 //! chooses the path; there is no hidden global session location. Older bare
 //! `SerializedEditorPart` files still load.
 //!
-//! Only the editor-group state is stored. Dirty working copies need the
+//! EditorPart stores its SerializableGrid, active group and group MRU. Dirty working copies need the
 //! working-copy backup service, which is not ported, so unsaved buffers are
 //! not restored.
 
@@ -29,19 +29,7 @@ const session_storage_key = "memento/" ++ session_memento_id;
 const SerializedEditorGroupModel = group_mod.SerializedEditorGroupModel;
 const SerializedEditorInput = group_mod.SerializedEditorInput;
 
-const EditorDto = struct {
-    id: []const u8,
-    value: []const u8,
-};
-
-const SessionDto = struct {
-    id: u32,
-    locked: bool = false,
-    editors: []const EditorDto = &.{},
-    mru: []const usize = &.{},
-    preview: ?usize = null,
-    sticky: ?isize = null,
-};
+const SerializedGrid = @import("../../../../base/browser/ui/grid/grid.zig").SerializedGrid;
 
 test "session: loadPart returns null for a missing file" {
     const allocator = std.testing.allocator;
@@ -53,7 +41,8 @@ test "session: loadPart returns null for a missing file" {
 }
 
 const PartDto = struct {
-    groups: []const SessionDto = &.{},
+    groups: []const SerializedEditorGroupModel = &.{},
+    serializedGrid: ?std.json.Value = null,
     activeGroup: ?u32 = null,
     mostRecentActiveGroups: []const u32 = &.{},
     // Input compatibility with sessions storing a group index.
@@ -69,12 +58,22 @@ pub fn savePart(
     var out: Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
 
-    const dto = PartDto{
-        .groups = @ptrCast(data.groups),
-        .activeGroup = if (data.active_group < data.groups.len) data.groups[data.active_group].id else null,
-        .mostRecentActiveGroups = data.most_recent_active_groups,
-    };
-    try std.json.Stringify.value(dto, .{ .emit_null_optional_fields = false }, &out.writer);
+    const active_id = if (data.active_group < data.groups.len) data.groups[data.active_group].id else null;
+    if (data.serialized_grid) |grid| {
+        const saved = try grid.map(SerializedEditorGroupModel, allocator, data, serializeGroup);
+        defer saved.root.deinit(allocator);
+        try std.json.Stringify.value(.{
+            .serializedGrid = saved,
+            .activeGroup = active_id,
+            .mostRecentActiveGroups = data.most_recent_active_groups,
+        }, .{ .emit_null_optional_fields = false }, &out.writer);
+    } else {
+        try std.json.Stringify.value(PartDto{
+            .groups = data.groups,
+            .activeGroup = active_id,
+            .mostRecentActiveGroups = data.most_recent_active_groups,
+        }, .{ .emit_null_optional_fields = false }, &out.writer);
+    }
 
     // Route the part through the storage service + memento, the same path the
     // workbench uses; the file is the terminal host for the memento value.
@@ -111,37 +110,61 @@ const MementoPartDto = struct {
     part: []const u8,
 };
 
+fn serializeGroup(part: *const editor_groups.SerializedEditorPart, id: u32) !SerializedEditorGroupModel {
+    for (part.groups) |group| {
+        if (group.id == id) return group;
+    }
+    return error.InvalidGrid;
+}
+
+const RestoredGroups = struct {
+    allocator: Allocator,
+    items: std.ArrayList(SerializedEditorGroupModel) = .empty,
+
+    fn add(self: *@This(), serialized: SerializedEditorGroupModel) !u32 {
+        try self.items.ensureUnusedCapacity(self.allocator, 1);
+        self.items.appendAssumeCapacity(try copyGroup(self.allocator, serialized));
+        return serialized.id;
+    }
+};
+
 fn parsePart(allocator: Allocator, bytes: []const u8) !?editor_groups.SerializedEditorPart {
     const parsed = try std.json.parseFromSlice(PartDto, allocator, bytes, .{});
     defer parsed.deinit();
-    if (parsed.value.groups.len == 0) return null;
-
-    const groups = try allocator.alloc(group_mod.SerializedEditorGroupModel, parsed.value.groups.len);
-    var initialized: usize = 0;
-    errdefer {
-        for (groups[0..initialized]) |*group| group.deinit(allocator);
-        allocator.free(groups);
+    var groups = RestoredGroups{ .allocator = allocator };
+    defer {
+        for (groups.items.items) |*group| group.deinit(allocator);
+        groups.items.deinit(allocator);
     }
 
-    for (parsed.value.groups, 0..) |group, index| {
-        groups[index] = try copyGroup(allocator, group);
-        initialized += 1;
+    var grid: ?editor_groups.SerializedGrid = null;
+    errdefer if (grid) |saved| saved.root.deinit(allocator);
+    if (parsed.value.serializedGrid) |value| {
+        const saved = try std.json.parseFromValueLeaky(SerializedGrid(SerializedEditorGroupModel), parsed.arena.allocator(), value, .{});
+        grid = try saved.map(u32, allocator, &groups, RestoredGroups.add);
+        if (groups.items.items.len == 0) return error.InvalidGrid;
+    } else {
+        if (parsed.value.groups.len == 0) return null;
+        for (parsed.value.groups) |group| _ = try groups.add(group);
     }
 
     const active_group = if (parsed.value.activeGroup) |active_id| index: {
-        for (groups, 0..) |group, i| {
+        for (groups.items.items, 0..) |group, i| {
             if (group.id == active_id) break :index i;
         }
         break :index 0;
-    } else @min(parsed.value.active_group orelse 0, groups.len - 1);
+    } else @min(parsed.value.active_group orelse 0, groups.items.items.len - 1);
+    const recent = try allocator.dupe(u32, parsed.value.mostRecentActiveGroups);
+    errdefer allocator.free(recent);
     return .{
-        .groups = groups,
+        .groups = try groups.items.toOwnedSlice(allocator),
         .active_group = active_group,
-        .most_recent_active_groups = try allocator.dupe(u32, parsed.value.mostRecentActiveGroups),
+        .most_recent_active_groups = recent,
+        .serialized_grid = grid,
     };
 }
 
-fn copyGroup(allocator: Allocator, group: SessionDto) !group_mod.SerializedEditorGroupModel {
+fn copyGroup(allocator: Allocator, group: SerializedEditorGroupModel) !SerializedEditorGroupModel {
     const editors = try allocator.alloc(group_mod.SerializedEditorInput, group.editors.len);
     var initialized: usize = 0;
     errdefer {

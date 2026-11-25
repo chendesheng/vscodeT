@@ -45,6 +45,7 @@ pub fn EditorPart(comptime GroupView: type) type {
     return struct {
         const Self = @This();
         const LayoutNode = grid.Node(*GroupView);
+        const SerializableGrid = grid.SerializableGrid(*GroupView, editor_mod.GroupIdentifier);
 
         base: Part,
         maximized_group: ?*GroupView = null,
@@ -72,6 +73,10 @@ pub fn EditorPart(comptime GroupView: type) type {
             allocator: Allocator,
             service: *editor_groups.EditorGroupsService,
         ) !*Self {
+            return initWithState(allocator, service, null);
+        }
+
+        pub fn initWithState(allocator: Allocator, service: *editor_groups.EditorGroupsService, saved: ?editor_groups.SerializedGrid) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
@@ -89,18 +94,25 @@ pub fn EditorPart(comptime GroupView: type) type {
             errdefer self.base.deinit();
             errdefer self.group_views.deinit();
 
-            const first = try self.createView(service.groups.items[0]);
-            errdefer {
-                first.deinit();
-                allocator.destroy(first);
-            }
-            self.root = try grid.initNode(*GroupView, allocator, first);
-            errdefer grid.deinitRoot(*GroupView, allocator, self.root);
-            errdefer for (self.group_views.items[1..]) |view| {
+            errdefer for (self.group_views.items) |view| {
                 view.deinit();
                 allocator.destroy(view);
             };
-            try self.restoreGroups();
+            for (service.groups.items) |group| _ = try self.createView(group);
+            if (saved) |state| {
+                var restore = GridDeserializer{ .part = self };
+                defer restore.seen.deinit(allocator);
+                self.root = try SerializableGrid.deserialize(allocator, state, &restore, GridDeserializer.fromJSON);
+                errdefer grid.deinitRoot(*GroupView, allocator, self.root);
+                if (restore.seen.count() != self.count()) return error.InvalidGrid;
+            } else {
+                self.root = try grid.initNode(*GroupView, allocator, self.group_views.items[0]);
+                errdefer grid.deinitRoot(*GroupView, allocator, self.root);
+                // Before serializedGrid, sessions stored only a group list.
+                for (self.group_views.items[1..], 0..) |view, index| {
+                    try grid.splitRoot(*GroupView, allocator, &self.root, self.group_views.items[index], .horizontal, view, false);
+                }
+            }
             return self;
         }
 
@@ -157,28 +169,29 @@ pub fn EditorPart(comptime GroupView: type) type {
             return null;
         }
 
-        /// Upstream restores every serialized group into the grid. The TUI
-        /// restores the groups as equal horizontal splits, because the split
-        /// grid itself is not serialized yet.
-        fn restoreGroups(self: *Self) !void {
-            var index: usize = 1;
-            while (index < self.service.groups.items.len) : (index += 1) {
-                const view = try self.createView(self.service.groups.items[index]);
-                errdefer {
-                    _ = self.group_views.pop();
-                    view.deinit();
-                    self.allocator.destroy(view);
-                }
-                try grid.splitRoot(
-                    *GroupView,
-                    self.allocator,
-                    &self.root,
-                    self.group_views.items[index - 1],
-                    .horizontal,
-                    view,
-                    false,
-                );
+        const GridDeserializer = struct {
+            part: *Self,
+            seen: std.AutoHashMapUnmanaged(editor_mod.GroupIdentifier, void) = .empty,
+
+            fn fromJSON(context: *@This(), id: editor_mod.GroupIdentifier, maximized: bool) !*GroupView {
+                const group = context.part.service.getGroup(id) orelse return error.InvalidGrid;
+                const entry = try context.seen.getOrPut(context.part.allocator, id);
+                if (entry.found_existing) return error.InvalidGrid;
+                const view = context.part.viewForGroup(group) orelse return error.InvalidGrid;
+                if (maximized) context.part.maximized_group = view;
+                return view;
             }
+        };
+
+        fn groupToJSON(_: void, view: *GroupView) !editor_mod.GroupIdentifier {
+            return view.group.id;
+        }
+
+        pub fn createState(self: *Self, allocator: Allocator, registry: *@import("../../../common/editor/editorFactory.zig").EditorFactoryRegistry) !editor_groups.SerializedEditorPart {
+            var state = try self.service.serializePart(allocator, registry);
+            errdefer state.deinit(allocator);
+            state.serialized_grid = try SerializableGrid.serialize(allocator, self.root, self.maximized_group, {}, groupToJSON);
+            return state;
         }
 
         /// Upstream `addGroup(location, direction)`: creates the group view and

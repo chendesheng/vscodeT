@@ -1529,9 +1529,10 @@ Library constraints:
   standalone preview uses its own document. Workbench title chrome, shell
   parts, the terminal emulator and image/Markdown preview output use their
   existing cell painters. Group state is serialized
-  through the workbench editor serializer registry; the JSON session stores
-  the group list and active group and restores splits as equal horizontal
-  splits. Dirty working copies are not persisted.
+  through the workbench editor serializer registry. The session stores the
+  editor grid with group models at its leaves, the active group ID and the
+  most recently active groups. Saved branch sizes are in cells and scale to
+  the restored viewport. Older group-list sessions use horizontal splits. Dirty working copies are not persisted.
 - Workspace roots come from the portable `Workspace` /
   `WorkspaceContextService` models (`src/vs/platform/workspace/common/` and
   `src/vs/workbench/services/workspaces/common/`). The CLI classifies directory

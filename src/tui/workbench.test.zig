@@ -1484,10 +1484,11 @@ test "Workbench: serialize and restore multiple groups" {
     const path_b = try seedFile(allocator, io, &tmp, "part_b.txt", "beta");
     defer allocator.free(path_b);
 
-    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 70, 10);
+    const workbench = try Workbench.init(allocator, io, &.{ path_a, path_b }, 70, 26);
     defer workbench.deinit();
     try workbench.activateIndex(1);
-    try workbench.splitActive(.horizontal);
+    try workbench.splitActive(.vertical);
+    workbench.part.resizeSash(workbench.part.root, 20, 9);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
 
     var serializer = workbench.createFileSerializer();
@@ -1498,10 +1499,18 @@ test "Workbench: serialize and restore multiple groups" {
     var data = try workbench.serializePart(allocator, &registry);
     defer data.deinit(allocator);
 
-    const restored = try Workbench.initFromSerializedPart(allocator, io, data, &registry, 70, 10);
+    const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
+    const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/groups.json", .{tmp.sub_path});
+    defer allocator.free(path);
+    try session.savePart(allocator, io, path, &data);
+    var loaded = (try session.loadPart(allocator, io, path)).?;
+    defer loaded.deinit(allocator);
+    const restored = try Workbench.initFromSerializedPart(allocator, io, loaded, &registry, 70, 26);
     defer restored.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), restored.groupCount());
+    try std.testing.expectEqual(.vertical, restored.part.root.kind.split.direction);
+    try std.testing.expectEqual(workbench.part.root.kind.split.first.rect.h, restored.part.root.kind.split.first.rect.h);
     // Group one restores A + B and group two restores the split copy of B.
     try std.testing.expectEqual(@as(usize, 3), restored.tabCount());
     try std.testing.expectEqualStrings("part_b.txt", restored.activeTab().?.input.getName());
