@@ -39,6 +39,7 @@ pub const SCMContribution = struct {
         configuration: ?*ConfigurationService,
         changes_host: scm_view.Host,
         history_host: scm_history.Host,
+        quick_input: *@import("../../../../platform/quickinput/browser/quickInputService.zig").QuickInputService,
     };
 
     pub fn attachProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider, options: Options) !void {
@@ -75,6 +76,7 @@ pub const SCMContribution = struct {
 
         const history = try scm_history.SCMHistoryViewPane.init(allocator, options.history_host, storage);
         self.history = history;
+        history.quick_input = options.quick_input;
     }
 
     /// Configure the view before mounting its history provider (initial query
@@ -117,3 +119,5 @@ pub const SCMContribution = struct {
         self.* = init(allocator);
     }
 };
+
+pub const view_actions = scm_history.view_actions ++ scm_view.view_actions;

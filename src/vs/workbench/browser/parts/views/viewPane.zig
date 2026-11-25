@@ -11,6 +11,35 @@ const theme_colors_mod = @import("../../themeColors.zig");
 
 const css = @import("./media/paneviewlet_css.zig");
 
+const platform_actions = @import("../../../../platform/actions/common/actions.zig");
+const views_service = @import("../../../services/views/common/viewsService.zig");
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
+pub const ViewLookup = enum {
+    active,
+    // Compatibility for the terminal's existing commands which operate on
+    // an eagerly constructed but hidden view. Upstream ViewAction uses active.
+    registered,
+};
+
+/// Port of ViewAction.run and runInView. Zig factories bind the view type and
+/// arguments that upstream represents using subclasses.
+pub fn viewAction(comptime View: type, comptime lookup: ViewLookup, comptime command: platform_actions.ICommandAction, comptime f1: bool, comptime run: anytype, comptime args: anytype) platform_actions.Action2 {
+    return .{
+        .command = command,
+        .f1 = f1,
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn invoke(_: *anyopaque, accessor: ServicesAccessor) anyerror!void {
+                const service = (try accessor.get(views_service.views_service_id)).*;
+                const view = (if (lookup == .active) service.getActiveViewWithId(View) else service.getViewWithId(View)) orelse return;
+                const result = @call(.auto, run, .{view} ++ args);
+                if (@typeInfo(@TypeOf(result)) == .error_union) try result;
+            }
+        }.invoke,
+    };
+}
+
 pub const ShowActions = enum {
     default,
     always,

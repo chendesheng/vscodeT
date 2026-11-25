@@ -7,10 +7,15 @@ pub const views_service_id = instantiation.ServiceIdentifier(IViewsService, "vie
 pub const IViewsService = struct {
     context: *anyopaque,
     get_active_view: *const fn (*anyopaque, []const u8) ?*anyopaque,
+    get_view: *const fn (*anyopaque, []const u8) ?*anyopaque,
     open_view: *const fn (*anyopaque, []const u8, bool) anyerror!?*anyopaque,
 
     pub fn getActiveViewWithId(self: IViewsService, comptime View: type) ?*View {
         return @ptrCast(@alignCast(self.get_active_view(self.context, View.ID) orelse return null));
+    }
+
+    pub fn getViewWithId(self: IViewsService, comptime View: type) ?*View {
+        return @ptrCast(@alignCast(self.get_view(self.context, View.ID) orelse return null));
     }
 
     pub fn openView(self: IViewsService, comptime View: type, focus: bool) !?*View {

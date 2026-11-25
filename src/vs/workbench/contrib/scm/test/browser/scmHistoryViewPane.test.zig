@@ -19,7 +19,6 @@ const Emitter = @import("../../../../../base/common/event.zig").Emitter;
 const TestHost = struct {
     opened: usize = 0,
     focused: usize = 0,
-    picked: usize = 0,
     opened_history: usize = 0,
 
     fn openChange(context: *anyopaque, item: *const history.ISCMHistoryItem, change: *const history.ISCMHistoryItemChange) anyerror!void {
@@ -37,11 +36,6 @@ const TestHost = struct {
     fn focusEditor(context: *anyopaque) void {
         const self: *TestHost = @ptrCast(@alignCast(context));
         self.focused += 1;
-    }
-
-    fn pickRefs(context: *anyopaque) void {
-        const self: *TestHost = @ptrCast(@alignCast(context));
-        self.picked += 1;
     }
 };
 
@@ -161,7 +155,6 @@ fn createView(allocator: Allocator, host: *TestHost, provider: *TestHistoryProvi
         .context = host,
         .open_change = TestHost.openChange,
         .focus_editor = TestHost.focusEditor,
-        .pick_refs = TestHost.pickRefs,
     }, null);
     view.setConfig(.{ .page_size = 2, .page_on_scroll = false });
     view.setProvider(provider.interface());
@@ -332,4 +325,61 @@ test "SCM history view pane: merge graph uses orthogonal connectors" {
     // and opens the next one.
     try testing.expect(std.mem.indexOf(u8, first_row, "\u{256E}") != null); // ╮
     try testing.expect(std.mem.indexOf(u8, second_row, "\u{253C}") != null); // ┼
+}
+
+test "SCM history reference picker owns provider values through acceptance and disposal" {
+    const allocator = testing.allocator;
+    const QuickInputService = @import("../../../../../platform/quickinput/browser/quickInputService.zig").QuickInputService;
+    const QuickPick = @import("../../../../../platform/quickinput/browser/quickInput.zig").QuickPick;
+    const Presenter = struct {
+        fn show(_: *anyopaque, _: *QuickPick) !void {}
+        fn hide(_: *anyopaque) void {}
+        fn refs(context: *anyopaque, alloc: Allocator, _: ?[]const []const u8) ![]history.ISCMHistoryItemRef {
+            const provider: *TestHistoryProvider = @ptrCast(@alignCast(context));
+            const values = try alloc.alloc(history.ISCMHistoryItemRef, 1);
+            errdefer alloc.free(values);
+            values[0] = try provider.current.clone(alloc);
+            return values;
+        }
+    };
+    var host = TestHost{};
+    var provider: TestHistoryProvider = undefined;
+    try provider.init(allocator, 2);
+    defer provider.deinit();
+    provider.base.provide_history_item_refs_fn = Presenter.refs;
+
+    const input = try QuickInputService.init(allocator, .{ .context = &host, .show = Presenter.show, .hide = Presenter.hide });
+    defer input.deinit();
+    {
+        const view = try createView(allocator, &host, &provider);
+        defer {
+            view.deinit();
+            allocator.destroy(view);
+        }
+        view.quick_input = input;
+        try view.pickHistoryItemRef();
+        try testing.expect(input.isVisible());
+        const picker = input.pickerRef();
+        var index: ?usize = null;
+        for (picker.items.items, 0..) |entry, i| {
+            switch (entry) {
+                .item => |item| if (std.mem.eql(u8, item.id, "main")) {
+                    index = i;
+                    break;
+                },
+                else => {},
+            }
+        }
+        picker.setActiveIndex(index orelse return error.TestExpectedReference);
+        picker.accept();
+        try testing.expect(!input.isVisible());
+        try testing.expect(view.filterKind() == .selected);
+        try testing.expectEqualStrings("main", view.filter_ids.items[0]);
+
+        // Disposing the view while its second picker is still visible cancels
+        // the outstanding request before the view and provider go away.
+        try view.pickHistoryItemRef();
+        try testing.expect(input.isVisible());
+    }
+    try testing.expect(!input.isVisible());
 }

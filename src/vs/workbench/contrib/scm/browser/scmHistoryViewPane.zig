@@ -105,7 +105,6 @@ pub const Host = struct {
         changes: []const history.ISCMHistoryItemChange,
     ) anyerror!void = null,
     focus_editor: *const fn (context: *anyopaque) void,
-    pick_refs: *const fn (context: *anyopaque) void,
 };
 
 const FilterKind = enum { auto, all, selected };
@@ -124,7 +123,16 @@ const Row = union(enum) {
     welcome,
 };
 
+const QuickInputService = @import("../../../../platform/quickinput/browser/quickInputService.zig").QuickInputService;
+const QuickPick = @import("../../../../platform/quickinput/browser/quickInput.zig").QuickPick;
+const QuickPickItem = @import("../../../../platform/quickinput/common/quickInput.zig").QuickPickItem;
+
 pub const SCMHistoryViewPane = struct {
+    pub const ID = HISTORY_VIEW_PANE_ID;
+
+    quick_input: ?*QuickInputService = null,
+    ref_picker: ?*RefPickState = null,
+
     allocator: Allocator,
     provider: ?*history.ISCMHistoryProvider = null,
     host: Host,
@@ -192,6 +200,7 @@ pub const SCMHistoryViewPane = struct {
     }
 
     pub fn deinit(self: *SCMHistoryViewPane) void {
+        if (self.ref_picker != null) self.quick_input.?.hide();
         self.clearOwnedKeys(&self.expanded);
         self.clearOwnedKeys(&self.collapsed_folders);
         self.expanded.deinit();
@@ -205,6 +214,66 @@ pub const SCMHistoryViewPane = struct {
         self.changes_arena.deinit();
         self.rows.deinit();
         self.* = undefined;
+    }
+
+    const RefPickState = struct {
+        view: *SCMHistoryViewPane,
+        arena: std.heap.ArenaAllocator,
+    };
+
+    fn disposeRefPick(context: *anyopaque) void {
+        const state: *RefPickState = @ptrCast(@alignCast(context));
+        const view = state.view;
+        if (view.ref_picker == state) view.ref_picker = null;
+        state.arena.deinit();
+        view.allocator.destroy(state);
+    }
+
+    /// Port of pickHistoryItemRef. The existing terminal quick input supports
+    /// one selected reference at a time, plus Auto and All.
+    pub fn pickHistoryItemRef(self: *SCMHistoryViewPane) !void {
+        const input = self.quick_input orelse return;
+        const provider = self.provider orelse return;
+        const refs = try provider.provideHistoryItemRefs(self.allocator, null);
+        defer history.freeHistoryItemRefs(self.allocator, refs);
+
+        const state = try self.allocator.create(RefPickState);
+        state.* = .{ .view = self, .arena = std.heap.ArenaAllocator.init(self.allocator) };
+        errdefer disposeRefPick(state);
+        const arena = state.arena.allocator();
+        var items: std.ArrayList(QuickPickItem) = .empty;
+        try items.append(arena, .{ .item = .{ .id = "all", .label = "All", .description = "All history item references" } });
+        try items.append(arena, .{ .item = .{ .id = "auto", .label = "Auto", .description = "Current history item references" } });
+        if (refs.len > 0) try items.append(arena, .{ .separator = .{ .label = "References" } });
+        for (refs) |reference| {
+            try items.append(arena, .{ .item = .{
+                .id = try arena.dupe(u8, reference.id),
+                .label = try arena.dupe(u8, reference.name),
+                .description = if (reference.description) |value| try arena.dupe(u8, value) else "",
+            } });
+        }
+        self.ref_picker = state;
+        try input.showPick(items.items, .{
+            .placeholder = "Select a history item reference to view",
+            .cleanup = disposeRefPick,
+            .cleanup_context = state,
+        }, refPickAccepted, state);
+    }
+
+    fn refPickAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
+        const state: *RefPickState = @ptrCast(@alignCast(context));
+        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+        const view = state.view;
+        if (std.mem.eql(u8, item.id, "all")) {
+            view.setFilterAll();
+        } else if (std.mem.eql(u8, item.id, "auto")) {
+            view.setFilterAuto();
+        } else try view.setFilterRefs(&.{item.id});
+    }
+
+    pub fn refreshAction(self: *SCMHistoryViewPane) !void {
+        self.outdated = false;
+        try self.refresh(.reload);
     }
 
     pub fn setProvider(self: *SCMHistoryViewPane, provider: ?*history.ISCMHistoryProvider) void {
@@ -1511,3 +1580,14 @@ fn paintScmHistoryHover(
     if (!std.meta.eql(root.asElement().style, style)) root.setStyle(style);
     try surface.paintFrame();
 }
+
+// Existing terminal palette metadata is preserved; upstream f1=false
+// and additional action preconditions will be aligned separately.
+const viewAction = @import("../../../browser/parts/views/viewPane.zig").viewAction;
+pub const view_actions = [_]@import("../../../../platform/actions/common/actions.zig").Action2{
+    viewAction(SCMHistoryViewPane, .registered, .{ .id = REFRESH_GRAPH_ACTION_ID, .title = "Source Control Graph: Refresh", .category = "Source Control" }, true, SCMHistoryViewPane.refreshAction, .{}),
+    viewAction(SCMHistoryViewPane, .registered, .{ .id = PICK_HISTORY_ITEM_REFS_ACTION_ID, .title = "Source Control Graph: Select History Item References", .category = "Source Control" }, true, SCMHistoryViewPane.pickHistoryItemRef, .{}),
+    viewAction(SCMHistoryViewPane, .registered, .{ .id = REVEAL_CURRENT_HISTORY_ITEM_ACTION_ID, .title = "Source Control Graph: Go to Current History Item", .category = "Source Control" }, true, SCMHistoryViewPane.revealCurrentHistoryItem, .{}),
+    viewAction(SCMHistoryViewPane, .registered, .{ .id = SET_LIST_VIEW_MODE_ACTION_ID, .title = "Source Control Graph: View as List", .category = "Source Control" }, true, SCMHistoryViewPane.setViewMode, .{@as(ViewMode, .list)}),
+    viewAction(SCMHistoryViewPane, .registered, .{ .id = SET_TREE_VIEW_MODE_ACTION_ID, .title = "Source Control Graph: View as Tree", .category = "Source Control" }, true, SCMHistoryViewPane.setViewMode, .{@as(ViewMode, .tree)}),
+};

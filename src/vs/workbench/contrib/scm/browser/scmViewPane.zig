@@ -236,6 +236,8 @@ const RowIdentity = struct {
 };
 
 pub const SCMViewPane = struct {
+    pub const ID = scm.VIEW_PANE_ID;
+
     allocator: Allocator,
     service: *ISCMService,
     host: Host,
@@ -2802,3 +2804,15 @@ test "scmView: commit without changes reports and does not call the host" {
     try testing.expectEqual(@as(usize, 0), fixture.host.committed);
     try testing.expectEqualStrings("message", input.value());
 }
+
+// Port the upstream ViewMode/SortKey actions here. Their existing terminal
+// palette labels, categories and visibility are preserved during extraction;
+// the full upstream f1/toggled/precondition metadata is not yet ported.
+const viewAction = @import("../../../browser/parts/views/viewPane.zig").viewAction;
+pub const view_actions = [_]@import("../../../../platform/actions/common/actions.zig").Action2{
+    viewAction(SCMViewPane, .registered, .{ .id = SET_LIST_VIEW_MODE_ACTION_ID, .title = "View as List", .category = "Source Control" }, true, SCMViewPane.setViewMode, .{@as(scm.ViewMode, .list)}),
+    viewAction(SCMViewPane, .registered, .{ .id = SET_TREE_VIEW_MODE_ACTION_ID, .title = "View as Tree", .category = "Source Control" }, true, SCMViewPane.setViewMode, .{@as(scm.ViewMode, .tree)}),
+    viewAction(SCMViewPane, .registered, .{ .id = SET_SORT_BY_NAME_ACTION_ID, .title = "Sort Changes by Name", .category = "Source Control" }, true, SCMViewPane.setViewSortKey, .{@as(ViewSortKey, .name)}),
+    viewAction(SCMViewPane, .registered, .{ .id = SET_SORT_BY_PATH_ACTION_ID, .title = "Sort Changes by Path", .category = "Source Control" }, true, SCMViewPane.setViewSortKey, .{@as(ViewSortKey, .path)}),
+    viewAction(SCMViewPane, .registered, .{ .id = SET_SORT_BY_STATUS_ACTION_ID, .title = "Sort Changes by Status", .category = "Source Control" }, true, SCMViewPane.setViewSortKey, .{@as(ViewSortKey, .status)}),
+};

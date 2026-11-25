@@ -228,7 +228,8 @@ const terminal_input_mod = @import("../contrib/terminal/browser/terminalInput.zi
 const diff_widget_mod = @import("../../editor/browser/widget/diffEditor/diffEditorWidget.zig");
 const git_model_mod = @import("../../../extensions/git/src/model.zig");
 const git_mod = @import("../../../extensions/git/src/git.zig");
-const SCMContribution = @import("../contrib/scm/browser/scm.contribution.zig").SCMContribution;
+const scm_contribution = @import("../contrib/scm/browser/scm.contribution.zig");
+const SCMContribution = scm_contribution.SCMContribution;
 const scm_common = @import("../contrib/scm/common/scm.zig");
 const repository_mod = @import("../../../extensions/git/src/repository.zig");
 const scm_view_mod = @import("../contrib/scm/browser/scmViewPane.zig");
@@ -461,14 +462,25 @@ const WindowViews = struct {
     workbench: *Workbench,
 
     pub fn interface(self: *WindowViews) views_service.IViewsService {
-        return .{ .context = self, .get_active_view = getActiveView, .open_view = openView };
+        return .{ .context = self, .get_active_view = getActiveView, .get_view = getView, .open_view = openView };
     }
 
     fn getActiveView(context: *anyopaque, id: []const u8) ?*anyopaque {
         const self: *WindowViews = @ptrCast(@alignCast(context));
         const active = self.workbench.sidebar_part.pane.active_id orelse return null;
-        if (!std.mem.eql(u8, id, SearchView.ID) or !std.mem.eql(u8, active, "search")) return null;
-        return self.workbench.search_view;
+        if (std.mem.eql(u8, id, SearchView.ID))
+            return if (std.mem.eql(u8, active, "search")) self.workbench.search_view else null;
+        const local_id: []const u8 = if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) "changes" else if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) "graph" else return null;
+        const container = self.workbench.view_descriptor_service.getViewContainerByViewId(local_id) orelse return null;
+        return if (std.mem.eql(u8, active, container.container.id)) getView(context, id) else null;
+    }
+
+    fn getView(context: *anyopaque, id: []const u8) ?*anyopaque {
+        const self: *WindowViews = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, id, SearchView.ID)) return self.workbench.search_view;
+        if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) return self.workbench.scm.changes;
+        if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) return self.workbench.scm.history;
+        return null;
     }
 
     fn openView(context: *anyopaque, id: []const u8, focus: bool) !?*anyopaque {
@@ -1537,7 +1549,7 @@ pub const Workbench = struct {
         try self.commands.registerAction(&self.instantiation, zen_mode_contribution.toggle_action);
         try self.commands.registerAction(&self.instantiation, zen_mode_contribution.exit_action);
         try self.commands.registerAction(&self.instantiation, @import("actions/layoutActions.zig").toggle_centered_layout_action);
-        const before_search = [_]commands_mod.CommandInfo{
+        const before_scm = [_]commands_mod.CommandInfo{
             .{
                 .id = zen_mode_contribution.zen_hide_editor_tabs_id,
                 .label = zen_mode_contribution.zen_hide_editor_tabs_label,
@@ -1577,16 +1589,10 @@ pub const Workbench = struct {
             .{ .id = "git.pullRef", .label = "Pull", .category = "Source Control", .context = self, .run = commandGitPull },
             .{ .id = "git.pushRef", .label = "Push", .category = "Source Control", .context = self, .run = commandGitPush },
             .{ .id = "git.publish", .label = "Publish Branch", .category = "Source Control", .context = self, .run = commandGitPublish },
-            .{ .id = "workbench.scm.action.graph.refresh", .label = "Source Control Graph: Refresh", .category = "Source Control", .context = self, .run = commandScmHistoryRefresh },
-            .{ .id = "workbench.scm.action.graph.pickHistoryItemRefs", .label = "Source Control Graph: Select History Item References", .category = "Source Control", .context = self, .run = commandScmHistoryPickRefs },
-            .{ .id = "workbench.scm.action.graph.revealCurrentHistoryItem", .label = "Source Control Graph: Go to Current History Item", .category = "Source Control", .context = self, .run = commandScmHistoryReveal },
-            .{ .id = "workbench.scm.action.graph.setListViewMode", .label = "Source Control Graph: View as List", .category = "Source Control", .context = self, .run = commandScmHistoryListMode },
-            .{ .id = "workbench.scm.action.graph.setTreeViewMode", .label = "Source Control Graph: View as Tree", .category = "Source Control", .context = self, .run = commandScmHistoryTreeMode },
-            .{ .id = scm_view_mod.SET_LIST_VIEW_MODE_ACTION_ID, .label = "View as List", .category = "Source Control", .context = self, .run = commandScmListMode },
-            .{ .id = scm_view_mod.SET_TREE_VIEW_MODE_ACTION_ID, .label = "View as Tree", .category = "Source Control", .context = self, .run = commandScmTreeMode },
-            .{ .id = scm_view_mod.SET_SORT_BY_NAME_ACTION_ID, .label = "Sort Changes by Name", .category = "Source Control", .context = self, .run = commandScmSortByName },
-            .{ .id = scm_view_mod.SET_SORT_BY_PATH_ACTION_ID, .label = "Sort Changes by Path", .category = "Source Control", .context = self, .run = commandScmSortByPath },
-            .{ .id = scm_view_mod.SET_SORT_BY_STATUS_ACTION_ID, .label = "Sort Changes by Status", .category = "Source Control", .context = self, .run = commandScmSortByStatus },
+        };
+        for (before_scm) |command| try self.commands.register(command);
+        for (scm_contribution.view_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        const before_search = [_]commands_mod.CommandInfo{
             .{ .id = "git.openChange", .label = "Open Change", .category = "Source Control", .context = self, .run = commandGitOpenChange },
             .{ .id = "git.openFile", .label = "Open File", .category = "Source Control", .context = self, .run = commandGitOpenFile },
             .{ .id = "workbench.action.compareEditor.nextChange", .label = "Go to Next Change", .category = "Diff", .context = self, .run = commandDiffNext },
@@ -3846,12 +3852,12 @@ pub const Workbench = struct {
                 .branch_action = scmBranchAction,
                 .status = scmViewStatus,
             },
+            .quick_input = self.quick_access.inputService(),
             .history_host = .{
                 .context = self,
                 .open_change = historyOpenChange,
                 .open_changes = historyOpenChanges,
                 .focus_editor = scmFocusEditor,
-                .pick_refs = historyPickRefs,
             },
         });
         self.applyScmConfig();
@@ -4553,72 +4559,6 @@ pub const Workbench = struct {
         const item = picker.selectedItem() orelse picker.activeItem() orelse return;
         const index = try std.fmt.parseInt(usize, item.id, 10);
         if (index < state.changes.len) try historyOpenChange(state.workbench, &state.item, &state.changes[index]);
-    }
-
-    fn historyPickRefs(context: *anyopaque) void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        self.showHistoryRefPicker();
-    }
-
-    fn showHistoryRefPicker(self: *Workbench) void {
-        const view = self.scm.history orelse return;
-        const provider = view.provider orelse return;
-        const refs = provider.provideHistoryItemRefs(self.allocator, null) catch return;
-        defer scm_common_history.freeHistoryItemRefs(self.allocator, refs);
-
-        const state = self.allocator.create(PickHandlerState) catch return;
-        state.* = .{
-            .workbench = self,
-            .arena = std.heap.ArenaAllocator.init(self.allocator),
-        };
-        errdefer freeRefPickState(state);
-        const arena = state.arena.allocator();
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
-        items.append(.{ .item = .{ .id = "all", .label = "All", .description = "All history item references" } }) catch return;
-        items.append(.{ .item = .{ .id = "auto", .label = "Auto", .description = "Current history item references" } }) catch return;
-        if (refs.len > 0) items.append(.{ .separator = .{ .label = "References" } }) catch return;
-        for (refs) |reference| {
-            const label = arena.dupe(u8, reference.name) catch continue;
-            const description: []const u8 = if (reference.description) |value| arena.dupe(u8, value) catch "" else "";
-            items.append(.{ .item = .{ .id = reference.id, .label = label, .description = description } }) catch continue;
-        }
-        state.items = items.items;
-        self.quick_access.inputService().showPick(
-            state.items,
-            .{
-                .placeholder = "Select a history item reference to view",
-                .cleanup = freeRefPickState,
-                .cleanup_context = state,
-            },
-            refPickAccepted,
-            state,
-        ) catch {};
-    }
-
-    const PickHandlerState = struct {
-        workbench: *Workbench,
-        arena: std.heap.ArenaAllocator,
-        items: []QuickPickItem = &.{},
-    };
-
-    fn freeRefPickState(context: *anyopaque) void {
-        const state: *PickHandlerState = @ptrCast(@alignCast(context));
-        const allocator = state.arena.child_allocator;
-        state.arena.deinit();
-        allocator.destroy(state);
-    }
-
-    fn refPickAccepted(context: *anyopaque, picker: *QuickPick) anyerror!void {
-        const state: *PickHandlerState = @ptrCast(@alignCast(context));
-        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
-        const view = state.workbench.scm.history orelse return;
-        if (std.mem.eql(u8, item.id, "all")) {
-            view.setFilterAll();
-        } else if (std.mem.eql(u8, item.id, "auto")) {
-            view.setFilterAuto();
-        } else {
-            view.setFilterRefs(&.{item.id}) catch {};
-        }
     }
 
     const ShowTabs = layout_service_mod.EditorTabsMode;
@@ -9974,59 +9914,6 @@ fn commandGitRefresh(context: *anyopaque) anyerror!void {
         view.outdated = false;
         view.refresh(.reload) catch {};
     }
-}
-
-fn commandScmHistoryRefresh(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.history) |view| {
-        view.outdated = false;
-        try view.refresh(.reload);
-    }
-}
-
-fn commandScmHistoryPickRefs(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.showHistoryRefPicker();
-}
-
-fn commandScmHistoryReveal(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.history) |view| try view.revealCurrentHistoryItem();
-}
-
-fn commandScmHistoryListMode(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.history) |view| view.setViewMode(.list);
-}
-
-fn commandScmHistoryTreeMode(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.history) |view| view.setViewMode(.tree);
-}
-
-fn commandScmListMode(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.changes) |view| view.setViewMode(.list);
-}
-
-fn commandScmTreeMode(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.changes) |view| view.setViewMode(.tree);
-}
-
-fn commandScmSortByName(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.changes) |view| view.setViewSortKey(.name);
-}
-
-fn commandScmSortByPath(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.changes) |view| view.setViewSortKey(.path);
-}
-
-fn commandScmSortByStatus(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.scm.changes) |view| view.setViewSortKey(.status);
 }
 
 fn commandGitCommit(context: *anyopaque) anyerror!void {
