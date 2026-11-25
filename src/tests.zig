@@ -83,7 +83,7 @@ comptime {
     _ = @import("./extensions/git/src/repository.zig");
     _ = @import("./extensions/git/src/test/git.test.zig");
     _ = @import("./extensions/git/src/test/util.test.zig");
-    _ = @import("./tui/quickDiffController.zig");
+    _ = @import("vs/workbench/contrib/scm/test/browser/quickDiffDecorator.test.zig");
     _ = @import("./vs/workbench/contrib/scm/browser/scmViewPane.zig");
     _ = @import("./tui/vscodeProfile.zig");
     _ = @import("./vs/workbench/browser/parts/editor/textDiffEditor.zig");

@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,936 lines and has no inline tests. All 151 baseline
+The browser shell is 13,881 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -42,6 +42,7 @@ Show All Commands resolves the quick input service through its Action2 handler.
   save the active group ID and recent activation order. Closing the active
   group selects the previously active group. EditorPart saves and restores the
   SerializableGrid, including nested splits, proportions and the maximized leaf.
+* QuickDiffWorkbenchController follows mounted editor and configuration changes. Closing or hiding a file removes its model listeners and gutter decorations.
 * MarkersView owns the Problems rows, cell rendering and input. The panel
   forwards its content rectangle and keeps focus when a selection previews a marker.
 * Find reads the computed editor options on creation and on configuration changes.

@@ -7368,6 +7368,19 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(workbench.repository != null);
     try std.testing.expect(workbench.scm_view != null);
     try std.testing.expect(workbench.quick_diff_controller != null);
+    const quick_diff = workbench.quick_diff_controller.?;
+    try std.testing.expectEqual(@as(usize, 1), quick_diff.count());
+    try std.testing.expect(!quick_diff.ignore_trim_whitespace);
+    try std.testing.expect(!quick_diff.config.gutter_pattern.added);
+    try std.testing.expect(quick_diff.config.gutter_pattern.modified);
+    try workbench.setUserConfigurationValue("scm.diffDecorationsGutterPattern.added", .{ .bool = true });
+    try std.testing.expect(quick_diff.config.gutter_pattern.added);
+    try workbench.setUserConfigurationValue("scm.diffDecorationsIgnoreTrimWhitespace", .{ .string = "inherit" });
+    try std.testing.expect(quick_diff.entries.items[0].model.ignore_trim_whitespace);
+    try workbench.setUserConfigurationValue("diffEditor.ignoreTrimWhitespace", .{ .bool = false });
+    try std.testing.expect(!quick_diff.entries.items[0].model.ignore_trim_whitespace);
+    try workbench.setUserConfigurationValue("scm.diffDecorationsIgnoreTrimWhitespace", .{ .string = "true" });
+    try std.testing.expect(quick_diff.entries.items[0].model.ignore_trim_whitespace);
     const initial_tabs = workbench.tabCount();
     const provider = workbench.repository.?;
     try std.testing.expect(provider.count() >= 3);
@@ -7569,6 +7582,8 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // The active diff exposes its modified control. An editor command uses
     // the focused side when the user moves focus to the original control.
     const widget = tab.diff.?.widget;
+    try std.testing.expect(!widget.options.ignore_trim_whitespace);
+    try std.testing.expectEqual(@as(usize, 0), quick_diff.count());
     try std.testing.expectEqual(widget.modified_editor, workbench.code_editor_api.getActiveCodeEditor().?);
     widget.setFocus(.original);
     try std.testing.expectEqual(widget.original_editor, workbench.code_editor_api.getFocusedCodeEditor().?);
@@ -7652,9 +7667,14 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try workbench.openPath(path);
     const file_tab = workbench.activeTab().?;
     try std.testing.expect(!file_tab.isDiff());
-    workbench.quick_diff_controller.?.setConfig(.{ .decorations = .none });
+    try std.testing.expect(quick_diff.contains(file_tab.editor));
+    try workbench.setUserConfigurationValue("scm.diffDecorations", .{ .string = "none" });
     try std.testing.expectEqual(@as(usize, 0), file_tab.editor.lineDecorationsWidth());
-    workbench.quick_diff_controller.?.setConfig(.{ .decorations = .all });
+    try std.testing.expectEqual(@as(usize, 0), quick_diff.count());
+    try workbench.setUserConfigurationValue("scm.diffDecorations", .{ .string = "overview" });
+    try std.testing.expect(quick_diff.contains(file_tab.editor));
+    try std.testing.expectEqual(@as(usize, 0), file_tab.editor.lineDecorationsWidth());
+    try workbench.setUserConfigurationValue("scm.diffDecorations", .{ .string = "all" });
     try std.testing.expectEqual(@as(usize, 1), file_tab.editor.lineDecorationsWidth());
 
     // The commit input commits the index. The `git.commit` command reads the

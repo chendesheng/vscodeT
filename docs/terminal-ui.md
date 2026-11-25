@@ -1935,7 +1935,8 @@ service/provider/resource subset and the quick-diff service, and
 to the upstream file decoration letters, status texts and theme colors, and
 provides the primary/secondary quick-diff providers. Model edits and repository
 refreshes schedule the same 200 ms quick-diff delay. A lazily started native editor worker
-serves all file editors. It receives owned original and modified text because the terminal provider supplies file
+serves the file editors visible in the editor groups. Changing tabs detaches the hidden editor.
+The SCM controller reads its own whitespace and gutter-pattern settings on configuration changes. It receives owned original and modified text because the terminal provider supplies file
 contents and the worker has no synchronized URI-backed models. The UI thread
 delivers replies in order. Each live model publishes the completed result with
 its captured version and the decorator receives the model's change event.

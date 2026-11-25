@@ -122,6 +122,19 @@ const DiffRequest = struct {
     }
 };
 
+/// SCM has its own default. Only the explicit inherit setting reads the diff editor option.
+pub fn ignoreTrimWhitespace(service: *@import("../../../services/configuration/browser/configurationService.zig").ConfigurationService) bool {
+    const value = service.getValue("scm.diffDecorationsIgnoreTrimWhitespace", .{}) orelse return false;
+    return switch (value.*) {
+        .bool => value.bool, // Legacy terminal settings accepted booleans.
+        .string => if (std.mem.eql(u8, value.string, "inherit"))
+            service.getBool("diffEditor.ignoreTrimWhitespace", true)
+        else
+            !std.mem.eql(u8, value.string, "false"),
+        else => false,
+    };
+}
+
 pub const QuickDiffModel = struct {
     allocator: Allocator,
     model: *TextModel,

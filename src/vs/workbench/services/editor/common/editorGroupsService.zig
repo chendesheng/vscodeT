@@ -81,6 +81,7 @@ pub const EditorGroupsService = struct {
     allocator: Allocator,
     groups: std.array_list.Managed(*EditorGroup),
     active: *EditorGroup,
+    on_did_visible_editors_change: Emitter(void),
     on_did_active_editor_change: Emitter(?*EditorInput),
     next_creation_order: u64 = 1,
     most_recent_active_groups: std.ArrayList(*EditorGroup) = .empty,
@@ -93,6 +94,7 @@ pub const EditorGroupsService = struct {
             .allocator = allocator,
             .groups = std.array_list.Managed(*EditorGroup).init(allocator),
             .active = undefined,
+            .on_did_visible_editors_change = .init(allocator),
             .on_did_active_editor_change = Emitter(?*EditorInput).init(allocator),
         };
 
@@ -110,6 +112,7 @@ pub const EditorGroupsService = struct {
             self.allocator.destroy(group);
         }
         self.most_recent_active_groups.deinit(self.allocator);
+        self.on_did_visible_editors_change.deinit();
         self.on_did_active_editor_change.deinit();
         self.groups.deinit();
         self.allocator.destroy(self);

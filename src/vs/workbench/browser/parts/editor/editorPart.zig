@@ -285,6 +285,7 @@ pub fn EditorPart(comptime GroupView: type) type {
             // before the view (and its tabs) are disposed.
             if (self.maximized_group == view) self.setMaximizedGroup(null);
             self.on_did_remove_group.fire(view) catch {};
+            self.service.on_did_visible_editors_change.fire({}) catch {};
             self.service.removeGroup(view.group) catch {};
             view.deinit();
             self.allocator.destroy(view);

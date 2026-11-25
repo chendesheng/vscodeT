@@ -1207,8 +1207,8 @@ console API for raw mode, sizing and input polling.
 - Quick diff is applied as `TextModel` decorations with the upstream
   `dirty-diff-*` classes: whole-line added/modified/deleted ranges, the
   one-cell gutter marker (`+`/`~`/`-`, primary/secondary/pattern variants
-  dimmed) and overview-ruler entries. `src/tui/quickDiffController.zig`
-  attaches a `QuickDiffModel`/`QuickDiffDecorator` per file editor, skips diff
+  dimmed) and overview-ruler entries. `QuickDiffWorkbenchController` in `quickDiffDecorator.zig`
+  attaches a `QuickDiffModel`/`QuickDiffDecorator` per visible file editor, skips diff
   tabs, and schedules worker diffs after model content events or Git status
   changes with the upstream 200 ms debounce. Open files share a native editor
   worker. It receives owned text snapshots and delivers versioned results to

@@ -99,7 +99,7 @@ with the documented omissions listed at the end of this document.
   `scmHistoryViewPane.zig` renders the graph on the `ui` DOM. The SCM container
   (`viewPaneContainer.zig` + the shared `ViewContainerModel`) stacks the
   collapsible Changes and Graph sections. `src/vs/workbench/contrib/scm/browser/scmViewPane.zig` is
-  the terminal `SOURCE CONTROL` view; `src/tui/quickDiffController.zig` attaches
+  the terminal `SOURCE CONTROL` view; `QuickDiffWorkbenchController` in `quickDiffDecorator.zig` attaches
   quick diff to file editors.
 - `src/vs/editor/browser/widget/diffEditor/` ports the view model,
   aligned snapshot rows, decorations, widget/gutter/widget orchestration,

@@ -237,7 +237,7 @@ const git_common_mod = @import("../contrib/git/common/gitService.zig");
 const scm_service_mod = @import("../contrib/scm/common/scmService.zig");
 const scm_common = @import("../contrib/scm/common/scm.zig");
 const quick_diff_service_mod = @import("../contrib/scm/common/quickDiffService.zig");
-const quick_diff_controller_mod = @import("../../../tui/quickDiffController.zig");
+const QuickDiffWorkbenchController = @import("../contrib/scm/browser/quickDiffDecorator.zig").QuickDiffWorkbenchController;
 const repository_mod = @import("../../../extensions/git/src/repository.zig");
 const scm_view_mod = @import("../contrib/scm/browser/scmViewPane.zig");
 const scm_history_view_mod = @import("../contrib/scm/browser/scmHistoryViewPane.zig");
@@ -698,7 +698,7 @@ pub const Workbench = struct {
     scm_service: ?*scm_service_mod.SCMService = null,
     quick_diff_storage: ?*storage_mod.InMemoryStorageService = null,
     quick_diff_service: ?*quick_diff_service_mod.QuickDiffService = null,
-    quick_diff_controller: ?*quick_diff_controller_mod.Controller = null,
+    quick_diff_controller: ?*QuickDiffWorkbenchController = null,
     scm_view: ?*scm_view_mod.SCMViewPane = null,
     scm_history_view: ?*scm_history_view_mod.SCMHistoryViewPane = null,
     scm_view_model: ?*view_container_model_mod.ViewContainerModel = null,
@@ -2293,6 +2293,7 @@ pub const Workbench = struct {
         }
         if (self.configuration) |configuration| {
             if (self.terminal_service) |service| service.options.configuration = null;
+            if (self.quick_diff_controller) |controller| controller.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             configuration.deinit();
             self.configuration = null;
@@ -2351,6 +2352,7 @@ pub const Workbench = struct {
                 self.settings_watcher = null;
             }
             if (self.terminal_service) |service| service.options.configuration = null;
+            if (self.quick_diff_controller) |controller| controller.detachConfiguration();
             if (self.theme_service) |service| service.detachConfiguration();
             configuration.deinit();
             self.configuration = null;
@@ -2399,6 +2401,7 @@ pub const Workbench = struct {
         );
         const themes = try self.ensureThemeService();
         try themes.setConfiguration(self.configuration.?);
+        if (self.quick_diff_controller) |controller| try controller.setConfiguration(self.configuration);
         try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
@@ -2440,13 +2443,6 @@ pub const Workbench = struct {
         self.applyThemeSettingsAsync();
         self.applyBreadcrumbsSettings();
         self.applyMarkdownPreviewConfig();
-        if (self.quick_diff_controller) |controller| {
-            controller.setIgnoreTrimWhitespace(self.resolvedIgnoreTrimWhitespace());
-            controller.setConfig(.{
-                .decorations = self.resolvedDiffDecorations(),
-                .gutter_pattern = .{ .added = true, .modified = true },
-            });
-        }
         if (self.repository != null) self.refreshGitStatus();
     }
 
@@ -4343,23 +4339,11 @@ pub const Workbench = struct {
             _ = quick_service.addQuickDiffProvider(quick) catch {};
         }
 
-        const controller = try self.allocator.create(quick_diff_controller_mod.Controller);
-        controller.* = quick_diff_controller_mod.Controller.init(self.allocator, quick_service);
+        const controller = try self.allocator.create(QuickDiffWorkbenchController);
+        controller.* = QuickDiffWorkbenchController.init(self.allocator, quick_service);
         controller.resources_changed = provider.interface().on_did_change_resources;
         self.quick_diff_controller = controller;
-        if (self.configuration != null) {
-            controller.setIgnoreTrimWhitespace(self.resolvedIgnoreTrimWhitespace());
-            controller.setConfig(.{
-                .decorations = self.resolvedDiffDecorations(),
-                .gutter_pattern = .{ .added = true, .modified = true },
-            });
-        }
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.file_input == null) continue;
-                controller.attach(tab.editor, tab.editor.path) catch {};
-            }
-        }
+        try controller.start(.{ .part = self.part }, self.configuration);
 
         const scm_view = try self.allocator.create(scm_view_mod.SCMViewPane);
         const scm_interface = scm_service.interface();
@@ -4436,43 +4420,10 @@ pub const Workbench = struct {
         self.refreshStatus();
     }
 
-    fn resolvedIgnoreTrimWhitespace(self: *Workbench) bool {
-        const configuration = self.configuration orelse return true;
-        if (configuration.getValue("scm.diffDecorationsIgnoreTrimWhitespace", .{})) |value| {
-            switch (value.*) {
-                .bool => |enabled| return enabled,
-                .string => |text| {
-                    if (std.mem.eql(u8, text, "inherit")) {
-                        return configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
-                    }
-                    return std.mem.eql(u8, text, "true");
-                },
-                else => {},
-            }
-        }
-        return configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
-    }
-
-    fn resolvedDiffDecorations(self: *Workbench) quick_diff_controller_mod.DecorationsMode {
-        const configuration = self.configuration orelse return .all;
-        if (configuration.getValue("scm.diffDecorations", .{})) |value| {
-            switch (value.*) {
-                .string => |text| {
-                    if (std.mem.eql(u8, text, "none")) return .none;
-                    if (std.mem.eql(u8, text, "gutter")) return .gutter;
-                    if (std.mem.eql(u8, text, "overview")) return .overview;
-                    if (std.mem.eql(u8, text, "minimap")) return .minimap;
-                },
-                else => {},
-            }
-        }
-        return .all;
-    }
-
     fn diffEditorOptions(self: *Workbench) DiffWidgetOptions {
         var options = DiffWidgetOptions{};
-        options.ignore_trim_whitespace = self.resolvedIgnoreTrimWhitespace();
         if (self.configuration) |configuration| {
+            options.ignore_trim_whitespace = configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
             options.render_side_by_side = configuration.getBool("diffEditor.renderSideBySide", true);
             options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
             options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
@@ -5917,7 +5868,6 @@ pub const Workbench = struct {
         try pane.addTab(tab);
         self.applyEditorSettingsToTab(tab);
         self.registerWorkingCopy(tab);
-        if (self.quick_diff_controller) |controller| controller.attach(tab.editor, tab.editor.path) catch {};
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
         try tab.ensureControllers();
         try self.history.add(path);
@@ -6131,7 +6081,6 @@ pub const Workbench = struct {
         try pane.addTab(tab);
         self.applyEditorSettingsToTab(tab);
         self.registerWorkingCopy(tab);
-        if (self.quick_diff_controller) |controller| controller.attach(tab.editor, tab.editor.path) catch {};
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
         try tab.ensureControllers();
         try self.history.add(path);
@@ -6607,7 +6556,6 @@ pub const Workbench = struct {
             _ = pane.removeTab(tab);
             if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
             self.unregisterWorkingCopy(tab);
-            if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
             self.detachHistoryTab(tab);
             self.detachTabViewHandlers(tab);
             tab.deinit();
@@ -7380,7 +7328,6 @@ pub const Workbench = struct {
         self.applyEditorSettingsToTab(tab);
         if (!tab.isImage()) {
             self.registerWorkingCopy(tab);
-            if (self.quick_diff_controller) |controller| controller.attach(tab.editor, tab.editor.path) catch {};
         }
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
         try tab.ensureControllers();
@@ -7772,7 +7719,6 @@ pub const Workbench = struct {
         if (self.hovered_tab == tab) self.hovered_tab = null;
         if (!tab.isImage() and tab.terminal_input == null) {
             self.unregisterWorkingCopy(tab);
-            if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
         }
         self.detachHistoryTab(tab);
         self.detachTabViewHandlers(tab);
@@ -9080,7 +9026,6 @@ pub const Workbench = struct {
         if (self.hovered_tab == tab) self.hovered_tab = null;
         self.detachHistoryTab(tab);
         self.unregisterWorkingCopy(tab);
-        if (self.quick_diff_controller) |controller| controller.detach(tab.editor);
         self.detachTabViewHandlers(tab);
         tab.deinit();
     }

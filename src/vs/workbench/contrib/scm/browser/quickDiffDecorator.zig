@@ -10,10 +10,16 @@
 //   `scm.diffDecorations=minimap` enablement check (documented in README).
 // - A deletion decoration uses the line's max column instead of upstream's
 //   `Number.MAX_VALUE`, because ranges are validated integers.
-// - The configuration change event is replaced by `setConfig`, called by the
-//   terminal `QuickDiffController`.
+// - Model debounce and worker replies are dispatched on the terminal UI thread.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const time = @import("../../../../base/common/timeCompat.zig");
+const EditorWorkerService = @import("../../../../editor/browser/services/editorWorkerService.zig").EditorWorkerService;
+const ResourceEvent = @import("../../../../base/common/event.zig").Emitter(void);
+const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const EditorService = @import("../../../services/editor/browser/editorService.zig").EditorService;
+const configuration = @import("../../../../platform/configuration/common/configuration.zig");
+const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
 
 const quick_diff = @import("../common/quickDiff.zig");
 const quick_diff_model_mod = @import("./quickDiffModel.zig");
@@ -303,8 +309,7 @@ pub const QuickDiffDecorator = struct {
     pub fn gutterWidth(self: *const QuickDiffDecorator) usize {
         // Upstream clamps `scm.diffDecorationsGutterWidth` to 1..5 and the
         // terminal maps it to a single marker cell.
-        if (self.config.decorations == .none) return 0;
-        return 1;
+        return @intFromBool(self.config.decorations.showsGutter());
     }
 };
 
@@ -350,6 +355,253 @@ fn createDecoration(
     }
     return options;
 }
+
+/// Owner id for quick-diff model decorations. The editor view uses 1..5 for
+/// find/bracket/word/hover/search, so 6 is free.
+pub const decoration_owner: usize = 6;
+
+pub const Entry = struct {
+    editor: *Editor,
+    path: []u8,
+    model: QuickDiffModel,
+    decorator: QuickDiffDecorator,
+    content_listener: usize = undefined,
+    provider_listener: usize = undefined,
+    diff_listener: usize = undefined,
+    resource_listener: ?usize = null,
+
+    fn onDiffChanged(_: void, self: *Entry) !void {
+        try self.decorator.update();
+    }
+
+    fn onContent(_: @import("../../../../editor/common/textModelEvents.zig").InternalModelContentChangeEvent, self: *Entry) !void {
+        self.model.triggerDiff(time.milliTimestamp());
+    }
+
+    fn onResources(_: void, self: *Entry) !void {
+        self.model.triggerDiff(time.milliTimestamp());
+    }
+};
+
+pub const QuickDiffWorkbenchController = struct {
+    allocator: Allocator,
+    service: *QuickDiffService,
+    worker: EditorWorkerService,
+    entries: std.array_list.Managed(*Entry),
+    resources_changed: ?*ResourceEvent = null,
+    config: Config = .{},
+    ignore_trim_whitespace: bool = false,
+    editors: ?EditorService = null,
+    visible_listener: ?usize = null,
+    configuration_service: ?*ConfigurationService = null,
+    configuration_listener: ?usize = null,
+
+    pub fn init(allocator: Allocator, service: *QuickDiffService) QuickDiffWorkbenchController {
+        return .{
+            .allocator = allocator,
+            .service = service,
+            .worker = EditorWorkerService.init(),
+            .entries = std.array_list.Managed(*Entry).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *QuickDiffWorkbenchController) void {
+        self.detachConfiguration();
+        if (self.visible_listener) |id| self.editors.?.onDidVisibleEditorsChange().unlisten(id);
+        for (self.entries.items) |entry| self.destroyEntry(entry);
+        self.entries.deinit();
+        self.worker.deinit();
+        self.* = undefined;
+    }
+
+    pub fn count(self: *const QuickDiffWorkbenchController) usize {
+        return self.entries.items.len;
+    }
+
+    pub fn contains(self: *const QuickDiffWorkbenchController, editor: *Editor) bool {
+        for (self.entries.items) |entry| {
+            if (entry.editor == editor) return true;
+        }
+        return false;
+    }
+
+    /// Attaches quick diff to a file editor. Diff snapshot editors are skipped
+    /// by the workbench (they are read-only and never passed here).
+    pub fn attach(self: *QuickDiffWorkbenchController, editor: *Editor, path: []const u8) !void {
+        if (self.config.decorations == .none) return;
+        if (self.contains(editor)) return;
+        const entry = try self.allocator.create(Entry);
+        errdefer self.allocator.destroy(entry);
+        const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
+
+        entry.* = .{
+            .editor = editor,
+            .path = path_copy,
+            .model = QuickDiffModel.init(
+                self.allocator,
+                editor.model,
+                path_copy,
+                self.service,
+                .{ .algorithm = .advanced, .max_computation_time_ms = 1000 },
+            ),
+            .decorator = undefined,
+        };
+        errdefer entry.model.deinit();
+        entry.model.setIgnoreTrimWhitespace(self.ignore_trim_whitespace);
+        entry.model.triggerDiff(time.milliTimestamp());
+        entry.content_listener = try editor.model.onDidChangeContentWithContextId(entry, Entry.onContent);
+        errdefer editor.model.removeDidChangeContentListener(entry.content_listener);
+        entry.provider_listener = try self.service.on_did_change_providers.listen(entry, Entry.onResources);
+        errdefer self.service.on_did_change_providers.unlisten(entry.provider_listener);
+        if (self.resources_changed) |source| entry.resource_listener = try source.listen(entry, Entry.onResources);
+        errdefer if (entry.resource_listener) |id| self.resources_changed.?.unlisten(id);
+        entry.decorator = QuickDiffDecorator.init(
+            self.allocator,
+            editor.model,
+            &entry.model,
+            self.service,
+            self.config,
+            decoration_owner,
+        );
+        errdefer entry.decorator.deinit();
+        entry.diff_listener = try entry.model.on_did_change.listen(entry, Entry.onDiffChanged);
+        errdefer entry.model.on_did_change.unlisten(entry.diff_listener);
+        try entry.decorator.update();
+
+        try self.entries.append(entry);
+        self.applyEditorState(entry);
+    }
+
+    pub fn detach(self: *QuickDiffWorkbenchController, editor: *Editor) void {
+        for (self.entries.items, 0..) |entry, index| {
+            if (entry.editor != editor) continue;
+            _ = self.entries.orderedRemove(index);
+            self.destroyEntry(entry);
+            if (self.entries.items.len == 0) self.worker.stopWorker();
+            return;
+        }
+    }
+
+    pub fn poll(self: *QuickDiffWorkbenchController, now_ms: i64) bool {
+        var changed = self.worker.dispatchReplies();
+        for (self.entries.items) |entry| {
+            if (entry.model.runScheduledDiff(&self.worker, now_ms)) changed = true;
+        }
+        self.worker.checkStopIdleWorker(now_ms);
+        return changed;
+    }
+
+    pub fn start(self: *QuickDiffWorkbenchController, editors: EditorService, config: ?*ConfigurationService) !void {
+        self.editors = editors;
+        if (config != null) try self.setConfiguration(config) else try self.setConfig(.{});
+    }
+
+    fn onEditorsChanged(_: void, self: *QuickDiffWorkbenchController) !void {
+        const editors = self.editors orelse return;
+        // Drop stale pointers even if creating a decorator for a new editor fails.
+        defer self.removeHiddenDecorators(editors);
+        var visible = editors.visibleEditorPanes();
+        while (visible.next()) |pane| {
+            if (pane.file_input != null) try self.attach(pane.editor, pane.editor.path);
+        }
+    }
+
+    fn removeHiddenDecorators(self: *QuickDiffWorkbenchController, editors: EditorService) void {
+        var i = self.entries.items.len;
+        while (i > 0) {
+            i -= 1;
+            const editor = self.entries.items[i].editor;
+            var visible = editors.visibleEditorPanes();
+            while (visible.next()) |pane| {
+                if (pane.file_input != null and pane.editor == editor) break;
+            } else {
+                self.detach(editor);
+            }
+        }
+    }
+
+    pub fn detachConfiguration(self: *QuickDiffWorkbenchController) void {
+        if (self.configuration_listener) |id| self.configuration_service.?.unlistenConfigurationChange(id);
+        self.configuration_listener = null;
+        self.configuration_service = null;
+    }
+
+    pub fn setConfiguration(self: *QuickDiffWorkbenchController, service: ?*ConfigurationService) !void {
+        self.detachConfiguration();
+        self.configuration_service = service;
+        if (service) |config| {
+            self.configuration_listener = try config.listenConfigurationChange(self, onDidChangeConfiguration);
+            try self.applyDecorationSettings(config);
+            self.setIgnoreTrimWhitespace(quick_diff_model_mod.ignoreTrimWhitespace(config));
+        }
+    }
+
+    fn onDidChangeConfiguration(change: configuration.Change, self: *QuickDiffWorkbenchController) !void {
+        const config = self.configuration_service.?;
+        if (configuration.affectsConfiguration(change, "scm.diffDecorations") or
+            configuration.affectsConfiguration(change, "scm.diffDecorationsGutterPattern"))
+            try self.applyDecorationSettings(config);
+        if (configuration.affectsConfiguration(change, "scm.diffDecorationsIgnoreTrimWhitespace") or
+            configuration.affectsConfiguration(change, "diffEditor.ignoreTrimWhitespace"))
+            self.setIgnoreTrimWhitespace(quick_diff_model_mod.ignoreTrimWhitespace(config));
+    }
+
+    fn applyDecorationSettings(self: *QuickDiffWorkbenchController, service: *ConfigurationService) !void {
+        var config = Config{};
+        if (service.getValue("scm.diffDecorations", .{})) |v| {
+            if (v.* == .string) config.decorations = std.meta.stringToEnum(DecorationsMode, v.string) orelse .all;
+        }
+        config.gutter_pattern.added = service.getBool("scm.diffDecorationsGutterPattern.added", false);
+        config.gutter_pattern.modified = service.getBool("scm.diffDecorationsGutterPattern.modified", true);
+        try self.setConfig(config);
+    }
+
+    pub fn setConfig(self: *QuickDiffWorkbenchController, config: Config) !void {
+        self.config = config;
+        if (config.decorations == .none) {
+            if (self.visible_listener) |id| self.editors.?.onDidVisibleEditorsChange().unlisten(id);
+            self.visible_listener = null;
+            while (self.entries.getLastOrNull()) |entry| self.detach(entry.editor);
+            return;
+        }
+        for (self.entries.items) |entry| {
+            try entry.decorator.setConfig(config);
+            self.applyEditorState(entry);
+        }
+        if (self.editors) |editors| {
+            if (self.visible_listener == null) self.visible_listener = try editors.onDidVisibleEditorsChange().listen(self, onEditorsChanged);
+            try onEditorsChanged({}, self);
+        }
+    }
+
+    pub fn setIgnoreTrimWhitespace(self: *QuickDiffWorkbenchController, ignore: bool) void {
+        if (self.ignore_trim_whitespace == ignore) return;
+        self.ignore_trim_whitespace = ignore;
+        for (self.entries.items) |entry| {
+            entry.model.setIgnoreTrimWhitespace(ignore);
+            entry.model.triggerDiff(time.milliTimestamp());
+        }
+    }
+
+    fn applyEditorState(self: *QuickDiffWorkbenchController, entry: *Entry) void {
+        _ = self;
+        const width: usize = if (entry.decorator.gutterWidth() > 0) 1 else 0;
+        entry.editor.setLineDecorationsWidth(width);
+    }
+
+    fn destroyEntry(self: *QuickDiffWorkbenchController, entry: *Entry) void {
+        entry.editor.model.removeDidChangeContentListener(entry.content_listener);
+        self.service.on_did_change_providers.unlisten(entry.provider_listener);
+        if (entry.resource_listener) |id| self.resources_changed.?.unlisten(id);
+        entry.model.on_did_change.unlisten(entry.diff_listener);
+        entry.decorator.deinit();
+        entry.model.deinit();
+        entry.editor.setLineDecorationsWidth(0);
+        self.allocator.free(entry.path);
+        self.allocator.destroy(entry);
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Tests

@@ -276,31 +276,38 @@ pub fn EditorGroupView(comptime View: type) type {
         pub fn addTab(self: *Self, tab: View) !void {
             try self.tabs.append(tab);
             if (self.group.model.isActive(.{ .input = tab.editorInput() })) {
-                self.panes.setActive(tab);
+                self.setActivePane(tab);
             }
         }
 
         /// Unregisters and returns the view for `tab`; the caller owns it.
         pub fn removeTab(self: *Self, tab: View) ?View {
             const index = self.indexOfTab(tab) orelse return null;
-            if (self.panes.activePane() == tab) self.panes.clearActive();
+            if (self.panes.activePane() == tab) self.setActivePane(null);
             return self.tabs.orderedRemove(index);
         }
 
         /// Upstream `setActive` plus switching the visible editor pane.
         pub fn activateTab(self: *Self, tab: View) !void {
             _ = try self.group.model.setActive(tab.editorInput());
-            self.panes.setActive(tab);
+            self.setActivePane(tab);
         }
 
         /// Mirrors the model change after a close/move: the active pane follows
         /// the model's new active editor, or is cleared when the group empties.
         pub fn syncActivePane(self: *Self) void {
-            self.panes.setActive(self.activeTab());
+            self.setActivePane(self.activeTab());
         }
 
         pub fn closeEditor(self: *Self, input: *EditorInput) void {
-            self.panes.closeEditor(input);
+            const pane = self.panes.activePane() orelse return;
+            if (pane.editorInput() == input) self.setActivePane(null);
+        }
+
+        fn setActivePane(self: *Self, pane: ?View) void {
+            const previous = self.panes.activePane();
+            self.panes.setActive(pane);
+            if (pane != previous) self.group.service.on_did_visible_editors_change.fire({}) catch {};
         }
 
         /// Upstream `EditorGroupView.focus()`: pass focus to the active editor
