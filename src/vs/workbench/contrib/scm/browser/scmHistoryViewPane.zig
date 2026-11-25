@@ -168,6 +168,7 @@ pub const SCMHistoryViewPane = struct {
     hovered_action: bool = false,
     list_focused: bool = false,
     hover_content: ?[]u8 = null,
+    hover_surface: ?ui.Surface = null,
     last_rect: ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 
     pub fn init(allocator: Allocator, host: Host, storage: ?*storage_mod.InMemoryStorageService) !*SCMHistoryViewPane {
@@ -198,7 +199,7 @@ pub const SCMHistoryViewPane = struct {
         self.changes.deinit();
         for (self.filter_ids.items) |id| self.allocator.free(id);
         self.filter_ids.deinit();
-        if (self.hover_content) |content| self.allocator.free(content);
+        self.clearHover();
         if (self.surface) |*surface| surface.deinit();
         self.arena.deinit();
         self.changes_arena.deinit();
@@ -897,10 +898,9 @@ pub const SCMHistoryViewPane = struct {
 
     fn setHover(self: *SCMHistoryViewPane, row_index: usize, over_action: bool) void {
         if (self.hovered_row == row_index and self.hovered_action == over_action) return;
+        self.clearHover();
         self.hovered_row = row_index;
         self.hovered_action = over_action;
-        if (self.hover_content) |content| self.allocator.free(content);
-        self.hover_content = null;
         if (over_action or row_index >= self.rows.items.len) return;
         switch (self.rows.items[row_index]) {
             .history_item => |vm| {
@@ -934,7 +934,54 @@ pub const SCMHistoryViewPane = struct {
         };
     }
 
+    pub fn renderHover(
+        self: *SCMHistoryViewPane,
+        cells: *ui.CellGrid,
+        column: ui.Rect,
+        sidebar_position: @import("../../../services/layout/browser/layoutService.zig").Position,
+        cell_borders: bool,
+        caps: ui.cell_border.Capabilities,
+    ) !void {
+        const content = self.hoverContent() orelse return;
+        const rect = self.hoverRect() orelse return;
+        const y = ui.cell.snap(rect.y);
+        const gap = @intFromBool(cell_borders);
+        const max_width = ui.cell.snap(column.w) -| gap -| 1;
+        if (max_width < 12) return;
+        var lines: usize = 1;
+        for (content) |ch| {
+            if (ch == '\n') lines += 1;
+        }
+        const max_height = ui.cell.snap(column.bottom()) -| y -| 2;
+        if (max_height < scm_history_hover_chrome + 1) return;
+        const size = scmHistoryHoverSize(max_width, max_height, lines);
+        const x = if (sidebar_position == .left) ui.cell.snap(column.x) + gap else ui.cell.snap(column.right()) - gap - size.width;
+
+        if (self.hover_surface == null) self.hover_surface = try ui.Surface.init(self.allocator, .{ .cols = size.width, .rows = size.height });
+        const surface = &self.hover_surface.?;
+        try surface.resize(size.width, size.height);
+        var background = ui.Color{ .r = 37, .g = 37, .b = 38 };
+        var foreground = ui.Color{ .r = 204, .g = 204, .b = 204 };
+        var border = ui.Color{ .r = 69, .g = 69, .b = 69 };
+        if (self.theme) |palette| {
+            background = palette.color("editorHoverWidget.background", .{ 37, 37, 38 });
+            foreground = palette.color("editorHoverWidget.foreground", .{ 204, 204, 204 });
+            border = palette.color("editorHoverWidget.border", .{ 69, 69, 69 });
+        }
+        const frame = if (caps.has(.round)) ui.cell.RoundedCellFrame.capture(cells, .{
+            .x = @floatFromInt(x),
+            .y = @floatFromInt(y),
+            .w = @floatFromInt(size.width),
+            .h = @floatFromInt(size.height),
+        }) else null;
+        try paintScmHistoryHover(surface, content, size, background, foreground, if (frame == null) border else null);
+        try cells.blit(surface.grid(), x, y, size.width, size.height);
+        if (frame) |rounded| rounded.paint(cells, caps, .{ .rgb = border });
+    }
+
     pub fn clearHover(self: *SCMHistoryViewPane) void {
+        if (self.hover_surface) |*surface| surface.deinit();
+        self.hover_surface = null;
         self.hovered_row = null;
         self.hovered_action = false;
         if (self.hover_content) |content| self.allocator.free(content);
@@ -1404,4 +1451,63 @@ fn statusColor(status: u8, theme: ?*const theme_colors_mod.ThemeColors) ui.Color
         return palette.colorOr(id, default_color);
     }
     return default_color;
+}
+
+const scm_history_hover_chrome: usize = 4;
+const scm_history_hover_max_width: usize = 60;
+const scm_history_hover_max_height: usize = 12;
+
+const ScmHistoryHoverSize = struct {
+    /// Border-box size of the overlay surface.
+    width: usize,
+    height: usize,
+    /// Content-box size of the DOM root inside border and padding.
+    content_width: usize,
+    content_height: usize,
+};
+
+fn scmHistoryHoverSize(max_width: usize, max_height: usize, lines: usize) ScmHistoryHoverSize {
+    const width = @min(max_width, scm_history_hover_max_width);
+    const height = @min(max_height, @min(lines + scm_history_hover_chrome, scm_history_hover_max_height));
+    return .{
+        .width = width,
+        .height = height,
+        .content_width = width -| scm_history_hover_chrome,
+        .content_height = height -| scm_history_hover_chrome,
+    };
+}
+
+fn paintScmHistoryHover(
+    surface: *ui.Surface,
+    content: []const u8,
+    size: ScmHistoryHoverSize,
+    background: ui.Color,
+    foreground: ui.Color,
+    glyph_border: ?ui.Color,
+) !void {
+    const border_width: f64 = if (glyph_border != null) 1 else 0;
+    const doc = surface.document();
+    const root = doc.root orelse root: {
+        const element = try doc.createElement(.div);
+        _ = try element.appendText(content);
+        doc.setRoot(element);
+        break :root element;
+    };
+    const style = ui.Style{
+        .position = .absolute,
+        .left = .{ .cells = 0 },
+        .top = .{ .cells = 0 },
+        .width = .{ .cells = @floatFromInt(size.content_width) },
+        .height = .{ .cells = @floatFromInt(size.content_height) },
+        .background = background,
+        .color = foreground,
+        .border = .all(border_width),
+        .border_style = .rounded,
+        .border_color = glyph_border,
+        .padding = .all(2 - border_width),
+        .white_space = .pre,
+        .overflow = .hidden,
+    };
+    if (!std.meta.eql(root.asElement().style, style)) root.setStyle(style);
+    try surface.paintFrame();
 }

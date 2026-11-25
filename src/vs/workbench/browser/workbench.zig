@@ -568,7 +568,6 @@ pub const Workbench = struct {
     status_hint_buf: [256]u8 = undefined,
     /// Branch-aware placeholder for the Source Control commit input.
     scm_placeholder_buf: [160]u8 = undefined,
-    scm_hover_surface: ?ui.Surface = null,
     markers_status: ?*MarkersStatusBar = null,
     problems_view: ?MarkersView = null,
     marker_listener: ?@import("../../base/common/event.zig").Emitter(MarkerChangeEvent).ListenerId = null,
@@ -793,7 +792,6 @@ pub const Workbench = struct {
         self.scm_history_view = null;
         self.scm_view_model = null;
         self.scm_container = null;
-        self.scm_hover_surface = null;
         self.repository = null;
         self.git_root = null;
         self.git_status_accessor = null;
@@ -1895,10 +1893,6 @@ pub const Workbench = struct {
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
         self.service.deinit();
-        if (self.scm_hover_surface) |*surface| {
-            surface.deinit();
-            self.scm_hover_surface = null;
-        }
         if (self.sidebar) |sidebar| sidebar.deinit();
         self.destroySearch();
         if (self.settings_watcher) |watcher| watcher.deinit();
@@ -10390,53 +10384,6 @@ pub const Workbench = struct {
         if (self.media_status) |status| status.update(null);
     }
 
-    fn renderScmHistoryHover(self: *Workbench) !void {
-        const view = self.scm_history_view orelse return;
-        const content = view.hoverContent() orelse return;
-        const rect = view.hoverRect() orelse return;
-        const column = self.workbenchGridLayout().editor_column;
-        const y = ui.cell.snap(rect.y);
-        const gap = @intFromBool(self.part.cell_borders);
-        const max_width = ui.cell.snap(column.w) -| gap -| 1;
-        if (max_width < 12) return;
-        var lines: usize = 1;
-        for (content) |ch| {
-            if (ch == '\n') lines += 1;
-        }
-        const max_height = self.workbenchRows() -| y -| 2;
-        if (max_height < scm_history_hover_chrome + 1) return;
-        const size = scmHistoryHoverSize(max_width, max_height, lines);
-        const x = if (self.layout_api.getSideBarPosition() == .left) ui.cell.snap(column.x) + gap else ui.cell.snap(column.right()) - gap - size.width;
-
-        if (self.scm_hover_surface == null or self.scm_hover_surface.?.doc.cols != size.width or self.scm_hover_surface.?.doc.rows != size.height) {
-            if (self.scm_hover_surface) |*surface| {
-                try surface.resize(size.width, size.height);
-            } else {
-                self.scm_hover_surface = try ui.Surface.init(self.allocator, .{ .cols = size.width, .rows = size.height });
-            }
-        }
-        const surface = &self.scm_hover_surface.?;
-        var background = ui.Color{ .r = 37, .g = 37, .b = 38 };
-        var foreground = ui.Color{ .r = 204, .g = 204, .b = 204 };
-        var border = ui.Color{ .r = 69, .g = 69, .b = 69 };
-        if (self.theme_palette) |palette| {
-            background = palette.color("editorHoverWidget.background", .{ 37, 37, 38 });
-            foreground = palette.color("editorHoverWidget.foreground", .{ 204, 204, 204 });
-            border = palette.color("editorHoverWidget.border", .{ 69, 69, 69 });
-        }
-        const cells = &self.frame.next;
-        const caps = self.part.cell_border_capabilities;
-        const frame = if (caps.has(.round)) ui.cell.RoundedCellFrame.capture(cells, .{
-            .x = @floatFromInt(x),
-            .y = @floatFromInt(y),
-            .w = @floatFromInt(size.width),
-            .h = @floatFromInt(size.height),
-        }) else null;
-        try paintScmHistoryHover(surface, content, size, background, foreground, if (frame == null) border else null);
-        try cells.blit(surface.grid(), x, y, size.width, size.height);
-        if (frame) |rounded| rounded.paint(cells, caps, .{ .rgb = border });
-    }
-
     pub fn preparePartsForRender(self: *Workbench) !*ui.Surface {
         self.syncSearchActivity();
         const editor_surface = try self.synchronizeEditorDom();
@@ -10533,7 +10480,7 @@ pub const Workbench = struct {
                 .part_focused = self.focus == .statusbar,
             });
         }
-        try self.renderScmHistoryHover();
+        if (self.scm_history_view) |graph| try graph.renderHover(&self.frame.next, self.workbenchGridLayout().editor_column, self.layout_api.getSideBarPosition(), self.part.cell_borders, self.part.cell_border_capabilities);
         if (self.quick_access.isOpen()) {
             self.quick_access.widget.caps = if (self.part.cell_borders) self.part.cell_border_capabilities else .{};
             self.quick_access.widget.open_to_bottom = self.preferredSideBySideDirection() == .DOWN;
@@ -12035,62 +11982,6 @@ fn commandGitOpenFile(context: *anyopaque) anyerror!void {
 /// one of those cells, while native borders are painted on the overlay edges.
 /// The DOM root uses content-box sizing, so each dimension is four cells
 /// smaller than the surface.
-const scm_history_hover_chrome: usize = 4;
-const scm_history_hover_max_width: usize = 60;
-const scm_history_hover_max_height: usize = 12;
-
-const ScmHistoryHoverSize = struct {
-    /// Border-box size of the overlay surface.
-    width: usize,
-    height: usize,
-    /// Content-box size of the DOM root inside border and padding.
-    content_width: usize,
-    content_height: usize,
-};
-
-fn scmHistoryHoverSize(max_width: usize, max_height: usize, lines: usize) ScmHistoryHoverSize {
-    const width = @min(max_width, scm_history_hover_max_width);
-    const height = @min(max_height, @min(lines + scm_history_hover_chrome, scm_history_hover_max_height));
-    return .{
-        .width = width,
-        .height = height,
-        .content_width = width -| scm_history_hover_chrome,
-        .content_height = height -| scm_history_hover_chrome,
-    };
-}
-
-fn paintScmHistoryHover(
-    surface: *ui.Surface,
-    content: []const u8,
-    size: ScmHistoryHoverSize,
-    background: ui.Color,
-    foreground: ui.Color,
-    glyph_border: ?ui.Color,
-) !void {
-    const border_width: f64 = if (glyph_border != null) 1 else 0;
-    const doc = surface.document();
-    doc.clear();
-    const root = try doc.createElement(.div);
-    root.setStyle(.{
-        .position = .absolute,
-        .left = .{ .cells = 0 },
-        .top = .{ .cells = 0 },
-        .width = .{ .cells = @floatFromInt(size.content_width) },
-        .height = .{ .cells = @floatFromInt(size.content_height) },
-        .background = background,
-        .color = foreground,
-        .border = .all(border_width),
-        .border_style = .rounded,
-        .border_color = glyph_border,
-        .padding = .all(2 - border_width),
-        .white_space = .pre,
-        .overflow = .hidden,
-    });
-    _ = try root.appendText(content);
-    doc.setRoot(root);
-    try surface.paintFrame();
-}
-
 fn commandDiffNext(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (self.activeTab()) |tab| _ = tab.nextDiffChange();

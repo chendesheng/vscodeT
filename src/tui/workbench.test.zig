@@ -7745,7 +7745,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     for ([_]bool{ false, true }) |native| {
         workbench.setCellBorderCapabilities(if (native) caps else null);
         try renderFrame(workbench, &hovered_frame.writer);
-        const hover_surface = &(workbench.scm_hover_surface orelse return error.TestExpectedHoverSurface);
+        const hover_surface = &(history_view.hover_surface orelse return error.TestExpectedHoverSurface);
         const hover_grid = hover_surface.grid();
         try std.testing.expect(hover_grid.cols >= 12 and hover_grid.rows >= 5);
         const cells = &workbench.frame.prev;

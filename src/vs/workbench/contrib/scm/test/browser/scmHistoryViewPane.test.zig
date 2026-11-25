@@ -188,10 +188,24 @@ test "SCM history view pane: hover exposes Open Changes without expanding the ro
     _ = try view.handleMouse(&.{ .kind = .move, .x = 9, .y = 0 }, rect);
     try view.render(&grid, rect, false);
     try testing.expectEqual(@as(u32, scm_history.open_changes_glyph), grid.cluster[grid.index(37, 0)]);
+    var overlay = try ui.CellGrid.init(allocator, 100, 20);
+    defer overlay.deinit();
+    try view.renderHover(&overlay, .{ .x = 0, .y = 0, .w = 80, .h = 20 }, .right, false, .{});
+    const hover = &view.hover_surface.?;
+    const root = hover.document().root.?;
+    const text = root.first_child.?;
+    try testing.expectEqualStrings(view.hoverContent().?, text.asText().data);
+    try testing.expectEqual(@as(u32, '╭'), overlay.cluster[overlay.index(20, 0)]);
+    try view.renderHover(&overlay, .{ .x = 40, .y = 0, .w = 40, .h = 20 }, .left, false, .{});
+    try testing.expectEqual(root, hover.document().root.?);
+    try testing.expectEqual(text, root.first_child.?);
+    try testing.expectEqual(@as(u32, '╭'), overlay.cluster[overlay.index(40, 0)]);
     const rows_before = view.rows.items.len;
     try testing.expect(try view.handleMouse(&.{ .kind = .down, .button = .left, .x = 37, .y = 0 }, rect));
     try testing.expectEqual(@as(usize, 1), host.opened_history);
     try testing.expectEqual(rows_before, view.rows.items.len);
+    view.clearHover();
+    try testing.expect(view.hover_surface == null);
 }
 
 test "SCM history view pane: the scrollbar thumb follows wheel scrolling" {

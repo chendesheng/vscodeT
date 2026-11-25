@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,814 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
+The browser shell is 13,705 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -43,6 +43,7 @@ Show All Commands resolves the quick input service through its Action2 handler.
   group selects the previously active group. EditorPart saves and restores the
   SerializableGrid, including nested splits, proportions and the maximized leaf.
 * Sidebar position updates the rail, sidebar, editor and panel rectangles together. The sash uses SplitView snapping on the side of the pointer where the sidebar sits.
+* SCMHistoryViewPane creates the Graph hover when a row is hovered and disposes it when the hover clears.
 * QuickDiffWorkbenchController follows mounted editor and configuration changes. Closing or hiding a file removes its model listeners and gutter decorations.
 * MarkersView owns the Problems rows, cell rendering and input. The panel
   forwards its content rectangle and keeps focus when a selection previews a marker.
