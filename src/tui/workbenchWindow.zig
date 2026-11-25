@@ -1126,76 +1126,6 @@ pub const TerminalWorkbench = struct {
         if (self.media_status) |status| try status.bindActiveEditor(editor_service);
     }
 
-    fn makeTerminalActionServices(host: *TerminalWorkbench) terminal_actions.TerminalActionServices {
-        const Host = TerminalWorkbench;
-        const Adapter = struct {
-            fn get(context: *anyopaque) *Host {
-                return @ptrCast(@alignCast(context));
-            }
-            fn ensureService(context: *anyopaque) !*TerminalService {
-                return get(context).ensureTerminalService();
-            }
-            fn revealPanel(context: *anyopaque) !void {
-                try get(context).showTerminal();
-            }
-            fn revealEditor(context: *anyopaque, moved: bool) !void {
-                try get(context).revealTerminalEditorMoved(moved);
-            }
-            fn hidePanel(context: *anyopaque) void {
-                get(context).hidePanel();
-            }
-            fn panelActive(context: *anyopaque) bool {
-                return get(context).terminalPanelActive();
-            }
-            fn panelRect(context: *anyopaque) ui.Rect {
-                return get(context).geometry().panelRect();
-            }
-            fn panelFocused(context: *anyopaque) bool {
-                return get(context).focus == .terminal;
-            }
-            fn editorFocused(context: *anyopaque) bool {
-                return get(context).focus == .editor;
-            }
-            fn focusedTerminal(context: *anyopaque) ?*terminal_service_mod.TerminalInstance {
-                return get(context).focusedTerminal();
-            }
-            fn focusPanel(context: *anyopaque) void {
-                get(context).setFocus(.terminal);
-            }
-            fn layout(context: *anyopaque) void {
-                get(context).layoutAll();
-            }
-            fn panelInstancesRemoved(context: *anyopaque, service: *TerminalService) !void {
-                try get(context).onPanelTerminalsRemoved(service);
-            }
-        };
-        return .{
-            .context = host,
-            .slot = &host.terminal_service,
-            .configuration = &host.configuration,
-            .configuration_api = host.configuration_api,
-            .part = host.part,
-            .factory = host.view_factory,
-            .tabbed_view = &host.terminal_tabbed_view,
-            .input = host.quick_access.inputService(),
-            .dialogs = host.dialog_api,
-            .close_host = host.closeEditorHost(),
-            .ensure_service = Adapter.ensureService,
-            .reveal_panel = Adapter.revealPanel,
-            .reveal_editor = Adapter.revealEditor,
-            .hide_panel = Adapter.hidePanel,
-            .panel_active = Adapter.panelActive,
-            .panel_rect = Adapter.panelRect,
-            .panel_focused = Adapter.panelFocused,
-            .editor_focused = Adapter.editorFocused,
-            .focused_terminal = Adapter.focusedTerminal,
-            .focus_panel = Adapter.focusPanel,
-            .layout = Adapter.layout,
-            .layout_service = host.layout_api,
-            .panel_instances_removed = Adapter.panelInstancesRemoved,
-        };
-    }
-
     fn registerNativeServices(self: *TerminalWorkbench) !void {
         self.context_menu_api = self.context_menu_service.interface();
         _ = try self.services.set(context_menus.context_menu_service_id, &self.context_menu_api);
@@ -1268,7 +1198,7 @@ pub const TerminalWorkbench = struct {
         self.storage_api = self.notification_storage.interface();
         _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
         _ = try self.services.set(storage_mod.storage_service_id, &self.storage_api);
-        self.terminal_action_services = self.makeTerminalActionServices();
+        self.terminal_action_services = @import("workbenchServices.zig").terminalActionServices(self);
         self.github_publish = .{
             .allocator = self.allocator,
             .io = self.io,
@@ -1610,68 +1540,11 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn builtinExtensionServices(self: *TerminalWorkbench) @import("../vs/workbench/api/browser/builtinExtensionHost.zig").Services {
-        const Host = struct {
-            fn get(context: *anyopaque) *TerminalWorkbench {
-                return @ptrCast(@alignCast(context));
-            }
-            fn languageFeatures(context: *anyopaque) ?*LanguageFeaturesService {
-                return get(context).language_features;
-            }
-            fn configuration(context: *anyopaque) ?*ConfigurationService {
-                return get(context).configuration;
-            }
-            fn launchTerminal(context: *anyopaque, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !*terminal_service_mod.TerminalInstance {
-                return get(context).launchTerminalProcess(name, executable, args, cwd);
-            }
-            fn terminalInstance(context: *anyopaque, id: usize) ?*terminal_service_mod.TerminalInstance {
-                const service = get(context).terminal_service orelse return null;
-                return service.getInstanceFromId(id);
-            }
-            fn updateConfiguration(context: *anyopaque, key: []const u8, value: ?std.json.Value) !void {
-                try get(context).setUserConfigurationValue(key, value);
-            }
-            fn statusHint(context: *anyopaque, message: []const u8) void {
-                get(context).setStatusHint("{s}", .{message});
-            }
-            fn closeActive(context: *anyopaque) !void {
-                try get(context).forceCloseActive();
-            }
-            fn openPath(context: *anyopaque, path: []const u8) !void {
-                try get(context).openPath(path);
-            }
-            fn switchTab(context: *anyopaque, delta: isize) !void {
-                try get(context).switchTab(delta);
-            }
-            fn historyBack(context: *anyopaque) !bool {
-                return get(context).goBackInHistory();
-            }
-            fn historyForward(context: *anyopaque) !bool {
-                return get(context).goForwardInHistory();
-            }
-            fn recordNavigation(context: *anyopaque) void {
-                get(context).recordNavigationWithReason(.NAVIGATION);
-            }
-        };
-        return .{
-            .context = self,
-            .io = self.io,
-            .editors = .{ .part = self.part },
-            .commands = &self.commands,
-            .statusbar = &self.statusbar,
-            .quick_input = self.quick_access.inputService(),
-            .language_features = Host.languageFeatures,
-            .configuration = Host.configuration,
-            .launch_terminal = Host.launchTerminal,
-            .terminal_instance = Host.terminalInstance,
-            .update_configuration = Host.updateConfiguration,
-            .status_hint = Host.statusHint,
-            .force_close_active = Host.closeActive,
-            .open_path = Host.openPath,
-            .switch_tab = Host.switchTab,
-            .history_back = Host.historyBack,
-            .history_forward = Host.historyForward,
-            .record_navigation = Host.recordNavigation,
-        };
+        return @import("workbenchServices.zig").builtinExtensionServices(self);
+    }
+
+    pub fn extensionHostServices(self: *TerminalWorkbench) @import("../vs/workbench/api/browser/extensionHostServices.zig").Services {
+        return @import("workbenchServices.zig").extensionHostServices(self);
     }
 
     fn registerActions(self: *TerminalWorkbench) !void {

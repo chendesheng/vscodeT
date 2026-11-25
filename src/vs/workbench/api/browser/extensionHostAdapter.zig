@@ -1970,7 +1970,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer workbench_window.deinit();
             try workbench.enableLanguageFeatures();
 
-            var extension_host = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
+            var extension_host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
             defer extension_host.deinit();
 
             const deadline = time_compat.milliTimestamp() + 10_000;
@@ -2027,25 +2027,25 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             try std.testing.expect(reference_providers.len > 0);
 
             // Extension command names reach the same workbench actions.
-            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToDeclaration"));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToDeclaration"));
             try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.revealDeclaration"));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.revealDeclaration"));
             try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToImplementation"));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToImplementation"));
             try std.testing.expectEqual(@as(usize, 3), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToTypeDefinition"));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToTypeDefinition"));
             try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
 
-            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToReferences"));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.goToReferences"));
             try std.testing.expect(workbench.quick_access.isOpen());
             workbench.quick_access.inputService().hide();
-            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.findReferences"));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.findReferences"));
             try std.testing.expect(workbench.quick_access.isOpen());
             workbench.quick_access.inputService().hide();
-            try std.testing.expect(runLspCommand(Services.bind(workbench), "outline.focus"));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "outline.focus"));
             try std.testing.expect(workbench.quick_access.isOpen());
             workbench.quick_access.inputService().hide();
-            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.showHover"));
+            try std.testing.expect(runLspCommand(workbench.extensionHostServices(), "editor.action.showHover"));
             try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
             const tab = workbench.activeTab().?;
             try tab.editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
@@ -2108,7 +2108,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var extension_host = try Extensions.init(
                 allocator,
                 io,
-                Services.bind(workbench),
+                workbench.extensionHostServices(),
                 &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }},
                 ".cache-ext/data-relative-fixture",
                 "host/dist",
@@ -2197,7 +2197,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var extension_host = try Extensions.init(
                 allocator,
                 io,
-                Services.bind(workbench),
+                workbench.extensionHostServices(),
                 &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
                 ".cache-ext/data-ts-test",
                 "host/dist",
@@ -2389,7 +2389,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             var extension_host = try Extensions.init(
                 allocator,
                 io,
-                Services.bind(workbench),
+                workbench.extensionHostServices(),
                 &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
                 ".cache-ext/data-js-test",
                 "host/dist",
@@ -2548,7 +2548,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             defer workbench_window.deinit();
             workbench.setDeclarativeExtensions(&catalog);
             try workbench.enableLanguageFeatures();
-            var extensions = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{
+            var extensions = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{
                 .path = "host/dist/extensions/" ++ name,
                 .is_builtin = true,
             }}, ".cache-ext/test-" ++ name, "host/dist");
@@ -2605,7 +2605,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 25);
             const workbench = workbench_window.workbench;
             defer workbench_window.deinit();
-            var host = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
+            var host = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
             defer host.deinit();
             const command = "merge-conflict.accept.all-incoming";
             const deadline = time_compat.milliTimestamp() + 10_000;
@@ -2634,7 +2634,7 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
             const workbench_window = try TestWindow.init(allocator, io, &.{}, 100, 30);
             const workbench = workbench_window.workbench;
             defer workbench_window.deinit();
-            const ext = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/test-fixtures/authentication", .is_under_development = true }}, ".cache-ext/auth-fixture", "host/dist");
+            const ext = try Extensions.init(allocator, io, workbench.extensionHostServices(), &.{.{ .path = "host/test-fixtures/authentication", .is_under_development = true }}, ".cache-ext/auth-fixture", "host/dist");
             defer ext.deinit();
             var tmp = std.heap.ArenaAllocator.init(allocator);
             defer tmp.deinit();

@@ -1,9 +1,11 @@
 // Port of the portable layout state exercised by
 // `src/vs/workbench/test/browser/layout.test.ts`.
 //
-// The browser tests drive the real Grid and DOM sash endpoints. The terminal
-// port tests the part-visibility/size state that the terminal workbench uses
-// instead; grid composition stays in `src/vs/workbench/browser/workbench.zig`.
+// The pinned browser tests use CSS floating-panel gap offsets and DOM
+// bounding rectangles, neither of which exists in cell geometry. The terminal
+// cases below assert the corresponding immediate panel/sash boundary updates
+// for normal and compact rails, alongside part visibility and size events.
+// Layout owns the registered parts and grid; the host supplies cell dimensions.
 
 const std = @import("std");
 const layout_mod = @import("../../browser/layout.zig");
@@ -88,7 +90,6 @@ test "LayoutModel: zen mode and centered layout state fire their events" {
 }
 
 test "registered panel changes reach layout listeners in grid notification order" {
-    const PanelPart = @import("../../browser/parts/panel/panelPart.zig").PanelPart;
     const service = @import("../../services/layout/browser/layoutService.zig");
     var layout = layout_mod.Layout.init(std.testing.allocator);
     defer layout.deinit();
@@ -163,4 +164,99 @@ test "Layout.initLayout observes the active editor after group restore and detac
         try std.testing.expectEqual(1, changes);
     }
     try std.testing.expectEqual(before, service.on_did_active_editor_change.listenerCount());
+}
+
+const PanelPart = @import("../../browser/parts/panel/panelPart.zig").PanelPart;
+const PanelAlignment = @import("../../services/layout/browser/layoutService.zig").PanelAlignment;
+const Grid = layout_mod.WorkbenchGrid;
+const ui = @import("ui");
+
+const SashEndpointHarness = struct {
+    layout: *LayoutModel,
+    panel: *PanelPart,
+    activity_width: usize,
+    rects: Grid.Rects = undefined,
+    position_events: usize = 0,
+    alignment_events: usize = 0,
+
+    fn changed(_: void, self: *@This()) !void {
+        self.rects = Grid.layout(.{ .x = 0, .y = 0, .w = 80, .h = 23 }, self.activity_width, self.layout.size(.sidebar), self.layout.size(.panel), self.layout.getSideBarPosition(), self.layout.getPanelPosition(), self.layout.getPanelAlignment());
+        self.layout.layout(80, 24, self.rects, .{ .x = 0, .y = 23, .w = 80, .h = 1 });
+    }
+
+    fn assertEndpoints(self: *@This()) !void {
+        const rects = self.rects;
+        try std.testing.expectEqual(rects.panel, self.panel.base.bounds.?);
+        try std.testing.expectEqual(@as(f64, @floatFromInt(self.activity_width)), rects.activity_bar.w);
+        try std.testing.expectEqual(ui.cell.snap(rects.sidebar.right()) - 1, rects.sidebarSashCell());
+        switch (rects.panel_position) {
+            .top => try std.testing.expectEqual(rects.panel.bottom(), rects.editor.y),
+            .bottom => try std.testing.expectEqual(rects.editor.bottom(), rects.panel.y),
+            .left => try std.testing.expectEqual(rects.panel.right(), rects.editor.x),
+            .right => try std.testing.expectEqual(rects.editor.right(), rects.panel.x),
+        }
+    }
+
+    fn positionChanged(position: Position, self: *@This()) !void {
+        // Layout's synchronous grid/layout event must have run before the
+        // position event, not on a later input tick or render.
+        try std.testing.expectEqual(position, self.rects.panel_position);
+        try std.testing.expectEqual(position, self.panel.getPosition());
+        try self.assertEndpoints();
+        self.position_events += 1;
+    }
+
+    fn alignmentChanged(alignment: PanelAlignment, self: *@This()) !void {
+        try std.testing.expectEqual(alignment, self.rects.panel_alignment);
+        try self.assertEndpoints();
+        if (alignment == .justify) {
+            try std.testing.expectEqual(self.rects.activity_bar.right(), self.rects.panel.x);
+            try std.testing.expectEqual(@as(f64, 80), self.rects.panel.right());
+        } else {
+            try std.testing.expectEqual(self.rects.editor_column.x, self.rects.panel.x);
+        }
+        self.alignment_events += 1;
+    }
+};
+
+test "refreshes cell sash endpoints immediately after panel position changes, normal and compact" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 3, 2 }) |activity_width| {
+        var layout = LayoutModel.init(allocator);
+        defer layout.deinit();
+        var panel = PanelPart.init(allocator);
+        defer panel.deinit();
+        try panel.base.register(layout.interface());
+        try layout.createWorkbenchLayout();
+        try layout.setSize(.sidebar, 20);
+        try layout.setPartHidden(false, .panel);
+        try layout.setSize(.panel, 6);
+        var harness = SashEndpointHarness{ .layout = &layout, .panel = &panel, .activity_width = activity_width };
+        _ = try layout.on_did_change.listen(&harness, SashEndpointHarness.changed);
+        _ = try layout.on_did_change_panel_position.listen(&harness, SashEndpointHarness.positionChanged);
+        try SashEndpointHarness.changed({}, &harness);
+        for ([_]Position{ .right, .top, .bottom }) |position| try layout.setPanelPosition(position);
+        try std.testing.expectEqual(@as(usize, 3), harness.position_events);
+    }
+}
+
+test "refreshes cell sash endpoints immediately after panel alignment changes, normal and compact" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 3, 2 }) |activity_width| {
+        var layout = LayoutModel.init(allocator);
+        defer layout.deinit();
+        var panel = PanelPart.init(allocator);
+        defer panel.deinit();
+        try panel.base.register(layout.interface());
+        try layout.createWorkbenchLayout();
+        try layout.setSize(.sidebar, 20);
+        try layout.setPartHidden(false, .panel);
+        try layout.setSize(.panel, 6);
+        var harness = SashEndpointHarness{ .layout = &layout, .panel = &panel, .activity_width = activity_width };
+        _ = try layout.on_did_change.listen(&harness, SashEndpointHarness.changed);
+        _ = try layout.on_did_change_panel_alignment.listen(&harness, SashEndpointHarness.alignmentChanged);
+        try SashEndpointHarness.changed({}, &harness);
+        for ([_]PanelAlignment{ .justify, .right, .center }) |alignment| try layout.setPanelAlignment(alignment);
+        try std.testing.expectEqual(@as(usize, 3), harness.alignment_events);
+    }
 }

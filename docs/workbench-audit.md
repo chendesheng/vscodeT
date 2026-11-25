@@ -106,7 +106,9 @@ The legacy CommandInfo table is deleted. Action2 registrations and extension com
 
 PanelPart now renders the upstream PanelTitle navigation actions through a live MenuService menu. Maximize/Restore visibility and tooltip follow the panel context events; the title toolbar reserves cells separately from the terminal contribution actions, and its hit regions are excluded from the layout sash.
 
-The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,749 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+The terminal, built-in extension and Node extension-host service factories now live in `src/tui/workbenchServices.zig`. The portable service contracts no longer construct a generic adapter from the native window type. Native application startup supplies the explicit contracts; the generic owner test harness gets the same contract from its window.
+
+The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,622 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -268,10 +270,12 @@ the workbench layout, lays it out and starts restoration. After layout readiness
 Restored races editor restoration against two seconds. Eventually uses the
 delayed idle callback. The terminal host supplies time and readiness events.
 
-The pinned layout test exercises floating-panel sash endpoints. Keep terminal
-tests for snapping, Alt-drag, visibility events and size restoration in addition
-to the portable endpoint assertions. Record each remaining browser-only omission
-with its owning port.
+The pinned layout tests exercise floating-panel CSS gap offsets and DOM sash
+endpoints. The terminal uses whole-cell geometry without floating browser
+panels or CSS pixel offsets. The owner layout tests exercise the corresponding
+immediate panel-position/alignment boundary updates for normal and compact
+activity rails, and host tests cover snapping, Alt-drag, visibility and size
+restoration.
 
 * Layout exposes the registered part containers and cell sizes through IWorkbenchLayoutService. Editor resize Action2 handlers use the upstream active-group-first rule, falling back to the outer editor part only in unchanged dimensions. Sash and terminal panel resize commands use the same layout service.
 
