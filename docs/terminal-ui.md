@@ -1831,7 +1831,10 @@ The engine is libghostty-vt, not a port of xterm.js:
   API is treated as an unstable implementation detail behind this file.
 - `src/vs/platform/terminal/node/pty.zig` is the POSIX host: `forkpty`,
   non-blocking master fd, queued writes, resize ioctl and process-group
-  signalling. The child only performs async-signal-safe calls after fork.
+  signalling. Darwin uses a kqueue process-exit event and Linux uses a pidfd.
+  POSIX hosts without a native descriptor use a blocking waitid and a pipe. The host reaps the child, drains its output and dispatches
+  TerminalInstance.onExit before disposing the tab. Pending input resumes on
+  writable master descriptors. The child only performs async-signal-safe calls after fork.
 - `src/vs/workbench/contrib/terminal/browser/terminalRenderer.zig` reads `RenderState` rows/cells, resolves palette
   and RGB colors, maps SGR attributes to `ui.cell.Attr`, and writes graphemes
   into the shared frame grid. Text is not rebuilt in a second cell buffer.

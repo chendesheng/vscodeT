@@ -61,6 +61,7 @@ pub const TerminalInstance = struct {
     emulator: TerminalEmulator,
     process_state: ProcessState = .running,
     exit: ?pty.Exit = null,
+    onExit: @import("../../../../base/common/event.zig").Emitter(pty.Exit),
     cols: u16,
     rows: u16,
     /// Title sequence reported through OSC 0/2, if any.
@@ -96,6 +97,7 @@ pub const TerminalInstance = struct {
             .allocator = allocator,
             .id = id,
             .process = process,
+            .onExit = .init(allocator),
             .emulator = undefined,
             .cols = options.cols,
             .rows = options.rows,
@@ -139,6 +141,7 @@ pub const TerminalInstance = struct {
     }
 
     pub fn deinit(self: *TerminalInstance) void {
+        self.onExit.deinit();
         self.emulator.deinit();
         self.process.deinit();
         self.labels.deinit(self.allocator);
@@ -169,12 +172,19 @@ pub const TerminalInstance = struct {
             self.emulator.feed(buffer[0..n]);
             got = true;
         }
-        if (self.process.pollExit()) |result| {
-            self.exit = result;
-            self.process_state = .killed_by_process;
-            self.process.closeMaster();
-        }
         return got;
+    }
+
+    /// Port of _onProcessExit: flush xterm data, record the status, then fire
+    /// onExit while the instance and its emulator are still accessible.
+    pub fn onProcessExit(self: *TerminalInstance) void {
+        if (self.exit != null) return;
+        const result = self.process.reap();
+        _ = self.feedOutput() catch false;
+        self.exit = result;
+        self.process_state = .killed_by_process;
+        self.process.closeMaster();
+        self.onExit.fire(result) catch |err| std.log.err("Terminal exit listener failed: {s}", .{@errorName(err)});
     }
 
     pub fn writeInput(self: *TerminalInstance, bytes: []const u8) void {
@@ -402,6 +412,7 @@ test "TerminalLabelComputer: process/cwd/workspace templates" {
         .allocator = allocator,
         .id = 1,
         .process = undefined,
+        .onExit = .init(allocator),
         .emulator = undefined,
         .cols = 80,
         .rows = 24,

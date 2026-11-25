@@ -265,7 +265,8 @@ The TUI has a bottom terminal panel backed by a real POSIX pty and the
 (pinned in `build.zig.zon`). It is the terminal counterpart of VS Code's
 xterm.js instance: VS Code's portable profile/environment/title/service code is
 ported under `src/vs/{platform,workbench}/.../terminal/`, the pty replaces
-node-pty, and libghostty-vt replaces xterm.js. No upstream files are modified.
+node-pty, and libghostty-vt replaces xterm.js. Process exit wakes the host while
+idle. The terminal flushes its last output before notifying listeners and closing its tab.
 
 | Action | Shortcut |
 | --- | --- |

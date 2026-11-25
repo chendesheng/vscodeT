@@ -747,12 +747,9 @@ pub fn main(init: std.process.Init) !void {
         if (workbench.backgroundTokenizationPending()) timeout = @min(timeout, 4);
         if (workbench.hasLatencySensitiveReads()) timeout = @min(timeout, 4);
 
-        workbench.flushTerminals();
-        if (workbench.hasPendingTerminalWrites()) timeout = @min(timeout, 20);
         timeout = restore_timer.nextTimeout(timeout);
         const polled = try terminal_host.wait(if (needs_render) 0 else timeout);
         if (polled.redraw) needs_render = true;
-        if (builtin.os.tag != .windows and workbench.pollTerminalExits()) needs_render = true;
         const ready = polled.input or terminal_host.hasBufferedInput();
         try restore_timer.dispatch(!ready and !needs_render);
         const resized = try terminal_host.handleResize();

@@ -278,17 +278,4 @@ pub const TerminalGroup = struct {
             (if (self.active == current.first) current.end - 1 else self.active - 1);
         return self.setActive(next_index);
     }
-
-    /// Keeps the active index in range after the last terminal exits.
-    pub fn pruneDead(self: *TerminalGroup) void {
-        var index: usize = 0;
-        while (index < self.instances.items.len) {
-            const instance = self.instances.items[index];
-            if (instance.exit != null) {
-                self.remove(index);
-                continue;
-            }
-            index += 1;
-        }
-    }
 };

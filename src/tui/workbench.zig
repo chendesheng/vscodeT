@@ -13,6 +13,12 @@ pub const TerminalWorkbench = struct {
     output: *std.Io.Writer,
     input_buffer: std.array_list.Managed(u8),
     awaiting_continuation: bool = false,
+    watched: std.MultiArrayList(Watch) = .empty,
+
+    const Watch = struct {
+        descriptor: if (builtin.os.tag == .windows) void else std.posix.pollfd,
+        source: union(enum) { input, watcher, terminal_output: usize, terminal_exit: usize },
+    };
 
     pub fn init(workbench: *Workbench, output: *std.Io.Writer, border_probe_bytes: ?[]const u8, image_probe_bytes: ?[]const u8) !TerminalWorkbench {
         var buffer = try std.array_list.Managed(u8).initCapacity(workbench.allocator, 4096);
@@ -33,6 +39,7 @@ pub const TerminalWorkbench = struct {
 
     pub fn deinit(self: *TerminalWorkbench) void {
         self.workbench.frame_scheduler = null;
+        self.watched.deinit(self.workbench.allocator);
         self.input_buffer.deinit();
     }
 
@@ -52,40 +59,60 @@ pub const TerminalWorkbench = struct {
                 if (workbench.pollFileWatcher(time_compat.milliTimestamp())) result.redraw = true;
             }
         } else {
-            var extra_fds: [tui.max_poll_fds]std.posix.fd_t = undefined;
-            var extra_ready: [tui.max_poll_fds]bool = undefined;
-            var terminal_indices: [tui.max_poll_fds]usize = undefined;
-            var count: usize = 0;
-            var has_watcher = false;
-            if (workbench.fileWatcherFd()) |fd| {
-                extra_fds[count] = fd;
-                has_watcher = true;
-                count += 1;
-            }
-            var terminal_count: usize = 0;
-            for (0..workbench.terminalCount()) |index| {
-                const fd = workbench.terminalFd(index) orelse continue;
-                if (count >= tui.max_poll_fds) break;
-                extra_fds[count] = fd;
-                terminal_indices[terminal_count] = index;
-                terminal_count += 1;
-                count += 1;
-            }
-            result.input = try tui.pollInputWithFds(
-                extra_fds[0..count],
-                extra_ready[0..count],
-                timeout,
-            );
-            if (has_watcher and extra_ready[0]) {
-                if (workbench.pollFileWatcher(time_compat.milliTimestamp())) result.redraw = true;
-            }
-            const terminal_offset: usize = if (has_watcher) 1 else 0;
-            for (0..terminal_count) |index| {
-                if (!extra_ready[terminal_offset + index]) continue;
-                if (workbench.onTerminalReady(terminal_indices[index])) result.redraw = true;
-            }
+            try self.waitPosix(timeout, &result);
         }
         return result;
+    }
+
+    fn waitPosix(self: *TerminalWorkbench, timeout: i32, result: *Readiness) !void {
+        const posix = std.posix;
+        const workbench = self.workbench;
+        self.watched.len = 0;
+        try self.watch(posix.STDIN_FILENO, posix.POLL.IN, .input);
+        if (workbench.fileWatcherFd()) |fd| try self.watch(fd, posix.POLL.IN, .watcher);
+        if (workbench.terminal_service) |service| {
+            for (0..service.instanceCount()) |index| {
+                const instance = service.instanceAt(index).?;
+                if (instance.fd()) |fd| {
+                    const events: i16 = if (instance.hasPendingWrite()) posix.POLL.IN | posix.POLL.OUT else posix.POLL.IN;
+                    try self.watch(fd, events, .{ .terminal_output = instance.id });
+                }
+                try self.watch(instance.process.exit_fd, posix.POLL.IN, .{ .terminal_exit = instance.id });
+            }
+        }
+        const descriptors = self.watched.items(.descriptor);
+        if (try posix.poll(descriptors, timeout) == 0) return;
+        for (descriptors, self.watched.items(.source)) |descriptor, source| {
+            if (descriptor.revents == 0) continue;
+            switch (source) {
+                .input => result.input = true,
+                .watcher => if (workbench.pollFileWatcher(time_compat.milliTimestamp())) {
+                    result.redraw = true;
+                },
+                .terminal_output => |id| {
+                    const service = workbench.terminal_service orelse continue;
+                    const instance = service.getInstanceFromId(id) orelse continue;
+                    if (descriptor.revents & posix.POLL.OUT != 0) instance.flushInput();
+                    if (descriptor.revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR) != 0) {
+                        if (try instance.feedOutput()) result.redraw = true;
+                    }
+                },
+                .terminal_exit => |id| {
+                    const service = workbench.terminal_service orelse continue;
+                    const instance = service.getInstanceFromId(id) orelse continue;
+                    instance.onProcessExit();
+                    if (service.getInstanceFromId(id)) |exited| try workbench.disposeExitedTerminal(exited);
+                    result.redraw = true;
+                },
+            }
+        }
+    }
+
+    fn watch(self: *TerminalWorkbench, fd: std.posix.fd_t, events: i16, source: @FieldType(Watch, "source")) !void {
+        try self.watched.append(self.workbench.allocator, .{
+            .descriptor = .{ .fd = fd, .events = events, .revents = 0 },
+            .source = source,
+        });
     }
 
     pub fn handleResize(self: *TerminalWorkbench) !bool {

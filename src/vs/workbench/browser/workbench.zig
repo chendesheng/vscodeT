@@ -3789,63 +3789,18 @@ pub const Workbench = struct {
         return service.instanceCount();
     }
 
-    pub fn terminalFd(self: *const Workbench, index: usize) ?std.posix.fd_t {
-        const service = self.terminal_service orelse return null;
-        const instance = service.instanceAt(index) orelse return null;
-        return instance.fd();
-    }
-
-    pub fn onTerminalReady(self: *Workbench, index: usize) bool {
-        const service = self.terminal_service orelse return false;
-        const instance = service.instanceAt(index) orelse return false;
-        const changed = instance.feedOutput() catch false;
-        if (instance.exit != null) return true;
-        return changed;
-    }
-
-    pub fn flushTerminals(self: *Workbench) void {
+    pub fn disposeExitedTerminal(self: *Workbench, instance: *terminal_service_mod.TerminalInstance) !void {
         const service = self.terminal_service orelse return;
-        for (0..service.instanceCount()) |index| service.instanceAt(index).?.flushInput();
-    }
-
-    pub fn hasPendingTerminalWrites(self: *const Workbench) bool {
-        const service = self.terminal_service orelse return false;
-        for (0..service.instanceCount()) |index| {
-            if (service.instanceAt(index).?.hasPendingWrite()) return true;
+        const exit = instance.exit orelse return;
+        reportTerminalExit(exit);
+        for (service.group.instances.items, 0..) |candidate, index| {
+            if (candidate == instance) return self.killPanelTerminal(index);
         }
-        return false;
-    }
-
-    pub fn pollTerminalExits(self: *Workbench) bool {
-        const service = self.terminal_service orelse return false;
-        var changed = service.pollExits();
-        // Reap both hosts after dispatching readiness for this poll batch, so
-        // removing an instance cannot shift the indices of queued readiness.
-        var index = service.editor.instances.items.len;
-        while (index > 0) {
-            index -= 1;
-            const instance = service.editor.instances.items[index];
-            const exit = instance.exit orelse continue;
-            for (self.part.group_views.items) |pane| {
-                for (pane.tabs.items) |tab| {
-                    if (tab.terminalInstance() != instance) continue;
-                    self.performCloseTab(pane, tab) catch {};
-                    reportTerminalExit(exit);
-                    changed = true;
-                    break;
-                } else continue;
-                break;
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.terminalInstance() == instance) return self.performCloseTab(pane, tab);
             }
         }
-        index = service.count();
-        while (index > 0) {
-            index -= 1;
-            const exit = service.at(index).?.exit orelse continue;
-            self.killPanelTerminal(index) catch {};
-            reportTerminalExit(exit);
-            changed = true;
-        }
-        return changed;
     }
 
     fn reportTerminalExit(exit: @import("../../platform/terminal/node/pty.zig").Exit) void {

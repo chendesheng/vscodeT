@@ -6378,6 +6378,57 @@ test "Workbench: terminal splits share one group and preserve panel geometry on 
     try std.testing.expectEqual(first_instance, service.active().?);
 }
 
+test "terminal host flushes final output and fires one exit before removing panel and editor instances" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    const Exit = @import("../vs/platform/terminal/node/pty.zig").Exit;
+    const Observer = struct {
+        service: *TerminalService,
+        instance: *terminal_service_mod.TerminalInstance,
+        count: usize = 0,
+        code: ?i32 = null,
+        saw_final_output: bool = false,
+        still_registered: bool = false,
+
+        fn onExit(exit: Exit, self: *@This()) !void {
+            self.count += 1;
+            self.code = exit.code;
+            self.saw_final_output = std.mem.eql(u8, self.instance.sequence orelse "", "last-output");
+            self.still_registered = self.service.getInstanceFromId(self.instance.id) == self.instance;
+        }
+    };
+    const workbench = try Workbench.init(std.testing.allocator, std.testing.io, &.{}, 80, 24);
+    defer workbench.deinit();
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var host = try @import("workbench.zig").TerminalWorkbench.init(workbench, &output.writer, null, null);
+    defer host.deinit();
+    const script = "read line; printf '\\033]2;last-output\\007'; exit ";
+    const editor = workbench.launchTerminalProcess("editor", "/bin/sh", &.{ "-c", script ++ "17" }, null) catch |err| switch (err) {
+        error.PtyOpenFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try workbench.commands.execute(terminal_ids.move_to_editor);
+    const panel = try workbench.launchTerminalProcess("panel", "/bin/sh", &.{ "-c", script ++ "0" }, null);
+    const service = workbench.terminal_service.?;
+    try std.testing.expectEqual(@as(usize, 1), service.editor.instances.items.len);
+    var editor_exit = Observer{ .service = service, .instance = editor };
+    var panel_exit = Observer{ .service = service, .instance = panel };
+    try editor.onExit.event(&editor_exit, Observer.onExit);
+    try panel.onExit.event(&panel_exit, Observer.onExit);
+    editor.writeInput("\n");
+    panel.writeInput("\n");
+    const deadline = time_compat.milliTimestamp() + 5000;
+    while (workbench.terminalCount() != 0 and time_compat.milliTimestamp() < deadline) _ = try host.wait(1000);
+    try std.testing.expectEqual(@as(usize, 0), workbench.terminalCount());
+    try std.testing.expectEqual(@as(?i32, 17), editor_exit.code);
+    try std.testing.expectEqual(@as(?i32, 0), panel_exit.code);
+    for ([_]Observer{ editor_exit, panel_exit }) |observer| {
+        try std.testing.expectEqual(@as(usize, 1), observer.count);
+        try std.testing.expect(observer.saw_final_output);
+        try std.testing.expect(observer.still_registered);
+    }
+}
+
 test "Workbench: terminal editor moves the live instance between hosts and closes it once" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;

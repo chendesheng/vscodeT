@@ -212,26 +212,6 @@ pub const TerminalService = struct {
         return self.editor.instances.items[editor_index];
     }
 
-    /// Reaps instances whose PTY closed, then drains their pending output
-    /// before the workbench removes them from their host.
-    pub fn pollExits(self: *TerminalService) bool {
-        var changed = false;
-        for (0..self.instanceCount()) |index| {
-            const instance = self.instanceAt(index).?;
-            if (instance.exit == null) {
-                if (instance.process.pollExit()) |result| {
-                    _ = instance.feedOutput() catch {
-                        instance.exit = result;
-                        instance.process_state = .killed_by_process;
-                        instance.process.closeMaster();
-                    };
-                    changed = true;
-                }
-            }
-        }
-        return changed;
-    }
-
     fn buildEnvironment(self: *TerminalService, scratch: Allocator) ![]pty.EnvVar {
         var env: std.array_list.Managed(pty.EnvVar) = .init(scratch);
         try env.append(.{ .key = "TERM", .value = "xterm-256color" });

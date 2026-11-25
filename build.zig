@@ -75,7 +75,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("ghostty-vt", ghostty_vt);
         addOnigLibraryPath(b, exe.root_module, onig_paths);
         exe.root_module.linkSystemLibrary("onig", .{});
-        linkPtyLibraries(exe.root_module, target);
+        linkPtyLibraries(b, exe.root_module, target);
         linkMacFrameworks(exe.root_module, target, enable_fsevents);
 
         // This declares intent for the executable to be installed into the
@@ -221,7 +221,10 @@ fn setupExtensionHost(b: *std.Build) void {
     json_step.dependOn(&install_json.step);
 }
 
-fn linkPtyLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+fn linkPtyLibraries(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    if (target.result.os.tag != .windows) {
+        module.addCSourceFile(.{ .file = b.path("src/vs/platform/terminal/node/processExit.c") });
+    }
     // glibc keeps forkpty in libutil; macOS exposes it through libSystem and
     // musl includes it in libc.
     if (target.result.os.tag == .linux and target.result.abi == .gnu) {
@@ -807,7 +810,7 @@ fn createTestRootModule(
     module.addImport("ghostty-vt", ghostty_vt);
     addOnigLibraryPath(b, module, onig_paths);
     module.linkSystemLibrary("onig", .{});
-    linkPtyLibraries(module, target);
+    linkPtyLibraries(b, module, target);
 
     const build_options = b.addOptions();
     build_options.addOption(bool, "bench", bench);
@@ -908,7 +911,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const enable_fsevents = fseventsEnabled(b, target);
     terminal_options.addOption(bool, "fsevents", enable_fsevents);
     terminal_tests.root_module.addOptions("build_options", terminal_options);
-    linkPtyLibraries(terminal_tests.root_module, target);
+    linkPtyLibraries(b, terminal_tests.root_module, target);
     linkMacFrameworks(terminal_tests.root_module, target, enable_fsevents);
     const run_terminal_tests = b.addRunArtifact(terminal_tests);
     const terminal_test_step = b.step("test-terminal", "Run integrated-terminal tests");
