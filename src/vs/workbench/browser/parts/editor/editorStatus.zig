@@ -100,6 +100,32 @@ pub const EditorStatus = struct {
     pending_indent_insert_spaces: bool = true,
     pending_indent_display_only: bool = false,
 
+    const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
+    const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
+    pub fn actionDescriptors(self: *EditorStatus) [5]Action2 {
+        return .{
+            self.action(goto_line_command, "Go to Line/Column...", "Go", commandGotoLine),
+            self.action(change_indentation_command, "Change Indentation", "Editor", commandChangeIndentation),
+            self.action(change_encoding_command, "Change File Encoding", "Editor", commandChangeEncoding),
+            self.action(change_eol_command, "Change End of Line Sequence", "Editor", commandChangeEOL),
+            self.action(change_language_mode_command, "Change Language Mode", "Editor", commandChangeLanguageMode),
+        };
+    }
+
+    fn action(self: *EditorStatus, id: []const u8, title: []const u8, category: []const u8, comptime callback: fn (*anyopaque) anyerror!void) Action2 {
+        return .{
+            .command = .{ .id = id, .title = title, .category = category },
+            .f1 = true,
+            .context = self,
+            .run_fn = struct {
+                fn run(context: *anyopaque, _: ServicesAccessor) !void {
+                    try callback(context);
+                }
+            }.run,
+        };
+    }
+
     pub fn init(
         allocator: Allocator,
         statusbar: *StatusbarService,

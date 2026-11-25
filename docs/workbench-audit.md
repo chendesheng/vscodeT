@@ -69,8 +69,12 @@ IConfigurationService binding across native source replacements. The ported
 ConfigAwareContextValuesContainer invalidates cached config.* keys on
 configuration events, so Zen tab actions use upstream-style context expressions
 and the layout action owner instead of native availability callbacks.
+Editor status and hover action registrations are owned by the editor status
+and hover contributions. Hover resolves the mounted ContentHoverController.
+Diff commands use IDiffEditorCommandsService; Git-specific snapshot refresh
+is resolved by the Git contribution.
 
-The portable browser Workbench is 270 lines and has no inline tests. The native TerminalWorkbench window is 5,704 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+The portable browser Workbench is 270 lines and has no inline tests. The native TerminalWorkbench window is 5,626 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

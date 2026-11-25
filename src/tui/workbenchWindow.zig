@@ -180,8 +180,7 @@ const LanguageFeaturesService = @import("../vs/editor/common/services/languageFe
 const languages = @import("../vs/editor/common/languages.zig");
 const go_to_commands = @import("../vs/editor/contrib/gotoSymbol/browser/goToCommands.zig");
 const goto_symbol_quick_access = @import("../vs/workbench/contrib/codeEditor/browser/quickaccess/gotoSymbolQuickAccess.zig");
-const hover_operation = @import("../vs/editor/contrib/hover/browser/hoverOperation.zig");
-const hover_types = @import("../vs/editor/contrib/hover/browser/hoverTypes.zig");
+const hover_actions = @import("../vs/editor/contrib/hover/browser/hoverActions.zig");
 const sticky_actions = @import("../vs/editor/contrib/stickyScroll/browser/stickyScrollActions.zig");
 const MarkdownPreviewManager = @import("../extensions/markdown-language-features/src/preview/previewManager.zig").MarkdownPreviewManager;
 const ImagePreviewEditorInput = @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
@@ -353,6 +352,8 @@ pub const TerminalWorkbench = struct {
     views_api: views_service.IViewsService,
     code_editor_api: code_editor_service.ICodeEditorService,
     editors: editor_service_mod.EditorService,
+    diff_commands: @import("../vs/workbench/browser/parts/editor/diffEditorCommandsService.zig").DiffEditorCommandsService,
+    diff_commands_api: @import("../vs/workbench/browser/parts/editor/diffEditorCommandsService.zig").IDiffEditorCommandsService,
     editor_api: @import("../vs/workbench/services/editor/common/editorService.zig").IEditorService,
     preferences: @import("../vs/workbench/services/preferences/browser/preferencesService.zig").PreferencesService,
     preferences_api: @import("../vs/workbench/services/preferences/common/preferences.zig").IPreferencesService,
@@ -1116,6 +1117,12 @@ pub const TerminalWorkbench = struct {
         self.editors = .{ .part = self.part, .opening = &self.editor_opening };
         self.editor_api = self.editors.interface();
         _ = try self.services.set(@import("../vs/workbench/services/editor/common/editorService.zig").editor_service_id, &self.editor_api);
+        self.diff_commands = .{
+            .editor_service = &self.editors,
+            .snapshot_provider = .{ .context = &self.git_commands, .refresh = @import("../extensions/git/src/commands.zig").CommandContribution.refreshSnapshot },
+        };
+        self.diff_commands_api = self.diff_commands.interface();
+        _ = try self.services.set(@import("../vs/workbench/browser/parts/editor/diffEditorCommandsService.zig").diff_editor_commands_service_id, &self.diff_commands_api);
         self.preferences = .{ .allocator = self.allocator, .editor_service = &self.editor_api, .text_file_service = &self.text_file_service, .settings_paths = &self.user_settings_paths, .keybindings_paths = &self.user_keybindings.paths };
         self.preferences_api = self.preferences.interface();
         _ = try self.services.set(@import("../vs/workbench/services/preferences/common/preferences.zig").preferences_service_id, &self.preferences_api);
@@ -1487,17 +1494,9 @@ pub const TerminalWorkbench = struct {
 
     fn registerDefaultCommands(self: *TerminalWorkbench) !void {
         const panel_actions = @import("../vs/workbench/browser/parts/panel/panelActions.zig");
-        const status = self.editor_status.?;
         try self.commands.registerAction(self.instantiation, quick_access_mod.quick_open_action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
-        const before_group_focus = [_]commands_mod.CommandInfo{
-            .{ .id = editor_status_mod.goto_line_command, .label = "Go to Line/Column...", .category = "Go", .context = status, .run = editor_status_mod.commandGotoLine },
-            .{ .id = editor_status_mod.change_indentation_command, .label = "Change Indentation", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeIndentation },
-            .{ .id = editor_status_mod.change_encoding_command, .label = "Change File Encoding", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeEncoding },
-            .{ .id = editor_status_mod.change_eol_command, .label = "Change End of Line Sequence", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeEOL },
-            .{ .id = editor_status_mod.change_language_mode_command, .label = "Change Language Mode", .category = "Editor", .context = status, .run = editor_status_mod.commandChangeLanguageMode },
-        };
-        for (before_group_focus) |command| try self.commands.register(command);
+        for (self.editor_status.?.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/contrib/files/browser/fileCommands.zig").editor_actions) |action| try self.commands.registerAction(self.instantiation, action);
         const after_file_actions = [_]commands_mod.CommandInfo{
             .{ .id = "list.focusUp", .label = "Focus Previous Item", .category = "List", .context = self, .run = commandListFocusUp },
@@ -1571,11 +1570,8 @@ pub const TerminalWorkbench = struct {
         for (self.git_commands.remoteActions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (scm_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.git_commands.openActions()) |action| try self.commands.registerAction(self.instantiation, action);
+        for (@import("../vs/workbench/browser/parts/editor/diffEditorCommands.zig").diff_actions) |action| try self.commands.registerAction(self.instantiation, action);
         const before_search = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.compareEditor.nextChange", .label = "Go to Next Change", .category = "Diff", .context = self, .run = commandDiffNext },
-            .{ .id = "workbench.action.compareEditor.previousChange", .label = "Go to Previous Change", .category = "Diff", .context = self, .run = commandDiffPrevious },
-            .{ .id = "workbench.action.compareEditor.swapSides", .label = "Swap Sides", .category = "Diff", .context = self, .run = commandDiffSwap },
-            .{ .id = "workbench.action.compareEditor.refreshDiff", .label = "Refresh Diff", .category = "Diff", .context = self, .run = commandDiffRefresh },
             .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
             .{ .id = "workbench.action.closeSidebar", .label = "Close Primary Side Bar", .category = "View", .context = self, .run = commandCloseSidebar },
             .{ .id = "workbench.action.focusSideBar", .label = "Focus into Primary Side Bar", .category = "View", .context = self, .run = commandFocusSidebar },
@@ -1614,15 +1610,7 @@ pub const TerminalWorkbench = struct {
         self.references_view_registered = true;
         for (self.symbol_navigation.actionDescriptors()) |action| try self.commands.registerEditorAction(self.instantiation, action);
         try self.commands.registerEditorAction(self.instantiation, self.symbol_quick_access.actionDescriptor());
-        try self.commands.register(.{
-            .id = "editor.action.showHover",
-            .label = "Show or Focus Hover",
-            .description = "Show or focus the editor hover at the cursor.",
-            .category = "Editor",
-            .context = self,
-            .requires_editor = true,
-            .run = commandShowHover,
-        });
+        try self.commands.registerEditorAction(self.instantiation, hover_actions.show_or_focus_hover_action);
     }
 
     fn newContextMenu(self: *TerminalWorkbench, comptime handler: fn (*TerminalWorkbench, *MenuActionContext, []const u8) anyerror!void) !*Menu {
@@ -3535,19 +3523,7 @@ pub const TerminalWorkbench = struct {
         const tab = self.activeTab() orelse return false;
         if (tab.isDiff()) return false;
         try tab.ensureControllers();
-        const controllers = tab.controllers orelse return false;
-        if (controllers.hover.isVisible()) {
-            controllers.hover.widget().focus();
-            return true;
-        }
-        const position = tab.editor.modelCursorPosition();
-        controllers.hover.showContentHover(
-            Range.init(position.lineNumber, position.column, position.lineNumber, position.column),
-            hover_operation.HoverStartMode.immediate,
-            hover_types.HoverStartSource.keyboard,
-            false,
-        );
-        return true;
+        return hover_actions.showOrFocusHover(tab.editor, .FocusIfVisible);
     }
 
     pub fn activateIndex(self: *TerminalWorkbench, index: usize) !void {
@@ -5134,13 +5110,6 @@ fn itemIndex(id: []const u8, prefix: []const u8) ?usize {
     return std.fmt.parseInt(usize, id[prefix.len..], 10) catch null;
 }
 
-fn commandShowHover(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    _ = self.showHover() catch |err| {
-        if (self.activeTab()) |tab| tab.editor.setMessage("Hover failed: {s}", .{@errorName(err)});
-    };
-}
-
 fn hasActiveEditor(context: *anyopaque) bool {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     return self.activeTab() != null;
@@ -5283,53 +5252,6 @@ fn commandScmGraphMenu(context: *anyopaque) anyerror!void {
 
 fn runTitleMenuAction(self: *TerminalWorkbench, _: *MenuActionContext, id: []const u8) anyerror!void {
     try self.commands.execute(id);
-}
-
-/// The hover insets its content two cells on every side. Glyph borders use
-/// one of those cells, while native borders are painted on the overlay edges.
-/// The DOM root uses content-box sizing, so each dimension is four cells
-/// smaller than the surface.
-fn commandDiffNext(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    if (self.activeTab()) |tab| _ = tab.nextDiffChange();
-}
-
-fn commandDiffPrevious(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    if (self.activeTab()) |tab| _ = tab.previousDiffChange();
-}
-
-fn commandDiffSwap(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    if (self.activeTab()) |tab| tab.swapDiffSides();
-}
-
-fn commandDiffRefresh(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return;
-    const diff = tab.diff orelse return;
-    if (!isDiffRefLabel(diff.model.original_label) or !isDiffRefLabel(diff.model.modified_label)) {
-        // Commit-to-commit diffs keep display ids as labels; there is no ref to
-        // re-resolve from the workbench state, so leave them unchanged.
-        return;
-    }
-    const left = diffRefFromLabel(diff.model.original_label);
-    const right = diffRefFromLabel(diff.model.modified_label);
-    try self.openDiff(diff.model.modified_path, left, right);
-}
-
-fn isDiffRefLabel(label: []const u8) bool {
-    return std.mem.eql(u8, label, "HEAD") or
-        std.mem.eql(u8, label, "Index") or
-        std.mem.eql(u8, label, "Working Tree") or
-        std.mem.eql(u8, label, "Empty");
-}
-
-fn diffRefFromLabel(label: []const u8) DiffRef {
-    if (std.mem.eql(u8, label, "HEAD")) return .head;
-    if (std.mem.eql(u8, label, "Index")) return .index;
-    if (std.mem.eql(u8, label, "Working Tree")) return .working;
-    return .empty;
 }
 
 fn commandFocusAndSelectBreadcrumbs(context: *anyopaque) anyerror!void {

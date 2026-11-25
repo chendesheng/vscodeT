@@ -328,6 +328,22 @@ pub const CommandContribution = struct {
         self.host.report_status(self.host.context, message);
     }
 
+    /// Terminal snapshot refresh resolves the same Git refs again. Commit
+    /// labels are display IDs rather than refs and cannot be re-resolved.
+    pub fn refreshSnapshot(context: *anyopaque, path: []const u8, left_label: []const u8, right_label: []const u8) !void {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        const left = refFromLabel(left_label) orelse return;
+        const right = refFromLabel(right_label) orelse return;
+        try self.openDiff(path, left, right);
+    }
+
+    fn refFromLabel(label: []const u8) ?git_mod.DiffRef {
+        for ([_]git_mod.DiffRef{ .head, .index, .working, .empty }) |ref| {
+            if (std.mem.eql(u8, label, ref.label())) return ref;
+        }
+        return null;
+    }
+
     /// Resolve Git's original/modified resource contents, including the
     /// unsaved working editor when present, then ask the editor service to
     /// reveal or mount the diff input.

@@ -132,6 +132,7 @@ pub const ContentHoverControllerHost = struct {
 };
 
 pub const ContentHoverController = struct {
+    pub const ID = "editor.contrib.contentHover";
     allocator: Allocator,
     model: *TextModel,
     settings: HoverSettings,

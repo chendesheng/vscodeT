@@ -9150,6 +9150,8 @@ test "Editor actions resolve the same mounted contribution through getContributi
     try std.testing.expectEqual(tab.controllers.?.find, tab.editor.getContribution(Find).?);
     try std.testing.expectEqual(tab.controllers.?.sticky, tab.editor.getContribution(Sticky).?);
     try std.testing.expectEqual(tab.controllers.?.word_highlighter, tab.editor.getContribution(Words).?);
+    const Hover = @import("../vs/editor/contrib/hover/browser/contentHoverController.zig").ContentHoverController;
+    try std.testing.expectEqual(tab.controllers.?.hover, tab.editor.getContribution(Hover).?);
     try wb.commands.execute("actions.find");
     try std.testing.expect(tab.controllers.?.find.state.is_revealed);
 }
@@ -9414,4 +9416,33 @@ test "Zen tab actions derive palette preconditions from configuration context ev
     try wb.setUserSettingsPaths(&.{replacement});
     try std.testing.expectEqualStrings("single", keys.getValue(config_key).string);
     try std.testing.expect(keys.contextMatchesRules(hide.command.precondition));
+}
+
+test "Diff editor commands resolve the active snapshot pane through their service" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "file.txt", "one\ntwo\n");
+    defer allocator.free(path);
+    const window = try TestWindow.init(allocator, io, &.{}, 100, 20);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.editors.openSnapshotDiff(wb.view_factory, io, null, path, "one\ntwo\n", "ONE\ntwo\nthree\n", "commit-a", "commit-b");
+    const tab = wb.activeTab().?;
+    const widget = tab.diff.?.widget;
+    const count = widget.changeCount();
+    try std.testing.expect(count > 0);
+    const original_index = widget.current_change orelse count - 1;
+    try wb.commands.execute("workbench.action.compareEditor.nextChange");
+    try std.testing.expectEqual((original_index + 1) % count, widget.current_change.?);
+    try wb.commands.execute("workbench.action.compareEditor.previousChange");
+    try std.testing.expectEqual(original_index, widget.current_change.?);
+    const original = widget.original_editor;
+    try std.testing.expect(!widget.inline_mode);
+    try wb.commands.execute("workbench.action.compareEditor.swapSides");
+    try std.testing.expectEqual(original, widget.modified_editor);
+    // Commit labels cannot be re-resolved as Git refs; refresh is a no-op.
+    try wb.commands.execute("workbench.action.compareEditor.refreshDiff");
+    try std.testing.expectEqual(tab, wb.activeTab().?);
 }

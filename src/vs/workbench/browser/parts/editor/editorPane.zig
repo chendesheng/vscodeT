@@ -1052,6 +1052,8 @@ pub const Controllers = struct {
         try editor.registerContribution(StickyScrollController, self.sticky);
         errdefer editor.unregisterContribution(StickyScrollController, self.sticky);
         try editor.registerContribution(WordHighlighterContribution, self.word_highlighter);
+        errdefer editor.unregisterContribution(WordHighlighterContribution, self.word_highlighter);
+        try editor.registerContribution(ContentHoverController, self.hover);
         return self;
     }
 
@@ -1078,6 +1080,7 @@ pub const Controllers = struct {
         self.editor.unregisterContribution(FindController, self.find);
         self.editor.unregisterContribution(StickyScrollController, self.sticky);
         self.editor.unregisterContribution(WordHighlighterContribution, self.word_highlighter);
+        self.editor.unregisterContribution(ContentHoverController, self.hover);
         // The sink context points at this controller; detach before it dies.
         self.editor.setSearchHighlightSink(null);
         self.view.removeConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
