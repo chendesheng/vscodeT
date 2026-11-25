@@ -55,6 +55,29 @@ pub const ActivityBarPart = struct {
         self.activities.deinit();
     }
 
+    /// CompositeBar.getOverflowingComposites: the terminal rail's final cell
+    /// reserves the overflow action when not all visible activities fit.
+    pub fn showOverflowMenu(self: *ActivityBarPart, rect: ui.Rect, panes: @import("../../../services/panecomposite/browser/panecomposite.zig").IPaneCompositePartService, context_menu: @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService, anchor: @import("../../../../platform/contextview/browser/contextMenuService.zig").Anchor) !void {
+        if (!overflowVisible(self, rect)) return;
+        const shown = visibleCapacity(rect) -| 1;
+        const Menu = @import("../../../../platform/contextview/browser/contextMenuService.zig").Menu;
+        const menu = try Menu.init(self.allocator, panes, struct {
+            fn run(service: *@TypeOf(panes), id: []const u8) !void {
+                _ = try service.openPaneComposite(id, .sidebar, true);
+            }
+        }.run);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
+        var visible_index: usize = 0;
+        for (self.activities.items) |activity| {
+            if (!activity.visible) continue;
+            defer visible_index += 1;
+            if (visible_index < shown) continue;
+            try menu.add(try arena.dupe(u8, activity.id), .{ .label = try arena.dupe(u8, activity.name), .type = .radio, .checked = std.mem.eql(u8, self.active_id orelse "", activity.id) });
+        }
+        try context_menu.showContextMenu(menu, anchor);
+    }
+
     pub fn width(self: *const ActivityBarPart) usize {
         return if (self.compact) compact_width else default_width;
     }

@@ -1145,7 +1145,7 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
                         if (tab.terminalInstance()) |instance| {
                             self.service.activateGroup(pane.group);
                             if (event.x == hit.start + 1) {
-                                self.showTerminalProfileMenu(pane.group.id, event) catch {};
+                                self.terminal_action_services.showMenu(.{ .profiles = pane.group.id }, self.context_menu_api, .mouse(event)) catch {};
                             } else if (event.mods.alt) {
                                 self.openTerminalEditorToSide(instance) catch {};
                             } else {
@@ -1445,13 +1445,13 @@ fn dispatchTerminalTabbedViewAction(context: *anyopaque, action: terminal_panel.
             self.movePanelInstanceToEditor(service, pane, source) catch {};
         },
         .kill_panel => |index| self.killPanelTerminal(index) catch {},
-        .tab_menu => |index| self.showTerminalTabMenu(index, event) catch {},
+        .tab_menu => |index| self.terminal_action_services.showMenu(.{ .tab = index }, self.context_menu_api, .mouse(event)) catch {},
         .new_terminal => self.newPanelTerminal() catch {},
-        .profiles => self.showTerminalProfileMenu(null, event) catch {},
-        .terminal_picker => self.showTerminalSwitchMenu(event) catch {},
+        .profiles => self.terminal_action_services.showMenu(.{ .profiles = null }, self.context_menu_api, .mouse(event)) catch {},
+        .terminal_picker => self.terminal_action_services.showMenu(.switch_instance, self.context_menu_api, .mouse(event)) catch {},
         .split_tabs => |index| self.splitTerminalTabs(index) catch {},
         .kill_tabs => |index| self.killTerminalTabs(index) catch {},
-        .tab_list_menu => self.showTerminalTabListMenu(event) catch {},
+        .tab_list_menu => self.terminal_action_services.showMenu(.tab_list, self.context_menu_api, .mouse(event)) catch {},
         .content => |pane| return routeTerminalMouse(self, self.terminal_service.?.at(pane.index).?, pane.rect, event),
     }
     return true;
@@ -1901,7 +1901,7 @@ pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         self.pointer = if (hit != null) .pointer else .default;
         if (event.kind == .down) {
             if (activity_bar_mod.overflowHitAt(&self.activity_bar_part, event.x, event.y, activity_rect)) {
-                self.showActivityOverflowMenu(event) catch {};
+                self.activity_bar_part.showOverflowMenu(self.geometry().activityRect(), self.pane_composite_api, self.context_menu_api, .mouse(event)) catch {};
             } else if (hit) |index| {
                 self.showActivity(index) catch {};
             }

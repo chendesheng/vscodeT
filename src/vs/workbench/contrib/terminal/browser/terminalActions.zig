@@ -127,73 +127,6 @@ const RenameState = struct {
     }
 };
 
-pub const MenuActionHost = struct {
-    context: *anyopaque,
-    part: *EditorPart,
-    view_factory: EditorViewFactory,
-    quick_input: *quick_input.QuickInputService,
-    set_user_configuration: *const fn (*anyopaque, []const u8, std.json.Value) anyerror!void,
-    reveal_panel: *const fn (*anyopaque) anyerror!void,
-    reveal_editor: *const fn (*anyopaque, bool) anyerror!void,
-    panel_instances_removed: *const fn (*anyopaque) anyerror!void,
-};
-
-/// The native menus encode the upstream action's instance/profile arguments
-/// in their item IDs. Resolve them and execute the terminal service action.
-pub fn runMenuAction(service: *TerminalService, host: MenuActionHost, action_id: []const u8) !void {
-    const separator = std.mem.indexOfScalar(u8, action_id, ':') orelse return;
-    const action = action_id[0..separator];
-    const argument = action_id[separator + 1 ..];
-    if (std.mem.eql(u8, action, "tabs")) {
-        if (std.mem.eql(u8, argument, "hide")) {
-            try host.set_user_configuration(host.context, "terminal.integrated.tabs.enabled", .{ .bool = false });
-        } else {
-            try host.set_user_configuration(host.context, "terminal.integrated.tabs.location", .{ .string = argument });
-        }
-        return;
-    }
-    if (std.mem.eql(u8, action, "editor-profile")) {
-        var segments = std.mem.splitScalar(u8, argument, ':');
-        const group_id = std.fmt.parseUnsigned(GroupIdentifier, segments.next() orelse return, 10) catch return;
-        const index = std.fmt.parseUnsigned(usize, segments.next() orelse return, 10) catch return;
-        if (index >= service.profiles.items.len) return;
-        const group = host.part.service.getGroup(group_id) orelse return;
-        const pane = host.part.viewForGroup(group) orelse return;
-        _ = try service.createEditorWithProfile(host.view_factory, pane, service.profiles.items[index], false);
-        return host.reveal_editor(host.context, false);
-    }
-    const id = std.fmt.parseUnsigned(usize, argument, 10) catch return;
-    if (std.mem.eql(u8, action, "profile")) {
-        if (id >= service.profiles.items.len) return;
-        _ = try service.createWithProfile(service.profiles.items[id]);
-        return host.reveal_panel(host.context);
-    }
-    for (0..service.count()) |index| {
-        const instance = service.at(index).?;
-        if (instance.id != id) continue;
-        if (std.mem.eql(u8, action, "move")) {
-            const pane = host.part.activeView() orelse return error.GroupPaneMissing;
-            try service.moveToEditor(host.view_factory, pane, index);
-            return host.reveal_editor(host.context, true);
-        }
-        if (std.mem.eql(u8, action, "rename")) return showRenamePicker(service, host.quick_input, instance);
-        if (std.mem.eql(u8, action, "kill")) {
-            service.killSelectedTabs(index);
-            return host.panel_instances_removed(host.context);
-        }
-        if (std.mem.eql(u8, action, "split")) {
-            try service.splitSelectedTabs(index);
-        } else if (std.mem.eql(u8, action, "unsplit")) {
-            try service.group.unsplitInstance(index);
-        } else if (std.mem.eql(u8, action, "join")) {
-            try service.joinSelectedTabs();
-        } else {
-            _ = service.setActive(index);
-        }
-        return host.reveal_panel(host.context);
-    }
-}
-
 const actions = @import("../../../../platform/actions/common/actions.zig");
 const instantiation = @import("../../../../platform/instantiation/common/instantiation.zig");
 const contextkey = @import("../../../../platform/contextkey/common/contextkey.zig");
@@ -216,6 +149,7 @@ pub const TerminalActionServices = struct {
     context: *anyopaque,
     slot: *?*TerminalService,
     configuration: *?*ConfigurationService,
+    configuration_api: @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService,
     part: *EditorPart,
     factory: EditorViewFactory,
     tabbed_view: *TerminalTabbedView,
@@ -236,75 +170,83 @@ pub const TerminalActionServices = struct {
     layout_service: @import("../../../services/layout/browser/layoutService.zig").IWorkbenchLayoutService,
     panel_instances_removed: *const fn (*anyopaque, *TerminalService) anyerror!void,
 
-    /// Explicit Zig composition adapter: only these service and view hooks
-    /// cross the native window boundary. Action handlers never receive its type.
-    pub fn bind(host: anytype) TerminalActionServices {
-        const Host = @TypeOf(host.*);
-        const Adapter = struct {
-            fn get(context: *anyopaque) *Host {
-                return @ptrCast(@alignCast(context));
-            }
-            fn ensureService(context: *anyopaque) !*TerminalService {
-                return get(context).ensureTerminalService();
-            }
-            fn revealPanel(context: *anyopaque) !void {
-                try get(context).showTerminal();
-            }
-            fn revealEditor(context: *anyopaque, moved: bool) !void {
-                try get(context).revealTerminalEditorMoved(moved);
-            }
-            fn hidePanel(context: *anyopaque) void {
-                get(context).hidePanel();
-            }
-            fn panelActive(context: *anyopaque) bool {
-                return get(context).terminalPanelActive();
-            }
-            fn panelRect(context: *anyopaque) ui.Rect {
-                return get(context).geometry().panelRect();
-            }
-            fn panelFocused(context: *anyopaque) bool {
-                return get(context).focus == .terminal;
-            }
-            fn editorFocused(context: *anyopaque) bool {
-                return get(context).focus == .editor;
-            }
-            fn focusedTerminal(context: *anyopaque) ?*TerminalInstance {
-                return get(context).focusedTerminal();
-            }
-            fn focusPanel(context: *anyopaque) void {
-                get(context).setFocus(.terminal);
-            }
-            fn layout(context: *anyopaque) void {
-                get(context).layoutAll();
-            }
-            fn panelInstancesRemoved(context: *anyopaque, service: *TerminalService) !void {
-                try get(context).onPanelTerminalsRemoved(service);
+    pub const MenuKind = union(enum) { switch_instance, profiles: ?GroupIdentifier, tab: usize, tab_list };
+
+    /// Terminal menu actions and captured arguments belong to the terminal
+    /// contribution; the host supplies only the context-menu anchor.
+    pub fn showMenu(self: *TerminalActionServices, kind: MenuKind, context_menu: @import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService, anchor: @import("../../../../platform/contextview/browser/contextMenuService.zig").Anchor) !void {
+        const service = self.slot.* orelse return;
+        const Context = struct {
+            owner: *TerminalActionServices,
+            fn run(context: *@This(), id: []const u8) !void {
+                try context.owner.runMenuAction(id);
             }
         };
-        return .{
-            .context = host,
-            .slot = &host.terminal_service,
-            .configuration = &host.configuration,
-            .part = host.part,
-            .factory = host.view_factory,
-            .tabbed_view = &host.terminal_tabbed_view,
-            .input = host.quick_access.inputService(),
-            .dialogs = host.dialog_api,
-            .close_host = host.closeEditorHost(),
-            .ensure_service = Adapter.ensureService,
-            .reveal_panel = Adapter.revealPanel,
-            .reveal_editor = Adapter.revealEditor,
-            .hide_panel = Adapter.hidePanel,
-            .panel_active = Adapter.panelActive,
-            .panel_rect = Adapter.panelRect,
-            .panel_focused = Adapter.panelFocused,
-            .editor_focused = Adapter.editorFocused,
-            .focused_terminal = Adapter.focusedTerminal,
-            .focus_panel = Adapter.focusPanel,
-            .layout = Adapter.layout,
-            .layout_service = host.layout_api,
-            .panel_instances_removed = Adapter.panelInstancesRemoved,
-        };
+        const menu = try Menu.init(service.allocator, Context{ .owner = self }, Context.run);
+        errdefer menu.deinit();
+        switch (kind) {
+            .switch_instance => try appendSwitchMenu(service, menu),
+            .profiles => |group| try appendProfileMenu(service, menu, group),
+            .tab => |index| try appendTabMenu(service, menu, index),
+            .tab_list => try appendTabListActions(Config.load(self.configuration.*), menu),
+        }
+        try context_menu.showContextMenu(menu, anchor);
+    }
+
+    pub fn runMenuAction(self: *TerminalActionServices, action_id: []const u8) !void {
+        const service = self.slot.* orelse return;
+        const separator = std.mem.indexOfScalar(u8, action_id, ':') orelse return;
+        const action = action_id[0..separator];
+        const argument = action_id[separator + 1 ..];
+        if (std.mem.eql(u8, action, "tabs")) {
+            if (std.mem.eql(u8, argument, "hide")) {
+                try self.configuration_api.updateValue("terminal.integrated.tabs.enabled", .{ .bool = false }, .USER);
+            } else {
+                try self.configuration_api.updateValue("terminal.integrated.tabs.location", .{ .string = argument }, .USER);
+            }
+            self.layout(self.context);
+            return;
+        }
+        if (std.mem.eql(u8, action, "editor-profile")) {
+            var segments = std.mem.splitScalar(u8, argument, ':');
+            const group_id = std.fmt.parseUnsigned(GroupIdentifier, segments.next() orelse return, 10) catch return;
+            const index = std.fmt.parseUnsigned(usize, segments.next() orelse return, 10) catch return;
+            if (index >= service.profiles.items.len) return;
+            const group = self.part.service.getGroup(group_id) orelse return;
+            const pane = self.part.viewForGroup(group) orelse return;
+            _ = try service.createEditorWithProfile(self.factory, pane, service.profiles.items[index], false);
+            return self.reveal_editor(self.context, false);
+        }
+        const id = std.fmt.parseUnsigned(usize, argument, 10) catch return;
+        if (std.mem.eql(u8, action, "profile")) {
+            if (id >= service.profiles.items.len) return;
+            _ = try service.createWithProfile(service.profiles.items[id]);
+            return self.reveal_panel(self.context);
+        }
+        for (0..service.count()) |index| {
+            const instance = service.at(index).?;
+            if (instance.id != id) continue;
+            if (std.mem.eql(u8, action, "move")) {
+                const pane = self.part.activeView() orelse return error.GroupPaneMissing;
+                try service.moveToEditor(self.factory, pane, index);
+                return self.reveal_editor(self.context, true);
+            }
+            if (std.mem.eql(u8, action, "rename")) return showRenamePicker(service, self.input, instance);
+            if (std.mem.eql(u8, action, "kill")) {
+                service.killSelectedTabs(index);
+                return self.panel_instances_removed(self.context, service);
+            }
+            if (std.mem.eql(u8, action, "split")) {
+                try service.splitSelectedTabs(index);
+            } else if (std.mem.eql(u8, action, "unsplit")) {
+                try service.group.unsplitInstance(index);
+            } else if (std.mem.eql(u8, action, "join")) {
+                try service.joinSelectedTabs();
+            } else {
+                _ = service.setActive(index);
+            }
+            return self.reveal_panel(self.context);
+        }
     }
 
     pub fn launchProcess(self: *TerminalActionServices, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !*TerminalInstance {

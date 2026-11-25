@@ -260,9 +260,6 @@ const text_files = @import("../vs/workbench/services/textfile/common/textFileSer
 const context_menus = @import("../vs/platform/contextview/browser/contextMenuService.zig");
 const Menu = context_menus.Menu;
 const MenuAnchor = context_menus.Anchor;
-const MenuActionContext = struct {
-    workbench: *TerminalWorkbench,
-};
 
 pub const IWorkbenchOptions = workbench_core.IWorkbenchOptions;
 
@@ -1122,6 +1119,76 @@ pub const TerminalWorkbench = struct {
         if (self.media_status) |status| try status.bindActiveEditor(editor_service);
     }
 
+    fn makeTerminalActionServices(host: *TerminalWorkbench) terminal_actions.TerminalActionServices {
+        const Host = TerminalWorkbench;
+        const Adapter = struct {
+            fn get(context: *anyopaque) *Host {
+                return @ptrCast(@alignCast(context));
+            }
+            fn ensureService(context: *anyopaque) !*TerminalService {
+                return get(context).ensureTerminalService();
+            }
+            fn revealPanel(context: *anyopaque) !void {
+                try get(context).showTerminal();
+            }
+            fn revealEditor(context: *anyopaque, moved: bool) !void {
+                try get(context).revealTerminalEditorMoved(moved);
+            }
+            fn hidePanel(context: *anyopaque) void {
+                get(context).hidePanel();
+            }
+            fn panelActive(context: *anyopaque) bool {
+                return get(context).terminalPanelActive();
+            }
+            fn panelRect(context: *anyopaque) ui.Rect {
+                return get(context).geometry().panelRect();
+            }
+            fn panelFocused(context: *anyopaque) bool {
+                return get(context).focus == .terminal;
+            }
+            fn editorFocused(context: *anyopaque) bool {
+                return get(context).focus == .editor;
+            }
+            fn focusedTerminal(context: *anyopaque) ?*terminal_service_mod.TerminalInstance {
+                return get(context).focusedTerminal();
+            }
+            fn focusPanel(context: *anyopaque) void {
+                get(context).setFocus(.terminal);
+            }
+            fn layout(context: *anyopaque) void {
+                get(context).layoutAll();
+            }
+            fn panelInstancesRemoved(context: *anyopaque, service: *TerminalService) !void {
+                try get(context).onPanelTerminalsRemoved(service);
+            }
+        };
+        return .{
+            .context = host,
+            .slot = &host.terminal_service,
+            .configuration = &host.configuration,
+            .configuration_api = host.configuration_api,
+            .part = host.part,
+            .factory = host.view_factory,
+            .tabbed_view = &host.terminal_tabbed_view,
+            .input = host.quick_access.inputService(),
+            .dialogs = host.dialog_api,
+            .close_host = host.closeEditorHost(),
+            .ensure_service = Adapter.ensureService,
+            .reveal_panel = Adapter.revealPanel,
+            .reveal_editor = Adapter.revealEditor,
+            .hide_panel = Adapter.hidePanel,
+            .panel_active = Adapter.panelActive,
+            .panel_rect = Adapter.panelRect,
+            .panel_focused = Adapter.panelFocused,
+            .editor_focused = Adapter.editorFocused,
+            .focused_terminal = Adapter.focusedTerminal,
+            .focus_panel = Adapter.focusPanel,
+            .layout = Adapter.layout,
+            .layout_service = host.layout_api,
+            .panel_instances_removed = Adapter.panelInstancesRemoved,
+        };
+    }
+
     fn registerNativeServices(self: *TerminalWorkbench) !void {
         self.context_menu_api = self.context_menu_service.interface();
         _ = try self.services.set(context_menus.context_menu_service_id, &self.context_menu_api);
@@ -1194,7 +1261,7 @@ pub const TerminalWorkbench = struct {
         self.storage_api = self.notification_storage.interface();
         _ = try self.services.set(@import("../vs/workbench/services/host/browser/host.zig").host_service_id, &self.host_api);
         _ = try self.services.set(storage_mod.storage_service_id, &self.storage_api);
-        self.terminal_action_services = terminal_actions.TerminalActionServices.bind(self);
+        self.terminal_action_services = self.makeTerminalActionServices();
         self.github_publish = .{
             .allocator = self.allocator,
             .io = self.io,
@@ -1694,14 +1761,6 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerEditorAction(self.instantiation, hover_actions.show_or_focus_hover_action);
     }
 
-    fn newContextMenu(self: *TerminalWorkbench, comptime handler: fn (*TerminalWorkbench, *MenuActionContext, []const u8) anyerror!void) !*Menu {
-        return Menu.init(self.allocator, MenuActionContext{ .workbench = self }, struct {
-            fn run(action: *MenuActionContext, id: []const u8) !void {
-                try handler(action.workbench, action, id);
-            }
-        }.run);
-    }
-
     fn reportMenuError(context: *anyopaque, err: anyerror) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         if (self.activeTab()) |tab| tab.editor.setMessage("Menu action failed: {s}", .{@errorName(err)});
@@ -1719,10 +1778,6 @@ pub const TerminalWorkbench = struct {
             theme.disabled = colors.colorOr("disabledForeground", theme.disabled);
         }
         self.context_menu_service.theme = theme;
-    }
-
-    fn showContextMenu(self: *TerminalWorkbench, menu: *Menu, anchor: MenuAnchor) !void {
-        try self.context_menu_api.showContextMenu(menu, anchor);
     }
 
     pub fn isDialogOpen(self: *const TerminalWorkbench) bool {
@@ -2289,29 +2344,6 @@ pub const TerminalWorkbench = struct {
         self.layoutAll();
     }
 
-    /// The activity-bar ellipsis lists the entries that do not fit the rail.
-    pub fn showActivityOverflowMenu(self: *TerminalWorkbench, event: *const ui.MouseEvent) !void {
-        const rect = self.geometry().activityRect();
-        const capacity = activity_bar_mod.visibleCapacity(rect);
-        if (!activity_bar_mod.overflowVisible(&self.activity_bar_part, rect)) return;
-        const shown = capacity -| 1;
-        const menu = try self.newContextMenu(runActivityOverflowAction);
-        errdefer menu.deinit();
-        const arena = menu.arena.allocator();
-        var visible_index: usize = 0;
-        for (self.activity_bar_part.activities.items) |activity| {
-            if (!activity.visible) continue;
-            defer visible_index += 1;
-            if (visible_index < shown) continue;
-            try menu.add(try std.fmt.allocPrint(arena, "activity:{s}", .{activity.id}), .{ .label = activity.name, .type = .radio, .checked = std.mem.eql(u8, self.activity_bar_part.active_id orelse "", activity.id) });
-        }
-        if (menu.items.items.len == 0) {
-            menu.deinit();
-            return;
-        }
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
-    }
-
     pub fn showActivity(self: *TerminalWorkbench, index: usize) !void {
         const activity = self.activity_bar_part.activityAtVisibleIndex(index) orelse return;
         try self.openActivity(activity.id, true);
@@ -2671,43 +2703,6 @@ pub const TerminalWorkbench = struct {
         try self.onPanelTerminalsRemoved(service);
     }
 
-    pub fn showTerminalSwitchMenu(self: *TerminalWorkbench, event: *const ui.MouseEvent) !void {
-        const service = self.terminal_service orelse return;
-        if (service.count() == 0) return;
-        const menu = try self.newContextMenu(onTerminalMenu);
-        errdefer menu.deinit();
-        try terminal_actions.appendSwitchMenu(service, menu);
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
-    }
-
-    pub fn showTerminalProfileMenu(self: *TerminalWorkbench, group_id: ?editor_mod.GroupIdentifier, event: *const ui.MouseEvent) !void {
-        const service = self.terminal_service orelse return;
-        const menu = try self.newContextMenu(onTerminalMenu);
-        errdefer menu.deinit();
-        try terminal_actions.appendProfileMenu(service, menu, group_id);
-        if (menu.items.items.len == 0) {
-            menu.deinit();
-            return;
-        }
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
-    }
-
-    pub fn showTerminalTabMenu(self: *TerminalWorkbench, index: usize, event: *const ui.MouseEvent) !void {
-        const service = self.terminal_service orelse return;
-        if (service.at(index) == null) return;
-        const menu = try self.newContextMenu(onTerminalMenu);
-        errdefer menu.deinit();
-        try terminal_actions.appendTabMenu(service, menu, index);
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
-    }
-
-    pub fn showTerminalTabListMenu(self: *TerminalWorkbench, event: *const ui.MouseEvent) !void {
-        const menu = try self.newContextMenu(onTerminalMenu);
-        errdefer menu.deinit();
-        try terminal_actions.appendTabListActions(self.terminalConfig(), menu);
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
-    }
-
     fn showTerminalRename(self: *TerminalWorkbench, instance: *terminal_service_mod.TerminalInstance) !void {
         const service = self.terminal_service orelse return;
         try terminal_actions.showRenamePicker(service, self.quick_access.inputService(), instance);
@@ -2984,7 +2979,8 @@ pub const TerminalWorkbench = struct {
                 .refresh = scmRefresh,
                 .focus_editor = scmFocusEditor,
                 .commit = scmViewCommit,
-                .commit_menu = scmCommitMenu,
+                .context_menu = self.context_menu_api,
+                .views_service = self.views_api,
                 .branch_action = scmBranchAction,
                 .status = scmViewStatus,
             },
@@ -3104,23 +3100,6 @@ pub const TerminalWorkbench = struct {
     fn scmViewStatus(context: *anyopaque, message: []const u8) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         self.setStatusHint("{s}", .{message});
-    }
-
-    fn scmCommitMenu(context: *anyopaque, event: *const ui.MouseEvent) anyerror!void {
-        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        const menu = try self.newContextMenu(runScmCommitAction);
-        errdefer menu.deinit();
-        try menu.add("commit", .{ .label = "Commit" });
-        try menu.add("amend", .{ .label = "Commit (Amend)" });
-        try menu.separator();
-        try menu.add("push", .{ .label = "Commit & Push" });
-        try menu.add("sync", .{ .label = "Commit & Sync" });
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
-    }
-
-    fn runScmCommitAction(self: *TerminalWorkbench, _: *MenuActionContext, id: []const u8) anyerror!void {
-        const action = std.meta.stringToEnum(scm_view_mod.CommitAction, id) orelse return;
-        if (self.scm.changes) |view| _ = view.commitInputWithAction(action);
     }
 
     fn scmBranchAction(context: *anyopaque, action: scm_view_mod.BranchAction) void {
@@ -4534,11 +4513,6 @@ fn breadcrumbFocusEditor(context: *anyopaque) void {
     if (self.activeTab()) |tab| tab.focusEditor();
 }
 
-fn runActivityOverflowAction(self: *TerminalWorkbench, _: *MenuActionContext, id: []const u8) anyerror!void {
-    if (!std.mem.startsWith(u8, id, "activity:")) return;
-    _ = try self.showActivityById(id[9..]);
-}
-
 fn navigationActiveEditor(context: *anyopaque) ?*Editor {
     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const tab = host.activeTab() orelse return null;
@@ -4645,45 +4619,6 @@ fn reportEditorMessage(context: *anyopaque, message: []const u8) bool {
 fn statusFocusEditor(context: *anyopaque) void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     self.focusEditor();
-}
-
-fn onTerminalMenu(self: *TerminalWorkbench, _: *MenuActionContext, id: []const u8) anyerror!void {
-    try runTerminalAction(self, id);
-}
-
-fn runTerminalAction(self: *TerminalWorkbench, action_id: []const u8) !void {
-    const service = self.terminal_service orelse return;
-    try terminal_actions.runMenuAction(service, .{
-        .context = self,
-        .part = self.part,
-        .view_factory = self.view_factory,
-        .quick_input = self.quick_access.inputService(),
-        .set_user_configuration = struct {
-            fn run(context: *anyopaque, key: []const u8, value: std.json.Value) !void {
-                const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                try host.setUserConfigurationValue(key, value);
-                host.layoutAll();
-            }
-        }.run,
-        .reveal_panel = struct {
-            fn run(context: *anyopaque) !void {
-                const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                try host.showTerminal();
-            }
-        }.run,
-        .reveal_editor = struct {
-            fn run(context: *anyopaque, moved: bool) !void {
-                const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                try host.revealTerminalEditorMoved(moved);
-            }
-        }.run,
-        .panel_instances_removed = struct {
-            fn run(context: *anyopaque) !void {
-                const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                try host.onPanelTerminalsRemoved(host.terminal_service.?);
-            }
-        }.run,
-    }, action_id);
 }
 
 fn executeStatusbarCommand(context: *anyopaque, command: statusbar_types.StatusbarCommand) anyerror!void {

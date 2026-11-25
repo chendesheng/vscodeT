@@ -515,6 +515,7 @@ pub const Repository = struct {
         }
         self.base.detail = self.branch;
         self.base.branch_action = @import("actionButton.zig").branchAction(state);
+        self.base.action_button_secondary_commands = @import("actionButton.zig").getCommitActionButtonSecondaryCommands(state);
         self.base.fresh_repository = if (state.head) |head| head.ref.commit == null else true;
         // Upstream inserts the accept-command keybinding into the template.
         // This terminal input currently accepts Enter.

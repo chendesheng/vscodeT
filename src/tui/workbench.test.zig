@@ -2009,6 +2009,12 @@ test "Workbench: activity bar switches view containers" {
     try std.testing.expectEqual(@as(usize, 2), workbench.activeActivity());
     try std.testing.expectEqual(@as(usize, 3), workbench.activity_bar_part.count());
 
+    // The overflowing rail resolves its selection through the pane-composite
+    // service, without invoking a native window menu-action dispatcher.
+    try workbench.activity_bar_part.showOverflowMenu(.{ .x = 0, .y = 0, .w = 3, .h = 2 }, workbench.pane_composite_api, workbench.context_menu_api, .{ .x = 1, .y = 1 });
+    try chooseContextMenuItem(workbench, "Search");
+    try std.testing.expectEqualStrings("search", workbench.pane_composite_api.getActivePaneComposite(.sidebar).?.id);
+
     // Problems is a panel container: no activity-bar entry and no sidebar
     // container (upstream registers it in `ViewContainerLocation.Panel`).
     try std.testing.expect(!try workbench.showActivityById("problems"));
@@ -4860,6 +4866,14 @@ test "Workbench: new terminal creates one tab and hover does not act" {
 
     // Toggling the panel with a terminal present must not create another.
     try workbench.showTerminal();
+    try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
+
+    try workbench.terminal_action_services.showMenu(.switch_instance, workbench.context_menu_api, .{ .x = 1, .y = 1 });
+    const switch_menu = workbench.context_menu_service.current.?;
+    try std.testing.expectEqual(@as(usize, 1), switch_menu.items.items.len);
+    try std.testing.expect(switch_menu.items.items[0].checked);
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .enter }));
     try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
 
     const panel = workbench.geometry().panelRect();
@@ -8422,6 +8436,17 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
         input.setValue("scm commit message", false);
         workbench.scm.changes.?.refresh();
         try std.testing.expect(provider.repository.stateRef().index_changes.len > 0);
+        // SCMActionButton now consumes the Git provider's grouped secondary
+        // commands, rather than building Git-specific rows in Workbench.
+        try workbench.scm.changes.?.showCommitMenu(.{ .x = 1, .y = 1 });
+        const commit_rows = workbench.context_menu_service.current.?.items.items;
+        try std.testing.expectEqual(@as(usize, 5), commit_rows.len);
+        try std.testing.expectEqualStrings("Commit", commit_rows[0].label);
+        try std.testing.expectEqualStrings("Commit (Amend)", commit_rows[1].label);
+        try std.testing.expectEqual(ui.ContextMenuItemType.separator, commit_rows[2].type);
+        try std.testing.expectEqualStrings("Commit & Push", commit_rows[3].label);
+        try std.testing.expectEqualStrings("Commit & Sync", commit_rows[4].label);
+        workbench.context_menu_service.hideContextMenu();
         _ = try workbench.commands.execute("git.commit");
         const after_commit = provider.repository.stateRef();
         try std.testing.expectEqual(@as(usize, 0), after_commit.index_changes.len);
@@ -9678,7 +9703,7 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try std.testing.expectEqual(tab, wb.activeTab().?);
 }
 
-fn chooseEditorTitleMenuItem(wb: *Workbench, label: []const u8) !void {
+fn chooseContextMenuItem(wb: *Workbench, label: []const u8) !void {
     const service = &wb.context_menu_service;
     try std.testing.expect(service.handleKey(&.{ .key = .home }));
     const count = service.current.?.items.items.len;
@@ -9712,7 +9737,7 @@ test "Workbench: editor title context uses picked tab keys and sticky pinning" {
     const second = pane.tabAtIndex(allocator, 1).?;
     const anchor = @import("../vs/platform/contextview/browser/contextMenuService.zig").Anchor{ .x = 1, .y = 1 };
     try wb.editor_tab_menus.onTabContextMenu(pane, first, anchor);
-    try chooseEditorTitleMenuItem(wb, "Pin");
+    try chooseContextMenuItem(wb, "Pin");
     try std.testing.expect(pane.group.model.isSticky(.{ .editor = first.input }));
     try std.testing.expect(!pane.group.model.isSticky(.{ .editor = second.input }));
     try wb.editor_tab_menus.onTabContextMenu(pane, second, anchor);
@@ -9725,11 +9750,11 @@ test "Workbench: editor title context uses picked tab keys and sticky pinning" {
         }
     }
     try std.testing.expect(found);
-    try chooseEditorTitleMenuItem(wb, "Close All");
+    try chooseContextMenuItem(wb, "Close All");
     try std.testing.expectEqual(@as(usize, 1), wb.tabCount());
     try std.testing.expectEqual(first, wb.activeTab().?);
     try wb.editor_tab_menus.onTabContextMenu(pane, first, anchor);
-    try chooseEditorTitleMenuItem(wb, "Unpin");
+    try chooseContextMenuItem(wb, "Unpin");
     try std.testing.expect(!pane.group.model.isSticky(.{ .editor = first.input }));
     try std.testing.expect(pane.group.model.isPinned(.{ .editor = first.input }));
 }
@@ -9756,7 +9781,7 @@ test "Workbench: group close confirmation veto keeps the entire editor set" {
     const pane = wb.activePane().?;
     const anchor = @import("../vs/platform/contextview/browser/contextMenuService.zig").Anchor{ .x = 1, .y = 1 };
     try wb.editor_tab_menus.onTabContextMenu(pane, wb.activeTab().?, anchor);
-    try chooseEditorTitleMenuItem(wb, "Close All");
+    try chooseContextMenuItem(wb, "Close All");
     try std.testing.expect(wb.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 3), wb.tabCount());
     var save = ui.KeyEvent{ .key = .enter };
@@ -9768,7 +9793,7 @@ test "Workbench: group close confirmation veto keeps the entire editor set" {
     try std.testing.expect(!wb.isDialogOpen());
     try std.testing.expectEqual(@as(usize, 3), wb.tabCount());
     try wb.editor_tab_menus.onTabContextMenu(pane, wb.activeTab().?, anchor);
-    try chooseEditorTitleMenuItem(wb, "Close All");
+    try chooseContextMenuItem(wb, "Close All");
     try std.testing.expect(wb.isDialogOpen());
     try std.testing.expect(terminal_workbench.handleDialogKey(wb, &save));
     try std.testing.expect(!wb.isDialogOpen());

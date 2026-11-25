@@ -171,7 +171,8 @@ pub const Host = struct {
     /// substitutes Git's smart-commit prompt by staging changed files when the
     /// index is empty) and reports failures through `status`.
     commit: *const fn (context: *anyopaque, message: []const u8, action: CommitAction) anyerror!void,
-    commit_menu: ?*const fn (context: *anyopaque, event: *const ui.MouseEvent) anyerror!void = null,
+    context_menu: ?@import("../../../../platform/contextview/browser/contextMenuService.zig").IContextMenuService = null,
+    views_service: ?@import("../../../services/views/common/viewsService.zig").IViewsService = null,
     branch_action: ?*const fn (context: *anyopaque, action: BranchAction) void = null,
     /// Shows a one-line status hint, used for an empty commit message.
     status: *const fn (context: *anyopaque, message: []const u8) void,
@@ -427,7 +428,7 @@ pub const SCMViewPane = struct {
 
     fn showActionButton(self: *const SCMViewPane) bool {
         const repository = self.activeRepository() orelse return false;
-        return (repository.input.visible() or (self.host.commit_menu != null and repository.provider.detail != null)) and
+        return (repository.input.visible() or (self.host.context_menu != null and repository.provider.detail != null)) and
             self.config.show_action_button and self.config.show_input_action_button and
             (self.config.show_commit_action or self.activeBranchAction() != null);
     }
@@ -443,8 +444,8 @@ pub const SCMViewPane = struct {
 
     fn showCommitDropdown(self: *const SCMViewPane, width: usize) bool {
         const repo = self.activeRepository() orelse return false;
-        return repo.provider.detail != null and self.activeBranchAction() == null and
-            self.host.commit_menu != null and width >= css.dropdown_width + 4;
+        return repo.provider.action_button_secondary_commands.len != 0 and self.activeBranchAction() == null and
+            self.host.context_menu != null and self.host.views_service != null and width >= css.dropdown_width + 4;
     }
 
     fn repositoryHasChanges(repository: *const ISCMRepository) bool {
@@ -478,6 +479,38 @@ pub const SCMViewPane = struct {
     /// repository state.
     pub fn commitInput(self: *SCMViewPane) bool {
         return self.commitInputWithAction(.commit);
+    }
+
+    /// SCMActionButton.setButton: group the provider's secondary commands and
+    /// bind the captured repository, rather than supplying Git commands from
+    /// the window. The current registered view is resolved when an action runs.
+    pub fn showCommitMenu(self: *SCMViewPane, anchor: @import("../../../../platform/contextview/browser/contextMenuService.zig").Anchor) !void {
+        const service = self.host.context_menu orelse return;
+        const views_service = self.host.views_service orelse return;
+        const repository = self.activeRepository() orelse return;
+        const menu = try Menu.init(self.allocator, @as(u8, 0), struct {
+            fn run(_: *u8, _: []const u8) !void {}
+        }.run);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
+        const repository_id = try arena.dupe(u8, repository.id);
+        const Action = struct {
+            views: @import("../../../services/views/common/viewsService.zig").IViewsService,
+            repository_id: []const u8,
+            action: CommitAction,
+            pub fn run(action: *@This()) !void {
+                const view = action.views.getViewWithId(SCMViewPane) orelse return;
+                const active = view.activeRepository() orelse return;
+                if (!std.mem.eql(u8, active.id, action.repository_id)) return;
+                _ = view.commitInputWithAction(action.action);
+            }
+        };
+        for (repository.provider.action_button_secondary_commands) |commands| {
+            if (commands.len == 0) continue;
+            if (menu.items.items.len != 0) try menu.separator();
+            for (commands) |command| try menu.addAction(command.id, command.title, null, Action{ .views = views_service, .repository_id = repository_id, .action = command.action });
+        }
+        try service.showContextMenu(menu, anchor);
     }
 
     pub fn commitInputWithAction(self: *SCMViewPane, action: CommitAction) bool {
@@ -1192,7 +1225,7 @@ pub const SCMViewPane = struct {
                                 _ = self.commitInput();
                             }
                         },
-                        .dropdown => if (self.host.commit_menu) |menu| try menu(self.host.context, event),
+                        .dropdown => try self.showCommitMenu(.mouse(event)),
                     }
                 } else {
                     const enabled = if (self.activeInput()) |input| input.enabled() else false;

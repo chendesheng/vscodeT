@@ -20,6 +20,9 @@ const history = @import("./history.zig");
 pub const Command = languages.Command;
 /// Terminal projection of the Git commit dropdown / post-commit command.
 pub const CommitAction = enum { commit, amend, push, sync };
+/// Terminal action-button command projection; repository and post-commit
+/// command arguments are represented by the explicit CommitAction value.
+pub const CommitActionDescriptor = struct { id: []const u8, title: []const u8, action: CommitAction };
 pub const BranchAction = union(enum) { publish, sync: struct { ahead: usize, behind: usize } };
 pub const Selector = language_selector.Selector;
 
@@ -109,6 +112,7 @@ pub const ISCMProvider = struct {
     input_box_visible: ?bool = null,
     input_box_placeholder: ?[]const u8 = null,
     branch_action: ?BranchAction = null,
+    action_button_secondary_commands: []const []const CommitActionDescriptor = &.{},
     fresh_repository: bool = false,
     on_did_change: ?*Emitter(void) = null,
     /// Terminal projection of the upstream `historyProvider` observable. Null
