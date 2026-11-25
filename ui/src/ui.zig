@@ -6,31 +6,31 @@
 //! whole-cell layout pass and a double-buffered ANSI delta. See
 //! docs/terminal-ui.md and docs/css.md in the parent repository.
 
-pub const ansi = @import("ansi.zig");
-pub const box = @import("box.zig");
-pub const cell = @import("cell.zig");
-pub const cell_border = @import("cell_border.zig");
-pub const contextmenu = @import("contextmenu.zig");
-pub const css = @import("css.zig");
-pub const dialog = @import("dialog.zig");
-pub const dom = @import("dom.zig");
-pub const drag_drop = @import("drag_drop.zig");
-pub const event = @import("event.zig");
-pub const frame = @import("frame.zig");
-pub const grapheme = @import("grapheme.zig");
-pub const image = @import("image.zig");
-pub const input = @import("input.zig");
-pub const inputbox = @import("inputbox.zig");
-pub const layout = @import("layout.zig");
-pub const linebreak = @import("linebreak.zig");
-pub const paint = @import("paint.zig");
-pub const pointer = @import("pointer.zig");
-pub const screen = @import("screen.zig");
-pub const scroll = @import("scroll.zig");
-pub const scroll_view = @import("scroll_view.zig");
-pub const style = @import("style.zig");
+pub const ansi = @import("terminal/ansi.zig");
+pub const box = @import("layout/box.zig");
+pub const cell = @import("render/cell.zig");
+pub const cell_border = @import("render/cell_border.zig");
+pub const contextmenu = @import("widgets/contextmenu.zig");
+pub const css = @import("style/css.zig");
+pub const dialog = @import("widgets/dialog.zig");
+pub const dom = @import("dom/dom.zig");
+pub const drag_drop = @import("widgets/drag_drop.zig");
+pub const event = @import("dom/event.zig");
+pub const frame = @import("render/frame.zig");
+pub const grapheme = @import("render/grapheme.zig");
+pub const image = @import("terminal/image.zig");
+pub const input = @import("terminal/input.zig");
+pub const inputbox = @import("widgets/inputbox.zig");
+pub const layout = @import("layout/layout.zig");
+pub const linebreak = @import("layout/linebreak.zig");
+pub const paint = @import("render/paint.zig");
+pub const pointer = @import("terminal/pointer.zig");
+pub const screen = @import("terminal/screen.zig");
+pub const scroll = @import("widgets/scroll.zig");
+pub const scroll_view = @import("widgets/scroll_view.zig");
+pub const style = @import("style/style.zig");
 pub const surface = @import("surface.zig");
-pub const text_layout = @import("text_layout.zig");
+pub const text_layout = @import("layout/text_layout.zig");
 
 pub const AlignContent = style.AlignContent;
 pub const AlignItems = style.AlignItems;

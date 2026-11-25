@@ -11,7 +11,7 @@ const files = [_]struct { name: []const u8, lines: u32 }{
     .{ .name = "src/main.zig", .lines = 42 },
     .{ .name = "src/tui/app.zig", .lines = 343 },
     .{ .name = "src/tui/preview.zig", .lines = 321 },
-    .{ .name = "ui/src/dom.zig", .lines = 470 },
+    .{ .name = "ui/src/dom/dom.zig", .lines = 470 },
     .{ .name = "ui/src/surface.zig", .lines = 121 },
     .{ .name = "docs/terminal-ui.md", .lines = 481 },
 };

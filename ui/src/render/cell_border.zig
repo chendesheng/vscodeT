@@ -21,7 +21,7 @@
 //! ANSI writer re-emits a pen only when the id changes.
 
 const std = @import("std");
-const style = @import("style.zig");
+const style = @import("../style/style.zig");
 
 /// Each cell has twelve segments: two halves of each outer edge and four
 /// centre arms.

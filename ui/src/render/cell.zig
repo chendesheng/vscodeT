@@ -11,7 +11,7 @@
 const std = @import("std");
 const cell_border = @import("cell_border.zig");
 const grapheme = @import("grapheme.zig");
-const style = @import("style.zig");
+const style = @import("../style/style.zig");
 
 pub const Attr = struct {
     pub const bold: u16 = 1 << 0;

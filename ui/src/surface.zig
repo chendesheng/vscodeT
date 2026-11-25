@@ -1,16 +1,16 @@
 //! A document, a viewport, and the double-buffered cell renderer.
 
 const std = @import("std");
-const ansi = @import("ansi.zig");
-const cell = @import("cell.zig");
-const cell_border = @import("cell_border.zig");
-const dom = @import("dom.zig");
-const box = @import("box.zig");
-const frame_mod = @import("frame.zig");
-const layout = @import("layout.zig");
-const paint = @import("paint.zig");
-const pointer_mod = @import("pointer.zig");
-const style = @import("style.zig");
+const ansi = @import("terminal/ansi.zig");
+const cell = @import("render/cell.zig");
+const cell_border = @import("render/cell_border.zig");
+const dom = @import("dom/dom.zig");
+const box = @import("layout/box.zig");
+const frame_mod = @import("render/frame.zig");
+const layout = @import("layout/layout.zig");
+const paint = @import("render/paint.zig");
+const pointer_mod = @import("terminal/pointer.zig");
+const style = @import("style/style.zig");
 
 pub const ColorDepth = cell.ColorDepth;
 pub const Pointer = style.Pointer;

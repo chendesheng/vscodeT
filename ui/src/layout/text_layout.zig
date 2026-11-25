@@ -20,9 +20,9 @@
 
 const std = @import("std");
 const box = @import("box.zig");
-const dom = @import("dom.zig");
+const dom = @import("../dom/dom.zig");
 const linebreak = @import("linebreak.zig");
-const style = @import("style.zig");
+const style = @import("../style/style.zig");
 
 pub const Error = std.mem.Allocator.Error;
 

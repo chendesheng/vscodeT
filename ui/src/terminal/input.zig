@@ -13,7 +13,7 @@
 //! sends.
 
 const std = @import("std");
-const event = @import("event.zig");
+const event = @import("../dom/event.zig");
 
 pub const KeyEvent = event.KeyEvent;
 pub const MouseEvent = event.MouseEvent;

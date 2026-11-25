@@ -23,9 +23,9 @@
 
 const std = @import("std");
 const box = @import("box.zig");
-const dom = @import("dom.zig");
+const dom = @import("../dom/dom.zig");
 const linebreak = @import("linebreak.zig");
-const style_mod = @import("style.zig");
+const style_mod = @import("../style/style.zig");
 const text_layout = @import("text_layout.zig");
 
 pub const Rect = style_mod.Rect;

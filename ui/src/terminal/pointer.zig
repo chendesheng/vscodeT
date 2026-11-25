@@ -20,7 +20,7 @@
 //! cells.
 
 const std = @import("std");
-const style = @import("style.zig");
+const style = @import("../style/style.zig");
 
 pub const Pointer = style.Pointer;
 

@@ -2,8 +2,8 @@
 //! hit testing and event handlers; this module owns the pointer gesture and
 //! the lifetime of the transfer, following WebKit's source/target event flow.
 const std = @import("std");
-const cell = @import("cell.zig");
-const input = @import("event.zig");
+const cell = @import("../render/cell.zig");
+const input = @import("../dom/event.zig");
 
 pub const Kind = enum { dragstart, drag, dragenter, dragover, dragleave, drop, dragend };
 pub const Effect = enum { none, move, copy };

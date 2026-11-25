@@ -18,9 +18,9 @@
 //! not answer the graphics query keep the caller's text fallback.
 
 const std = @import("std");
-const cell = @import("cell.zig");
-const cell_border = @import("cell_border.zig");
-const style = @import("style.zig");
+const cell = @import("../render/cell.zig");
+const cell_border = @import("../render/cell_border.zig");
+const style = @import("../style/style.zig");
 
 const CellGrid = cell.CellGrid;
 

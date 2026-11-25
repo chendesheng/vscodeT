@@ -10,12 +10,12 @@
 //! attributes on the box edge when the terminal supports them.
 
 const std = @import("std");
-const box = @import("box.zig");
+const box = @import("../layout/box.zig");
 const cell = @import("cell.zig");
 const cell_border = @import("cell_border.zig");
-const dom = @import("dom.zig");
-const layout = @import("layout.zig");
-const style_mod = @import("style.zig");
+const dom = @import("../dom/dom.zig");
+const layout = @import("../layout/layout.zig");
+const style_mod = @import("../style/style.zig");
 
 const CellGrid = cell.CellGrid;
 const LayoutBox = box.LayoutBox;

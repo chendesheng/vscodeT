@@ -23,9 +23,9 @@
 //! is kept for the future incremental pass.
 
 const std = @import("std");
-const css = @import("css.zig");
-const dom = @import("dom.zig");
-const style_mod = @import("style.zig");
+const css = @import("../style/css.zig");
+const dom = @import("../dom/dom.zig");
+const style_mod = @import("../style/style.zig");
 
 pub const Kind = enum {
     initial_containing_block,

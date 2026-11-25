@@ -56,7 +56,7 @@ The public module starts at [src/ui.zig](src/ui.zig). [tests/](tests/) holds the
   press/release handling. It is not a DOM node: the host renders it over its
   frame and routes input to it while open.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
-- Kitty graphics support in `ui/src/image.zig`: capability probe, PNG/RGBA
+- Kitty graphics support in `ui/src/terminal/image.zig`: capability probe, PNG/RGBA
   transmission, virtual placements, image deletion and Unicode-placeholder
   cells (`U+10EEEE` + row/column diacritics + the image id in the foreground
   color). `Runtime` owns the id space and queues escape codes for the host to

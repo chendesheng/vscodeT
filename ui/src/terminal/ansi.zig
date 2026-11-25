@@ -12,8 +12,8 @@
 //! that do not implement underline subparameters.
 
 const std = @import("std");
-const cell = @import("cell.zig");
-const cell_border = @import("cell_border.zig");
+const cell = @import("../render/cell.zig");
+const cell_border = @import("../render/cell_border.zig");
 
 const CellGrid = cell.CellGrid;
 const ColorDepth = cell.ColorDepth;
@@ -315,7 +315,7 @@ const ansi_palette = [_][3]u8{
     .{ 0x5c, 0x5c, 0xff }, .{ 0xff, 0x00, 0xff }, .{ 0x00, 0xff, 0xff }, .{ 0xff, 0xff, 0xff },
 };
 
-fn rgbTo256(rgb: @import("style.zig").Color) u8 {
+fn rgbTo256(rgb: @import("../style/style.zig").Color) u8 {
     if (rgb.r == rgb.g and rgb.g == rgb.b) {
         if (rgb.r < 8) return 0;
         if (rgb.r > 248) return 15;
@@ -327,7 +327,7 @@ fn rgbTo256(rgb: @import("style.zig").Color) u8 {
     return 16 + 36 * r6 + 6 * g6 + b6;
 }
 
-fn rgbToAnsi(rgb: @import("style.zig").Color) u8 {
+fn rgbToAnsi(rgb: @import("../style/style.zig").Color) u8 {
     var best: u8 = 0;
     var best_distance: f64 = std.math.inf(f64);
     for (ansi_palette, 0..) |entry, index| {

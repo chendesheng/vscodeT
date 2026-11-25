@@ -23,16 +23,16 @@
 //! tooltips and browser form types belong to the host or the browser layer.
 
 const std = @import("std");
-const cell = @import("cell.zig");
-const dom = @import("dom.zig");
+const cell = @import("../render/cell.zig");
+const dom = @import("../dom/dom.zig");
 const scroll = @import("scroll.zig");
-const style_mod = @import("style.zig");
+const style_mod = @import("../style/style.zig");
 
 const Allocator = std.mem.Allocator;
 const Color = style_mod.Color;
 const Document = dom.Document;
 const ScrollWindow = scroll.ScrollWindow;
-const event_mod = @import("event.zig");
+const event_mod = @import("../dom/event.zig");
 const Key = event_mod.Key;
 const KeyEvent = event_mod.KeyEvent;
 const FocusEvent = event_mod.FocusEvent;

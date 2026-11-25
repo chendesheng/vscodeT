@@ -10,9 +10,9 @@
 //! fresh tree per surface; a later retained tree will add a freelist.
 
 const std = @import("std");
-const css = @import("css.zig");
+const css = @import("../style/css.zig");
 const event = @import("event.zig");
-const style_mod = @import("style.zig");
+const style_mod = @import("../style/style.zig");
 
 pub const Style = style_mod.Style;
 pub const HoverStyle = style_mod.HoverStyle;

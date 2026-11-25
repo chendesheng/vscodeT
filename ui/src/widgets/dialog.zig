@@ -21,10 +21,10 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const cell = @import("cell.zig");
-const dom = @import("dom.zig");
-const events = @import("event.zig");
-const style = @import("style.zig");
+const cell = @import("../render/cell.zig");
+const dom = @import("../dom/dom.zig");
+const events = @import("../dom/event.zig");
+const style = @import("../style/style.zig");
 
 const CellGrid = cell.CellGrid;
 const PaintStyle = cell.PaintStyle;
@@ -33,7 +33,7 @@ pub const max_buttons = 3;
 
 const dialog_max_width: usize = 50;
 const border_width: usize = 1;
-const cell_border = @import("cell_border.zig");
+const cell_border = @import("../render/cell_border.zig");
 const horizontal_padding: usize = 2;
 const vertical_padding: usize = 1;
 const warning_glyph: u21 = 0x26A0; // ⚠

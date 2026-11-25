@@ -25,9 +25,9 @@
 //! never overflows.
 
 const std = @import("std");
-const dom = @import("dom.zig");
+const dom = @import("../dom/dom.zig");
 const scroll = @import("scroll.zig");
-const style = @import("style.zig");
+const style = @import("../style/style.zig");
 
 const Color = style.Color;
 const Document = dom.Document;

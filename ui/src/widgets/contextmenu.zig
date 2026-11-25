@@ -26,11 +26,11 @@
 //! automatically.
 
 const std = @import("std");
-const cell = @import("cell.zig");
-const cell_border = @import("cell_border.zig");
-const dom = @import("dom.zig");
-const event = @import("event.zig");
-const style = @import("style.zig");
+const cell = @import("../render/cell.zig");
+const cell_border = @import("../render/cell_border.zig");
+const dom = @import("../dom/dom.zig");
+const event = @import("../dom/event.zig");
+const style = @import("../style/style.zig");
 
 const Allocator = std.mem.Allocator;
 const CellGrid = cell.CellGrid;
