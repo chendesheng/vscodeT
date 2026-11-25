@@ -509,12 +509,15 @@ pub fn main(init: std.process.Init) !void {
 
     try workbench.setUserSettingsPaths(profile.settings_paths);
     try workbench.setKeybindingsPaths(profile.keybindings_paths);
-    if (profile.user_data_dir) |user_data| {
-        workbench.setTerminalProfileStorage(user_data) catch {};
-        if (std.fs.path.join(allocator, &.{ user_data, "history.json" })) |history_path| {
-            defer allocator.free(history_path);
-            workbench.setHistoryStatePath(history_path) catch {};
-        } else |_| {}
+    const HistoryStorage = @import("historyStorage.zig").HistoryStorage;
+    var history_storage: HistoryStorage = undefined;
+    const history_path = if (profile.user_data_dir) |dir| try std.fs.path.join(allocator, &.{ dir, "history.json" }) else null;
+    defer if (history_path) |path| allocator.free(path);
+    if (profile.user_data_dir) |dir| workbench.setTerminalProfileStorage(dir) catch {};
+    if (history_path) |path| {
+        history_storage = .{ .history = &workbench.history, .allocator = allocator, .io = io, .path = path };
+        try history_storage.load();
+        _ = try workbench.lifecycle.on_will_shutdown.listen(&history_storage, HistoryStorage.save);
     }
 
     if (folders.items.len > 0) {

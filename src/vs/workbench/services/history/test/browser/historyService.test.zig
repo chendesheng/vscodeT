@@ -1,7 +1,7 @@
 // Adapted editor-history cases for the TUI quick-open history subset.
 
 const std = @import("std");
-const history = @import("../../common/history.zig");
+const history = @import("../../browser/historyService.zig");
 const editor = @import("../../../../common/editor.zig");
 const text_editor = @import("../../../../browser/parts/editor/textEditor.zig");
 const Selection = @import("../../../../../editor/common/core/selection.zig").Selection;
@@ -68,4 +68,19 @@ test "historyService: group and editor scoped stacks are independent" {
     try std.testing.expectEqualStrings("/a", group_back.path);
     const editor_back = service.goBack(.EDITOR, .NONE, 2, "/b").?;
     try std.testing.expectEqualStrings("/b", editor_back.path);
+}
+
+test "loadHistory keeps opened editors first and appends stored files in saved MRU order" {
+    var service = history.HistoryService.init(std.testing.allocator);
+    defer service.deinit();
+    service.max = 4;
+    try service.add("/open");
+    try service.loadHistory(&.{ "/b", "/open", "/a", "/b", "/c", "/overflow" });
+    const entries = service.getHistory();
+    try std.testing.expectEqual(4, entries.len);
+    for (entries, [_][]const u8{ "/open", "/b", "/a", "/c" }) |actual, expected| {
+        try std.testing.expectEqualStrings(expected, actual);
+    }
+    try service.add(service.getHistory()[2]);
+    try std.testing.expectEqualStrings("/a", service.getHistory()[0]);
 }

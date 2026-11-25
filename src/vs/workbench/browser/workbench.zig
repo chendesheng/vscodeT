@@ -82,7 +82,7 @@ const StatusbarService = statusbar_mod.StatusbarService;
 const EntryAccessor = statusbar_mod.EntryAccessor;
 const statusbar_types = @import("../services/statusbar/browser/statusbar.zig");
 const ActivityService = @import("../services/activity/browser/activityService.zig").ActivityService;
-const history_mod = @import("../services/history/common/history.zig");
+const history_mod = @import("../services/history/browser/historyService.zig");
 const HistoryService = history_mod.HistoryService;
 const commands_mod = @import("./commands.zig");
 const CommandRegistry = commands_mod.CommandRegistry;
@@ -670,7 +670,6 @@ pub const Workbench = struct {
     /// True while restoring a navigation entry; suppresses recording the
     /// restore as another navigation.
     history_navigating: bool = false,
-    history_state_path: ?[]u8 = null,
     view_state_storage: ?[]u8 = null,
     sidebar_action_anchor: ?WorkbenchMenu.Anchor = null,
     history_tab: ?*Tab = null,
@@ -1328,7 +1327,6 @@ pub const Workbench = struct {
     }
 
     fn initQuickAccess(self: *Workbench) !void {
-        self.history_state_path = null;
         self.view_state_storage = null;
         self.sidebar_action_anchor = null;
         self.history_navigating = false;
@@ -1945,13 +1943,11 @@ pub const Workbench = struct {
         self.quick_access.deinit();
         self.working_copy_service.deinit();
         self.commands.deinit();
-        self.saveHistoryState() catch {};
         if (self.history_tab) |tab| {
             if (self.history_selection_listener) |listener| tab.removeSelectionListener(listener);
             if (self.history_content_listener) |listener| tab.editor.removeWorkingCopyContentListener(listener);
             self.history_tab = null;
         }
-        if (self.history_state_path) |path| self.allocator.free(path);
         self.history.deinit();
         // Dispose the service (and unregister editor listeners) before tab
         // inputs/emitters are destroyed.
@@ -5904,128 +5900,6 @@ pub const Workbench = struct {
         defer atomic.deinit(self.io);
         try atomic.file.writeStreamingAll(self.io, out.written());
         try atomic.replace(self.io);
-    }
-
-    const HistorySelectionDto = struct {
-        start_line: usize,
-        start_column: usize,
-        end_line: usize,
-        end_column: usize,
-        selection_start_line: usize,
-        selection_start_column: usize,
-        position_line: usize,
-        position_column: usize,
-    };
-
-    const HistoryNavigationDto = struct {
-        group_id: u32,
-        path: []const u8,
-        top_view_line: usize = 1,
-        selection: ?HistorySelectionDto = null,
-    };
-
-    const HistoryClosedDto = struct {
-        path: []const u8,
-        group_id: u32,
-        index: usize,
-        sticky: bool,
-        pinned: bool,
-        batch_id: u64,
-    };
-
-    const HistoryStateDto = struct {
-        version: u32 = 1,
-        recent: []const []const u8 = &.{},
-        navigation: []const HistoryNavigationDto = &.{},
-        closed: []const HistoryClosedDto = &.{},
-    };
-
-    pub fn setHistoryStatePath(self: *Workbench, path: []const u8) !void {
-        if (self.history_state_path) |old| self.allocator.free(old);
-        self.history_state_path = try self.allocator.dupe(u8, path);
-        self.loadHistoryState() catch {};
-    }
-
-    fn saveHistoryState(self: *Workbench) !void {
-        const path = self.history_state_path orelse return;
-        if (std.fs.path.dirname(path)) |dir| Io.Dir.cwd().createDirPath(self.io, dir) catch {};
-        var recent = std.array_list.Managed([]const u8).init(self.allocator);
-        defer recent.deinit();
-        for (self.history.getHistory()) |entry| try recent.append(entry);
-        var navigation = std.array_list.Managed(HistoryNavigationDto).init(self.allocator);
-        defer navigation.deinit();
-        for (self.history.default_stacks.selections.entries.items) |entry| {
-            try navigation.append(.{
-                .group_id = entry.group_id,
-                .path = entry.path,
-                .top_view_line = entry.top_view_line,
-                .selection = if (entry.selection) |selection| if (std.mem.eql(u8, selection.kind, "text")) blk: {
-                    const text_selection: *text_editor_selection_mod.TextEditorPaneSelection = @ptrCast(@alignCast(selection.context));
-                    break :blk .{
-                        .start_line = text_selection.selection.startLineNumber,
-                        .start_column = text_selection.selection.startColumn,
-                        .end_line = text_selection.selection.endLineNumber,
-                        .end_column = text_selection.selection.endColumn,
-                        .selection_start_line = text_selection.selection.selectionStartLineNumber,
-                        .selection_start_column = text_selection.selection.selectionStartColumn,
-                        .position_line = text_selection.selection.positionLineNumber,
-                        .position_column = text_selection.selection.positionColumn,
-                    };
-                } else null else null,
-            });
-        }
-        var closed = std.array_list.Managed(HistoryClosedDto).init(self.allocator);
-        defer closed.deinit();
-        for (self.history.closed_editors.items) |entry| {
-            try closed.append(.{
-                .path = entry.path,
-                .group_id = entry.group_id,
-                .index = entry.index,
-                .sticky = entry.sticky,
-                .pinned = entry.pinned,
-                .batch_id = entry.batch_id,
-            });
-        }
-        const dto = HistoryStateDto{ .recent = recent.items, .navigation = navigation.items, .closed = closed.items };
-        var out: Io.Writer.Allocating = .init(self.allocator);
-        defer out.deinit();
-        try std.json.Stringify.value(dto, .{}, &out.writer);
-        try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = out.written() });
-    }
-
-    fn loadHistoryState(self: *Workbench) !void {
-        const path = self.history_state_path orelse return;
-        const bytes = Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(8 * 1024 * 1024)) catch return;
-        defer self.allocator.free(bytes);
-        const parsed = std.json.parseFromSlice(HistoryStateDto, self.allocator, bytes, .{}) catch return;
-        defer parsed.deinit();
-        if (parsed.value.version != 1) return;
-        for (parsed.value.recent) |entry| self.history.add(entry) catch {};
-        for (parsed.value.navigation) |entry| {
-            var selection: ?editor_mod.IEditorPaneSelection = null;
-            if (entry.selection) |sel| {
-                const snapshot = try text_editor_selection_mod.TextEditorPaneSelection.create(self.allocator, Selection.init(
-                    sel.selection_start_line,
-                    sel.selection_start_column,
-                    sel.position_line,
-                    sel.position_column,
-                ));
-                selection = snapshot.interface();
-            }
-            self.history.recordNavigation(entry.group_id, entry.path, selection, entry.top_view_line, .PROGRAMMATIC) catch {
-                if (selection) |iface| iface.dispose();
-            };
-        }
-        for (parsed.value.closed) |entry| {
-            self.history.recordClosedEditor(.{
-                .path = self.allocator.dupe(u8, entry.path) catch continue,
-                .group_id = entry.group_id,
-                .index = entry.index,
-                .sticky = entry.sticky,
-                .pinned = entry.pinned,
-                .batch_id = entry.batch_id,
-            }) catch {};
-        }
     }
 
     /// Snapshots the active editor's pane selection into the ported editor

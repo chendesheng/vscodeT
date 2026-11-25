@@ -67,7 +67,7 @@ pub const RestoredEditorPanes = struct {
     width: usize,
     height: usize,
     images: *ui.image.Runtime,
-    history: *@import("../../../services/history/common/history.zig").HistoryService,
+    history: *@import("../../../services/history/browser/historyService.zig").HistoryService,
     working_copies: *@import("../../../services/workingCopy/common/workingCopyService.zig").WorkingCopyService,
 
     pub fn createPane(self: RestoredEditorPanes, allocator: Allocator, input: *EditorInput) !?*Tab {

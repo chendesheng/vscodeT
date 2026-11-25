@@ -7917,3 +7917,30 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
     try std.testing.expectEqual(36, wb.sidebar_part.width);
     try std.testing.expectEqual(12, wb.panel_part.getSize());
 }
+
+test "terminal shutdown history preserves recent order, selection and closed editor batch IDs" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const History = @import("../vs/workbench/services/history/browser/historyService.zig").HistoryService;
+    const HistoryStorage = @import("historyStorage.zig").HistoryStorage;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "history.json",
+        \\{"version":1,"recent":["a","b"],"closed":[{"path":"b","group_id":3,"index":2,"sticky":false,"pinned":true,"batch_id":17}],"navigation":[{"path":"a","group_id":3,"top_view_line":9,"selection":{"start_line":10,"start_column":3,"end_line":10,"end_column":3,"selection_start_line":10,"selection_start_column":3,"position_line":10,"position_column":3}}]}
+    );
+    defer allocator.free(path);
+    for (0..2) |_| {
+        var history = History.init(allocator);
+        defer history.deinit();
+        var store = HistoryStorage{ .allocator = allocator, .io = io, .path = path, .history = &history };
+        try store.load();
+        try std.testing.expectEqualStrings("a", history.getHistory()[0]);
+        try std.testing.expectEqualStrings("b", history.getHistory()[1]);
+        try std.testing.expectEqual(17, history.closed_batch_id);
+        try std.testing.expectEqual(1, history.closed_editors.items.len);
+        const entry = history.default_stacks.selections.current().?;
+        try std.testing.expectEqual(9, entry.top_view_line);
+        try std.testing.expectEqual(10, entry.selection.?.restore(.{}).selection.?.positionLineNumber);
+        try HistoryStorage.save(.{ .reason = .quit }, &store);
+    }
+}
