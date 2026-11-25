@@ -44,6 +44,27 @@ pub fn absolutePath(allocator: Allocator, io: Io, path: []const u8) ![]u8 {
     return std.fs.path.resolve(allocator, &.{ cwd_buffer[0..cwd_length], path });
 }
 
+/// URI identity at the terminal filesystem boundary. Existing paths use
+/// realpath (including symlinks); missing files are normalized lexically.
+pub fn canonicalPath(allocator: Allocator, io: Io, path: []const u8) ![]const u8 {
+    var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+    if (Io.Dir.cwd().realPathFile(io, path, &buffer)) |length| {
+        return allocator.dupe(u8, buffer[0..length]);
+    } else |_| {}
+    var cwd_buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_length = try Io.Dir.cwd().realPathFile(io, ".", &cwd_buffer);
+    return std.fs.path.resolve(allocator, &.{ cwd_buffer[0..cwd_length], path });
+}
+
+pub fn samePath(allocator: Allocator, io: Io, left: []const u8, right: []const u8) bool {
+    if (std.mem.eql(u8, left, right)) return true;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const resolved_left = canonicalPath(arena.allocator(), io, left) catch return false;
+    const resolved_right = canonicalPath(arena.allocator(), io, right) catch return false;
+    return std.mem.eql(u8, resolved_left, resolved_right);
+}
+
 pub const SaveParticipant = struct {
     context: *anyopaque,
     participate: *const fn (context: *anyopaque, model: *anyopaque) anyerror!void,

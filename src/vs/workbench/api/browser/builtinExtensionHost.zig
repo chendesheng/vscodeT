@@ -9,7 +9,13 @@ const ArrayList = std.array_list.Managed;
 
 const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const EditorTextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
-const Workbench = @import("../../browser/workbench.zig").Workbench;
+const EditorService = @import("../../services/editor/browser/editorService.zig").EditorService;
+const CommandRegistry = @import("../../browser/commands.zig").CommandRegistry;
+const QuickInputService = @import("../../../platform/quickinput/browser/quickInputService.zig").QuickInputService;
+const ConfigurationService = @import("../../services/configuration/browser/configurationService.zig").ConfigurationService;
+const LanguageFeaturesService = @import("../../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
+const TerminalInstance = @import("../../contrib/terminal/browser/terminalInstance.zig").TerminalInstance;
+const EditorInput = @import("../../common/editor/editorInput.zig").EditorInput;
 const Tab = @import("../../browser/parts/editor/editorPane.zig").Tab;
 const editor_input_dispatch = @import("../../../../tui/editorInputDispatch.zig");
 const time_compat = @import("../../../base/common/timeCompat.zig");
@@ -32,9 +38,33 @@ const ITextEditor = extension_api.ITextEditor;
 const IStatusEntry = extension_api.IStatusEntry;
 const IExtensionContext = extension_api.IExtensionContext;
 
+/// The compiled extension host consumes the same editor, command and status
+/// services as the extension-host actors. These callbacks adapt the remaining
+/// terminal window actions until their portable services own them.
+pub const Services = struct {
+    context: *anyopaque,
+    io: std.Io,
+    editors: EditorService,
+    commands: *CommandRegistry,
+    statusbar: *statusbar_part.StatusbarService,
+    quick_input: *QuickInputService,
+    language_features: *const fn (*anyopaque) ?*LanguageFeaturesService,
+    configuration: *const fn (*anyopaque) ?*ConfigurationService,
+    launch_terminal: *const fn (*anyopaque, []const u8, []const u8, []const []const u8, ?[]const u8) anyerror!*TerminalInstance,
+    terminal_instance: *const fn (*anyopaque, usize) ?*TerminalInstance,
+    update_configuration: *const fn (*anyopaque, []const u8, ?std.json.Value) anyerror!void,
+    status_hint: *const fn (*anyopaque, []const u8) void,
+    force_close_active: *const fn (*anyopaque) anyerror!void,
+    open_path: *const fn (*anyopaque, []const u8) anyerror!void,
+    switch_tab: *const fn (*anyopaque, isize) anyerror!void,
+    history_back: *const fn (*anyopaque) anyerror!bool,
+    history_forward: *const fn (*anyopaque) anyerror!bool,
+    record_navigation: *const fn (*anyopaque) void,
+};
+
 pub const BuiltinExtensionHost = struct {
     allocator: Allocator,
-    workbench: *Workbench,
+    services: Services,
     key_registry: key_input.KeyInputRegistry,
     extensions: builtin_extension.BuiltinExtensionRegistry,
     context: IExtensionContext,
@@ -42,12 +72,12 @@ pub const BuiltinExtensionHost = struct {
     tunnel_provider: TunnelProvider = undefined,
     tunnel_view: ?TunnelView = null,
 
-    pub fn init(allocator: Allocator, workbench: *Workbench) !*BuiltinExtensionHost {
+    pub fn init(allocator: Allocator, services: Services) !*BuiltinExtensionHost {
         const self = try allocator.create(BuiltinExtensionHost);
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
-            .workbench = workbench,
+            .services = services,
             .key_registry = key_input.KeyInputRegistry.init(allocator),
             .extensions = builtin_extension.BuiltinExtensionRegistry.init(allocator),
             .context = undefined,
@@ -99,7 +129,7 @@ pub const BuiltinExtensionHost = struct {
 
     /// Modal extensions own independent key handlers and dispose them together.
     pub fn createChild(self: *BuiltinExtensionHost) !*BuiltinExtensionHost {
-        return init(self.allocator, self.workbench);
+        return init(self.allocator, self.services);
     }
 
     pub fn deinit(self: *BuiltinExtensionHost) void {
@@ -113,7 +143,7 @@ pub const BuiltinExtensionHost = struct {
     pub fn registerPortActions(self: *BuiltinExtensionHost) !void {
         self.tunnel_view = @as(TunnelView, undefined);
         errdefer self.tunnel_view = null;
-        try self.tunnel_view.?.init(&self.context, self.workbench.quick_access.inputService(), &self.tunnel_service);
+        try self.tunnel_view.?.init(&self.context, self.services.quick_input, &self.tunnel_service);
     }
 
     pub fn registerBuiltin(self: *BuiltinExtensionHost, extension: builtin_extension.IBuiltinExtension) !void {
@@ -144,12 +174,12 @@ pub const BuiltinExtensionHost = struct {
     }
 
     fn setActiveMessage(self: *BuiltinExtensionHost, comptime fmt: []const u8, args: anytype) void {
-        if (self.workbench.activeTab()) |tab| tab.editor.setMessage(fmt, args);
+        if (self.services.editors.activeEditorPane()) |tab| if (tab.codeEditorControl()) |editor| editor.setMessage(fmt, args);
     }
 
     fn activeEditorInterface(self: *BuiltinExtensionHost) ?ITextEditor {
-        const tab = self.workbench.activeTab() orelse return null;
-        var editor = editorInterface(tab.editor);
+        const tab = self.services.editors.activeEditorPane() orelse return null;
+        var editor = editorInterface(tab.codeEditorControl() orelse return null);
         editor.keyboard_input = .{
             .context = tab,
             .dispatch = tabDispatchEditorKey,
@@ -368,12 +398,49 @@ fn activeTextEditor(context: *anyopaque) ?ITextEditor {
     return self.activeEditorInterface();
 }
 
-fn onDidChangeActiveEditor(_: *anyopaque, _: extension_api.EditorChangeListener) anyerror!extension_api.IDisposable {
-    // The terminal currently has no generic active-editor event bus. Key
-    // handlers observe the active editor on every event; tab-switch-driven
-    // status refresh is a follow-up. Returning `none` keeps the contract
-    // explicit instead of inventing a second notification path.
-    return extension_api.IDisposable.none;
+const ActiveEditorRegistration = struct {
+    host: *BuiltinExtensionHost,
+    listener: extension_api.EditorChangeListener,
+    last_editor: ?*anyopaque,
+    active_id: usize = undefined,
+    visible_id: usize = undefined,
+
+    fn dispose(self: *ActiveEditorRegistration) void {
+        const service = self.host.services.editors;
+        service.onDidActiveEditorChange().unlisten(self.active_id);
+        service.onDidVisibleEditorsChange().unlisten(self.visible_id);
+        self.host.allocator.destroy(self);
+    }
+
+    fn onActive(_: ?*EditorInput, self: *ActiveEditorRegistration) !void {
+        self.notify();
+    }
+    fn onVisible(_: void, self: *ActiveEditorRegistration) !void {
+        self.notify();
+    }
+    fn notify(self: *ActiveEditorRegistration) void {
+        const editor = self.host.activeEditorInterface();
+        const context = if (editor) |value| value.context else null;
+        if (self.last_editor == context) return;
+        self.last_editor = context;
+        self.listener.callback(self.listener.context, editor);
+    }
+};
+
+fn onDidChangeActiveEditor(context: *anyopaque, listener: extension_api.EditorChangeListener) anyerror!extension_api.IDisposable {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    const registration = try self.allocator.create(ActiveEditorRegistration);
+    errdefer self.allocator.destroy(registration);
+    registration.* = .{
+        .host = self,
+        .listener = listener,
+        .last_editor = if (self.activeEditorInterface()) |editor| editor.context else null,
+    };
+    const service = self.services.editors;
+    registration.active_id = try service.onDidActiveEditorChange().listen(registration, ActiveEditorRegistration.onActive);
+    errdefer service.onDidActiveEditorChange().unlisten(registration.active_id);
+    registration.visible_id = try service.onDidVisibleEditorsChange().listen(registration, ActiveEditorRegistration.onVisible);
+    return extension_api.IDisposable.from(ActiveEditorRegistration, registration, ActiveEditorRegistration.dispose);
 }
 
 fn registerKeyHandler(context: *anyopaque, handler: extension_api.KeyInputHandler) anyerror!extension_api.IDisposable {
@@ -399,7 +466,7 @@ const CommandRegistration = struct {
 
     fn dispose(context: *anyopaque) void {
         const self: *CommandRegistration = @ptrCast(@alignCast(context));
-        self.host.workbench.commands.unregister(self.state.id);
+        self.host.services.commands.unregister(self.state.id);
         self.host.allocator.free(self.state.id);
         self.host.allocator.free(self.state.label);
         self.host.allocator.destroy(self.state);
@@ -423,7 +490,7 @@ fn registerCommand(
     state.* = .{ .host = self, .id = id_copy, .label = label_copy, .handler = handler };
     const registration = try self.allocator.create(CommandRegistration);
     errdefer self.allocator.destroy(registration);
-    try self.workbench.commands.register(.{
+    try self.services.commands.register(.{
         .id = state.id,
         .label = state.label,
         .category = handler.category,
@@ -436,13 +503,13 @@ fn registerCommand(
 
 fn executeCommand(context: *anyopaque, id: []const u8) anyerror!bool {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    return self.workbench.commands.platform.execute(id);
+    return self.services.commands.platform.execute(id);
 }
 
 /// Built-in API command IDs map to the model-and-position commands in goToSymbol.ts.
 fn executeLocationProvider(context: *anyopaque, arena: Allocator, id: []const u8, model: *TextModel, position: Position) ![]const extension_api.LocationLink {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    const features = self.workbench.language_features orelse return &.{};
+    const features = self.services.language_features(self.services.context) orelse return &.{};
     const symbols = @import("../../../editor/contrib/gotoSymbol/browser/goToSymbol.zig");
     const none = @import("../../../base/common/cancellation.zig").CancellationToken.None;
     const links = if (std.mem.eql(u8, id, "vscode.executeReferenceProvider"))
@@ -494,7 +561,7 @@ fn createStatusEntry(context: *anyopaque, id: []const u8, name: []const u8) anye
     errdefer self.allocator.free(id_copy);
     const name_copy = try self.allocator.dupe(u8, name);
     errdefer self.allocator.free(name_copy);
-    const accessor = try self.workbench.statusbar.addEntry(.{
+    const accessor = try self.services.statusbar.addEntry(.{
         .name = name_copy,
         .text = "",
     }, id_copy, .left, .{ .number = 50 });
@@ -518,65 +585,69 @@ fn registerTunnelProvider(context: *anyopaque, provider: tunnel.ITunnelProvider)
 
 fn createExtensionTerminal(context: *anyopaque, options: extension_api.TerminalOptions) !usize {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    const executable = try @import("../../../platform/terminal/node/terminalProfiles.zig").findTerminalExecutable(self.allocator, self.workbench.io, options.shell_path) orelse return error.ExecutableNotFound;
+    const executable = try @import("../../../platform/terminal/node/terminalProfiles.zig").findTerminalExecutable(self.allocator, self.services.io, options.shell_path) orelse return error.ExecutableNotFound;
     defer self.allocator.free(executable);
-    const instance = try self.workbench.launchTerminalProcess(options.name, executable, options.shell_args, null);
+    const instance = try self.services.launch_terminal(self.services.context, options.name, executable, options.shell_args, null);
     return instance.id;
 }
 
 fn extensionTerminalRunning(context: *anyopaque, id: usize) bool {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    const service = self.workbench.terminal_service orelse return false;
-    const instance = service.getInstanceFromId(id) orelse return false;
+    const instance = self.services.terminal_instance(self.services.context, id) orelse return false;
     return instance.process_state == .running;
 }
 
 fn sendTerminalText(context: *anyopaque, id: usize, text: []const u8) void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    const service = self.workbench.terminal_service orelse return;
-    if (service.getInstanceFromId(id)) |instance| instance.writeInput(text);
+    if (self.services.terminal_instance(self.services.context, id)) |instance| instance.writeInput(text);
 }
 
 fn updateUserConfiguration(context: *anyopaque, key: []const u8, value: ?std.json.Value) !void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    try self.workbench.setUserConfigurationValue(key, value);
+    try self.services.update_configuration(self.services.context, key, value);
 }
 
 fn setWindowMessage(context: *anyopaque, text: []const u8) void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    if (self.workbench.activeTab()) |tab| tab.editor.setMessage("{s}", .{text}) else self.workbench.setStatusHint("{s}", .{text});
+    if (self.services.editors.activeEditorPane()) |tab| {
+        if (tab.codeEditorControl()) |editor| {
+            editor.setMessage("{s}", .{text});
+            return;
+        }
+    }
+    self.services.status_hint(self.services.context, text);
 }
 
 fn forceCloseActive(context: *anyopaque) anyerror!void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    try self.workbench.forceCloseActive();
+    try self.services.force_close_active(self.services.context);
 }
 
 fn openPath(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    try self.workbench.openPath(path);
+    try self.services.open_path(self.services.context, path);
 }
 
 fn switchTab(context: *anyopaque, delta: isize) anyerror!void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    try self.workbench.switchTab(delta);
+    try self.services.switch_tab(self.services.context, delta);
 }
 
 fn getTextDocument(context: *anyopaque, path: []const u8) ?*TextModel {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    const input = self.workbench.findOpenInput(path) orelse return null;
+    const input = self.services.editors.findOpenFileInput(self.services.io, path) orelse return null;
     return input.editor.model;
 }
 
 fn getBool(context: *anyopaque, key: []const u8, default: bool) bool {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    const configuration = self.workbench.configuration orelse return default;
+    const configuration = self.services.configuration(self.services.context) orelse return default;
     return configuration.getBool(key, default);
 }
 
 fn getString(context: *anyopaque, key: []const u8) ?[]const u8 {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    const configuration = self.workbench.configuration orelse return null;
+    const configuration = self.services.configuration(self.services.context) orelse return null;
     const value = configuration.getValue(key, .{}) orelse return null;
     return switch (value.*) {
         .string => |text| text,
@@ -586,15 +657,15 @@ fn getString(context: *anyopaque, key: []const u8) ?[]const u8 {
 
 fn historyGoBack(context: *anyopaque) anyerror!bool {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    return self.workbench.goBackInHistory();
+    return self.services.history_back(self.services.context);
 }
 
 fn historyGoForward(context: *anyopaque) anyerror!bool {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    return self.workbench.goForwardInHistory();
+    return self.services.history_forward(self.services.context);
 }
 
 fn historyRecord(context: *anyopaque) void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
-    self.workbench.recordNavigationWithReason(.NAVIGATION);
+    self.services.record_navigation(self.services.context);
 }

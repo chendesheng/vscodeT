@@ -8734,3 +8734,40 @@ test "Workbench: notification center commands render an actionable notification 
     try std.testing.expectEqual(@as(usize, 0), wb.notification_service.model.notifications.items.len);
     try std.testing.expect(!controller.center.is_visible);
 }
+
+test "built-in extension active editor event follows mounted controls without an input pump" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const first = try seedFile(allocator, io, &tmp, "first.txt", "one");
+    defer allocator.free(first);
+    const second = try seedFile(allocator, io, &tmp, "second.txt", "two");
+    defer allocator.free(second);
+    const window = try TestWindow.init(allocator, io, &.{}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const State = struct {
+        first: []const u8,
+        second: []const u8,
+        count: usize = 0,
+        last: enum { none, first, second, unexpected } = .none,
+        fn changed(context: *anyopaque, editor: ?@import("../vs/workbench/api/common/extensionApi.zig").ITextEditor) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+            self.last = if (editor) |value| (if (std.mem.eql(u8, value.path, self.first)) .first else if (std.mem.eql(u8, value.path, self.second)) .second else .unexpected) else .none;
+        }
+    };
+    var state = State{ .first = first, .second = second };
+    const registration = try wb.builtin_host.context.editors.onDidChangeActiveEditor(.{ .context = &state, .callback = State.changed });
+    defer registration.dispose();
+    try wb.openPath(first);
+    try std.testing.expectEqual(@as(usize, 1), state.count);
+    try std.testing.expect(state.last == .first);
+    try wb.openPath(second);
+    try std.testing.expectEqual(@as(usize, 2), state.count);
+    try std.testing.expect(state.last == .second);
+    try wb.activateIndex(0);
+    try std.testing.expect(state.last == .first);
+    try std.testing.expectEqual(@as(usize, 3), state.count);
+}

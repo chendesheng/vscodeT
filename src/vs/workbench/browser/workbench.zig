@@ -180,6 +180,7 @@ const replace_types = replace_service_mod;
 const search_configuration = @import("../contrib/search/common/searchConfiguration.zig");
 const tree = @import("../contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
 const group_mod = @import("../common/editor/editorGroupModel.zig");
+const editor_service_mod = @import("../services/editor/browser/editorService.zig");
 const editor_groups = @import("../services/editor/common/editorGroupsService.zig");
 const extensions_registry = @import("../services/extensions/common/extensionsRegistry.zig");
 const time_compat = @import("../../base/common/timeCompat.zig");
@@ -1366,11 +1367,76 @@ pub const Workbench = struct {
         }
 
         self.simple_browser = .{ .allocator = self.allocator, .io = self.io, .quick_input = self.quick_access.inputService(), .context = self, .open_editor = openTerminalEditorWithProfile, .report_error = reportEditorMessage };
-        self.builtin_host = try @import("../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost.init(self.allocator, self);
+        self.builtin_host = try @import("../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost.init(self.allocator, self.builtinExtensionServices());
         self.statusbar.setCommandExecutor(.{
             .context = self,
             .execute = executeStatusbarCommand,
         });
+    }
+
+    pub fn builtinExtensionServices(self: *Workbench) @import("../api/browser/builtinExtensionHost.zig").Services {
+        const Host = struct {
+            fn get(context: *anyopaque) *Workbench {
+                return @ptrCast(@alignCast(context));
+            }
+            fn languageFeatures(context: *anyopaque) ?*LanguageFeaturesService {
+                return get(context).language_features;
+            }
+            fn configuration(context: *anyopaque) ?*ConfigurationService {
+                return get(context).configuration;
+            }
+            fn launchTerminal(context: *anyopaque, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !*terminal_service_mod.TerminalInstance {
+                return get(context).launchTerminalProcess(name, executable, args, cwd);
+            }
+            fn terminalInstance(context: *anyopaque, id: usize) ?*terminal_service_mod.TerminalInstance {
+                const service = get(context).terminal_service orelse return null;
+                return service.getInstanceFromId(id);
+            }
+            fn updateConfiguration(context: *anyopaque, key: []const u8, value: ?std.json.Value) !void {
+                try get(context).setUserConfigurationValue(key, value);
+            }
+            fn statusHint(context: *anyopaque, message: []const u8) void {
+                get(context).setStatusHint("{s}", .{message});
+            }
+            fn closeActive(context: *anyopaque) !void {
+                try get(context).forceCloseActive();
+            }
+            fn openPath(context: *anyopaque, path: []const u8) !void {
+                try get(context).openPath(path);
+            }
+            fn switchTab(context: *anyopaque, delta: isize) !void {
+                try get(context).switchTab(delta);
+            }
+            fn historyBack(context: *anyopaque) !bool {
+                return get(context).goBackInHistory();
+            }
+            fn historyForward(context: *anyopaque) !bool {
+                return get(context).goForwardInHistory();
+            }
+            fn recordNavigation(context: *anyopaque) void {
+                get(context).recordNavigationWithReason(.NAVIGATION);
+            }
+        };
+        return .{
+            .context = self,
+            .io = self.io,
+            .editors = .{ .part = self.part },
+            .commands = &self.commands,
+            .statusbar = &self.statusbar,
+            .quick_input = self.quick_access.inputService(),
+            .language_features = Host.languageFeatures,
+            .configuration = Host.configuration,
+            .launch_terminal = Host.launchTerminal,
+            .terminal_instance = Host.terminalInstance,
+            .update_configuration = Host.updateConfiguration,
+            .status_hint = Host.statusHint,
+            .force_close_active = Host.closeActive,
+            .open_path = Host.openPath,
+            .switch_tab = Host.switchTab,
+            .history_back = Host.historyBack,
+            .history_forward = Host.historyForward,
+            .record_navigation = Host.recordNavigation,
+        };
     }
 
     fn registerDefaultCommands(self: *Workbench) !void {
@@ -3592,14 +3658,7 @@ pub const Workbench = struct {
         return self.service.count();
     }
 
-    pub const OpenOptions = struct {
-        /// Preview editors are replaced by the next preview in the group.
-        pinned: bool = true,
-        preserve_focus: bool = false,
-        /// Open the file in a text editor even when its extension normally
-        /// selects the image preview (the "Open in Text Editor" action).
-        force_text: bool = false,
-    };
+    pub const OpenOptions = editor_service_mod.OpenOptions;
 
     /// Opens a path through the editor-groups service. If the resource is
     /// already open in another group, the service reveals that group and the
@@ -5073,58 +5132,16 @@ pub const Workbench = struct {
         return self.openPathWithOptions(path, .{ .pinned = false });
     }
 
-    /// True when two filesystem paths name the same file after resolving
-    /// relative segments. The editor keeps the path spelling supplied by the
-    /// caller while language providers return canonical absolute URIs, so a
-    /// plain string compare is not enough to detect the current buffer.
     fn samePath(self: *Workbench, left: []const u8, right: []const u8) bool {
-        if (std.mem.eql(u8, left, right)) return true;
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const resolved_left = self.normalizePath(arena.allocator(), left) catch return false;
-        const resolved_right = self.normalizePath(arena.allocator(), right) catch return false;
-        return std.mem.eql(u8, resolved_left, resolved_right);
+        return text_files.samePath(self.allocator, self.io, left, right);
     }
 
-    /// Resolves a path to an absolute, normalized spelling. Existing files go
-    /// through `realpath` so symlinks compare equal; otherwise the path is
-    /// joined with the current directory and normalized lexically.
-    fn normalizePath(self: *Workbench, allocator: Allocator, path: []const u8) ![]const u8 {
-        var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
-        if (Io.Dir.cwd().realPathFile(self.io, path, &buffer)) |length| {
-            return try allocator.dupe(u8, buffer[0..length]);
-        } else |_| {}
-        var cwd_buffer: [Io.Dir.max_path_bytes]u8 = undefined;
-        const cwd_length = try Io.Dir.cwd().realPathFile(self.io, ".", &cwd_buffer);
-        return try std.fs.path.resolve(allocator, &.{ cwd_buffer[0..cwd_length], path });
-    }
-
-    /// Finds the tab/input already showing `path`, if the group model still
-    /// owns it. Reusing it avoids reading and constructing a whole editor for
-    /// a file that is already open.
     pub fn findOpenInput(self: *Workbench, path: []const u8) ?*FileEditorInput {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                const file_input = tab.file_input orelse continue;
-                if (!self.samePath(file_input.editor.path, path)) continue;
-                if (!pane.group.model.contains(.{ .input = &file_input.base }, .{})) continue;
-                return file_input;
-            }
-        }
-        return null;
+        return (editor_service_mod.EditorService{ .part = self.part }).findOpenFileInput(self.io, path);
     }
 
-    /// Finds an already-open image preview tab for `path`.
     pub fn findOpenImageInput(self: *Workbench, path: []const u8) ?*ImagePreviewEditorInput {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                const input = tab.image_input orelse continue;
-                if (!self.samePath(input.path, path)) continue;
-                if (!pane.group.model.contains(.{ .input = &input.base }, .{})) continue;
-                return input;
-            }
-        }
-        return null;
+        return (editor_service_mod.EditorService{ .part = self.part }).findOpenImageInput(self.io, path);
     }
 
     fn openExistingImageInput(
@@ -5190,24 +5207,33 @@ pub const Workbench = struct {
     }
 
     fn openExistingInput(self: *Workbench, path: []const u8, existing: *FileEditorInput, options: OpenOptions) !void {
-        const opened = try self.service.openEditor(
-            &existing.base,
-            null,
-            .{ .open = .{ .pinned = options.pinned, .active = true } },
-        );
-        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
+        const service = editor_service_mod.EditorService{ .part = self.part };
+        try self.finishTextEditorOpen(path, try service.openExistingFileInput(existing, options), options);
+    }
+
+    fn openCreatedTextEditor(self: *Workbench, path: []const u8, editor: *Editor, options: OpenOptions) !void {
+        self.applyConfiguredLanguageAssociations(editor);
+        if (self.language_features) |features| editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
+        const service = editor_service_mod.EditorService{ .part = self.part };
+        try self.finishTextEditorOpen(path, try service.openTextEditor(editor, options, &self.images), options);
+    }
+
+    fn finishTextEditorOpen(self: *Workbench, path: []const u8, opened: editor_service_mod.OpenedTextEditor, options: OpenOptions) !void {
         if (self.autoRevealEnabled(path)) {
             if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
         }
-        if (pane.tabForInput(opened.result.editor)) |tab| {
-            try pane.activateTab(tab);
+        if (opened.tab) |tab| {
             tab.setImageRuntime(&self.images);
+            if (opened.is_new) {
+                self.applyEditorSettingsToTab(tab);
+                self.registerWorkingCopy(tab);
+            }
             if (self.language_features) |features| tab.attachLanguageRegistry(features);
             try tab.ensureControllers();
-            if (!options.preserve_focus) tab.focusEditor();
+            if (!opened.is_new and !options.preserve_focus) tab.focusEditor();
         }
         try self.history.add(path);
-        self.pruneTabs(pane);
+        self.pruneTabs(opened.pane);
     }
 
     pub fn openPathWithOptions(self: *Workbench, path: []const u8, options: OpenOptions) !void {
@@ -5223,50 +5249,7 @@ pub const Workbench = struct {
         }
         const size = (self.activePane() orelse return error.GroupPaneMissing).contentDimensions();
         const editor = try Editor.createWithExtensionsOptions(self.allocator, self.io, path, size.width, size.height, self.declarative, self.json_client, .{ .reserve_scrollbar = true });
-        errdefer {
-            editor.deinit();
-            self.allocator.destroy(editor);
-        }
-        self.applyConfiguredLanguageAssociations(editor);
-        if (self.language_features) |features| {
-            editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        }
-        const input = try FileEditorInput.init(self.allocator, editor);
-        errdefer input.deinit();
-
-        const opened = try self.service.openEditor(
-            &input.base,
-            null,
-            .{ .open = .{ .pinned = options.pinned, .active = true } },
-        );
-
-        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
-        if (self.autoRevealEnabled(path)) {
-            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
-        }
-        if (!opened.result.is_new) {
-            input.deinit();
-            if (pane.tabForInput(opened.result.editor)) |tab| {
-                try pane.activateTab(tab);
-                if (self.language_features) |features| tab.attachLanguageRegistry(features);
-                try tab.ensureControllers();
-                if (!options.preserve_focus) tab.focusEditor();
-            }
-            try self.history.add(path);
-            self.pruneTabs(pane);
-            return;
-        }
-
-        const tab = try Tab.initFromInput(self.allocator, input);
-        tab.setImageRuntime(&self.images);
-        try tab.view.setStatusBarVisible(false);
-        try pane.addTab(tab);
-        self.applyEditorSettingsToTab(tab);
-        self.registerWorkingCopy(tab);
-        if (self.language_features) |features| tab.attachLanguageRegistry(features);
-        try tab.ensureControllers();
-        try self.history.add(path);
-        self.pruneTabs(pane);
+        try self.openCreatedTextEditor(path, editor, options);
     }
 
     /// The Io used for interactive reads and network work. Callers pass this
@@ -5364,50 +5347,7 @@ pub const Workbench = struct {
             self.json_client,
             .{ .reserve_scrollbar = true },
         );
-        errdefer {
-            editor.deinit();
-            self.allocator.destroy(editor);
-        }
-        self.applyConfiguredLanguageAssociations(editor);
-        if (self.language_features) |features| {
-            editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
-        }
-        const input = try FileEditorInput.init(self.allocator, editor);
-        errdefer input.deinit();
-
-        const opened = try self.service.openEditor(
-            &input.base,
-            null,
-            .{ .open = .{ .pinned = options.pinned, .active = true } },
-        );
-
-        const pane = self.paneForGroup(opened.group) orelse return error.GroupPaneMissing;
-        if (self.autoRevealEnabled(path)) {
-            if (self.sidebar) |sidebar| sidebar.revealPath(path) catch {};
-        }
-        if (!opened.result.is_new) {
-            input.deinit();
-            if (pane.tabForInput(opened.result.editor)) |tab| {
-                try pane.activateTab(tab);
-                if (self.language_features) |features| tab.attachLanguageRegistry(features);
-                try tab.ensureControllers();
-                if (!options.preserve_focus) tab.focusEditor();
-            }
-            try self.history.add(path);
-            self.pruneTabs(pane);
-            return;
-        }
-
-        const tab = try Tab.initFromInput(self.allocator, input);
-        tab.setImageRuntime(&self.images);
-        try tab.view.setStatusBarVisible(false);
-        try pane.addTab(tab);
-        self.applyEditorSettingsToTab(tab);
-        self.registerWorkingCopy(tab);
-        if (self.language_features) |features| tab.attachLanguageRegistry(features);
-        try tab.ensureControllers();
-        try self.history.add(path);
-        self.pruneTabs(pane);
+        try self.openCreatedTextEditor(path, editor, options);
     }
 
     /// Drains completed async reads on the TUI thread. Returns true when a

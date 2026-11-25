@@ -8,7 +8,6 @@ src/vs/editor/contrib/stickyScroll/test/browser/stickyScroll.test.zig -> src/tui
 src/vs/editor/contrib/suggest/test/browser/suggest.test.zig -> src/tui/editorView.zig
 src/vs/editor/standalone/browser/standaloneThemeService.zig -> src/tui/editorView.zig
 src/vs/workbench/api/browser/builtinExtensionHost.zig -> src/tui/editorInputDispatch.zig
-src/vs/workbench/api/browser/builtinExtensionHost.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/api/browser/extensionHostAdapter.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorInputDispatch.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorView.zig

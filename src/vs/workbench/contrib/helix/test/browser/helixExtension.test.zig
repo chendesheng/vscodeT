@@ -24,7 +24,7 @@ test "Helix extension: registers a key handler and edits through the host" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
 
-    var host = try BuiltinExtensionHost.init(allocator, workbench);
+    var host = try BuiltinExtensionHost.init(allocator, workbench.builtinExtensionServices());
     defer host.deinit();
     try host.registerBuiltin(try helix_extension.create(allocator));
     host.activate();
@@ -61,7 +61,7 @@ test "Helix extension: deactivation removes its key handler" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
 
-    var host = try BuiltinExtensionHost.init(allocator, workbench);
+    var host = try BuiltinExtensionHost.init(allocator, workbench.builtinExtensionServices());
     defer host.deinit();
     try host.registerBuiltin(try helix_extension.create(allocator));
     host.activate();
@@ -95,7 +95,7 @@ test "Helix extension: Insert mode pairs braces, accepts completion and repeats 
     });
     defer registration.dispose();
 
-    const host = try BuiltinExtensionHost.init(allocator, workbench);
+    const host = try BuiltinExtensionHost.init(allocator, workbench.builtinExtensionServices());
     defer host.deinit();
     try host.registerBuiltin(try helix_extension.create(allocator));
     host.activate();
@@ -175,7 +175,7 @@ test "Helix extension: read-only edits report an error and do not crash" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
 
-    var host = try BuiltinExtensionHost.init(allocator, workbench);
+    var host = try BuiltinExtensionHost.init(allocator, workbench.builtinExtensionServices());
     defer host.deinit();
     try host.registerBuiltin(try helix_extension.create(allocator));
     host.activate();

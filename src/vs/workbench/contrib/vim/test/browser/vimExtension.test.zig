@@ -24,7 +24,7 @@ test "Vim extension: registers a key handler and edits through the host" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
 
-    var host = try BuiltinExtensionHost.init(allocator, workbench);
+    var host = try BuiltinExtensionHost.init(allocator, workbench.builtinExtensionServices());
     defer host.deinit();
     try host.registerBuiltin(try vim_extension.create(allocator));
     host.activate();
@@ -61,7 +61,7 @@ test "Vim extension: deactivation removes its key handler" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
 
-    var host = try BuiltinExtensionHost.init(allocator, workbench);
+    var host = try BuiltinExtensionHost.init(allocator, workbench.builtinExtensionServices());
     defer host.deinit();
     try host.registerBuiltin(try vim_extension.create(allocator));
     host.activate();
@@ -95,7 +95,7 @@ test "Vim: insert mode uses editor typing and completion" {
     });
     defer registration.dispose();
 
-    const host = try BuiltinExtensionHost.init(allocator, workbench);
+    const host = try BuiltinExtensionHost.init(allocator, workbench.builtinExtensionServices());
     defer host.deinit();
     try host.registerBuiltin(try vim_extension.create(allocator));
     host.activate();
