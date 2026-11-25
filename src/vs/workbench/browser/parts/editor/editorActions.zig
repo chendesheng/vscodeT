@@ -618,3 +618,17 @@ pub const GroupActions = struct {
         return self.action("workbench.action.joinAllGroups", "Join All Editor Groups", joinAllGroups, .{});
     }
 };
+
+/// Terminal alias retained for the original palette inventory. The actual
+/// group maximization is the EditorGroupsService arrangement operation.
+pub const maximize_editor_action: actions.Action2 = .{
+    .command = .{ .id = "workbench.action.maximizeEditor", .title = "Maximize Editor Group", .category = "View" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = maximizeEditorGroup,
+};
+
+fn maximizeEditorGroup(_: *anyopaque, accessor: ServicesAccessor) !void {
+    const service = try accessor.get(groups.editor_groups_service_id);
+    service.arrangeGroups(.MAXIMIZE);
+}

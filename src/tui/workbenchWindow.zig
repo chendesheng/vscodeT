@@ -677,6 +677,14 @@ pub const TerminalWorkbench = struct {
             }.run,
             .request_render = requestWorkbenchFrame,
             .focus_editor = breadcrumbFocusEditor,
+            .focus_breadcrumbs = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    host.setFocus(.breadcrumbs);
+                    host.statusbar.main_part.clearFocus();
+                    if (host.search_window.view) |view| view.blur();
+                }
+            }.run,
             .layout_changed = struct {
                 fn run(context: *anyopaque) void {
                     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -1059,6 +1067,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.part.on_did_focus.listen(self, onEditorPartFocus);
         _ = try self.part.on_did_add_group.listenSignal(self, onEditorGroupsChanged);
         _ = try self.part.on_did_move_group.listenSignal(self, onEditorGroupsChanged);
+        _ = try self.part.on_did_change_group_maximized.listenSignal(self, onEditorGroupsChanged);
         try self.markdown_previews.registerListeners();
         try self.history.registerListeners(.{
             .context = self,
@@ -1518,19 +1527,11 @@ pub const TerminalWorkbench = struct {
         for (self.editor_status.?.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/contrib/files/browser/fileCommands.zig").editor_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/browser/actions/listCommands.zig").list_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        const after_file_actions = [_]commands_mod.CommandInfo{
-            .{ .id = "github.publish", .label = "Publish to GitHub", .category = "GitHub", .context = self, .run = commandGithubPublish },
-            .{ .id = "simpleBrowser.show", .label = "Show", .category = "Simple Browser", .context = &self.simple_browser, .run = SimpleBrowserManager.run },
-            .{ .id = "workbench.action.browser.open", .label = "Open Integrated Browser", .show_in_palette = false, .context = &self.simple_browser, .run = SimpleBrowserManager.run },
-        };
-        for (after_file_actions) |command| try self.commands.register(command);
+        try self.commands.register(.{ .id = "github.publish", .label = "Publish to GitHub", .category = "GitHub", .context = self, .run = commandGithubPublish });
+        for (self.simple_browser.actions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/contrib/preferences/browser/preferences.contribution.zig").preferences_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.group_actions.closeAndReopenActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        const after_preferences_actions = [_]commands_mod.CommandInfo{
-            .{ .id = "breadcrumbs.focusAndSelect", .label = "Focus and Select Breadcrumbs", .category = "View", .context = self, .run = commandFocusAndSelectBreadcrumbs },
-            .{ .id = "breadcrumbs.focus", .label = "Focus Breadcrumbs", .category = "View", .context = self, .run = commandFocusBreadcrumbs },
-        };
-        for (after_preferences_actions) |command| try self.commands.register(command);
+        for (self.breadcrumbs.focusActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const outline_actions = @import("../vs/workbench/contrib/outline/browser/outlineActions.zig");
         try self.commands.registerAction(self.instantiation, outline_actions.focus_action);
         try self.commands.register(.{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions });
@@ -1546,17 +1547,14 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, editor_actions.navigate_between_groups_action);
         try self.commands.registerAction(self.instantiation, editor_actions.reset_group_sizes_action);
         for (@import("../vs/workbench/browser/actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.commands.register(.{ .id = "workbench.action.maximizeEditor", .label = "Maximize Editor Group", .category = "View", .context = self, .run = commandMaximizeEditor });
+        try self.commands.registerAction(self.instantiation, editor_actions.maximize_editor_action);
         try self.commands.registerAction(self.instantiation, panel_actions.close_panel_action);
         for (self.group_actions.closeEditorsActions()) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, self.group_actions.joinAllAction());
         for (self.group_actions.navigationActions()) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, terminal_actions.editor_action);
-        const after_terminal_editor = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.view.explorer", .label = "View: Show Explorer", .category = "View", .context = self, .run = commandViewExplorer },
-            .{ .id = "workbench.view.scm", .label = "View: Show Source Control", .category = "View", .context = self, .run = commandViewScm },
-        };
-        for (after_terminal_editor) |command| try self.commands.register(command);
+        try self.commands.registerAction(self.instantiation, @import("../vs/workbench/contrib/files/browser/explorerViewlet.zig").show_explorer_action);
+        try self.commands.registerAction(self.instantiation, scm_contribution.show_scm_action);
         for (markers_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, panel_actions.toggle_panel_action);
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.toggle_action);
@@ -3531,22 +3529,12 @@ pub const TerminalWorkbench = struct {
         try self.focusGroupLocation(.next);
     }
 
-    /// Port of `workbench.action.maximizeEditor`: expand the active group.
     pub fn maximizeActiveGroup(self: *TerminalWorkbench) void {
-        const pane = self.activePane() orelse return;
-        if (self.part.maximized_group == pane) return;
-        self.service.activateGroup(pane.group);
-        pane.syncActivePane();
-        self.part.setMaximizedGroup(pane);
-        self.layoutAll();
-        self.requestFrame();
+        self.part.arrangeGroups(.MAXIMIZE);
     }
 
     pub fn minimizeActiveGroup(self: *TerminalWorkbench) void {
-        if (self.part.maximized_group == null) return;
-        self.part.setMaximizedGroup(null);
-        self.layoutAll();
-        self.requestFrame();
+        self.part.restoreGroupSizes();
     }
 
     pub fn closePanel(self: *TerminalWorkbench) void {
@@ -3759,19 +3747,8 @@ pub const TerminalWorkbench = struct {
         try self.part.closeEditor(pane, tab, self.groupTransferHost());
     }
 
-    /// Upstream `toggleExpandGroup`: the group temporarily occupies the whole
-    /// editor area; its siblings keep their grid rects and return unchanged
-    /// when the expanded group is toggled off.
     pub fn toggleExpandGroup(self: *TerminalWorkbench, pane: *GroupPane) void {
-        if (self.part.maximized_group == pane) {
-            self.part.setMaximizedGroup(null);
-        } else {
-            self.service.activateGroup(pane.group);
-            pane.syncActivePane();
-            self.part.setMaximizedGroup(pane);
-        }
-        self.layoutAll();
-        self.requestFrame();
+        self.part.toggleExpandGroup(pane);
     }
 
     pub fn ensureContextKeys(self: *TerminalWorkbench) !*context_key_mod.ContextKeyService {
@@ -4546,24 +4523,6 @@ pub const TerminalWorkbench = struct {
         if (self.frame_scheduler) |scheduler| scheduler.request(scheduler.context);
     }
 
-    pub fn focusBreadcrumbs(self: *TerminalWorkbench, select: bool) bool {
-        const pane = self.activePane() orelse return false;
-        const control = self.ensureBreadcrumbsControl(pane) catch return false;
-        self.setFocus(.breadcrumbs);
-        self.statusbar.main_part.clearFocus();
-        if (self.search_window.view) |view| view.blur();
-        control.setFocused(true);
-        if (select) {
-            _ = control.focusAndSelect();
-        } else {
-            _ = control.focusAndSelect();
-            control.widget.setSelection(null);
-            control.widget.setFocused(control.widget.itemCount() -| 1);
-        }
-        self.requestFrame();
-        return true;
-    }
-
     pub fn resize(self: *TerminalWorkbench, cols: usize, rows: usize) !void {
         _ = self.cancelSashDrag();
         self.editor_drop_target.clearTabDrag();
@@ -4919,13 +4878,6 @@ fn problemsFocusEditor(context: *anyopaque) void {
     if (self.activeTab()) |tab| tab.focusEditor();
 }
 
-fn commandViewScm(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    if (!try self.showActivityById("scm")) return;
-    self.focusSidebar();
-    if (self.scm.changes) |view| view.refresh();
-}
-
 fn commandScmMenu(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const container = self.scm.container orelse return;
@@ -4954,16 +4906,6 @@ fn runTitleMenuAction(self: *TerminalWorkbench, _: *MenuActionContext, id: []con
     try self.commands.execute(id);
 }
 
-fn commandFocusAndSelectBreadcrumbs(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    _ = self.focusBreadcrumbs(true);
-}
-
-fn commandFocusBreadcrumbs(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    _ = self.focusBreadcrumbs(false);
-}
-
 fn commandOutlineMoreActions(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const view = self.outline_view orelse return;
@@ -4981,11 +4923,6 @@ fn focusWindowEditor(context: *anyopaque) void {
 fn commandImageOpenInTextEditor(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     try self.openActiveImageAsText();
-}
-
-fn commandMaximizeEditor(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    self.maximizeActiveGroup();
 }
 
 fn commandGithubPublish(context: *anyopaque) anyerror!void {
@@ -5007,11 +4944,6 @@ fn reportEditorMessage(context: *anyopaque, message: []const u8) bool {
     const tab = self.activeTab() orelse return false;
     tab.editor.setMessage("{s}", .{message});
     return true;
-}
-
-fn commandViewExplorer(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.showExplorer();
 }
 
 fn statusFocusEditor(context: *anyopaque) void {

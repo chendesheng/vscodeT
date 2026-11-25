@@ -268,11 +268,14 @@ pub fn EditorPart(comptime GroupView: type) type {
         }
 
         pub fn arrangeGroups(self: *Self, arrangement: editor_groups.GroupsArrangement) void {
-            if (self.count() < 2) return;
             switch (arrangement) {
-                .EVEN => self.root.distributeViewSizes(),
+                .EVEN => {
+                    if (self.count() < 2) return;
+                    self.root.distributeViewSizes();
+                    self.layout(self.viewport);
+                },
+                .MAXIMIZE => self.maximizeGroup(self.activeView() orelse return),
             }
-            self.layout(self.viewport);
         }
 
         fn activeGroup(context: *anyopaque) ?editor_groups.IEditorGroup {
@@ -395,6 +398,24 @@ pub fn EditorPart(comptime GroupView: type) type {
             );
             self.on_did_add_group.fire(view) catch {};
             return view;
+        }
+
+        pub fn maximizeGroup(self: *Self, view: *GroupView) void {
+            if (self.maximized_group == view) return;
+            self.service.activateGroup(view.group);
+            view.syncActivePane();
+            self.setMaximizedGroup(view);
+            self.layout(self.viewport);
+        }
+
+        pub fn restoreGroupSizes(self: *Self) void {
+            if (self.maximized_group == null) return;
+            self.setMaximizedGroup(null);
+            self.layout(self.viewport);
+        }
+
+        pub fn toggleExpandGroup(self: *Self, view: *GroupView) void {
+            if (self.maximized_group == view) self.restoreGroupSizes() else self.maximizeGroup(view);
         }
 
         pub fn setMaximizedGroup(self: *Self, view: ?*GroupView) void {

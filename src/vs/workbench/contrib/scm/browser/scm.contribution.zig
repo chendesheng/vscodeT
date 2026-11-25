@@ -230,3 +230,22 @@ pub fn registerViewContainer(registry: *@import("../../../common/views.zig").Vie
         .order = 2,
     }, .sidebar, .{});
 }
+
+const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
+const Accessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const pane_composite = @import("../../../services/panecomposite/browser/panecomposite.zig");
+const views_service = @import("../../../services/views/common/viewsService.zig");
+
+pub const show_scm_action: Action2 = .{
+    .command = .{ .id = "workbench.view.scm", .title = "View: Show Source Control", .category = "View" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = showSourceControl,
+};
+
+fn showSourceControl(_: *anyopaque, accessor: Accessor) !void {
+    const service = try accessor.get(pane_composite.pane_composite_part_service_id);
+    if (!try service.openPaneComposite("scm", .sidebar, true)) return;
+    const views = try accessor.get(views_service.views_service_id);
+    if (views.getViewWithId(scm_view.SCMViewPane)) |view| view.refresh();
+}

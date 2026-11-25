@@ -491,6 +491,7 @@ pub const BreadcrumbsControlCollection = struct {
         open_file: *const fn (*anyopaque, []const u8) anyerror!void,
         request_render: *const fn (*anyopaque) void,
         focus_editor: *const fn (*anyopaque) void,
+        focus_breadcrumbs: *const fn (*anyopaque) void,
         layout_changed: *const fn (*anyopaque) void,
     };
 
@@ -581,6 +582,45 @@ pub const BreadcrumbsControlCollection = struct {
         while (it.next()) |entry| if (entry.*.control) |control| {
             control.setThemeColors(palette);
             control.rebuildItems() catch {};
+        };
+    }
+
+    // Upstream focusAndSelectHandler: resolve the active group's registered
+    // widget, focus the final item, and select it with Payload_Pick when asked.
+    pub fn focusAndSelectHandler(self: *BreadcrumbsControlCollection, select: bool) !void {
+        const pane = self.part.activeView() orelse return;
+        const control: *BreadcrumbsControl = @ptrCast(@alignCast(self.service.getWidget(pane.group.id) orelse return));
+        if (!control.isVisible()) return;
+        const count = control.widget.itemCount();
+        if (count == 0) return;
+        self.host.focus_breadcrumbs(self.host.context);
+        control.setFocused(true);
+        try control.widget.emitFocus(count - 1);
+        if (select) _ = try control.selectIndex(count - 1);
+        self.host.request_render(self.host.context);
+    }
+
+    const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
+    const Accessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
+    fn focusAction(self: *BreadcrumbsControlCollection, comptime select: bool, id: []const u8, label: []const u8) Action2 {
+        return .{
+            .command = .{ .id = id, .title = label, .category = "View" },
+            .f1 = true,
+            .context = self,
+            .run_fn = struct {
+                fn run(context: *anyopaque, _: Accessor) !void {
+                    const collection: *BreadcrumbsControlCollection = @ptrCast(@alignCast(context));
+                    try collection.focusAndSelectHandler(select);
+                }
+            }.run,
+        };
+    }
+
+    pub fn focusActions(self: *BreadcrumbsControlCollection) [2]Action2 {
+        return .{
+            self.focusAction(true, "breadcrumbs.focusAndSelect", "Focus and Select Breadcrumbs"),
+            self.focusAction(false, "breadcrumbs.focus", "Focus Breadcrumbs"),
         };
     }
 

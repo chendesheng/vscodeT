@@ -4109,6 +4109,14 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     try std.testing.expect(workbench.breadcrumbs.pickerVisible());
     try std.testing.expect(workbench.breadcrumbs.picker.?.file.?.selectedPath() != null);
     try std.testing.expect(terminal_workbench.handleBreadcrumbPopupKey(workbench, &escape));
+    try workbench.commands.execute("breadcrumbs.focus");
+    try std.testing.expectEqual(Focus.breadcrumbs, workbench.focus);
+    try std.testing.expectEqual(control.widget.itemCount() - 1, control.widget.getFocused().?);
+    try std.testing.expect(!workbench.breadcrumbs.pickerVisible());
+    try workbench.commands.execute("breadcrumbs.focusAndSelect");
+    try std.testing.expect(workbench.breadcrumbs.pickerVisible());
+    try std.testing.expect(workbench.breadcrumbs.picker.?.file.?.selectedPath() != null);
+    try std.testing.expect(terminal_workbench.handleBreadcrumbPopupKey(workbench, &escape));
 }
 
 test "Workbench: breadcrumb symbols come from a registered outline provider" {

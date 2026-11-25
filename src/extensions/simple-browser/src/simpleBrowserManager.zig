@@ -29,6 +29,20 @@ pub const SimpleBrowserManager = struct {
         try self.open_editor(self.context, .{ .path = executable, .args = &.{ "-restrictions=exec,shell", url }, .profile_name = "Simple Browser" });
     }
 
+    const Action2 = @import("../../../vs/platform/actions/common/actions.zig").Action2;
+    const Accessor = @import("../../../vs/platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
+    pub fn actions(self: *SimpleBrowserManager) [2]Action2 {
+        return .{
+            .{ .command = .{ .id = "simpleBrowser.show", .title = "Show", .category = "Simple Browser" }, .f1 = true, .context = self, .run_fn = runAction },
+            .{ .command = .{ .id = "workbench.action.browser.open", .title = "Open Integrated Browser" }, .f1 = false, .context = self, .run_fn = runAction },
+        };
+    }
+
+    fn runAction(context: *anyopaque, _: Accessor) !void {
+        try run(context);
+    }
+
     pub fn run(context: *anyopaque) !void {
         const self: *SimpleBrowserManager = @ptrCast(@alignCast(context));
         try self.show(null);

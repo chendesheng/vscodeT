@@ -79,7 +79,7 @@ const instantiation = @import("../../../../platform/instantiation/common/instant
 pub const editor_groups_service_id = instantiation.ServiceIdentifier(IEditorGroupsService, "editorGroupsService");
 
 /// Portable arrangement currently supported by the binary terminal grid.
-pub const GroupsArrangement = enum { EVEN };
+pub const GroupsArrangement = enum { EVEN, MAXIMIZE };
 
 pub const IEditorGroupsService = struct {
     context: *anyopaque,
