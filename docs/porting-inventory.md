@@ -1407,3 +1407,9 @@ Use this for every phase and every extracted module:
 - [ ] `zig build`, `zig build test --summary all`, `zig fmt --check`, and
       `git diff --check` pass.
 - [ ] The working tree contains only intentional changes.
+
+The Node and built-in extension-host adapters use explicit editor, command,
+configuration, quick input, notification, status and terminal service inputs.
+`extensionHostServices.zig` is the transitional Zig composition adapter for
+window actions still owned by the terminal shell; neither runtime adapter
+imports the Workbench shell.

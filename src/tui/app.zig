@@ -646,7 +646,7 @@ pub fn main(init: std.process.Init) !void {
     if (extension_paths.items.len > 0) {
         if (profile.user_data_dir) |user_data_dir| {
             std.Io.Dir.cwd().createDirPath(io, user_data_dir) catch {};
-            extension_host = extensions.Extensions.init(allocator, io, workbench, extension_paths.items, user_data_dir, runtime_dir) catch |err| blk: {
+            extension_host = extensions.Extensions.init(allocator, io, extensions.Services.bind(workbench), extension_paths.items, user_data_dir, runtime_dir) catch |err| blk: {
                 if (err == error.ExtensionHostBundleMissing) {
                     report(log_service, "extension host disabled: installed extensionHost.mjs is missing; run `zig build host` (details in README)", .{});
                 } else {

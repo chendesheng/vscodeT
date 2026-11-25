@@ -3645,9 +3645,7 @@ pub const Workbench = struct {
     }
 
     pub fn tabCount(self: *Workbench) usize {
-        var count: usize = 0;
-        for (self.part.group_views.items) |pane| count += pane.tabs.items.len;
-        return count;
+        return (editor_service_mod.EditorService{ .part = self.part }).tabCount();
     }
 
     pub fn groupCount(self: *const Workbench) usize {
@@ -5928,12 +5926,7 @@ pub const Workbench = struct {
     /// `workbench.editor.openSideBySideDirection` (upstream
     /// `preferredSideBySideGroupDirection`).
     pub fn preferredSideBySideDirection(self: *Workbench) editor_groups.GroupDirection {
-        if (self.configuration) |configuration| {
-            if (configuration.getValue("workbench.editor.openSideBySideDirection", .{})) |value| {
-                if (value.* == .string and std.mem.eql(u8, value.string, "down")) return .DOWN;
-            }
-        }
-        return .RIGHT;
+        return editor_groups.preferredSideBySideGroupDirection(if (self.configuration) |config| config.interface() else null);
     }
 
     /// Port of `workbench.action.splitEditor`: duplicate the active editor

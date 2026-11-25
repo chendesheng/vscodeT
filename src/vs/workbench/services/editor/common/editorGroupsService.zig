@@ -24,6 +24,16 @@ const GroupIdentifier = editor_mod.GroupIdentifier;
 const EditorOpenOptions = group_mod.EditorOpenOptions;
 const EditorOpenResult = group_mod.EditorOpenResult;
 
+/// Upstream preferredSideBySideGroupDirection.
+pub fn preferredSideBySideGroupDirection(configuration: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) GroupDirection {
+    if (configuration) |service| {
+        if (service.getValue("workbench.editor.openSideBySideDirection")) |value| {
+            if (value.* == .string and std.mem.eql(u8, value.string, "down")) return .DOWN;
+        }
+    }
+    return .RIGHT;
+}
+
 pub const GroupsOrder = enum {
     /// Groups in the order they were created.
     CREATION_TIME,

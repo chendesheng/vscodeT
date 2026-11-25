@@ -21,8 +21,8 @@ const Editor = @import("../../../editor/browser/widget/codeEditor/codeEditorWidg
 const LastContentChange = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").LastContentChange;
 const ChangeListener = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").ChangeListener;
 const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
-const Workbench = @import("../../browser/workbench.zig").Workbench;
-const GroupPane = @import("../../browser/workbench.zig").GroupPane;
+pub const Services = @import("extensionHostServices.zig").Services;
+const GroupPane = @import("../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
 const Tab = @import("../../browser/parts/editor/editorPane.zig").Tab;
 const EditorInput = @import("../../common/editor/editorInput.zig").EditorInput;
 const EditorService = @import("../../services/editor/browser/editorService.zig").EditorService;
@@ -165,7 +165,7 @@ fn utf16ColumnInLines(lines: []const []u8, line_number: usize, column: usize) us
 pub const Extensions = struct {
     allocator: Allocator,
     io: Io,
-    workbench: *Workbench,
+    services: Services,
     host: *manager.HostManager,
     /// Loadable Node extensions. The host receives all of them in one
     /// init-data payload; activation events select which one runs.
@@ -227,7 +227,7 @@ pub const Extensions = struct {
     pub fn init(
         allocator: Allocator,
         io: Io,
-        workbench: *Workbench,
+        services: Services,
         extension_paths: []const ExtensionPath,
         user_data_dir: []const u8,
         runtime_dir: []const u8,
@@ -246,7 +246,7 @@ pub const Extensions = struct {
             extension_ptrs[index] = description;
             // Extension settings are part of the workbench configuration that
             // the host receives during `$initializeConfiguration`.
-            workbench.registerExtensionConfiguration(description.manifest, description.identifier);
+            services.register_extension_configuration(services.common.context, description.manifest, description.identifier);
         }
 
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
@@ -257,8 +257,8 @@ pub const Extensions = struct {
         self.* = .{
             .allocator = allocator,
             .io = io,
-            .workbench = workbench,
-            .editor_service = .{ .part = workbench.part },
+            .services = services,
+            .editor_service = services.common.editors,
             .host = undefined,
             .descriptions = owned_descriptions,
             .extension_ptrs = extension_ptrs,
@@ -267,15 +267,15 @@ pub const Extensions = struct {
             .last_selections = std.array_list.Managed(Selection).init(allocator),
         };
 
-        self.tabs_task = .{ .queue = &workbench.window_events, .context = self, .run = updateTabs, .progress = true };
-        self.selection_task = .{ .queue = &workbench.window_events, .context = self, .run = updateSelection, .progress = true };
-        self.visible_ranges_task = .{ .queue = &workbench.window_events, .context = self, .run = updateVisibleRanges, .progress = true };
+        self.tabs_task = .{ .queue = services.window, .context = self, .run = updateTabs, .progress = true };
+        self.selection_task = .{ .queue = services.window, .context = self, .run = updateSelection, .progress = true };
+        self.visible_ranges_task = .{ .queue = services.window, .context = self, .run = updateVisibleRanges, .progress = true };
         const host_script = try std.fs.path.join(allocator, &.{ runtime_dir, "extensionHost.mjs" });
         defer allocator.free(host_script);
         // Fail before spawning node: without the bundle the host can never
         // connect, and the manager would otherwise wait for its socket timeout.
         std.Io.Dir.cwd().access(io, host_script, .{}) catch return error.ExtensionHostBundleMissing;
-        const workspace_path = try std.fs.path.resolve(allocator, &.{ cwd, workbench.workspaceFolderPath() orelse "." });
+        const workspace_path = try std.fs.path.resolve(allocator, &.{ cwd, services.workspace_folder_path(services.common.context) orelse "." });
         defer allocator.free(workspace_path);
         self.host = try manager.HostManager.start(allocator, .{
             .host_script = host_script,
@@ -288,10 +288,10 @@ pub const Extensions = struct {
         });
         errdefer self.host.deinit();
         self.inline_completions = .{
-            .editors = .{ .part = workbench.part },
+            .editors = services.common.editors,
             .configuration = .{ .context = self, .get_value = configurationValue },
             .io = io,
-            .window = &workbench.window_events,
+            .window = services.window,
             .host_context = self,
             .has_editor_focus = hasEditorFocus,
             .request_frame = requestTerminalFrame,
@@ -300,17 +300,17 @@ pub const Extensions = struct {
         };
         errdefer self.inline_completions.deinit();
 
-        self.message_service = .{ .allocator = allocator, .notification_service = workbench.notification_api, .quick_input = workbench.quick_access.inputService() };
+        self.message_service = .{ .allocator = allocator, .notification_service = services.notification, .quick_input = services.common.quick_input };
         errdefer self.message_service.deinit();
         self.storage_actor = try MainThreadStorage.init(allocator);
-        self.statusbar_actor = try MainThreadStatusBar.init(allocator, &workbench.statusbar, .{
+        self.statusbar_actor = try MainThreadStatusBar.init(allocator, services.common.statusbar, .{
             .context = self,
             .callback = requestTerminalFrame,
         });
         self.commands_actor = try MainThreadCommands.init(allocator, self.host, .{
             .context = self,
             .execute = executeHostCommand,
-        }, &workbench.commands, self.descriptions, try workbench.ensureContextKeys());
+        }, services.common.commands, self.descriptions, try services.context_keys(services.common.context));
         self.configuration_actor = MainThreadConfiguration.init(
             allocator,
             .{ .context = self, .data = configurationDataHost },
@@ -342,9 +342,9 @@ pub const Extensions = struct {
             .on_did_activate = extensionServiceActivatedHost,
             .as_browser_uri = extensionServiceBrowserUriHost,
         } };
-        try self.accounts.init(allocator, &workbench.commands, workbench.quick_access.inputService(), .{ .context = workbench, .show = showStatusHint }, self.host, self.descriptions);
+        try self.accounts.init(allocator, services.common.commands, services.common.quick_input, .{ .context = services.common.context, .show = services.common.status_hint }, self.host, self.descriptions);
         errdefer self.accounts.deinit();
-        try self.task_service.init(allocator, &workbench.commands, workbench.quick_access.inputService(), self.descriptions, .{
+        try self.task_service.init(allocator, services.common.commands, services.common.quick_input, self.descriptions, .{
             .context = self,
             .activate = activateTaskType,
             .run_terminal = runTaskInTerminal,
@@ -362,7 +362,7 @@ pub const Extensions = struct {
                 .focused = focusedTerminal,
                 .find = findTerminal,
                 .request_render = requestTerminalFrame,
-            }, self.terminal_completion_provider.interface(), &workbench.commands, workbench.quick_access);
+            }, self.terminal_completion_provider.interface(), services.common.commands, services.quick_access);
             break;
         }
         errdefer if (self.terminal_completions) |*session| session.deinit();
@@ -377,7 +377,7 @@ pub const Extensions = struct {
     }
 
     pub fn deinit(self: *Extensions) void {
-        if (self.workbench.quick_access.isOpen()) self.workbench.quick_access.inputService().hide();
+        if (self.services.quick_access.isOpen()) self.services.quick_access.inputService().hide();
         self.message_service.deinit();
         if (self.terminal_completions) |*session| session.deinit();
         self.secret_state.deinit(self.allocator);
@@ -446,8 +446,8 @@ pub const Extensions = struct {
     }
 
     fn initLanguageActors(self: *Extensions) !void {
-        const features = self.workbench.language_features orelse return;
-        const marker_service = self.workbench.marker_service orelse return;
+        const features = self.services.common.language_features(self.services.common.context) orelse return;
+        const marker_service = self.services.marker_service orelse return;
         self.language_features_actor = MainThreadLanguageFeatures.init(self.allocator, features, .{
             .context = self,
             .request = languageFeaturesRequest,
@@ -477,13 +477,12 @@ pub const Extensions = struct {
 
     fn focusedTerminal(context: *anyopaque) ?*TerminalInstance {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        return self.workbench.focusedTerminal();
+        return self.services.focused_terminal(self.services.common.context);
     }
 
     fn findTerminal(context: *anyopaque, id: usize) ?*TerminalInstance {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const service = self.workbench.terminal_service orelse return null;
-        return service.getInstanceFromId(id);
+        return self.services.common.terminal_instance(self.services.common.context, id);
     }
 
     fn requestTerminalFrame(context: *anyopaque) void {
@@ -493,23 +492,18 @@ pub const Extensions = struct {
 
     fn hasEditorFocus(context: *anyopaque) bool {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        return self.workbench.focus == .editor;
+        return self.services.has_editor_focus(self.services.common.context);
     }
 
     fn configurationValue(context: *anyopaque, key: []const u8) ?*const @import("../../../platform/configuration/common/configuration.zig").Value {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const service = self.workbench.configuration orelse return null;
+        const service = self.services.common.configuration(self.services.common.context) orelse return null;
         return service.getValue(key, .{});
-    }
-
-    fn showStatusHint(context: *anyopaque, message: []const u8) void {
-        const workbench: *Workbench = @ptrCast(@alignCast(context));
-        workbench.setStatusHint("{s}", .{message});
     }
 
     fn diagnosticsModelFor(context: *anyopaque, resource: markers_mod.Resource) ?*TextModel {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        for (self.workbench.part.group_views.items) |pane| {
+        for (self.editor_service.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 var candidate = markers_mod.Resource.fromUri(self.allocator, tab.editor.model.uri()) catch continue;
                 defer candidate.deinit(self.allocator);
@@ -630,7 +624,7 @@ pub const Extensions = struct {
         }
         if (!std.mem.eql(u8, scheme.string, "file")) return false;
         const path = uriPath(uri) orelse return false;
-        self.workbench.openPath(path) catch return false;
+        self.services.common.open_path(self.services.common.context, path) catch return false;
         self.needs_render = true;
         return true;
     }
@@ -654,7 +648,7 @@ pub const Extensions = struct {
 
     fn editorTabsCloseTabHost(context: *anyopaque, tab_id: []const u8) anyerror!bool {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        const closed = self.workbench.closePath(tab_id) catch false;
+        const closed = self.services.close_path(self.services.common.context, tab_id) catch false;
         self.needs_render = true;
         return closed;
     }
@@ -662,8 +656,8 @@ pub const Extensions = struct {
     fn editorTabsCloseGroupHost(context: *anyopaque, group_id: i64) anyerror!bool {
         _ = group_id;
         const self: *Extensions = @ptrCast(@alignCast(context));
-        while (self.workbench.tabCount() > 0) {
-            if (!(self.workbench.closeActive() catch false)) break;
+        while (self.editor_service.tabCount() > 0) {
+            if (!(self.services.close_active(self.services.common.context) catch false)) break;
         }
         self.needs_render = true;
         return true;
@@ -673,7 +667,7 @@ pub const Extensions = struct {
         _ = options;
         const self: *Extensions = @ptrCast(@alignCast(context));
         const path = uriPath(uri) orelse return .null;
-        self.workbench.openPath(path) catch {};
+        self.services.common.open_path(self.services.common.context, path) catch {};
         // Make the document known before `workspace.openTextDocument`
         // resolves; the extension host otherwise waits for the next pump.
         self.syncActiveDocument() catch {};
@@ -681,7 +675,7 @@ pub const Extensions = struct {
         // Return the resource the document mirror registered, not the caller's
         // path spelling, so an extension-requested open joins the same
         // document (`$tryOpenDocument` resolves to this URI).
-        const opened = self.workbench.findOpenInput(path) orelse return .null;
+        const opened = self.editor_service.findOpenFileInput(self.io, path) orelse return .null;
         return try std_uri.jsonComponents(arena, opened.editor.model.uri());
     }
 
@@ -726,8 +720,8 @@ pub const Extensions = struct {
     fn textEditorShowDocumentHost(context: *anyopaque, uri: std.json.Value, options: std.json.Value) anyerror!?[]const u8 {
         const self: *Extensions = @ptrCast(@alignCast(context));
         const path = uriPath(uri) orelse return null;
-        self.workbench.openPath(path) catch {};
-        if (self.workbench.activeTab()) |tab| applyShowDocumentSelection(tab.editor, options);
+        self.services.common.open_path(self.services.common.context, path) catch {};
+        if (self.editor_service.activeEditorPane()) |tab| applyShowDocumentSelection(tab.editor, options);
         self.syncActiveDocument() catch {};
         self.syncSelection() catch {};
         self.needs_render = true;
@@ -760,7 +754,7 @@ pub const Extensions = struct {
 
     fn configurationDataHost(context: *anyopaque, arena: Allocator) anyerror!std.json.Value {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        return self.workbench.configurationData(arena);
+        return self.services.configuration_data(self.services.common.context, arena);
     }
 
     fn configurationNotifyHost(context: *anyopaque, arena: Allocator, data: std.json.Value, changed_key: []const u8) anyerror!void {
@@ -783,7 +777,7 @@ pub const Extensions = struct {
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(self.io, ".", arena);
-        const workspace = try std.fs.path.resolve(arena, &.{ cwd, self.workbench.workspaceFolderPath() orelse "." });
+        const workspace = try std.fs.path.resolve(arena, &.{ cwd, self.services.workspace_folder_path(self.services.common.context) orelse "." });
         const init_data = try manager.buildInitData(arena, .{
             .host_script = "",
             .extensions = self.extension_ptrs,
@@ -820,7 +814,7 @@ pub const Extensions = struct {
             error.InitializeWorkspaceRejected,
         );
 
-        const configuration_data = try self.workbench.configurationData(arena);
+        const configuration_data = try self.services.configuration_data(self.services.common.context, arena);
         var config_args = [_]rpc.Arg{.{ .json = if (configuration_data == .null) try emptyConfig(arena) else configuration_data }};
         try self.callAndWait(
             proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostConfiguration),
@@ -1096,7 +1090,7 @@ pub const Extensions = struct {
         }
         if (std.mem.eql(u8, method, "$startFileSearch")) {
             const self: *Extensions = @ptrCast(@alignCast(context));
-            return .{ .json = try @import("mainThreadWorkspace.zig").findFiles(self.io, self.allocator, arena, self.workbench.workspaceFolderPath(), args) };
+            return .{ .json = try @import("mainThreadWorkspace.zig").findFiles(self.io, self.allocator, arena, self.services.workspace_folder_path(self.services.common.context), args) };
         }
         if (std.mem.eql(u8, method, "$getTools")) {
             return .{ .json = .{ .array = std.json.Array.init(arena) } };
@@ -1305,15 +1299,15 @@ pub const Extensions = struct {
 /// Maps command ids issued by Node extensions to the workbench LSP
 /// actions. Returns true when the command was recognized, even when the
 /// action produced no result.
-pub fn runLspCommand(workbench: *Workbench, command: []const u8) bool {
+pub fn runLspCommand(services: Services, command: []const u8) bool {
     if (std.mem.eql(u8, command, "editor.action.showHover")) {
-        _ = workbench.showHover() catch false;
+        _ = services.show_hover(services.common.context) catch false;
         return true;
     }
     if (std.mem.eql(u8, command, "outline.focus") or
         std.mem.eql(u8, command, "workbench.action.gotoSymbol"))
     {
-        _ = workbench.gotoSymbolInEditor() catch false;
+        _ = services.goto_symbol(services.common.context) catch false;
         return true;
     }
 
@@ -1324,7 +1318,7 @@ pub fn runLspCommand(workbench: *Workbench, command: []const u8) bool {
     else
         command;
     if (go_to_commands.find(id) == null) return false;
-    _ = workbench.runLspAction(id) catch false;
+    _ = services.run_lsp_action(services.common.context, id) catch false;
     return true;
 }
 
@@ -1538,14 +1532,19 @@ fn activateTaskType(context: *anyopaque, arena: Allocator, event: []const u8) !v
 
 fn runTaskInTerminal(context: *anyopaque, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !void {
     const self: *Extensions = @ptrCast(@alignCast(context));
-    _ = try self.workbench.launchTerminalProcess(name, executable, args, cwd);
+    _ = try self.services.common.launch_terminal(self.services.common.context, name, executable, args, cwd);
+}
+
+fn findInFiles(views: @import("../../services/views/common/viewsService.zig").IViewsService) !void {
+    const search = @import("../../contrib/search/browser/searchActionsBase.zig");
+    if (try search.openSearchView(views, true)) |view| try search.findInFiles(view);
 }
 
 fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: std.json.Value, arena: Allocator) anyerror!?std.json.Value {
     const self: *Extensions = @ptrCast(@alignCast(context));
     const args: []const std.json.Value = if (command_args == .array) command_args.array.items else &.{};
     if (std.mem.eql(u8, command, "workbench.action.browser.open") or std.mem.eql(u8, command, "simpleBrowser.show")) {
-        try self.workbench.simple_browser.show(if (args.len > 0 and args[0] == .string) args[0].string else null);
+        try self.services.simple_browser.show(if (args.len > 0 and args[0] == .string) args[0].string else null);
         self.needs_render = true;
         return null;
     }
@@ -1605,7 +1604,7 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         return null;
     }
     if (std.mem.eql(u8, command, "search.action.focusSearchList")) {
-        self.workbench.findInFiles() catch {};
+        findInFiles(self.services.views) catch {};
         self.needs_render = true;
         return null;
     }
@@ -1623,17 +1622,17 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         else if (std.mem.eql(u8, command, "workbench.action.splitEditorDown"))
             .DOWN
         else if (std.mem.eql(u8, command, "workbench.action.splitEditor"))
-            self.workbench.preferredSideBySideDirection()
+            self.services.preferredSideBySideDirection()
         else if (std.mem.eql(u8, command, "workbench.action.splitEditorOrthogonal"))
-            if (self.workbench.preferredSideBySideDirection() == .RIGHT) .DOWN else .RIGHT
+            if (self.services.preferredSideBySideDirection() == .RIGHT) .DOWN else .RIGHT
         else
             .RIGHT;
-        self.workbench.splitActiveInDirection(direction) catch {};
+        self.services.split_active(self.services.common.context, direction) catch {};
         self.needs_render = true;
         return null;
     }
     if (std.mem.eql(u8, command, "workbench.action.closeActiveEditor")) {
-        _ = self.workbench.closeActive() catch false;
+        _ = self.services.close_active(self.services.common.context) catch false;
         self.needs_render = true;
         return null;
     }
@@ -1643,22 +1642,22 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
             const to = objectString(object, "to") orelse "";
             const by = objectString(object, "by") orelse "tab";
             const value = objectUsize(object, "value") orelse 1;
-            self.workbench.moveActiveEditor(to, by, value) catch {};
+            self.services.move_active_editor(self.services.common.context, to, by, value) catch {};
             self.needs_render = true;
         }
         return null;
     }
     if (std.mem.startsWith(u8, command, "workbench.action.openEditorAtIndex")) {
         if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) {
-            self.workbench.activateIndex(@intCast(args[0].integer)) catch {};
+            self.services.activate_index(self.services.common.context, @intCast(args[0].integer)) catch {};
             self.needs_render = true;
         } else if (std.mem.eql(u8, command, "workbench.action.openEditorAtIndex1")) {
-            self.workbench.activateIndex(0) catch {};
+            self.services.activate_index(self.services.common.context, 0) catch {};
             self.needs_render = true;
         }
         return null;
     }
-    if (runLspCommand(self.workbench, command)) {
+    if (runLspCommand(self.services, command)) {
         // Publish the new document/selection before the command reply so an
         // extension that reads `activeTextEditor` immediately sees the target.
         self.syncActiveDocument() catch {};
@@ -1672,12 +1671,12 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         return null;
     }
     if (std.mem.eql(u8, command, "workbench.action.nextEditorInGroup")) {
-        self.workbench.switchTab(1) catch {};
+        self.services.common.switch_tab(self.services.common.context, 1) catch {};
         self.needs_render = true;
         return null;
     }
     if (std.mem.eql(u8, command, "workbench.action.previousEditorInGroup")) {
-        self.workbench.switchTab(-1) catch {};
+        self.services.common.switch_tab(self.services.common.context, -1) catch {};
         self.needs_render = true;
         return null;
     }
@@ -1685,7 +1684,7 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         if (args.len > 0 and args[0] == .object) {
             if (args[0].object.get("path")) |path| {
                 if (path == .string) {
-                    self.workbench.openPath(path.string) catch {};
+                    self.services.common.open_path(self.services.common.context, path.string) catch {};
                     self.needs_render = true;
                 }
             }
@@ -1697,8 +1696,8 @@ fn executeHostCommand(context: *anyopaque, command: []const u8, command_args: st
         // surface does not yet expose a terminal context-key registry.
         return null;
     }
-    if (self.workbench.commands.get(command) != null) {
-        self.workbench.commands.execute(command) catch |err| {
+    if (self.services.common.commands.get(command) != null) {
+        self.services.common.commands.execute(command) catch |err| {
             if (self.active) |active| active.editor.setMessage("{s}: {s}", .{ command, @errorName(err) });
         };
         self.syncActiveDocument() catch {};
@@ -1914,8 +1913,7 @@ test "Extensions: editor-pane disposal detaches listeners before the editor is d
     closed.addScrollListener(scroll_listener);
     _ = try tab.listenWillDispose(&detach, Detach.onDispose);
     const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
-    const TabKeyResult = @import("../../browser/workbench.zig").TabKeyResult;
-    try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
+    try std.testing.expect((try workbench.handleTabKey(&ctrl_w)) == .handled);
     try std.testing.expect(detach.editor == null);
     try std.testing.expectEqual(@as(usize, 1), detach.count);
 }
@@ -1970,7 +1968,7 @@ test "Extensions: language feature registration reaches the workbench registries
     defer workbench_window.deinit();
     try workbench.enableLanguageFeatures();
 
-    var extension_host = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
+    var extension_host = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
     defer extension_host.deinit();
 
     const deadline = time_compat.milliTimestamp() + 10_000;
@@ -2027,25 +2025,25 @@ test "Extensions: language feature registration reaches the workbench registries
     try std.testing.expect(reference_providers.len > 0);
 
     // Extension command names reach the same workbench actions.
-    try std.testing.expect(runLspCommand(workbench, "editor.action.goToDeclaration"));
+    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToDeclaration"));
     try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-    try std.testing.expect(runLspCommand(workbench, "editor.action.revealDeclaration"));
+    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.revealDeclaration"));
     try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-    try std.testing.expect(runLspCommand(workbench, "editor.action.goToImplementation"));
+    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToImplementation"));
     try std.testing.expectEqual(@as(usize, 3), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-    try std.testing.expect(runLspCommand(workbench, "editor.action.goToTypeDefinition"));
+    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToTypeDefinition"));
     try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
 
-    try std.testing.expect(runLspCommand(workbench, "editor.action.goToReferences"));
+    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToReferences"));
     try std.testing.expect(workbench.quick_access.isOpen());
     workbench.quick_access.inputService().hide();
-    try std.testing.expect(runLspCommand(workbench, "editor.action.findReferences"));
+    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.findReferences"));
     try std.testing.expect(workbench.quick_access.isOpen());
     workbench.quick_access.inputService().hide();
-    try std.testing.expect(runLspCommand(workbench, "outline.focus"));
+    try std.testing.expect(runLspCommand(Services.bind(workbench), "outline.focus"));
     try std.testing.expect(workbench.quick_access.isOpen());
     workbench.quick_access.inputService().hide();
-    try std.testing.expect(runLspCommand(workbench, "editor.action.showHover"));
+    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.showHover"));
     try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
     const tab = workbench.activeTab().?;
     try tab.editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
@@ -2108,7 +2106,7 @@ test "Extensions: relative paths mirror the model URI language features use" {
     var extension_host = try Extensions.init(
         allocator,
         io,
-        workbench,
+        Services.bind(workbench),
         &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }},
         ".cache-ext/data-relative-fixture",
         "host/dist",
@@ -2197,7 +2195,7 @@ test "Extensions: real TypeScript extension drives the language features" {
     var extension_host = try Extensions.init(
         allocator,
         io,
-        workbench,
+        Services.bind(workbench),
         &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
         ".cache-ext/data-ts-test",
         "host/dist",
@@ -2389,7 +2387,7 @@ test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
     var extension_host = try Extensions.init(
         allocator,
         io,
-        workbench,
+        Services.bind(workbench),
         &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
         ".cache-ext/data-js-test",
         "host/dist",
@@ -2548,7 +2546,7 @@ fn checkBuiltinCompletion(comptime name: []const u8, filename: []const u8, sourc
     defer workbench_window.deinit();
     workbench.setDeclarativeExtensions(&catalog);
     try workbench.enableLanguageFeatures();
-    var extensions = try Extensions.init(allocator, io, workbench, &.{.{
+    var extensions = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{
         .path = "host/dist/extensions/" ++ name,
         .is_builtin = true,
     }}, ".cache-ext/test-" ++ name, "host/dist");
@@ -2605,7 +2603,7 @@ test "Extensions: accept incoming merge conflict in the workbench" {
     const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 25);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
-    var host = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
+    var host = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
     defer host.deinit();
     const command = "merge-conflict.accept.all-incoming";
     const deadline = time_compat.milliTimestamp() + 10_000;
@@ -2634,7 +2632,7 @@ test "Extensions: account sessions need a grant for the requesting extension and
     const workbench_window = try TestWindow.init(allocator, io, &.{}, 100, 30);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
-    const ext = try Extensions.init(allocator, io, workbench, &.{.{ .path = "host/test-fixtures/authentication", .is_under_development = true }}, ".cache-ext/auth-fixture", "host/dist");
+    const ext = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/test-fixtures/authentication", .is_under_development = true }}, ".cache-ext/auth-fixture", "host/dist");
     defer ext.deinit();
     var tmp = std.heap.ArenaAllocator.init(allocator);
     defer tmp.deinit();
@@ -2656,7 +2654,7 @@ test "Extensions: account sessions need a grant for the requesting extension and
             const deadline = time_compat.milliTimestamp() + 5000;
             while (time_compat.milliTimestamp() < deadline) {
                 _ = host.pump();
-                if (if (picker) host.workbench.quick_access.isOpen() else self.success != null) return;
+                if (if (picker) host.services.quick_access.isOpen() else self.success != null) return;
                 time_compat.sleepMillis(10);
             }
             return error.Timeout;

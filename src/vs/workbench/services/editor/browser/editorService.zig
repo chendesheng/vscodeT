@@ -204,6 +204,12 @@ pub const EditorService = struct {
         };
     }
 
+    pub fn tabCount(self: EditorService) usize {
+        var count: usize = 0;
+        for (self.part.group_views.items) |pane| count += pane.tabs.items.len;
+        return count;
+    }
+
     pub fn activeEditorPane(self: EditorService) ?*Tab {
         const group = self.part.activeView() orelse return null;
         return group.panes.activePane();
