@@ -2,7 +2,7 @@
 
 The reference is `vscode/src/vs/workbench/browser/workbench.ts` at
 `e31c2e52`. It composes services and parts. The current Zig composition
-root also owns the terminal host, feature implementations and integration tests.
+root still owns terminal painting, input routing and feature implementations.
 
 ## Baseline at 47925902
 
@@ -22,6 +22,36 @@ imports. Each existing exception in `scripts/workbench-imports.txt` names both
 ends of the edge. Delete an exception in the commit that removes its import.
 The original test names and platform skip conditions are recorded by the baseline
 commit. Preserve discovery through `src/tests.zig` when moving cases.
+
+## Implemented since the baseline
+
+The browser shell is 15,239 lines and has no inline tests. All 151 baseline
+tests remain registered. Of those, 150 exercise the terminal host and one
+exercises the tabs control at its owner path. The command-palette fixture
+records 256 command IDs with labels, categories and visibility for empty and
+populated editor groups.
+
+* Fresh and restored workbenches share service construction. The editor part
+  constructs group views from the registered group models. Restored inputs
+  participate in the same active-editor events as newly opened inputs.
+* The layout service registers live parts and emits visibility, zen-mode and
+  centering events. Centering considers the number of columns, the maximized
+  group and the capabilities of visible editors. Stacked groups share one
+  column. Workbench context keys subscribe to layout and working-copy events.
+* The service collection and instantiation service support explicit lazy
+  factories. Contributions observe lifecycle phases and session saving runs
+  on shutdown. Document symbols use one shared outline-model service.
+* Task providers, authentication account choices, file-icon theme data and
+  sidebar moves have service owners. Simple Browser uses its bundled command
+  handler and launches Lynx in a terminal editor.
+* The terminal host owns its input buffer, descriptor waits, resize handling
+  and frame output. The command table, native menu construction, feature
+  wiring and several state-scanning methods still live in the browser shell.
+  The native CLI still schedules background work and performs startup wiring.
+
+The startup sequence below describes the pinned target. The composition port,
+notification center and toasts, full layout restoration and event-driven
+background services are still in progress.
 
 ## Implementation owners
 
@@ -44,7 +74,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 | Input, terminal capabilities, OS readiness and deadlines | Terminal host. Worker completion must wake the host while idle |
 | Tests | Upstream owner paths and terminal host integration tests |
 
-Startup registers the layout service and sets Ready, initializes layout, starts
+Upstream startup registers the layout service and sets Ready, initializes layout, starts
 both registries, installs context keys and listeners, renders parts, creates
 the workbench layout, lays it out and starts restoration. After layout readiness,
 Restored races editor restoration against two seconds. Eventually uses the

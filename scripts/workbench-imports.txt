@@ -1,8 +1,8 @@
 src/extensions/references-view/referencesView.zig -> src/vs/workbench/browser/workbench.zig
 src/extensions/tunnel-forwarding/portForwarding.zig -> src/vs/workbench/browser/workbench.zig
-src/tui/app.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/benchmark.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/workbench.test.zig -> src/vs/workbench/browser/workbench.zig
+src/tui/workbench.zig -> src/vs/workbench/browser/workbench.zig
 src/vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig -> src/tui/editorView.zig
 src/vs/editor/browser/widget/diffEditor/diffEditorWidget.zig -> src/tui/editorView.zig
 src/vs/editor/contrib/find/test/browser/findController.test.zig -> src/tui/editorView.zig

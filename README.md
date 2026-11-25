@@ -9,6 +9,11 @@ is ported into `src/vs/...` at matching upstream paths, and built-in extension
 sources (currently the Git extension) into `src/extensions/...`, mirroring
 `vscode/extensions/...`.
 
+The terminal host handles input and frame output. The browser workbench still
+contains feature and rendering code. The port audit tracks the service owners,
+the pinned startup sequence and the remaining extractions.
+[Workbench port audit](docs/workbench-audit.md)
+
 ## Live demo
 
 **[Open the full vscodeT workbench](https://chendesheng.github.io/vscodeT/unkernel/)** —

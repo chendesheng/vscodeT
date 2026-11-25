@@ -1,6 +1,8 @@
 # `src/tui` review: what to port, what to move to `ui`, what to delete
 
-Status: audit of the current working tree (2026-11-19, before the next commit).
+This review records the 2026-11-19 working tree. The subsequent workbench split,
+service boundaries, test moves and remaining work are tracked in the
+[workbench port audit](workbench-audit.md).
 This supersedes the snapshot and file table in
 [`porting-inventory.md`](porting-inventory.md) §0 and §7; that document's
 subsystem notes and test map are still useful, but its line numbers, file count

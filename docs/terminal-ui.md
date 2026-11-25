@@ -2,6 +2,14 @@
 
 Status: proposed design.
 
+The native host in `src/tui/workbench.zig` preserves partial input sequences
+across reads, waits on terminal and watcher handles, and flushes completed
+frames. Terminal cells supply part bounds and pointer input. The browser
+workbench still composes and paints the editor, sidebar and panel. Browser DOM
+font measurement, macOS font smoothing, auxiliary windows, floating panels,
+ARIA live regions and browser-managed text selection and IME lack equivalent
+host APIs here. [Workbench port audit](workbench-audit.md)
+
 ## 1. Context
 
 This repository is a Zig 0.17 port of VS Code editor internals. The model,

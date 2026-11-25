@@ -4,6 +4,8 @@
 > 19,012 lines). The current file-by-file verdict and roadmap are in
 > [`tui-review.md`](tui-review.md); use this document for the subsystem notes
 > and test map, not for line numbers or "remaining" status.
+> The [workbench port audit](workbench-audit.md) tracks the later browser-shell
+> extraction and the live terminal host.
 
 Status: all inventory slices are implemented in the terminal's shape. P1–P3
 are complete; P4 has the full terminal view/view-model/controller/widget stack

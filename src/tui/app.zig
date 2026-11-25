@@ -10,7 +10,9 @@ const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetT
 const editorInputDispatch = @import("./editorInputDispatch.zig");
 const handleKeyEvent = editorInputDispatch.handleKeyEvent;
 const View = @import("./editorView.zig").View;
-const Workbench = @import("../vs/workbench/browser/workbench.zig").Workbench;
+const terminal_workbench = @import("workbench.zig");
+const TerminalWorkbench = terminal_workbench.TerminalWorkbench;
+const Workbench = terminal_workbench.Workbench;
 const extensions = @import("../vs/workbench/api/browser/extensionHostAdapter.zig");
 const extensions_registry = @import("../vs/workbench/services/extensions/common/extensionsRegistry.zig");
 const VimRuntime = @import("../vs/workbench/contrib/vim/browser/vimRuntime.zig").VimRuntime;
@@ -354,7 +356,7 @@ pub fn main(init: std.process.Init) !void {
 
     try tui.installSigWinch();
 
-    var size = try tui.getTerminalSize();
+    const size = try tui.getTerminalSize();
 
     if (args.preview) {
         var editor = try Editor.createWithExtensions(allocator, io, paths.items[0], size.width, size.height, if (declarative) |*registry| registry else null, json_client);
@@ -642,10 +644,8 @@ pub fn main(init: std.process.Init) !void {
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
     });
 
-    var input_buffer = try ArrayList(u8).initCapacity(allocator, 4096);
-    defer input_buffer.deinit();
-    if (border_probe.leftover) |leftover| try input_buffer.appendSlice(leftover);
-    if (image_probe.leftover) |leftover| try input_buffer.appendSlice(leftover);
+    var terminal_host = try TerminalWorkbench.init(workbench, out, border_probe.leftover, image_probe.leftover);
+    defer terminal_host.deinit();
 
     try tui.hideCursor(out);
     defer tui.showCursor(out) catch {};
@@ -653,9 +653,7 @@ pub fn main(init: std.process.Init) !void {
     infoLog(log_service, "workbench ready: {d} tab(s)", .{workbench.tabCount()});
     workbench.refreshStatus();
     if (workbench.activeTab()) |active| try active.view.refresh();
-    try workbench.render(out);
-    try workbench.syncCursor(out);
-    try out.flush();
+    try terminal_host.render();
     infoLog(log_service, "startup: first-frame={d}ms active-editor-wraps={d}", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,
         if (workbench.activeTab()) |active| active.editor.view_lines.rebuildAllCount() else 0,
@@ -675,9 +673,6 @@ pub fn main(init: std.process.Init) !void {
     var needs_render = false;
     // Last frame that was only caused by a background-tokenization chunk.
     var last_token_render_ms: i64 = 0;
-    // A read can end in the middle of an escape sequence. Keep those bytes
-    // and wait for the rest instead of decoding the tail as typed text.
-    var awaiting_input_continuation = false;
     const outline_models = try workbench.instantiation.invokeFunction(@import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").getOutlineModelService, .{});
     var eventually_after: ?i64 = time_compat.milliTimestamp() + 2500;
     while (true) {
@@ -748,50 +743,10 @@ pub fn main(init: std.process.Init) !void {
             const deadline = if (now_ms < after) after else after + 2500;
             timeout = @min(timeout, @as(i32, @intCast(std.math.clamp(deadline - now_ms, 0, 2500))));
         }
-        var input_ready = false;
-        if (builtin.os.tag == .windows) {
-            const polled = try tui.pollInputWithHandle(workbench.fileWatcherHandle(), timeout);
-            input_ready = polled.input;
-            if (polled.extra) {
-                if (workbench.pollFileWatcher(time_compat.milliTimestamp())) needs_render = true;
-            }
-        } else {
-            var extra_fds: [tui.max_poll_fds]std.posix.fd_t = undefined;
-            var extra_ready: [tui.max_poll_fds]bool = undefined;
-            var terminal_indices: [tui.max_poll_fds]usize = undefined;
-            var count: usize = 0;
-            var has_watcher = false;
-            if (workbench.fileWatcherFd()) |fd| {
-                extra_fds[count] = fd;
-                has_watcher = true;
-                count += 1;
-            }
-            var terminal_count: usize = 0;
-            for (0..workbench.terminalCount()) |index| {
-                const fd = workbench.terminalFd(index) orelse continue;
-                if (count >= tui.max_poll_fds) break;
-                extra_fds[count] = fd;
-                terminal_indices[terminal_count] = index;
-                terminal_count += 1;
-                count += 1;
-            }
-            input_ready = try tui.pollInputWithFds(
-                extra_fds[0..count],
-                extra_ready[0..count],
-                timeout,
-            );
-            if (has_watcher and extra_ready[0]) {
-                if (workbench.pollFileWatcher(time_compat.milliTimestamp())) needs_render = true;
-            }
-            const terminal_offset: usize = if (has_watcher) 1 else 0;
-            for (0..terminal_count) |index| {
-                if (!extra_ready[terminal_offset + index]) continue;
-                if (workbench.onTerminalReady(terminal_indices[index])) needs_render = true;
-            }
-            if (workbench.pollTerminalExits()) needs_render = true;
-        }
-        const ready = input_ready or
-            (input_buffer.items.len != 0 and !awaiting_input_continuation);
+        const polled = try terminal_host.wait(timeout);
+        if (polled.redraw) needs_render = true;
+        if (builtin.os.tag != .windows and workbench.pollTerminalExits()) needs_render = true;
+        const ready = polled.input or terminal_host.hasBufferedInput();
         if (eventually_after) |after| {
             const now = time_compat.milliTimestamp();
             if ((!ready and now >= after) or now >= after + 2500) {
@@ -799,14 +754,7 @@ pub fn main(init: std.process.Init) !void {
                 try workbench.lifecycle.setPhase(.Eventually);
             }
         }
-        var resized = false;
-        if (try tui.resizedSize()) |new_size| {
-            size = new_size;
-            try workbench.resize(size.width, size.height);
-            workbench.setCellPixelSize(size.cell_width_px, size.cell_height_px);
-            try tui.clearScreen(out);
-            resized = true;
-        }
+        const resized = try terminal_host.handleResize();
 
         if (workbench.drainBackgroundTokenization()) needs_render = true;
 
@@ -835,49 +783,17 @@ pub fn main(init: std.process.Init) !void {
                     try current.refresh();
                 }
                 workbench.refreshStatus();
-                try workbench.render(out);
-                try workbench.syncCursor(out);
-                try out.flush();
+                try terminal_host.render();
                 needs_render = false;
                 if (token_maintenance) last_token_render_ms = now_ms;
             }
             continue;
         }
 
-        // Leftover bytes from the capability probe are processed before a new
-        // read; both the border reply and DA1 are ignored by the decoder.
-        if (input_buffer.items.len == 0 or input_ready) {
-            _ = try tui.readFd(io, 0, &input_buffer);
-            awaiting_input_continuation = false;
-        }
-
-        var events: std.ArrayList(input.Item) = .empty;
+        const batch = try terminal_host.readEvents(polled.input);
+        var events = batch.decoded.items;
         defer events.deinit(allocator);
-        var consumed: usize = 0;
-        var paste_incomplete = false;
-        if (workbench.terminalAcceptsPaste()) {
-            while (true) {
-                switch (try terminal_input.takePaste(allocator, &input_buffer)) {
-                    .taken => |content| {
-                        defer allocator.free(content);
-                        try workbench.pasteTerminal(content);
-                        needs_render = true;
-                    },
-                    .incomplete => {
-                        paste_incomplete = true;
-                        break;
-                    },
-                    .none => break,
-                }
-            }
-        }
-        if (!paste_incomplete) {
-            const decoded = try input.decodeWithRemainder(allocator, input_buffer.items);
-            events = decoded.items;
-            consumed = decoded.consumed;
-        } else {
-            awaiting_input_continuation = true;
-        }
+        if (batch.pasted) needs_render = true;
 
         var sidebar_event_count: usize = 0;
         for (events.items) |*item| {
@@ -1091,15 +1007,7 @@ pub fn main(init: std.process.Init) !void {
                 },
             }
         }
-        if (consumed < input_buffer.items.len) {
-            const remainder = input_buffer.items.len - consumed;
-            std.mem.copyForwards(u8, input_buffer.items[0..remainder], input_buffer.items[consumed..]);
-            input_buffer.shrinkRetainingCapacity(remainder);
-            awaiting_input_continuation = true;
-        } else {
-            input_buffer.clearRetainingCapacity();
-            awaiting_input_continuation = false;
-        }
+        terminal_host.consume(batch.decoded.consumed);
 
         // Explorer wheel/hover/selection events do not change the active
         // editor. New/activated tabs and layout/focus changes already dirty
@@ -1118,9 +1026,7 @@ pub fn main(init: std.process.Init) !void {
         }
         workbench.refreshStatus();
         try tui.hideCursor(out);
-        try workbench.render(out);
-        try workbench.syncCursor(out);
-        try out.flush();
+        try terminal_host.render();
         needs_render = false;
     }
 }
