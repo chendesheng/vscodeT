@@ -3,7 +3,7 @@
 // use their own part renderers.
 const ui = @import("ui");
 pub const base: u16 = 0x00d0;
-pub const Class = enum(u16) { part = base, editor, activitybar, sidebar, panel, statusbar, left, right, bottom, basepanel };
+pub const Class = enum(u16) { part = base, editor, activitybar, sidebar, panel, statusbar, left, right, bottom, basepanel, top };
 const styles = blk: {
     var rules: [@typeInfo(Class).@"enum".field_names.len]ui.Style = @splat(.{});
     rules[0].overflow = .hidden;

@@ -158,11 +158,12 @@ pub const Workbench = struct {
         for (options.extra_classes) |class| try main.addClass(class);
         const Class = editor_css.part.Class;
         const side: Class = if (self.layout_api.getSideBarPosition() == .left) .left else .right;
+        const panel_side = Layout.panelPositionClass(self.layout_api.getPanelPosition());
         inline for (.{
             .{ .activitybar, "none", &[_]Class{ .activitybar, side } },
             .{ .sidebar, "none", &[_]Class{ .sidebar, side } },
             .{ .editor, "main", &[_]Class{.editor} },
-            .{ .panel, "none", &[_]Class{ .panel, .basepanel, .bottom } },
+            .{ .panel, "none", &[_]Class{ .panel, .basepanel, panel_side } },
             .{ .statusbar, "status", &[_]Class{.statusbar} },
         }) |description| {
             const container = try createPart(main, description[0], description[1], description[2]);

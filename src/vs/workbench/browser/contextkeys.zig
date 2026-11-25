@@ -108,6 +108,10 @@ pub const WorkbenchContextKeysHandler = struct {
     sidebar_visible: contextkeys.IContextKey,
     panel_visible: contextkeys.IContextKey,
     panel_maximized: contextkeys.IContextKey,
+    panel_position: contextkeys.IContextKey,
+    panel_alignment: contextkeys.IContextKey,
+    position_listener: usize,
+    alignment_listener: usize,
     dirty_listener: usize,
     zen_listener: usize,
     centered_listener: usize,
@@ -125,6 +129,10 @@ pub const WorkbenchContextKeysHandler = struct {
             .sidebar_visible = try keys.createKey("sideBarVisible", .{ .boolean = false }),
             .panel_visible = try keys.createKey("panelVisible", .{ .boolean = false }),
             .panel_maximized = try keys.createKey("panelMaximized", .{ .boolean = false }),
+            .panel_position = try keys.createKey("panelPosition", .{ .string = "bottom" }),
+            .panel_alignment = try keys.createKey("panelAlignment", .{ .string = "center" }),
+            .position_listener = undefined,
+            .alignment_listener = undefined,
             .dirty_listener = undefined,
             .zen_listener = undefined,
             .centered_listener = undefined,
@@ -134,18 +142,26 @@ pub const WorkbenchContextKeysHandler = struct {
         self.in_zen_mode.set(.{ .boolean = layout.is_zen_mode_active(layout.context) });
         self.main_editor_centered.set(.{ .boolean = layout.is_main_editor_centered(layout.context) });
         self.updatePartVisibility();
+        self.panel_position.set(.{ .string = @tagName(layout.getPanelPosition()) });
+        self.panel_alignment.set(.{ .string = @tagName(layout.getPanelAlignment()) });
         self.zen_listener = try layout.on_did_change_zen_mode.listen(self, onZenMode);
         errdefer layout.on_did_change_zen_mode.unlisten(self.zen_listener);
         self.centered_listener = try layout.on_did_change_main_editor_centered.listen(self, onCenteredLayout);
         errdefer layout.on_did_change_main_editor_centered.unlisten(self.centered_listener);
         self.visibility_listener = try layout.on_did_change_part_visibility.listen(self, onPartVisibility);
         errdefer layout.on_did_change_part_visibility.unlisten(self.visibility_listener);
+        self.position_listener = try layout.on_did_change_panel_position.listen(self, onPanelPosition);
+        errdefer layout.on_did_change_panel_position.unlisten(self.position_listener);
+        self.alignment_listener = try layout.on_did_change_panel_alignment.listen(self, onPanelAlignment);
+        errdefer layout.on_did_change_panel_alignment.unlisten(self.alignment_listener);
         self.dirty_listener = try copies.on_did_change_dirty.listen(self, onDidChangeDirty);
     }
 
     pub fn deinit(self: *@This()) void {
         if (self.active_editor) |editor| self.detachEditor(editor);
         self.working_copy_service.on_did_change_dirty.unlisten(self.dirty_listener);
+        self.layout_service.on_did_change_panel_position.unlisten(self.position_listener);
+        self.layout_service.on_did_change_panel_alignment.unlisten(self.alignment_listener);
         self.layout_service.on_did_change_part_visibility.unlisten(self.visibility_listener);
         self.layout_service.on_did_change_main_editor_centered.unlisten(self.centered_listener);
         self.layout_service.on_did_change_zen_mode.unlisten(self.zen_listener);
@@ -214,6 +230,14 @@ pub const WorkbenchContextKeysHandler = struct {
     fn onReadOnlyChanged(read_only: bool, self: *@This()) !void {
         self.window_keys.editor_read_only.set(.{ .boolean = read_only });
         self.window_keys.legacy_editor_read_only.set(.{ .boolean = read_only });
+    }
+
+    fn onPanelPosition(position: services.Position, self: *@This()) !void {
+        self.panel_position.set(.{ .string = @tagName(position) });
+    }
+
+    fn onPanelAlignment(alignment: services.PanelAlignment, self: *@This()) !void {
+        self.panel_alignment.set(.{ .string = @tagName(alignment) });
     }
 
     fn updatePartVisibility(self: *@This()) void {

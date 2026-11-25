@@ -1233,7 +1233,6 @@ pub const TerminalWorkbench = struct {
         self.panel_part = PanelPart.init(self.allocator);
         errdefer self.panel_part.deinit();
         self.sidebar_part.base.resize_primary = SidebarPart.resizeWidth;
-        self.panel_part.base.resize_primary = PanelPart.resizeHeight;
         const layout_service = self.layout.interface();
         try self.sidebar_part.base.register(layout_service);
         try self.panel_part.base.register(layout_service);
@@ -1604,6 +1603,7 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, editor_actions.maximize_editor_action);
         try self.commands.registerAction(self.instantiation, panel_actions.close_panel_action);
         try self.commands.registerAction(self.instantiation, panel_actions.toggle_maximized_panel_action);
+        for (panel_actions.positioning_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.group_actions.closeEditorsActions()) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, self.group_actions.joinAllAction());
         for (self.group_actions.navigationActions()) |action| try self.commands.registerAction(self.instantiation, action);
@@ -2504,10 +2504,6 @@ pub const TerminalWorkbench = struct {
         self.terminal_tabbed_view.setListFocused(false);
         _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
         self.revealActiveTerminalTab();
-    }
-
-    pub fn hideTerminal(self: *TerminalWorkbench) void {
-        self.hidePanel();
     }
 
     pub fn toggleTerminal(self: *TerminalWorkbench) !void {
@@ -3573,10 +3569,6 @@ pub const TerminalWorkbench = struct {
         try self.focusGroupLocation(.next);
     }
 
-    pub fn closePanel(self: *TerminalWorkbench) void {
-        self.hidePanel();
-    }
-
     pub fn closeAllEditors(self: *TerminalWorkbench) !void {
         try self.group_actions.closeAllEditors();
     }
@@ -4335,6 +4327,7 @@ pub const TerminalWorkbench = struct {
     fn applyLayoutSettings(self: *TerminalWorkbench, change: ?configuration_mod.Change) void {
         const values = layout_service_mod.LayoutSettingsValues.load(self.configuration, self.workspaceRoot());
         self.layout.panel_opens_maximized = values.panel_opens_maximized;
+        if (change == null) self.layout.initializePanelPosition(values.panel_position) catch {};
         if (change == null or @import("../vs/platform/configuration/common/configuration.zig").affectsConfiguration(change.?, layout_service_mod.LayoutSettings.status_bar_visible))
             self.layout.setStatusBarConfiguration(values.status_bar_visible) catch {};
         if (change == null or @import("../vs/platform/configuration/common/configuration.zig").affectsConfiguration(change.?, layout_service_mod.LayoutSettings.sidebar_position))

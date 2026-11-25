@@ -76,6 +76,8 @@ is resolved by the Git contribution.
 
 TextEditorConfiguration and the workbench language service now subscribe directly to the configuration binding, applying resource/language overrides, file associations and temporary Zen line-number options at the owning controls. The per-document language service is a terminal adaptation; a shared global registry is still unported.
 
+Layout now ports panel position (top/bottom/left/right), alignment (center/left/right/justify), axis-specific sash resizing and cached non-maximized width/height. Position and alignment are restored from workspace/profile state, and their events drive the actual context keys and actions. A horizontal non-center panel cannot maximize, matching upstream.
+
 Layout now ports panel maximization through the editor-area visibility transition, remembers the last maximized state, honors workbench.panel.opensMaximized, restores the non-maximized size, and updates panelMaximized from visibility events. The new upstream panel action is included in the palette in addition to the original inventory.
 
 The legacy CommandInfo table is gone from TerminalWorkbench. The startup registry now registers owner Action2 descriptors in the preserved palette order. The sidebar menu owner builds view visibility/move/overflow actions, uses the contributed pane secondary actions, and displays them through IContextMenuService; native code supplies anchors and theme.
@@ -92,7 +94,7 @@ Workbench.startup now initiates restore immediately after layout, deferring save
 
 Layout now closes the active sidebar composite on hide, restores the last active/default/visible composite on show, and preserves upstream panel/editor focus preference. Sidebar visibility and focus commands resolve IWorkbenchLayoutService and IPaneCompositePartService.
 
-The portable browser Workbench is 291 lines and has no inline tests. The native TerminalWorkbench window is 5,031 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 5,024 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -275,7 +277,7 @@ with its owning port.
 
 * The Git extension owns eight command registrations, remote publish picker identity and labels, and resolving snapshot diff contents (including unsaved working editors). SCMContribution owns its registered view container and model; SidebarPart owns view-container mounting and unmounting. The workbench supplies the native editor and SCM selection callbacks.
 
-* The portable WorkbenchCore now owns Layout, InstantiationService, the upstream startup/registry/context/listener/part order, the notification controller and restore deadlines. The transitional native shell supplies explicit service instances and window lifecycle/focus callbacks. The next structural step relocates the native shell to src/tui and renames the core to Workbench at the pinned upstream path.
+* The portable Workbench owns Layout, InstantiationService, the upstream startup/registry/context/listener/part order, the notification controller and restore deadlines at the pinned upstream path. The native window in src/tui supplies explicit service instances and window lifecycle/focus callbacks.
 
 * The portable Workbench now lives at the pinned browser/workbench.zig path and owns Layout, the service-instantiation lifecycle, registered part creation, notification handlers and restoration deadlines. TerminalWorkbench is the native window adapter, and TerminalHostLoop owns fd/input readiness and frame delivery. Generic integration suites receive the window type at the test root. Remaining native feature wiring is still debt, not part of the faithful portable Workbench.
 

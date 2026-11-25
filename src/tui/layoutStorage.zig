@@ -70,9 +70,6 @@ pub const LayoutStorage = struct {
     fn persist(self: *LayoutStorage) !void {
         const wb = self.workbench;
         if (self.workspace_path) |path| try storage.writeStateFile(wb.allocator, wb.io, path, wb.layout.workspaceState(wb.pane_composite_api.getLastActivePaneCompositeId(.panel)));
-        try storage.writeStateFile(wb.allocator, wb.io, self.profile_path, Layout.ProfileState{
-            .@"workbench.sideBar.size" = wb.sidebar_part.width,
-            .@"workbench.panel.size" = wb.panel_part.getSize(),
-        });
+        try storage.writeStateFile(wb.allocator, wb.io, self.profile_path, wb.layout.profileState());
     }
 };

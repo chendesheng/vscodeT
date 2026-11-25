@@ -9,12 +9,12 @@
 // container; the same file paints the composite bar and routes its hit
 // testing, matching `activitybarPart.zig`.
 //
-// Terminal adaptation: the panel is the bottom panel (the workbench layout
-// supports the bottom position only) and the title is one cell row. The title
+// Terminal adaptation: the panel uses the same four positions in the cell
+// grid; the title is one cell row. The title
 // is still built the upstream way: `renderTitle` creates a `ui.Document`
 // element tree (flex row, one element per composite) and paints it through a
 // `ui.Surface`, so tabs keep DOM-shaped node state instead of ad-hoc spans.
-// Single-cell glyphs replace theme icons. Panel alignment, floating panels, the
+// Single-cell glyphs replace theme icons. Floating panels, the
 // overflow switcher and drag-and-drop move actions are not ported.
 
 const std = @import("std");
@@ -78,6 +78,8 @@ pub const PanelPart = struct {
         };
         // PanelPart always shows its composite bar in the title.
         part.pane.composite_bar_position = .title;
+        part.base.resize_primary = resizePrimary;
+        part.base.apply_position = applyPosition;
         return part;
     }
 
@@ -101,14 +103,15 @@ pub const PanelPart = struct {
         return self.visible;
     }
 
-    pub fn resizeHeight(base: *Part, height: usize) !usize {
+    pub fn resizePrimary(base: *Part, size: usize) !usize {
         const self: *PanelPart = @fieldParentPtr("base", base);
-        try self.setSize(height);
+        try self.setSize(size);
         return self.size;
     }
 
     pub fn setSize(self: *PanelPart, size: usize) !void {
-        const clamped = @max(self.minimum_height, @min(size, self.maximum_height));
+        const horizontal = @import("../../../services/layout/browser/layoutService.zig").isHorizontal(self.position);
+        const clamped = if (horizontal) @max(self.minimum_height, @min(size, self.maximum_height)) else @max(self.minimum_width, size);
         if (self.size == clamped) return;
         self.size = clamped;
         try self.on_did_change.fire({});
@@ -116,6 +119,11 @@ pub const PanelPart = struct {
 
     pub fn getSize(self: *const PanelPart) usize {
         return self.size;
+    }
+
+    fn applyPosition(base: *Part, position: Position) !void {
+        const self: *PanelPart = @fieldParentPtr("base", base);
+        try self.setPosition(position);
     }
 
     pub fn setPosition(self: *PanelPart, position: Position) !void {

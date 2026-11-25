@@ -21,6 +21,12 @@ pub const Direction = @import("../../../../base/browser/ui/grid/grid.zig").Direc
 pub const IWorkbenchLayoutService = struct {
     context: *anyopaque,
     get_side_bar_position: *const fn (*anyopaque) Position,
+    get_panel_position: *const fn (*anyopaque) Position,
+    set_panel_position: *const fn (*anyopaque, Position) anyerror!void,
+    get_panel_alignment: *const fn (*anyopaque) PanelAlignment,
+    set_panel_alignment: *const fn (*anyopaque, PanelAlignment) anyerror!void,
+    on_did_change_panel_position: *Emitter(Position),
+    on_did_change_panel_alignment: *Emitter(PanelAlignment),
     get_visible_neighbor_part: *const fn (*anyopaque, Parts, Direction) ?Parts,
     get_container: *const fn (*anyopaque, ?Parts) ?*ui.Node,
     get_size: *const fn (*anyopaque, Parts) IViewSize,
@@ -44,6 +50,22 @@ pub const IWorkbenchLayoutService = struct {
 
     pub fn getSideBarPosition(self: @This()) Position {
         return self.get_side_bar_position(self.context);
+    }
+
+    pub fn getPanelPosition(self: @This()) Position {
+        return self.get_panel_position(self.context);
+    }
+
+    pub fn setPanelPosition(self: @This(), position: Position) !void {
+        try self.set_panel_position(self.context, position);
+    }
+
+    pub fn getPanelAlignment(self: @This()) PanelAlignment {
+        return self.get_panel_alignment(self.context);
+    }
+
+    pub fn setPanelAlignment(self: @This(), alignment: PanelAlignment) !void {
+        try self.set_panel_alignment(self.context, alignment);
     }
 
     pub fn getVisibleNeighborPart(self: @This(), part: Parts, direction: Direction) ?Parts {
@@ -124,6 +146,12 @@ pub const Parts = enum {
 /// Upstream `Position`: the side bar position and the panel position.
 pub const Position = enum { left, right, top, bottom };
 
+pub fn isHorizontal(position: Position) bool {
+    return position == .top or position == .bottom;
+}
+
+pub const PanelAlignment = enum { left, right, center, justify };
+
 /// Upstream `ActivityBarPosition`. The terminal shell supports every value:
 /// `default` is the vertical rail left of the side bar, `top`/`bottom` move the
 /// activity bar into the side bar title area as a composite bar, `hidden` keeps
@@ -139,6 +167,7 @@ pub const ActivityBarPosition = enum {
 pub const LayoutSettings = struct {
     pub const sidebar_position = "workbench.sideBar.location";
     pub const panel_opens_maximized = "workbench.panel.opensMaximized";
+    pub const panel_position = "workbench.panel.defaultLocation";
     pub const status_bar_visible = "workbench.statusBar.visible";
     pub const activity_bar_location = "workbench.activityBar.location";
     pub const activity_bar_auto_hide = "workbench.activityBar.autoHide";
@@ -169,6 +198,7 @@ pub const PartOpensMaximizedOptions = enum { always, never, preserve };
 pub const LayoutSettingsValues = struct {
     sidebar_position: Position = .left,
     panel_opens_maximized: PartOpensMaximizedOptions = .preserve,
+    panel_position: Position = .bottom,
     status_bar_visible: bool = true,
     activity_bar_location: ActivityBarPosition = .default,
     activity_bar_auto_hide: bool = false,
@@ -186,6 +216,9 @@ pub const LayoutSettingsValues = struct {
         const overrides: configuration.Overrides = if (resource) |path| .{ .resource = path } else .{};
         if (config.getValue(LayoutSettings.sidebar_position, overrides)) |v| {
             if (v.* == .string and std.mem.eql(u8, v.string, "right")) values.sidebar_position = .right;
+        }
+        if (config.getValue(LayoutSettings.panel_position, overrides)) |value| {
+            if (value.* == .string) values.panel_position = std.meta.stringToEnum(Position, value.string) orelse .bottom;
         }
         if (config.getValue(LayoutSettings.panel_opens_maximized, overrides)) |value| {
             if (value.* == .string) values.panel_opens_maximized = std.meta.stringToEnum(PartOpensMaximizedOptions, value.string) orelse .preserve;

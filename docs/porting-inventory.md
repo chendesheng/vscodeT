@@ -1,6 +1,6 @@
 # TUI porting inventory
 
-**Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. See the [Workbench port audit](workbench-audit.md) for the live boundary, line budgets, and remaining port omissions.
+**Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. The legacy command table has been replaced by owner Action2 registrations. Layout supports all four panel positions, panel alignment and maximization. See the [Workbench port audit](workbench-audit.md) for the live boundary, line budgets, and remaining port omissions.
 
 > Snapshot note: this document describes the 2026-11-16 tree (28 files,
 > 19,012 lines). The current file-by-file verdict and roadmap are in

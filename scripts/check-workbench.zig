@@ -1,9 +1,9 @@
 const std = @import("std");
 
 const shell = "src/vs/workbench/browser/workbench.zig";
-const line_budget = 291;
+const line_budget = 292;
 const native_window = "src/tui/workbenchWindow.zig";
-const native_line_budget = 5031;
+const native_line_budget = 5024;
 const exceptions = @embedFile("workbench-imports.txt");
 
 pub fn main(init: std.process.Init) !void {

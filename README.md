@@ -1106,8 +1106,9 @@ console API for raw mode, sizing and input polling.
   the filter transition, reacts to setting edits, and restores the pre-zen filter.
   A workspace remembers zen mode, its exit state, panel and side bar visibility,
   and editor centering. Setting `zenMode.restore` to false restores the layout
-  that preceded zen mode. Panel height and side bar width use profile storage.
-- The bottom panel is a ported pane-composite part
+  that preceded zen mode. Panel width and height, alignment and side bar width
+  use profile storage; workspace storage retains the panel position.
+- The panel (bottom by default) is a ported pane-composite part
   (`src/vs/workbench/browser/parts/panel/panelPart.zig`) with a one-row
   composite bar inside a rounded outline matching the sidebar. The glyph
   fallback reserves border cells when there is room for the title and content.
@@ -1117,8 +1118,10 @@ console API for raw mode, sizing and input polling.
   to the terminal, not as a side-bar view. `Ctrl-J` toggles the panel,
   `Ctrl-Shift-M` opens/focuses Problems and `Alt-Shift-T` toggles the
   terminal container. `hideIfEmpty` containers keep their tab while active and
-  drop it again once empty. Panel position (top/left/right), floating panels,
-  alignment, maximize and the overflow switcher are not ported.
+  drop it again once empty. Panel position (top/bottom/left/right), alignment
+  (center/left/right/justify) and maximization follow Layout commands and
+  context keys, with separate remembered width and height. Floating panels
+  require browser window infrastructure; the overflow switcher remains unported.
 - Source Control runs Git through the CLI. `src/extensions/git/src/git.zig` implements
   the ported `IGitExtensionDelegate` over the Git command line (argv, never a
   shell; explicit cwd; bounded stdout/stderr; per-command deadline), and
@@ -1460,8 +1463,8 @@ console API for raw mode, sizing and input polling.
   `no-drop` according to the target. Leaving the app
   restores `default`. The shape is resolved from the inherited
   `ui.Style.pointer` field by hit testing, with direct-painted chrome mapped at
-  its existing hit tests. Drag the bottom panel's horizontal divider to
-  resize the panel. The sidebar, bottom panel and editor sashes highlight with
+  its existing hit tests. Drag the panel divider along its sizing axis to
+  resize the panel. The sidebar, panel and editor sashes highlight with
   `sash.hoverBorder` on hover and during a drag. Terminals without OSC 22 ignore
   the pointer sequence.
   Double-click and context menus are not wired. Horizontal wheel/Shift+wheel

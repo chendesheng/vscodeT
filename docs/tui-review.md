@@ -1,6 +1,6 @@
 # `src/tui` review: what to port, what to move to `ui`, what to delete
 
-**Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. See the [Workbench port audit](workbench-audit.md) for the live boundary, line budgets, and remaining port omissions.
+**Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. The legacy command table has been replaced by owner Action2 registrations. Layout supports all four panel positions, panel alignment and maximization. See the [Workbench port audit](workbench-audit.md) for the live boundary, line budgets, and remaining port omissions.
 
 This review records the 2026-11-19 working tree. The subsequent workbench split,
 service boundaries, test moves and remaining work are tracked in the

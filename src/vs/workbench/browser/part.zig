@@ -15,6 +15,7 @@ pub const Part = struct {
     create_content_area: ?*const fn (*Part, *ui.Node) anyerror!*ui.Node = null,
     registration: IDisposable = .none,
     resize_primary: ?*const fn (*Part, usize) anyerror!usize = null,
+    apply_position: ?*const fn (*Part, service.Position) anyerror!void = null,
     read_visible: *const fn (*const Part) bool,
     apply_visible: *const fn (*Part, bool) anyerror!void,
 

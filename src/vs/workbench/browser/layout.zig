@@ -19,22 +19,26 @@ const Part = @import("part.zig").Part;
 const IDisposable = @import("../../base/common/lifecycle.zig").IDisposable;
 pub const Parts = layout_service.Parts;
 pub const Position = layout_service.Position;
+pub const PanelAlignment = layout_service.PanelAlignment;
+const isHorizontal = layout_service.isHorizontal;
 
-/// Port of the workbench grid's middle section for a left or right sidebar and a
-/// bottom, center-aligned panel. As in createGridDescriptor, the editor and
-/// panel share a vertical branch inside the horizontal middle section.
+/// Port of the single-window workbench grid's middle section. As in
+/// createGridDescriptor/adjustPartPositions, the panel shares a branch with
+/// the editor or with the editor/sidebar combination according to alignment.
 pub const WorkbenchGrid = struct {
     pub const Sash = enum {
         sidebar,
         panel,
 
-        pub fn coordinate(self: Sash, x: usize, y: usize) usize {
-            return if (self == .sidebar) x else y;
+        pub fn coordinate(self: Sash, x: usize, y: usize, panel_position: Position) usize {
+            return if (self == .sidebar or !isHorizontal(panel_position)) x else y;
         }
     };
 
     pub const Rects = struct {
         sidebar_position: Position = .left,
+        panel_position: Position = .bottom,
+        panel_alignment: PanelAlignment = .center,
         activity_bar: ui.Rect,
         sidebar: ui.Rect,
         editor_column: ui.Rect,
@@ -47,7 +51,7 @@ pub const WorkbenchGrid = struct {
 
         pub fn sidebarSashCell(self: Rects) usize {
             const left = self.sidebar_position == .left;
-            if (self.sidebar.w == 0) return if (left) ui.cell.snap(self.editor.x) else ui.cell.snap(self.editor.right()) -| 1;
+            if (self.sidebar.w == 0) return if (left) ui.cell.snap(self.editor_column.x) else ui.cell.snap(self.editor_column.right()) -| 1;
             return if (left) ui.cell.snap(self.sidebar.right()) - 1 else ui.cell.snap(self.sidebar.x);
         }
 
@@ -71,25 +75,55 @@ pub const WorkbenchGrid = struct {
         fixed_index: usize,
     } = null,
 
-    pub fn layout(rect: ui.Rect, activity_width: usize, sidebar_width: usize, panel_height: usize, position: Position) Rects {
-        const activity = grid.splitRectsAt(rect, .horizontal, @floatFromInt(activity_width), 0);
-        const middle = grid.splitRectsAt(activity.second, .horizontal, @floatFromInt(sidebar_width), 0);
-        var rail_rect = activity.first;
-        var sidebar_rect = middle.first;
-        var column = middle.second;
+    fn splitSidebar(rect: ui.Rect, width: usize, position: Position) struct { side: ui.Rect, rest: ui.Rect } {
+        const parts = grid.splitRectsAt(rect, .horizontal, @floatFromInt(width), 0);
+        var side = parts.first;
+        var rest = parts.second;
         if (position == .right) {
-            rail_rect.x = rect.right() - rail_rect.w;
-            sidebar_rect.x = rail_rect.x - sidebar_rect.w;
-            column.x = rect.x;
+            side.x = rect.right() - side.w;
+            rest.x = rect.x;
         }
-        const editor = grid.splitRectsAt(column, .vertical, column.h - @as(f64, @floatFromInt(panel_height)), 0);
+        return .{ .side = side, .rest = rest };
+    }
+
+    fn splitPanel(rect: ui.Rect, size: usize, position: Position) struct { panel: ui.Rect, editor: ui.Rect } {
+        const axis: grid.Orientation = if (isHorizontal(position)) .vertical else .horizontal;
+        const first = position == .top or position == .left;
+        const total = if (isHorizontal(position)) rect.h else rect.w;
+        const fixed = @min(total, @as(f64, @floatFromInt(size)));
+        const parts = grid.splitRectsAt(rect, axis, if (first) fixed else total - fixed, 0);
+        return .{ .panel = if (first) parts.first else parts.second, .editor = if (first) parts.second else parts.first };
+    }
+
+    pub fn layout(rect: ui.Rect, activity_width: usize, sidebar_width: usize, panel_size: usize, sidebar_position: Position, panel_position: Position, alignment: PanelAlignment) Rects {
+        const activity = splitSidebar(rect, activity_width, sidebar_position);
+        const wide_panel = isHorizontal(panel_position) and
+            (alignment == .justify or (sidebar_position == .left and alignment == .left) or (sidebar_position == .right and alignment == .right));
+        if (wide_panel) {
+            const panel = splitPanel(activity.rest, panel_size, panel_position);
+            const middle = splitSidebar(panel.editor, sidebar_width, sidebar_position);
+            return .{
+                .sidebar_position = sidebar_position,
+                .panel_position = panel_position,
+                .panel_alignment = alignment,
+                .activity_bar = activity.side,
+                .sidebar = middle.side,
+                .editor_column = middle.rest,
+                .editor = middle.rest,
+                .panel = panel.panel,
+            };
+        }
+        const middle = splitSidebar(activity.rest, sidebar_width, sidebar_position);
+        const panel = splitPanel(middle.rest, panel_size, panel_position);
         return .{
-            .sidebar_position = position,
-            .activity_bar = rail_rect,
-            .sidebar = sidebar_rect,
-            .editor_column = column,
-            .editor = editor.first,
-            .panel = editor.second,
+            .sidebar_position = sidebar_position,
+            .panel_position = panel_position,
+            .panel_alignment = alignment,
+            .activity_bar = activity.side,
+            .sidebar = middle.side,
+            .editor_column = middle.rest,
+            .editor = panel.editor,
+            .panel = panel.panel,
         };
     }
 
@@ -103,15 +137,15 @@ pub const WorkbenchGrid = struct {
     pub fn onSashStart(self: *WorkbenchGrid, sash: Sash, start: usize, rects: Rects, limits: Limits, sibling_minimum: usize, alt: bool) void {
         const side = switch (sash) {
             .sidebar => ui.cell.snap(rects.sidebar.w),
-            .panel => ui.cell.snap(rects.panel.h),
+            .panel => ui.cell.snap(if (isHorizontal(rects.panel_position)) rects.panel.h else rects.panel.w),
         };
         const remaining = switch (sash) {
             .sidebar => ui.cell.snap(rects.editor_column.w),
-            .panel => ui.cell.snap(rects.editor.h),
+            .panel => ui.cell.snap(if (isHorizontal(rects.panel_position)) rects.editor.h else rects.editor.w),
         };
         const fixed: split_view.ViewSize = .{ .size = side, .minimum = limits.minimum, .maximum = limits.maximum, .snap = sash == .sidebar };
         const flexible: split_view.ViewSize = .{ .size = remaining, .minimum = sibling_minimum, .maximum = std.math.maxInt(usize) };
-        const fixed_first = sash == .sidebar and rects.sidebar_position == .left;
+        const fixed_first = if (sash == .sidebar) rects.sidebar_position == .left else rects.panel_position == .top or rects.panel_position == .left;
         const views = if (fixed_first) [2]split_view.ViewSize{ fixed, flexible } else .{ flexible, fixed };
         self.drag = .{ .sash = sash, .current = start, .state = .onSashStart(start, views), .views = views, .fixed_index = @intFromBool(!fixed_first) };
         self.drag.?.state.alt = alt;
@@ -194,6 +228,12 @@ pub const Layout = struct {
     allocator: Allocator,
     states: [8]PartState = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} },
     sidebar_position: Position = .left,
+    panel_position: Position = .bottom,
+    panel_position_explicit: bool = false,
+    panel_alignment: PanelAlignment = .center,
+    // Non-maximized sizes are retained separately across orthogonal moves.
+    panel_last_non_maximized_width: usize = 30,
+    panel_last_non_maximized_height: usize = 10,
     panel_opens_maximized: layout_service.PartOpensMaximizedOptions = .preserve,
     panel_was_last_maximized: bool = false,
     workbench_grid: WorkbenchGrid = .{},
@@ -217,6 +257,8 @@ pub const Layout = struct {
     on_did_change_zen_mode: Emitter(bool),
     on_did_change_main_editor_centered: Emitter(bool),
     on_did_change_panel_maximized: Emitter(bool),
+    on_did_change_panel_position: Emitter(Position),
+    on_did_change_panel_alignment: Emitter(PanelAlignment),
 
     pub fn init(allocator: Allocator) Layout {
         return .{
@@ -226,6 +268,8 @@ pub const Layout = struct {
             .on_did_change_zen_mode = Emitter(bool).init(allocator),
             .on_did_change_main_editor_centered = Emitter(bool).init(allocator),
             .on_did_change_panel_maximized = Emitter(bool).init(allocator),
+            .on_did_change_panel_position = .init(allocator),
+            .on_did_change_panel_alignment = .init(allocator),
         };
     }
 
@@ -266,10 +310,12 @@ pub const Layout = struct {
         self.on_did_change_zen_mode.deinit();
         self.on_did_change_main_editor_centered.deinit();
         self.on_did_change_panel_maximized.deinit();
+        self.on_did_change_panel_position.deinit();
+        self.on_did_change_panel_alignment.deinit();
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .get_visible_neighbor_part = getVisibleNeighborPartContext, .get_container = getContainerContext, .get_size = getSizeContext, .set_size = setSizeContext, .resize_part = resizePartContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .on_did_change_panel_maximized = &self.on_did_change_panel_maximized, .is_panel_maximized = isPanelMaximizedContext, .toggle_maximized_panel = toggleMaximizedPanelContext, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
+        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .get_panel_position = getPanelPositionContext, .set_panel_position = setPanelPositionContext, .get_panel_alignment = getPanelAlignmentContext, .set_panel_alignment = setPanelAlignmentContext, .on_did_change_panel_position = &self.on_did_change_panel_position, .on_did_change_panel_alignment = &self.on_did_change_panel_alignment, .get_visible_neighbor_part = getVisibleNeighborPartContext, .get_container = getContainerContext, .get_size = getSizeContext, .set_size = setSizeContext, .resize_part = resizePartContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .on_did_change_panel_maximized = &self.on_did_change_panel_maximized, .is_panel_maximized = isPanelMaximizedContext, .toggle_maximized_panel = toggleMaximizedPanelContext, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
     }
 
     fn getVisibleNeighborPartContext(context: *anyopaque, part: Parts, direction: grid.Direction) ?Parts {
@@ -289,6 +335,26 @@ pub const Layout = struct {
             if (grid.boxesAdjacent(source, target, direction)) return candidate;
         }
         return null;
+    }
+
+    fn getPanelPositionContext(context: *anyopaque) Position {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.getPanelPosition();
+    }
+
+    fn setPanelPositionContext(context: *anyopaque, position: Position) !void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        try self.setPanelPosition(position);
+    }
+
+    fn getPanelAlignmentContext(context: *anyopaque) PanelAlignment {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.getPanelAlignment();
+    }
+
+    fn setPanelAlignmentContext(context: *anyopaque, alignment: PanelAlignment) !void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        try self.setPanelAlignment(alignment);
     }
 
     fn isPanelMaximizedContext(context: *anyopaque) bool {
@@ -516,6 +582,7 @@ pub const Layout = struct {
     /// terminal grid is center-aligned, so panel maximization is represented
     /// by the same upstream EDITOR_HIDDEN state rather than a separate size.
     fn setEditorHidden(self: *Layout, hidden: bool) anyerror!void {
+        if (hidden and !self.panelMaximizationSupported()) return error.PanelMaximizationUnsupported;
         if (hidden and !self.isVisible(.panel)) try self.setPartHidden(false, .panel);
         const previous = self.isPanelMaximized();
         try self.setPartVisibility(hidden, .editor);
@@ -524,8 +591,12 @@ pub const Layout = struct {
         if (previous != maximized) try self.on_did_change_panel_maximized.fire(maximized);
     }
 
+    pub fn panelMaximizationSupported(self: *const Layout) bool {
+        return self.panel_alignment == .center or !isHorizontal(self.panel_position);
+    }
+
     pub fn isPanelMaximized(self: *const Layout) bool {
-        return self.isVisible(.panel) and !self.isVisible(.editor);
+        return self.panelMaximizationSupported() and self.isVisible(.panel) and !self.isVisible(.editor);
     }
 
     pub fn toggleMaximizedPanel(self: *Layout) !void {
@@ -534,6 +605,7 @@ pub const Layout = struct {
     }
 
     fn panelOpensMaximized(self: *const Layout) bool {
+        if (!self.panelMaximizationSupported()) return false;
         return switch (self.panel_opens_maximized) {
             .always => true,
             .never => false,
@@ -600,7 +672,7 @@ pub const Layout = struct {
     }
 
     /// Upstream setSize resizes the corresponding registered grid view. This
-    /// terminal subset has a vertical sidebar and horizontal bottom panel.
+    /// terminal grid uses the panel's current primary axis.
     pub fn setViewSize(self: *Layout, part: Parts, value: layout_service.IViewSize) !void {
         switch (part) {
             .sidebar => {
@@ -609,8 +681,9 @@ pub const Layout = struct {
             },
             .panel => {
                 if (self.isPanelMaximized()) return;
-                const height = if (self.terminal_geometry) |geometry| geometry.clampPanelHeight(value.height) else value.height;
-                try self.setSize(.panel, height);
+                const wanted = if (isHorizontal(self.panel_position)) value.height else value.width;
+                const primary = if (self.terminal_geometry) |geometry| geometry.clampPanelSize(wanted) else wanted;
+                try self.setSize(.panel, primary);
             },
             .editor => {
                 const before = self.getSize(.editor);
@@ -633,7 +706,7 @@ pub const Layout = struct {
             .sidebar => try self.setViewSize(.sidebar, .{ .width = adjustSize(size_value.width, width_delta), .height = size_value.height }),
             .panel => {
                 if (self.terminal_geometry) |geometry| if (!geometry.panelShown()) return;
-                try self.setViewSize(.panel, .{ .width = size_value.width, .height = adjustSize(size_value.height, height_delta) });
+                try self.setViewSize(.panel, .{ .width = adjustSize(size_value.width, width_delta), .height = adjustSize(size_value.height, height_delta) });
             },
             .editor => {
                 var remaining_width = width_delta;
@@ -659,25 +732,36 @@ pub const Layout = struct {
     /// by the resizePart fallback when there is no applicable group sash.
     pub fn resizeEditorPart(self: *Layout, width_delta: isize, height_delta: isize) !void {
         const geometry = self.terminal_geometry orelse return;
-        if (width_delta != 0 and geometry.sidebarShown()) {
+        if (width_delta != 0 and geometry.panelShown() and !isHorizontal(self.panel_position) and !self.isPanelMaximized()) {
+            const current: isize = @intCast(geometry.panelPrimarySize());
+            try self.setSize(.panel, geometry.clampPanelSize(@intCast(@max(current -| width_delta, 0))));
+        } else if (width_delta != 0 and geometry.sidebarShown()) {
             const current: isize = @intCast(geometry.sidebarWidth());
             try self.setSize(.sidebar, geometry.clampSidebarWidth(@intCast(@max(current -| width_delta, 0))));
         }
-        if (height_delta != 0 and geometry.panelShown() and !self.isPanelMaximized()) {
-            const current: isize = @intCast(geometry.panelHeight());
-            try self.setSize(.panel, geometry.clampPanelHeight(@intCast(@max(current -| height_delta, 0))));
+        if (height_delta != 0 and geometry.panelShown() and isHorizontal(self.panel_position) and !self.isPanelMaximized()) {
+            const current: isize = @intCast(geometry.panelPrimarySize());
+            try self.setSize(.panel, geometry.clampPanelSize(@intCast(@max(current -| height_delta, 0))));
         }
         // Group resize also needs the normal layout event when no outer part
         // size changed (or a constrained value was already at its limit).
         try self.on_did_change.fire({});
     }
 
-    pub fn setSize(self: *Layout, part: Parts, value: usize) !void {
-        const index = @backingInt(part);
+    fn applyPrimarySize(self: *Layout, part: Parts, value: usize) !usize {
         const constrained = if (self.parts.get(part)) |binding| blk: {
             const resize = binding.part.resize_primary orelse break :blk value;
             break :blk try resize(binding.part, value);
         } else value;
+        if (part == .panel) {
+            if (isHorizontal(self.panel_position)) self.panel_last_non_maximized_height = constrained else self.panel_last_non_maximized_width = constrained;
+        }
+        return constrained;
+    }
+
+    pub fn setSize(self: *Layout, part: Parts, value: usize) !void {
+        const index = @backingInt(part);
+        const constrained = try self.applyPrimarySize(part, value);
         if (self.states[index].size == constrained) return;
         self.states[index].size = constrained;
         try self.on_did_change.fire({});
@@ -708,6 +792,65 @@ pub const Layout = struct {
         return self.sidebar_position;
     }
 
+    pub fn getPanelPosition(self: *const Layout) Position {
+        return self.panel_position;
+    }
+
+    pub fn getPanelAlignment(self: *const Layout) PanelAlignment {
+        return self.panel_alignment;
+    }
+
+    pub fn initializePanelPosition(self: *Layout, position: Position) !void {
+        if (self.panel_position_explicit) return;
+        try self.movePanelPosition(position);
+    }
+
+    pub fn setPanelPosition(self: *Layout, position: Position) !void {
+        if (!self.isVisible(.panel)) try self.setPartHidden(false, .panel);
+        self.panel_position_explicit = true;
+        try self.movePanelPosition(position);
+    }
+
+    pub fn panelPositionClass(position: Position) @import("media/part_css.zig").Class {
+        return switch (position) {
+            .left => .left,
+            .right => .right,
+            .top => .top,
+            .bottom => .bottom,
+        };
+    }
+
+    fn movePanelPosition(self: *Layout, position: Position) !void {
+        const previous = self.panel_position;
+        if (previous == position) return;
+        if (isHorizontal(position) and self.panel_alignment != .center and self.isPanelMaximized()) try self.setEditorHidden(false);
+        const had_focus = hasFocusContext(self, .panel);
+        self.workbench_grid.onSashEnd();
+        self.panel_position = position;
+        if (self.parts.get(.panel)) |binding| {
+            if (binding.part.apply_position) |apply| try apply(binding.part, position);
+            if (binding.part.getContainer()) |container| {
+                container.removeClass(panelPositionClass(previous));
+                try container.addClass(panelPositionClass(position));
+            }
+        }
+        const wanted = if (isHorizontal(position)) self.panel_last_non_maximized_height else self.panel_last_non_maximized_width;
+        self.states[@backingInt(Parts.panel)].size = try self.applyPrimarySize(.panel, wanted);
+        try self.on_did_change.fire({});
+        if (had_focus) focusPartContext(self, .panel);
+        try self.on_did_change_panel_position.fire(position);
+    }
+
+    pub fn setPanelAlignment(self: *Layout, alignment: PanelAlignment) !void {
+        if (!isHorizontal(self.panel_position)) try self.setPanelPosition(.bottom);
+        if (alignment != .center and self.isPanelMaximized()) try self.setEditorHidden(false);
+        if (self.panel_alignment == alignment) return;
+        self.panel_alignment = alignment;
+        self.workbench_grid.onSashEnd();
+        try self.on_did_change.fire({});
+        try self.on_did_change_panel_alignment.fire(alignment);
+    }
+
     /// Workspace-scoped LayoutStateKeys. The terminal storage adapter owns
     /// the encoding and keeps these separate from profile part sizes.
     pub const WorkspaceState = struct {
@@ -718,11 +861,15 @@ pub const Layout = struct {
         @"workbench.panel.hidden": ?bool = null,
         @"workbench.panelpart.activepanelid": ?[]const u8 = null,
         @"panel.wasLastMaximized": bool = false,
+        @"panel.position": ?Position = null,
     };
 
     pub const ProfileState = struct {
         @"workbench.sideBar.size": ?usize = null,
         @"workbench.panel.size": ?usize = null,
+        @"panel.lastNonMaximizedHeight": ?usize = null,
+        @"panel.lastNonMaximizedWidth": ?usize = null,
+        @"panel.alignment": ?PanelAlignment = null,
     };
 
     pub fn workspaceState(self: *const Layout, active_panel: ?[]const u8) WorkspaceState {
@@ -734,6 +881,7 @@ pub const Layout = struct {
             .@"workbench.panel.hidden" = !self.isVisible(.panel),
             .@"workbench.panelpart.activepanelid" = active_panel,
             .@"panel.wasLastMaximized" = self.panel_was_last_maximized,
+            .@"panel.position" = self.panel_position,
         };
     }
 
@@ -741,6 +889,10 @@ pub const Layout = struct {
     /// session can reopen the panes recorded in ZEN_MODE_EXIT_INFO.
     fn restorePartState(self: *Layout, state: WorkspaceState) !void {
         const host = self.zen_host orelse return error.LayoutNotInitialized;
+        if (state.@"panel.position") |position| {
+            self.panel_position_explicit = true;
+            try self.movePanelPosition(position);
+        }
         self.panel_was_last_maximized = state.@"panel.wasLastMaximized";
         if (state.@"workbench.sideBar.hidden") |hidden| try self.setPartHidden(hidden, .sidebar);
         if (state.@"workbench.panel.hidden") |hidden| {
@@ -775,10 +927,29 @@ pub const Layout = struct {
         return self.when_restored.is_open;
     }
 
+    pub fn profileState(self: *const Layout) ProfileState {
+        return .{
+            .@"workbench.sideBar.size" = self.size(.sidebar),
+            .@"workbench.panel.size" = if (isHorizontal(self.panel_position)) self.panel_last_non_maximized_height else self.panel_last_non_maximized_width,
+            .@"panel.lastNonMaximizedHeight" = self.panel_last_non_maximized_height,
+            .@"panel.lastNonMaximizedWidth" = self.panel_last_non_maximized_width,
+            .@"panel.alignment" = self.panel_alignment,
+        };
+    }
+
     pub fn restorePartSizes(self: *Layout, state: ProfileState) !void {
         if (self.reset_layout) return;
         if (state.@"workbench.sideBar.size") |size_in_cells| try self.setSize(.sidebar, size_in_cells);
-        if (state.@"workbench.panel.size") |size_in_cells| try self.setSize(.panel, size_in_cells);
+        if (state.@"panel.lastNonMaximizedHeight") |height| self.panel_last_non_maximized_height = height;
+        if (state.@"panel.lastNonMaximizedWidth") |width| self.panel_last_non_maximized_width = width;
+        const primary = if (isHorizontal(self.panel_position)) state.@"panel.lastNonMaximizedHeight" else state.@"panel.lastNonMaximizedWidth";
+        if (primary orelse state.@"workbench.panel.size") |size_in_cells| try self.setSize(.panel, size_in_cells);
+        if (state.@"panel.alignment") |alignment| {
+            if (alignment != .center and isHorizontal(self.panel_position) and self.isPanelMaximized()) try self.setEditorHidden(false);
+            self.panel_alignment = alignment;
+            try self.on_did_change.fire({});
+            try self.on_did_change_panel_alignment.fire(alignment);
+        }
     }
 
     /// Port of `isZenModeActive`.
@@ -954,7 +1125,7 @@ const PanelPart = panel_part_mod.PanelPart;
 
 /// Cell-grid adapter to the upstream workbench grid's layout and bounds.
 /// The part instances own their size constraints; the terminal has only a
-/// single main window and a bottom panel. Glyphs reserve a cell when native
+/// single main window and a docked panel. Glyphs reserve a cell when native
 /// cell borders are unavailable, rather than using browser pixel borders.
 pub const TerminalGeometry = struct {
     layout: *const Layout,
@@ -978,7 +1149,7 @@ pub const TerminalGeometry = struct {
         return self.layout.workbenchRows(self.rows);
     }
 
-    /// The bottom panel is visible with an active container. `hideIfEmpty`
+    /// The panel is visible with an active container. `hideIfEmpty`
     /// containers hide their title (not the panel) while they are empty; the
     /// panel itself stays open until the workbench closes it.
     pub fn panelShown(self: *const TerminalGeometry) bool {
@@ -989,11 +1160,17 @@ pub const TerminalGeometry = struct {
         return self.panel_part.pane.active_id orelse "";
     }
 
+    pub fn panelPrimarySize(self: *const TerminalGeometry) usize {
+        if (!self.panelShown()) return 0;
+        const limits = self.panelPrimaryLimits();
+        if (self.layout.isPanelMaximized()) return limits.maximum;
+        const wanted = self.panel_part.getSize();
+        return std.math.clamp(wanted, limits.minimum, limits.maximum);
+    }
+
     pub fn panelHeight(self: *const TerminalGeometry) usize {
         if (!self.panelShown()) return 0;
-        if (self.layout.isPanelMaximized()) return self.workbenchRows();
-        const wanted = if (self.panel_part.getSize() == 0) 10 else self.panel_part.getSize();
-        return self.clampPanelHeight(wanted);
+        return if (isHorizontal(self.layout.getPanelPosition())) self.panelPrimarySize() else self.workbenchRows();
     }
 
     pub fn panelHeightLimits(self: *const TerminalGeometry) WorkbenchGrid.Limits {
@@ -1004,8 +1181,20 @@ pub const TerminalGeometry = struct {
         return .{ .minimum = @min(self.panel_part.minimum_height, maximum), .maximum = maximum };
     }
 
-    pub fn clampPanelHeight(self: *const TerminalGeometry, wanted: usize) usize {
-        const limits = self.panelHeightLimits();
+    pub fn panelWidthLimits(self: *const TerminalGeometry) WorkbenchGrid.Limits {
+        const available = self.cols -| self.activityBarWidth() -| (if (self.sidebarShown()) self.sidebarWidth() + self.sidebarFrameInset() else 0);
+        if (self.layout.isPanelMaximized()) return .{ .minimum = available, .maximum = available };
+        const editor_minimum = @min(self.part.minimumWidth(self.workbenchRows()), @max(available -| self.panel_part.minimum_width, 1));
+        const maximum = available -| editor_minimum;
+        return .{ .minimum = @min(self.panel_part.minimum_width, maximum), .maximum = maximum };
+    }
+
+    pub fn panelPrimaryLimits(self: *const TerminalGeometry) WorkbenchGrid.Limits {
+        return if (isHorizontal(self.layout.getPanelPosition())) self.panelHeightLimits() else self.panelWidthLimits();
+    }
+
+    pub fn clampPanelSize(self: *const TerminalGeometry, wanted: usize) usize {
+        const limits = self.panelPrimaryLimits();
         return std.math.clamp(wanted, limits.minimum, limits.maximum);
     }
 
@@ -1013,7 +1202,7 @@ pub const TerminalGeometry = struct {
         return WorkbenchGrid.layout(.{
             .w = @floatFromInt(self.cols),
             .h = @floatFromInt(self.workbenchRows()),
-        }, self.activityBarWidth(), if (self.sidebarShown()) self.sidebarWidth() + self.sidebarFrameInset() else 0, self.panelHeight(), self.layout.getSideBarPosition());
+        }, self.activityBarWidth(), if (self.sidebarShown()) self.sidebarWidth() + self.sidebarFrameInset() else 0, self.panelPrimarySize(), self.layout.getSideBarPosition(), self.layout.getPanelPosition(), self.layout.getPanelAlignment());
     }
 
     pub fn editorRows(self: *const TerminalGeometry) usize {
@@ -1052,9 +1241,10 @@ pub const TerminalGeometry = struct {
 
     pub fn editorColumnMinimum(self: *const TerminalGeometry) usize {
         const available = self.cols -| self.activityBarWidth() -| self.sidebarMinimum();
-        const editor = if (self.part.maximized_group != null) editor_part_mod.min_pane_width else self.part.minimumWidth(self.workbenchRows() -| self.panelHeight());
+        const horizontal = isHorizontal(self.layout.getPanelPosition());
+        const editor = if (!self.layout.isVisible(.editor)) 0 else if (self.part.maximized_group != null) editor_part_mod.min_pane_width else self.part.minimumWidth(self.workbenchRows() -| (if (horizontal) self.panelHeight() else 0));
         const panel = if (self.panelShown()) self.panel_part.minimum_width else 0;
-        return @min(available, @max(editor, panel));
+        return @min(available, if (horizontal) @max(editor, panel) else editor +| panel);
     }
 
     pub fn clampSidebarWidth(self: *const TerminalGeometry, width: usize) usize {

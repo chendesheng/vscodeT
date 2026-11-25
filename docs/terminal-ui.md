@@ -645,7 +645,7 @@ layout cells for its border. The editor hover keeps its content inset and
 can paint a rounded border on the outer cell edges.
 
 The workbench draws one frame around the editor area, following VS Code's
-`editorBorder.css`. The sidebar and bottom panel each have a separate frame.
+`editorBorder.css`. The sidebar and panel each have a separate frame.
 A single editor keeps its frame when the sidebar is hidden. Straight dividers
 between groups use `editorGroup.border` and meet at T-junctions in nested splits. Cell-border
 terminals draw the frame and dividers on cell edges. The `round` extension
@@ -765,7 +765,7 @@ The terminal window owns the cell surface and its root element. Workbench startu
 
 Workbenches can attach registered stylesheet class IDs to the main container
 through `IWorkbenchOptions.extra_classes`. Terminal cells supply font metrics.
-The side bar, activity bar, bottom panel and status bar still paint separately. Changing `workbench.sideBar.location` repositions the rail, its sidebar sash and the adjacent editor and panel.
+The side bar, activity bar, panel and status bar still paint separately. Changing `workbench.sideBar.location` repositions the rail, its sidebar sash and the adjacent editor and panel.
 
 ### Native context menus
 
@@ -2261,9 +2261,12 @@ rules, not changes to the ported view pipeline.
 
 ### Workbench layout storage
 
-The terminal saves side bar width and bottom panel height in terminal cells under
+The terminal saves side bar width, panel alignment and the last non-maximized
+panel width and height in terminal cells under
 `User/globalStorage/layout.state.json`. Workspace storage keeps pane visibility,
-the active panel, editor centering, zen mode and its exit information. Each file
+panel position, maximization history, the active panel, editor centering, zen
+mode and its exit information. The panel defaults to bottom and supports all
+four dock positions; its sash follows the horizontal or vertical sizing axis. Each file
 is replaced atomically on shutdown. An explicit session path identifies an
 empty window across launches. A window without a folder or session path has
 only profile-level sizing. Restoring a terminal panel opens the pane without

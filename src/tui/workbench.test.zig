@@ -6751,6 +6751,80 @@ test "Workbench: list commands follow last focused list without a render or acti
     try std.testing.expect(wb.lists.lastFocusedList() == null);
 }
 
+test "Workbench: panel positions, alignment and orthogonal sash sizes follow Layout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "panel-position.txt", "editor-position-content");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const window = try TestWindow.init(allocator, io, &.{path}, 100, 26);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    _ = try wb.openPanelContainer(PROBLEMS_CONTAINER_ID);
+    try wb.layout_api.setSize(.panel, .{ .height = 6 });
+    try wb.commands.execute("workbench.action.positionPanelTop");
+    var rects = wb.geometry().workbenchGridLayout();
+    try std.testing.expectEqual(@as(f64, 6), rects.panel.h);
+    try std.testing.expectEqual(rects.panel.bottom(), rects.editor.y);
+    try std.testing.expectEqual(rects.panel.w, rects.editor.w);
+    try std.testing.expectEqual(.top, wb.panel_part.getPosition());
+    wb.focusEditor();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try renderFrame(wb, &out.writer);
+    const cursor = terminal_workbench.cursorCell(wb) orelse return error.TestExpectedCursor;
+    try std.testing.expect(cursor.row >= ui.cell.snap(rects.editor.y));
+    try wb.commands.execute("workbench.action.positionPanelRight");
+    try wb.layout_api.setSize(.panel, .{ .width = 24 });
+    rects = wb.geometry().workbenchGridLayout();
+    try std.testing.expectEqual(rects.editor.right(), rects.panel.x);
+    try std.testing.expectEqual(@as(f64, 24), rects.panel.w);
+    try std.testing.expectEqual(rects.editor.h, rects.panel.h);
+    const x = ui.cell.snap(rects.panel.x);
+    const y = ui.cell.snap(rects.panel.y) + 4;
+    try std.testing.expectEqual(@import("../vs/workbench/browser/layout.zig").WorkbenchGrid.Sash.panel, terminal_workbench.workbenchSashAt(wb, x, y).?);
+    try std.testing.expectEqual(ui.Pointer.ew_resize, terminal_workbench.workbenchSashPointer(wb, .panel));
+    try std.testing.expect(terminal_workbench.handleWorkbenchSashMouse(wb, &.{ .kind = .down, .button = .left, .x = x, .y = y }));
+    try std.testing.expect(terminal_workbench.handleWorkbenchSashMouse(wb, &.{ .kind = .move, .button = .left, .x = x - 3, .y = y }));
+    try std.testing.expect(terminal_workbench.handleWorkbenchSashMouse(wb, &.{ .kind = .up, .button = .left, .x = x - 3, .y = y }));
+    try std.testing.expectEqual(@as(f64, 27), wb.geometry().workbenchGridLayout().panel.w);
+    try wb.commands.execute("workbench.action.positionPanelLeft");
+    rects = wb.geometry().workbenchGridLayout();
+    try std.testing.expectEqual(rects.panel.right(), rects.editor.x);
+    try std.testing.expectEqual(@as(f64, 27), rects.panel.w);
+    try wb.commands.execute("workbench.action.positionPanelBottom");
+    rects = wb.geometry().workbenchGridLayout();
+    try std.testing.expectEqual(@as(f64, 6), rects.panel.h);
+    try wb.commands.execute("workbench.action.alignPanelJustify");
+    rects = wb.geometry().workbenchGridLayout();
+    try std.testing.expectEqual(rects.sidebar.x, rects.panel.x);
+    try std.testing.expectEqual(rects.editor.right(), rects.panel.right());
+    try std.testing.expectEqual(rects.editor.bottom(), rects.sidebar.bottom());
+    const keys = (try wb.ensureContextKeys()).interface();
+    try std.testing.expectEqualStrings("justify", keys.getContextKeyValue("panelAlignment").string);
+    try std.testing.expectEqualStrings("bottom", keys.getContextKeyValue("panelPosition").string);
+    const profile = wb.layout.profileState();
+    try std.testing.expectEqual(@as(?usize, 27), profile.@"panel.lastNonMaximizedWidth");
+    try std.testing.expectEqual(@as(?usize, 6), profile.@"panel.lastNonMaximizedHeight");
+    try wb.commands.execute("workbench.action.alignPanelCenter");
+    try wb.commands.execute("workbench.action.toggleMaximizedPanel");
+    try std.testing.expect(wb.layout_api.isPanelMaximized());
+    try wb.commands.execute("workbench.action.alignPanelLeft");
+    try std.testing.expect(!wb.layout_api.isPanelMaximized());
+    try std.testing.expect(wb.layout_api.isVisible(.editor));
+    try wb.commands.execute("workbench.action.positionPanelRight");
+    try wb.commands.execute("workbench.action.toggleMaximizedPanel");
+    try std.testing.expect(wb.layout_api.isPanelMaximized());
+    try wb.commands.execute("workbench.action.positionPanelTop");
+    try std.testing.expect(!wb.layout_api.isPanelMaximized());
+    try std.testing.expectEqual(@as(f64, 6), wb.geometry().workbenchGridLayout().panel.h);
+}
+
 test "Workbench: maximize panel hides editor and restores remembered height and visibility" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -7433,7 +7507,7 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     try workbench.showProblems();
     try workbench.layout.resizeEditorPart(-100, 0);
     try std.testing.expectEqual(@as(usize, 18), ui.cell.snap(workbench.panel_part.base.bounds.?.w));
-    workbench.closePanel();
+    try workbench.commands.execute("workbench.action.closePanel");
 
     // An uneven editor split must still reserve each group's minimum.
     try workbench.splitActive(.horizontal);
