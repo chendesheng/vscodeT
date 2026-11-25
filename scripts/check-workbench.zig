@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const shell = "src/vs/workbench/browser/workbench.zig";
-const line_budget = 7186;
+const line_budget = 6934;
 const exceptions = @embedFile("workbench-imports.txt");
 
 pub fn main(init: std.process.Init) !void {

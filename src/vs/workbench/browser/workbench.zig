@@ -128,7 +128,6 @@ const OutlineEditor = outline_mod.OutlineEditor;
 const IOutlineCreator = outline_mod.IOutlineCreator;
 const DocumentSymbolsOutlineCreator = @import("../contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutlineCreator;
 const outline_model = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig");
-const OutlineModel = outline_model.OutlineModel;
 const Emitter = @import("../../base/common/event.zig").Emitter;
 const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
 const ServiceCollection = @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection;
@@ -188,14 +187,11 @@ const editorBrowser = @import("../../editor/browser/editorBrowser.zig");
 const Range = @import("../../editor/common/core/range.zig").Range;
 const LanguageFeaturesService = @import("../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
 const languages = @import("../../editor/common/languages.zig");
-const references_model = @import("../../editor/contrib/gotoSymbol/browser/referencesModel.zig");
-const ReferencesModel = references_model.ReferencesModel;
 const go_to_commands = @import("../../editor/contrib/gotoSymbol/browser/goToCommands.zig");
 const goto_symbol_quick_access = @import("../contrib/codeEditor/browser/quickaccess/gotoSymbolQuickAccess.zig");
 const hover_operation = @import("../../editor/contrib/hover/browser/hoverOperation.zig");
 const hover_types = @import("../../editor/contrib/hover/browser/hoverTypes.zig");
 const sticky_actions = @import("../../editor/contrib/stickyScroll/browser/stickyScrollActions.zig");
-const strings = @import("../../base/common/strings.zig");
 const MarkdownPreviewManager = @import("../../../extensions/markdown-language-features/src/preview/previewManager.zig").MarkdownPreviewManager;
 const media_preview = @import("../contrib/mediaPreview/common/mediaPreview.zig");
 const ImagePreviewEditorInput = @import("../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
@@ -299,11 +295,6 @@ const TerminalColorSchemeHost = struct {
     }
 };
 pub const DiffRef = git_mod.DiffRef;
-
-const SymbolActionContext = struct {
-    workbench: *Workbench,
-    action: *const go_to_commands.ActionDescriptor,
-};
 
 const LayoutNode = grid_mod.Node(*GroupPane);
 
@@ -505,18 +496,11 @@ pub const Workbench = struct {
     breadcrumbs: breadcrumbs_control_mod.BreadcrumbsControlCollection,
     home_path: ?[]u8 = null,
     breadcrumbs_arena: std.heap.ArenaAllocator,
-    navigation_arena: std.heap.ArenaAllocator,
+    symbol_navigation: go_to_commands.SymbolNavigationActionHost,
+    symbol_quick_access: goto_symbol_quick_access.GotoSymbolQuickAccessProvider,
     builtin_host: *@import("../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost,
     references_view_registered: bool,
     references_view: @import("../../../extensions/references-view/referencesView.zig").SymbolsTree,
-    pending_references: ?*ReferencesModel = null,
-    symbol_picker: ?struct {
-        tab: *Tab,
-        subscription: ?IDisposable = null,
-        outline: ?*OutlineModel = null,
-    } = null,
-    pending_symbols: ?[]goto_symbol_quick_access.Entry = null,
-    symbol_action_contexts: [go_to_commands.actions.len]SymbolActionContext = undefined,
     frame_scheduler: ?struct {
         context: *anyopaque,
         request: *const fn (*anyopaque) void,
@@ -641,11 +625,6 @@ pub const Workbench = struct {
         errdefer self.outline_service.deinit();
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
-        self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer self.navigation_arena.deinit();
-        self.pending_references = null;
-        self.symbol_picker = null;
-        self.pending_symbols = null;
         self.home_path = readHomePath(allocator);
         errdefer if (self.home_path) |path| allocator.free(path);
         self.frame_scheduler = null;
@@ -806,6 +785,57 @@ pub const Workbench = struct {
         std.mem.swap(ServiceCollection, services, &self.services);
         errdefer self.services.deinit();
         try self.initQuickAccess();
+        self.symbol_navigation = .{
+            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .quick_input = self.quick_access.inputService(),
+            .language_features = &self.language_features,
+            .host = .{
+                .context = self,
+                .active_editor = navigationActiveEditor,
+                .workspace_root = struct {
+                    fn root(context: *anyopaque) ?[]const u8 {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        return host.workspaceFolderPath();
+                    }
+                }.root,
+                .find_open_editor = struct {
+                    fn find(context: *anyopaque, path: []const u8) ?*Editor {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        return if (host.findOpenInput(path)) |input| input.editor else null;
+                    }
+                }.find,
+                .open_link = struct {
+                    fn open(context: *anyopaque, link: languages.LocationLink) !void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        try host.navigateToLink(link);
+                    }
+                }.open,
+            },
+        };
+        self.symbol_quick_access = .{
+            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .quick_input = self.quick_access.inputService(),
+            .language_features = &self.language_features,
+            .host = .{
+                .context = self,
+                .active_editor = navigationActiveEditor,
+                .outline_models = struct {
+                    fn models(context: *anyopaque) ?*outline_model.OutlineModelService {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        return if (host.outline_creator) |creator| creator.models else null;
+                    }
+                }.models,
+                .reveal_editor = struct {
+                    fn reveal(context: *anyopaque) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.focusEditor();
+                        host.revealActiveEditor();
+                    }
+                }.reveal,
+            },
+        };
         return self;
     }
 
@@ -1579,28 +1609,8 @@ pub const Workbench = struct {
         try self.builtin_host.registerPortActions();
         try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
         self.references_view_registered = true;
-        for (go_to_commands.actions, 0..) |_, index| {
-            const action = &go_to_commands.actions[index];
-            self.symbol_action_contexts[index] = .{ .workbench = self, .action = action };
-            try self.commands.register(.{
-                .id = action.id,
-                .label = action.label,
-                .description = action.description,
-                .category = "Go",
-                .context = &self.symbol_action_contexts[index],
-                .requires_editor = true,
-                .run = commandSymbolNavigation,
-            });
-        }
-        try self.commands.register(.{
-            .id = goto_symbol_quick_access.command_id,
-            .label = goto_symbol_quick_access.command_label,
-            .description = "Go to a symbol in the active editor.",
-            .category = "Go",
-            .context = self,
-            .requires_editor = true,
-            .run = commandGotoSymbol,
-        });
+        for (self.symbol_navigation.actionDescriptors()) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        try self.commands.registerEditorAction(&self.instantiation, self.symbol_quick_access.actionDescriptor());
         try self.commands.register(.{
             .id = "editor.action.showHover",
             .label = "Show or Focus Hover",
@@ -1704,6 +1714,8 @@ pub const Workbench = struct {
             self.breadcrumb_popup = null;
         }
         self.breadcrumbs.deinit();
+        self.symbol_navigation.deinit();
+        self.symbol_quick_access.deinit();
         if (self.outline_creator) |*creator| creator.dispose();
         self.context_menu_service.deinit();
         if (self.home_path) |home| {
@@ -1713,13 +1725,11 @@ pub const Workbench = struct {
         self.breadcrumbs_arena.deinit();
         if (self.references_view_registered) self.references_view.deinit();
         self.builtin_host.deinit();
-        self.navigation_arena.deinit();
         if (self.outline_view) |view| {
             view.deinit();
             self.outline_view = null;
         }
         self.outline_service.deinit();
-        self.closeSymbolPicker();
         if (self.startup_window == null) self.instantiation.deinit();
         self.services.deinit();
         if (self.media_status) |status| {
@@ -3893,119 +3903,7 @@ pub const Workbench = struct {
     }
 
     pub fn executeSymbolNavigation(self: *Workbench, action: *const go_to_commands.ActionDescriptor) !bool {
-        const tab = self.activeTab() orelse return false;
-        if (tab.isDiff()) return false;
-        const features = self.language_features orelse return false;
-        if (self.quick_access.isOpen()) self.quick_access.inputService().hide();
-
-        self.pending_references = null;
-        self.pending_symbols = null;
-        _ = self.navigation_arena.reset(.retain_capacity);
-        const arena = self.navigation_arena.allocator();
-
-        const model = tab.editor.model;
-        const position = tab.editor.modelCursorPosition();
-        const links = try action.getLocationLinks(arena, features, model, position);
-
-        const references = try arena.create(ReferencesModel);
-        references.* = try ReferencesModel.init(arena, links, action.title);
-        if (references.references.len == 0) {
-            self.setNoResultMessage(tab.editor, action.kind, position);
-            return false;
-        }
-        if (references.references.len == 1 and !action.always_show_list) {
-            self.navigateToReference(&references.references[0]) catch |err| {
-                tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
-                return false;
-            };
-            return true;
-        }
-
-        self.pending_references = references;
-        self.showReferencePicker(tab, references, action) catch |err| {
-            self.pending_references = null;
-            tab.editor.setMessage("References failed: {s}", .{@errorName(err)});
-            return false;
-        };
-        return true;
-    }
-
-    fn showReferencePicker(
-        self: *Workbench,
-        tab: *Tab,
-        references: *ReferencesModel,
-        action: *const go_to_commands.ActionDescriptor,
-    ) !void {
-        const arena = self.navigation_arena.allocator();
-        const current_uri = try std_uri.resourceKey(arena, tab.editor.model.uri());
-        const current_reference = references.referenceAt(current_uri, tab.editor.modelCursorPosition());
-
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
-        var active_id: ?[]const u8 = null;
-        var index: usize = 0;
-        for (references.groups) |*group| {
-            const path = pathForUri(arena, group.uri);
-            const basename = std.fs.path.basename(path);
-            const separator_label = try std.fmt.allocPrint(arena, "{s} ({d})", .{ basename, group.children.len });
-            try items.append(.{ .separator = .{ .label = separator_label } });
-
-            const root = self.workspaceFolderPath();
-            const description = if (root) |value| @import("../../base/common/extpath.zig").relativeToRoot(path, value) orelse path else path;
-            for (group.children) |*reference| {
-                const id = try std.fmt.allocPrint(arena, "ref:{d}", .{index});
-                const label = try self.referenceItemLabel(arena, reference);
-                try items.append(.{ .item = .{
-                    .id = id,
-                    .label = label,
-                    .description = description,
-                } });
-                if (current_reference != null and current_reference.? == reference) active_id = id;
-                index += 1;
-            }
-        }
-
-        self.quick_access.inputService().showPick(
-            items.items,
-            .{ .placeholder = action.title, .active_id = active_id },
-            onReferencePick,
-            self,
-        ) catch |err| {
-            self.pending_references = null;
-            tab.editor.setMessage("References failed: {s}", .{@errorName(err)});
-        };
-    }
-
-    fn referenceItemLabel(self: *Workbench, allocator: Allocator, reference: *const references_model.OneReference) ![]u8 {
-        const path = pathForUri(allocator, reference.uri());
-        const basename = std.fs.path.basename(path);
-        const range = reference.range();
-        var preview: []const u8 = "";
-        if (self.findOpenInput(path)) |input| {
-            const line = input.editor.model.getLineContent(range.startLineNumber) catch null;
-            if (line) |value| {
-                var owned_line = value;
-                defer owned_line.deinit();
-                const trimmed = std.mem.trim(u8, owned_line.items, " \t\r");
-                preview = try allocator.dupe(u8, strings.safeUtf8Prefix(trimmed, 60));
-            }
-        }
-        if (preview.len > 0) {
-            return std.fmt.allocPrint(allocator, "{s}:{d}:{d}  {s}", .{
-                basename,
-                range.startLineNumber,
-                range.startColumn,
-                preview,
-            });
-        }
-        return std.fmt.allocPrint(allocator, "{s}:{d}:{d}", .{
-            basename,
-            range.startLineNumber,
-            range.startColumn,
-        });
-    }
-
-    fn navigateToReference(self: *Workbench, reference: *const references_model.OneReference) !void {
-        try self.navigateToLink(reference.link);
+        return self.symbol_navigation.runEditorCommand(action);
     }
 
     fn navigateToLink(self: *Workbench, link: languages.LocationLink) !void {
@@ -4039,121 +3937,8 @@ pub const Workbench = struct {
         self.revealActiveEditor();
     }
 
-    fn setNoResultMessage(self: *Workbench, editor: *Editor, kind: go_to_commands.Kind, position: Position) void {
-        _ = self;
-        const word = editor.model.getWordAtPosition(position);
-        if (word) |value| {
-            var owned = value;
-            defer owned.deinit();
-            switch (kind) {
-                .definition => editor.setMessage("No definition found for '{s}'", .{owned.word.items}),
-                .declaration => editor.setMessage("No declaration found for '{s}'", .{owned.word.items}),
-                .type_definition => editor.setMessage("No type definition found for '{s}'", .{owned.word.items}),
-                .implementation => editor.setMessage("No implementation found for '{s}'", .{owned.word.items}),
-                .references => editor.setMessage("No references found for '{s}'", .{owned.word.items}),
-            }
-        } else {
-            switch (kind) {
-                .definition => editor.setMessage("No definition found", .{}),
-                .declaration => editor.setMessage("No declaration found", .{}),
-                .type_definition => editor.setMessage("No type definition found", .{}),
-                .implementation => editor.setMessage("No implementation found", .{}),
-                .references => editor.setMessage("No references found", .{}),
-            }
-        }
-    }
-
-    /// Opens the document-symbol picker for the active editor. Ports the
-    /// portable behavior of `workbench.action.gotoSymbol`.
     pub fn gotoSymbolInEditor(self: *Workbench) !bool {
-        const tab = self.activeTab() orelse return false;
-        if (tab.isDiff()) return false;
-        const features = self.language_features orelse return false;
-        if (self.quick_access.isOpen()) self.quick_access.inputService().hide();
-
-        self.pending_references = null;
-        self.pending_symbols = null;
-        _ = self.navigation_arena.reset(.retain_capacity);
-
-        const providers = try features.document_symbol_provider.ordered(self.allocator, tab.editor.model, false);
-        defer self.allocator.free(providers);
-        if (providers.len == 0) {
-            tab.editor.setMessage("{s}", .{goto_symbol_quick_access.no_provider_message});
-            return false;
-        }
-        const input = self.quick_access.inputService();
-        try input.showPick(&.{}, .{
-            .placeholder = goto_symbol_quick_access.placeholder,
-            .no_results_label = goto_symbol_quick_access.no_matching_message,
-            .cleanup = cleanupSymbolPicker,
-            .cleanup_context = self,
-        }, onSymbolPick, self);
-        input.pickerRef().setBusy(true);
-        self.symbol_picker = .{ .tab = tab };
-        errdefer input.hide();
-        const subscription = try self.outline_creator.?.models.getOrCreate(tab.editor.model, providers, self, symbolPickerReady);
-        if (self.symbol_picker) |*picker| picker.subscription = subscription;
-        return self.symbol_picker != null;
-    }
-
-    fn cleanupSymbolPicker(context: *anyopaque) void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        self.closeSymbolPicker();
-    }
-
-    fn closeSymbolPicker(self: *Workbench) void {
-        if (self.symbol_picker) |picker| {
-            if (picker.subscription) |handle| handle.dispose();
-            if (picker.outline) |outline| outline.deinit();
-        }
-        self.symbol_picker = null;
-        self.pending_symbols = null;
-    }
-
-    fn symbolPickerReady(context: *anyopaque, outline: *OutlineModel) void {
-        const self: *Workbench = @ptrCast(@alignCast(context));
-        const tab = if (self.symbol_picker) |picker| picker.tab else {
-            outline.deinit();
-            return;
-        };
-        self.symbol_picker.?.subscription = null;
-        self.symbol_picker.?.outline = outline;
-        const input = self.quick_access.inputService();
-        if (self.activeTab() != tab) {
-            input.hide();
-            return;
-        }
-        input.pickerRef().setBusy(false);
-        self.setSymbolItems(tab, outline) catch |err| {
-            tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
-            input.hide();
-        };
-    }
-
-    fn setSymbolItems(self: *Workbench, tab: *Tab, outline: *OutlineModel) !void {
-        const arena = self.navigation_arena.allocator();
-        const entries = try goto_symbol_quick_access.collect(arena, outline);
-        if (entries.len == 0) {
-            tab.editor.setMessage("{s}", .{goto_symbol_quick_access.no_symbols_message});
-            self.quick_access.inputService().hide();
-            return;
-        }
-
-        const active_index = goto_symbol_quick_access.activeIndex(entries, tab.editor.modelCursorPosition());
-        var items = std.array_list.Managed(QuickPickItem).init(arena);
-        for (entries, 0..) |entry, index| {
-            const id = try std.fmt.allocPrint(arena, "sym:{d}", .{index});
-            const label = try goto_symbol_quick_access.label(arena, entry);
-            try items.append(.{ .item = .{
-                .id = id,
-                .label = label,
-                .description = goto_symbol_quick_access.kindLabel(entry.symbol.symbol.kind),
-            } });
-        }
-        const active_id = if (active_index) |index| try std.fmt.allocPrint(arena, "sym:{d}", .{index}) else null;
-
-        self.pending_symbols = entries;
-        try self.quick_access.inputService().setPickItems(items.items, active_id);
+        return self.symbol_quick_access.provide();
     }
 
     /// Delivers a keydown to the editor contributions before the built-in
@@ -5979,52 +5764,15 @@ fn onBreadcrumbPickerReveal(context: *anyopaque, outline: *outline_mod.IOutline,
     try self.revealBreadcrumbElement(outline, element);
 }
 
-fn onReferencePick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const model = self.pending_references orelse return;
-    const item = picker.selectedItem() orelse picker.activeItem() orelse return;
-    self.pending_references = null;
-    const index = itemIndex(item.id, "ref:") orelse return;
-    if (index >= model.references.len) return;
-    self.navigateToReference(&model.references[index]) catch |err| {
-        if (self.activeTab()) |tab| tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
-    };
-}
-
-fn onSymbolPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const entries = self.pending_symbols orelse return;
-    const item = picker.selectedItem() orelse picker.activeItem() orelse return;
-    self.pending_symbols = null;
-    const index = itemIndex(item.id, "sym:") orelse return;
-    if (index >= entries.len) return;
-    const tab = self.activeTab() orelse return;
-    if (self.symbol_picker == null or self.symbol_picker.?.tab != tab) return;
-    tab.editor.setSelection(entries[index].symbol.symbol.selection_range) catch |err| {
-        tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
-        return;
-    };
-    self.focusEditor();
-    self.revealActiveEditor();
+fn navigationActiveEditor(context: *anyopaque) ?*Editor {
+    const host: *Workbench = @ptrCast(@alignCast(context));
+    const tab = host.activeTab() orelse return null;
+    return if (tab.isDiff()) null else tab.editor;
 }
 
 fn itemIndex(id: []const u8, prefix: []const u8) ?usize {
     if (!std.mem.startsWith(u8, id, prefix)) return null;
     return std.fmt.parseInt(usize, id[prefix.len..], 10) catch null;
-}
-
-fn commandSymbolNavigation(context: *anyopaque) anyerror!void {
-    const ctx: *SymbolActionContext = @ptrCast(@alignCast(context));
-    _ = ctx.workbench.executeSymbolNavigation(ctx.action) catch |err| {
-        if (ctx.workbench.activeTab()) |tab| tab.editor.setMessage("Navigation failed: {s}", .{@errorName(err)});
-    };
-}
-
-fn commandGotoSymbol(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    _ = self.gotoSymbolInEditor() catch |err| {
-        if (self.activeTab()) |tab| tab.editor.setMessage("Symbols failed: {s}", .{@errorName(err)});
-    };
 }
 
 fn commandShowHover(context: *anyopaque) anyerror!void {

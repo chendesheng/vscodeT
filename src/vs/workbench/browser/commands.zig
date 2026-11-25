@@ -77,6 +77,7 @@ pub const CommandRegistry = struct {
             .id = command.id,
             .label = desc.command.title,
             .category = desc.command.category orelse "",
+            .description = desc.command.tooltip orelse "",
             .context = command.context,
             .run = command.run,
             .show_in_palette = desc.f1,
