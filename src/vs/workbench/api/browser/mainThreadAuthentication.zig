@@ -32,6 +32,7 @@ pub const Accounts = struct {
     status: Status,
     action: ManageAccountsAction,
     host: *manager.HostManager,
+    extensions: []const manager.ExtensionDescription,
     pending: ?*@import("authenticationRequest.zig").Request = null,
     changed: bool = false,
     signing_in: ?u32 = null,
@@ -41,7 +42,7 @@ pub const Accounts = struct {
     pub const Status = struct { context: *anyopaque, show: *const fn (*anyopaque, []const u8) void };
 
     pub fn init(self: *Accounts, allocator: Allocator, commands: *CommandRegistry, quick_input: *QuickInputService, status: Status, host: *manager.HostManager, extensions: []const manager.ExtensionDescription) !void {
-        self.* = .{ .allocator = allocator, .commands = commands, .quick_input = quick_input, .status = status, .host = host, .action = .{
+        self.* = .{ .allocator = allocator, .commands = commands, .quick_input = quick_input, .status = status, .host = host, .extensions = extensions, .action = .{
             .authentication = self.interface(),
             .quick_input = quick_input,
             .extensions = extensions,
