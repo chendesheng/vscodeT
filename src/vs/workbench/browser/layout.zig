@@ -186,6 +186,8 @@ pub const Layout = struct {
     when_restored: Barrier = .{},
     parts: std.EnumArray(Parts, ?Binding) = .initFill(null),
     grid_ready: bool = false,
+    pane_composite_service: ?@import("../services/panecomposite/browser/panecomposite.zig").IPaneCompositePartService = null,
+    view_descriptor_service: ?*const @import("../services/views/browser/viewDescriptorService.zig").ViewDescriptorService = null,
     reset_layout: bool = false,
     main_container: ?*ui.Node = null,
     on_did_change_part_visibility: Emitter(layout_service.IPartVisibilityChangeEvent),
@@ -419,11 +421,38 @@ pub const Layout = struct {
 
     pub fn setPartHidden(self: *Layout, hidden: bool, part: Parts) !void {
         if (part == .statusbar and !self.isZenModeActive()) self.configured_statusbar_visible = !hidden;
+        if (part == .panel and self.pane_composite_service != null)
+            return self.setPanelHidden(hidden);
+        try self.setPartVisibility(hidden, part);
+    }
+
+    fn setPartVisibility(self: *Layout, hidden: bool, part: Parts) !void {
         if (self.parts.get(part)) |binding| {
             try binding.part.apply_visible(binding.part, !hidden);
             return;
         }
         try self.visibilityChanged(part, !hidden);
+    }
+
+    /// Portable setPanelHidden: change the grid visibility, close the
+    /// active composite (remembering its ID), or reopen the last/default
+    /// composite. A terminal panel has no auxiliary-bar or maximization mode.
+    fn setPanelHidden(self: *Layout, hidden: bool) !void {
+        const panes = self.pane_composite_service orelse return;
+        try self.setPartVisibility(hidden, .panel);
+        if (hidden) {
+            if (panes.getActivePaneComposite(.panel) != null) {
+                try panes.hideActivePaneComposite(.panel);
+                focusPartContext(self, .editor);
+            }
+        } else if (panes.getActivePaneComposite(.panel) == null) {
+            const visible = try panes.getVisiblePaneCompositeIds(.panel, self.allocator);
+            defer self.allocator.free(visible);
+            const last = panes.getLastActivePaneCompositeId(.panel);
+            const default = if (self.view_descriptor_service) |views| views.getDefaultViewContainer(.panel) else null;
+            const id = last orelse if (visible.len != 0) visible[0] else if (default) |container| container.id else return;
+            _ = try panes.openPaneComposite(id, .panel, true);
+        }
     }
 
     fn visibilityChanged(self: *Layout, part: Parts, visible: bool) !void {

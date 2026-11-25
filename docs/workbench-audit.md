@@ -34,9 +34,13 @@ The native settings-watcher callback no longer dispatches feature reloads.
 JSON preferences now use IPreferencesService, TextFileService and the
 IEditorService resource-opening method. The Preferences contribution owns
 the Action2 registrations. Command quick access uses the mounted FindController
-to reveal a command ID in the textual keybindings editor.
+to reveal a command ID in the textual keybindings editor. Panel and activity-bar
+switch actions now use the shared SwitchCompositeViewAction and
+IPaneCompositePartService. Layout owns hiding the active panel composite and
+reopening the last/default panel, and persistence uses the last active ID even
+while hidden. Native window callbacks mount views and route focus only.
 
-The portable browser Workbench is 258 lines and has no inline tests. The native TerminalWorkbench window is 6,105 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+The portable browser Workbench is 258 lines and has no inline tests. The native TerminalWorkbench window is 6,001 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

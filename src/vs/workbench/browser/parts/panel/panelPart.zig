@@ -64,7 +64,7 @@ pub const PanelPart = struct {
     };
 
     pub fn init(allocator: Allocator) PanelPart {
-        return .{
+        var part = PanelPart{
             .base = Part.init(allocator, .panel, PanelPart),
             .allocator = allocator,
             .pane = pane.PaneCompositePart.init(
@@ -76,6 +76,9 @@ pub const PanelPart = struct {
             .title_nodes = std.array_list.Managed(TitleNode).init(allocator),
             .on_did_change = Emitter(void).init(allocator),
         };
+        // PanelPart always shows its composite bar in the title.
+        part.pane.composite_bar_position = .title;
+        return part;
     }
 
     pub fn deinit(self: *PanelPart) void {
@@ -139,7 +142,11 @@ pub const PanelPart = struct {
     /// Opens a panel container and reveals the panel. Upstream reveals the
     /// part through `layoutService.setPartHidden` in `doOpenPaneComposite`.
     pub fn openPaneComposite(self: *PanelPart, id: []const u8) !bool {
-        const opened = try self.pane.openPaneComposite(id, true);
+        return self.openPaneCompositeWithFocus(id, true);
+    }
+
+    pub fn openPaneCompositeWithFocus(self: *PanelPart, id: []const u8, focus: bool) !bool {
+        const opened = try self.pane.openPaneComposite(id, focus);
         if (opened == null) return false;
         if (!self.visible) {
             self.visible = true;

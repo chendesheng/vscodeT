@@ -2219,8 +2219,11 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
     const ctrl_j = ui.KeyEvent{ .key = .{ .char = 'j' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_j));
     try std.testing.expect(!workbench.geometry().panelShown());
+    try std.testing.expect(workbench.pane_composite_api.getActivePaneComposite(.panel) == null);
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.pane_composite_api.getLastActivePaneCompositeId(.panel).?);
     try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_j));
     try std.testing.expect(workbench.geometry().panelShown());
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.pane_composite_api.getActivePaneComposite(.panel).?.id);
 
     // Ctrl-Shift-M toggles Problems through the registered keybinding.
     const ctrl_shift_m = ui.KeyEvent{ .key = .{ .char = 'm' }, .mods = .{ .ctrl = true, .shift = true } };
@@ -2240,6 +2243,10 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
     };
     try std.testing.expectEqualStrings(TERMINAL_CONTAINER_ID, workbench.geometry().activePanelId());
     try std.testing.expect(workbench.terminalVisible());
+    try workbench.commands.execute("workbench.action.previousPanelView");
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.geometry().activePanelId());
+    try workbench.commands.execute("workbench.action.nextPanelView");
+    try std.testing.expectEqualStrings(TERMINAL_CONTAINER_ID, workbench.geometry().activePanelId());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();

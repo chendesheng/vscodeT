@@ -369,6 +369,8 @@ pub const TerminalWorkbench = struct {
     activity_bar_part: ActivityBarPart,
     sidebar_part: SidebarPart,
     panel_part: PanelPart,
+    pane_composite_service: @import("../vs/workbench/browser/parts/paneCompositePartService.zig").PaneCompositePartService,
+    pane_composite_api: @import("../vs/workbench/services/panecomposite/browser/panecomposite.zig").IPaneCompositePartService,
     view_containers_registry: views_mod.ViewContainersRegistry,
     view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
@@ -1071,6 +1073,15 @@ pub const TerminalWorkbench = struct {
         self.window_views = .{ .workbench = self };
         self.views_api = self.window_views.interface();
         _ = try self.services.set(views_service.views_service_id, &self.views_api);
+        self.pane_composite_service = .{
+            .sidebar = &self.sidebar_part,
+            .panel = &self.panel_part,
+            .host = .{ .context = self, .open = openNativePaneComposite },
+        };
+        self.pane_composite_api = self.pane_composite_service.interface();
+        _ = try self.services.set(@import("../vs/workbench/services/panecomposite/browser/panecomposite.zig").pane_composite_part_service_id, &self.pane_composite_api);
+        self.layout.pane_composite_service = self.pane_composite_api;
+        self.layout.view_descriptor_service = &self.view_descriptor_service;
         self.editor_groups_api = self.part.interface();
         _ = try self.services.set(editor_groups.editor_groups_service_id, &self.editor_groups_api);
         self.code_editors = .{ .part = self.part };
@@ -1495,6 +1506,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn registerDefaultCommands(self: *TerminalWorkbench) !void {
+        const panel_actions = @import("../vs/workbench/browser/parts/panel/panelActions.zig");
         const status = self.editor_status.?;
         try self.commands.registerAction(self.instantiation, quick_access_mod.quick_open_action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
@@ -1552,9 +1564,9 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, editor_actions.navigate_between_groups_action);
         try self.commands.registerAction(self.instantiation, editor_actions.reset_group_sizes_action);
         for (@import("../vs/workbench/browser/actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        try self.commands.register(.{ .id = "workbench.action.maximizeEditor", .label = "Maximize Editor Group", .category = "View", .context = self, .run = commandMaximizeEditor });
+        try self.commands.registerAction(self.instantiation, panel_actions.close_panel_action);
         const before_join_all = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.maximizeEditor", .label = "Maximize Editor Group", .category = "View", .context = self, .run = commandMaximizeEditor },
-            .{ .id = "workbench.action.closePanel", .label = "Close Panel", .category = "View", .context = self, .run = commandClosePanel },
             .{ .id = "workbench.action.closeAllEditors", .label = "Close All Editors", .category = "View", .context = self, .run = commandCloseAllEditors },
             .{ .id = "workbench.action.closeOtherEditors", .label = "Close Other Editors", .category = "View", .context = self, .run = commandCloseOtherEditors },
         };
@@ -1573,9 +1585,9 @@ pub const TerminalWorkbench = struct {
             .{ .id = "workbench.view.scm", .label = "View: Show Source Control", .category = "View", .context = self, .run = commandViewScm },
             .{ .id = markers_common.Markers.SHOW_MARKERS_VIEW_ACTION_ID, .label = "View: Show Problems", .category = "View", .context = self, .run = commandShowProblems },
             .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .label = "View: Toggle Problems", .category = "View", .context = self, .run = commandToggleProblems },
-            .{ .id = "workbench.action.togglePanel", .label = "View: Toggle Panel Visibility", .category = "View", .context = self, .run = commandTogglePanel },
         };
         for (after_terminal_editor) |command| try self.commands.register(command);
+        try self.commands.registerAction(self.instantiation, panel_actions.toggle_panel_action);
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.toggle_action);
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.exit_action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/actions/layoutActions.zig").toggle_centered_layout_action);
@@ -1607,11 +1619,9 @@ pub const TerminalWorkbench = struct {
                 .context = self,
                 .run = commandZenShowSingleEditorTab,
             },
-            .{ .id = "workbench.action.focusPanel", .label = "View: Focus Panel", .category = "View", .context = self, .run = commandFocusPanel },
-            .{ .id = "workbench.action.previousPanelView", .label = "View: Previous Panel View", .category = "View", .context = self, .run = commandPreviousPanelView },
-            .{ .id = "workbench.action.nextPanelView", .label = "View: Next Panel View", .category = "View", .context = self, .run = commandNextPanelView },
         };
         for (before_scm) |command| try self.commands.register(command);
+        for (panel_actions.focus_and_switch_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.git_commands.refreshActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const scm_menus = [_]commands_mod.CommandInfo{
             .{ .id = scm_view_mod.CHANGES_MENU_ACTION_ID, .label = "Changes More Actions", .show_in_palette = false, .context = self, .run = commandScmChangesMenu },
@@ -1630,10 +1640,9 @@ pub const TerminalWorkbench = struct {
             .{ .id = "workbench.action.toggleSidebarVisibility", .label = "Toggle Primary Side Bar Visibility", .category = "View", .context = self, .run = commandToggleSidebar },
             .{ .id = "workbench.action.closeSidebar", .label = "Close Primary Side Bar", .category = "View", .context = self, .run = commandCloseSidebar },
             .{ .id = "workbench.action.focusSideBar", .label = "Focus into Primary Side Bar", .category = "View", .context = self, .run = commandFocusSidebar },
-            .{ .id = "workbench.action.previousSideBarView", .label = "Previous Primary Side Bar View", .category = "View", .context = self, .run = commandPreviousSidebarView },
-            .{ .id = "workbench.action.nextSideBarView", .label = "Next Primary Side Bar View", .category = "View", .context = self, .run = commandNextSidebarView },
         };
         for (before_search) |command| try self.commands.register(command);
+        for (activity_bar_mod.switch_sidebar_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/parts/statusbar/statusbarActions.zig").focus_statusbar_action);
         for (terminal_actions.terminal_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.markdown_previews.registerCommands(&self.commands);
@@ -2524,38 +2533,13 @@ pub const TerminalWorkbench = struct {
     /// Upstream `workbench.actions.view.problems`: open the Problems container
     /// in the panel and move focus to the list.
     pub fn showProblems(self: *TerminalWorkbench) !void {
-        try self.ensureProblemsView();
-        if (!try self.panel_part.openPaneComposite(PROBLEMS_CONTAINER_ID)) return;
-        try self.syncPanelContainerVisibility();
-        self.setFocus(.problems);
-        self.statusbar.main_part.clearFocus();
-        if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
-        if (self.search_window.view) |view| view.blur();
-        self.updateProblemsHighlight();
-        self.layoutAll();
+        _ = try self.openPanelContainer(PROBLEMS_CONTAINER_ID);
     }
 
     pub fn toggleProblems(self: *TerminalWorkbench) !void {
-        // Upstream `ToggleMarkersViewAction` toggles on
-        // `viewsService.isViewVisible`, i.e. whether the container is the
-        // visible panel container, not whether the list owns focus.
         if (self.problemsVisible()) {
-            // `viewsService.closeView` on the only view of a panel container
-            // hides the part through `hideActivePaneComposite`.
-            self.closeActivePanelContainer();
-            return;
-        }
-        try self.showProblems();
-    }
-
-    fn closeActivePanelContainer(self: *TerminalWorkbench) void {
-        self.panel_part.hideActivePaneComposite() catch {};
-        self.panel_part.setHovered(null);
-        if (self.focus == .terminal or self.focus == .problems) {
-            self.setFocus(.editor);
-        }
-        self.updateProblemsHighlight();
-        self.layoutAll();
+            try self.layout.setPartHidden(true, .panel);
+        } else try self.showProblems();
     }
 
     fn problemsVisible(self: *const TerminalWorkbench) bool {
@@ -2566,75 +2550,44 @@ pub const TerminalWorkbench = struct {
         return self.focus == .problems and self.problemsVisible();
     }
 
-    /// Hides the panel without clearing the active container, like upstream
-    /// `TogglePanelAction`.
     pub fn hidePanel(self: *TerminalWorkbench) void {
-        self.panel_part.setHovered(null);
         self.layout.setPartHidden(true, .panel) catch {};
-        if (self.focus == .terminal or self.focus == .problems) {
-            self.setFocus(.editor);
-        }
-        self.updateProblemsHighlight();
-        self.layoutAll();
     }
 
-    /// Reveals `id` in the panel and moves focus to it.
+    /// Native mounting and focus, behind IPaneCompositePartService.
+    fn openNativePaneComposite(context: *anyopaque, id: []const u8, location: views_mod.ViewContainerLocation, focus: bool) !bool {
+        const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
+        switch (location) {
+            .sidebar => {
+                try self.openActivity(id, focus);
+                return true;
+            },
+            .panel => return self.openPanelContainerWithFocus(id, focus),
+            .auxiliary_bar => return false,
+        }
+    }
+
     pub fn openPanelContainer(self: *TerminalWorkbench, id: []const u8) !bool {
-        if (!try self.panel_part.openPaneComposite(id)) return false;
+        return self.openPanelContainerWithFocus(id, true);
+    }
+
+    fn openPanelContainerWithFocus(self: *TerminalWorkbench, id: []const u8, focus: bool) !bool {
+        if (!try self.panel_part.openPaneCompositeWithFocus(id, focus)) return false;
         try self.syncPanelContainerVisibility();
         if (std.mem.eql(u8, id, PROBLEMS_CONTAINER_ID)) {
             try self.ensureProblemsView();
-            self.setFocus(.problems);
-        } else if (std.mem.eql(u8, id, TERMINAL_CONTAINER_ID)) {
+            if (focus) self.setFocus(.problems);
+        } else if (focus and std.mem.eql(u8, id, TERMINAL_CONTAINER_ID)) {
             self.setFocus(.terminal);
         }
-        self.statusbar.main_part.clearFocus();
-        if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
-        if (self.search_window.view) |view| view.blur();
+        if (focus) {
+            self.statusbar.main_part.clearFocus();
+            if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
+            if (self.search_window.view) |view| view.blur();
+        }
         self.updateProblemsHighlight();
         self.layoutAll();
         return true;
-    }
-
-    /// Panel container used when the panel is revealed without an explicit
-    /// id: the last active composite, else the first visible one.
-    fn defaultPanelContainerId(self: *TerminalWorkbench) ?[]const u8 {
-        if (self.panel_part.pane.last_active_id) |id| return id;
-        if (self.panel_part.pane.active_id) |id| return id;
-        for (self.panel_part.pane.bar.items.items) |item| {
-            if (item.visible) return item.id;
-        }
-        return if (self.view_descriptor_service.getDefaultViewContainer(.panel)) |container| container.id else null;
-    }
-
-    /// Cycles the visible panel containers, like
-    /// `workbench.action.previousPanelView`/`nextPanelView`.
-    fn cyclePanelView(self: *TerminalWorkbench, delta: isize) !bool {
-        if (!self.geometry().panelShown()) return false;
-        const items = self.panel_part.pane.bar.items.items;
-        var visible_count: usize = 0;
-        for (items) |item| {
-            if (item.visible) visible_count += 1;
-        }
-        if (visible_count < 2) return false;
-        var current: isize = -1;
-        for (items, 0..) |item, index| {
-            if (!item.visible) continue;
-            if (std.mem.eql(u8, item.id, self.geometry().activePanelId())) {
-                current = @intCast(index);
-                break;
-            }
-        }
-        if (current < 0) return false;
-        var step: isize = 1;
-        while (step <= @as(isize, @intCast(items.len))) : (step += 1) {
-            const next_index = @mod(current + delta * step, @as(isize, @intCast(items.len)));
-            const item = items[@intCast(next_index)];
-            if (!item.visible) continue;
-            _ = try self.openPanelContainer(item.id);
-            return true;
-        }
-        return false;
     }
 
     /// Keeps the composite-bar title items in sync with `hideIfEmpty`: a
@@ -5526,16 +5479,6 @@ fn commandToggleProblems(context: *anyopaque) anyerror!void {
     try self.toggleProblems();
 }
 
-fn commandTogglePanel(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    if (self.geometry().panelShown()) {
-        self.hidePanel();
-        return;
-    }
-    const id = self.defaultPanelContainerId() orelse return;
-    _ = try self.openPanelContainer(id);
-}
-
 fn zenTabsHideAvailable(context: *anyopaque) bool {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     return self.layout.isZenModeActive() and self.zenModeConfiguration().show_tabs != .none;
@@ -5569,31 +5512,6 @@ fn commandZenShowMultipleEditorTabs(context: *anyopaque) anyerror!void {
 
 fn commandZenShowSingleEditorTab(context: *anyopaque) anyerror!void {
     try commandZenSetEditorTabs(context, .single);
-}
-
-fn commandFocusPanel(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    if (!self.geometry().panelShown()) {
-        const id = self.defaultPanelContainerId() orelse return;
-        _ = try self.openPanelContainer(id);
-        return;
-    }
-    if (std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID)) {
-        self.setFocus(.problems);
-    } else if (std.mem.eql(u8, self.geometry().activePanelId(), TERMINAL_CONTAINER_ID)) {
-        self.setFocus(.terminal);
-    }
-    self.updateProblemsHighlight();
-}
-
-fn commandPreviousPanelView(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    _ = try self.cyclePanelView(-1);
-}
-
-fn commandNextPanelView(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    _ = try self.cyclePanelView(1);
 }
 
 fn commandScmMenu(context: *anyopaque) anyerror!void {
@@ -5735,11 +5653,6 @@ fn commandMaximizeEditor(context: *anyopaque) anyerror!void {
     self.maximizeActiveGroup();
 }
 
-fn commandClosePanel(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    self.closePanel();
-}
-
 fn commandCloseAllEditors(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     try self.closeAllEditors();
@@ -5810,23 +5723,6 @@ fn commandFocusSidebar(context: *anyopaque) anyerror!void {
     try self.setSidebarVisible(true);
     self.focusSidebar();
     self.layoutAll();
-}
-
-fn commandPreviousSidebarView(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try switchSidebarView(self, -1);
-}
-
-fn commandNextSidebarView(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try switchSidebarView(self, 1);
-}
-
-/// Port of `SwitchCompositeViewAction`: cycles through the visible side bar
-/// view containers in composite-bar order.
-fn switchSidebarView(self: *TerminalWorkbench, offset: isize) !void {
-    const target = try self.sidebar_part.switchViewTarget(offset, self.allocator) orelse return;
-    _ = try self.showActivityById(target);
 }
 
 fn commandToggleSidebar(context: *anyopaque) anyerror!void {

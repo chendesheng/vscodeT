@@ -415,3 +415,22 @@ test "activityBar: overflow row lists hidden entries" {
     try std.testing.expectEqual(@as(?usize, null), hitAt(&part, 1, 3, rect));
     try std.testing.expectEqual(@as(?usize, 1), hitAt(&part, 1, 2, rect));
 }
+
+// The upstream activity-bar contribution registers the same
+// SwitchCompositeViewAction used by the panel.
+const actions = @import("../../../../platform/actions/common/actions.zig");
+const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const SwitchCompositeViewAction = @import("../compositeBarActions.zig").SwitchCompositeViewAction;
+
+pub const switch_sidebar_actions = [_]actions.Action2{
+    .{ .command = .{ .id = "workbench.action.previousSideBarView", .title = "Previous Primary Side Bar View", .category = "View" }, .f1 = true, .context = @constCast(&{}), .run_fn = previousSidebar },
+    .{ .command = .{ .id = "workbench.action.nextSideBarView", .title = "Next Primary Side Bar View", .category = "View" }, .f1 = true, .context = @constCast(&{}), .run_fn = nextSidebar },
+};
+
+fn previousSidebar(_: *anyopaque, accessor: ServicesAccessor) !void {
+    try SwitchCompositeViewAction.run(accessor, .sidebar, -1);
+}
+
+fn nextSidebar(_: *anyopaque, accessor: ServicesAccessor) !void {
+    try SwitchCompositeViewAction.run(accessor, .sidebar, 1);
+}

@@ -51,14 +51,8 @@ pub const LayoutStorage = struct {
         defer workspace.deinit();
         var state = workspace.value;
         if (state.@"workbench.panelpart.activepanelid") |id| {
-            const focus = wb.focus;
-            const opened = try wb.openPanelContainer(id);
+            const opened = try wb.pane_composite_api.openPaneComposite(id, .panel, false);
             if (!opened) state.@"workbench.panel.hidden" = true;
-            switch (focus) {
-                .sidebar => wb.focusSidebar(),
-                .statusbar => wb.focusStatusBar(),
-                else => wb.focusEditor(),
-            }
         }
         // The panel composite owns the selected ID after opening.
         state.@"workbench.panelpart.activepanelid" = null;
@@ -67,7 +61,7 @@ pub const LayoutStorage = struct {
 
     pub fn save(_: WillShutdownEvent, self: *LayoutStorage) !void {
         const wb = self.workbench;
-        if (self.workspace_path) |path| try storage.writeStateFile(wb.allocator, wb.io, path, wb.layout.workspaceState(wb.panel_part.pane.active_id));
+        if (self.workspace_path) |path| try storage.writeStateFile(wb.allocator, wb.io, path, wb.layout.workspaceState(wb.pane_composite_api.getLastActivePaneCompositeId(.panel)));
         try storage.writeStateFile(wb.allocator, wb.io, self.profile_path, Layout.ProfileState{
             .@"workbench.sideBar.size" = wb.sidebar_part.width,
             .@"workbench.panel.size" = wb.panel_part.getSize(),
