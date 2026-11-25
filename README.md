@@ -1079,7 +1079,7 @@ console API for raw mode, sizing and input polling.
   sash classes.
 - Zen mode ports `workbench.zenMode.contribution.ts` and the `toggleZenMode`
   transition from `layout.ts` (`src/vs/workbench/browser/workbench.zenMode.contribution.zig`
-  and the `Workbench` layout methods). `Ctrl-K Z` toggles it and
+  and `Layout.toggleZenMode`). `Ctrl-K Z` toggles it and
   `Escape Escape` exits while active; the palette has `View: Toggle Zen Mode`
   and, only while active, the three editor-tab actions (`Hide Editor Tabs in
   Zen Mode`, `Show Multiple Editor Tabs in Zen Mode`, `Show Single Editor Tab
@@ -1091,15 +1091,17 @@ console API for raw mode, sizing and input polling.
   uses a cell-based port of `CenteredViewLayout` (the upstream 19.09% side
   margins, with `workbench.editor.centeredLayoutAutoResize` disabling centering
   for multiple groups or a side-by-side diff); `View: Toggle Centered Layout`
-  also works on its own. Leaving zen mode restores the panel, side bar and
-  status bar only if they were visible before entering, clears the temporary
+  also works on its own. Leaving zen mode restores the previous panel and side bar visibility, applies
+  the configured status bar visibility, clears the temporary
   line-number override, restores the configured tab mode and re-centers or
   un-centers the editor as the transition requires. The `inZenMode` and
   `isCenteredLayout` context keys are available to user keybindings. Not
   ported: `zenMode.fullScreen` (the TUI cannot full-screen its host terminal
-  window), `zenMode.restore` (the in-memory layout state does not survive a
-  restart), `zenMode.silentNotifications` (there is no notification service)
+  window), `zenMode.silentNotifications` (there is no notification service)
   and the auxiliary-bar branch (the terminal has no secondary side bar).
+  A workspace remembers zen mode, its exit state, panel and side bar visibility,
+  and editor centering. Setting `zenMode.restore` to false restores the layout
+  that preceded zen mode. Panel height and side bar width use profile storage.
 - The bottom panel is a ported pane-composite part
   (`src/vs/workbench/browser/parts/panel/panelPart.zig`) with a one-row
   composite bar inside a rounded outline matching the sidebar. The glyph

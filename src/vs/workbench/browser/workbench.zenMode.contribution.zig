@@ -12,8 +12,7 @@
 //   centered cell layout in `Layout` (upstream's `CenteredViewLayout` ratio
 //   adapted to whole cells). `zenMode.silentNotifications` has no effect because
 //   the terminal workbench has no notification service.
-// - `zenMode.restore` is read but has no effect: the terminal has no
-//   saved zen-mode state in the workspace session.
+// - Workspace layout storage preserves zen mode and its exit information.
 
 const std = @import("std");
 const configuration = @import("../../platform/configuration/common/configuration.zig");

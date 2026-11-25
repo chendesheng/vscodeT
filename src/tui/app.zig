@@ -595,6 +595,14 @@ pub fn main(init: std.process.Init) !void {
 
     workbench.initGit() catch {};
     if (profile.user_data_dir) |user_data| workbench.setSidebarViewStorage(user_data) catch {};
+    const LayoutStorage = @import("layoutStorage.zig").LayoutStorage;
+    var layout_storage: ?LayoutStorage = if (profile.user_data_dir) |dir| try .init(workbench, dir, args.session) else null;
+    defer if (layout_storage) |*storage| storage.deinit();
+    if (layout_storage) |*storage| {
+        if (storage.load(false)) |_| {
+            _ = try workbench.lifecycle.on_will_shutdown.listen(storage, LayoutStorage.save);
+        } else |err| report(log_service, "layout restore failed: {s}", .{@errorName(err)});
+    }
     if (workbench.activeTab()) |active| {
         try active.ensureControllers();
     } else {

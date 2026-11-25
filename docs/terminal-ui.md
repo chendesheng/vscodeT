@@ -2218,3 +2218,13 @@ rules, not changes to the ported view pipeline.
   terminal-only.
 - Whether to enable mode 2027 / terminal width negotiation once the renderer
   handles grapheme clusters.
+
+### Workbench layout storage
+
+The terminal saves side bar width and bottom panel height in terminal cells under
+`User/globalStorage/layout.state.json`. Workspace storage keeps pane visibility,
+the active panel, editor centering, zen mode and its exit information. Each file
+is replaced atomically on shutdown. An explicit session path identifies an
+empty window across launches. A window without a folder or session path has
+only profile-level sizing. Restoring a terminal panel opens the pane without
+restarting processes from the previous session.

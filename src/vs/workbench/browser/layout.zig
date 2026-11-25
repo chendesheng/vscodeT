@@ -107,13 +107,13 @@ pub const PartState = struct {
 
 /// Port of `LayoutStateKeys.ZEN_MODE_EXIT_INFO`.
 pub const ZenModeExitInfo = struct {
-    transitioned_to_centered_editor_layout: bool = false,
-    transitioned_to_full_screen: bool = false,
-    handle_notifications_do_not_disturb_mode: bool = false,
-    was_visible: struct {
-        side_bar: bool = false,
+    transitionedToCenteredEditorLayout: bool = false,
+    transitionedToFullScreen: bool = false,
+    handleNotificationsDoNotDisturbMode: bool = false,
+    wasVisible: struct {
+        sideBar: bool = false,
         panel: bool = false,
-        auxiliary_bar: bool = false,
+        auxiliaryBar: bool = false,
     } = .{},
 };
 
@@ -314,6 +314,53 @@ pub const Layout = struct {
         return self.sidebar_position;
     }
 
+    /// Workspace-scoped LayoutStateKeys. The terminal storage adapter owns
+    /// the encoding and keeps these separate from profile part sizes.
+    pub const WorkspaceState = struct {
+        @"workbench.editor.centered": bool = false,
+        @"workbench.zenMode.active": bool = false,
+        @"workbench.zenMode.exitInfo": ZenModeExitInfo = .{},
+        @"workbench.sideBar.hidden": ?bool = null,
+        @"workbench.panel.hidden": ?bool = null,
+        @"workbench.panelpart.activepanelid": ?[]const u8 = null,
+    };
+
+    pub const ProfileState = struct {
+        @"workbench.sideBar.size": ?usize = null,
+        @"workbench.panel.size": ?usize = null,
+    };
+
+    pub fn workspaceState(self: *const Layout, active_panel: ?[]const u8) WorkspaceState {
+        return .{
+            .@"workbench.editor.centered" = self.isMainEditorCentered(),
+            .@"workbench.zenMode.active" = self.isZenModeActive(),
+            .@"workbench.zenMode.exitInfo" = self.zen_mode_exit_info,
+            .@"workbench.sideBar.hidden" = !self.isVisible(.sidebar),
+            .@"workbench.panel.hidden" = !self.isVisible(.panel),
+            .@"workbench.panelpart.activepanelid" = active_panel,
+        };
+    }
+
+    /// Apply the stored visibility before zen mode so leaving a restored zen
+    /// session can reopen the panes recorded in ZEN_MODE_EXIT_INFO.
+    pub fn restoreParts(self: *Layout, state: WorkspaceState) !void {
+        const host = self.zen_host orelse return error.LayoutNotInitialized;
+        if (state.@"workbench.sideBar.hidden") |hidden| try self.setPartHidden(hidden, .sidebar);
+        if (state.@"workbench.panel.hidden") |hidden| try self.setPartHidden(hidden, .panel);
+        self.main_editor_centered = state.@"workbench.editor.centered";
+        self.zen_mode_exit_info = state.@"workbench.zenMode.exitInfo";
+        if (state.@"workbench.zenMode.active") {
+            self.setZenModeActive(!host.get_configuration(host.context).restore);
+            try self.toggleZenMode(false, true);
+        }
+        if (self.isMainEditorCentered()) try self.centerMainEditorLayout(true, host.get_centered_options(host.context), true);
+    }
+
+    pub fn restorePartSizes(self: *Layout, state: ProfileState) !void {
+        if (state.@"workbench.sideBar.size") |size_in_cells| try self.setSize(.sidebar, size_in_cells);
+        if (state.@"workbench.panel.size") |size_in_cells| try self.setSize(.panel, size_in_cells);
+    }
+
     /// Port of `isZenModeActive`.
     pub fn isZenModeActive(self: *const Layout) bool {
         return self.zen_mode_active;
@@ -349,8 +396,8 @@ pub const Layout = struct {
         const config = host.get_configuration(host.context);
         if (self.isZenModeActive()) {
             if (!restoring) self.zen_mode_exit_info = .{
-                .transitioned_to_centered_editor_layout = !self.isMainEditorCentered() and config.center_layout,
-                .was_visible = .{ .panel = self.isVisible(.panel), .side_bar = self.isVisible(.sidebar) },
+                .transitionedToCenteredEditorLayout = !self.isMainEditorCentered() and config.center_layout,
+                .wasVisible = .{ .panel = self.isVisible(.panel), .sideBar = self.isVisible(.sidebar) },
             };
             try self.setPartHidden(true, .panel);
             try self.setPartHidden(true, .sidebar);
@@ -360,11 +407,11 @@ pub const Layout = struct {
             if (config.center_layout) try self.centerMainEditorLayout(true, host.get_centered_options(host.context), true);
         } else {
             const info = self.zen_mode_exit_info;
-            if (info.was_visible.panel) try self.setPartHidden(false, .panel);
-            if (info.was_visible.side_bar) try self.setPartHidden(false, .sidebar);
+            if (info.wasVisible.panel) try self.setPartHidden(false, .panel);
+            if (info.wasVisible.sideBar) try self.setPartHidden(false, .sidebar);
             try self.setPartHidden(!host.configured_visible(host.context, .activitybar), .activitybar);
             try self.setPartHidden(!self.configured_statusbar_visible, .statusbar);
-            if (info.transitioned_to_centered_editor_layout) try self.centerMainEditorLayout(false, host.get_centered_options(host.context), true);
+            if (info.transitionedToCenteredEditorLayout) try self.centerMainEditorLayout(false, host.get_centered_options(host.context), true);
             self.setZenLineNumbers(host, false);
         }
         if (!skip_layout) try self.on_did_change.fire({});

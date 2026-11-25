@@ -10,6 +10,18 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../base/common/event.zig").Emitter;
 
+/// The native profile uses the ordered folder resources to identify a workspace.
+pub fn workspaceFolderStatePath(allocator: Allocator, root: []const u8, folders: []const @import("../../workspace/common/workspace.zig").WorkspaceFolder, filename: []const u8) ![]u8 {
+    var hash = std.hash.Wyhash.init(0);
+    for (folders) |folder| {
+        hash.update(folder.resource);
+        hash.update(&.{0});
+    }
+    var key: [16]u8 = undefined;
+    const id = try std.fmt.bufPrint(&key, "{x:0>16}", .{hash.final()});
+    return std.fs.path.join(allocator, &.{ root, id, filename });
+}
+
 pub const StorageScope = enum(i8) {
     application_shared = -2,
     application = -1,

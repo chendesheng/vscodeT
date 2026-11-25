@@ -7851,3 +7851,69 @@ test "Ports commands use the registered workspace tunnel provider" {
     try w.commands.execute("remote.tunnel.closeCommandPalette");
     try std.testing.expectEqualStrings("No ports currently forwarded. Try running the Forward a Port command", picker.items.items[0].item.label);
 }
+
+test "workbench restores scoped layout and honors zenMode.restore on reopening" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const LayoutStorage = @import("layoutStorage.zig").LayoutStorage;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try seedFile(allocator, io, &tmp, "notes.txt", "one");
+    defer allocator.free(file);
+    const root = std.fs.path.dirname(file).?;
+    const settings = try seedFile(allocator, io, &tmp, "settings.json", "{}");
+    defer allocator.free(settings);
+
+    {
+        const wb = try Workbench.init(allocator, io, &.{file}, 100, 40);
+        defer wb.deinit();
+        try wb.setWorkspaceFolders(&.{root});
+        try wb.initSidebarFromWorkspace();
+        try std.testing.expect(try wb.openPanelContainer(PROBLEMS_CONTAINER_ID));
+        try wb.layout.setSize(.sidebar, 36);
+        try wb.layout.setSize(.panel, 12);
+        try wb.toggleZenMode(false, false);
+        try std.testing.expect(wb.layout.isMainEditorCentered());
+        var storage = try LayoutStorage.init(wb, root, null);
+        defer storage.deinit();
+        _ = try wb.lifecycle.on_will_shutdown.listen(&storage, LayoutStorage.save);
+        try wb.lifecycle.shutdown(.quit);
+    }
+
+    for ([_]bool{ true, false }) |restore_zen| {
+        const wb = try Workbench.init(allocator, io, &.{file}, 100, 40);
+        defer wb.deinit();
+        try wb.setUserSettingsPaths(&.{settings});
+        try wb.setWorkspaceFolders(&.{root});
+        try wb.initSidebarFromWorkspace();
+        try wb.setUserConfigurationValue("zenMode.restore", .{ .bool = restore_zen });
+        var storage = try LayoutStorage.init(wb, root, null);
+        defer storage.deinit();
+        try storage.load(true);
+        try std.testing.expect(!wb.layout.isZenModeActive());
+        try std.testing.expectEqual(28, wb.sidebar_part.width);
+        try storage.load(false);
+        try std.testing.expectEqual(restore_zen, wb.layout.isZenModeActive());
+        try std.testing.expectEqual(restore_zen, wb.layout.isMainEditorCentered());
+        try std.testing.expectEqual(!restore_zen, wb.layout.isVisible(.sidebar));
+        try std.testing.expectEqual(!restore_zen, wb.panelShown());
+        if (restore_zen) try wb.toggleZenMode(false, false);
+        try std.testing.expect(wb.layout.isVisible(.sidebar));
+        try std.testing.expect(wb.panelShown());
+        try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, wb.activePanelId());
+        try std.testing.expect(!wb.layout.isMainEditorCentered());
+        try std.testing.expectEqual(36, wb.sidebar_part.width);
+        try std.testing.expectEqual(12, wb.panel_part.getSize());
+    }
+
+    // Another window in the profile gets the shared sizes and its own layout.
+    const wb = try Workbench.init(allocator, io, &.{}, 100, 40);
+    defer wb.deinit();
+    var storage = try LayoutStorage.init(wb, root, "other.session");
+    defer storage.deinit();
+    try storage.load(false);
+    try std.testing.expect(!wb.layout.isZenModeActive());
+    try std.testing.expect(!wb.panelShown());
+    try std.testing.expectEqual(36, wb.sidebar_part.width);
+    try std.testing.expectEqual(12, wb.panel_part.getSize());
+}

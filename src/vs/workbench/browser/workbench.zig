@@ -5862,15 +5862,7 @@ pub const Workbench = struct {
 
     fn sidebarViewStatePath(self: *Workbench) !?[]u8 {
         const storage = self.view_state_storage orelse return null;
-        const workspace = self.workspace.getWorkspace();
-        var hash = std.hash.Wyhash.init(0);
-        for (workspace.folders.items) |folder| {
-            hash.update(folder.resource);
-            hash.update(&.{0});
-        }
-        var key: [16]u8 = undefined;
-        const workspace_key = try std.fmt.bufPrint(&key, "{x:0>16}", .{hash.final()});
-        return try std.fs.path.join(self.allocator, &.{ storage, workspace_key, "views.state.json" });
+        return try storage_mod.workspaceFolderStatePath(self.allocator, storage, self.workspace.getWorkspace().folders.items, "views.state.json");
     }
 
     fn restoreSidebarViewStates(self: *Workbench) !void {
