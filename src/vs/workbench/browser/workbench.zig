@@ -3621,18 +3621,7 @@ pub const Workbench = struct {
         }
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
         self.layout.layout(self.cols, self.rows, self.workbenchGridLayout(), self.statusBarRect());
-        const rect = self.editorLayoutRect();
-        for (self.part.group_views.items) |pane| {
-            const suppress_breadcrumbs = if (pane.activeTab()) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
-            pane.setBreadcrumbsVisible(self.breadcrumbsEnabled());
-            pane.breadcrumbs_suppressed = suppress_breadcrumbs;
-            pane.setTabsVisible(self.tabsVisibleFor(pane.tabs.items.len));
-        }
-        self.part.layout(rect);
-        if (self.part.maximized_group) |expanded| {
-            expanded.rect = self.part.contentRect();
-            expanded.layout();
-        }
+        self.part.layout(self.editorLayoutRect());
         self.syncTerminalSize();
     }
 
@@ -5118,14 +5107,6 @@ pub const Workbench = struct {
     fn boolSetting(self: *Workbench, key: []const u8, default: bool) bool {
         const configuration = self.configuration orelse return default;
         return configuration.getBool(key, default);
-    }
-
-    fn tabsVisibleFor(self: *Workbench, tab_count: usize) bool {
-        return switch (self.part.part_options.show_tabs) {
-            .none => false,
-            .single => tab_count > 1,
-            .multiple => true,
-        };
     }
 
     fn relativeToRoot(path: []const u8, root: []const u8) ?[]const u8 {

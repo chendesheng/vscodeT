@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 12,798 lines and has no inline tests. It has no direct imports from `src/tui`. Five files import the shell. All 151 baseline
+The browser shell is 12,779 lines and has no inline tests. It has no direct imports from `src/tui`. Five files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -35,6 +35,7 @@ code editor through ICodeEditorService. A diff exposes its modified control as
 the active editor and its focused side for commands.
 Show All Commands resolves the quick input service through its Action2 handler.
 
+* EditorPart owns the group grid layout, maximized geometry and group chrome settings. Each EditorGroupView updates breadcrumb visibility with its active pane.
 * Centered layout, group cycling and resetting group sizes use Action2 and their layout/editor-group services.
 * Directional editor-group commands ask EditorPart for the most recently active group
   sharing the requested grid edge. Wrapping preserves the row or column span.

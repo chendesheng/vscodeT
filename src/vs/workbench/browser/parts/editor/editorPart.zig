@@ -56,7 +56,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         on_did_remove_group: Emitter(*GroupView),
         on_did_move_group: Emitter(*GroupView),
         visible: bool = true,
-        part_options: struct { show_tabs: layout_service.EditorTabsMode = .multiple } = .{},
+        part_options: struct { show_tabs: layout_service.EditorTabsMode = .multiple, breadcrumbs_enabled: bool = false } = .{},
         allocator: Allocator,
         service: *editor_groups.EditorGroupsService,
         group_views: std.array_list.Managed(*GroupView),
@@ -165,6 +165,7 @@ pub fn EditorPart(comptime GroupView: type) type {
 
         pub fn handleChangedPartOptions(self: *Self, config: ?*ConfigurationService, enforced: ?layout_service.EditorTabsMode) void {
             self.part_options.show_tabs = getTabsMode(config, enforced);
+            self.part_options.breadcrumbs_enabled = @import("breadcrumbs.zig").Settings.load(config).enabled;
         }
 
         fn getTabsMode(config: ?*ConfigurationService, enforced: ?layout_service.EditorTabsMode) layout_service.EditorTabsMode {
@@ -389,7 +390,14 @@ pub fn EditorPart(comptime GroupView: type) type {
             self.viewport = rect;
             grid.layoutNode(*GroupView, self.root, self.contentRect(), self, gapCallback, min_pane_width);
             self.syncRects(self.root);
-            for (self.group_views.items) |view| view.layout();
+            for (self.group_views.items) |view| {
+                if (@hasDecl(GroupView, "updatePartOptions")) view.updatePartOptions(self.part_options.show_tabs, self.part_options.breadcrumbs_enabled);
+                view.layout();
+            }
+            if (self.maximized_group) |expanded| {
+                expanded.rect = self.contentRect();
+                expanded.layout();
+            }
         }
 
         /// Groups in `GroupsOrder.GRID_APPEARANCE` order: depth-first over the

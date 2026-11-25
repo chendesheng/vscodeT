@@ -161,11 +161,7 @@ pub fn EditorGroupView(comptime View: type) type {
             shortcuts: WatermarkShortcuts,
         ) !void {
             const active = self.activeTab();
-            const suppress_breadcrumbs = if (active) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
-            if (self.breadcrumbs_suppressed != suppress_breadcrumbs) {
-                self.breadcrumbs_suppressed = suppress_breadcrumbs;
-                self.layout();
-            }
+            if (self.updateBreadcrumbsVisibility()) self.layout();
             try self.layoutDom(grid, part_bounds, visible);
             if (!visible) return;
             const container = self.dom.?.editor_container;
@@ -314,6 +310,9 @@ pub fn EditorGroupView(comptime View: type) type {
         fn setActivePane(self: *Self, pane: ?View) void {
             const previous = self.panes.activePane();
             self.panes.setActive(pane);
+            if (pane != previous) {
+                if (self.updateBreadcrumbsVisibility() and self.panes.page_position != null) self.layout();
+            }
             if (pane != previous) self.group.service.on_did_visible_editors_change.fire({}) catch {};
         }
 
@@ -338,6 +337,24 @@ pub fn EditorGroupView(comptime View: type) type {
         /// Upstream `layout(pagePosition)`: assign the group rectangle and lay
         /// out the title control, the breadcrumb bar and the visible editor
         /// pane. Panes activated later re-use this position.
+        pub fn updatePartOptions(self: *Self, show_tabs: @import("../../../services/layout/browser/layoutService.zig").EditorTabsMode, breadcrumbs_enabled: bool) void {
+            self.setTabsVisible(switch (show_tabs) {
+                .none => false,
+                .single => self.tabs.items.len > 1,
+                .multiple => true,
+            });
+            self.setBreadcrumbsVisible(breadcrumbs_enabled);
+            _ = self.updateBreadcrumbsVisibility();
+        }
+
+        fn updateBreadcrumbsVisibility(self: *Self) bool {
+            const previous = self.breadcrumbs_suppressed;
+            if (@hasField(@typeInfo(View).pointer.child, "terminal_input")) {
+                self.breadcrumbs_suppressed = if (self.activeTab()) |tab| tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null else false;
+            }
+            return previous != self.breadcrumbs_suppressed;
+        }
+
         pub fn layout(self: *Self) void {
             const width = @max(ui.cell.snap(self.rect.w), 1);
             const height = @max(ui.cell.snap(self.rect.h) -| self.chromeHeight(), 1);
