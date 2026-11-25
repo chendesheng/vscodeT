@@ -457,3 +457,262 @@ fn basenameAny(path: []const u8) []const u8 {
     }
     return path[0..end];
 }
+
+const Tab = @import("editorPane.zig").Tab;
+const GroupPane = @import("editorGroupView.zig").EditorGroupView(*Tab);
+const EditorPart = @import("editorPart.zig").EditorPart(GroupPane);
+const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
+const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
+const configuration_types = @import("../../../../platform/configuration/common/configuration.zig");
+
+/// Zig composition of the per-group BreadcrumbsControlFactory instances.
+/// The group pane's mounted-editor event replaces the browser editor-pane
+/// transition. Configuration and group lifetime events own control creation;
+/// rendering only looks up an already-created control.
+pub const BreadcrumbsControlCollection = struct {
+    allocator: Allocator,
+    part: *EditorPart,
+    workspace: *WorkspaceContextService,
+    configuration: ?*ConfigurationService = null,
+    configuration_listener: ?usize = null,
+    outline_service: *OutlineService,
+    home: ?[]const u8,
+    theme: ?*const theme_colors_mod.ThemeColors = null,
+    settings: Settings,
+    service: breadcrumbs.BreadcrumbsService,
+    factories: std.AutoHashMapUnmanaged(GroupIdentifier, *BreadcrumbsControlFactory) = .empty,
+    add_listener: ?usize = null,
+    remove_listener: ?usize = null,
+    suspended: bool = false,
+    host: CollectionHost,
+
+    pub const CollectionHost = struct {
+        context: *anyopaque,
+        file_icon_theme: *const fn (*anyopaque) file_icon_mod.FileIconThemeData,
+        open_element: *const fn (*anyopaque, Selection, SelectMode, Anchor) anyerror!void,
+        reveal_element: *const fn (*anyopaque, *IOutline, *anyopaque) anyerror!void,
+        close_popup: *const fn (*anyopaque) void,
+        request_render: *const fn (*anyopaque) void,
+        focus_editor: *const fn (*anyopaque) void,
+        layout_changed: *const fn (*anyopaque) void,
+    };
+
+    pub fn init(self: *BreadcrumbsControlCollection, allocator: Allocator, part: *EditorPart, workspace: *WorkspaceContextService, outline_service: *OutlineService, home: ?[]const u8, host: CollectionHost) !void {
+        self.* = .{ .allocator = allocator, .part = part, .workspace = workspace, .outline_service = outline_service, .home = home, .settings = Settings.load(null), .service = breadcrumbs.BreadcrumbsService.init(allocator), .host = host };
+        errdefer self.deinit();
+        self.add_listener = try part.on_did_add_group.listen(self, onAddGroup);
+        self.remove_listener = try part.on_did_remove_group.listen(self, onRemoveGroup);
+        for (part.group_views.items) |pane| try self.addGroup(pane);
+    }
+
+    pub fn deinit(self: *BreadcrumbsControlCollection) void {
+        if (self.add_listener) |id| self.part.on_did_add_group.unlisten(id);
+        if (self.remove_listener) |id| self.part.on_did_remove_group.unlisten(id);
+        self.detachServices();
+        var it = self.factories.valueIterator();
+        while (it.next()) |entry| entry.*.destroy();
+        self.factories.deinit(self.allocator);
+        self.service.deinit();
+    }
+
+    pub fn detachServices(self: *BreadcrumbsControlCollection) void {
+        self.suspended = true;
+        if (self.configuration_listener) |id| self.configuration.?.unlistenConfigurationChange(id);
+        self.configuration_listener = null;
+        self.configuration = null;
+        self.host.close_popup(self.host.context);
+        var it = self.factories.valueIterator();
+        while (it.next()) |entry| entry.*.disposeControl();
+    }
+
+    pub fn attachServices(self: *BreadcrumbsControlCollection, workspace: *WorkspaceContextService, configuration: ?*ConfigurationService) !void {
+        self.detachServices();
+        self.workspace = workspace;
+        self.configuration = configuration;
+        self.settings = Settings.load(configuration);
+        self.suspended = false;
+        if (configuration) |config| self.configuration_listener = try config.listenConfigurationChange(self, onConfigurationChanged);
+        var it = self.factories.valueIterator();
+        while (it.next()) |entry| try entry.*.sync();
+    }
+
+    fn onConfigurationChanged(change: configuration_types.Change, self: *BreadcrumbsControlCollection) !void {
+        if (!configuration_types.affectsConfiguration(change, "breadcrumbs")) return;
+        self.settings = Settings.load(self.configuration);
+        self.host.close_popup(self.host.context);
+        var it = self.factories.valueIterator();
+        while (it.next()) |entry| try entry.*.sync();
+        self.host.layout_changed(self.host.context);
+        self.host.request_render(self.host.context);
+    }
+
+    fn onAddGroup(pane: *GroupPane, self: *BreadcrumbsControlCollection) !void {
+        try self.addGroup(pane);
+    }
+
+    fn addGroup(self: *BreadcrumbsControlCollection, pane: *GroupPane) !void {
+        const factory = try self.allocator.create(BreadcrumbsControlFactory);
+        factory.* = .{ .owner = self, .pane = pane };
+        errdefer factory.destroy();
+        factory.listener = try pane.on_did_change_active_editor_pane.listen(factory, BreadcrumbsControlFactory.onActivePaneChanged);
+        try self.factories.put(self.allocator, pane.group.id, factory);
+        errdefer _ = self.factories.remove(pane.group.id);
+        try factory.sync();
+    }
+
+    fn onRemoveGroup(pane: *GroupPane, self: *BreadcrumbsControlCollection) !void {
+        if (self.factories.fetchRemove(pane.group.id)) |entry| entry.value.destroy();
+    }
+
+    pub fn getControl(self: *const BreadcrumbsControlCollection, pane: *GroupPane) ?*BreadcrumbsControl {
+        const factory = self.factories.get(pane.group.id) orelse return null;
+        const control = factory.control orelse return null;
+        return if (control.isVisible()) control else null;
+    }
+
+    pub fn activeControl(self: *const BreadcrumbsControlCollection) ?*BreadcrumbsControl {
+        const pane = self.part.activeView() orelse return null;
+        return self.getControl(pane);
+    }
+
+    pub fn setThemeColors(self: *BreadcrumbsControlCollection, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.theme = palette;
+        var it = self.factories.valueIterator();
+        while (it.next()) |entry| if (entry.*.control) |control| {
+            control.setThemeColors(palette);
+            control.rebuildItems() catch {};
+        };
+    }
+
+    pub fn draw(self: *const BreadcrumbsControlCollection, grid: *ui.CellGrid, pane: *GroupPane, rect: ui.Rect, active_group: bool) !void {
+        if (!self.settings.enabled or rect.w == 0) return;
+        const background = if (self.theme) |theme| theme.color("breadcrumb.background", .{ 37, 37, 38 }) else ui.Color{ .r = 37, .g = 37, .b = 38 };
+        grid.fillRect(rect.x, rect.y, rect.w, rect.h, .{ .bg = ui.cell.packColor(background) });
+        if (self.getControl(pane)) |control| try control.draw(grid, rect, active_group);
+    }
+};
+
+/// Port of upstream BreadcrumbsControlFactory: one control per editor group,
+/// enabled by configuration and updated by the mounted active editor event.
+pub const BreadcrumbsControlFactory = struct {
+    owner: *BreadcrumbsControlCollection,
+    pane: *GroupPane,
+    control: ?*BreadcrumbsControl = null,
+    registration: ?IDisposable = null,
+    input: ?*EditorInput = null,
+    listener: ?usize = null,
+
+    fn destroy(self: *BreadcrumbsControlFactory) void {
+        if (self.listener) |id| self.pane.on_did_change_active_editor_pane.unlisten(id);
+        self.disposeControl();
+        self.owner.allocator.destroy(self);
+    }
+
+    fn disposeControl(self: *BreadcrumbsControlFactory) void {
+        if (self.registration) |registration| registration.dispose();
+        self.registration = null;
+        if (self.control) |control| control.deinit();
+        self.control = null;
+        self.input = null;
+    }
+
+    fn currentTab(self: *BreadcrumbsControlFactory) ?*Tab {
+        const tab = self.pane.panes.activePane() orelse return null;
+        if (tab.isImage() or tab.terminal_input != null or tab.search_editor_input != null or tab.markdown_panel != null) return null;
+        return tab;
+    }
+
+    fn onActivePaneChanged(_: ?*Tab, self: *BreadcrumbsControlFactory) !void {
+        try self.sync();
+    }
+
+    fn sync(self: *BreadcrumbsControlFactory) !void {
+        const owner = self.owner;
+        if (owner.suspended or !owner.settings.enabled) {
+            self.disposeControl();
+            return;
+        }
+        const input = if (self.currentTab()) |tab| tab.editorInput() else null;
+        if (self.control) |control| {
+            if (self.input != input) {
+                if (owner.part.activeView() == self.pane) owner.host.close_popup(owner.host.context);
+                control.disposeModel();
+                control.setFocused(false);
+                self.input = input;
+                try control.update();
+                owner.host.request_render(owner.host.context);
+            }
+            if (!std.meta.eql(control.settings, owner.settings)) try control.setSettings(owner.settings);
+            return;
+        }
+        const control = try BreadcrumbsControl.init(owner.allocator, .{
+            .context = self,
+            .active_resource = activeResource,
+            .active_language = activeLanguage,
+            .outline_editor = outlineEditor,
+            .file_icon = fileIcon,
+            .symbol_icon = symbolIcon,
+            .open_element = openElement,
+            .reveal_element = revealElement,
+            .request_render = requestRender,
+            .focus_editor = focusEditor,
+        }, owner.workspace, owner.configuration, owner.outline_service, owner.home);
+        errdefer control.deinit();
+        control.setGroup(self.pane.group.id);
+        control.setThemeColors(owner.theme);
+        self.registration = try owner.service.register(self.pane.group.id, control);
+        self.control = control;
+        self.input = input;
+        owner.host.request_render(owner.host.context);
+    }
+
+    fn activeResource(context: *anyopaque) ?[]const u8 {
+        const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
+        const tab = self.currentTab() orelse return null;
+        return tab.editor.path;
+    }
+    fn activeLanguage(context: *anyopaque) []const u8 {
+        const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
+        const tab = self.currentTab() orelse return "plaintext";
+        return tab.editor.languageId();
+    }
+    fn outlineEditor(context: *anyopaque) ?OutlineEditor {
+        const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
+        const tab = self.currentTab() orelse return null;
+        return .{ .context = tab, .control = tab.editor, .resource = tab.editor.path, .language_id = tab.editor.languageId() };
+    }
+    fn fileIcon(context: *anyopaque) ?file_icon_mod.Icon {
+        const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
+        const tab = self.currentTab() orelse return null;
+        if (tab.editor.path.len == 0) return null;
+        const icons = self.owner.host.file_icon_theme(self.owner.host.context);
+        return if (icons.disabled) null else icons.forFile(std.fs.path.basename(tab.editor.path), tab.editor.languageId());
+    }
+    fn symbolIcon(_: *anyopaque, kind: ?u32) []const u8 {
+        return switch (kind orelse return "◇") {
+            1, 2, 3 => "N",
+            4, 9, 10, 22 => "◇",
+            5, 8, 11 => "ƒ",
+            6, 7, 12, 13, 21 => "·",
+            else => "◇",
+        };
+    }
+    fn openElement(context: *anyopaque, selection: Selection, mode: SelectMode, anchor: Anchor) !void {
+        const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
+        self.pane.group.service.activateGroup(self.pane.group);
+        self.pane.syncActivePane();
+        try self.owner.host.open_element(self.owner.host.context, selection, mode, anchor);
+    }
+    fn revealElement(context: *anyopaque, outline: *IOutline, element: *anyopaque) !void {
+        const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
+        try self.owner.host.reveal_element(self.owner.host.context, outline, element);
+    }
+    fn requestRender(context: *anyopaque) void {
+        const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
+        self.owner.host.request_render(self.owner.host.context);
+    }
+    fn focusEditor(context: *anyopaque) void {
+        const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
+        self.owner.host.focus_editor(self.owner.host.context);
+    }
+};

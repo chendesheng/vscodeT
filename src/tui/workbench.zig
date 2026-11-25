@@ -491,7 +491,7 @@ fn renderPane(self: *Workbench, pane: *shell.GroupPane) !void {
     const chrome = pane.chromeHeight();
     if (chrome > height) return;
     if (chrome > pane.titleHeight()) {
-        try self.renderBreadcrumbs(pane, x, y + pane.titleHeight(), width, active_group);
+        try self.breadcrumbs.draw(&self.frame.next, pane, .{ .x = @floatFromInt(x), .y = @floatFromInt(y + pane.titleHeight()), .w = @floatFromInt(width), .h = 1 }, active_group);
     }
     if (pane.activeTab()) |active| {
         try active.paint(&self.frame, x, y + chrome, width, height -| chrome);
@@ -2201,7 +2201,7 @@ pub fn handleSearchEditorMouse(self: *Workbench, event: *const ui.MouseEvent) bo
 
 pub fn handleBreadcrumbsKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
     if (self.focus != .breadcrumbs) return false;
-    const control = self.breadcrumbs_control orelse {
+    const control = self.breadcrumbs.activeControl() orelse {
         self.focusEditor();
         return false;
     };

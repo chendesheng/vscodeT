@@ -113,9 +113,6 @@ const TokenizationRegistry = @import("../../editor/common/tokenizationRegistry.z
 const theme_colors_mod = @import("./themeColors.zig");
 const SettingsWatcher = configuration_mod.SettingsWatcher;
 const IDisposable = @import("../../base/common/lifecycle.zig").IDisposable;
-const breadcrumbs_mod = @import("./parts/editor/breadcrumbs.zig");
-const BreadcrumbsService = breadcrumbs_mod.BreadcrumbsService;
-const BreadcrumbsSettings = breadcrumbs_mod.Settings;
 const breadcrumbs_model = @import("./parts/editor/breadcrumbsModel.zig");
 const breadcrumbs_picker = @import("./parts/editor/breadcrumbsPicker.zig");
 const breadcrumbs_control_mod = @import("./parts/editor/breadcrumbsControl.zig");
@@ -123,7 +120,6 @@ const BreadcrumbsControl = breadcrumbs_control_mod.BreadcrumbsControl;
 const BreadcrumbsSelection = breadcrumbs_control_mod.Selection;
 const BreadcrumbsSelectMode = breadcrumbs_control_mod.SelectMode;
 const BreadcrumbsAnchor = breadcrumbs_control_mod.Anchor;
-const BreadcrumbsHost = breadcrumbs_control_mod.Host;
 const outline_service_mod = @import("../services/outline/browser/outlineService.zig");
 const OutlineService = outline_service_mod.OutlineService;
 const outline_mod = @import("../services/outline/browser/outline.zig");
@@ -522,17 +518,7 @@ pub const Workbench = struct {
     on_did_shutdown: Emitter(void),
     /// Terminal Outline side panel (`outline` view container).
     outline_view: ?*OutlinePane = null,
-    breadcrumbs_service: BreadcrumbsService,
-    breadcrumbs_settings: BreadcrumbsSettings,
-    breadcrumbs_control: ?*BreadcrumbsControl = null,
-    breadcrumbs_registration: ?IDisposable = null,
-    breadcrumbs_group: ?u32 = null,
-    breadcrumbs_pane: ?*GroupPane = null,
-    breadcrumbs_input: ?*EditorInput = null,
-    breadcrumbs_host_context: BreadcrumbContext = undefined,
-    /// Persistent breadcrumb controls for inactive groups, keyed by group id.
-    /// Rendering an inactive group must not rebuild its outline every frame.
-    breadcrumbs_inactive: std.AutoHashMapUnmanaged(u32, *InactiveBreadcrumb) = .empty,
+    breadcrumbs: breadcrumbs_control_mod.BreadcrumbsControlCollection,
     home_path: ?[]u8 = null,
     breadcrumbs_arena: std.heap.ArenaAllocator,
     navigation_arena: std.heap.ArenaAllocator,
@@ -669,9 +655,6 @@ pub const Workbench = struct {
         self.layout.reset_layout = options.reset_layout;
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
-        self.breadcrumbs_service = BreadcrumbsService.init(allocator);
-        errdefer self.breadcrumbs_service.deinit();
-        self.breadcrumbs_settings = BreadcrumbsSettings.load(null);
         self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
         errdefer self.breadcrumbs_arena.deinit();
         self.navigation_arena = std.heap.ArenaAllocator.init(allocator);
@@ -679,14 +662,8 @@ pub const Workbench = struct {
         self.pending_references = null;
         self.symbol_picker = null;
         self.pending_symbols = null;
-        self.breadcrumbs_control = null;
-        self.breadcrumbs_inactive = .empty;
         self.home_path = readHomePath(allocator);
         errdefer if (self.home_path) |path| allocator.free(path);
-        self.breadcrumbs_registration = null;
-        self.breadcrumbs_group = null;
-        self.breadcrumbs_pane = null;
-        self.breadcrumbs_input = null;
         self.frame_scheduler = null;
         self.breadcrumb_popup = null;
         self.context_menu_service = .init(allocator, self, reportMenuError);
@@ -731,6 +708,32 @@ pub const Workbench = struct {
         try self.part.base.register(self.layout.interface());
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
+        try self.breadcrumbs.init(allocator, self.part, self.workspace, &self.outline_service, self.home_path, .{
+            .context = self,
+            .file_icon_theme = struct {
+                fn run(context: *anyopaque) file_icon.FileIconThemeData {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    return host.getFileIconTheme();
+                }
+            }.run,
+            .open_element = breadcrumbOpenElement,
+            .reveal_element = breadcrumbRevealElement,
+            .close_popup = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    if (host.breadcrumb_popup) |popup| popup.close();
+                }
+            }.run,
+            .request_render = requestWorkbenchFrame,
+            .focus_editor = breadcrumbFocusEditor,
+            .layout_changed = struct {
+                fn run(context: *anyopaque) void {
+                    const host: *Workbench = @ptrCast(@alignCast(context));
+                    host.layoutAll();
+                }
+            }.run,
+        });
+        errdefer self.breadcrumbs.deinit();
         self.editor_drop_target.init(allocator, self.part, &self.window_events, &self.configuration, &self.theme_palette, &self.frame, &self.pointer, .{
             .context = self,
             .terminal_panel_rect = struct {
@@ -1730,9 +1733,8 @@ pub const Workbench = struct {
             popup.deinit();
             self.breadcrumb_popup = null;
         }
+        self.breadcrumbs.deinit();
         if (self.outline_creator) |*creator| creator.dispose();
-        self.disposeBreadcrumbs();
-        self.disposeAllInactiveBreadcrumbs();
         self.context_menu_service.deinit();
         if (self.home_path) |home| {
             self.allocator.free(home);
@@ -1742,7 +1744,6 @@ pub const Workbench = struct {
         if (self.references_view_registered) self.references_view.deinit();
         self.builtin_host.deinit();
         self.navigation_arena.deinit();
-        self.breadcrumbs_service.deinit();
         if (self.outline_view) |view| {
             view.deinit();
             self.outline_view = null;
@@ -1933,11 +1934,7 @@ pub const Workbench = struct {
 
     fn chromeHeight(self: *Workbench) usize {
         const tabs: usize = if (self.part.part_options.show_tabs == .none) 0 else editor_group_view.title_height;
-        return tabs + (if (self.breadcrumbs_settings.enabled) editor_group_view.breadcrumbs_height else 0);
-    }
-
-    fn breadcrumbsEnabled(self: *const Workbench) bool {
-        return self.breadcrumbs_settings.enabled;
+        return tabs + (if (self.breadcrumbs.settings.enabled) editor_group_view.breadcrumbs_height else 0);
     }
 
     fn sidebarWidth(self: *const Workbench) usize {
@@ -2125,6 +2122,7 @@ pub const Workbench = struct {
             watcher.deinit();
             self.settings_watcher = null;
         }
+        self.breadcrumbs.detachServices();
         if (self.configuration) |configuration| {
             if (self.terminal_service) |service| service.options.configuration = null;
             self.git_model.detachConfiguration();
@@ -2156,8 +2154,6 @@ pub const Workbench = struct {
             service.options.workspace_root = self.workspaceFolderPath();
             service.options.multi_root = self.workspace.getWorkspace().folders.items.len > 1;
         }
-        self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
-        self.disposeBreadcrumbs();
         self.layoutAll();
         try self.quick_access.setWorkspace(self.workspace);
         if (self.lifecycle.phase.reached(.Restored) and self.workspace.getWorkspace().folders.items.len > 0) {
@@ -2179,6 +2175,7 @@ pub const Workbench = struct {
         freeOwnedPaths(self.allocator, self.user_settings_paths);
         self.user_settings_paths = try dupeOwnedPaths(self.allocator, paths);
         if (self.configuration) |configuration| {
+            self.breadcrumbs.detachServices();
             if (self.workspace_watcher) |watcher| {
                 watcher.deinit();
                 self.workspace_watcher = null;
@@ -2198,8 +2195,6 @@ pub const Workbench = struct {
             self.configureJsonLanguage();
             try self.layout.onZenModeConfigurationChange(null);
             self.applyEditorSettingsToAllTabs();
-            self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
-            self.disposeBreadcrumbs();
             self.layoutAll();
             if (self.lifecycle.phase.reached(.Restored) and self.workspace.getWorkspace().folders.items.len > 0) {
                 self.ensureWorkspaceWatcher() catch |err| {
@@ -2245,7 +2240,7 @@ pub const Workbench = struct {
             watcher.setOnReload(.{ .context = self, .callback = onSettingsReloaded });
             watcher.setAsyncIo(self.async_io);
         }
-        self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
+        try self.breadcrumbs.attachServices(self.workspace, self.configuration);
         self.applyLayoutSettings(null);
     }
 
@@ -2272,7 +2267,6 @@ pub const Workbench = struct {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyConfiguredLanguageAssociationsToAllEditors();
         if (self.search_view) |view| view.onConfigurationChanged();
-        self.applyBreadcrumbsSettings();
         self.applyMarkdownPreviewConfig();
         if (self.git_model.repository != null) self.refreshGitStatus();
     }
@@ -2636,7 +2630,7 @@ pub const Workbench = struct {
         if (!self.sidebarShown()) return;
         self.setFocus(.sidebar);
         self.updateProblemsHighlight();
-        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
         self.statusbar.main_part.clearFocus();
         if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) {
             if (self.search_view) |view| view.focus();
@@ -2651,7 +2645,7 @@ pub const Workbench = struct {
         }
         if (self.scm.changes) |view| view.blurInput();
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
-        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
         self.statusbar.main_part.clearFocus();
         if (self.search_view) |view| view.blur();
     }
@@ -2661,7 +2655,7 @@ pub const Workbench = struct {
         self.setFocus(.statusbar);
         self.updateProblemsHighlight();
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
-        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
         if (self.statusbar.main_part.focusedHandle() == null) {
             if (self.statusbar.main_part.lastFocusedHandle()) |handle| {
                 self.statusbar.main_part.setFocused(handle);
@@ -2698,7 +2692,7 @@ pub const Workbench = struct {
         try self.syncPanelContainerVisibility();
         self.setFocus(.problems);
         self.statusbar.main_part.clearFocus();
-        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
         if (self.search_view) |view| view.blur();
         self.updateProblemsHighlight();
         self.layoutAll();
@@ -2758,7 +2752,7 @@ pub const Workbench = struct {
             self.setFocus(.terminal);
         }
         self.statusbar.main_part.clearFocus();
-        if (self.breadcrumbs_control) |control| control.setFocused(false);
+        if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
         if (self.search_view) |view| view.blur();
         self.updateProblemsHighlight();
         self.layoutAll();
@@ -3195,7 +3189,6 @@ pub const Workbench = struct {
             };
             if (!visible) self.layout.workbench_grid.onSashEnd();
         }
-        self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
         self.layout.layout(self.cols, self.rows, self.workbenchGridLayout(), self.statusBarRect());
         self.part.layout(self.editorLayoutRect());
         self.syncTerminalSize();
@@ -3220,7 +3213,6 @@ pub const Workbench = struct {
     fn collapseEmptyPane(self: *Workbench, pane: *GroupPane) void {
         if (pane.group.model.count() != 0 or self.service.count() <= 1) return;
         self.editor_drop_target.invalidateDragPane(pane);
-        self.disposeInactiveBreadcrumbs(pane.group.id);
         if (self.part.maximized_group == pane) self.part.setMaximizedGroup(null);
         _ = self.part.collapseView(pane);
     }
@@ -3238,10 +3230,6 @@ pub const Workbench = struct {
     }
 
     /// First workspace folder, used for the extension host's workspace data.
-    fn homePath(self: *const Workbench) ?[]const u8 {
-        return self.home_path;
-    }
-
     pub fn workspaceFolderPath(self: *Workbench) ?[]const u8 {
         const folders = self.workspace.getWorkspace().folders.items;
         if (folders.len == 0) return null;
@@ -4854,7 +4842,7 @@ pub const Workbench = struct {
             if (pane.group.model.contains(.{ .input = tab.input }, .{})) continue;
             if (pane.activeTab() == tab) removed_active = true;
             _ = pane.removeTab(tab);
-            if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
+
             self.unregisterWorkingCopy(tab);
             self.detachHistoryTab(tab);
             self.detachTabViewHandlers(tab);
@@ -5562,7 +5550,7 @@ pub const Workbench = struct {
         _ = try pane.group.model.closeEditor(tab.input, .UNKNOWN, true);
         _ = pane.removeTab(tab);
         pane.syncActivePane();
-        if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
+
         if (self.hovered_tab == tab) self.hovered_tab = null;
         if (!tab.isImage() and tab.terminal_input == null) {
             self.unregisterWorkingCopy(tab);
@@ -5809,9 +5797,7 @@ pub const Workbench = struct {
         if (self.search_view) |view| view.setThemeColors(palette);
         if (self.scm.changes) |view| view.setThemeColors(palette);
         if (self.scm.history) |view| view.setThemeColors(palette);
-        if (self.breadcrumbs_control) |control| control.setThemeColors(palette);
-        var inactive_it = self.breadcrumbs_inactive.iterator();
-        while (inactive_it.next()) |entry| entry.value_ptr.*.control.setThemeColors(palette);
+        self.breadcrumbs.setThemeColors(palette);
         self.dialog_handler.setThemeColors(palette);
         self.statusbar.main_part.setThemeColors(palette);
         self.quick_access.setThemeColors(palette);
@@ -6015,7 +6001,6 @@ pub const Workbench = struct {
     /// Destroys a tab view that lost to an already-open editor, detaching the
     /// workbench registrations that keep raw pointers into it.
     fn discardTab(self: *Workbench, tab: *Tab) void {
-        if (self.breadcrumbs_input == tab.editorInput()) self.disposeBreadcrumbs();
         if (self.hovered_tab == tab) self.hovered_tab = null;
         self.detachHistoryTab(tab);
         self.unregisterWorkingCopy(tab);
@@ -6296,7 +6281,7 @@ pub const Workbench = struct {
         self.hovered_tab = null;
         self.hovered_pane = null;
         self.hovered_title_action_pane = null;
-        if (self.breadcrumbs_control) |control| control.clearHover();
+        if (self.breadcrumbs.activeControl()) |control| control.clearHover();
     }
 
     fn renderWatermarkShortcuts(context: *anyopaque, watermark: *editor_group_watermark.EditorGroupWatermark) !void {
@@ -6393,20 +6378,6 @@ pub const Workbench = struct {
         }
     }
 
-    fn disposeBreadcrumbs(self: *Workbench) void {
-        if (self.breadcrumbs_control) |control| {
-            control.deinit();
-            self.breadcrumbs_control = null;
-        }
-        if (self.breadcrumbs_registration) |registration| {
-            registration.dispose();
-            self.breadcrumbs_registration = null;
-        }
-        self.breadcrumbs_pane = null;
-        self.breadcrumbs_input = null;
-        self.breadcrumbs_group = null;
-    }
-
     /// First workspace folder resource, or null for an empty workspace.
     fn workspaceRoot(self: *const Workbench) ?[]const u8 {
         const folders = self.workspace.getWorkspace().folders.items;
@@ -6500,154 +6471,8 @@ pub const Workbench = struct {
         }
     }
 
-    fn applyBreadcrumbsSettings(self: *Workbench) void {
-        self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
-        if (self.breadcrumbs_control) |control| {
-            control.setSettings(self.breadcrumbs_settings) catch {};
-        }
-        var it = self.breadcrumbs_inactive.iterator();
-        while (it.next()) |entry| entry.value_ptr.*.control.setSettings(self.breadcrumbs_settings) catch {};
-        if (!self.breadcrumbs_settings.enabled) {
-            self.disposeBreadcrumbs();
-            self.disposeAllInactiveBreadcrumbs();
-        }
-        self.layoutAll();
-        self.requestFrame();
-    }
-
     pub fn ensureBreadcrumbsControl(self: *Workbench, pane: *GroupPane) !*BreadcrumbsControl {
-        const tab = pane.activeTab() orelse return error.NoActiveTab;
-        if (tab.isImage()) return error.NoActiveTab;
-        self.disposeInactiveBreadcrumbs(pane.group.id);
-        if (self.breadcrumbs_control) |control| {
-            if (self.breadcrumbs_pane == pane and self.breadcrumbs_input == tab.editorInput()) {
-                if (self.breadcrumbs_group != pane.group.id) {
-                    if (self.breadcrumbs_registration) |registration| registration.dispose();
-                    self.breadcrumbs_registration = null;
-                    control.setGroup(pane.group.id);
-                    self.breadcrumbs_registration = try self.breadcrumbs_service.register(pane.group.id, control);
-                    self.breadcrumbs_group = pane.group.id;
-                }
-                return control;
-            }
-            self.disposeBreadcrumbs();
-        }
-        self.breadcrumbs_host_context = .{ .workbench = self, .pane = pane };
-        const control = try BreadcrumbsControl.init(
-            self.allocator,
-            breadcrumbHost(&self.breadcrumbs_host_context),
-            self.workspace,
-            self.configuration,
-            &self.outline_service,
-            self.homePath(),
-        );
-        errdefer control.deinit();
-        control.setGroup(pane.group.id);
-        control.setThemeColors(self.theme_palette);
-        const registration = try self.breadcrumbs_service.register(pane.group.id, control);
-        self.breadcrumbs_control = control;
-        self.breadcrumbs_pane = pane;
-        self.breadcrumbs_input = tab.editorInput();
-        self.breadcrumbs_group = pane.group.id;
-        self.breadcrumbs_registration = registration;
-        return control;
-    }
-
-    fn disposeInactiveBreadcrumbs(self: *Workbench, group: u32) void {
-        if (self.breadcrumbs_inactive.fetchRemove(group)) |entry| {
-            entry.value.registration.dispose();
-            entry.value.control.deinit();
-            self.allocator.destroy(entry.value);
-        }
-    }
-
-    fn disposeAllInactiveBreadcrumbs(self: *Workbench) void {
-        var it = self.breadcrumbs_inactive.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.*.registration.dispose();
-            entry.value_ptr.*.control.deinit();
-            self.allocator.destroy(entry.value_ptr.*);
-        }
-        self.breadcrumbs_inactive.deinit(self.allocator);
-        self.breadcrumbs_inactive = .empty;
-    }
-
-    fn ensureInactiveBreadcrumbs(self: *Workbench, pane: *GroupPane) ?*BreadcrumbsControl {
-        const tab = pane.activeTab() orelse return null;
-        if (tab.isImage()) return null;
-        if (self.breadcrumbs_inactive.get(pane.group.id)) |entry| {
-            if (entry.pane == pane and entry.input == tab.editorInput()) return entry.control;
-            self.disposeInactiveBreadcrumbs(pane.group.id);
-        }
-
-        const entry = self.allocator.create(InactiveBreadcrumb) catch return null;
-        entry.pane = pane;
-        entry.input = tab.editorInput();
-        entry.context = .{ .workbench = self, .pane = pane };
-        const control = BreadcrumbsControl.init(
-            self.allocator,
-            breadcrumbHost(&entry.context),
-            self.workspace,
-            self.configuration,
-            &self.outline_service,
-            self.homePath(),
-        ) catch {
-            self.allocator.destroy(entry);
-            return null;
-        };
-        control.setGroup(pane.group.id);
-        control.setThemeColors(self.theme_palette);
-        const registration = self.breadcrumbs_service.register(pane.group.id, control) catch {
-            control.deinit();
-            self.allocator.destroy(entry);
-            return null;
-        };
-        entry.control = control;
-        entry.registration = registration;
-        self.breadcrumbs_inactive.put(self.allocator, pane.group.id, entry) catch {
-            registration.dispose();
-            control.deinit();
-            self.allocator.destroy(entry);
-            return null;
-        };
-        return control;
-    }
-
-    pub fn renderBreadcrumbs(self: *Workbench, pane: *GroupPane, x: usize, y: usize, width: usize, active_group: bool) !void {
-        if (!self.breadcrumbsEnabled() or width == 0) return;
-        const row_background = ui.cell.PaintStyle{
-            .bg = ui.cell.packColor(self.themeColor("breadcrumb.background", .{ 37, 37, 38 })),
-        };
-        self.frame.next.fillRect(@floatFromInt(x), @floatFromInt(y), @floatFromInt(width), 1, row_background);
-        if (pane.activeTab() == null) return;
-
-        const is_active_pane = self.activePane() == pane;
-        if (is_active_pane) {
-            const control = self.ensureBreadcrumbsControl(pane) catch return;
-            if (!std.meta.eql(control.settings, self.breadcrumbs_settings)) {
-                control.setSettings(self.breadcrumbs_settings) catch {};
-            }
-            try control.draw(&self.frame.next, .{
-                .x = @floatFromInt(x),
-                .y = @floatFromInt(y),
-                .w = @floatFromInt(width),
-                .h = 1,
-            }, active_group);
-            return;
-        }
-
-        // Inactive groups keep one persistent control each, so rendering the
-        // group does not recreate its outline model every frame.
-        const control = self.ensureInactiveBreadcrumbs(pane) orelse return;
-        if (!std.meta.eql(control.settings, self.breadcrumbs_settings)) {
-            control.setSettings(self.breadcrumbs_settings) catch {};
-        }
-        try control.draw(&self.frame.next, .{
-            .x = @floatFromInt(x),
-            .y = @floatFromInt(y),
-            .w = @floatFromInt(width),
-            .h = 1,
-        }, active_group);
+        return self.breadcrumbs.getControl(pane) orelse error.NoActiveTab;
     }
 
     fn ensureOutlineView(self: *Workbench) !*OutlinePane {
@@ -6958,104 +6783,21 @@ fn outlineSymbolVisible(context: *anyopaque, kind: u32) bool {
     return self.boolSetting(outline_contrib.showConfigForKind(kind), true);
 }
 
-const InactiveBreadcrumb = struct {
-    control: *BreadcrumbsControl,
-    context: BreadcrumbContext,
-    registration: IDisposable,
-    pane: *GroupPane,
-    input: *EditorInput,
-};
-
-const BreadcrumbContext = struct {
-    workbench: *Workbench,
-    pane: ?*GroupPane,
-
-    fn activeTab(self: *BreadcrumbContext) ?*Tab {
-        if (self.pane) |pane| return pane.activeTab();
-        return self.workbench.activeTab();
-    }
-
-    fn activate(self: *BreadcrumbContext) void {
-        if (self.pane) |pane| {
-            self.workbench.service.activateGroup(pane.group);
-            pane.syncActivePane();
-        }
-    }
-};
-
-fn breadcrumbHost(context: *BreadcrumbContext) BreadcrumbsHost {
-    return .{
-        .context = context,
-        .active_resource = breadcrumbActiveResource,
-        .active_language = breadcrumbActiveLanguage,
-        .outline_editor = breadcrumbOutlineEditor,
-        .file_icon = breadcrumbFileIcon,
-        .symbol_icon = breadcrumbSymbolIcon,
-        .open_element = breadcrumbOpenElement,
-        .reveal_element = breadcrumbRevealElement,
-        .request_render = breadcrumbRequestRender,
-        .focus_editor = breadcrumbFocusEditor,
-    };
-}
-
-fn breadcrumbActiveResource(context: *anyopaque) ?[]const u8 {
-    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return null;
-    return tab.editor.path;
-}
-
-fn breadcrumbActiveLanguage(context: *anyopaque) []const u8 {
-    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return "plaintext";
-    return tab.editor.languageId();
-}
-
-fn breadcrumbOutlineEditor(context: *anyopaque) ?OutlineEditor {
-    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return null;
-    return .{
-        .context = @ptrCast(tab),
-        .control = if (tab.isImage() or tab.markdown_panel != null or tab.terminal_input != null) null else tab.editor,
-        .resource = tab.editor.path,
-        .language_id = tab.editor.languageId(),
-    };
-}
-
-fn breadcrumbFileIcon(context: *anyopaque) ?file_icon.Icon {
-    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return null;
-    if (tab.editor.path.len == 0) return null;
-    const icons = self.workbench.getFileIconTheme();
-    return if (icons.disabled) null else icons.forFile(std.fs.path.basename(tab.editor.path), tab.editor.languageId());
-}
-
-fn breadcrumbSymbolIcon(_: *anyopaque, kind: ?u32) []const u8 {
-    const value = kind orelse return "◇";
-    return switch (value) {
-        1, 2, 3 => "N",
-        4, 9, 10, 22 => "◇",
-        5, 8, 11 => "ƒ",
-        6, 7, 12, 13, 21 => "·",
-        else => "◇",
-    };
-}
-
 fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, mode: BreadcrumbsSelectMode, anchor: BreadcrumbsAnchor) anyerror!void {
-    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    self.activate();
+    const self: *Workbench = @ptrCast(@alignCast(context));
     switch (selection) {
         .file => |file| {
             if (mode == .reveal and file.kind == .FILE) {
-                try self.workbench.openBreadcrumbFile(file.path);
+                try self.openBreadcrumbFile(file.path);
             } else {
-                try self.workbench.showBreadcrumbPicker(file, anchor);
+                try self.showBreadcrumbPicker(file, anchor);
             }
         },
         .outline => |outline| {
             if (mode == .pick) {
-                try self.workbench.showBreadcrumbOutlinePicker(outline.outline, outline.element, anchor);
+                try self.showBreadcrumbOutlinePicker(outline.outline, outline.element, anchor);
             } else {
-                try self.workbench.revealBreadcrumbElement(outline.outline, outline.element);
+                try self.revealBreadcrumbElement(outline.outline, outline.element);
             }
         },
         .placeholder => {},
@@ -7063,19 +6805,14 @@ fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, m
 }
 
 fn breadcrumbRevealElement(context: *anyopaque, outline: *outline_mod.IOutline, element: *anyopaque) anyerror!void {
-    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    try self.workbench.revealBreadcrumbElement(outline, element);
-}
-
-fn breadcrumbRequestRender(context: *anyopaque) void {
-    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    self.workbench.requestFrame();
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    try self.revealBreadcrumbElement(outline, element);
 }
 
 fn breadcrumbFocusEditor(context: *anyopaque) void {
-    const self: *BreadcrumbContext = @ptrCast(@alignCast(context));
-    self.workbench.focusEditor();
-    if (self.workbench.activeTab()) |tab| tab.focusEditor();
+    const self: *Workbench = @ptrCast(@alignCast(context));
+    self.focusEditor();
+    if (self.activeTab()) |tab| tab.focusEditor();
 }
 
 fn runActivityOverflowAction(self: *Workbench, _: *MenuActionContext, id: []const u8) anyerror!void {

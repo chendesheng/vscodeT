@@ -91,6 +91,7 @@ pub fn EditorGroupView(comptime View: type) type {
         /// Upstream `EditorGroupView.onDidFocus`. The part listens to this to
         /// make a focused group the active group (`doSetGroupActive`).
         on_did_focus: Emitter(*Self),
+        on_did_change_active_editor_pane: Emitter(?View),
         model_listener: ?usize = null,
 
         pub fn init(allocator: Allocator, group: *editor_groups.EditorGroup) Self {
@@ -100,6 +101,7 @@ pub fn EditorGroupView(comptime View: type) type {
                 .tabs = std.array_list.Managed(View).init(allocator),
                 .hits = std.array_list.Managed(TabHit).init(allocator),
                 .on_did_focus = Emitter(*Self).init(allocator),
+                .on_did_change_active_editor_pane = .init(allocator),
             };
         }
 
@@ -138,6 +140,7 @@ pub fn EditorGroupView(comptime View: type) type {
             for (self.tabs.items) |tab| tab.deinit();
             self.panes.clearActive();
             self.on_did_focus.deinit();
+            self.on_did_change_active_editor_pane.deinit();
             self.hits.deinit();
             self.tabs.deinit();
         }
@@ -621,7 +624,10 @@ pub fn EditorGroupView(comptime View: type) type {
             if (pane != previous) {
                 if (self.updateBreadcrumbsVisibility() and self.panes.page_position != null) self.layout();
             }
-            if (pane != previous) self.group.service.on_did_visible_editors_change.fire({}) catch {};
+            if (pane != previous) {
+                self.on_did_change_active_editor_pane.fire(pane) catch {};
+                self.group.service.on_did_visible_editors_change.fire({}) catch {};
+            }
         }
 
         pub fn interface(self: *Self) editor_groups.IEditorGroup {

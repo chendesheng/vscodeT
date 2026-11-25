@@ -80,6 +80,7 @@ pub const BreadcrumbsService = struct {
     pub fn register(self: *BreadcrumbsService, group: GroupIdentifier, widget: *anyopaque) !IDisposable {
         if (self.widgets.contains(group)) return error.GroupAlreadyRegistered;
         try self.widgets.put(group, widget);
+        errdefer _ = self.widgets.remove(group);
         const registration = try self.allocator.create(Registration);
         registration.* = .{ .service = self, .group = group };
         return .{ .context = registration, .disposeFn = disposeRegistration };

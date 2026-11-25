@@ -3976,7 +3976,7 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     try std.testing.expectEqual(@as(usize, 2), cursorCell(workbench).?.row);
 
     // The first breadcrumb item opens the folder picker.
-    const control = workbench.breadcrumbs_control.?;
+    const control = workbench.breadcrumbs.activeControl().?;
     try std.testing.expect(control.widget.itemCount() >= 2);
 
     var needs_frame = false;
@@ -5403,19 +5403,25 @@ test "Workbench: inactive breadcrumbs reuse a persistent control" {
     const workbench_window = try TestWindow.init(allocator, io, &.{ path_a, path_b }, 60, 10);
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
+    // The group factory and model update before any terminal frame is drawn.
+    const original = workbench.breadcrumbs.activeControl().?;
+    try workbench.activateIndex(0);
+    try std.testing.expectEqual(original, workbench.breadcrumbs.activeControl().?);
+    try std.testing.expectEqualStrings(workbench.activeTab().?.editor.path, original.model.?.resource);
     try workbench.activateIndex(1);
     try workbench.splitActive(.horizontal);
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
 
+    try std.testing.expectEqual(@as(usize, 2), workbench.breadcrumbs.factories.count());
+    const inactive = workbench.part.group_views.items[0];
+    const first = workbench.breadcrumbs.getControl(inactive).?;
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
-    try std.testing.expectEqual(@as(usize, 1), workbench.breadcrumbs_inactive.count());
-    const first = workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?;
 
     try renderFrame(workbench, &out.writer);
-    try std.testing.expectEqual(@as(usize, 1), workbench.breadcrumbs_inactive.count());
-    try std.testing.expectEqual(first, workbench.breadcrumbs_inactive.get(workbench.part.group_views.items[0].group.id).?);
+    try std.testing.expectEqual(@as(usize, 2), workbench.breadcrumbs.factories.count());
+    try std.testing.expectEqual(first, workbench.breadcrumbs.getControl(inactive).?);
 }
 
 test "Workbench: content widgets show diagnostics in a rounded hover" {
