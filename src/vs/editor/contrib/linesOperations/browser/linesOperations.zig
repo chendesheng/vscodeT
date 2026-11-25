@@ -1,8 +1,8 @@
 // Port of the portable command-producing actions from
 // `src/vs/editor/contrib/linesOperations/browser/linesOperations.ts`.
 //
-// The editor action/keybinding wrappers are intentionally not ported. These
-// helpers execute the same commands through the shared command runner.
+// The line move, copy, sort and duplicate actions resolve the focused or active
+// code editor. The edit implementations use the shared command runner.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -23,6 +23,54 @@ const MoveLinesCommand = @import("./moveLinesCommand.zig").MoveLinesCommand;
 const SortLinesCommand = @import("./sortLinesCommand.zig").SortLinesCommand;
 const ReplaceCommandThatSelectsText = @import("../../../common/commands/replaceCommand.zig").ReplaceCommandThatSelectsText;
 const TrimTrailingWhitespaceCommand = @import("../../../common/commands/trimTrailingWhitespaceCommand.zig").TrimTrailingWhitespaceCommand;
+
+const actions = @import("../../../../platform/actions/common/actions.zig");
+const keys = @import("../../../../platform/contextkey/common/contextkey.zig");
+const bindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
+const codes = @import("../../../../base/common/keyCodes.zig");
+const Editor = @import("../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+const EditorCommand = @import("../../../browser/editorExtensions.zig").EditorCommand;
+const Accessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const writable = keys.Expr{ .Not = "editorReadonly" };
+const text_focus = keys.Expr{ .Defined = "editorTextFocus" };
+
+fn directional(comptime operation: fn (*Editor, bool) anyerror!void, comptime direction: bool) fn (*Editor) anyerror!void {
+    return struct {
+        fn run(editor: *Editor) !void {
+            try operation(editor, direction);
+        }
+    }.run;
+}
+
+fn lineAction(comptime id: []const u8, comptime title: []const u8, comptime operation: fn (*Editor) anyerror!void, comptime menu_order: ?i64, comptime key: ?bindings.IKeybindings) actions.Action2 {
+    return .{
+        .command = .{ .id = id, .title = title, .category = "Editor", .precondition = &writable },
+        .f1 = true,
+        .menus = if (menu_order) |order| &.{.{ .id = actions.menu_ids.MenubarSelectionMenu, .group = "2_line", .order = order }} else &.{},
+        .keybindings = if (key) |value| &.{.{ .id = id, .weight = @backingInt(bindings.KeybindingWeight.EditorContrib), .when = &text_focus, .bindings = value }} else &.{},
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, accessor: Accessor) !void {
+                try EditorCommand.runEditorCommand(accessor, true, operation);
+            }
+        }.run,
+    };
+}
+
+fn copyBinding(comptime arrow: codes.KeyCode) bindings.IKeybindings {
+    const chord = codes.KeyMod.Alt | codes.KeyMod.Shift | @backingInt(arrow);
+    return .{ .primary = chord, .linux = .{ .primary = codes.KeyMod.CtrlCmd | chord } };
+}
+
+pub const editor_actions = [_]actions.Action2{
+    lineAction("editor.action.moveLinesUpAction", "Move Line Up", directional(Editor.moveLines, false), 3, .{ .primary = codes.KeyMod.Alt | @backingInt(codes.KeyCode.UpArrow) }),
+    lineAction("editor.action.moveLinesDownAction", "Move Line Down", directional(Editor.moveLines, true), 4, .{ .primary = codes.KeyMod.Alt | @backingInt(codes.KeyCode.DownArrow) }),
+    lineAction("editor.action.copyLinesUpAction", "Copy Line Up", directional(Editor.copyLines, false), 1, copyBinding(.UpArrow)),
+    lineAction("editor.action.copyLinesDownAction", "Copy Line Down", directional(Editor.copyLines, true), 2, copyBinding(.DownArrow)),
+    lineAction("editor.action.duplicateSelection", "Duplicate Selection", Editor.duplicateSelection, 5, null),
+    lineAction("editor.action.sortLinesAscending", "Sort Lines Ascending", directional(Editor.sortLines, false), null, null),
+    lineAction("editor.action.sortLinesDescending", "Sort Lines Descending", directional(Editor.sortLines, true), null, null),
+};
 
 fn runConcrete(
     comptime T: type,

@@ -84,6 +84,13 @@ pub const CommandRegistry = struct {
         });
     }
 
+    /// Editor commands reach the palette only for a workbench with an active
+    /// editor, mirroring getCodeEditorCommandPicks in editorCommandsQuickAccess.
+    pub fn registerEditorAction(self: *CommandRegistry, instantiation: *InstantiationService, action: actions.Action2) !void {
+        try self.registerAction(instantiation, action);
+        self.infos.getPtr(action.command.id).?.requires_editor = true;
+    }
+
     pub fn register(self: *CommandRegistry, info: CommandInfo) !void {
         try self.infos.ensureUnusedCapacity(self.allocator, 1);
         try self.platform.commands.ensureUnusedCapacity(1);

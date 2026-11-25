@@ -31,6 +31,21 @@ pub const EditorActionOptions = struct {
     run: *const fn (context: *anyopaque) anyerror!void,
 };
 
+/// Port of EditorCommand.runEditorCommand. The focused editor takes precedence
+/// over the workbench's active editor. Writability belongs to the target's
+/// scoped context, including the two distinct controls in a diff editor.
+pub const EditorCommand = struct {
+    const Editor = @import("widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
+    const Accessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
+    pub fn runEditorCommand(accessor: Accessor, requires_writable: bool, comptime run: fn (*Editor) anyerror!void) !void {
+        const service = try accessor.get(@import("services/codeEditorService.zig").code_editor_service_id);
+        const editor = service.getFocusedCodeEditor() orelse service.getActiveCodeEditor() orelse return;
+        if (requires_writable and editor.isReadOnly()) return;
+        try run(editor);
+    }
+};
+
 /// Base shape shared by registered editor actions.
 pub const EditorAction = struct {
     id: []const u8,

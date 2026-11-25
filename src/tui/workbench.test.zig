@@ -7443,10 +7443,21 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // The diff tab composites both panes, the center gutter and its title.
     var diff_frame: std.Io.Writer.Allocating = .init(allocator);
     defer diff_frame.deinit();
+    workbench.focusEditor();
     try workbench.render(&diff_frame.writer);
     try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "HEAD") != null);
     try std.testing.expect(std.mem.indexOf(u8, diff_frame.written(), "Working Tree") != null);
     try std.testing.expect(workbench.cursorCell() != null);
+
+    // The active diff exposes its modified control. An editor command uses
+    // the focused side when the user moves focus to the original control.
+    const widget = tab.diff.?.widget;
+    try std.testing.expectEqual(widget.modified_editor, workbench.code_editor_api.getActiveCodeEditor().?);
+    widget.setFocus(.original);
+    try std.testing.expectEqual(widget.original_editor, workbench.code_editor_api.getFocusedCodeEditor().?);
+    try workbench.commands.execute("editor.action.copyLinesDownAction");
+    try std.testing.expect(!widget.original_editor.isDirty());
+    widget.setFocus(.modified);
 
     // Navigation keys are TUI-specific (Alt-Up/Alt-Down).
     const before_change = tab.diff.?.widget.current_change;
@@ -8109,4 +8120,26 @@ test "resetLayout ignores saved workspace visibility and profile sizes while res
     try std.testing.expectEqual(visible, wb.layout.isVisible(.sidebar));
     try std.testing.expect(!wb.layout.isMainEditorCentered());
     try std.testing.expect(wb.layout.isRestored());
+}
+
+test "line actions resolve the active code editor when focus leaves it and honor read-only state" {
+    const allocator = std.testing.allocator;
+    const io = time_compat.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "line-actions.txt", "one");
+    defer allocator.free(path);
+    const workbench = try Workbench.init(allocator, io, &.{path}, 60, 16);
+    defer workbench.deinit();
+    const tab = workbench.activeTab().?;
+    _ = tab.view.setFocused(false);
+    try std.testing.expect(workbench.code_editor_api.getFocusedCodeEditor() == null);
+    try std.testing.expectEqual(tab.editor, workbench.code_editor_api.getActiveCodeEditor().?);
+    try workbench.commands.execute("editor.action.copyLinesDownAction");
+    var value = try tab.editor.model.getValue(null, false);
+    defer value.deinit();
+    try std.testing.expectEqualStrings("one\none", value.items);
+    tab.editor.setReadOnly(true);
+    try workbench.commands.execute("editor.action.copyLinesDownAction");
+    try std.testing.expectEqual(@as(usize, 2), tab.editor.model.getLineCount());
 }

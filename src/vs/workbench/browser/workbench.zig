@@ -74,6 +74,8 @@ const SidebarPart = sidebar_part_mod.SidebarPart;
 const layout_service_mod = @import("../services/layout/browser/layoutService.zig");
 const workbench_layout = @import("./layout.zig");
 const Layout = workbench_layout.Layout;
+const code_editor_service = @import("../../editor/browser/services/codeEditorService.zig");
+const CodeEditorService = @import("../services/editor/browser/codeEditorService.zig").CodeEditorService;
 const WorkbenchGrid = workbench_layout.WorkbenchGrid;
 const statusbar_mod = @import("./parts/statusbar/statusbarPart.zig");
 const statusbar_model_mod = @import("./parts/statusbar/statusbarModel.zig");
@@ -286,6 +288,7 @@ const ContextKeyHandles = struct {
     tree_find_open: context_key_mod.IContextKey,
     resource_scheme: context_key_mod.IContextKey,
     editor_read_only: context_key_mod.IContextKey,
+    legacy_editor_read_only: context_key_mod.IContextKey,
 };
 
 /// Terminal host color scheme. The terminal has no portable OS color-scheme
@@ -506,6 +509,8 @@ pub const IWorkbenchOptions = struct {
 pub const Workbench = struct {
     const WindowTimer = @import("../../base/common/async.zig").WindowTimer;
     restore_timer: ?*WindowTimer,
+    code_editors: CodeEditorService,
+    code_editor_api: code_editor_service.ICodeEditorService,
     allocator: Allocator,
     io: Io,
     /// Io used to run interactive file/dir/network work off the TUI thread.
@@ -951,6 +956,9 @@ pub const Workbench = struct {
         errdefer self.services.deinit();
         self.lifecycle_api = self.lifecycle.interface();
         self.layout_api = self.layout.interface();
+        self.code_editors = .{ .part = self.part };
+        self.code_editor_api = self.code_editors.interface();
+        _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
         _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
         _ = try self.services.set(layout_service_mod.layout_service_id, &self.layout_api);
         try outline_model.registerSingleton(&self.services);
@@ -1607,13 +1615,10 @@ pub const Workbench = struct {
             .{ .id = "editor.action.startFindReplaceAction", .label = "Replace", .context = self, .requires_editor = true, .run = commandReplace },
             .{ .id = "editor.action.commentLine", .label = "Toggle Line Comment", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleLineComment },
             .{ .id = "editor.action.blockComment", .label = "Toggle Block Comment", .category = "Editor", .context = self, .requires_editor = true, .run = commandToggleBlockComment },
-            .{ .id = "editor.action.moveLinesUpAction", .label = "Move Line Up", .category = "Editor", .context = self, .requires_editor = true, .run = commandMoveLinesUp },
-            .{ .id = "editor.action.moveLinesDownAction", .label = "Move Line Down", .category = "Editor", .context = self, .requires_editor = true, .run = commandMoveLinesDown },
-            .{ .id = "editor.action.copyLinesUpAction", .label = "Copy Line Up", .category = "Editor", .context = self, .requires_editor = true, .run = commandCopyLinesUp },
-            .{ .id = "editor.action.copyLinesDownAction", .label = "Copy Line Down", .category = "Editor", .context = self, .requires_editor = true, .run = commandCopyLinesDown },
-            .{ .id = "editor.action.duplicateSelection", .label = "Duplicate Selection", .category = "Editor", .context = self, .requires_editor = true, .run = commandDuplicateSelection },
-            .{ .id = "editor.action.sortLinesAscending", .label = "Sort Lines Ascending", .category = "Editor", .context = self, .requires_editor = true, .run = commandSortLinesAscending },
-            .{ .id = "editor.action.sortLinesDescending", .label = "Sort Lines Descending", .category = "Editor", .context = self, .requires_editor = true, .run = commandSortLinesDescending },
+        };
+        for (commands) |command| try self.commands.register(command);
+        for (@import("../../editor/contrib/linesOperations/browser/linesOperations.zig").editor_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
+        const remaining_editor_commands = [_]commands_mod.CommandInfo{
             .{ .id = "editor.action.indentLines", .label = "Indent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandIndentLines },
             .{ .id = "editor.action.outdentLines", .label = "Outdent Lines", .category = "Editor", .context = self, .requires_editor = true, .run = commandOutdentLines },
             .{ .id = "editor.action.insertFinalNewLine", .label = "Insert Final New Line", .category = "Editor", .context = self, .requires_editor = true, .run = commandInsertFinalNewLine },
@@ -1648,7 +1653,7 @@ pub const Workbench = struct {
             .{ .id = "editor.action.wordHighlight.next", .label = "Go to Next Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightNext },
             .{ .id = "editor.action.wordHighlight.prev", .label = "Go to Previous Symbol Highlight", .category = "Go", .context = self, .requires_editor = true, .run = commandWordHighlightPrevious },
         };
-        for (commands) |command| try self.commands.register(command);
+        for (remaining_editor_commands) |command| try self.commands.register(command);
 
         try self.builtin_host.registerPortActions();
         try self.references_view.init(&self.builtin_host.context, self.quick_access.inputService());
@@ -8060,7 +8065,8 @@ pub const Workbench = struct {
             .explorer_resource_readonly = try service.createKey("explorerResourceReadonly", .{ .boolean = false }),
             .tree_find_open = try service.createKey("treeFindOpen", .{ .boolean = false }),
             .resource_scheme = try service.createKey("resourceScheme", .{ .string = "file" }),
-            .editor_read_only = try service.createKey("editorReadOnly", .{ .boolean = false }),
+            .editor_read_only = try service.createKey("editorReadonly", .{ .boolean = false }),
+            .legacy_editor_read_only = try service.createKey("editorReadOnly", .{ .boolean = false }),
         };
         self.context_keys = service;
         self.commands.context_keys = service.interface();
@@ -8107,7 +8113,9 @@ pub const Workbench = struct {
         keys.explorer_resource_readonly.set(.{ .boolean = false });
         keys.tree_find_open.set(.{ .boolean = false });
         keys.resource_scheme.set(.{ .string = if (terminal_editor_active) "vscode-terminal" else "file" });
-        keys.editor_read_only.set(.{ .boolean = if (self.activeTab()) |tab| tab.editor.read_only else false });
+        const target = self.code_editor_api.getFocusedCodeEditor() orelse self.code_editor_api.getActiveCodeEditor();
+        keys.editor_read_only.set(.{ .boolean = if (target) |editor| editor.isReadOnly() else false });
+        keys.legacy_editor_read_only.set(.{ .boolean = if (self.activeTab()) |tab| tab.editor.read_only else false });
     }
 
     fn getFileIconTheme(self: *const Workbench) file_icon.FileIconThemeData {
@@ -13904,41 +13912,6 @@ fn commandToggleLineComment(context: *anyopaque) anyerror!void {
 fn commandToggleBlockComment(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
     try tab.editor.toggleBlockComment();
-}
-
-fn commandMoveLinesUp(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.moveLines(false);
-}
-
-fn commandMoveLinesDown(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.moveLines(true);
-}
-
-fn commandCopyLinesUp(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.copyLines(false);
-}
-
-fn commandCopyLinesDown(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.copyLines(true);
-}
-
-fn commandDuplicateSelection(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.duplicateSelection();
-}
-
-fn commandSortLinesAscending(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.sortLines(false);
-}
-
-fn commandSortLinesDescending(context: *anyopaque) anyerror!void {
-    const tab = try commandTab(context);
-    try tab.editor.sortLines(true);
 }
 
 fn commandIndentLines(context: *anyopaque) anyerror!void {
