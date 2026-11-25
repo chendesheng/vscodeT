@@ -194,6 +194,8 @@ pub const Layout = struct {
     allocator: Allocator,
     states: [8]PartState = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} },
     sidebar_position: Position = .left,
+    panel_opens_maximized: layout_service.PartOpensMaximizedOptions = .preserve,
+    panel_was_last_maximized: bool = false,
     workbench_grid: WorkbenchGrid = .{},
     // Like the browser grid, Layout retains the last laid-out container and
     // its part geometry for subsequent resize commands.
@@ -214,6 +216,7 @@ pub const Layout = struct {
     on_did_change: Emitter(void),
     on_did_change_zen_mode: Emitter(bool),
     on_did_change_main_editor_centered: Emitter(bool),
+    on_did_change_panel_maximized: Emitter(bool),
 
     pub fn init(allocator: Allocator) Layout {
         return .{
@@ -222,6 +225,7 @@ pub const Layout = struct {
             .on_did_change = Emitter(void).init(allocator),
             .on_did_change_zen_mode = Emitter(bool).init(allocator),
             .on_did_change_main_editor_centered = Emitter(bool).init(allocator),
+            .on_did_change_panel_maximized = Emitter(bool).init(allocator),
         };
     }
 
@@ -261,10 +265,11 @@ pub const Layout = struct {
         self.on_did_change.deinit();
         self.on_did_change_zen_mode.deinit();
         self.on_did_change_main_editor_centered.deinit();
+        self.on_did_change_panel_maximized.deinit();
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .get_visible_neighbor_part = getVisibleNeighborPartContext, .get_container = getContainerContext, .get_size = getSizeContext, .set_size = setSizeContext, .resize_part = resizePartContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
+        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .get_visible_neighbor_part = getVisibleNeighborPartContext, .get_container = getContainerContext, .get_size = getSizeContext, .set_size = setSizeContext, .resize_part = resizePartContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .on_did_change_panel_maximized = &self.on_did_change_panel_maximized, .is_panel_maximized = isPanelMaximizedContext, .toggle_maximized_panel = toggleMaximizedPanelContext, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
     }
 
     fn getVisibleNeighborPartContext(context: *anyopaque, part: Parts, direction: grid.Direction) ?Parts {
@@ -284,6 +289,16 @@ pub const Layout = struct {
             if (grid.boxesAdjacent(source, target, direction)) return candidate;
         }
         return null;
+    }
+
+    fn isPanelMaximizedContext(context: *anyopaque) bool {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.isPanelMaximized();
+    }
+
+    fn toggleMaximizedPanelContext(context: *anyopaque) !void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        try self.toggleMaximizedPanel();
     }
 
     fn hasFocusContext(context: *anyopaque, part: Parts) bool {
@@ -425,7 +440,7 @@ pub const Layout = struct {
         }
         const rects = geometry.workbenchGridLayout();
         self.layout(geometry.cols, geometry.rows, rects, geometry.statusBarRect());
-        geometry.part.layout(self.centeredEditorRect(rects.editor));
+        if (self.isVisible(.editor)) geometry.part.layout(self.centeredEditorRect(rects.editor));
     }
 
     fn layoutPart(self: *Layout, id: Parts, rect: ui.Rect) void {
@@ -439,6 +454,7 @@ pub const Layout = struct {
     }
 
     pub fn setPartHidden(self: *Layout, hidden: bool, part: Parts) !void {
+        if (part == .editor) return self.setEditorHidden(hidden);
         if (part == .statusbar and !self.isZenModeActive()) self.configured_statusbar_visible = !hidden;
         if (self.pane_composite_service != null) {
             if (part == .sidebar) return self.setSideBarHidden(hidden);
@@ -496,11 +512,51 @@ pub const Layout = struct {
         }
     }
 
+    /// The main editor area and panel cannot both be hidden. The current
+    /// terminal grid is center-aligned, so panel maximization is represented
+    /// by the same upstream EDITOR_HIDDEN state rather than a separate size.
+    fn setEditorHidden(self: *Layout, hidden: bool) anyerror!void {
+        if (hidden and !self.isVisible(.panel)) try self.setPartHidden(false, .panel);
+        const previous = self.isPanelMaximized();
+        try self.setPartVisibility(hidden, .editor);
+        const maximized = self.isPanelMaximized();
+        self.panel_was_last_maximized = maximized;
+        if (previous != maximized) try self.on_did_change_panel_maximized.fire(maximized);
+    }
+
+    pub fn isPanelMaximized(self: *const Layout) bool {
+        return self.isVisible(.panel) and !self.isVisible(.editor);
+    }
+
+    pub fn toggleMaximizedPanel(self: *Layout) !void {
+        try self.setEditorHidden(!self.isPanelMaximized());
+        if (self.isPanelMaximized()) focusPartContext(self, .panel);
+    }
+
+    fn panelOpensMaximized(self: *const Layout) bool {
+        return switch (self.panel_opens_maximized) {
+            .always => true,
+            .never => false,
+            .preserve => self.panel_was_last_maximized,
+        };
+    }
+
+    /// Called when a pane composite is opened directly by the native part.
+    /// This is the same visibility transition as setPanelHidden(false).
+    pub fn onPanelOpened(self: *Layout) !void {
+        if (self.panelOpensMaximized() != self.isPanelMaximized()) {
+            try self.setEditorHidden(self.panelOpensMaximized());
+        }
+    }
+
     /// Portable setPanelHidden: change the grid visibility, close the
     /// active composite (remembering its ID), or reopen the last/default
-    /// composite. A terminal panel has no auxiliary-bar or maximization mode.
+    /// composite. Restore the editor before hiding a maximized panel.
     fn setPanelHidden(self: *Layout, hidden: bool) !void {
         const panes = self.pane_composite_service orelse return;
+        const was_hidden = !self.isVisible(.panel);
+        const maximized = self.isPanelMaximized();
+        if (hidden and maximized) try self.setEditorHidden(false);
         try self.setPartVisibility(hidden, .panel);
         if (hidden) {
             if (panes.getActivePaneComposite(.panel) != null) {
@@ -509,6 +565,12 @@ pub const Layout = struct {
             }
         } else if (panes.getActivePaneComposite(.panel) == null) {
             try self.openViewContainer(.panel, panes.getLastActivePaneCompositeId(.panel), true);
+        }
+        if (was_hidden == hidden) return;
+        if (hidden) {
+            self.panel_was_last_maximized = maximized;
+        } else {
+            try self.onPanelOpened();
         }
     }
 
@@ -546,6 +608,7 @@ pub const Layout = struct {
                 try self.setSize(.sidebar, width);
             },
             .panel => {
+                if (self.isPanelMaximized()) return;
                 const height = if (self.terminal_geometry) |geometry| geometry.clampPanelHeight(value.height) else value.height;
                 try self.setSize(.panel, height);
             },
@@ -600,7 +663,7 @@ pub const Layout = struct {
             const current: isize = @intCast(geometry.sidebarWidth());
             try self.setSize(.sidebar, geometry.clampSidebarWidth(@intCast(@max(current -| width_delta, 0))));
         }
-        if (height_delta != 0 and geometry.panelShown()) {
+        if (height_delta != 0 and geometry.panelShown() and !self.isPanelMaximized()) {
             const current: isize = @intCast(geometry.panelHeight());
             try self.setSize(.panel, geometry.clampPanelHeight(@intCast(@max(current -| height_delta, 0))));
         }
@@ -654,6 +717,7 @@ pub const Layout = struct {
         @"workbench.sideBar.hidden": ?bool = null,
         @"workbench.panel.hidden": ?bool = null,
         @"workbench.panelpart.activepanelid": ?[]const u8 = null,
+        @"panel.wasLastMaximized": bool = false,
     };
 
     pub const ProfileState = struct {
@@ -669,6 +733,7 @@ pub const Layout = struct {
             .@"workbench.sideBar.hidden" = !self.isVisible(.sidebar),
             .@"workbench.panel.hidden" = !self.isVisible(.panel),
             .@"workbench.panelpart.activepanelid" = active_panel,
+            .@"panel.wasLastMaximized" = self.panel_was_last_maximized,
         };
     }
 
@@ -676,8 +741,12 @@ pub const Layout = struct {
     /// session can reopen the panes recorded in ZEN_MODE_EXIT_INFO.
     fn restorePartState(self: *Layout, state: WorkspaceState) !void {
         const host = self.zen_host orelse return error.LayoutNotInitialized;
+        self.panel_was_last_maximized = state.@"panel.wasLastMaximized";
         if (state.@"workbench.sideBar.hidden") |hidden| try self.setPartHidden(hidden, .sidebar);
-        if (state.@"workbench.panel.hidden") |hidden| try self.setPartHidden(hidden, .panel);
+        if (state.@"workbench.panel.hidden") |hidden| {
+            try self.setPartHidden(hidden, .panel);
+            if (!hidden) try self.onPanelOpened() else self.panel_was_last_maximized = state.@"panel.wasLastMaximized";
+        }
         self.main_editor_centered = state.@"workbench.editor.centered";
         self.zen_mode_exit_info = state.@"workbench.zenMode.exitInfo";
         if (state.@"workbench.zenMode.active") {
@@ -922,12 +991,14 @@ pub const TerminalGeometry = struct {
 
     pub fn panelHeight(self: *const TerminalGeometry) usize {
         if (!self.panelShown()) return 0;
+        if (self.layout.isPanelMaximized()) return self.workbenchRows();
         const wanted = if (self.panel_part.getSize() == 0) 10 else self.panel_part.getSize();
         return self.clampPanelHeight(wanted);
     }
 
     pub fn panelHeightLimits(self: *const TerminalGeometry) WorkbenchGrid.Limits {
         const available = self.workbenchRows();
+        if (self.layout.isPanelMaximized()) return .{ .minimum = available, .maximum = available };
         const editor_minimum = @min(editor_part_mod.min_pane_height, @max(available -| self.panel_part.minimum_height, 1));
         const maximum = @min(self.panel_part.maximum_height, available -| editor_minimum);
         return .{ .minimum = @min(self.panel_part.minimum_height, maximum), .maximum = maximum };

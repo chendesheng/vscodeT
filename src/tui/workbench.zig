@@ -230,11 +230,13 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
             }
         }
     }
-    renderCenteredLayoutMargins(workbench);
-    try paintEditorGroups(workbench, editor_surface);
-    renderEditorFrame(workbench);
-    if (workbench.part.maximized_group == null) renderDividers(workbench, workbench.part.root);
-    if (workbench.editor_drop_target.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").animationsEnabled(if (workbench.configuration) |config| config.interface() else null), time_compat.milliTimestamp());
+    if (workbench.layout.isVisible(.editor)) {
+        renderCenteredLayoutMargins(workbench);
+        try paintEditorGroups(workbench, editor_surface);
+        renderEditorFrame(workbench);
+        if (workbench.part.maximized_group == null) renderDividers(workbench, workbench.part.root);
+        if (workbench.editor_drop_target.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").animationsEnabled(if (workbench.configuration) |config| config.interface() else null), time_compat.milliTimestamp());
+    }
     if (workbench.geometry().panelShown()) {
         try renderPanel(workbench);
         renderPanelFrame(workbench);
@@ -281,7 +283,7 @@ pub fn cursorCell(workbench: *Workbench) ?@import("editorView.zig").Cell {
         const cursor = @import("../vs/workbench/contrib/terminal/browser/terminalRenderer.zig").cursorCell(&instance.emulator, service.group.paneRect(content, service.group.active)) orelse return null;
         return .{ .row = cursor.row, .col = cursor.col };
     }
-    if (workbench.focus != .editor) return null;
+    if (workbench.focus != .editor or !workbench.layout.isVisible(.editor)) return null;
     const pane = workbench.activePane() orelse return null;
     const active = pane.activeTab() orelse return null;
     const cell = active.cursorCell() orelse return null;
@@ -976,6 +978,7 @@ pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
 }
 
 pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
+    if (!self.layout.isVisible(.editor)) return false;
     if (handleTabDragMouse(self, event)) return true;
     if (!WorkbenchGrid.Rects.inColumn(self.geometry().workbenchGridLayout().editor, event.x)) return false;
 
@@ -2267,6 +2270,7 @@ pub fn handleTabDragMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
 }
 
 pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?struct { tab: *Tab, event: ui.MouseEvent } {
+    if (!self.layout.isVisible(.editor)) return null;
     if (event.x >= self.cols or event.y >= self.rows or !WorkbenchGrid.Rects.inColumn(self.geometry().workbenchGridLayout().editor, event.x)) return null;
     const surface = synchronizeEditorDom(self) catch return null;
     const target = (surface.elementFromPoint(event.x, event.y) catch null) orelse return null;

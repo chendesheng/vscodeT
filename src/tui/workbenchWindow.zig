@@ -1603,6 +1603,7 @@ pub const TerminalWorkbench = struct {
         for (@import("../vs/workbench/browser/actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, editor_actions.maximize_editor_action);
         try self.commands.registerAction(self.instantiation, panel_actions.close_panel_action);
+        try self.commands.registerAction(self.instantiation, panel_actions.toggle_maximized_panel_action);
         for (self.group_actions.closeEditorsActions()) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, self.group_actions.joinAllAction());
         for (self.group_actions.navigationActions()) |action| try self.commands.registerAction(self.instantiation, action);
@@ -1896,6 +1897,7 @@ pub const TerminalWorkbench = struct {
     fn onGridChanged(_: void, self: *TerminalWorkbench) !void {
         self.layoutAll();
         self.updatePartFocus() catch {};
+        self.requestFrame();
     }
 
     /// Port of the composite action collection: the active side bar view
@@ -2336,6 +2338,7 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn focusEditor(self: *TerminalWorkbench) void {
+        if (!self.layout.isVisible(.editor)) self.layout.setPartHidden(false, .editor) catch {};
         self.setFocus(.editor);
         if (self.activeSidebarViewContainer()) |container| {
             container.cancelHeaderDrag();
@@ -2422,7 +2425,9 @@ pub const TerminalWorkbench = struct {
     }
 
     fn openPanelContainerWithFocus(self: *TerminalWorkbench, id: []const u8, focus: bool) !bool {
+        const was_hidden = !self.layout.isVisible(.panel);
         if (!try self.panel_part.openPaneCompositeWithFocus(id, focus)) return false;
+        if (was_hidden) try self.layout.onPanelOpened();
         try self.syncPanelContainerVisibility();
         if (std.mem.eql(u8, id, PROBLEMS_CONTAINER_ID)) {
             try self.ensureProblemsView();
@@ -3568,14 +3573,6 @@ pub const TerminalWorkbench = struct {
         try self.focusGroupLocation(.next);
     }
 
-    pub fn maximizeActiveGroup(self: *TerminalWorkbench) void {
-        self.part.arrangeGroups(.MAXIMIZE);
-    }
-
-    pub fn minimizeActiveGroup(self: *TerminalWorkbench) void {
-        self.part.restoreGroupSizes();
-    }
-
     pub fn closePanel(self: *TerminalWorkbench) void {
         self.hidePanel();
     }
@@ -4337,6 +4334,7 @@ pub const TerminalWorkbench = struct {
     /// composite bar lives and whether the activity bar is shown at all.
     fn applyLayoutSettings(self: *TerminalWorkbench, change: ?configuration_mod.Change) void {
         const values = layout_service_mod.LayoutSettingsValues.load(self.configuration, self.workspaceRoot());
+        self.layout.panel_opens_maximized = values.panel_opens_maximized;
         if (change == null or @import("../vs/platform/configuration/common/configuration.zig").affectsConfiguration(change.?, layout_service_mod.LayoutSettings.status_bar_visible))
             self.layout.setStatusBarConfiguration(values.status_bar_visible) catch {};
         if (change == null or @import("../vs/platform/configuration/common/configuration.zig").affectsConfiguration(change.?, layout_service_mod.LayoutSettings.sidebar_position))

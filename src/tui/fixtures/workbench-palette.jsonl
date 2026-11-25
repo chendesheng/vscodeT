@@ -92,6 +92,7 @@
 ["workbench.action.decreaseViewHeight","Decrease Editor Height","View","",true,false,false,true,true]
 ["workbench.action.maximizeEditor","Maximize Editor Group","View","",true,false,false,true,true]
 ["workbench.action.closePanel","Close Panel","View","",true,false,false,true,true]
+["workbench.action.toggleMaximizedPanel","Toggle Maximized Panel","View","Maximize Panel",true,false,false,true,true]
 ["workbench.action.closeAllEditors","Close All Editors","View","",true,false,false,true,true]
 ["workbench.action.closeOtherEditors","Close Other Editors","View","",true,false,false,true,true]
 ["workbench.action.joinAllGroups","Join All Editor Groups","View","",true,false,false,true,true]

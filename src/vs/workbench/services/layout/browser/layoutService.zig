@@ -34,6 +34,9 @@ pub const IWorkbenchLayoutService = struct {
     on_did_change_part_visibility: *Emitter(IPartVisibilityChangeEvent),
     on_did_change_zen_mode: *Emitter(bool),
     on_did_change_main_editor_centered: *Emitter(bool),
+    on_did_change_panel_maximized: *Emitter(bool),
+    is_panel_maximized: *const fn (*anyopaque) bool,
+    toggle_maximized_panel: *const fn (*anyopaque) anyerror!void,
     toggle_zen_mode: *const fn (*anyopaque) anyerror!void,
     is_zen_mode_active: *const fn (*anyopaque) bool,
     is_main_editor_centered: *const fn (*anyopaque) bool,
@@ -61,6 +64,14 @@ pub const IWorkbenchLayoutService = struct {
 
     pub fn resizePart(self: @This(), part: Parts, width_delta: isize, height_delta: isize) !void {
         try self.resize_part(self.context, part, width_delta, height_delta);
+    }
+
+    pub fn isPanelMaximized(self: @This()) bool {
+        return self.is_panel_maximized(self.context);
+    }
+
+    pub fn toggleMaximizedPanel(self: @This()) !void {
+        try self.toggle_maximized_panel(self.context);
     }
 
     pub fn toggleZenMode(self: @This()) !void {
@@ -127,6 +138,7 @@ pub const ActivityBarPosition = enum {
 /// Upstream `LayoutSettings` ids read by the terminal shell.
 pub const LayoutSettings = struct {
     pub const sidebar_position = "workbench.sideBar.location";
+    pub const panel_opens_maximized = "workbench.panel.opensMaximized";
     pub const status_bar_visible = "workbench.statusBar.visible";
     pub const activity_bar_location = "workbench.activityBar.location";
     pub const activity_bar_auto_hide = "workbench.activityBar.autoHide";
@@ -151,9 +163,12 @@ pub const ZenModeSettings = struct {
     pub const silent_notifications = "zenMode.silentNotifications";
 };
 
+pub const PartOpensMaximizedOptions = enum { always, never, preserve };
+
 /// The layout settings the terminal shell reads, with upstream defaults.
 pub const LayoutSettingsValues = struct {
     sidebar_position: Position = .left,
+    panel_opens_maximized: PartOpensMaximizedOptions = .preserve,
     status_bar_visible: bool = true,
     activity_bar_location: ActivityBarPosition = .default,
     activity_bar_auto_hide: bool = false,
@@ -171,6 +186,9 @@ pub const LayoutSettingsValues = struct {
         const overrides: configuration.Overrides = if (resource) |path| .{ .resource = path } else .{};
         if (config.getValue(LayoutSettings.sidebar_position, overrides)) |v| {
             if (v.* == .string and std.mem.eql(u8, v.string, "right")) values.sidebar_position = .right;
+        }
+        if (config.getValue(LayoutSettings.panel_opens_maximized, overrides)) |value| {
+            if (value.* == .string) values.panel_opens_maximized = std.meta.stringToEnum(PartOpensMaximizedOptions, value.string) orelse .preserve;
         }
         if (config.getValue(LayoutSettings.status_bar_visible, overrides)) |value| {
             if (value.* == .bool) values.status_bar_visible = value.bool;

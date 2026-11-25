@@ -107,6 +107,7 @@ pub const WorkbenchContextKeysHandler = struct {
     main_editor_visible: contextkeys.IContextKey,
     sidebar_visible: contextkeys.IContextKey,
     panel_visible: contextkeys.IContextKey,
+    panel_maximized: contextkeys.IContextKey,
     dirty_listener: usize,
     zen_listener: usize,
     centered_listener: usize,
@@ -123,6 +124,7 @@ pub const WorkbenchContextKeysHandler = struct {
             .main_editor_visible = try keys.createKey("mainEditorAreaVisible", .{ .boolean = true }),
             .sidebar_visible = try keys.createKey("sideBarVisible", .{ .boolean = false }),
             .panel_visible = try keys.createKey("panelVisible", .{ .boolean = false }),
+            .panel_maximized = try keys.createKey("panelMaximized", .{ .boolean = false }),
             .dirty_listener = undefined,
             .zen_listener = undefined,
             .centered_listener = undefined,
@@ -217,6 +219,7 @@ pub const WorkbenchContextKeysHandler = struct {
     fn updatePartVisibility(self: *@This()) void {
         self.main_editor_visible.set(.{ .boolean = self.layout_service.isVisible(.editor) });
         self.panel_visible.set(.{ .boolean = self.layout_service.isVisible(.panel) });
+        self.panel_maximized.set(.{ .boolean = self.layout_service.isPanelMaximized() });
         self.sidebar_visible.set(.{ .boolean = self.layout_service.isVisible(.sidebar) });
     }
 

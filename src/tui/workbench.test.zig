@@ -6653,9 +6653,9 @@ test "Workbench: centered layout narrows and centers the editor part" {
     _ = try workbench.group_actions.newEmptyGroup(.RIGHT);
     try std.testing.expect(workbench.layout.isMainEditorCentered());
     try std.testing.expect(!workbench.layout.isMainEditorCenteredEffective());
-    workbench.maximizeActiveGroup();
+    workbench.part.arrangeGroups(.MAXIMIZE);
     try std.testing.expect(workbench.layout.isMainEditorCenteredEffective());
-    workbench.minimizeActiveGroup();
+    workbench.part.restoreGroupSizes();
     try std.testing.expect(!workbench.layout.isMainEditorCenteredEffective());
 
     try workbench.commands.execute("workbench.action.toggleCenteredLayout");
@@ -6749,6 +6749,53 @@ test "Workbench: list commands follow last focused list without a render or acti
     try std.testing.expect(wb.lists.lastFocusedList().?.focus == &search.list_focus);
     try wb.setWorkspaceFolders(&.{root});
     try std.testing.expect(wb.lists.lastFocusedList() == null);
+}
+
+test "Workbench: maximize panel hides editor and restores remembered height and visibility" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "panel-max.txt", "editor-only-content");
+    defer allocator.free(path);
+    const settings = try seedFile(allocator, io, &tmp, "panel-settings.json", "{}");
+    defer allocator.free(settings);
+    const window = try TestWindow.init(allocator, io, &.{path}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.setUserSettingsPaths(&.{settings});
+    _ = try wb.openPanelContainer(PROBLEMS_CONTAINER_ID);
+    try wb.layout_api.setSize(.panel, .{ .height = 8 });
+    const before = wb.geometry().panelHeight();
+    try wb.commands.execute("workbench.action.toggleMaximizedPanel");
+    try std.testing.expect(wb.layout_api.isPanelMaximized());
+    const keys = (try wb.ensureContextKeys()).interface();
+    try std.testing.expect(keys.getContextKeyValue("panelMaximized").boolean);
+    try std.testing.expect(!keys.getContextKeyValue("mainEditorAreaVisible").boolean);
+    try std.testing.expect(!wb.layout_api.isVisible(.editor));
+    try std.testing.expectEqual(wb.geometry().workbenchRows(), wb.geometry().panelHeight());
+    try std.testing.expectEqual(@as(usize, 0), wb.layout_api.getSize(.editor).height);
+    try std.testing.expectEqual(Focus.problems, wb.focus);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try renderFrame(wb, &out.writer);
+    const frame = try frameText(allocator, &wb.frame);
+    defer allocator.free(frame);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "editor-only-content") == null);
+    try wb.commands.execute("workbench.action.toggleMaximizedPanel");
+    try std.testing.expect(wb.layout_api.isVisible(.editor));
+    try std.testing.expectEqual(before, wb.geometry().panelHeight());
+    try wb.commands.execute("workbench.action.toggleMaximizedPanel");
+    try wb.commands.execute("workbench.action.closePanel");
+    try std.testing.expect(wb.layout_api.isVisible(.editor));
+    try std.testing.expect(!wb.layout_api.isVisible(.panel));
+    _ = try wb.openPanelContainer(PROBLEMS_CONTAINER_ID);
+    try std.testing.expect(wb.layout_api.isPanelMaximized());
+    try wb.commands.execute("workbench.action.closePanel");
+    try wb.setUserConfigurationValue("workbench.panel.opensMaximized", .{ .string = "never" });
+    _ = try wb.openPanelContainer(PROBLEMS_CONTAINER_ID);
+    try std.testing.expect(!wb.layout_api.isPanelMaximized());
+    try std.testing.expectEqual(before, wb.geometry().panelHeight());
 }
 
 test "Workbench: closing the side bar keeps the activity bar" {
@@ -7088,7 +7135,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
 
         // The sidebar and editor frames meet at the sash. Either cell should
         // offer the same resize gesture, including with an expanded editor.
-        workbench.maximizeActiveGroup();
+        workbench.part.arrangeGroups(.MAXIMIZE);
         for (0..2) |cell| {
             const width = workbench.layout.size(.sidebar);
             const x = ui.cell.snap(workbench.sidebar_part.base.bounds.?.right()) - 1 + cell;
@@ -7120,7 +7167,7 @@ test "Workbench: sidebar and single editor have outlines with and without cell b
             try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &.{ .kind = .up, .x = x + 2, .y = 3, .button = .left }));
             try std.testing.expectEqual(width + 2, workbench.layout.size(.sidebar));
         }
-        workbench.minimizeActiveGroup();
+        workbench.part.restoreGroupSizes();
 
         try workbench.splitActive(.horizontal);
         const editor_split = workbench.part.root.kind.split;
@@ -7398,7 +7445,7 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     try workbench.resize(50, 12);
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.first.rect.w));
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.second.rect.w));
-    workbench.maximizeActiveGroup();
+    workbench.part.arrangeGroups(.MAXIMIZE);
     try workbench.layout.resizeEditorPart(-100, 0);
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(workbench.part.base.bounds.?.w));
 }

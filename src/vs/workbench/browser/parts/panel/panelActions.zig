@@ -49,3 +49,20 @@ fn previousPanel(_: *anyopaque, accessor: ServicesAccessor) !void {
 fn nextPanel(_: *anyopaque, accessor: ServicesAccessor) !void {
     try SwitchCompositeViewAction.run(accessor, .panel, 1);
 }
+
+pub const toggle_maximized_panel_action: actions.Action2 = .{
+    .command = .{ .id = "workbench.action.toggleMaximizedPanel", .title = "Toggle Maximized Panel", .tooltip = "Maximize Panel", .category = "View" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = toggleMaximizedPanel,
+};
+
+fn toggleMaximizedPanel(_: *anyopaque, accessor: ServicesAccessor) !void {
+    const service = try accessor.get(layout.layout_service_id);
+    if (!service.isVisible(.panel)) {
+        try service.setPartHidden(false, .panel);
+        if (!service.isPanelMaximized()) try service.toggleMaximizedPanel();
+    } else {
+        try service.toggleMaximizedPanel();
+    }
+}
