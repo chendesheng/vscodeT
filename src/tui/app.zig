@@ -467,7 +467,7 @@ pub fn main(init: std.process.Init) !void {
             var owned = data;
             defer owned.deinit(allocator);
 
-            const created = Workbench.init(allocator, io, &surface, &.{}, .{}, .{ .data = data, .registry = &registry.? }) catch |err| blk: {
+            const created = terminal_workbench.createWorkbench(allocator, io, &surface, &.{}, .{}, .{ .data = data, .registry = &registry.? }) catch |err| blk: {
                 report(log_service, "session restore failed: {s}", .{@errorName(err)});
                 break :blk @as(?*Workbench, null);
             };
@@ -487,7 +487,7 @@ pub fn main(init: std.process.Init) !void {
             report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
-        workbench = try Workbench.init(allocator, io, &surface, &.{}, .{}, null);
+        workbench = try terminal_workbench.createWorkbench(allocator, io, &surface, &.{}, .{}, null);
     }
     infoLog(log_service, "startup: workbench-init={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,

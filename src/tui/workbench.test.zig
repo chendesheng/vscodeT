@@ -8450,8 +8450,15 @@ test "workbench mounts and disposes only its subtree in the terminal window" {
     const sibling = try doc.createElement(.div);
     _ = try parent.appendChild(sibling);
     {
-        const wb = try Workbench.init(std.testing.allocator, std.testing.io, &surface, &.{}, .{}, null);
+        const models = @import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig");
+        var supplied_models = models.OutlineModelService.init(std.testing.allocator);
+        defer supplied_models.deinit();
+        var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(std.testing.allocator);
+        defer services.deinit();
+        _ = try services.set(models.outline_model_service_id, &supplied_models);
+        const wb = try Workbench.init(std.testing.allocator, std.testing.io, &surface, &services, &.{}, .{}, null);
         defer wb.deinit();
+        try std.testing.expectEqual(&supplied_models, try wb.instantiation.invokeFunction(models.getOutlineModelService, .{}));
         const main = wb.layout.main_container.?;
         try std.testing.expectEqual(parent, main.parent.?);
         try std.testing.expectEqual(main, sibling.nextSibling().?);

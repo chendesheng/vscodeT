@@ -23,7 +23,9 @@ pub const TestWindow = struct {
         errdefer surface.deinit();
         const doc = surface.document();
         doc.setRoot(try doc.createElement(.div));
-        return .{ .surface = surface, .workbench = try Workbench.init(allocator, io, surface, paths, options, previous) };
+        var services = try @import("../../workbench.common.main.zig").createServices(allocator);
+        defer services.deinit();
+        return .{ .surface = surface, .workbench = try Workbench.init(allocator, io, surface, &services, paths, options, previous) };
     }
 
     fn measureWidth(cp: u21) u2 {

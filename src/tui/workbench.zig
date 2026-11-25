@@ -17,6 +17,12 @@ pub fn initWindowSurface(surface: *ui.Surface, allocator: std.mem.Allocator, col
     document.setRoot(try document.createElement(.div));
 }
 
+pub fn createWorkbench(allocator: std.mem.Allocator, io: std.Io, surface: *ui.Surface, paths: []const []const u8, options: shell.IWorkbenchOptions, previous: ?Workbench.PreviousState) !*Workbench {
+    var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(allocator);
+    defer services.deinit();
+    return Workbench.init(allocator, io, surface, &services, paths, options, previous);
+}
+
 pub const TerminalWorkbench = struct {
     workbench: *Workbench,
     output: *std.Io.Writer,

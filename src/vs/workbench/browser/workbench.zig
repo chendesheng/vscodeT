@@ -142,6 +142,7 @@ const DocumentSymbolsOutlineCreator = @import("../contrib/codeEditor/browser/out
 const outline_model = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig");
 const OutlineModel = outline_model.OutlineModel;
 const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
+const ServiceCollection = @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection;
 const ServicesAccessor = @import("../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const outline_pane_mod = @import("../contrib/outline/browser/outlinePane.zig");
 const OutlinePane = outline_pane_mod.OutlinePane;
@@ -625,7 +626,7 @@ pub const Workbench = struct {
     quick_input_api: @import("../../platform/quickinput/common/quickInput.zig").IQuickInputService,
     simple_browser: SimpleBrowserManager,
     outline_service: OutlineService,
-    services: @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection,
+    services: ServiceCollection,
     instantiation: @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService,
     layout_api: layout_service_mod.IWorkbenchLayoutService,
     lifecycle_api: lifecycle_mod.ILifecycleService,
@@ -714,10 +715,11 @@ pub const Workbench = struct {
     pending_dialog: ?DialogRequest = null,
 
     /// Mounts the workbench in the window supplied by the host. The window and
-    /// its parent element outlive this workbench.
-    pub fn init(allocator: Allocator, io: Io, surface: *ui.Surface, paths: []const []const u8, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
+    /// its parent element outlive this workbench. The workbench takes the entries
+    /// from services. Instances supplied by the host remain borrowed.
+    pub fn init(allocator: Allocator, io: Io, surface: *ui.Surface, services: *ServiceCollection, paths: []const []const u8, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
         const parent = surface.document().root orelse return error.MissingWorkbenchParent;
-        const self = try initWorkbench(allocator, io, surface, state);
+        const self = try initWorkbench(allocator, io, surface, services, state);
         errdefer self.deinit();
         self.layout.reset_layout = options.reset_layout;
         try self.startup(parent, options);
@@ -735,7 +737,7 @@ pub const Workbench = struct {
         registry: *editor_factory.EditorFactoryRegistry,
     };
 
-    fn initWorkbench(allocator: Allocator, io: Io, surface: *ui.Surface, state: ?PreviousState) !*Workbench {
+    fn initWorkbench(allocator: Allocator, io: Io, surface: *ui.Surface, services: *ServiceCollection, state: ?PreviousState) !*Workbench {
         const self = try allocator.create(Workbench);
         errdefer allocator.destroy(self);
 
@@ -884,16 +886,23 @@ pub const Workbench = struct {
         try self.part.base.register(self.layout.interface());
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
-        try self.initServices();
+        self.services = .init(allocator);
+        std.mem.swap(ServiceCollection, services, &self.services);
         errdefer self.services.deinit();
-        errdefer self.instantiation.deinit();
         try self.initQuickAccess();
         return self;
     }
 
     fn startup(self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
+        try self.initServices();
+        try self.instantiation.invokeFunction(startWorkbench, .{ self, parent, options });
+    }
+
+    fn startWorkbench(accessor: ServicesAccessor, self: *Workbench, parent: *ui.Node, options: IWorkbenchOptions) !void {
         try self.layout.initLayout(self.part);
-        try self.instantiation.invokeFunction(startContributions, .{&self.contributions});
+        try self.registerDefaultCommands();
+        try @import("../workbench.common.main.zig").registerMenus(&self.commands.menus);
+        try self.contributions.start(accessor);
         _ = try self.ensureContextKeys();
         try self.registerListeners();
         try self.renderWorkbench(parent, options);
@@ -907,8 +916,7 @@ pub const Workbench = struct {
     }
 
     fn initServices(self: *Workbench) !void {
-        self.services = .init(self.allocator);
-        errdefer self.services.deinit();
+        try self.instantiation.init(self.allocator, &self.services);
         self.lifecycle_api = self.lifecycle.interface();
         self.layout_api = self.layout.interface();
         self.code_editors = .{ .part = self.part };
@@ -916,18 +924,11 @@ pub const Workbench = struct {
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
         _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
         _ = try self.services.set(layout_service_mod.layout_service_id, &self.layout_api);
-        try outline_model.registerSingleton(&self.services);
-        try self.instantiation.init(self.allocator, &self.services);
-        errdefer self.instantiation.deinit();
         try self.instantiation.invokeFunction(setServicesReady, .{});
     }
 
     fn setServicesReady(accessor: ServicesAccessor) !void {
         try (try accessor.get(lifecycle_mod.lifecycle_service_id)).setPhase(.Ready);
-    }
-
-    fn startContributions(accessor: ServicesAccessor, registry: *contributions_mod.WorkbenchContributions) !void {
-        try registry.start(accessor);
     }
 
     fn restoreEditors(self: *Workbench) !void {
@@ -1327,11 +1328,6 @@ pub const Workbench = struct {
 
         self.simple_browser = .{ .allocator = self.allocator, .io = self.io, .quick_input = self.quick_access.inputService(), .context = self, .open_editor = openTerminalEditorWithProfile, .report_error = reportEditorMessage };
         self.builtin_host = try @import("../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost.init(self.allocator, self);
-        errdefer self.builtin_host.deinit();
-        try self.registerDefaultCommands();
-        try scm_view_mod.registerMenus(&self.commands.menus);
-        try scm_history_view_mod.registerMenus(&self.commands.menus);
-        try @import("../contrib/outline/browser/outlineActions.zig").registerMenus(&self.commands.menus);
         self.statusbar.setCommandExecutor(.{
             .context = self,
             .execute = executeStatusbarCommand,
