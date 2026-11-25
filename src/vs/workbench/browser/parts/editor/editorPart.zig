@@ -5,7 +5,7 @@
 // controls. This port keeps the group registry, the oriented split tree from
 // `src/vs/base/browser/ui/grid/grid.zig`, branch demotion when a group
 // collapses, and the sash hit-test/resize math. Group rendering and tab
-// interaction stay in `src/vs/workbench/browser/workbench.zig`.
+// interaction are adapted by the terminal host in `src/tui/workbench.zig`.
 //
 // `GroupView` is a comptime parameter with this contract:
 //
@@ -443,6 +443,15 @@ pub fn EditorPart(comptime GroupView: type) type {
             if (!self.removeView(view)) return false;
             self.layout(self.viewport);
             return true;
+        }
+
+        /// Update mounted editor panes after the native surface is sized.
+        /// Only the visible group is laid out when the group is maximized.
+        pub fn layoutEditorArea(self: *Self, surface: *ui.Surface, show_tips: bool, colors: @import("editorGroupWatermark.zig").Colors, shortcuts: @import("editorGroupView.zig").WatermarkShortcuts) !void {
+            for (self.group_views.items) |pane| {
+                const visible = self.maximized_group == null or self.maximized_group == pane;
+                try pane.layoutEditorArea(self.grid_element.?, self.base.bounds.?, surface, visible, show_tips, colors, shortcuts);
+            }
         }
 
         pub fn setCellBorders(self: *Self, enabled: bool) void {

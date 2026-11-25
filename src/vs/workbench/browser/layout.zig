@@ -368,6 +368,21 @@ pub const Layout = struct {
         self.layoutPart(.statusbar, statusbar);
     }
 
+    /// Terminal view of Layout.layout: apply the same grid rects to the
+    /// registered parts and the editor group's centered/maximized layout.
+    pub fn layoutTerminal(self: *Layout, geometry: TerminalGeometry) void {
+        if (self.workbench_grid.activeSash()) |sash| {
+            const visible = switch (sash) {
+                .sidebar => geometry.sidebar_available, // snapped sash retains pointer capture
+                .panel => geometry.panelShown(),
+            };
+            if (!visible) self.workbench_grid.onSashEnd();
+        }
+        const rects = geometry.workbenchGridLayout();
+        self.layout(geometry.cols, geometry.rows, rects, geometry.statusBarRect());
+        geometry.part.layout(self.centeredEditorRect(rects.editor));
+    }
+
     fn layoutPart(self: *Layout, id: Parts, rect: ui.Rect) void {
         const binding = self.parts.get(id) orelse return;
         binding.part.layout(rect.w, rect.h, rect.y, rect.x);
@@ -662,5 +677,158 @@ pub const Layout = struct {
             .w = base.w - @as(f64, @floatFromInt(margin * 2)),
             .h = base.h,
         };
+    }
+};
+
+const Tab = @import("parts/editor/editorPane.zig").Tab;
+const GroupView = @import("parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
+const editor_part_mod = @import("parts/editor/editorPart.zig");
+const EditorPart = editor_part_mod.EditorPart(GroupView);
+const SidebarPart = @import("parts/sidebar/sidebarPart.zig").SidebarPart;
+const ActivityBarPart = @import("parts/activitybar/activitybarPart.zig").ActivityBarPart;
+const panel_part_mod = @import("parts/panel/panelPart.zig");
+const PanelPart = panel_part_mod.PanelPart;
+
+/// Cell-grid adapter to the upstream workbench grid's layout and bounds.
+/// The part instances own their size constraints; the terminal has only a
+/// single main window and a bottom panel. Glyphs reserve a cell when native
+/// cell borders are unavailable, rather than using browser pixel borders.
+pub const TerminalGeometry = struct {
+    layout: *const Layout,
+    cols: usize,
+    rows: usize,
+    part: *EditorPart,
+    sidebar_part: *const SidebarPart,
+    activity_bar_part: *const ActivityBarPart,
+    panel_part: *const PanelPart,
+    sidebar_available: bool,
+
+    pub fn statusBarVisible(self: *const TerminalGeometry) bool {
+        return self.layout.statusBarVisible(self.rows);
+    }
+
+    pub fn statusBarRect(self: *const TerminalGeometry) ui.Rect {
+        return self.layout.statusBarRect(self.cols, self.rows);
+    }
+
+    pub fn workbenchRows(self: *const TerminalGeometry) usize {
+        return self.layout.workbenchRows(self.rows);
+    }
+
+    /// The bottom panel is visible with an active container. `hideIfEmpty`
+    /// containers hide their title (not the panel) while they are empty; the
+    /// panel itself stays open until the workbench closes it.
+    pub fn panelShown(self: *const TerminalGeometry) bool {
+        return self.panel_part.isVisible() and self.panel_part.pane.active_id != null;
+    }
+
+    pub fn activePanelId(self: *const TerminalGeometry) []const u8 {
+        return self.panel_part.pane.active_id orelse "";
+    }
+
+    pub fn panelHeight(self: *const TerminalGeometry) usize {
+        if (!self.panelShown()) return 0;
+        const wanted = if (self.panel_part.getSize() == 0) 10 else self.panel_part.getSize();
+        return self.clampPanelHeight(wanted);
+    }
+
+    pub fn panelHeightLimits(self: *const TerminalGeometry) WorkbenchGrid.Limits {
+        const available = self.workbenchRows();
+        const editor_minimum = @min(editor_part_mod.min_pane_height, @max(available -| self.panel_part.minimum_height, 1));
+        const maximum = @min(self.panel_part.maximum_height, available -| editor_minimum);
+        return .{ .minimum = @min(self.panel_part.minimum_height, maximum), .maximum = maximum };
+    }
+
+    pub fn clampPanelHeight(self: *const TerminalGeometry, wanted: usize) usize {
+        const limits = self.panelHeightLimits();
+        return std.math.clamp(wanted, limits.minimum, limits.maximum);
+    }
+
+    pub fn workbenchGridLayout(self: *const TerminalGeometry) WorkbenchGrid.Rects {
+        return WorkbenchGrid.layout(.{
+            .w = @floatFromInt(self.cols),
+            .h = @floatFromInt(self.workbenchRows()),
+        }, self.activityBarWidth(), if (self.sidebarShown()) self.sidebarWidth() + self.sidebarFrameInset() else 0, self.panelHeight(), self.layout.getSideBarPosition());
+    }
+
+    pub fn editorRows(self: *const TerminalGeometry) usize {
+        return ui.cell.snap(self.workbenchGridLayout().editor.h);
+    }
+
+    pub fn panelFrameRect(self: *const TerminalGeometry) ui.Rect {
+        return if (self.panelShown()) self.workbenchGridLayout().panel else .{};
+    }
+
+    /// The title bar and content share the same inset for painting and input.
+    pub fn panelRect(self: *const TerminalGeometry) ui.Rect {
+        const rect = self.panelFrameRect();
+        if (!self.glyphPanelFrame(rect)) return rect;
+        return .{ .x = rect.x + 1, .y = rect.y + 1, .w = rect.w - 2, .h = rect.h - 2 };
+    }
+
+    pub fn glyphPanelFrame(self: *const TerminalGeometry, rect: ui.Rect) bool {
+        // Keep space for a title and a content row inside the border.
+        return !self.part.cell_borders and rect.w >= 3 and rect.h >= panel_part_mod.title_height + 3;
+    }
+
+    /// Panel content below the one-row title (composite bar).
+    pub fn panelContentRect(self: *const TerminalGeometry) ui.Rect {
+        if (!self.panelShown()) return .{};
+        return panel_part_mod.contentRect(self.panelRect());
+    }
+
+    pub fn sidebarWidth(self: *const TerminalGeometry) usize {
+        return self.clampSidebarWidth(self.layout.size(.sidebar));
+    }
+
+    pub fn sidebarMinimum(self: *const TerminalGeometry) usize {
+        return self.sidebar_part.minimum_width + self.sidebarFrameInset();
+    }
+
+    pub fn editorColumnMinimum(self: *const TerminalGeometry) usize {
+        const available = self.cols -| self.activityBarWidth() -| self.sidebarMinimum();
+        const editor = if (self.part.maximized_group != null) editor_part_mod.min_pane_width else self.part.minimumWidth(self.workbenchRows() -| self.panelHeight());
+        const panel = if (self.panelShown()) self.panel_part.minimum_width else 0;
+        return @min(available, @max(editor, panel));
+    }
+
+    pub fn clampSidebarWidth(self: *const TerminalGeometry, width: usize) usize {
+        const maximum = self.cols -| self.activityBarWidth() -| self.editorColumnMinimum() -| self.sidebarFrameInset();
+        return @min(maximum, std.math.clamp(width, self.sidebar_part.minimum_width, self.sidebar_part.maximum_width));
+    }
+
+    pub fn activityBarWidth(self: *const TerminalGeometry) usize {
+        // The activity bar takes no cells when it is hidden or when it moved
+        // into the side bar composite bar (top/bottom positions). Without a
+        // side bar model there is no side bar area for the rail either; the
+        // terminal app always initializes the side bar.
+        if (!self.activity_bar_part.visible) return 0;
+        if (!self.sidebar_available) return 0;
+        return self.activity_bar_part.width();
+    }
+
+    pub fn sidebarShown(self: *const TerminalGeometry) bool {
+        return self.layout.isVisible(.sidebar) and self.sidebar_available and
+            self.cols > self.activityBarWidth() + self.sidebarMinimum();
+    }
+
+    pub fn activityRect(self: *const TerminalGeometry) ui.Rect {
+        return self.workbenchGridLayout().activity_bar;
+    }
+
+    pub fn sidebarFrameInset(self: *const TerminalGeometry) usize {
+        return @intFromBool(!self.part.cell_borders);
+    }
+
+    pub fn sidebarFrameRect(self: *const TerminalGeometry) ui.Rect {
+        return self.workbenchGridLayout().sidebar;
+    }
+
+    pub fn sidebarRect(self: *const TerminalGeometry) ui.Rect {
+        return SidebarPart.innerRect(self.sidebarFrameRect(), self.part.cell_borders, self.layout.getSideBarPosition());
+    }
+
+    pub fn glyphSidebarFrame(self: *const TerminalGeometry) bool {
+        return !self.part.cell_borders and self.workbenchRows() >= 14;
     }
 };

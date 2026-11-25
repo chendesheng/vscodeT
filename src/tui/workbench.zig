@@ -17,6 +17,7 @@ const terminal_service_mod = @import("../vs/workbench/contrib/terminal/browser/t
 const terminal_panel = @import("../vs/workbench/contrib/terminal/browser/terminalTabbedView.zig");
 const view_pane_container_mod = @import("../vs/workbench/browser/parts/views/viewPaneContainer.zig");
 const MenuAnchor = @import("../vs/platform/contextview/browser/contextMenuService.zig").Anchor;
+const layout_service_mod = @import("../vs/workbench/services/layout/browser/layoutService.zig");
 const WorkbenchGrid = @import("../vs/workbench/browser/layout.zig").WorkbenchGrid;
 const activity_bar_mod = @import("../vs/workbench/browser/parts/activitybar/activitybarPart.zig");
 const sidebar_part_mod = @import("../vs/workbench/browser/parts/sidebar/sidebarPart.zig");
@@ -207,7 +208,7 @@ const sash_highlight_width: u8 = 64;
 /// resulting frame. The benchmark and host integration tests use this path.
 pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
     if (workbench.pointer_shapes) try workbench.pointer_state.update(writer, workbench.pointer);
-    const editor_surface = try workbench.synchronizeEditorDom();
+    const editor_surface = try synchronizeEditorDom(workbench);
     workbench.frame.begin();
     if (workbench.theme_palette) |palette| {
         workbench.frame.next.fillRect(
@@ -219,7 +220,7 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
         );
     }
     paintActivityBar(workbench);
-    if (workbench.sidebarShown()) {
+    if (workbench.geometry().sidebarShown()) {
         try paintSidebarContents(workbench);
         renderSidebarFrame(workbench);
         if (workbench.activeSidebarViewContainer()) |container| {
@@ -233,12 +234,12 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
     renderEditorFrame(workbench);
     if (workbench.part.maximized_group == null) renderDividers(workbench, workbench.part.root);
     if (workbench.editor_drop_target.drag_target) |target| target.paint(&workbench.frame.next, workbench.theme_palette, workbench.part.cell_borders, @import("../vs/workbench/browser/parts/editor/editorDropTarget.zig").animationsEnabled(if (workbench.configuration) |config| config.interface() else null), time_compat.milliTimestamp());
-    if (workbench.panelShown()) {
+    if (workbench.geometry().panelShown()) {
         try renderPanel(workbench);
         renderPanelFrame(workbench);
     }
-    if (!workbench.sidebarShown() and workbench.workbenchSashHighlighted(.sidebar)) {
-        const rects = workbench.workbenchGridLayout();
+    if (!workbench.geometry().sidebarShown() and workbenchSashHighlighted(workbench, .sidebar)) {
+        const rects = workbench.geometry().workbenchGridLayout();
         const rail = rects.activity_bar;
         const x = rects.sidebarSashCell();
         if (x < workbench.cols) for (0..ui.cell.snap(rail.h)) |y| {
@@ -275,7 +276,7 @@ pub fn cursorCell(workbench: *Workbench) ?@import("editorView.zig").Cell {
         const service = workbench.terminal_service orelse return null;
         const instance = service.active() orelse return null;
         if (workbench.terminal_tabbed_view.tab_list.focused) return null;
-        const content = workbench.terminal_tabbed_view.layoutForService(workbench.panelRect(), service).terminal;
+        const content = workbench.terminal_tabbed_view.layoutForService(workbench.geometry().panelRect(), service).terminal;
         const cursor = @import("../vs/workbench/contrib/terminal/browser/terminalRenderer.zig").cursorCell(&instance.emulator, service.group.paneRect(content, service.group.active)) orelse return null;
         return .{ .row = cursor.row, .col = cursor.col };
     }
@@ -285,7 +286,7 @@ pub fn cursorCell(workbench: *Workbench) ?@import("editorView.zig").Cell {
     const cell = active.cursorCell() orelse return null;
     const row = ui.cell.snap(pane.rect.y) + pane.chromeHeight() + cell.row;
     const col = ui.cell.snap(pane.rect.x) + cell.col;
-    if (row >= ui.cell.snap(workbench.workbenchGridLayout().editor.h) or col >= workbench.cols) return null;
+    if (row >= ui.cell.snap(workbench.geometry().workbenchGridLayout().editor.h) or col >= workbench.cols) return null;
     return .{ .row = row, .col = col };
 }
 
@@ -302,14 +303,14 @@ fn paintActivityBar(self: *Workbench) void {
     // The activity bar is a part of its own: it stays visible when the
     // side bar is hidden (default location) and moves into the side bar
     // title area for the top/bottom locations.
-    if (self.workbenchGridLayout().activity_bar.w > 0) {
-        activity_bar_mod.render(&self.activity_bar_part, &self.activity_service, &self.frame.next, self.workbenchGridLayout().activity_bar, self.activeActivity(), self.focus == .sidebar, self.theme_palette);
+    if (self.geometry().workbenchGridLayout().activity_bar.w > 0) {
+        activity_bar_mod.render(&self.activity_bar_part, &self.activity_service, &self.frame.next, self.geometry().workbenchGridLayout().activity_bar, self.activeActivity(), self.focus == .sidebar, self.theme_palette);
     }
 }
 
 fn paintSidebarContents(self: *Workbench) !void {
     const focused = self.focus == .sidebar;
-    const rect = self.sidebarRect();
+    const rect = self.geometry().sidebarRect();
 
     // The side bar part paints its own title chrome and background;
     // the active view pane container renders into the content area
@@ -380,15 +381,15 @@ fn paintEditorGroups(self: *Workbench, editor_surface: *ui.Surface) !void {
 }
 
 fn paintOverlaysAndStatus(self: *Workbench) !void {
-    if (self.statusBarVisible()) {
+    if (self.geometry().statusBarVisible()) {
         if (self.theme_palette) |palette| self.statusbar.main_part.setThemeColors(palette);
-        try self.statusbar.main_part.render(&self.frame.next, self.statusBarRect(), .{
+        try self.statusbar.main_part.render(&self.frame.next, self.geometry().statusBarRect(), .{
             .no_folder = self.workspace.getWorkbenchState() == .EMPTY,
             .part_focused = self.focus == .statusbar,
         });
     }
     if (self.notification_controller) |controller| try controller.render(self.editor_surface.document(), &self.frame.next, self.theme_palette);
-    if (self.scm.history) |graph| try graph.renderHover(&self.frame.next, self.workbenchGridLayout().editor_column, self.layout_api.getSideBarPosition(), self.part.cell_borders, self.part.cell_border_capabilities);
+    if (self.scm.history) |graph| try graph.renderHover(&self.frame.next, self.geometry().workbenchGridLayout().editor_column, self.layout_api.getSideBarPosition(), self.part.cell_borders, self.part.cell_border_capabilities);
     if (self.quick_access.isOpen()) {
         self.quick_access.widget.caps = if (self.part.cell_borders) self.part.cell_border_capabilities else .{};
         self.quick_access.widget.open_to_bottom = self.preferredSideBySideDirection() == .DOWN;
@@ -404,7 +405,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
 /// content. The terminal keeps its own tab strip inside the content area,
 /// like the upstream panel's container hosting the terminal view.
 fn renderPanel(self: *Workbench) !void {
-    const rect = self.panelRect();
+    const rect = self.geometry().panelRect();
     const focused = self.focus == .terminal or self.focus == .problems;
     var badge_buf: [48]u8 = undefined;
     var badges: [1]panel_part_mod.Badge = undefined;
@@ -419,7 +420,7 @@ fn renderPanel(self: *Workbench) !void {
     );
 
     const content = panel_part_mod.contentRect(rect);
-    const active_id = self.activePanelId();
+    const active_id = self.geometry().activePanelId();
     if (std.mem.eql(u8, active_id, TERMINAL_CONTAINER_ID)) {
         if (self.terminal_service) |service| {
             try self.terminal_tabbed_view.render(&self.frame.next, service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), self.theme_palette);
@@ -573,7 +574,7 @@ fn drawPlainText(grid: *ui.CellGrid, x: usize, y: usize, max_width: usize, text:
 
 fn renderCenteredLayoutMargins(workbench: *Workbench) void {
     if (!workbench.layout.isMainEditorCenteredEffective()) return;
-    const area = workbench.workbenchGridLayout().editor;
+    const area = workbench.geometry().workbenchGridLayout().editor;
     const centered = workbench.layout.centeredEditorRect(area);
     if (centered.x <= area.x and centered.w >= area.w) return;
     const editor_background = workbench.themeColor("editor.background", .{ 30, 30, 33 });
@@ -729,13 +730,13 @@ fn sashHoverStyle(workbench: *const Workbench) ui.HoverStyle {
 }
 
 fn renderSidebarFrame(workbench: *Workbench) void {
-    const rects = workbench.workbenchGridLayout();
+    const rects = workbench.geometry().workbenchGridLayout();
     const rect = rects.sidebar;
     const color = workbench.themeColor("sideBar.border", .{ 70, 70, 70 });
     const cells = &workbench.frame.next;
     const edge = rects.sidebarSashCell();
     const rows = ui.cell.snap(rect.h);
-    const highlighted = workbench.workbenchSashHighlighted(.sidebar);
+    const highlighted = workbenchSashHighlighted(workbench, .sidebar);
     const sash_color = if (highlighted) sashHoverStyle(workbench).background.? else color;
     const sash_bg = ui.cell.packColor(sash_color);
     if (workbench.part.cell_borders) {
@@ -760,7 +761,7 @@ fn renderSidebarFrame(workbench: *Workbench) void {
         .bg = ui.cell.packColor(workbench.themeColor("sideBar.background", .{ 30, 30, 33 })),
     };
     const sash_paint: ui.cell.PaintStyle = if (highlighted) .{ .fg = paint.bg, .bg = sash_bg } else paint;
-    if (workbench.glyphSidebarFrame()) {
+    if (workbench.geometry().glyphSidebarFrame()) {
         cells.paintRoundedFrame(rect, paint);
         if (highlighted) {
             for (0..rows) |row| {
@@ -775,24 +776,24 @@ fn renderSidebarFrame(workbench: *Workbench) void {
 }
 
 fn renderPanelFrame(workbench: *Workbench) void {
-    const rect = workbench.workbenchGridLayout().panel;
+    const rect = workbench.geometry().workbenchGridLayout().panel;
     const color = workbench.themeColor("panel.border", .{ 70, 70, 70 });
     if (workbench.part.cell_borders) {
         if (rect.w >= 2 and rect.h >= 2) paintPaneCompositeCellFrame(workbench, rect, color);
-    } else if (workbench.glyphPanelFrame(rect)) {
+    } else if (workbench.geometry().glyphPanelFrame(rect)) {
         workbench.frame.next.paintRoundedFrame(rect, .{
             .fg = ui.cell.packColor(color),
             .bg = ui.cell.packColor(workbench.themeColor("panel.background", .{ 30, 30, 33 })),
         });
     }
 
-    if (!workbench.workbenchSashHighlighted(.panel)) return;
+    if (!workbenchSashHighlighted(workbench, .panel)) return;
     const sash_color = sashHoverStyle(workbench).background.?;
     const background = ui.cell.packColor(sash_color);
     const panel_background = ui.cell.packColor(workbench.themeColor("panel.background", .{ 30, 30, 33 }));
     const cells = &workbench.frame.next;
     const row = ui.cell.snap(rect.y);
-    const glyphs = workbench.glyphPanelFrame(rect);
+    const glyphs = workbench.geometry().glyphPanelFrame(rect);
     for (ui.cell.snap(rect.x)..ui.cell.snap(rect.right())) |x| {
         if (workbench.part.cell_borders) {
             cells.addBorder(x, row, ui.cell_border.Segment.top, .{
@@ -900,7 +901,7 @@ pub fn handleQuickAccessMouse(self: *Workbench, event: *ui.MouseEvent) bool {
 /// handling; a drag consumes every event until the button is released.
 pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     if (self.editor_drop_target.editor_drag.source != null) return false;
-    if (!self.quick_access.isOpen() and self.sidebarShown()) {
+    if (!self.quick_access.isOpen() and self.geometry().sidebarShown()) {
         if (self.activeSidebarViewContainer()) |container| {
             if (container.header_press != null and (event.kind == .move or event.kind == .up)) {
                 return handleSidebarPaneHeader(self, container, event, .{});
@@ -945,7 +946,7 @@ pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     }
 
     if (handleWorkbenchSashMouse(self, event)) return true;
-    if (!self.quick_access.isOpen() and self.sidebarShown()) {
+    if (!self.quick_access.isOpen() and self.geometry().sidebarShown()) {
         if (self.activeSidebarViewContainer()) |container| {
             if (container.handleSashMouse(event)) {
                 if (event.kind == .move) self.clearSidebarViewHover();
@@ -976,7 +977,7 @@ pub fn handleSashMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
 
 pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     if (handleTabDragMouse(self, event)) return true;
-    if (!WorkbenchGrid.Rects.inColumn(self.workbenchGridLayout().editor, event.x)) return false;
+    if (!WorkbenchGrid.Rects.inColumn(self.geometry().workbenchGridLayout().editor, event.x)) return false;
 
     const pane = self.part.viewAt(event.x, event.y) orelse {
         self.clearTabHover();
@@ -1216,7 +1217,7 @@ fn handleWatermarkMouse(self: *Workbench, pane: *shell.GroupPane, event: *const 
         else => return false,
     }
     const watermark = if (pane.watermark) |*view| view else return false;
-    const surface = self.synchronizeEditorDom() catch return false;
+    const surface = synchronizeEditorDom(self) catch return false;
     const target = (surface.elementFromPoint(event.x, event.y) catch null) orelse return false;
     if (watermark.rowAt(target) == null) return false;
     if (event.kind == .down) self.focusEditor();
@@ -1385,7 +1386,7 @@ pub fn handleTerminalMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     const service = self.terminal_service orelse return false;
     const left_press = event.kind == .down and event.button == .left;
     if (self.terminalPanelActive()) {
-        const rect = self.panelRect();
+        const rect = self.geometry().panelRect();
         if (self.terminal_tabbed_view.handleMouse(service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), event, time_compat.milliTimestamp(), .{
             .context = self,
             .pointer = &self.pointer,
@@ -1590,12 +1591,12 @@ pub fn handleWorkbenchSashMouse(self: *Workbench, event: *const ui.MouseEvent) b
                 if (changed) {
                     // ViewItem.setVisible caches the size at pointer-down.
                     if (!visible) {
-                        self.layout.setSize(.sidebar, grid.drag.?.state.sizes[grid.drag.?.fixed_index] -| self.sidebarFrameInset()) catch return true;
+                        self.layout.setSize(.sidebar, grid.drag.?.state.sizes[grid.drag.?.fixed_index] -| self.geometry().sidebarFrameInset()) catch return true;
                         if (self.focus == .sidebar) self.focusEditor();
                     }
                     self.setSidebarVisible(visible) catch return true;
                 }
-                const width = size -| self.sidebarFrameInset();
+                const width = size -| self.geometry().sidebarFrameInset();
                 if (visible and width != self.layout.size(.sidebar)) {
                     self.layout.setSize(.sidebar, width) catch return true;
                     self.layoutAll();
@@ -1604,27 +1605,29 @@ pub fn handleWorkbenchSashMouse(self: *Workbench, event: *const ui.MouseEvent) b
             .panel => self.resizePanelTo(size),
         }
         if (event.kind == .up or event.kind == .click) {
-            const click = sash == .sidebar and grid.drag.?.click_y != null and self.sidebarShown();
+            const click = sash == .sidebar and grid.drag.?.click_y != null and self.geometry().sidebarShown();
             grid.onSashEnd();
             const last = grid.last_sidebar_click;
             grid.last_sidebar_click = null;
             if (click) {
                 const now = time_compat.milliTimestamp();
                 if (last != null and last.?.x == event.x and last.?.y == event.y and now - last.?.time <= 400) {
-                    self.resetSidebarSash() catch return true;
+                    resetSidebarSash(
+                        self,
+                    ) catch return true;
                 } else grid.last_sidebar_click = .{ .x = event.x, .y = event.y, .time = now };
             }
-            const hovered = self.workbenchSashAt(event.x, event.y);
+            const hovered = workbenchSashAt(self, event.x, event.y);
             self.hovered_sash = if (hovered) |hit| .{ .workbench = hit } else null;
-            self.pointer = if (hovered) |hit| self.workbenchSashPointer(hit) else .default;
+            self.pointer = if (hovered) |hit| workbenchSashPointer(self, hit) else .default;
         } else {
-            self.pointer = self.workbenchSashPointer(sash);
+            self.pointer = workbenchSashPointer(self, sash);
         }
         return true;
     }
 
-    const sash = self.workbenchSashAt(event.x, event.y) orelse return false;
-    self.pointer = self.workbenchSashPointer(sash);
+    const sash = workbenchSashAt(self, event.x, event.y) orelse return false;
+    self.pointer = workbenchSashPointer(self, sash);
     if (event.kind == .move) {
         self.hovered_sash = .{ .workbench = sash };
         if (sash == .panel) self.panel_part.setHovered(null);
@@ -1638,17 +1641,17 @@ pub fn handleWorkbenchSashMouse(self: *Workbench, event: *const ui.MouseEvent) b
 
 fn startWorkbenchSash(self: *Workbench, sash: WorkbenchGrid.Sash, coordinate: usize, alt: bool) void {
     const limits: WorkbenchGrid.Limits = switch (sash) {
-        .sidebar => .{ .minimum = self.sidebarMinimum(), .maximum = self.sidebar_part.maximum_width +| self.sidebarFrameInset() },
-        .panel => self.panelHeightLimits(),
+        .sidebar => .{ .minimum = self.geometry().sidebarMinimum(), .maximum = self.sidebar_part.maximum_width +| self.geometry().sidebarFrameInset() },
+        .panel => self.geometry().panelHeightLimits(),
     };
-    self.layout.workbench_grid.onSashStart(sash, coordinate, self.workbenchGridLayout(), limits, if (sash == .sidebar) self.editorColumnMinimum() else 0, alt);
+    self.layout.workbench_grid.onSashStart(sash, coordinate, self.geometry().workbenchGridLayout(), limits, if (sash == .sidebar) self.geometry().editorColumnMinimum() else 0, alt);
 }
 
 /// Routes pointer input on the workbench status row. The row is outside
 /// every editor pane, so it is handled before sash/sidebar/editor routing.
 pub fn handleStatusbarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-    if (!self.statusBarVisible()) return false;
-    const rect = self.statusBarRect();
+    if (!self.geometry().statusBarVisible()) return false;
+    const rect = self.geometry().statusBarRect();
     const part = self.statusbar.main_part;
     if (event.y != ui.cell.snap(rect.y)) {
         if (event.kind == .move) part.clearHover();
@@ -1784,7 +1787,7 @@ pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         }
     }
 
-    if (self.focus != .sidebar or !self.sidebarShown()) return false;
+    if (self.focus != .sidebar or !self.geometry().sidebarShown()) return false;
 
     // Let the global Escape Escape chord exit zen mode when the side bar
     // was reopened while zen mode is active.
@@ -1879,7 +1882,7 @@ pub fn handleSidebarPaneHeader(
     content: ui.Rect,
 ) bool {
     const target = if (event.kind == .move or event.kind == .up)
-        self.sidebar_part.dropDestination(self.sidebarRect(), self.activityRect(), event.x, event.y)
+        self.sidebar_part.dropDestination(self.geometry().sidebarRect(), self.geometry().activityRect(), event.x, event.y)
     else
         null;
     if (event.kind == .up and container.handleHeaderDrop(event, target, &self.view_descriptor_service)) {
@@ -1903,10 +1906,10 @@ pub fn handleSidebarPaneHeader(
 pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     // The activity bar stays clickable while the side bar is hidden; an
     // entry click reveals the side bar again, like upstream.
-    if (WorkbenchGrid.Rects.inColumn(self.activityRect(), event.x)) {
+    if (WorkbenchGrid.Rects.inColumn(self.geometry().activityRect(), event.x)) {
         if (event.kind == .wheel) return true;
         if (event.kind == .move) self.clearSidebarViewHover();
-        const activity_rect = self.activityRect();
+        const activity_rect = self.geometry().activityRect();
         const hit = activity_bar_mod.hitAt(&self.activity_bar_part, event.x, event.y, activity_rect);
         self.pointer = if (hit != null) .pointer else .default;
         if (event.kind == .down) {
@@ -1919,12 +1922,12 @@ pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         return true;
     }
 
-    if (!self.sidebarShown()) {
+    if (!self.geometry().sidebarShown()) {
         if (event.kind == .move) self.clearSidebarViewHover();
         return false;
     }
 
-    if (!WorkbenchGrid.Rects.inColumn(self.sidebarFrameRect(), event.x) or event.y >= self.workbenchRows()) {
+    if (!WorkbenchGrid.Rects.inColumn(self.geometry().sidebarFrameRect(), event.x) or event.y >= self.geometry().workbenchRows()) {
         if (event.kind == .move) self.clearSidebarViewHover();
         return false;
     }
@@ -1932,7 +1935,7 @@ pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     // The side bar title chrome (header composite bar, title and footer):
     // title actions and the composite bar items only exist there, so the
     // rest of the side bar keeps routing events to its view.
-    const rect = self.sidebarRect();
+    const rect = self.geometry().sidebarRect();
     if (event.x < ui.cell.snap(rect.x) or event.x >= ui.cell.snap(rect.right()) or
         event.y < ui.cell.snap(rect.y) or event.y >= ui.cell.snap(rect.bottom()))
     {
@@ -2074,14 +2077,14 @@ fn explorerPreviewPress(event: *const ui.MouseEvent) bool {
 /// The panel title and the active panel view's input. Terminal content is
 /// left to `handleTerminalMouse` so the emulator keeps mouse reporting.
 pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-    if (!self.panelShown()) return false;
+    if (!self.geometry().panelShown()) return false;
     const list = &self.terminal_tabbed_view.tab_list;
     if ((list.dragged_instance != null or list.dragging_sash or list.dragging_pane_sash != null) and
         (event.kind == .up or event.kind == .move))
     {
         if (handleTerminalMouse(self, event)) return true;
     }
-    const rect = self.panelRect();
+    const rect = self.geometry().panelRect();
     const rect_x = ui.cell.snap(rect.x);
     const rect_y = ui.cell.snap(rect.y);
     const rect_width = ui.cell.snap(rect.w);
@@ -2108,7 +2111,7 @@ pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     }
 
     self.panel_part.setHovered(null);
-    if (std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) {
+    if (std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID)) {
         if (event.kind == .down) {
             self.setFocus(.problems);
             self.updateProblemsHighlight();
@@ -2123,9 +2126,9 @@ pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
 /// Key routing for the Problems list in the panel. Terminal keys stay with
 /// `handleTerminalKey`.
 pub fn handlePanelKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
-    if (!self.panelShown()) return false;
+    if (!self.geometry().panelShown()) return false;
     if (self.focus != .problems) return false;
-    if (!std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) return false;
+    if (!std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID)) return false;
     if (event.key == .escape) {
         // Let the global Escape Escape chord exit zen mode when the panel
         // was reopened while zen mode is active.
@@ -2265,8 +2268,8 @@ pub fn handleTabDragMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
 }
 
 pub fn editorMouseEvent(self: *Workbench, event: ui.MouseEvent) ?struct { tab: *Tab, event: ui.MouseEvent } {
-    if (event.x >= self.cols or event.y >= self.rows or !WorkbenchGrid.Rects.inColumn(self.workbenchGridLayout().editor, event.x)) return null;
-    const surface = self.synchronizeEditorDom() catch return null;
+    if (event.x >= self.cols or event.y >= self.rows or !WorkbenchGrid.Rects.inColumn(self.geometry().workbenchGridLayout().editor, event.x)) return null;
+    const surface = synchronizeEditorDom(self) catch return null;
     const target = (surface.elementFromPoint(event.x, event.y) catch null) orelse return null;
     const pane = editorGroupAtNode(self, target) orelse return null;
     if (event.kind != .wheel and pane.group != self.service.activeGroup()) return null;
@@ -2316,4 +2319,87 @@ fn isCtrlChar(event: *const ui.KeyEvent, wanted: u21) bool {
         .char => |ch| ch == wanted,
         else => false,
     };
+}
+
+fn sidebarSashAt(self: *const Workbench, x: usize, y: usize) bool {
+    if (self.sidebar == null or y >= self.geometry().workbenchRows() or
+        self.cols <= self.geometry().activityBarWidth() + self.geometry().sidebarMinimum()) return false;
+    if (self.geometry().sidebarShown() and self.geometry().clampSidebarWidth(self.sidebar_part.maximum_width) == self.sidebar_part.minimum_width) return false;
+    if (!self.geometry().sidebarShown() and self.layout.isZenModeActive()) return false;
+    return self.geometry().workbenchGridLayout().hitsSidebarSash(x, self.part.cell_borders or (self.part.glyphFrame() and y < self.geometry().editorRows()));
+}
+
+fn panelSashAt(self: *const Workbench, x: usize, y: usize) bool {
+    const frame = self.geometry().panelFrameRect();
+    const sizes = self.geometry().panelHeightLimits();
+    if (sizes.minimum == sizes.maximum) return false;
+    const top = ui.cell.snap(frame.y);
+    if (x < ui.cell.snap(frame.x) or x >= ui.cell.snap(frame.right())) return false;
+    if (top > 0 and y == top - 1) {
+        const editor = self.part.viewport;
+        return (self.part.cell_borders or self.part.glyphFrame()) and
+            x >= ui.cell.snap(editor.x) and x < ui.cell.snap(editor.right());
+    }
+    if (y != top) return false;
+    if (self.geometry().glyphPanelFrame(frame)) return true;
+
+    // Native borders share their row with the title. Compact terminals
+    // also use this row, so leave composite tabs and actions clickable.
+    const title = self.geometry().panelRect();
+    if (panel_part_mod.hitTest(&self.panel_part, title, x, y) != null) return false;
+    if (self.terminalPanelActive()) {
+        if (self.terminal_service) |service| {
+            const title_end = panel_part_mod.titleContentEnd(&self.panel_part, title);
+            return self.terminal_tabbed_view.hitTest(service, title, title_end, x, y) == .none;
+        }
+    }
+    return true;
+}
+
+pub fn workbenchSashAt(self: *const Workbench, x: usize, y: usize) ?WorkbenchGrid.Sash {
+    if (sidebarSashAt(self, x, y)) return .sidebar;
+    const list = &self.terminal_tabbed_view.tab_list;
+    if (list.dragged_instance != null or list.dragging_sash or list.dragging_pane_sash != null) return null;
+    return if (self.geometry().panelShown() and panelSashAt(self, x, y)) .panel else null;
+}
+
+pub fn workbenchSashPointer(self: *const Workbench, sash: WorkbenchGrid.Sash) ui.Pointer {
+    if (sash == .panel) return sash_css.pointer(.horizontal);
+    if (!self.geometry().sidebarShown() or self.geometry().sidebarWidth() == self.sidebar_part.minimum_width) return sash_css.pointer(if (self.layout_api.getSideBarPosition() == .left) .vertical_minimum else .vertical_maximum);
+    if (self.geometry().sidebarWidth() == self.geometry().clampSidebarWidth(self.sidebar_part.maximum_width)) return sash_css.pointer(if (self.layout_api.getSideBarPosition() == .left) .vertical_maximum else .vertical_minimum);
+    return sash_css.pointer(.vertical);
+}
+
+/// Grid.onDidSashReset first asks the adjacent view for its preferred size.
+pub fn resetSidebarSash(self: *Workbench) !void {
+    const id = self.sidebar_part.pane.active_id orelse "";
+    var optimal: usize = 0;
+    if (std.mem.eql(u8, id, "scm")) {
+        optimal = layout_service_mod.widthInCells(400);
+    } else if (self.activeSidebarViewContainer()) |container| {
+        if (container.bodyRect("explorer")) |body| {
+            optimal = self.sidebar.?.getOptimalWidth(ui.cell.snap(body.h)) + layout_service_mod.widthInCells(16);
+        }
+    }
+    const available = self.cols -| self.geometry().activityBarWidth();
+    const preferred = self.sidebar_part.preferredWidth(optimal) orelse (available / 2 -| self.geometry().sidebarFrameInset());
+    try self.layout.setSize(.sidebar, self.geometry().clampSidebarWidth(preferred));
+    self.layoutAll();
+}
+
+pub fn workbenchSashHighlighted(self: *const Workbench, sash: WorkbenchGrid.Sash) bool {
+    if (self.layout.workbench_grid.activeSash() == sash) return true;
+    const hovered = self.hovered_sash orelse return false;
+    return hovered == .workbench and hovered.workbench == sash;
+}
+
+fn synchronizeEditorDom(self: *Workbench) !*ui.Surface {
+    const surface = self.editor_surface;
+    try surface.resize(self.cols, self.rows);
+    surface.border_capabilities = self.part.cell_border_capabilities;
+    const watermark = @import("../vs/workbench/browser/parts/editor/editorGroupWatermark.zig");
+    const colors = watermark.Colors.fromTheme(self.theme_palette);
+    const show_tips = self.part.count() == 1 and (if (self.configuration) |config| config.getBool(watermark.settings_key, true) else true);
+    try self.part.layoutEditorArea(surface, show_tips, colors, self.watermarkShortcuts());
+    return surface;
 }

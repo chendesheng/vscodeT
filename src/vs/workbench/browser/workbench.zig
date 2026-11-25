@@ -1,6 +1,7 @@
-//! Terminal workbench composition root. This file currently owns feature wiring,
-//! input routing and terminal DOM synchronization. See docs/workbench-audit.md
-//! for the mapping to the pinned workbench.ts, layout and contributions.
+//! Transitional terminal workbench composition root, not yet the faithful
+//! workbench.ts port. The terminal host owns rendering and input routing;
+//! this file still contains feature wiring and host state. See
+//! docs/workbench-audit.md for the remaining upstream ownership map.
 //!
 //! Every group gets a tab row and an editor pane, groups are arranged in an
 //! oriented split tree, and src/tui/workbench.zig composites visible panes into
@@ -732,7 +733,7 @@ pub const Workbench = struct {
             .terminal_panel_rect = struct {
                 fn run(context: *anyopaque) ?ui.Rect {
                     const host: *Workbench = @ptrCast(@alignCast(context));
-                    return if (host.terminalPanelActive()) host.panelRect() else null;
+                    return if (host.terminalPanelActive()) host.geometry().panelRect() else null;
                 }
             }.run,
             .clear_hover = struct {
@@ -1833,131 +1834,28 @@ pub const Workbench = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn statusBarVisible(self: *const Workbench) bool {
-        return self.layout.statusBarVisible(self.rows);
-    }
-
-    pub fn statusBarRect(self: *const Workbench) ui.Rect {
-        return self.layout.statusBarRect(self.cols, self.rows);
-    }
-
-    pub fn workbenchRows(self: *const Workbench) usize {
-        return self.layout.workbenchRows(self.rows);
-    }
-
-    /// The bottom panel is visible with an active container. `hideIfEmpty`
-    /// containers hide their title (not the panel) while they are empty; the
-    /// panel itself stays open until the workbench closes it.
-    pub fn panelShown(self: *const Workbench) bool {
-        return self.panel_part.isVisible() and self.panel_part.pane.active_id != null;
-    }
-
-    pub fn activePanelId(self: *const Workbench) []const u8 {
-        return self.panel_part.pane.active_id orelse "";
+    /// The terminal supplies only its cell dimensions and a view of the
+    /// registered parts. Layout owns the grid and size constraints.
+    pub fn geometry(self: *const Workbench) workbench_layout.TerminalGeometry {
+        return .{ .layout = &self.layout, .cols = self.cols, .rows = self.rows, .part = self.part, .sidebar_part = &self.sidebar_part, .activity_bar_part = &self.activity_bar_part, .panel_part = &self.panel_part, .sidebar_available = self.sidebar != null };
     }
 
     /// The Terminal container is active and has at least one instance.
     pub fn terminalVisible(self: *const Workbench) bool {
-        if (!self.panelShown()) return false;
-        if (!std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID)) return false;
+        if (!self.geometry().panelShown()) return false;
+        if (!std.mem.eql(u8, self.geometry().activePanelId(), TERMINAL_CONTAINER_ID)) return false;
         return self.terminal_service != null and self.terminal_service.?.count() > 0;
-    }
-
-    fn panelHeight(self: *const Workbench) usize {
-        if (!self.panelShown()) return 0;
-        const wanted = if (self.panel_part.getSize() == 0) 10 else self.panel_part.getSize();
-        return self.clampPanelHeight(wanted);
-    }
-
-    pub fn panelHeightLimits(self: *const Workbench) WorkbenchGrid.Limits {
-        const available = self.workbenchRows();
-        const editor_minimum = @min(editor_part.min_pane_height, @max(available -| self.panel_part.minimum_height, 1));
-        const maximum = @min(self.panel_part.maximum_height, available -| editor_minimum);
-        return .{ .minimum = @min(self.panel_part.minimum_height, maximum), .maximum = maximum };
-    }
-
-    fn clampPanelHeight(self: *const Workbench, wanted: usize) usize {
-        const limits = self.panelHeightLimits();
-        return std.math.clamp(wanted, limits.minimum, limits.maximum);
-    }
-
-    pub fn workbenchGridLayout(self: *const Workbench) WorkbenchGrid.Rects {
-        return WorkbenchGrid.layout(.{
-            .w = @floatFromInt(self.cols),
-            .h = @floatFromInt(self.workbenchRows()),
-        }, self.activityBarWidth(), if (self.sidebarShown()) self.sidebarWidth() + self.sidebarFrameInset() else 0, self.panelHeight(), self.layout_api.getSideBarPosition());
-    }
-
-    fn editorRows(self: *const Workbench) usize {
-        return ui.cell.snap(self.workbenchGridLayout().editor.h);
-    }
-
-    fn panelFrameRect(self: *const Workbench) ui.Rect {
-        return if (self.panelShown()) self.workbenchGridLayout().panel else .{};
-    }
-
-    /// The title bar and content share the same inset for painting and input.
-    pub fn panelRect(self: *const Workbench) ui.Rect {
-        const rect = self.panelFrameRect();
-        if (!self.glyphPanelFrame(rect)) return rect;
-        return .{ .x = rect.x + 1, .y = rect.y + 1, .w = rect.w - 2, .h = rect.h - 2 };
-    }
-
-    pub fn glyphPanelFrame(self: *const Workbench, rect: ui.Rect) bool {
-        // Keep space for a title and a content row inside the border.
-        return !self.part.cell_borders and rect.w >= 3 and rect.h >= panel_part_mod.title_height + 3;
-    }
-
-    /// Panel content below the one-row title (composite bar).
-    pub fn panelContentRect(self: *const Workbench) ui.Rect {
-        if (!self.panelShown()) return .{};
-        return panel_part_mod.contentRect(self.panelRect());
     }
 
     /// Editor content height: the rows above the workbench status bar minus the
     /// group chrome (tab strip plus the optional breadcrumb row).
     fn editorContentHeight(self: *Workbench) usize {
-        return @max(self.editorRows() -| self.chromeHeight(), 1);
+        return @max(self.geometry().editorRows() -| self.chromeHeight(), 1);
     }
 
     fn chromeHeight(self: *Workbench) usize {
         const tabs: usize = if (self.part.part_options.show_tabs == .none) 0 else editor_group_view.title_height;
         return tabs + (if (self.breadcrumbs.settings.enabled) editor_group_view.breadcrumbs_height else 0);
-    }
-
-    fn sidebarWidth(self: *const Workbench) usize {
-        return self.clampSidebarWidth(self.layout.size(.sidebar));
-    }
-
-    pub fn sidebarMinimum(self: *const Workbench) usize {
-        return self.sidebar_part.minimum_width + self.sidebarFrameInset();
-    }
-
-    pub fn editorColumnMinimum(self: *const Workbench) usize {
-        const available = self.cols -| self.activityBarWidth() -| self.sidebarMinimum();
-        const editor = if (self.part.maximized_group != null) editor_part.min_pane_width else self.part.minimumWidth(self.workbenchRows() -| self.panelHeight());
-        const panel = if (self.panelShown()) self.panel_part.minimum_width else 0;
-        return @min(available, @max(editor, panel));
-    }
-
-    fn clampSidebarWidth(self: *const Workbench, width: usize) usize {
-        const maximum = self.cols -| self.activityBarWidth() -| self.editorColumnMinimum() -| self.sidebarFrameInset();
-        return @min(maximum, std.math.clamp(width, self.sidebar_part.minimum_width, self.sidebar_part.maximum_width));
-    }
-
-    fn activityBarWidth(self: *const Workbench) usize {
-        // The activity bar takes no cells when it is hidden or when it moved
-        // into the side bar composite bar (top/bottom positions). Without a
-        // side bar model there is no side bar area for the rail either; the
-        // terminal app always initializes the side bar.
-        if (!self.activity_bar_part.visible) return 0;
-        if (self.sidebar == null) return 0;
-        return self.activity_bar_part.width();
-    }
-
-    pub fn sidebarShown(self: *const Workbench) bool {
-        return self.layout.isVisible(.sidebar) and self.sidebar != null and
-            self.cols > self.activityBarWidth() + self.sidebarMinimum();
     }
 
     pub fn setSidebarVisible(self: *Workbench, visible: bool) !void {
@@ -2024,7 +1922,7 @@ pub const Workbench = struct {
         if (self.activeSidebarViewContainer()) |container| {
             if (container.titleActionRect(id)) |rect| return .{ .x = ui.cell.snap(rect.x), .y = ui.cell.snap(rect.bottom()) };
         }
-        const rect = self.sidebarRect();
+        const rect = self.geometry().sidebarRect();
         return .{ .x = ui.cell.snap(rect.right()) -| 1, .y = ui.cell.snap(rect.y) + 1 };
     }
 
@@ -2065,26 +1963,6 @@ pub const Workbench = struct {
             }
         }
         return false;
-    }
-
-    pub fn activityRect(self: *const Workbench) ui.Rect {
-        return self.workbenchGridLayout().activity_bar;
-    }
-
-    pub fn sidebarFrameInset(self: *const Workbench) usize {
-        return @intFromBool(!self.part.cell_borders);
-    }
-
-    pub fn sidebarFrameRect(self: *const Workbench) ui.Rect {
-        return self.workbenchGridLayout().sidebar;
-    }
-
-    pub fn sidebarRect(self: *const Workbench) ui.Rect {
-        return SidebarPart.innerRect(self.sidebarFrameRect(), self.part.cell_borders, self.layout_api.getSideBarPosition());
-    }
-
-    pub fn glyphSidebarFrame(self: *const Workbench) bool {
-        return !self.part.cell_borders and self.workbenchRows() >= 14;
     }
 
     /// Sets the workspace folders and rebuilds the Explorer roots. Upstream
@@ -2550,7 +2428,7 @@ pub const Workbench = struct {
 
     /// The activity-bar ellipsis lists the entries that do not fit the rail.
     pub fn showActivityOverflowMenu(self: *Workbench, event: *const ui.MouseEvent) !void {
-        const rect = self.activityRect();
+        const rect = self.geometry().activityRect();
         const capacity = activity_bar_mod.visibleCapacity(rect);
         if (!activity_bar_mod.overflowVisible(&self.activity_bar_part, rect)) return;
         const shown = capacity -| 1;
@@ -2615,7 +2493,7 @@ pub const Workbench = struct {
     }
 
     pub fn focusSidebar(self: *Workbench) void {
-        if (!self.sidebarShown()) return;
+        if (!self.geometry().sidebarShown()) return;
         self.setFocus(.sidebar);
         self.updateProblemsHighlight();
         if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
@@ -2639,7 +2517,7 @@ pub const Workbench = struct {
     }
 
     pub fn focusStatusBar(self: *Workbench) void {
-        if (!self.statusBarVisible()) return;
+        if (!self.geometry().statusBarVisible()) return;
         self.setFocus(.statusbar);
         self.updateProblemsHighlight();
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
@@ -2710,7 +2588,7 @@ pub const Workbench = struct {
     }
 
     fn problemsVisible(self: *const Workbench) bool {
-        return self.panelShown() and std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID);
+        return self.geometry().panelShown() and std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID);
     }
 
     fn problemsFocused(self: *const Workbench) bool {
@@ -2761,7 +2639,7 @@ pub const Workbench = struct {
     /// Cycles the visible panel containers, like
     /// `workbench.action.previousPanelView`/`nextPanelView`.
     fn cyclePanelView(self: *Workbench, delta: isize) !bool {
-        if (!self.panelShown()) return false;
+        if (!self.geometry().panelShown()) return false;
         const items = self.panel_part.pane.bar.items.items;
         var visible_count: usize = 0;
         for (items) |item| {
@@ -2771,7 +2649,7 @@ pub const Workbench = struct {
         var current: isize = -1;
         for (items, 0..) |item, index| {
             if (!item.visible) continue;
-            if (std.mem.eql(u8, item.id, self.activePanelId())) {
+            if (std.mem.eql(u8, item.id, self.geometry().activePanelId())) {
                 current = @intCast(index);
                 break;
             }
@@ -2794,11 +2672,11 @@ pub const Workbench = struct {
     fn syncPanelContainerVisibility(self: *Workbench) !void {
         const stats = if (self.marker_service) |service| service.getStatistics() else markers_mod.MarkerStatistics{};
         const problems_has_content = stats.errors + stats.warnings + stats.infos > 0;
-        const problems_active = std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID);
+        const problems_active = std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID);
         _ = try self.panel_part.pane.setPaneCompositeVisible(PROBLEMS_CONTAINER_ID, problems_has_content or problems_active);
 
         const terminals = if (self.terminal_service) |service| service.count() else 0;
-        const terminal_active = std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID);
+        const terminal_active = std.mem.eql(u8, self.geometry().activePanelId(), TERMINAL_CONTAINER_ID);
         _ = try self.panel_part.pane.setPaneCompositeVisible(TERMINAL_CONTAINER_ID, terminals > 0 or terminal_active);
     }
 
@@ -2978,16 +2856,16 @@ pub const Workbench = struct {
 
     pub fn focusTerminalListRow(self: *Workbench, next: bool) void {
         const service = self.terminal_service orelse return;
-        self.terminal_tabbed_view.focusListRow(service, self.panelRect(), next);
+        self.terminal_tabbed_view.focusListRow(service, self.geometry().panelRect(), next);
     }
 
     pub fn terminalPanelActive(self: *const Workbench) bool {
-        return self.panelShown() and std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID);
+        return self.geometry().panelShown() and std.mem.eql(u8, self.geometry().activePanelId(), TERMINAL_CONTAINER_ID);
     }
 
     fn revealActiveTerminalTab(self: *Workbench) void {
         const service = self.terminal_service orelse return;
-        self.terminal_tabbed_view.revealActive(service, self.panelRect());
+        self.terminal_tabbed_view.revealActive(service, self.geometry().panelRect());
     }
 
     pub fn focusTerminal(self: *Workbench) !void {
@@ -3003,14 +2881,14 @@ pub const Workbench = struct {
     }
 
     pub fn resizeTerminalPanel(self: *Workbench, delta: isize) void {
-        if (!self.panelShown()) return;
-        const current: isize = @intCast(self.panelHeight());
+        if (!self.geometry().panelShown()) return;
+        const current: isize = @intCast(self.geometry().panelHeight());
         self.resizePanelTo(@intCast(@max(current +| delta, 0)));
     }
 
     pub fn resizePanelTo(self: *Workbench, desired: usize) void {
-        const height = self.clampPanelHeight(desired);
-        if (height == self.panelHeight()) return;
+        const height = self.geometry().clampPanelHeight(desired);
+        if (height == self.geometry().panelHeight()) return;
         self.layout.setSize(.panel, height) catch {};
         self.layoutAll();
     }
@@ -3099,34 +2977,18 @@ pub const Workbench = struct {
         if (exit.signal) |number| std.log.scoped(.terminal).warn("Terminal process exited on signal {d}", .{number});
     }
 
-    fn editorAreaRect(self: *const Workbench) ui.Rect {
-        return self.workbenchGridLayout().editor;
-    }
-
-    fn editorLayoutRect(self: *const Workbench) ui.Rect {
-        return self.layout.centeredEditorRect(self.editorAreaRect());
-    }
-
     pub fn layoutAll(self: *Workbench) void {
         const override = if (self.layout.isZenModeActive()) self.zenModeConfiguration().show_tabs else null;
         self.part.handleChangedPartOptions(self.configuration, override);
         self.hovered_sash = null;
-        if (self.layout.workbench_grid.activeSash()) |sash| {
-            const visible = switch (sash) {
-                .sidebar => self.sidebar != null, // A snapped sidebar keeps pointer capture.
-                .panel => self.panelShown(),
-            };
-            if (!visible) self.layout.workbench_grid.onSashEnd();
-        }
-        self.layout.layout(self.cols, self.rows, self.workbenchGridLayout(), self.statusBarRect());
-        self.part.layout(self.editorLayoutRect());
+        self.layout.layoutTerminal(self.geometry());
         self.syncTerminalSize();
     }
 
     pub fn syncTerminalSize(self: *Workbench) void {
         const service = self.terminal_service orelse return;
         if (!self.terminalVisible()) return;
-        self.terminal_tabbed_view.layoutInstances(self.panelRect(), service);
+        self.terminal_tabbed_view.layoutInstances(self.geometry().panelRect(), service);
     }
 
     fn paneExists(self: *const Workbench, pane: *GroupPane) bool {
@@ -5113,14 +4975,14 @@ pub const Workbench = struct {
     /// Approximate the editor-part resize actions by changing the sidebar and
     /// panel sizes that determine the editor area.
     pub fn resizeEditorArea(self: *Workbench, width_delta: isize, height_delta: isize) !void {
-        if (width_delta != 0 and self.sidebarShown()) {
-            const current: isize = @intCast(self.sidebarWidth());
-            try self.layout.setSize(.sidebar, self.clampSidebarWidth(@intCast(@max(current -| width_delta, 0))));
+        if (width_delta != 0 and self.geometry().sidebarShown()) {
+            const current: isize = @intCast(self.geometry().sidebarWidth());
+            try self.layout.setSize(.sidebar, self.geometry().clampSidebarWidth(@intCast(@max(current -| width_delta, 0))));
         }
-        if (height_delta != 0 and self.panelShown()) {
-            const current: isize = @intCast(self.panelHeight());
+        if (height_delta != 0 and self.geometry().panelShown()) {
+            const current: isize = @intCast(self.geometry().panelHeight());
             const next: usize = @intCast(@max(current -| height_delta, 0));
-            try self.layout.setSize(.panel, self.clampPanelHeight(next));
+            try self.layout.setSize(.panel, self.geometry().clampPanelHeight(next));
         }
         self.layoutAll();
     }
@@ -5430,7 +5292,7 @@ pub const Workbench = struct {
     pub fn updateContextKeys(self: *Workbench) void {
         const keys = self.context_key_handles orelse return;
         const active_activity = self.activity_bar_part.active_id orelse "";
-        const sidebar_focused = self.focus == .sidebar and self.sidebarShown();
+        const sidebar_focused = self.focus == .sidebar and self.geometry().sidebarShown();
         const explorer_active = std.mem.eql(u8, active_activity, "explorer");
         const search_active = std.mem.eql(u8, active_activity, "search");
         const scm_active = std.mem.eql(u8, active_activity, "scm");
@@ -5449,16 +5311,16 @@ pub const Workbench = struct {
         keys.input_focus.set(.{ .boolean = sidebar_focused and search_active and !search_results_focused });
         keys.status_bar_focus.set(.{ .boolean = self.focus == .statusbar });
         keys.terminal_focus.set(.{ .boolean = self.terminalFocused() });
-        keys.panel_focus.set(.{ .boolean = (self.focus == .terminal or self.focus == .problems) and self.panelShown() });
-        keys.active_panel.set(.{ .string = if (self.panelShown()) self.activePanelId() else "" });
+        keys.panel_focus.set(.{ .boolean = (self.focus == .terminal or self.focus == .problems) and self.geometry().panelShown() });
+        keys.active_panel.set(.{ .string = if (self.geometry().panelShown()) self.geometry().activePanelId() else "" });
         keys.in_quick_open.set(.{ .boolean = self.quick_access.isOpen() });
         keys.in_files_picker.set(.{ .boolean = self.quick_access.isOpen() and !self.quick_access.isPickOpen() });
-        keys.explorer_viewlet_visible.set(.{ .boolean = self.sidebarShown() and explorer_active });
+        keys.explorer_viewlet_visible.set(.{ .boolean = self.geometry().sidebarShown() and explorer_active });
         keys.explorer_viewlet_focus.set(.{ .boolean = sidebar_focused and explorer_active });
         keys.files_explorer_focus.set(.{ .boolean = sidebar_focused and explorer_active });
-        keys.search_viewlet_visible.set(.{ .boolean = self.sidebarShown() and search_active });
+        keys.search_viewlet_visible.set(.{ .boolean = self.geometry().sidebarShown() and search_active });
         keys.search_view_focus.set(.{ .boolean = sidebar_focused and search_active });
-        keys.scm_viewlet_visible.set(.{ .boolean = self.sidebarShown() and scm_active });
+        keys.scm_viewlet_visible.set(.{ .boolean = self.geometry().sidebarShown() and scm_active });
         keys.scm_view_focus.set(.{ .boolean = sidebar_focused and scm_active });
         // Explorer file operations are not ported; these keys keep bindings
         // that require them inert rather than active.
@@ -5706,78 +5568,6 @@ pub const Workbench = struct {
         self.hovered_sash = null;
         self.pointer = .default;
         return true;
-    }
-
-    fn sidebarSashAt(self: *const Workbench, x: usize, y: usize) bool {
-        if (self.sidebar == null or y >= self.workbenchRows() or
-            self.cols <= self.activityBarWidth() + self.sidebarMinimum()) return false;
-        if (self.sidebarShown() and self.clampSidebarWidth(self.sidebar_part.maximum_width) == self.sidebar_part.minimum_width) return false;
-        if (!self.sidebarShown() and self.layout.isZenModeActive()) return false;
-        return self.workbenchGridLayout().hitsSidebarSash(x, self.part.cell_borders or (self.part.glyphFrame() and y < self.editorRows()));
-    }
-
-    fn panelSashAt(self: *const Workbench, x: usize, y: usize) bool {
-        const frame = self.panelFrameRect();
-        const sizes = self.panelHeightLimits();
-        if (sizes.minimum == sizes.maximum) return false;
-        const top = ui.cell.snap(frame.y);
-        if (x < ui.cell.snap(frame.x) or x >= ui.cell.snap(frame.right())) return false;
-        if (top > 0 and y == top - 1) {
-            const editor = self.part.viewport;
-            return (self.part.cell_borders or self.part.glyphFrame()) and
-                x >= ui.cell.snap(editor.x) and x < ui.cell.snap(editor.right());
-        }
-        if (y != top) return false;
-        if (self.glyphPanelFrame(frame)) return true;
-
-        // Native borders share their row with the title. Compact terminals
-        // also use this row, so leave composite tabs and actions clickable.
-        const title = self.panelRect();
-        if (panel_part_mod.hitTest(&self.panel_part, title, x, y) != null) return false;
-        if (self.terminalPanelActive()) {
-            if (self.terminal_service) |service| {
-                const title_end = panel_part_mod.titleContentEnd(&self.panel_part, title);
-                return self.terminal_tabbed_view.hitTest(service, title, title_end, x, y) == .none;
-            }
-        }
-        return true;
-    }
-
-    pub fn workbenchSashAt(self: *const Workbench, x: usize, y: usize) ?WorkbenchGrid.Sash {
-        if (self.sidebarSashAt(x, y)) return .sidebar;
-        const list = &self.terminal_tabbed_view.tab_list;
-        if (list.dragged_instance != null or list.dragging_sash or list.dragging_pane_sash != null) return null;
-        return if (self.panelShown() and self.panelSashAt(x, y)) .panel else null;
-    }
-
-    pub fn workbenchSashPointer(self: *const Workbench, sash: WorkbenchGrid.Sash) ui.Pointer {
-        if (sash == .panel) return sash_css.pointer(.horizontal);
-        if (!self.sidebarShown() or self.sidebarWidth() == self.sidebar_part.minimum_width) return sash_css.pointer(if (self.layout_api.getSideBarPosition() == .left) .vertical_minimum else .vertical_maximum);
-        if (self.sidebarWidth() == self.clampSidebarWidth(self.sidebar_part.maximum_width)) return sash_css.pointer(if (self.layout_api.getSideBarPosition() == .left) .vertical_maximum else .vertical_minimum);
-        return sash_css.pointer(.vertical);
-    }
-
-    /// Grid.onDidSashReset first asks the adjacent view for its preferred size.
-    pub fn resetSidebarSash(self: *Workbench) !void {
-        const id = self.sidebar_part.pane.active_id orelse "";
-        var optimal: usize = 0;
-        if (std.mem.eql(u8, id, "scm")) {
-            optimal = layout_service_mod.widthInCells(400);
-        } else if (self.activeSidebarViewContainer()) |container| {
-            if (container.bodyRect("explorer")) |body| {
-                optimal = self.sidebar.?.getOptimalWidth(ui.cell.snap(body.h)) + layout_service_mod.widthInCells(16);
-            }
-        }
-        const available = self.cols -| self.activityBarWidth();
-        const preferred = self.sidebar_part.preferredWidth(optimal) orelse (available / 2 -| self.sidebarFrameInset());
-        try self.layout.setSize(.sidebar, self.clampSidebarWidth(preferred));
-        self.layoutAll();
-    }
-
-    pub fn workbenchSashHighlighted(self: *const Workbench, sash: WorkbenchGrid.Sash) bool {
-        if (self.layout.workbench_grid.activeSash() == sash) return true;
-        const hovered = self.hovered_sash orelse return false;
-        return hovered == .workbench and hovered.workbench == sash;
     }
 
     /// Destroys a tab view that lost to an already-open editor, detaching the
@@ -6123,17 +5913,8 @@ pub const Workbench = struct {
         return element;
     }
 
-    pub fn synchronizeEditorDom(self: *Workbench) !*ui.Surface {
-        const surface = self.editor_surface;
-        try surface.resize(self.cols, self.rows);
-        surface.border_capabilities = self.part.cell_border_capabilities;
-        const colors = editor_group_watermark.Colors.fromTheme(self.theme_palette);
-        const show_tips = self.part.count() == 1 and self.boolSetting(editor_group_watermark.settings_key, true);
-        for (self.part.group_views.items) |pane| {
-            const visible = self.part.maximized_group == null or self.part.maximized_group == pane;
-            try pane.layoutEditorArea(self.part.grid_element.?, self.part.base.bounds.?, surface, visible, show_tips, colors, .{ .context = self, .render = renderWatermarkShortcuts });
-        }
-        return surface;
+    pub fn watermarkShortcuts(self: *Workbench) editor_group_view.WatermarkShortcuts {
+        return .{ .context = self, .render = renderWatermarkShortcuts };
     }
 
     pub fn setFocus(self: *Workbench, focus: Focus) void {
@@ -6237,7 +6018,7 @@ pub const Workbench = struct {
     fn focusLayoutPart(context: *anyopaque, part: layout_service_mod.Parts) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         switch (part) {
-            .sidebar => if (self.sidebarShown()) self.focusSidebar() else self.focusEditor(),
+            .sidebar => if (self.geometry().sidebarShown()) self.focusSidebar() else self.focusEditor(),
             .panel => {
                 if (self.problemsVisible()) {
                     self.setFocus(.problems);
@@ -6248,7 +6029,7 @@ pub const Workbench = struct {
                 self.statusbar.main_part.clearFocus();
                 if (self.search_view) |view| view.blur();
             },
-            .statusbar => if (self.statusBarVisible()) self.focusStatusBar() else self.focusEditor(),
+            .statusbar => if (self.geometry().statusBarVisible()) self.focusStatusBar() else self.focusEditor(),
             else => self.focusEditor(),
         }
     }
@@ -6430,7 +6211,7 @@ pub const Workbench = struct {
         if (self.outline_view) |view| view.setBorderRendering(enabled);
         if (self.part.cell_borders == enabled) return;
         self.part.setCellBorders(enabled);
-        if (self.sidebarShown() or self.panelShown() or self.part.maximized_group != null) self.layoutAll();
+        if (self.geometry().sidebarShown() or self.geometry().panelShown() or self.part.maximized_group != null) self.layoutAll();
     }
 
     pub fn setCellBorderCapabilities(self: *Workbench, capabilities: ?ui.cell_border.Capabilities) void {
@@ -6683,7 +6464,7 @@ const ToggleStatusbarVisibilityAction = struct {
     pub fn run(self: *@This()) !void {
         const visible = self.workbench.layout.isVisible(.statusbar);
         try self.workbench.setUserConfigurationValue(layout_service_mod.LayoutSettings.status_bar_visible, .{ .bool = !visible });
-        if (!self.workbench.statusBarVisible() and self.workbench.focus == .statusbar) self.workbench.focusEditor();
+        if (!self.workbench.geometry().statusBarVisible() and self.workbench.focus == .statusbar) self.workbench.focusEditor();
     }
 };
 
@@ -6905,7 +6686,7 @@ fn commandToggleProblems(context: *anyopaque) anyerror!void {
 
 fn commandTogglePanel(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.panelShown()) {
+    if (self.geometry().panelShown()) {
         self.hidePanel();
         return;
     }
@@ -6950,14 +6731,14 @@ fn commandZenShowSingleEditorTab(context: *anyopaque) anyerror!void {
 
 fn commandFocusPanel(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    if (!self.panelShown()) {
+    if (!self.geometry().panelShown()) {
         const id = self.defaultPanelContainerId() orelse return;
         _ = try self.openPanelContainer(id);
         return;
     }
-    if (std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) {
+    if (std.mem.eql(u8, self.geometry().activePanelId(), PROBLEMS_CONTAINER_ID)) {
         self.setFocus(.problems);
-    } else if (std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID)) {
+    } else if (std.mem.eql(u8, self.geometry().activePanelId(), TERMINAL_CONTAINER_ID)) {
         self.setFocus(.terminal);
     }
     self.updateProblemsHighlight();

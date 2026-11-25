@@ -2,7 +2,7 @@
 
 The reference is `vscode/src/vs/workbench/browser/workbench.ts` at
 `e31c2e52`. It composes services and parts. The current Zig composition
-root still owns terminal painting, input routing and feature implementations.
+root still owns feature wiring and host state; terminal painting and input routing live in src/tui.
 
 ## Baseline at 47925902
 
@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 8,187 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
+The browser shell is 7,968 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -50,11 +50,12 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * Git discovery, CLI initialization, repository and Git-service delegate ownership now live in the native extension Model (extensions/git/src/model.zig); the single-root discovery behavior is preserved. Parent-repository consent, ignored/unsafe repository tracking and multiple open repositories remain unported.
 * Markdown and image preview view controllers and their asynchronous rendering/image ownership now live in their contribution directories. The terminal host supplies the ui image runtime and cell geometry. These features no longer require editorPane to import src/tui.
 * TextDiffEditor reads its diff configuration through IConfigurationService rather than the shell.
+* Layout owns terminal grid geometry, part constraints, sidebar/panel sizing and the application of centered/maximized editor layout. The geometry adapter receives only the registered part instances and terminal dimensions. Sash hit testing and pointer feedback are in the native host; EditorPart owns mounting and laying out visible editor panes on its surface.
 * HistoryService owns active-editor subscriptions, pane selection/edit event recording, navigation restore suppression, back/forward and recently-closed editor batches. It opens resources through an explicit editor-service host adapter. The regression changes the active editor and edits it before drawing a frame, then verifies the inactive editor is detached.
 * BreadcrumbsControlFactory now owns a persistent control for each editor group. The collection listens to group lifetimes, mounted active editor changes and breadcrumb configuration; it unbinds models before workspace/configuration replacement. Painting only reads the existing controls. The regression verifies same-control identity and new model resource before rendering, as well as inactive-group persistence.
 * EditorDropTarget owns the drag session, selection anchor, preview overlay, transfer validation, drag image and hover/animation deadlines. Its owner receives EditorPart and the terminal frame/pointer adapters; the root provides only the remaining tab/group disposal, transfer and focus hooks. The existing drag/copy/merge and timed-hover integration tests exercise the same behavior.
 * Keyboard and pointer routing for terminal tabs, editor tabs, global keybindings, sash gestures, sidebar/activity bar, status bar, panel, search editor, breadcrumb controls, dialogs and watermark now lives in `src/tui/workbench.zig`. This includes PTY paste/mouse encoding and cell-to-editor hit targeting. The application and host integration tests invoke these native adapters directly; portable extension lifecycle tests dispatch the corresponding close-editor command.
-* All 19 terminal command IDs now register through TerminalActions Action2 and explicit terminal service/view dependencies. Their existing palette order, label, category and native availability semantics are retained. TerminalContextKeys binds terminal counts, editor location, panel visibility and split state directly to instance/group and editor/view events. The palette snapshot now includes Action2 context expressions (including the previously unrecorded zen-mode condition). The terminal split and move regressions check availability changes before rendering.
+* All 19 terminal command IDs now register through TerminalActions Action2 and explicit terminal service/view dependencies. Their existing palette order, label, category and native availability semantics are retained. TerminalContextKeys binds terminal counts, editor location, panel visibility and split state directly to instance/group and editor/view events. The palette snapshot now includes Action2 context expressions, including 22 previously unrecorded conditions. All 272 IDs, order, labels, categories and visibility were compared unchanged. The terminal split and move regressions check availability changes before rendering.
 * TerminalEditorService opens terminal inputs in the chosen editor group. TerminalService owns side-by-side placement, error-safe instance transfers between panel and editor, and selected-tab split/join/kill operations. TerminalActions resolves native menu IDs and rename-picker lifetimes; the shell supplies cell layout, focus and panel visibility.
 * EditorGroupView owns dirty-close detection, duplicate-group checks, reveal and save/revert veto decisions through EditorInput and the file dialog service. The window-close action uses the same file confirmation, reveals the first dirty editor per group, and saves/reverts before disposing the groups. The async custom-close callback, autosave confirmation buckets and progress service remain unported.
 * EditorGroupView owns persistent editor copying and opening the destination before closing the source for cross-group moves. Only terminal creation, external registration cleanup, drag cancellation and focus are supplied by the host.

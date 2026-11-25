@@ -260,7 +260,7 @@ pub const TerminalActionServices = struct {
                 return get(context).terminalPanelActive();
             }
             fn panelRect(context: *anyopaque) ui.Rect {
-                return get(context).panelRect();
+                return get(context).geometry().panelRect();
             }
             fn panelFocused(context: *anyopaque) bool {
                 return get(context).focus == .terminal;

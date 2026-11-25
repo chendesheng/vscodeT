@@ -79,8 +79,8 @@ fn ownsEditor(workbench: *const Workbench, editor: *const Editor) bool {
 fn clickStatusEntry(workbench: *Workbench, id: []const u8) !bool {
     const part = workbench.statusbar.main_part;
     const handle = part.model.findHandle(id) orelse return false;
-    const y = ui.cell.snap(workbench.statusBarRect().y);
-    const width = ui.cell.snap(workbench.statusBarRect().w);
+    const y = ui.cell.snap(workbench.geometry().statusBarRect().y);
+    const width = ui.cell.snap(workbench.geometry().statusBarRect().w);
     var x: usize = 0;
     while (x < width) : (x += 1) {
         const hit = part.hitAt(x, y) catch null;
@@ -2012,7 +2012,7 @@ test "Workbench: activity bar switches view containers" {
     // Problems is a panel container: no activity-bar entry and no sidebar
     // container (upstream registers it in `ViewContainerLocation.Panel`).
     try std.testing.expect(!try workbench.showActivityById("problems"));
-    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.geometry().panelShown());
 
     const alt_1 = ui.KeyEvent{ .key = .{ .char = '1' }, .mods = .{ .alt = true } };
     try std.testing.expect(try terminal_workbench.handleSidebarKey(workbench, &alt_1));
@@ -2032,13 +2032,13 @@ test "Workbench: zen mode restores a status bar that was hidden before" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     try workbench.layout.setPartHidden(true, .statusbar);
-    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expect(!workbench.geometry().statusBarVisible());
 
     try workbench.toggleZenMode(false, false);
-    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expect(!workbench.geometry().statusBarVisible());
     try workbench.toggleZenMode(false, false);
     try std.testing.expect(!workbench.layout.isZenModeActive());
-    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expect(!workbench.geometry().statusBarVisible());
 }
 
 test "Workbench: zen tab actions are only available in zen mode" {
@@ -2141,8 +2141,8 @@ test "Workbench: Problems panel, status count and range highlight" {
     try std.testing.expect(std.mem.indexOf(u8, status.item.text(), "1") != null);
 
     try workbench.showProblems();
-    try std.testing.expect(workbench.panelShown());
-    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.activePanelId());
+    try std.testing.expect(workbench.geometry().panelShown());
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.geometry().activePanelId());
     try std.testing.expectEqual(Focus.problems, workbench.focus);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -2182,7 +2182,7 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.enableLanguageFeatures();
-    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.geometry().panelShown());
 
     const service = workbench.marker_service orelse return error.TestUnexpectedResult;
     const tab = workbench.activeTab() orelse return error.TestExpectedTab;
@@ -2201,34 +2201,34 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
 
     // Markers alone do not reveal the panel, but they do publish the
     // `hideIfEmpty` Problems title; the Problems command opens the panel.
-    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.geometry().panelShown());
     try std.testing.expect(workbench.panel_part.pane.bar.findItemConst(PROBLEMS_CONTAINER_ID).?.visible);
     try workbench.showProblems();
-    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.geometry().panelShown());
     try std.testing.expect(workbench.panel_part.pane.bar.findItemConst(PROBLEMS_CONTAINER_ID).?.visible);
 
     // Toggling Problems while it owns focus hides the panel; toggling again
     // reveals the same container.
     try workbench.toggleProblems();
-    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.geometry().panelShown());
     try workbench.toggleProblems();
-    try std.testing.expect(workbench.panelShown());
-    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.activePanelId());
+    try std.testing.expect(workbench.geometry().panelShown());
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.geometry().activePanelId());
 
     // Ctrl-J closes and re-opens the panel with its last active container.
     const ctrl_j = ui.KeyEvent{ .key = .{ .char = 'j' }, .mods = .{ .ctrl = true } };
     try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_j));
-    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.geometry().panelShown());
     try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_j));
-    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.geometry().panelShown());
 
     // Ctrl-Shift-M toggles Problems through the registered keybinding.
     const ctrl_shift_m = ui.KeyEvent{ .key = .{ .char = 'm' }, .mods = .{ .ctrl = true, .shift = true } };
     try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_shift_m));
-    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.geometry().panelShown());
     try std.testing.expect(try terminal_workbench.handleGlobalKey(workbench, &ctrl_shift_m));
-    try std.testing.expect(workbench.panelShown());
-    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.activePanelId());
+    try std.testing.expect(workbench.geometry().panelShown());
+    try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.geometry().activePanelId());
 
     // The Terminal container shares the panel title; upstream order puts
     // Problems (order 0) before Terminal (order 3).
@@ -2238,7 +2238,7 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
         error.PtyOpenFailed => return error.SkipZigTest,
         else => return err,
     };
-    try std.testing.expectEqualStrings(TERMINAL_CONTAINER_ID, workbench.activePanelId());
+    try std.testing.expectEqualStrings(TERMINAL_CONTAINER_ID, workbench.geometry().activePanelId());
     try std.testing.expect(workbench.terminalVisible());
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -3321,8 +3321,8 @@ test "Workbench: status bar spans the window and shows editor state" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
 
-    try std.testing.expect(workbench.statusBarVisible());
-    try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(workbench.statusBarRect().y));
+    try std.testing.expect(workbench.geometry().statusBarVisible());
+    try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(workbench.geometry().statusBarRect().y));
 
     const pane = workbench.part.group_views.items[0];
     try std.testing.expectEqual(@as(usize, 9), ui.cell.snap(pane.rect.h));
@@ -3421,7 +3421,7 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
 
-    const y = ui.cell.snap(workbench.statusBarRect().y);
+    const y = ui.cell.snap(workbench.geometry().statusBarRect().y);
     var hit_x: ?usize = null;
     var x: usize = 0;
     while (x < 100) : (x += 1) {
@@ -4787,7 +4787,7 @@ test "Workbench: new terminal creates one tab and hover does not act" {
     try workbench.showTerminal();
     try std.testing.expectEqual(@as(usize, 1), workbench.terminalCount());
 
-    const panel = workbench.panelRect();
+    const panel = workbench.geometry().panelRect();
     const view = &workbench.terminal_tabbed_view;
     const layout = view.layoutForService(panel, service);
     try std.testing.expect(layout.sash_x == null);
@@ -4855,7 +4855,7 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
 
     const instance = service.at(0).?;
     try std.testing.expect(instance.view_focused);
-    const content = workbench.terminal_tabbed_view.layoutForService(workbench.panelRect(), service).terminal;
+    const content = workbench.terminal_tabbed_view.layoutForService(workbench.geometry().panelRect(), service).terminal;
     const local_rect = ui.Rect{ .x = 0, .y = 0, .w = content.w, .h = content.h };
 
     var line_buffer: [64]u8 = undefined;
@@ -6428,7 +6428,7 @@ test "Workbench: bottom panel has a rounded outline with and without cell border
         const left = ui.cell.snap(workbench.part.base.bounds.?.x);
         const right = workbench.cols - 1;
         const top = ui.cell.snap(workbench.part.base.bounds.?.h);
-        const bottom = ui.cell.snap(workbench.statusBarRect().y) - 1;
+        const bottom = ui.cell.snap(workbench.geometry().statusBarRect().y) - 1;
         const joint = ui.cell_border.Joint;
         const corners = [_]struct { x: usize, y: usize, glyph: u32, round_joint: u8 }{
             .{ .x = left, .y = top, .glyph = '╭', .round_joint = joint.top_left },
@@ -6448,7 +6448,7 @@ test "Workbench: bottom panel has a rounded outline with and without cell border
         const title = try cells.rowText(allocator, top + inset);
         defer allocator.free(title);
         try std.testing.expect(std.mem.indexOf(u8, title, "PROBLEMS") != null);
-        const content = workbench.panelContentRect();
+        const content = workbench.geometry().panelContentRect();
         try std.testing.expectEqual(left + inset, ui.cell.snap(content.x));
         try std.testing.expectEqual(top + inset + 1, ui.cell.snap(content.y));
         try std.testing.expectEqual(bottom + 1 - inset, ui.cell.snap(content.bottom()));
@@ -6460,7 +6460,7 @@ test "Workbench: bottom panel has a rounded outline with and without cell border
     const title = try workbench.frame.prev.rowText(allocator, ui.cell.snap(workbench.part.base.bounds.?.h));
     defer allocator.free(title);
     try std.testing.expect(std.mem.indexOf(u8, title, "PROBLEMS") != null);
-    try std.testing.expect(workbench.panelContentRect().h >= 1);
+    try std.testing.expect(workbench.geometry().panelContentRect().h >= 1);
 }
 
 test "Workbench: zen mode applies configuration changes while active" {
@@ -6500,14 +6500,14 @@ test "Workbench: zen mode applies configuration changes while active" {
     try std.testing.expect(workbench.notification_controller.?.position == .bottom_left);
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expect(workbench.layout.isMainEditorCentered());
-    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expect(!workbench.geometry().statusBarVisible());
     try std.testing.expect(!workbench.activity_bar_part.visible);
 
     try workbench.setUserConfigurationValue("zenMode.hideLineNumbers", .{ .bool = false });
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
 
     try workbench.setUserConfigurationValue("zenMode.hideStatusBar", .{ .bool = false });
-    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expect(workbench.geometry().statusBarVisible());
 
     try workbench.setUserConfigurationValue("zenMode.hideActivityBar", .{ .bool = false });
     try std.testing.expect(workbench.activity_bar_part.visible);
@@ -6519,7 +6519,7 @@ test "Workbench: zen mode applies configuration changes while active" {
     try std.testing.expect(!workbench.layout.isZenModeActive());
     try std.testing.expect(workbench.notification_api.getFilter(null) == .OFF);
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Relative, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
-    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expect(workbench.geometry().statusBarVisible());
     try std.testing.expect(workbench.activity_bar_part.visible);
 
     // Exiting zen uses the current workbench preference, including an edit
@@ -6529,7 +6529,7 @@ test "Workbench: zen mode applies configuration changes while active" {
     try workbench.setUserConfigurationValue("workbench.statusBar.visible", .{ .bool = false });
     try workbench.commands.execute(zen_mode_contribution.exit_zen_mode_id);
     try std.testing.expect(workbench.notification_api.getFilter(null) == .ERROR);
-    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expect(!workbench.geometry().statusBarVisible());
 }
 
 test "Workbench: centered layout narrows and centers the editor part" {
@@ -6768,7 +6768,7 @@ test "Workbench: terminal splits share one group and preserve panel geometry on 
         if (std.mem.eql(u8, pick.command_id, terminal_ids.focus_next_pane)) break true;
     } else false);
     const view = &workbench.terminal_tabbed_view;
-    const layout = view.layoutForService(workbench.panelRect(), service);
+    const layout = view.layoutForService(workbench.geometry().panelRect(), service);
     const first = service.group.paneRect(layout.terminal, 0);
     const second = service.group.paneRect(layout.terminal, 1);
     try std.testing.expectEqual(first.right() + 1, second.x);
@@ -7063,7 +7063,7 @@ test "Workbench: dragging the sash above the bottom panel resizes it" {
         }
     }
 
-    const title = workbench.panelRect();
+    const title = workbench.geometry().panelRect();
     const x = ui.cell.snap(title.x) + 2;
     const y = ui.cell.snap(title.y);
     try std.testing.expect(panel_part_mod.hitTest(&workbench.panel_part, title, x, y) != null);
@@ -7105,7 +7105,7 @@ test "Workbench: right sidebar moves its rail, hit targets and snapping sash tog
     try wb.initSidebar(std.fs.path.dirname(path).?);
     pumpSidebarForTests(wb);
     try wb.setUserConfigurationValue("workbench.sideBar.location", .{ .string = "right" });
-    const rects = wb.workbenchGridLayout();
+    const rects = wb.geometry().workbenchGridLayout();
     try std.testing.expectEqual(workbench_layout.Position.right, wb.layout_api.getSideBarPosition());
     try std.testing.expectEqual(@as(f64, 0), rects.editor.x);
     try std.testing.expectEqual(rects.editor.right(), rects.sidebar.x);
@@ -7132,18 +7132,18 @@ test "Workbench: right sidebar moves its rail, hit targets and snapping sash tog
     try std.testing.expect(!wb.layout.isVisible(.sidebar));
     try std.testing.expectEqual(ui.Pointer.w_resize, wb.pointerShape());
     try sidebarMouseForTest(wb, .up, collapse);
-    const hidden_edge = ui.cell.snap(wb.workbenchGridLayout().activity_bar.x) - 1;
+    const hidden_edge = ui.cell.snap(wb.geometry().workbenchGridLayout().activity_bar.x) - 1;
     try sidebarMouseForTest(wb, .down, hidden_edge);
     try sidebarMouseForTest(wb, .move, hidden_edge - minimum);
     try std.testing.expect(wb.layout.isVisible(.sidebar));
     try sidebarMouseForTest(wb, .up, hidden_edge - minimum);
-    const alt_edge = wb.workbenchGridLayout().sidebarSashCell();
+    const alt_edge = wb.geometry().workbenchGridLayout().sidebarSashCell();
     try std.testing.expect(terminal_workbench.handleSashMouse(wb, &.{ .kind = .down, .x = alt_edge, .y = 2, .button = .left, .mods = .{ .alt = true } }));
     try std.testing.expect(terminal_workbench.handleSashMouse(wb, &.{ .kind = .move, .x = 89, .y = 2, .mods = .{ .alt = true } }));
     try std.testing.expect(wb.layout.isVisible(.sidebar));
     try sidebarMouseForTest(wb, .up, 89);
     try wb.setUserConfigurationValue("workbench.sideBar.location", .{ .string = "left" });
-    try std.testing.expectEqual(@as(f64, 0), wb.workbenchGridLayout().activity_bar.x);
+    try std.testing.expectEqual(@as(f64, 0), wb.geometry().workbenchGridLayout().activity_bar.x);
 }
 
 test "Workbench: dragging the sidebar divider resizes the side bar" {
@@ -7303,9 +7303,9 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
     const pane = workbench.activePane().?;
     const tab = workbench.activeTab().?;
     try std.testing.expect(workbench.layout.isVisible(.sidebar));
-    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.geometry().panelShown());
     try std.testing.expect(workbench.activity_bar_part.visible);
-    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expect(workbench.geometry().statusBarVisible());
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.On, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.part.part_options.show_tabs);
     try std.testing.expect(!workbench.layout.isMainEditorCentered());
@@ -7321,9 +7321,9 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
     try std.testing.expect(workbench.layout.isZenModeActive());
     try std.testing.expectEqual(@as(usize, 1), zen_events);
     try std.testing.expect(!workbench.layout.isVisible(.sidebar));
-    try std.testing.expect(!workbench.panelShown());
+    try std.testing.expect(!workbench.geometry().panelShown());
     try std.testing.expect(!workbench.activity_bar_part.visible);
-    try std.testing.expect(!workbench.statusBarVisible());
+    try std.testing.expect(!workbench.geometry().statusBarVisible());
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.Off, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     // The default `zenMode.centerLayout` centers the single editor group.
     try std.testing.expect(workbench.layout.isMainEditorCentered());
@@ -7348,9 +7348,9 @@ test "Workbench: zen mode hides chrome, line numbers and tabs and restores them"
     try std.testing.expect(!workbench.layout.isZenModeActive());
     try std.testing.expectEqual(@as(usize, 2), zen_events);
     try std.testing.expect(workbench.layout.isVisible(.sidebar));
-    try std.testing.expect(workbench.panelShown());
+    try std.testing.expect(workbench.geometry().panelShown());
     try std.testing.expect(workbench.activity_bar_part.visible);
-    try std.testing.expect(workbench.statusBarVisible());
+    try std.testing.expect(workbench.geometry().statusBarVisible());
     try std.testing.expectEqual(editor_options.RenderLineNumbersType.On, tab.view.terminal_view_host.options.get(.lineNumbers).render_type);
     try std.testing.expectEqual(layout_service_mod.EditorTabsMode.multiple, workbench.part.part_options.show_tabs);
     try std.testing.expect(!workbench.layout.isMainEditorCentered());
@@ -8006,9 +8006,9 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try workbench.setUserConfigurationValue("scm.countBadge", .{ .string = "off" });
     try std.testing.expectEqual(@as(usize, 0), workbench.scm.activity.?.count);
     try std.testing.expect(workbench.activity_service.getContainerBadgeDescription("scm") == null);
-    const sidebar_was_shown = workbench.sidebarShown();
+    const sidebar_was_shown = workbench.geometry().sidebarShown();
     if (sidebar_was_shown) try workbench.toggleSidebar();
-    try std.testing.expect(!workbench.sidebarShown());
+    try std.testing.expect(!workbench.geometry().sidebarShown());
     try workbench.setUserConfigurationValue("scm.countBadge", .{ .string = "focused" });
     try std.testing.expectEqual(@as(usize, provider.count()), workbench.scm.activity.?.count);
     if (sidebar_was_shown) try workbench.toggleSidebar();
@@ -8559,11 +8559,11 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
         try std.testing.expectEqual(restore_zen, wb.layout.isZenModeActive());
         try std.testing.expectEqual(restore_zen, wb.layout.isMainEditorCentered());
         try std.testing.expectEqual(!restore_zen, wb.layout.isVisible(.sidebar));
-        try std.testing.expectEqual(!restore_zen, wb.panelShown());
+        try std.testing.expectEqual(!restore_zen, wb.geometry().panelShown());
         if (restore_zen) try wb.toggleZenMode(false, false);
         try std.testing.expect(wb.layout.isVisible(.sidebar));
-        try std.testing.expect(wb.panelShown());
-        try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, wb.activePanelId());
+        try std.testing.expect(wb.geometry().panelShown());
+        try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, wb.geometry().activePanelId());
         try std.testing.expect(!wb.layout.isMainEditorCentered());
         try std.testing.expectEqual(36, wb.sidebar_part.width);
         try std.testing.expectEqual(12, wb.panel_part.getSize());
@@ -8577,7 +8577,7 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
     defer storage.deinit();
     try wb.layout.restoreParts(try storage.load(false), &wb.part.when_restored);
     try std.testing.expect(!wb.layout.isZenModeActive());
-    try std.testing.expect(!wb.panelShown());
+    try std.testing.expect(!wb.geometry().panelShown());
     try std.testing.expectEqual(36, wb.sidebar_part.width);
     try std.testing.expectEqual(12, wb.panel_part.getSize());
 }
