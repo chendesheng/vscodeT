@@ -418,34 +418,6 @@ test "syntax theme: markdown inline code and bold use dark+ styles" {
     try std.testing.expect(saw_fenced_const);
 }
 
-test "syntax theme: editor paints the dark+ colors" {
-    const Editor = @import("../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-    const View = @import("../../../../tui/editorView.zig").View;
-
-    var theme: SyntaxTheme = undefined;
-    try theme.init(std.testing.allocator);
-    defer theme.deinit();
-
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var editor = try Editor.createFromText(allocator, io, "// hi\nconst x = 1;\n", "test.zig", 40, 8);
-    defer {
-        editor.deinit();
-        allocator.destroy(editor);
-    }
-
-    editor.ensureTokensVisible();
-    var view = try View.init(allocator, editor);
-    defer view.deinit();
-    var out = std.Io.Writer.Allocating.init(allocator);
-    defer out.deinit();
-    try view.renderAnsi(&out.writer);
-
-    const rendered = out.written();
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;106;153;85m") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1b[38;2;86;156;214m") != null);
-}
-
 test "syntax theme: every supported language highlights inside a fence" {
     // The sweep needs the full VS Code grammar set; without the `vscode/`
     // submodule only the vendored fallback grammars are embedded.

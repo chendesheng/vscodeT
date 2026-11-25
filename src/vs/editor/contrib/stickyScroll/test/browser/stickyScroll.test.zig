@@ -18,7 +18,7 @@ const ui = @import("ui");
 
 const Editor = @import("../../../../browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const View = @import("../../../../../../tui/editorView.zig").View;
-const StickyScrollHost = @import("../../../../../../tui/stickyScrollHost.zig").StickyScrollHost;
+const StickyScrollHost = @import("../../browser/stickyScrollHost.zig").StickyScrollHost;
 const sticky_controller = @import("../../browser/stickyScrollController.zig");
 const StickyScrollController = sticky_controller.StickyScrollController;
 const sticky_provider = @import("../../browser/stickyScrollProvider.zig");
@@ -224,7 +224,7 @@ const Fixture = struct {
 
     fn createView(self: *Fixture) !void {
         self.view = try View.init(self.allocator, self.editor);
-        self.host = StickyScrollHost.init(self.allocator, self.view.?);
+        self.host = self.view.?.stickyScrollHost();
         self.controller = try StickyScrollController.init(
             self.allocator,
             self.editor,
@@ -588,7 +588,7 @@ test "real JavaScript file produces sticky scopes from indentation" {
     }
     const view = try View.init(allocator, editor);
     defer view.deinit();
-    var host = StickyScrollHost.init(allocator, view);
+    var host = view.stickyScrollHost();
     const controller = try StickyScrollController.init(allocator, editor, host.interface());
     defer controller.deinit();
     host.attach(controller);

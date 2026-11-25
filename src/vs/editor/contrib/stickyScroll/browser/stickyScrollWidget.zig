@@ -89,9 +89,9 @@ pub const Colors = struct {
     line_number: ui.Color,
 };
 
-/// The view-facing operations the widget needs. The TUI implementation lives in
-/// `src/tui/stickyScrollHost.zig`; keeping them behind callbacks leaves this
-/// file free of `src/tui` imports.
+/// The view-facing operations the widget needs. The contribution adapter in
+/// `stickyScrollHost.zig` supplies the editor/view model and callbacks for
+/// terminal painting, focus and invalidation.
 pub const Host = struct {
     context: *anyopaque,
 

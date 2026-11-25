@@ -49,7 +49,7 @@ const groups = @import("../../../services/editor/common/editorGroupsService.zig"
 const topmost = @import("../../../contrib/markdown/browser/topmostLineMonitor.zig");
 const MarkdownPreview = @import("../../../contrib/markdown/browser/markdownPreview.zig").MarkdownPreview;
 const MarkdownPreviewConfig = @import("../../../contrib/markdown/browser/markdownPreviewConfig.zig").MarkdownPreviewConfig;
-const StickyScrollHost = @import("../../../../../tui/stickyScrollHost.zig").StickyScrollHost;
+const StickyScrollHost = @import("../../../../editor/contrib/stickyScroll/browser/stickyScrollHost.zig").StickyScrollHost;
 const StickyScrollController = @import("../../../../editor/contrib/stickyScroll/browser/stickyScrollController.zig").StickyScrollController;
 const ImagePreviewPane = @import("../../../contrib/mediaPreview/browser/imagePreviewPane.zig").ImagePreviewPane;
 const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
@@ -956,7 +956,7 @@ pub const Controllers = struct {
         editor.setFindController(self.find, FindController.startFromContext);
 
         self.view = view;
-        self.sticky_host = StickyScrollHost.init(allocator, view);
+        self.sticky_host = view.stickyScrollHost();
         self.sticky = try StickyScrollController.init(allocator, editor, self.sticky_host.interface());
         errdefer self.sticky.deinit();
         self.sticky_host.attach(self.sticky);

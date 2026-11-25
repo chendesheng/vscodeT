@@ -1278,7 +1278,8 @@ Library constraints:
   are no tracked folding decorations to shift the range.
 - Sticky scroll is ported from
   `src/vs/editor/contrib/stickyScroll/browser` and painted as an editor overlay
-  (`src/tui/stickyScrollHost.zig` is the terminal adapter). It is not a CSS
+  (`stickyScrollHost.zig` in that contribution owns the editor/view-model adapter;
+  the terminal view supplies paint and focus callbacks). It is not a CSS
   `position: sticky` element: like upstream, the controller computes the
   enclosing outline/folding scopes from the scroll position and the widget
   paints them above the text. Candidate providers are the document-symbol

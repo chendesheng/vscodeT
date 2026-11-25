@@ -1817,6 +1817,54 @@ pub const View = struct {
         return .{ .row = visible_row, .col = col };
     }
 
+    pub fn stickyScrollHost(self: *View) @import("../vs/editor/contrib/stickyScroll/browser/stickyScrollHost.zig").StickyScrollHost {
+        const Host = @import("../vs/editor/contrib/stickyScroll/browser/stickyScrollHost.zig").StickyScrollHost;
+        const Colors = @import("../vs/editor/contrib/stickyScroll/browser/stickyScrollWidget.zig").Colors;
+        const Callbacks = struct {
+            fn get(context: *anyopaque) *View {
+                return @ptrCast(@alignCast(context));
+            }
+            fn requestFrame(context: *anyopaque) void {
+                get(context).invalidate();
+            }
+            fn focusEditor(context: *anyopaque) void {
+                get(context).focusEditor();
+            }
+            fn colors(context: *anyopaque) Colors {
+                const fallback_background = ui.Color{ .r = 30, .g = 30, .b = 33 };
+                const fallback_hover = ui.Color{ .r = 42, .g = 45, .b = 46 };
+                const fallback_line_number = ui.Color{ .r = 110, .g = 110, .b = 110 };
+                const view = get(context);
+                if (view.theme_colors) |palette| {
+                    return .{
+                        .background = palette.colorOr("editorStickyScroll.background", palette.background),
+                        .gutter_background = palette.colorOr("editorStickyScrollGutter.background", palette.background),
+                        .hover_background = palette.colorOr("editorStickyScrollHover.background", fallback_hover),
+                        .line_number = palette.color("editorLineNumber.foreground", .{
+                            fallback_line_number.r,
+                            fallback_line_number.g,
+                            fallback_line_number.b,
+                        }),
+                    };
+                }
+                return .{
+                    .background = fallback_background,
+                    .gutter_background = fallback_background,
+                    .hover_background = fallback_hover,
+                    .line_number = fallback_line_number,
+                };
+            }
+        };
+        return Host.init(self.terminal_view_host, .{
+            .context = self,
+            .style_fn = self.lineStyleFunction(),
+            .decoration_bits_fn = self.decorationBitsFunction(),
+            .colors = Callbacks.colors,
+            .request_frame = Callbacks.requestFrame,
+            .focus_editor = Callbacks.focusEditor,
+        });
+    }
+
     /// Terminal cell style adapter for a rendered view-line part. Sticky
     /// scroll reuses it so its header rows get the same syntax/bracket colors
     /// as ordinary lines.
