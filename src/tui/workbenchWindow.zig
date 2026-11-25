@@ -728,15 +728,22 @@ pub const TerminalWorkbench = struct {
             .model = &self.git_model,
             .io = self.io,
             .quick_input = self.quick_access.inputService(),
+            .configuration = &self.configuration_api,
+            .editors = &self.editor_api,
+            .dialogs = &self.dialog_api,
             .publish_arena = std.heap.ArenaAllocator.init(allocator),
             .host = .{
                 .context = self,
-                .commands_for = struct {
-                    fn commands(context: *anyopaque, repository: *repository_mod.Repository) @import("../extensions/git/src/commands.zig").Commands {
+                .focus_editor = scmFocusEditor,
+                .refresh_resources = scmRefresh,
+                .did_run_remote_action = onScmRemoteAction,
+                .request_frame = requestWorkbenchFrame,
+                .files_changed = struct {
+                    fn run(context: *anyopaque, changes: []const @import("../vs/platform/files/common/files.zig").FileChange) void {
                         const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                        return host.gitCommandsFor(repository);
+                        host.handleFileChanges(changes);
                     }
-                }.commands,
+                }.run,
                 .report_status = scmViewStatus,
                 .working_text = struct {
                     fn get(context: *anyopaque, allocator_: Allocator, path: []const u8) !?[]u8 {
@@ -2737,13 +2744,6 @@ pub const TerminalWorkbench = struct {
         try self.git_commands.openDiff(path, left_ref, right_ref);
     }
 
-    /// Opens a read-only diff between the parent revision and a history item.
-    /// `original_path` is the rename source; `left_rev == null` compares the
-    /// root commit against the empty tree.
-    fn openRefDiff(self: *TerminalWorkbench, path: []const u8, original_path: ?[]const u8, left_rev: ?[]const u8, right_rev: []const u8, left_label: []const u8, right_label: []const u8) !void {
-        try self.git_commands.openRefDiff(path, original_path, left_rev, right_rev, left_label, right_label);
-    }
-
     fn openSnapshotDiff(
         self: *TerminalWorkbench,
         path: []const u8,
@@ -2765,7 +2765,7 @@ pub const TerminalWorkbench = struct {
 
     fn providerOpenChange(context: *anyopaque, provider: *repository_mod.Repository, resource: *repository_mod.GitScmResource) anyerror!void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        return self.gitCommandsFor(provider).openChange(resource);
+        return self.git_commands.commandsFor(provider).openChange(resource);
     }
 
     fn scmViewOpen(_: *anyopaque, resource: *scm_common.ISCMResource) !void {
@@ -2774,11 +2774,7 @@ pub const TerminalWorkbench = struct {
 
     fn scmViewResourceAction(context: *anyopaque, action: scm_view_mod.ResourceAction, resource: *scm_common.ISCMResource) anyerror!void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        const commands = self.gitCommands() catch |err| {
-            self.setStatusHint("Source Control action failed: {s}", .{@errorName(err)});
-            return;
-        };
-        commands.runResourceAction(action, resource) catch |err| self.setStatusHint("Source Control action failed: {s}", .{@errorName(err)});
+        self.git_commands.runResourceAction(action, resource);
     }
 
     fn scmRefresh(context: *anyopaque) void {
@@ -2793,7 +2789,7 @@ pub const TerminalWorkbench = struct {
 
     fn scmViewCommit(context: *anyopaque, message: []const u8, action: scm_view_mod.CommitAction) anyerror!void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        try (try self.gitCommands()).commit(message, action);
+        try (try self.git_commands.commands()).commit(message, action);
     }
 
     fn scmViewStatus(context: *anyopaque, message: []const u8) void {
@@ -2803,70 +2799,7 @@ pub const TerminalWorkbench = struct {
 
     fn scmBranchAction(context: *anyopaque, action: scm_view_mod.BranchAction) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-        switch (action) {
-            .publish => self.git_commands.publish() catch |err| self.setStatusHint("Publish failed: {s}", .{@errorName(err)}),
-            .sync => {
-                self.git_commands.runRemoteAction(.pull, null) catch |err| {
-                    self.setStatusHint("Pull failed: {s}", .{@errorName(err)});
-                    return;
-                };
-                self.git_commands.runRemoteCommand(.push);
-            },
-        }
-    }
-
-    fn gitCommands(self: *TerminalWorkbench) !@import("../extensions/git/src/commands.zig").Commands {
-        return self.gitCommandsFor(self.git_model.repository orelse return error.NoRepository);
-    }
-
-    fn gitCommandsFor(self: *TerminalWorkbench, provider: *repository_mod.Repository) @import("../extensions/git/src/commands.zig").Commands {
-        return .{
-            .allocator = self.allocator,
-            .repository = provider,
-            .configuration = if (self.configuration) |config| config.interface() else null,
-            .host = .{
-                .context = self,
-                .report_status = scmViewStatus,
-                .did_run_remote_action = onScmRemoteAction,
-                .resources = .{
-                    .io = self.io,
-                    .dialogs = self.dialog_api,
-                    .resolve_repository = struct {
-                        fn run(context: *anyopaque) ?*repository_mod.Repository {
-                            const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                            return host.git_model.repository;
-                        }
-                    }.run,
-                    .open_path = struct {
-                        fn run(context: *anyopaque, path: []const u8) !void {
-                            const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                            try host.openPath(path);
-                        }
-                    }.run,
-                    .open_diff = struct {
-                        fn run(context: *anyopaque, path: []const u8, left: DiffRef, right: DiffRef) !void {
-                            const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                            try host.openDiff(path, left, right);
-                        }
-                    }.run,
-                    .open_ref_diff = struct {
-                        fn run(context: *anyopaque, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {
-                            const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                            try host.openRefDiff(path, original_path, left, right, left_label, right_label);
-                        }
-                    }.run,
-                    .focus_editor = scmFocusEditor,
-                    .refresh = scmRefresh,
-                    .files_changed = struct {
-                        fn run(context: *anyopaque, changes: []const @import("../vs/platform/files/common/files.zig").FileChange) void {
-                            const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                            host.handleFileChanges(changes);
-                        }
-                    }.run,
-                    .request_frame = requestWorkbenchFrame,
-                },
-            },
-        };
+        self.git_commands.runBranchAction(action);
     }
 
     fn onScmRemoteAction(context: *anyopaque) void {
@@ -2940,7 +2873,7 @@ pub const TerminalWorkbench = struct {
     fn historyOpenChange(context: *anyopaque, item: *const scm_common_history.ISCMHistoryItem, change: *const scm_common_history.ISCMHistoryItemChange) !void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         const revision = if (self.scm.history) |view| view.itemRevision(item.*) else item.id;
-        try (try self.gitCommands()).openHistoryChange(item, change, revision);
+        try (try self.git_commands.commands()).openHistoryChange(item, change, revision);
     }
 
     const ShowTabs = layout_service_mod.EditorTabsMode;

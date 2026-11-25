@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const repository_mod = @import("repository.zig");
 const git_mod = @import("git.zig");
 const IConfigurationService = @import("../../../vs/platform/configuration/common/configuration.zig").IConfigurationService;
+const IEditorService = @import("../../../vs/workbench/services/editor/common/editorService.zig").IEditorService;
 
 const scm = @import("../../../vs/workbench/contrib/scm/common/scm.zig");
 const CommitAction = scm.CommitAction;
@@ -302,11 +303,18 @@ pub const CommandContribution = struct {
     model: *Model,
     io: std.Io,
     quick_input: *QuickInputService,
+    configuration: *const IConfigurationService,
+    editors: *const IEditorService,
+    dialogs: *const dialogs.IDialogService,
     publish_arena: std.heap.ArenaAllocator,
     publish_root: ?[]const u8 = null,
     host: struct {
         context: *anyopaque,
-        commands_for: *const fn (*anyopaque, *repository_mod.Repository) Commands,
+        focus_editor: *const fn (*anyopaque) void,
+        refresh_resources: *const fn (*anyopaque) void,
+        did_run_remote_action: *const fn (*anyopaque) void,
+        files_changed: *const fn (*anyopaque, []const FileChange) void,
+        request_frame: *const fn (*anyopaque) void,
         report_status: *const fn (*anyopaque, []const u8) void,
         working_text: *const fn (*anyopaque, Allocator, []const u8) anyerror!?[]u8,
         has_diff: *const fn (*anyopaque, []const u8, []const u8, []const u8) bool,
@@ -316,6 +324,109 @@ pub const CommandContribution = struct {
         selected_resource: *const fn (*anyopaque) ?*scm.ISCMResource,
         open_active_diff: *const fn (*anyopaque) anyerror!void,
     },
+
+    pub fn commands(self: *CommandContribution) !Commands {
+        return self.commandsFor(self.model.repository orelse return error.NoRepository);
+    }
+
+    /// One command instance targets a captured repository. All native
+    /// resource and confirmation callbacks are resolved by the extension
+    /// contribution; the window supplies only the service/focus boundary.
+    pub fn commandsFor(self: *CommandContribution, repository: *repository_mod.Repository) Commands {
+        return .{
+            .allocator = self.allocator,
+            .repository = repository,
+            .configuration = self.configuration.*,
+            .host = .{
+                .context = self,
+                .report_status = struct {
+                    fn run(context: *anyopaque, message: []const u8) void {
+                        const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                        owner.host.report_status(owner.host.context, message);
+                    }
+                }.run,
+                .did_run_remote_action = struct {
+                    fn run(context: *anyopaque) void {
+                        const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                        owner.host.did_run_remote_action(owner.host.context);
+                    }
+                }.run,
+                .resources = .{
+                    .io = self.io,
+                    .dialogs = self.dialogs.*,
+                    .resolve_repository = struct {
+                        fn run(context: *anyopaque) ?*repository_mod.Repository {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            return owner.model.repository;
+                        }
+                    }.run,
+                    .open_path = struct {
+                        fn run(context: *anyopaque, path: []const u8) !void {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            try owner.editors.openEditor(path, .{});
+                        }
+                    }.run,
+                    .open_diff = struct {
+                        fn run(context: *anyopaque, path: []const u8, left: git_mod.DiffRef, right: git_mod.DiffRef) !void {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            try owner.openDiff(path, left, right);
+                        }
+                    }.run,
+                    .open_ref_diff = struct {
+                        fn run(context: *anyopaque, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            try owner.openRefDiff(path, original_path, left, right, left_label, right_label);
+                        }
+                    }.run,
+                    .focus_editor = struct {
+                        fn run(context: *anyopaque) void {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            owner.host.focus_editor(owner.host.context);
+                        }
+                    }.run,
+                    .refresh = struct {
+                        fn run(context: *anyopaque) void {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            owner.host.refresh_resources(owner.host.context);
+                        }
+                    }.run,
+                    .files_changed = struct {
+                        fn run(context: *anyopaque, changes: []const FileChange) void {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            owner.host.files_changed(owner.host.context, changes);
+                        }
+                    }.run,
+                    .request_frame = struct {
+                        fn run(context: *anyopaque) void {
+                            const owner: *CommandContribution = @ptrCast(@alignCast(context));
+                            owner.host.request_frame(owner.host.context);
+                        }
+                    }.run,
+                },
+            },
+        };
+    }
+
+    pub fn runResourceAction(self: *CommandContribution, action: scm.ResourceAction, resource: *scm.ISCMResource) void {
+        const target = self.commands() catch |err| {
+            self.status("Source Control action failed: {s}", .{@errorName(err)});
+            return;
+        };
+        target.runResourceAction(action, resource) catch |err| self.status("Source Control action failed: {s}", .{@errorName(err)});
+    }
+
+    pub fn runBranchAction(self: *CommandContribution, action: scm.BranchAction) void {
+        switch (action) {
+            .publish => self.publish() catch |err| self.status("Publish failed: {s}", .{@errorName(err)}),
+            .sync => {
+                self.runRemoteAction(.pull, null) catch |err| {
+                    self.status("Pull failed: {s}", .{@errorName(err)});
+                    return;
+                };
+                self.runRemoteCommand(.push);
+            },
+        }
+    }
 
     pub fn deinit(self: *CommandContribution) void {
         if (self.quick_input.handler_context == @as(*anyopaque, self)) self.quick_input.hide();
@@ -375,7 +486,7 @@ pub const CommandContribution = struct {
 
     pub fn runRemoteAction(self: *CommandContribution, action: git_mod.Git.RemoteAction, remote: ?[]const u8) !void {
         const repository = self.model.repository orelse return error.NoRepository;
-        try self.host.commands_for(self.host.context, repository).remote(action, remote);
+        try self.commandsFor(repository).remote(action, remote);
     }
 
     pub fn runRemoteCommand(self: *CommandContribution, comptime action: git_mod.Git.RemoteAction) void {
