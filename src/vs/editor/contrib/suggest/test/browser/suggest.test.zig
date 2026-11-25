@@ -361,25 +361,37 @@ test "SuggestController: deferred provider reports loading then results" {
 
     const items = [_]completion.CompletionItem{.{ .label = "foo", .insert_text = "foo" }};
 
+    const window_dispatch = @import("../../../../../base/common/windowDispatch.zig");
+    var queue = window_dispatch.Queue{ .io = io };
     const DeferredState = struct {
         ready_at: i64,
         items: []const completion.CompletionItem,
-        canceled: bool = false,
+        task: window_dispatch.Task,
+        callback_context: *anyopaque = undefined,
+        callback: completion.CompletionRequest.Callback = undefined,
 
-        fn poll(context: *anyopaque, now: i64) anyerror!?completion.CompletionList {
+        fn onComplete(context: *anyopaque, callback_context: *anyopaque, callback: completion.CompletionRequest.Callback) void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            if (now < self.ready_at) return null;
-            return .{ .items = self.items };
+            self.callback_context = callback_context;
+            self.callback = callback;
+            self.task.schedule(self.ready_at);
+        }
+
+        fn run(context: *anyopaque, _: i64, _: bool) bool {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.callback(self.callback_context, self, .{ .items = self.items });
+            return true;
         }
 
         fn cancel(context: *anyopaque) void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            self.canceled = true;
+            self.task.schedule(null);
         }
     };
 
     const DeferredProvider = struct {
         ready_at: i64,
+        queue: *window_dispatch.Queue,
         items: []const completion.CompletionItem,
 
         fn interface(self: *@This()) completion.CompletionItemProvider {
@@ -397,30 +409,38 @@ test "SuggestController: deferred provider reports loading then results" {
         fn deferred(context: *anyopaque, session_allocator: std.mem.Allocator, _: *TextModel, _: Position, _: completion.CompletionContext, _: CancellationToken) anyerror!?completion.CompletionRequest {
             const self: *@This() = @ptrCast(@alignCast(context));
             const state = try session_allocator.create(DeferredState);
-            state.* = .{ .ready_at = self.ready_at, .items = self.items };
+            state.* = .{ .ready_at = self.ready_at, .items = self.items, .task = .{ .queue = self.queue, .context = state, .run = DeferredState.run } };
             return .{
                 .context = state,
-                .poll = DeferredState.poll,
+                .on_complete = DeferredState.onComplete,
                 .cancel = DeferredState.cancel,
             };
         }
     };
 
-    var provider = DeferredProvider{ .ready_at = 10, .items = &items };
+    var provider = DeferredProvider{ .ready_at = 10, .items = &items, .queue = &queue };
     const providers = [_]completion.CompletionItemProvider{provider.interface()};
     var harness = makeHarness(editor);
     const controller = try makeController(allocator, editor, &harness, &providers);
     defer controller.deinit();
+    controller.attachWindow(&queue);
 
     _ = try controller.model.triggerExplicit(0);
     try std.testing.expect(controller.isOpen());
     try std.testing.expect(controller.model.isLoading());
-    _ = try controller.onTick(0);
+    try std.testing.expect(!queue.dispatch(0));
     try std.testing.expect(controller.model.isLoading());
-    _ = try controller.onTick(10);
+    try std.testing.expect(queue.dispatch(10));
     try std.testing.expect(!controller.model.isLoading());
     try std.testing.expectEqual(@as(usize, 1), controller.model.completionModel().?.count());
     try std.testing.expectEqualStrings("foo", controller.model.selectedItem().?.label);
+
+    // Cancellation removes the provider callback before freeing its arena.
+    _ = try controller.model.triggerExplicit(0);
+    try std.testing.expect(controller.model.isLoading());
+    controller.cancel();
+    try std.testing.expect(!queue.dispatch(10));
+    try std.testing.expect(!controller.isOpen());
 }
 
 test "SuggestController: resolved documentation appears in the details pane" {

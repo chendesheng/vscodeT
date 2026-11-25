@@ -58,9 +58,12 @@ pub const CompletionContext = struct {
 };
 
 pub const CompletionRequest = struct {
+    pub const Callback = *const fn (callback_context: *anyopaque, request_context: *anyopaque, result: anyerror!CompletionList) void;
     context: *anyopaque,
-    /// Returns null while pending, the list when ready.
-    poll: *const fn (context: *anyopaque, now_ms: i64) anyerror!?CompletionList,
+    /// Delivers the promise result on the window thread, possibly immediately.
+    /// Cancellation prevents subsequent callbacks. Result storage belongs to
+    /// the completion session allocator, including after request disposal.
+    on_complete: *const fn (context: *anyopaque, callback_context: *anyopaque, callback: Callback) void,
     cancel: *const fn (context: *anyopaque) void,
 };
 

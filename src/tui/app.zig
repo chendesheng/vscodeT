@@ -702,17 +702,7 @@ pub fn main(init: std.process.Init) !void {
         if (extension_host) |ext| {
             if (ext.pump()) needs_render = true;
         }
-        var timeout: i32 = 250;
-        if (workbench.activeTab()) |active| {
-            try active.ensureControllers();
-            if (active.controllers) |controllers| {
-                if (try controllers.suggest.onTick(now_ms)) needs_render = true;
-                if (controllers.suggest.pollTimeout(now_ms)) |suggest_timeout| {
-                    timeout = @min(timeout, @as(i32, @intCast(@min(suggest_timeout, 250))));
-                }
-            }
-        }
-        timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), timeout);
+        var timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), 250);
 
         timeout = restore_timer.nextTimeout(timeout);
         const polled = try terminal_host.wait(if (needs_render) 0 else timeout);

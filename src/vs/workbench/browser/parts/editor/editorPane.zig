@@ -1038,6 +1038,7 @@ pub const Controllers = struct {
         self.hover.attachWindow(window);
         self.word_highlighter.attachWindow(window);
         self.sticky.attachWindow(window);
+        self.suggest.attachWindow(window);
     }
     pub fn deinit(self: *Controllers) void {
         // The sink context points at this controller; detach before it dies.

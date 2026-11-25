@@ -1,8 +1,8 @@
 // Terminal controller for the suggest contribution.
 //
 // Upstream `suggestController.ts` wires a large editor contribution and
-// actions. The TUI has no contribution host, so the app forwards keys and the
-// poll loop forwards the quick-suggest deadline here.
+// actions. The terminal forwards keys through the editor and adapts timers
+// and provider promise settlement to the shared window dispatcher.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -70,6 +70,7 @@ pub const SuggestController = struct {
         });
         errdefer self.widget.deinit();
         self.model.overtyping_capturer = self.overtyping_capturer.interface();
+        self.model.listener = .{ .context = self, .on_change = onModelChanged };
         return self;
     }
 
@@ -120,8 +121,24 @@ pub const SuggestController = struct {
         return self.model.isOpen();
     }
 
-    pub fn pollTimeout(self: *const SuggestController, now_ms: i64) ?i64 {
-        return self.model.pollTimeout(now_ms);
+    pub fn attachWindow(self: *SuggestController, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.model.attachWindow(window, self, onDeadline);
+    }
+
+    fn onDeadline(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *SuggestController = @ptrCast(@alignCast(context));
+        return self.onTick(now) catch false;
+    }
+
+    fn onModelChanged(context: *anyopaque) void {
+        const self: *SuggestController = @ptrCast(@alignCast(context));
+        if (!self.host.has_editor_focus(self.host.context)) {
+            self.cancel();
+        } else if (self.model.isOpen()) {
+            self.showWidget();
+        } else {
+            self.hideWidget();
+        }
     }
 
     pub fn onTick(self: *SuggestController, now_ms: i64) !bool {

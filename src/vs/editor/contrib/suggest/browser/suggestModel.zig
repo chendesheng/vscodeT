@@ -2,7 +2,7 @@
 // `src/vs/editor/contrib/suggest/browser/suggestModel.ts`.
 //
 // Terminal adaptation: quick suggestions are scheduled with a 10 ms deadline
-// in the app poll loop; trigger characters and explicit invocation open
+// on the window dispatcher; trigger characters and explicit invocation open
 // immediately. Provider results live in an arena for the completion session.
 
 const std = @import("std");
@@ -17,6 +17,7 @@ const CancellationToken = @import("../../../../base/common/cancellation.zig").Ca
 const CompletionModel = @import("./completionModel.zig").CompletionModel;
 const snippetParser = @import("../../snippet/browser/snippetParser.zig");
 const SnippetSession = @import("../../snippet/browser/snippetSession.zig").SnippetSession;
+const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
 const snippet_variables = @import("../../snippet/browser/snippetVariables.zig");
 
 pub const quick_suggest_delay_ms: i64 = 10;
@@ -61,9 +62,17 @@ pub const SuggestModel = struct {
     open: bool = false,
     trigger: Trigger = .quick,
     deadline_ms: ?i64 = null,
+    deadline_task: window_dispatch.Task = .{},
+    listener: ?Listener = null,
+
     anchor: ?Position = null,
     empty_explicit: bool = false,
     overtyping_capturer: ?snippet_variables.OvertypingCapturer = null,
+
+    pub const Listener = struct {
+        context: *anyopaque,
+        on_change: *const fn (*anyopaque) void,
+    };
 
     pub fn init(
         allocator: Allocator,
@@ -117,18 +126,21 @@ pub const SuggestModel = struct {
         return false;
     }
 
-    pub fn pollTimeout(self: *const SuggestModel, now_ms: i64) ?i64 {
-        if (self.session) |session| {
-            if (session.pending.items.len > 0) return 10;
-        }
-        const deadline = self.deadline_ms orelse return null;
-        return @max(0, deadline - now_ms);
+    pub fn attachWindow(self: *SuggestModel, window: *window_dispatch.Queue, context: *anyopaque, run: window_dispatch.Callback) void {
+        self.deadline_task.schedule(null);
+        self.deadline_task = .{ .queue = window, .context = context, .run = run };
+        self.deadline_task.schedule(self.deadline_ms);
+    }
+
+    fn setDeadline(self: *SuggestModel, deadline: ?i64) void {
+        self.deadline_ms = deadline;
+        self.deadline_task.schedule(deadline);
     }
 
     /// Called after a printable character was inserted.
     pub fn onTypedCharacter(self: *SuggestModel, ch: u8, now_ms: i64) !bool {
         if (self.isProviderTriggerCharacter(ch)) {
-            self.deadline_ms = null;
+            self.setDeadline(null);
             return try self.triggerNow(now_ms, .character);
         }
         if (isWordChar(ch)) {
@@ -136,7 +148,7 @@ pub const SuggestModel = struct {
                 try self.refilter();
                 return true;
             }
-            self.deadline_ms = now_ms + quick_suggest_delay_ms;
+            self.setDeadline(now_ms + quick_suggest_delay_ms);
             return false;
         }
         const was_open = self.open;
@@ -173,10 +185,10 @@ pub const SuggestModel = struct {
     }
 
     pub fn onTick(self: *SuggestModel, now_ms: i64) !bool {
-        var changed = try self.pollPending(now_ms);
+        var changed = false;
         if (self.deadline_ms) |deadline| {
             if (now_ms >= deadline) {
-                self.deadline_ms = null;
+                self.setDeadline(null);
                 if (try self.triggerNow(now_ms, .quick)) changed = true;
             }
         }
@@ -210,13 +222,13 @@ pub const SuggestModel = struct {
     }
 
     pub fn triggerExplicit(self: *SuggestModel, now_ms: i64) !bool {
-        self.deadline_ms = null;
+        self.setDeadline(null);
         return try self.triggerNow(now_ms, .explicit);
     }
 
     pub fn triggerCharacter(self: *SuggestModel, ch: u8, now_ms: i64) !bool {
         if (!self.isProviderTriggerCharacter(ch)) return false;
-        self.deadline_ms = null;
+        self.setDeadline(null);
         return try self.triggerNow(now_ms, .character);
     }
 
@@ -442,10 +454,13 @@ pub const SuggestModel = struct {
         else
             self.providers;
         var session = Session.init(self.allocator);
-        errdefer {
+        var transferred = false;
+        errdefer if (transferred) {
+            self.resetSession();
+        } else {
             for (session.pending.items) |pending| pending.request.cancel(pending.request.context);
             session.deinit();
-        }
+        };
 
         for (self.active_providers, 0..) |provider, provider_index| {
             const context = completion.CompletionContext{
@@ -466,7 +481,10 @@ pub const SuggestModel = struct {
                     CancellationToken.None,
                 ) catch continue;
                 if (request) |value| {
-                    try session.pending.append(.{ .provider_index = provider_index, .request = value });
+                    session.pending.append(.{ .provider_index = provider_index, .request = value }) catch |err| {
+                        value.cancel(value.context);
+                        return err;
+                    };
                 }
                 continue;
             }
@@ -486,21 +504,31 @@ pub const SuggestModel = struct {
         }
 
         self.session = session;
+        transferred = true;
+        self.trigger = trigger;
         try self.rebuildCompletion(prefix);
         self.open = true;
-        self.trigger = trigger;
         self.anchor = position;
         self.empty_explicit = trigger == .explicit and self.completion.?.isEmpty();
         if (self.completion.?.isEmpty() and session.pending.items.len == 0 and trigger != .explicit) {
             self.cancel();
             return false;
         }
-        return true;
+        // Install the session before subscribing: even an already-resolved
+        // promise may deliver synchronously. The callback may cancel it.
+        const requests = try self.allocator.dupe(PendingRequest, session.pending.items);
+        defer self.allocator.free(requests);
+        for (requests) |pending| {
+            if (self.session == null) break;
+            pending.request.on_complete(pending.request.context, self, onRequestCompleted);
+        }
+        return self.open;
     }
 
     fn rebuildCompletion(self: *SuggestModel, prefix: []const u8) !void {
         const session = self.session orelse return;
         if (self.completion) |*old| old.deinit();
+        self.completion = null;
         var model = try CompletionModel.init(self.allocator, session.items.items);
         errdefer model.deinit();
         try model.filter(prefix);
@@ -508,47 +536,39 @@ pub const SuggestModel = struct {
         self.empty_explicit = self.trigger == .explicit and model.isEmpty();
     }
 
-    fn pollPending(self: *SuggestModel, now_ms: i64) !bool {
-        const session = if (self.session) |*value| value else return false;
-        var changed = false;
-        var index: usize = 0;
-        while (index < session.pending.items.len) {
-            const pending = session.pending.items[index];
-            const result = pending.request.poll(pending.request.context, now_ms) catch {
-                pending.request.cancel(pending.request.context);
-                _ = session.pending.orderedRemove(index);
-                changed = true;
-                continue;
-            };
+    fn onRequestCompleted(context: *anyopaque, request_context: *anyopaque, result: anyerror!completion.CompletionList) void {
+        const self: *SuggestModel = @ptrCast(@alignCast(context));
+        self.acceptRequestResult(request_context, result) catch self.cancel();
+        if (self.listener) |listener| listener.on_change(listener.context);
+    }
+
+    fn acceptRequestResult(self: *SuggestModel, request_context: *anyopaque, result: anyerror!completion.CompletionList) !void {
+        const session = if (self.session) |*value| value else return;
+        for (session.pending.items, 0..) |pending, index| {
+            if (pending.request.context != request_context) continue;
+            _ = session.pending.orderedRemove(index);
+            pending.request.cancel(request_context);
             if (result) |list| {
-                pending.request.cancel(pending.request.context);
                 for (list.items) |item| {
                     var copy = item;
                     copy.provider_index = pending.provider_index;
                     try session.items.append(copy);
                 }
-                _ = session.pending.orderedRemove(index);
-                changed = true;
-                continue;
-            }
-            index += 1;
-        }
+            } else |_| {}
+            break;
+        } else return;
 
-        if (!changed) return false;
         const position = self.editor.modelCursorPosition();
         var line = try self.editor.model.getLineContent(position.lineNumber);
         defer line.deinit();
         const start_column = wordStartColumn(line.items, position.column);
         if (start_column == position.column) {
             self.cancel();
-            return true;
+            return;
         }
         try self.rebuildCompletion(line.items[start_column - 1 .. position.column - 1]);
         self.anchor = position;
-        if (self.completion.?.isEmpty() and session.pending.items.len == 0 and self.trigger != .explicit) {
-            self.cancel();
-        }
-        return true;
+        if (self.completion.?.isEmpty() and session.pending.items.len == 0 and self.trigger != .explicit) self.cancel();
     }
 
     fn refilter(self: *SuggestModel) !void {
@@ -576,7 +596,7 @@ pub const SuggestModel = struct {
             session.deinit();
         }
         self.session = null;
-        self.deadline_ms = null;
+        self.setDeadline(null);
         self.anchor = null;
         _ = self.arena.reset(.retain_capacity);
     }
