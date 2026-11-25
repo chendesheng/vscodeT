@@ -232,6 +232,7 @@ pub const NotificationViewItem = struct {
     progress_value: ?NotificationViewItemProgress = null,
     closed: bool = false,
     retained_handle: bool = false,
+    view_references: usize = 0,
     notifying: usize = 0,
     on_did_change_expansion: Emitter(void),
     on_did_change_visibility: Emitter(bool),
@@ -416,8 +417,17 @@ pub const NotificationViewItem = struct {
         self.notifying -= 1;
         self.releaseIfClosed();
     }
+    // A scheduled view may outlive removal from the model. The upstream JS
+    // port relies on GC here; the terminal view explicitly retains the item.
+    pub fn retainView(self: *NotificationViewItem) void {
+        self.view_references += 1;
+    }
+    pub fn releaseView(self: *NotificationViewItem) void {
+        self.view_references -= 1;
+        self.releaseIfClosed();
+    }
     fn releaseIfClosed(self: *NotificationViewItem) void {
-        if (!self.closed or self.notifying != 0 or self.retained_handle) return;
+        if (!self.closed or self.notifying != 0 or self.retained_handle or self.view_references != 0) return;
         if (self.model) |model| model.destroyItem(self);
     }
     fn fromContext(ctx: *anyopaque) *NotificationViewItem {
