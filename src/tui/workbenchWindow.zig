@@ -16,7 +16,7 @@
 //! Like VS Code's editorBorder.css, the rounded outline encloses the entire
 //! editor area. The split tree draws straight sashes inside it. Cell borders
 //! draw both on cell edges; the glyph fallback reserves a cell for each line.
-//! The sidebar and bottom panel use the same rounded frame treatment, adapting
+//! The sidebar and panel use the same rounded frame treatment, adapting
 //! the outlines in upstream's `floatingPanels.css` to the terminal grid.
 //! The SCM history hover adapts the rounded workbench hover from
 //! `src/vs/platform/hover/browser/hover.css` to the terminal cell grid.
@@ -1114,6 +1114,13 @@ pub const TerminalWorkbench = struct {
         self.focus_subscriptions[3] = try self.quick_input_api.on_hide.listenSignal(self, updatePartFocus);
         self.focus_subscriptions[4] = try self.activity_bar_part.on_did_change.listenSignal(self, updatePartFocus);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
+        self.menu_service.useContextService(self.context_keys.?);
+        try self.panel_part.attachTitleMenu(&self.menu_service, self.core.context_keys.getContext());
+        _ = try self.panel_part.on_did_change.listenSignal(self, struct {
+            fn run(host: *TerminalWorkbench) !void {
+                host.requestFrame();
+            }
+        }.run);
         const editor_service = @import("../vs/workbench/services/editor/browser/editorService.zig").EditorService{ .part = self.part };
         if (self.editor_status) |status| try status.bindActiveEditor(editor_service);
         if (self.media_status) |status| try status.bindActiveEditor(editor_service);
@@ -1708,6 +1715,7 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, scm_contribution.show_scm_action);
         for (markers_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, panel_actions.toggle_panel_action);
+        try panel_actions.registerPanelTitle(&self.commands.menus);
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.toggle_action);
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.exit_action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/browser/actions/layoutActions.zig").toggle_centered_layout_action);
@@ -4096,10 +4104,6 @@ pub const TerminalWorkbench = struct {
         self.setFocus(.editor);
     }
 
-    pub fn clearStatusHover(self: *TerminalWorkbench) void {
-        self.statusbar.main_part.clearHover();
-    }
-
     pub fn leaveEditorHover(self: *TerminalWorkbench) void {
         if (self.activeTab()) |tab| {
             if (tab.controllers) |controllers| controllers.hover.hideContentHover();
@@ -4130,10 +4134,6 @@ pub const TerminalWorkbench = struct {
         destination.setActive(change.views[0]);
         self.updateSidebarTitleActions();
         try self.saveSidebarViewStates();
-    }
-
-    pub fn showSidebarViewMenu(self: *TerminalWorkbench, container: *view_pane_container_mod.ViewPaneContainer, source: sidebar_part_mod.ViewMenuSource, header_id: ?[]const u8, anchor: MenuAnchor) !void {
-        try self.sidebar_menus.show(container, source, header_id, anchor);
     }
 
     pub fn clearTabHover(self: *TerminalWorkbench) void {

@@ -1121,7 +1121,8 @@ console API for raw mode, sizing and input polling.
   terminal container. `hideIfEmpty` containers keep their tab while active and
   drop it again once empty. Panel position (top/bottom/left/right), alignment
   (center/left/right/justify) and maximization follow Layout commands and
-  context keys, with separate remembered width and height. Floating panels
+  context keys, with separate remembered width and height. The title bar
+  exposes Maximize/Restore (when supported) and Hide Panel actions. Floating panels
   require browser window infrastructure; the overflow switcher remains unported.
 - Source Control runs Git through the CLI. `src/extensions/git/src/git.zig` implements
   the ported `IGitExtensionDelegate` over the Git command line (argv, never a

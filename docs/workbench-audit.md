@@ -104,6 +104,8 @@ The remaining native menu-action context and dispatcher are removed. ActivityBar
 
 The legacy CommandInfo table is deleted. Action2 registrations and extension commands now share CommandsRegistry for execution and insertion order, MenuRegistry for palette descriptors and context expressions, and a registration map only for disposal metadata. Markdown preview commands use owner Action2 registrations. Extension enablement is a parsed ContextKeyExpr rather than a separate callback filter. The conditional extension palette menu rows that were previously suppressed remain a documented port gap. The snapshot now also records the existing precondition of the hidden Hide Notification Toasts action, which the old metadata table lost; its palette visibility and all other rows are unchanged.
 
+PanelPart now renders the upstream PanelTitle navigation actions through a live MenuService menu. Maximize/Restore visibility and tooltip follow the panel context events; the title toolbar reserves cells separately from the terminal contribution actions, and its hit regions are excluded from the layout sash.
+
 The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,749 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture

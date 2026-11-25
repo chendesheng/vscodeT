@@ -2268,7 +2268,9 @@ panel position, maximization history, the last active sidebar and panel containe
 mode and its exit information. The panel defaults to bottom and supports all
 four dock positions; its sash follows the horizontal or vertical sizing axis.
 Layout restores containers through the registered pane-composite service;
-hidden containers retain the saved last-active ID without mounting their view. Each file
+hidden containers retain the saved last-active ID without mounting their view.
+PanelTitle navigation actions occupy trailing title cells; their visibility and
+Maximize/Restore state are resolved from the live menu/context-key events. Each file
 is replaced atomically on shutdown. An explicit session path identifies an
 empty window across launches. A window without a folder or session path has
 only profile-level sizing. Restoring a terminal panel opens the pane without

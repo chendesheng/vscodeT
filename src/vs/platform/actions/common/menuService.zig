@@ -608,6 +608,7 @@ pub const MenuService = struct {
             .onDidChange = Emitter(void).init(allocator),
             .registry_listener = try self.registry.on_did_change.listen(menu, Menu.onRegistryChange),
         };
+        errdefer self.registry.on_did_change.unlisten(menu.registry_listener);
         if (self.context_service) |context_service| {
             menu.context_listener = try context_service.onDidChangeContext.listen(menu, Menu.onContextChange);
         }
@@ -664,7 +665,7 @@ pub const MenuService = struct {
                             .is_modified_from_default = self.hide_state.isModifiedFromDefault(id, item.command.id),
                             .label = label,
                             .keybinding_label = self.keybindingLabel(allocator, item.command.id, context) catch null,
-                            .tooltip = item.command.tooltip orelse "",
+                            .tooltip = commandTooltip(item.command, checked),
                             .group_title = group_title,
                             .command_registry = self.command_registry,
                             .menu = id,
@@ -689,7 +690,7 @@ pub const MenuService = struct {
                                     break :blk alt.title;
                                 } else alt.title,
                                 .keybinding_label = self.keybindingLabel(allocator, alt.id, context) catch null,
-                                .tooltip = alt.tooltip orelse "",
+                                .tooltip = commandTooltip(alt, alt_checked),
                                 .group_title = group_title,
                                 .command_registry = self.command_registry,
                                 .menu = id,
@@ -747,6 +748,11 @@ fn separator(allocator: Allocator, label: ?[]const u8) !IAction {
     const value = try allocator.create(base_actions.Separator);
     value.* = .{ .label_text = label };
     return value.interface();
+}
+
+fn commandTooltip(command: ICommandAction, checked: ?bool) []const u8 {
+    if (checked == true) if (command.toggle_info) |info| if (info.tooltip) |tooltip| return tooltip;
+    return command.tooltip orelse "";
 }
 
 fn toggleState(command: ICommandAction, context: contextkey.IContext) ?bool {

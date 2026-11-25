@@ -58,11 +58,22 @@ const vertical_panel = Expr{ .And = @constCast(&[_]*const Expr{ &not_bottom, &no
 const panel_maximization_supported = Expr{ .Or = @constCast(&[_]*const Expr{ &aligned_center, &vertical_panel }) };
 
 pub const toggle_maximized_panel_action: actions.Action2 = .{
-    .command = .{ .id = "workbench.action.toggleMaximizedPanel", .title = "Toggle Maximized Panel", .tooltip = "Maximize Panel", .category = "View", .precondition = &panel_maximization_supported, .toggled = &.{ .Defined = "panelMaximized" } },
+    .command = .{ .id = "workbench.action.toggleMaximizedPanel", .title = "Toggle Maximized Panel", .tooltip = "Maximize Panel", .icon = "panel-maximize", .category = "View", .precondition = &panel_maximization_supported, .toggled = &.{ .Defined = "panelMaximized" }, .toggle_info = .{ .condition = &.{ .Defined = "panelMaximized" }, .tooltip = "Restore Panel" } },
     .f1 = true,
+    .menus = &.{.{ .id = actions.menu_ids.PanelTitle, .group = "navigation", .order = 1, .when = &panel_maximization_supported }},
     .context = @constCast(&{}),
     .run_fn = toggleMaximizedPanel,
 };
+
+/// The PanelTitle contribution uses the toggle command with the local Hide
+/// Panel label/icon, independently of its command-palette label.
+pub fn registerPanelTitle(registry: *actions.MenuRegistry) !void {
+    try registry.appendMenuItem(actions.menu_ids.PanelTitle, .{
+        .command = .{ .id = toggle_panel_action.command.id, .title = "Hide Panel", .icon = "panel-close" },
+        .group = "navigation",
+        .order = 2,
+    });
+}
 
 fn toggleMaximizedPanel(_: *anyopaque, accessor: ServicesAccessor) !void {
     const service = try accessor.get(layout.layout_service_id);

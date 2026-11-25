@@ -426,7 +426,7 @@ fn renderPanel(self: *Workbench) !void {
     const active_id = self.geometry().activePanelId();
     if (std.mem.eql(u8, active_id, TERMINAL_CONTAINER_ID)) {
         if (self.terminal_service) |service| {
-            try self.terminal_tabbed_view.render(&self.frame.next, service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), self.theme_palette);
+            try self.terminal_tabbed_view.render(&self.frame.next, service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), panel_part_mod.titleActionsStart(&self.panel_part, rect), self.theme_palette);
         } else {
             renderPlaceholder(self, content, focused);
         }
@@ -1409,7 +1409,7 @@ pub fn handleTerminalMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     const left_press = event.kind == .down and event.button == .left;
     if (self.terminalPanelActive()) {
         const rect = self.geometry().panelRect();
-        if (self.terminal_tabbed_view.handleMouse(service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), event, time_compat.milliTimestamp(), .{
+        if (self.terminal_tabbed_view.handleMouse(service, rect, panel_part_mod.titleContentEnd(&self.panel_part, rect), panel_part_mod.titleActionsStart(&self.panel_part, rect), event, time_compat.milliTimestamp(), .{
             .context = self,
             .pointer = &self.pointer,
             .focus_panel = focusTerminalTabbedView,
@@ -1885,7 +1885,7 @@ pub fn handleSidebarPaneHeader(
     switch (outcome) {
         .handled => self.pointer = if (container.dragging_header) .grabbing else .pointer,
         .action => |id| self.runSidebarTitleAction(id, event),
-        .context_menu => |id| self.showSidebarViewMenu(container, .header, id, MenuAnchor.mouse(event)) catch {},
+        .context_menu => |id| self.sidebar_menus.show(container, .header, id, MenuAnchor.mouse(event)) catch {},
     }
     return true;
 }
@@ -1940,7 +1940,7 @@ pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         event.y >= content_top + content_height;
     if (in_chrome) {
         if (event.kind == .down and event.button == .right) {
-            if (self.activeSidebarViewContainer()) |container| self.showSidebarViewMenu(container, .container, null, MenuAnchor.mouse(event)) catch {};
+            if (self.activeSidebarViewContainer()) |container| self.sidebar_menus.show(container, .container, null, MenuAnchor.mouse(event)) catch {};
             return true;
         }
         if (event.kind == .move) {
@@ -2087,6 +2087,12 @@ pub fn handlePanelMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     }
 
     if (event.y == rect_y) {
+        if (panel_part_mod.hitTitleAction(&self.panel_part, rect, event.x, event.y)) |id| {
+            if (event.kind == .move) self.panel_part.setHovered(id);
+            self.pointer = .pointer;
+            if (event.kind == .down and event.button == .left) self.panel_part.runTitleAction(id) catch {};
+            return true;
+        }
         if (self.terminalPanelActive() and handleTerminalMouse(self, event)) return true;
         const hit = panel_part_mod.hitTest(&self.panel_part, rect, event.x, event.y);
         if (event.kind == .move) self.panel_part.setHovered(hit);
@@ -2337,7 +2343,8 @@ fn panelSashAt(self: *const Workbench, x: usize, y: usize) bool {
         const edge = if (position == .left) boundary -| 1 else boundary;
         const adjacent = if (position == .left) boundary else boundary -| 1;
         if (x != edge and !((self.part.cell_borders or self.part.glyphFrame()) and x == adjacent)) return false;
-        if (panel_part_mod.hitTest(&self.panel_part, self.geometry().panelRect(), x, y) != null) return false;
+        const title = self.geometry().panelRect();
+        if (panel_part_mod.hitTitleAction(&self.panel_part, title, x, y) != null or panel_part_mod.hitTest(&self.panel_part, title, x, y) != null) return false;
         return true;
     }
     const top = ui.cell.snap(frame.y);
@@ -2353,11 +2360,11 @@ fn panelSashAt(self: *const Workbench, x: usize, y: usize) bool {
     // Native borders share their row with the title. Compact terminals
     // also use this row, so leave composite tabs and actions clickable.
     const title = self.geometry().panelRect();
-    if (panel_part_mod.hitTest(&self.panel_part, title, x, y) != null) return false;
+    if (panel_part_mod.hitTitleAction(&self.panel_part, title, x, y) != null or panel_part_mod.hitTest(&self.panel_part, title, x, y) != null) return false;
     if (self.terminalPanelActive()) {
         if (self.terminal_service) |service| {
             const title_end = panel_part_mod.titleContentEnd(&self.panel_part, title);
-            return self.terminal_tabbed_view.hitTest(service, title, title_end, x, y) == .none;
+            return self.terminal_tabbed_view.hitTest(service, title, title_end, panel_part_mod.titleActionsStart(&self.panel_part, title), x, y) == .none;
         }
     }
     return true;

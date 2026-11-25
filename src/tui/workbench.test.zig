@@ -4883,7 +4883,7 @@ test "Workbench: new terminal creates one tab and hover does not act" {
 
     const title_y = ui.cell.snap(panel.y);
     var plus_x = ui.cell.snap(panel.x);
-    while (view.hitTest(service, panel, panel_part_mod.titleContentEnd(&workbench.panel_part, panel), plus_x, title_y) != .new_terminal) : (plus_x += 1) {
+    while (view.hitTest(service, panel, panel_part_mod.titleContentEnd(&workbench.panel_part, panel), panel_part_mod.titleActionsStart(&workbench.panel_part, panel), plus_x, title_y) != .new_terminal) : (plus_x += 1) {
         if (plus_x >= ui.cell.snap(panel.right())) return error.TestUnexpectedResult;
     }
     var move = ui.MouseEvent{ .kind = .move, .x = plus_x, .y = title_y };
@@ -9888,4 +9888,53 @@ test "Workbench: status bar navigation uses upstream context-key command registr
     try wb.commands.execute("workbench.statusBar.clearFocus");
     try std.testing.expectEqual(Focus.editor, wb.focus);
     try std.testing.expect(!context.getContextKeyValue("statusBarFocused").boolean);
+}
+
+fn findPanelTitleActionCell(wb: *Workbench, id: []const u8) ?usize {
+    const rect = wb.geometry().panelRect();
+    for (panel_part_mod.titleActionsStart(&wb.panel_part, rect)..ui.cell.snap(rect.right())) |x| {
+        if (panel_part_mod.hitTitleAction(&wb.panel_part, rect, x, ui.cell.snap(rect.y))) |hit| {
+            if (std.mem.eql(u8, hit, id)) return x;
+        }
+    }
+    return null;
+}
+
+test "Workbench: panel title menu follows maximization and alignment context events" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "panel_title.txt", "one");
+    defer allocator.free(path);
+    const window = try TestWindow.init(allocator, io, &.{path}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try std.testing.expect(try wb.openPanelContainer(PROBLEMS_CONTAINER_ID));
+    const maximize_id = "workbench.action.toggleMaximizedPanel";
+    const close_id = "workbench.action.togglePanel";
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try renderFrame(wb, &out.writer);
+    const x = findPanelTitleActionCell(wb, maximize_id) orelse return error.TestUnexpectedResult;
+    var click = ui.MouseEvent{ .kind = .down, .button = .left, .x = x, .y = ui.cell.snap(wb.geometry().panelRect().y) };
+    try std.testing.expectEqualStrings("Maximize Panel", wb.panel_part.titleActionTooltip(maximize_id).?);
+    // The title action must win over the panel sash in the compact border mode.
+    try std.testing.expect(terminal_workbench.workbenchSashAt(wb, click.x, click.y) == null);
+    try std.testing.expect(terminal_workbench.handlePanelMouse(wb, &click));
+    try std.testing.expect(wb.layout.isPanelMaximized());
+    try std.testing.expectEqualStrings("Restore Panel", wb.panel_part.titleActionTooltip(maximize_id).?);
+    try renderFrame(wb, &out.writer);
+    click.x = findPanelTitleActionCell(wb, maximize_id) orelse return error.TestUnexpectedResult;
+    click.y = ui.cell.snap(wb.geometry().panelRect().y);
+    try std.testing.expect(terminal_workbench.handlePanelMouse(wb, &click));
+    try std.testing.expect(!wb.layout.isPanelMaximized());
+    try wb.layout.setPanelAlignment(.justify);
+    try std.testing.expect(wb.panel_part.titleActionTooltip(maximize_id) == null);
+    try renderFrame(wb, &out.writer);
+    try std.testing.expect(findPanelTitleActionCell(wb, maximize_id) == null);
+    click.x = findPanelTitleActionCell(wb, close_id) orelse return error.TestUnexpectedResult;
+    click.y = ui.cell.snap(wb.geometry().panelRect().y);
+    try std.testing.expect(terminal_workbench.handlePanelMouse(wb, &click));
+    try std.testing.expect(!wb.layout.isVisible(.panel));
 }

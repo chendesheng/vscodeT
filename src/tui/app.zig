@@ -777,7 +777,7 @@ pub fn main(init: std.process.Init) !void {
                         if (workbench.requestQuit()) return;
                         continue;
                     }
-                    workbench.clearStatusHover();
+                    workbench.statusbar.main_part.clearHover();
 
                     if (try terminal_workbench.handleQuickAccessKey(workbench, event)) continue;
                     if (workbench.core.notification_controller) |controller| if (controller.handleKey(event)) continue;

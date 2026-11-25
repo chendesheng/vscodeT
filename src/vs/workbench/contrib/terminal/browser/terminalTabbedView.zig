@@ -106,7 +106,7 @@ pub const TerminalTabbedView = struct {
 
     /// Null means the mouse is outside the terminal panel. The encoded
     /// terminal mouse path may explicitly decline a content event.
-    pub fn handleMouse(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, title_end: usize, event: *const ui.MouseEvent, now_ms: i64, host: MouseHost) ?bool {
+    pub fn handleMouse(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, title_end: usize, title_right: usize, event: *const ui.MouseEvent, now_ms: i64, host: MouseHost) ?bool {
         const config = Config.load(service.options.configuration);
         const left_press = event.kind == .down and event.button == .left;
         const geometry = self.layoutForService(rect, service);
@@ -136,7 +136,7 @@ pub const TerminalTabbedView = struct {
             host.pointer.* = sash_css.pointer(.vertical);
             return true;
         }
-        const hit = self.hitTest(service, rect, title_end, event.x, event.y);
+        const hit = self.hitTest(service, rect, title_end, title_right, event.x, event.y);
         if (list.dragged_instance) |id| {
             if (event.kind == .up) {
                 const was_dragging = list.drag_target != null or list.drag_start_y != event.y;
@@ -306,7 +306,7 @@ pub const TerminalTabbedView = struct {
         return self.layout(rect, config, service.count(), service.group.groupCount());
     }
 
-    pub fn render(self: *const TerminalTabbedView, grid: *ui.CellGrid, service: *TerminalService, rect: ui.Rect, title_end: usize, palette: ?*const ThemeColors) !void {
+    pub fn render(self: *const TerminalTabbedView, grid: *ui.CellGrid, service: *TerminalService, rect: ui.Rect, title_end: usize, title_right: usize, palette: ?*const ThemeColors) !void {
         const l = self.layoutForService(rect, service);
         const panel_bg = tabs.color(palette, "panel.background", .{ 30, 30, 33 });
         const terminal_bg = if (palette) |colors| colors.colorOr("terminal.background", panel_bg) else panel_bg;
@@ -331,12 +331,12 @@ pub const TerminalTabbedView = struct {
             self.tab_list.render(grid, service, l.tabs, palette);
             renderDivider(grid, sash, l.tabs, panel_bg, palette);
         }
-        self.renderToolbar(grid, service, rect, l, title_end, palette);
+        self.renderToolbar(grid, service, rect, l, title_end, title_right, palette);
     }
 
-    fn renderToolbar(self: *const TerminalTabbedView, grid: *ui.CellGrid, service: *const TerminalService, rect: ui.Rect, l: Layout, title_end: usize, palette: ?*const ThemeColors) void {
+    fn renderToolbar(self: *const TerminalTabbedView, grid: *ui.CellGrid, service: *const TerminalService, rect: ui.Rect, l: Layout, title_end: usize, title_right: usize, palette: ?*const ThemeColors) void {
         const config = Config.load(service.options.configuration);
-        const t = self.toolbar(rect, l, title_end, config, service.count()) orelse return;
+        const t = self.toolbar(rect, l, title_end, title_right, config, service.count()) orelse return;
         const foreground = tabs.color(palette, "foreground", .{ 204, 204, 204 });
         const background = tabs.color(palette, "panel.background", .{ 30, 30, 33 });
         const style: ui.cell.PaintStyle = .{ .fg = ui.cell.packColor(foreground), .bg = ui.cell.packColor(background) };
@@ -356,10 +356,10 @@ pub const TerminalTabbedView = struct {
         }
     }
 
-    pub fn hitTest(self: *const TerminalTabbedView, service: *const TerminalService, rect: ui.Rect, title_end: usize, x: usize, y: usize) Hit {
+    pub fn hitTest(self: *const TerminalTabbedView, service: *const TerminalService, rect: ui.Rect, title_end: usize, title_right: usize, x: usize, y: usize) Hit {
         const l = self.layoutForService(rect, service);
         if (y == ui.cell.snap(rect.y)) {
-            if (self.toolbar(rect, l, title_end, Config.load(service.options.configuration), service.count())) |t| {
+            if (self.toolbar(rect, l, title_end, title_right, Config.load(service.options.configuration), service.count())) |t| {
                 if (x == t.new_terminal) return .new_terminal;
                 if (x == t.new_terminal + 1) return .profiles;
                 if (t.split) |split| {
@@ -396,9 +396,9 @@ pub const TerminalTabbedView = struct {
         return .none;
     }
 
-    fn toolbar(_: *const TerminalTabbedView, rect: ui.Rect, l: Layout, title_end: usize, config: Config, count: usize) ?Toolbar {
+    fn toolbar(_: *const TerminalTabbedView, rect: ui.Rect, l: Layout, title_end: usize, title_right: usize, config: Config, count: usize) ?Toolbar {
         // Reserve a gutter between panel titles and the terminal actions.
-        const end = ui.cell.snap(rect.right()) -| 1;
+        const end = @min(ui.cell.snap(rect.right()), title_right) -| 1;
         const start = title_end + 1;
         if (end -| start < 3 or ui.cell.snap(rect.h) == 0) return null;
         const narrow = l.sash_x != null and ui.cell.snap(l.tabs.w) < tabs.midpoint_view_width;

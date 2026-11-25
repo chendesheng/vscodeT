@@ -14,7 +14,8 @@
 // is still built the upstream way: `renderTitle` creates a `ui.Document`
 // element tree (flex row, one element per composite) and paints it through a
 // `ui.Surface`, so tabs keep DOM-shaped node state instead of ad-hoc spans.
-// Single-cell glyphs replace theme icons. Floating panels, the
+// Single-cell glyphs replace theme icons. PanelTitle menu actions are resolved
+// through MenuService and reserve the trailing title cells. Floating panels, the
 // overflow switcher and drag-and-drop move actions are not ported.
 
 const std = @import("std");
@@ -24,6 +25,8 @@ const pane = @import("../paneCompositePart.zig");
 const layout_mod = @import("../../layout.zig");
 const theme_colors_mod = @import("../../themeColors.zig");
 const ui = @import("ui");
+const menus = @import("../../../../platform/actions/common/menuService.zig");
+const IAction = @import("../../../../base/common/actions.zig").IAction;
 
 pub const Position = layout_mod.Position;
 
@@ -53,6 +56,8 @@ pub const PanelPart = struct {
     /// Element nodes per visible composite, used for hit testing. The nodes
     /// live in the surface document arena and are rebuilt every render.
     title_nodes: std.array_list.Managed(TitleNode),
+    title_action_nodes: std.array_list.Managed(TitleNode),
+    title_menu: ?*menus.Menu = null,
     on_did_change: Emitter(void),
     /// Last painted title grid; unchanged chrome is blitted instead of being
     /// cleared and laid out again on every editor frame.
@@ -74,6 +79,7 @@ pub const PanelPart = struct {
                 .panel,
             ),
             .title_nodes = std.array_list.Managed(TitleNode).init(allocator),
+            .title_action_nodes = std.array_list.Managed(TitleNode).init(allocator),
             .on_did_change = Emitter(void).init(allocator),
         };
         // PanelPart always shows its composite bar in the title.
@@ -88,8 +94,57 @@ pub const PanelPart = struct {
         if (self.title_surface) |*surface| surface.deinit();
         self.title_surface = null;
         self.title_nodes.deinit();
+        self.title_action_nodes.deinit();
+        if (self.title_menu) |menu| {
+            menu.deinit();
+            self.allocator.destroy(menu);
+        }
         self.on_did_change.deinit();
         self.pane.deinit();
+    }
+
+    /// AbstractPaneCompositePart's title toolbar resolves its menu through
+    /// MenuService and refreshes on the menu/context-key event.
+    pub fn attachTitleMenu(self: *PanelPart, service: *menus.MenuService, context: @import("../../../../platform/contextkey/common/contextkey.zig").IContext) !void {
+        if (self.title_menu != null) return;
+        const menu = try service.createMenu(self.allocator, @import("../../../../platform/actions/common/actions.zig").menu_ids.PanelTitle, context);
+        errdefer {
+            menu.deinit();
+            self.allocator.destroy(menu);
+        }
+        _ = try menu.onDidChange.listenSignal(self, onTitleMenuChanged);
+        self.title_menu = menu;
+        errdefer self.title_menu = null;
+        try self.onTitleMenuChanged();
+    }
+
+    fn onTitleMenuChanged(self: *PanelPart) !void {
+        self.title_signature = null;
+        self.title_action_nodes.clearRetainingCapacity();
+        try self.on_did_change.fire({});
+    }
+
+    fn titleActions(self: *const PanelPart) []const IAction {
+        const menu = self.title_menu orelse return &.{};
+        for (menu.getActions()) |group| {
+            if (std.mem.eql(u8, group.id, "navigation")) return group.actions;
+        }
+        return &.{};
+    }
+
+    pub fn titleActionTooltip(self: *const PanelPart, id: []const u8) ?[]const u8 {
+        for (self.titleActions()) |action| {
+            if (std.mem.eql(u8, action.id(), id)) return if (action.tooltip().len != 0) action.tooltip() else action.label();
+        }
+        return null;
+    }
+
+    pub fn runTitleAction(self: *PanelPart, id: []const u8) !void {
+        for (self.titleActions()) |action| {
+            if (!std.mem.eql(u8, action.id(), id)) continue;
+            if (action.enabled()) try action.execute(null);
+            return;
+        }
     }
 
     pub fn setVisible(self: *PanelPart, visible: bool) !void {
@@ -279,6 +334,7 @@ pub fn renderTitle(
     const doc = surface.document();
     doc.clear();
     part.title_nodes.clearRetainingCapacity();
+    part.title_action_nodes.clearRetainingCapacity();
 
     const background = if (palette) |colors|
         colors.color("panel.background", .{ 30, 30, 33 })
@@ -315,6 +371,11 @@ pub fn renderTitle(
         .background = background,
         .color = inactive_foreground,
     });
+
+    const composite_row = try doc.createElement(.div);
+    const composites_width = titleActionsStart(part, rect) -| x;
+    composite_row.setStyle(.{ .display = .flex, .flex_direction = .row, .width = .{ .cells = @floatFromInt(composites_width) }, .height = .{ .cells = 1 }, .flex_shrink = 0, .overflow = .hidden });
+    _ = try root.appendChild(composite_row);
 
     for (part.pane.bar.items.items) |item| {
         if (!item.visible) continue;
@@ -362,8 +423,35 @@ pub fn renderTitle(
             _ = try tab.appendChild(badge_node);
         }
 
-        _ = try root.appendChild(tab);
+        _ = try composite_row.appendChild(tab);
         try part.title_nodes.append(.{ .id = item.id, .node = tab });
+    }
+
+    for (part.titleActions()) |action| {
+        const button = try doc.createElement(.div);
+        const hovered = part.hovered_id != null and std.mem.eql(u8, part.hovered_id.?, action.id());
+        button.setStyle(.{
+            .display = .flex,
+            .align_items = .center,
+            .justify_content = .center,
+            .width = .{ .cells = 2 },
+            .height = .{ .cells = 1 },
+            .flex_shrink = 0,
+            .overflow = .hidden,
+            .background = if (hovered) hover_background else null,
+            .color = if (action.enabled()) active_foreground else inactive_foreground,
+            .pointer = if (action.enabled()) .pointer else .default,
+        });
+        const icon = if (menus.MenuItemAction.from(action)) |item| item.item.icon orelse "" else "";
+        const label = if (std.mem.eql(u8, icon, "panel-maximize"))
+            if (action.checked() == true) "⊟" else "⊞"
+        else if (std.mem.eql(u8, icon, "panel-close"))
+            "×"
+        else
+            action.label();
+        _ = try button.appendText(label);
+        _ = try root.appendChild(button);
+        try part.title_action_nodes.append(.{ .id = action.id(), .node = button });
     }
 
     doc.setRoot(root);
@@ -378,7 +466,26 @@ pub fn titleContentEnd(part: *const PanelPart, rect: ui.Rect) usize {
     const surface = &(part.title_surface orelse return x);
     const last = part.title_nodes.getLastOrNull() orelse return x;
     const box = surface.box_tree.find(last.node) orelse return x;
-    return x + ui.cell.snap(box.rect.right());
+    return @min(titleActionsStart(part, rect), x + ui.cell.snap(box.rect.right()));
+}
+
+/// Panel navigation actions occupy the right-hand end of the one-cell title.
+/// The active composite toolbar uses the remaining cells before this boundary.
+pub fn titleActionsStart(part: *const PanelPart, rect: ui.Rect) usize {
+    const count = part.titleActions().len;
+    const reserve = if (count == 0) 0 else count * 2 + 1;
+    return ui.cell.snap(rect.x) + (ui.cell.snap(rect.w) -| reserve);
+}
+
+pub fn hitTitleAction(part: *const PanelPart, rect: ui.Rect, x: usize, y: usize) ?[]const u8 {
+    if (!part.visible or y != ui.cell.snap(rect.y) or x < titleActionsStart(part, rect) or x >= ui.cell.snap(rect.right())) return null;
+    const surface = &(part.title_surface orelse return null);
+    const local_x = @as(f64, @floatFromInt(x - ui.cell.snap(rect.x))) + 0.5;
+    for (part.title_action_nodes.items) |button| {
+        const box = surface.box_tree.find(button.node) orelse continue;
+        if (local_x >= box.rect.x and local_x < box.rect.right()) return button.id;
+    }
+    return null;
 }
 
 /// Returns the composite id under the mouse position. The boxes come from the
@@ -389,7 +496,7 @@ pub fn hitTest(part: *const PanelPart, rect: ui.Rect, x: usize, y: usize) ?[]con
     const rect_x = ui.cell.snap(rect.x);
     const rect_y = ui.cell.snap(rect.y);
     const width = ui.cell.snap(rect.w);
-    if (width == 0 or y != rect_y or x < rect_x or x >= rect_x + width) return null;
+    if (width == 0 or y != rect_y or x < rect_x or x >= titleActionsStart(part, rect)) return null;
 
     const local_x = @as(f64, @floatFromInt(x - rect_x)) + 0.5;
     for (part.title_nodes.items) |tab| {
