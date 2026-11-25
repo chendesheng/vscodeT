@@ -26,6 +26,7 @@ pub const Menu = struct {
     context_type: []const u8,
     run: *const fn (*anyopaque, []const u8) anyerror!void,
     selected: ?*Entry = null,
+    on_hide: ?*const fn (*anyopaque) void = null,
 
     const Entry = struct {
         owner: *Menu,
@@ -106,9 +107,13 @@ pub const Menu = struct {
     }
 
     pub fn appendMenuActions(self: *Menu, service: *api.MenuService, id: @import("../../actions/common/actions.zig").MenuId, context: @import("../../contextkey/common/contextkey.zig").IContext, exclude_navigation: bool) !void {
+        return self.appendMenuActionsWithOptions(service, id, context, exclude_navigation, .{});
+    }
+
+    pub fn appendMenuActionsWithOptions(self: *Menu, service: *api.MenuService, id: @import("../../actions/common/actions.zig").MenuId, context: @import("../../contextkey/common/contextkey.zig").IContext, exclude_navigation: bool, options: api.MenuActionOptions) !void {
         const arena = self.arena.allocator();
         try self.resolved.ensureUnusedCapacity(arena, 1);
-        const actions = try service.getMenuActions(arena, id, context);
+        const actions = try service.getMenuActionsWithOptions(arena, id, context, options);
         self.resolved.appendAssumeCapacity(actions);
         for (actions.groups) |group| {
             if (exclude_navigation and std.mem.eql(u8, group.id, "navigation")) continue;

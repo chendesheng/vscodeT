@@ -263,8 +263,6 @@ const Menu = context_menus.Menu;
 const MenuAnchor = context_menus.Anchor;
 const MenuActionContext = struct {
     workbench: *TerminalWorkbench,
-    group_id: ?editor_mod.GroupIdentifier = null,
-    tabs: []const *Tab = &.{},
 };
 
 pub const IWorkbenchOptions = workbench_core.IWorkbenchOptions;
@@ -474,6 +472,7 @@ pub const TerminalWorkbench = struct {
     context_menu_service: context_menus.ContextMenuService,
     context_menu_api: context_menus.IContextMenuService,
     sidebar_menus: sidebar_part_mod.SidebarViewMenus,
+    editor_tab_menus: @import("../vs/workbench/browser/parts/editor/editorTabsControl.zig").EditorTabsControl,
     menu_service: @import("../vs/platform/actions/common/menuService.zig").MenuService,
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
@@ -655,6 +654,34 @@ pub const TerminalWorkbench = struct {
                     host.setStatusHint("{s}", .{message});
                 }
             }.report,
+        };
+        self.editor_tab_menus = .{
+            .allocator = allocator,
+            .groups = &self.group_actions,
+            .menus = &self.menu_service,
+            .context_menu = &self.context_menu_service,
+            .context_keys = &self.core.context_keys,
+            .host = .{
+                .context = self,
+                .request_frame = struct {
+                    fn run(context: *anyopaque) void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        host.requestFrame();
+                    }
+                }.run,
+                .move_terminal_to_panel = struct {
+                    fn run(context: *anyopaque, pane: *GroupPane, tab: *Tab) !void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        try host.moveTerminalToPanel(pane, tab);
+                    }
+                }.run,
+                .rename_terminal = struct {
+                    fn run(context: *anyopaque, tab: *Tab) !void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        if (tab.terminalInstance()) |instance| try host.showTerminalRename(instance);
+                    }
+                }.run,
+            },
         };
         self.range_highlights = try RangeHighlightDecorations.create(allocator, @import("../vs/workbench/browser/codeeditor.zig").Host.forEditorPart(self.part));
         self.part.attachWindow(&self.window_events);
@@ -1583,6 +1610,8 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, self.github_publish.descriptor());
         for (self.simple_browser.actions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/contrib/preferences/browser/preferences.contribution.zig").preferences_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        try @import("../vs/workbench/browser/parts/editor/editorTabsControl.zig").registerEditorTitleContext(&self.commands.menus);
+        try @import("../vs/workbench/contrib/terminal/browser/terminalActions.zig").registerEditorTitleContext(&self.commands.menus);
         for (self.group_actions.closeAndReopenActions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.breadcrumbs.focusActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const outline_actions = @import("../vs/workbench/contrib/outline/browser/outlineActions.zig");
@@ -4065,11 +4094,7 @@ pub const TerminalWorkbench = struct {
     /// Destroys a tab view that lost to an already-open editor, detaching the
     /// workbench registrations that keep raw pointers into it.
     fn discardTab(self: *TerminalWorkbench, tab: *Tab) void {
-        if (self.context_menu_service.current) |menu| {
-            if (menu.getActionsContext(MenuActionContext)) |context| {
-                if (std.mem.indexOfScalar(*Tab, context.tabs, tab) != null) self.context_menu_service.hideContextMenu();
-            }
-        }
+        self.editor_tab_menus.invalidateTab(tab);
         if (self.hovered_tab == tab) self.hovered_tab = null;
         self.history.detachHistoryTab(tab);
         self.unregisterWorkingCopy(tab);
@@ -4098,67 +4123,6 @@ pub const TerminalWorkbench = struct {
     fn focusEditorAfterTransfer(context: *anyopaque) void {
         const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
         self.setFocus(.editor);
-    }
-
-    /// A click on the leading ellipsis lists the tabs clipped out of the strip
-    /// and activates the chosen one.
-    pub fn showTabOverflowMenu(self: *TerminalWorkbench, pane: *GroupPane, event: *const ui.MouseEvent) !bool {
-        var ordered = std.array_list.Managed(*Tab).init(self.allocator);
-        defer ordered.deinit();
-        try pane.orderedTabs(self.allocator, &ordered);
-        if (pane.hits.items.len >= ordered.items.len) return false;
-        const menu = try self.newContextMenu(runTabOverflowAction);
-        errdefer menu.deinit();
-        const arena = menu.arena.allocator();
-
-        var hidden = std.array_list.Managed(*Tab).init(arena);
-        for (ordered.items, 0..) |tab, index| {
-            var visible = false;
-            for (pane.hits.items) |hit| {
-                if (hit.index == index) {
-                    visible = true;
-                    break;
-                }
-            }
-            if (!visible) try hidden.append(tab);
-        }
-        if (hidden.items.len == 0) {
-            menu.deinit();
-            return false;
-        }
-
-        for (hidden.items, 0..) |tab, index| {
-            try menu.add(try std.fmt.allocPrint(arena, "overflow:{d}", .{index}), .{ .label = tab.input.getName() });
-        }
-        menu.getActionsContext(MenuActionContext).?.tabs = hidden.items;
-        menu.getActionsContext(MenuActionContext).?.group_id = pane.group.id;
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
-        return true;
-    }
-
-    /// EditorTitleContext actions target the tab under the pointer.
-    pub fn showTabContextMenu(self: *TerminalWorkbench, pane: *GroupPane, tab: *Tab, event: *const ui.MouseEvent) !void {
-        const menu = try self.newContextMenu(runTabMenuAction);
-        errdefer menu.deinit();
-        const arena = menu.arena.allocator();
-        try menu.add("tab:close", .{ .label = "Close" });
-        try menu.add("tab:close_others", .{ .label = "Close Others" });
-        try menu.add("tab:close_right", .{ .label = "Close to the Right" });
-        try menu.add("tab:close_saved", .{ .label = "Close Saved" });
-        try menu.add("tab:close_all", .{ .label = "Close All" });
-        try menu.separator();
-        const pinned = pane.group.model.isPinned(.{ .editor = tab.input });
-        try menu.add(if (pinned) "tab:unpin" else "tab:pin", .{ .label = if (pinned) "Unpin" else "Pin" });
-        try menu.separator();
-        try menu.add("tab:split_right", .{ .label = "Split Right" });
-        try menu.add("tab:split_down", .{ .label = "Split Down" });
-        if (tab.terminal_input != null) {
-            try menu.add("tab:move_terminal_to_panel", .{ .label = "Move Terminal into Panel" });
-            try menu.add("tab:rename_terminal", .{ .label = "Rename Terminal" });
-        }
-        menu.getActionsContext(MenuActionContext).?.group_id = pane.group.id;
-        menu.getActionsContext(MenuActionContext).?.tabs = try arena.dupe(*Tab, &.{tab});
-        try self.showContextMenu(menu, MenuAnchor.mouse(event));
     }
 
     /// Mirrors StatusbarPart.getContextMenuActions, including the empty row.
@@ -4641,81 +4605,6 @@ fn runActivityOverflowAction(self: *TerminalWorkbench, _: *MenuActionContext, id
     _ = try self.showActivityById(id[9..]);
 }
 
-fn runTabOverflowAction(self: *TerminalWorkbench, menu: *MenuActionContext, id: []const u8) anyerror!void {
-    const index = itemIndex(id, "overflow:") orelse return;
-    const tabs = menu.tabs;
-    if (index >= tabs.len) return;
-    const group = self.service.getGroup(menu.group_id.?) orelse return;
-    const pane = self.paneForGroup(group) orelse return;
-    if (pane.indexOfTab(tabs[index]) == null) return;
-    try pane.activateTab(tabs[index]);
-    self.focusEditor();
-    self.layoutAll();
-}
-
-fn runTabMenuAction(self: *TerminalWorkbench, menu: *MenuActionContext, id: []const u8) anyerror!void {
-    const group = self.service.getGroup(menu.group_id.?) orelse return;
-    const pane = self.paneForGroup(group) orelse return;
-    const tab = menu.tabs[0];
-    if (pane.indexOfTab(tab) == null) return;
-
-    if (std.mem.eql(u8, id, "tab:close")) {
-        _ = try self.closeTab(pane, tab);
-    } else if (std.mem.eql(u8, id, "tab:rename_terminal")) {
-        if (tab.terminalInstance()) |instance| try self.showTerminalRename(instance);
-    } else if (std.mem.eql(u8, id, "tab:move_terminal_to_panel")) {
-        try self.moveTerminalToPanel(pane, tab);
-    } else if (std.mem.eql(u8, id, "tab:close_others")) {
-        const tabs = try self.allocator.dupe(*Tab, pane.tabs.items);
-        defer self.allocator.free(tabs);
-        for (tabs) |candidate| {
-            if (candidate == tab) continue;
-            _ = try self.closeTab(pane, candidate);
-            if (self.isDialogOpen()) break;
-        }
-    } else if (std.mem.eql(u8, id, "tab:close_right")) {
-        const index = pane.indexOfTab(tab) orelse return;
-        const tabs = try self.allocator.dupe(*Tab, pane.tabs.items);
-        defer self.allocator.free(tabs);
-        for (tabs, 0..) |candidate, candidate_index| {
-            if (candidate_index <= index) continue;
-            _ = try self.closeTab(pane, candidate);
-            if (self.isDialogOpen()) break;
-        }
-    } else if (std.mem.eql(u8, id, "tab:close_saved")) {
-        const tabs = try self.allocator.dupe(*Tab, pane.tabs.items);
-        defer self.allocator.free(tabs);
-        for (tabs) |candidate| {
-            if (candidate.editor.isDirty()) continue;
-            _ = try self.closeTab(pane, candidate);
-            if (self.isDialogOpen()) break;
-        }
-    } else if (std.mem.eql(u8, id, "tab:close_all")) {
-        const tabs = try self.allocator.dupe(*Tab, pane.tabs.items);
-        defer self.allocator.free(tabs);
-        for (tabs) |candidate| {
-            _ = try self.closeTab(pane, candidate);
-            if (self.isDialogOpen()) break;
-        }
-    } else if (std.mem.eql(u8, id, "tab:pin")) {
-        _ = pane.group.model.pin(tab.input) catch {};
-        self.layoutAll();
-    } else if (std.mem.eql(u8, id, "tab:unpin")) {
-        _ = pane.group.model.unpin(tab.input) catch {};
-        self.layoutAll();
-    } else if (std.mem.eql(u8, id, "tab:split_right") or
-        std.mem.eql(u8, id, "tab:split_down"))
-    {
-        try pane.activateTab(tab);
-        self.focusEditor();
-        try self.splitActive(if (std.mem.eql(u8, id, "tab:split_right"))
-            .horizontal
-        else
-            .vertical);
-    }
-    self.requestFrame();
-}
-
 const ToggleStatusbarVisibilityAction = struct {
     workbench: *TerminalWorkbench,
 
@@ -4730,11 +4619,6 @@ fn navigationActiveEditor(context: *anyopaque) ?*Editor {
     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
     const tab = host.activeTab() orelse return null;
     return if (tab.isDiff()) null else tab.editor;
-}
-
-fn itemIndex(id: []const u8, prefix: []const u8) ?usize {
-    if (!std.mem.startsWith(u8, id, prefix)) return null;
-    return std.fmt.parseInt(usize, id[prefix.len..], 10) catch null;
 }
 
 fn hasActiveEditor(context: *anyopaque) bool {

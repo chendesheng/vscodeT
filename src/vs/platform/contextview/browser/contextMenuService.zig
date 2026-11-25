@@ -90,6 +90,7 @@ pub const ContextMenuService = struct {
         self.current = null;
         defer menu.deinit();
         self.on_did_hide_context_menu.fire({}) catch |err| self.errors.report(self.errors.context, err);
+        if (menu.on_hide) |on_hide| on_hide(menu.context);
         if (run_action) menu.runSelected() catch |err| self.errors.report(self.errors.context, err);
     }
 

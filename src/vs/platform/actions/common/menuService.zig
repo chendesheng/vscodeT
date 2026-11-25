@@ -44,6 +44,8 @@ pub const MenuActionOptions = struct {
     arg: ?[]const u8 = null,
     args: []const []const u8 = &.{},
     should_forward_args: bool = false,
+    // Scoped invoker for a menu with a captured command context.
+    invoker: ?CommandInvoker = null,
 };
 
 pub const CommandInvoker = struct {
@@ -669,7 +671,7 @@ pub const MenuService = struct {
                             .hide_state = &self.hide_state,
                             .allocator = self.allocator,
                             .options = options,
-                            .invoker = self.invoker,
+                            .invoker = options.invoker orelse self.invoker,
                         };
                         if (item.alt) |alt| {
                             const alt_action = try allocator.create(MenuItemAction);
@@ -694,7 +696,7 @@ pub const MenuService = struct {
                                 .hide_state = &self.hide_state,
                                 .allocator = self.allocator,
                                 .options = options,
-                                .invoker = self.invoker,
+                                .invoker = options.invoker orelse self.invoker,
                             };
                             const alt_interface = alt_action.interface();
                             const alt_storage = try allocator.create(IAction);

@@ -531,6 +531,96 @@ pub fn EditorGroupView(comptime View: type) type {
             });
         }
 
+        /// Upstream closeEditors: confirm the entire set before closing any
+        /// editor, then close inactive editors before the active editor. The
+        /// dialog continuation stands in for the awaited confirmation chain.
+        pub fn closeEditors(self: *Self, tabs_to_close: []const View, dialog_service: dialogs.IDialogService, host: CloseHost) !void {
+            if (tabs_to_close.len == 0 or dialog_service.hasDialog()) return;
+            const tabs = try self.allocator.dupe(View, tabs_to_close);
+            const state = self.allocator.create(CloseEditorsOperation) catch |err| {
+                self.allocator.free(tabs);
+                return err;
+            };
+            state.* = .{ .allocator = self.allocator, .pane = self, .tabs = tabs, .dialog_service = dialog_service, .host = host };
+            defer state.release();
+            try state.confirmNext();
+        }
+
+        const CloseEditorsOperation = struct {
+            allocator: Allocator,
+            pane: *Self,
+            tabs: []View,
+            dialog_service: dialogs.IDialogService,
+            host: CloseHost,
+            next: usize = 0,
+            refs: usize = 1,
+
+            fn release(self: *CloseEditorsOperation) void {
+                self.refs -= 1;
+                if (self.refs != 0) return;
+                self.allocator.free(self.tabs);
+                self.allocator.destroy(self);
+            }
+
+            fn confirmNext(self: *CloseEditorsOperation) !void {
+                const host = self.host;
+                while (self.next < self.tabs.len) {
+                    const tab = self.tabs[self.next];
+                    self.next += 1;
+                    if (!host.is_alive(host.context, self.pane, tab)) continue;
+                    const input = tab.editorInput();
+                    if (!shouldConfirmClose(input) or self.pane.isOpenedInOtherGroup(input)) continue;
+                    host.prepare_dialog(host.context);
+                    self.pane.group.service.activateGroup(self.pane.group);
+                    try self.pane.activateTab(tab);
+                    try tab.ensureControllers();
+                    host.focus_editor(host.context, tab);
+                    self.refs += 1;
+                    errdefer self.release();
+                    _ = try file_dialogs.showSaveConfirm(self.allocator, self.dialog_service, &.{input.getName()}, .{
+                        .context = self,
+                        .complete = complete,
+                        .dispose = dispose,
+                    });
+                    return;
+                }
+                try self.doCloseEditors();
+            }
+
+            fn complete(ptr: *anyopaque, result: dialogs.ConfirmResult) void {
+                const self: *CloseEditorsOperation = @ptrCast(@alignCast(ptr));
+                const host = self.host;
+                const tab = self.tabs[self.next - 1];
+                if (host.is_alive(host.context, self.pane, tab)) {
+                    if (self.pane.doHandleCloseConfirmation(tab, result)) {
+                        host.focus_editor(host.context, tab);
+                        return;
+                    }
+                } else if (result == .CANCEL) return;
+                self.confirmNext() catch |err| host.report_error(host.context, err);
+            }
+
+            fn dispose(ptr: *anyopaque) void {
+                const self: *CloseEditorsOperation = @ptrCast(@alignCast(ptr));
+                self.release();
+            }
+
+            fn doCloseEditors(self: *CloseEditorsOperation) !void {
+                const host = self.host;
+                var active: ?View = null;
+                for (self.tabs) |tab| {
+                    if (!host.is_alive(host.context, self.pane, tab)) continue;
+                    if (self.pane.activeTab() == tab) {
+                        active = tab;
+                        continue;
+                    }
+                    try host.close_tab(host.context, self.pane, tab);
+                }
+                if (active) |tab| if (host.is_alive(host.context, self.pane, tab)) try host.close_tab(host.context, self.pane, tab);
+                host.focus_editor(host.context, null);
+            }
+        };
+
         const CloseConfirmation = struct {
             allocator: Allocator,
             pane: *Self,

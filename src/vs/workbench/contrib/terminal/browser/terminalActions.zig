@@ -470,3 +470,14 @@ pub const terminal_actions = [_]actions.Action2{
     terminalAction(.resize_up, ids.resize_up, "Resize Terminal Panel Up", null, true),
     terminalAction(.resize_down, ids.resize_down, "Resize Terminal Panel Down", null, true),
 };
+
+const terminal_resource: @import("../../../../platform/contextkey/common/contextkey.zig").Expr = .{ .Equals = .{ .key = "resourceScheme", .value = .{ .string = "vscode-terminal" } } };
+
+/// EditorTitleContext contributions from terminalMenus.ts. The selected
+/// terminal input's resource scheme is resolved by EditorTabsControl.
+pub fn registerEditorTitleContext(registry: *@import("../../../../platform/actions/common/actions.zig").MenuRegistry) !void {
+    const action_mod = @import("../../../../platform/actions/common/actions.zig");
+
+    try registry.appendMenuItem(action_mod.menu_ids.EditorTitleContext, .{ .command = .{ .id = ids.move_to_panel, .title = "Move Terminal into Panel" }, .when = &terminal_resource, .group = "2_files" });
+    try registry.appendMenuItem(action_mod.menu_ids.EditorTitleContext, .{ .command = .{ .id = ids.rename, .title = "Rename Terminal" }, .when = &terminal_resource, .group = "2_files" });
+}

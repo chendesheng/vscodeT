@@ -9677,3 +9677,100 @@ test "Diff editor commands resolve the active snapshot pane through their servic
     try wb.commands.execute("workbench.action.compareEditor.refreshDiff");
     try std.testing.expectEqual(tab, wb.activeTab().?);
 }
+
+fn chooseEditorTitleMenuItem(wb: *Workbench, label: []const u8) !void {
+    const service = &wb.context_menu_service;
+    try std.testing.expect(service.handleKey(&.{ .key = .home }));
+    const count = service.current.?.items.items.len;
+    for (0..count) |_| {
+        if (service.current.?.popup.?.focusedItem()) |item| {
+            if (std.mem.eql(u8, item.label, label)) {
+                try std.testing.expect(service.handleKey(&.{ .key = .enter }));
+                return;
+            }
+        }
+        try std.testing.expect(service.handleKey(&.{ .key = .down }));
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "Workbench: editor title context uses picked tab keys and sticky pinning" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = try seedFile(allocator, io, &tmp, "pin_a.txt", "a");
+    defer allocator.free(a);
+    const b = try seedFile(allocator, io, &tmp, "pin_b.txt", "b");
+    defer allocator.free(b);
+    const window = try TestWindow.init(allocator, io, &.{ a, b }, 60, 12);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.activateIndex(1);
+    const pane = wb.activePane().?;
+    const first = pane.tabAtIndex(allocator, 0).?;
+    const second = pane.tabAtIndex(allocator, 1).?;
+    const anchor = @import("../vs/platform/contextview/browser/contextMenuService.zig").Anchor{ .x = 1, .y = 1 };
+    try wb.editor_tab_menus.onTabContextMenu(pane, first, anchor);
+    try chooseEditorTitleMenuItem(wb, "Pin");
+    try std.testing.expect(pane.group.model.isSticky(.{ .editor = first.input }));
+    try std.testing.expect(!pane.group.model.isSticky(.{ .editor = second.input }));
+    try wb.editor_tab_menus.onTabContextMenu(pane, second, anchor);
+    const rows = wb.context_menu_service.current.?.items.items;
+    var found = false;
+    for (rows) |row| {
+        if (std.mem.eql(u8, row.label, "Close to the Right")) {
+            try std.testing.expect(!row.enabled);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+    try chooseEditorTitleMenuItem(wb, "Close All");
+    try std.testing.expectEqual(@as(usize, 1), wb.tabCount());
+    try std.testing.expectEqual(first, wb.activeTab().?);
+    try wb.editor_tab_menus.onTabContextMenu(pane, first, anchor);
+    try chooseEditorTitleMenuItem(wb, "Unpin");
+    try std.testing.expect(!pane.group.model.isSticky(.{ .editor = first.input }));
+    try std.testing.expect(pane.group.model.isPinned(.{ .editor = first.input }));
+}
+
+test "Workbench: group close confirmation veto keeps the entire editor set" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const a = try seedFile(allocator, io, &tmp, "confirm_a.txt", "a");
+    defer allocator.free(a);
+    const b = try seedFile(allocator, io, &tmp, "confirm_b.txt", "b");
+    defer allocator.free(b);
+    const c = try seedFile(allocator, io, &tmp, "confirm_c.txt", "c");
+    defer allocator.free(c);
+    const window = try TestWindow.init(allocator, io, &.{ a, b, c }, 70, 15);
+    defer window.deinit();
+    const wb = window.workbench;
+    for (0..2) |index| {
+        try wb.activateIndex(index);
+        try wb.activeTab().?.editor.insertText("x");
+    }
+    try wb.activateIndex(2);
+    const pane = wb.activePane().?;
+    const anchor = @import("../vs/platform/contextview/browser/contextMenuService.zig").Anchor{ .x = 1, .y = 1 };
+    try wb.editor_tab_menus.onTabContextMenu(pane, wb.activeTab().?, anchor);
+    try chooseEditorTitleMenuItem(wb, "Close All");
+    try std.testing.expect(wb.isDialogOpen());
+    try std.testing.expectEqual(@as(usize, 3), wb.tabCount());
+    var save = ui.KeyEvent{ .key = .enter };
+    try std.testing.expect(terminal_workbench.handleDialogKey(wb, &save));
+    try std.testing.expect(wb.isDialogOpen());
+    try std.testing.expectEqual(@as(usize, 3), wb.tabCount());
+    var cancel = ui.KeyEvent{ .key = .escape };
+    try std.testing.expect(terminal_workbench.handleDialogKey(wb, &cancel));
+    try std.testing.expect(!wb.isDialogOpen());
+    try std.testing.expectEqual(@as(usize, 3), wb.tabCount());
+    try wb.editor_tab_menus.onTabContextMenu(pane, wb.activeTab().?, anchor);
+    try chooseEditorTitleMenuItem(wb, "Close All");
+    try std.testing.expect(wb.isDialogOpen());
+    try std.testing.expect(terminal_workbench.handleDialogKey(wb, &save));
+    try std.testing.expect(!wb.isDialogOpen());
+    try std.testing.expectEqual(@as(usize, 0), wb.tabCount());
+}

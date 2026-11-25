@@ -1173,14 +1173,14 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         if (event.button == .right) {
             if (tab_bar.hitAt(pane.hits.items, event.x)) |index| {
                 if (pane.tabAtIndex(self.allocator, index)) |tab| {
-                    self.showTabContextMenu(pane, tab, event) catch {};
+                    self.editor_tab_menus.onTabContextMenu(pane, tab, .mouse(event)) catch {};
                 }
             }
             return true;
         }
         if (event.button != .left) return false;
         if (pane.hits.items.len > 0 and event.x < pane.hits.items[0].start) {
-            if (self.showTabOverflowMenu(pane, event) catch false) return true;
+            if (self.editor_tab_menus.showOverflowMenu(pane, .mouse(event)) catch false) return true;
         }
         if (tab_bar.closeHitAt(pane.hits.items, event.x)) |index| {
             if (pane.tabAtIndex(self.allocator, index)) |tab| {
@@ -1198,7 +1198,7 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
             }
             if (tab) |value| {
                 if (builtin.os.tag == .macos and event.mods.ctrl) {
-                    self.showTabContextMenu(pane, value, event) catch {};
+                    self.editor_tab_menus.onTabContextMenu(pane, value, .mouse(event)) catch {};
                     return true;
                 }
                 self.editor_drop_target.selectTabForDrag(pane, value, index, event.mods) catch return true;
