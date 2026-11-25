@@ -927,6 +927,8 @@ pub const Workbench = struct {
         _ = try self.lifecycle_api.on_will_shutdown.listen(self, onWillShutdown);
         _ = try self.lifecycle_api.on_did_shutdown.listen(self, onDidShutdown);
         _ = try self.part.on_did_focus.listen(self, onEditorPartFocus);
+        _ = try self.part.on_did_add_group.listenSignal(self, onEditorGroupsChanged);
+        _ = try self.part.on_did_move_group.listenSignal(self, onEditorGroupsChanged);
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveHistoryEditor);
         _ = try self.service.on_did_visible_editors_change.listen(self, onHistoryVisibleEditorsChanged);
@@ -1477,17 +1479,15 @@ pub const Workbench = struct {
         };
         for (before_group_focus) |command| try self.commands.register(command);
         for (@import("parts/editor/editorActions.zig").focus_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        const editor_actions = @import("parts/editor/editorActions.zig");
+        for (editor_actions.new_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
         const editor_commands = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.newGroupLeft", .label = "New Editor Group to the Left", .category = "View", .context = self, .run = commandNewGroupLeft },
-            .{ .id = "workbench.action.newGroupRight", .label = "New Editor Group to the Right", .category = "View", .context = self, .run = commandNewGroupRight },
-            .{ .id = "workbench.action.newGroupAbove", .label = "New Editor Group Above", .category = "View", .context = self, .run = commandNewGroupAbove },
-            .{ .id = "workbench.action.newGroupBelow", .label = "New Editor Group Below", .category = "View", .context = self, .run = commandNewGroupBelow },
             .{ .id = "workbench.action.closeGroup", .label = "Close Editor Group", .category = "View", .context = self, .run = commandCloseGroup },
             .{ .id = "workbench.action.joinTwoGroups", .label = "Join Editor Group with Next Group", .category = "View", .context = self, .run = commandJoinTwoGroups },
-            .{ .id = "workbench.action.moveActiveEditorGroupLeft", .label = "Move Editor Group Left", .category = "View", .context = self, .run = commandMoveGroupLeft },
-            .{ .id = "workbench.action.moveActiveEditorGroupRight", .label = "Move Editor Group Right", .category = "View", .context = self, .run = commandMoveGroupRight },
-            .{ .id = "workbench.action.moveActiveEditorGroupUp", .label = "Move Editor Group Up", .category = "View", .context = self, .run = commandMoveGroupUp },
-            .{ .id = "workbench.action.moveActiveEditorGroupDown", .label = "Move Editor Group Down", .category = "View", .context = self, .run = commandMoveGroupDown },
+        };
+        for (editor_commands) |command| try self.commands.register(command);
+        for (editor_actions.move_group_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        const after_move_groups = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.duplicateActiveEditorGroupLeft", .label = "Duplicate Editor Group Left", .category = "View", .context = self, .run = commandDuplicateGroupLeft },
             .{ .id = "workbench.action.duplicateActiveEditorGroupRight", .label = "Duplicate Editor Group Right", .category = "View", .context = self, .run = commandDuplicateGroupRight },
             .{ .id = "workbench.action.duplicateActiveEditorGroupUp", .label = "Duplicate Editor Group Up", .category = "View", .context = self, .run = commandDuplicateGroupUp },
@@ -1513,8 +1513,7 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.navigateUp", .label = "Focus Group Up", .category = "View", .context = self, .run = commandNavigateUp },
             .{ .id = "workbench.action.navigateDown", .label = "Focus Group Down", .category = "View", .context = self, .run = commandNavigateDown },
         };
-        for (editor_commands) |command| try self.commands.register(command);
-        const editor_actions = @import("parts/editor/editorActions.zig");
+        for (after_move_groups) |command| try self.commands.register(command);
         try self.commands.registerAction(&self.instantiation, editor_actions.navigate_between_groups_action);
         try self.commands.registerAction(&self.instantiation, editor_actions.reset_group_sizes_action);
         const after_group_actions = [_]commands_mod.CommandInfo{
@@ -1597,7 +1596,10 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.focusSideBar", .label = "Focus into Primary Side Bar", .category = "View", .context = self, .run = commandFocusSidebar },
             .{ .id = "workbench.action.previousSideBarView", .label = "Previous Primary Side Bar View", .category = "View", .context = self, .run = commandPreviousSidebarView },
             .{ .id = "workbench.action.nextSideBarView", .label = "Next Primary Side Bar View", .category = "View", .context = self, .run = commandNextSidebarView },
-            .{ .id = "workbench.action.focusStatusBar", .label = "Focus Status Bar", .category = "View", .context = self, .run = commandFocusStatusBar },
+        };
+        for (before_search) |command| try self.commands.register(command);
+        try self.commands.registerAction(&self.instantiation, @import("parts/statusbar/statusbarActions.zig").focus_statusbar_action);
+        const terminal_and_markdown_commands = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.terminal.toggleTerminal", .label = "Toggle Terminal", .category = "Terminal", .context = self, .run = commandToggleTerminal },
             .{ .id = "workbench.action.terminal.new", .label = "New Terminal", .category = "Terminal", .context = self, .run = commandNewTerminal },
             .{ .id = terminal_common.TerminalCommandId.editor, .label = "Create New Terminal in Editor Area", .category = "Terminal", .context = self, .run = commandNewTerminalEditor },
@@ -1623,7 +1625,7 @@ pub const Workbench = struct {
             .{ .id = "markdown.togglePreview", .label = "Toggle Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandToggleMarkdownPreview },
             .{ .id = "markdown.preview.refresh", .label = "Refresh Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandRefreshMarkdownPreview },
         };
-        for (before_search) |command| try self.commands.register(command);
+        for (terminal_and_markdown_commands) |command| try self.commands.register(command);
         for (media_actions.zoom_actions) |action| try self.commands.registerEditorAction(&self.instantiation, action);
         try self.commands.register(.{ .id = media_actions.open_in_text_id, .label = media_actions.open_in_text_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageOpenInTextEditor });
         const search_contribution = @import("../contrib/search/browser/search.contribution.zig");
@@ -5262,6 +5264,11 @@ pub const Workbench = struct {
         pane.focus();
     }
 
+    fn onEditorGroupsChanged(self: *Workbench) !void {
+        self.layoutAll();
+        self.requestFrame();
+    }
+
     fn onEditorPartFocus(_: void, self: *Workbench) !void {
         const pane = self.activePane() orelse return;
         pane.syncActivePane();
@@ -5311,15 +5318,8 @@ pub const Workbench = struct {
     /// Port of `workbench.action.newGroupLeft/Right/Above/Below`: add an empty
     /// group and activate it.
     pub fn newEmptyGroup(self: *Workbench, direction: editor_groups.GroupDirection) !*GroupPane {
-        self.part.setMaximizedGroup(null);
-        self.part.active_sash = null;
         const source = self.activePane() orelse return error.NoActivePane;
-        const orientation: SplitDirection = switch (direction) {
-            .LEFT, .RIGHT => .horizontal,
-            .UP, .DOWN => .vertical,
-        };
-        const new_first = direction == .LEFT or direction == .UP;
-        const view = try self.part.splitGroup(source, orientation, new_first);
+        const view = try self.part.addGroup(source, direction);
         try self.focusPane(view);
         return view;
     }
@@ -5421,38 +5421,6 @@ pub const Workbench = struct {
             self.discardTab(tab);
         }
         _ = self.part.removeView(pane);
-    }
-
-    /// Port of `workbench.action.moveActiveEditorGroupLeft/Right/Up/Down`.
-    pub fn moveActiveGroup(self: *Workbench, direction: editor_groups.GroupDirection) !void {
-        self.part.setMaximizedGroup(null);
-        self.part.active_sash = null;
-        self.layoutAll();
-        const source = self.activePane() orelse return;
-        const target = try self.findGroupMoveTarget(source, direction) orelse return;
-        if (target == source) return;
-        const orientation: SplitDirection = switch (direction) {
-            .LEFT, .RIGHT => .horizontal,
-            .UP, .DOWN => .vertical,
-        };
-        try self.part.moveGroupView(source, target, orientation, direction == .LEFT or direction == .UP);
-        self.service.activateGroup(source.group);
-        try self.focusPane(source);
-    }
-
-    fn findGroupMoveTarget(self: *Workbench, source: *GroupPane, direction: editor_groups.GroupDirection) !?*GroupPane {
-        // Upstream allows the target neighbour to be on the other axis to
-        // support more move scenarios (microsoft/vscode#50741).
-        const directions: [3]editor_groups.GroupDirection = switch (direction) {
-            .LEFT, .RIGHT => .{ direction, .UP, .DOWN },
-            .UP, .DOWN => .{ direction, .LEFT, .RIGHT },
-        };
-        for (directions) |candidate| {
-            if (try self.findAdjacentPane(candidate, false)) |pane| {
-                if (pane != source) return pane;
-            }
-        }
-        return null;
     }
 
     /// Port of `workbench.action.duplicateActiveEditorGroupLeft/Right/Up/Down`:
@@ -9849,26 +9817,6 @@ fn commandSplitEditorDown(context: *anyopaque) anyerror!void {
     try runSplitCommand(self, .DOWN);
 }
 
-fn commandNewGroupLeft(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    _ = try self.newEmptyGroup(.LEFT);
-}
-
-fn commandNewGroupRight(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    _ = try self.newEmptyGroup(.RIGHT);
-}
-
-fn commandNewGroupAbove(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    _ = try self.newEmptyGroup(.UP);
-}
-
-fn commandNewGroupBelow(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    _ = try self.newEmptyGroup(.DOWN);
-}
-
 fn commandCloseGroup(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.closeActiveGroup();
@@ -9877,26 +9825,6 @@ fn commandCloseGroup(context: *anyopaque) anyerror!void {
 fn commandJoinTwoGroups(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.joinTwoGroups();
-}
-
-fn commandMoveGroupLeft(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveActiveGroup(.LEFT);
-}
-
-fn commandMoveGroupRight(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveActiveGroup(.RIGHT);
-}
-
-fn commandMoveGroupUp(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveActiveGroup(.UP);
-}
-
-fn commandMoveGroupDown(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.moveActiveGroup(.DOWN);
 }
 
 fn commandDuplicateGroupLeft(context: *anyopaque) anyerror!void {
@@ -10267,11 +10195,6 @@ fn openConfigJson(self: *Workbench, paths: []const []const u8, empty_contents: [
 fn statusFocusEditor(context: *anyopaque) void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     self.focusEditor();
-}
-
-fn commandFocusStatusBar(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.focusStatusBar();
 }
 
 fn onTerminalPicker(context: *anyopaque, picker: *QuickPick) anyerror!void {

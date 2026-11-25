@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 10,954 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
+The browser shell is 10,877 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -52,6 +52,7 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * TextDiffEditor reads its diff configuration through IConfigurationService rather than the shell.
 * EditorGroupView owns persistent editor copying and opening the destination before closing the source for cross-group moves. Only terminal creation, external registration cleanup, drag cancellation and focus are supplied by the host.
 * EditorPart owns the group grid layout, maximized geometry and group chrome settings. Each EditorGroupView updates breadcrumb visibility with its active pane.
+* Creating and moving groups now use Action2 through IEditorGroupsService, with the upstream directional fallback and focus-preserving behavior when creating an empty group from a sidebar. Focus Status Bar resolves IWorkbenchLayoutService.focusPart.
 * Centered layout, group cycling and resetting group sizes use Action2 and their layout/editor-group services.
 * Directional editor-group commands ask EditorPart for the most recently active group
   sharing the requested grid edge. Wrapping preserves the row or column span.

@@ -259,7 +259,20 @@ pub const Layout = struct {
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
+        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
+    }
+
+    fn hasFocusContext(context: *anyopaque, part: Parts) bool {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        const host = self.zen_host orelse return false;
+        return host.get_focused_part(host.context) == part;
+    }
+
+    fn focusPartContext(context: *anyopaque, part: Parts) void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        if (!self.isVisible(part)) return;
+        const host = self.zen_host orelse return;
+        host.focus_part(host.context, part);
     }
 
     fn getSideBarPositionContext(context: *anyopaque) Position {

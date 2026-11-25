@@ -19,6 +19,8 @@ pub const IWorkbenchLayoutService = struct {
     register_part: *const fn (*anyopaque, *Part) anyerror!IDisposable,
     set_part_hidden: *const fn (*anyopaque, bool, Parts) anyerror!void,
     is_visible: *const fn (*anyopaque, Parts) bool,
+    has_focus: *const fn (*anyopaque, Parts) bool,
+    focus_part: *const fn (*anyopaque, Parts) void,
     on_did_change_part_visibility: *Emitter(IPartVisibilityChangeEvent),
     on_did_change_zen_mode: *Emitter(bool),
     on_did_change_main_editor_centered: *Emitter(bool),
@@ -48,6 +50,12 @@ pub const IWorkbenchLayoutService = struct {
     }
     pub fn setPartHidden(self: @This(), hidden: bool, part: Parts) !void {
         try self.set_part_hidden(self.context, hidden, part);
+    }
+    pub fn hasFocus(self: @This(), part: Parts) bool {
+        return self.has_focus(self.context, part);
+    }
+    pub fn focusPart(self: @This(), part: Parts) void {
+        self.focus_part(self.context, part);
     }
     pub fn isVisible(self: @This(), part: Parts) bool {
         return self.is_visible(self.context, part);

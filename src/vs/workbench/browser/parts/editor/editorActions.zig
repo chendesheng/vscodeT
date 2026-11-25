@@ -3,6 +3,7 @@ const actions = @import("../../../../platform/actions/common/actions.zig");
 const bindings = @import("../../../../platform/keybinding/common/keybindingsRegistry.zig");
 const key_codes = @import("../../../../base/common/keyCodes.zig");
 const ServicesAccessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const layout = @import("../../../services/layout/browser/layoutService.zig");
 const groups = @import("../../../services/editor/common/editorGroupsService.zig");
 
 fn focusGroupAction(comptime id: []const u8, title: []const u8, comptime scope: ?groups.IFindGroupScope, comptime binding: ?u32) actions.Action2 {
@@ -53,3 +54,64 @@ fn resetGroupSizes(_: *anyopaque, accessor: ServicesAccessor) !void {
     const service = try accessor.get(groups.editor_groups_service_id);
     service.arrangeGroups(.EVEN);
 }
+
+// AbstractCreateEditorGroupAction: the new group becomes active, but a
+// focused sidebar/list stays focused so it can open an input in that group.
+fn newGroupAction(comptime id: []const u8, title: []const u8, comptime direction: groups.GroupDirection) actions.Action2 {
+    return .{
+        .command = .{ .id = id, .title = title, .category = "View" },
+        .f1 = true,
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, accessor: ServicesAccessor) !void {
+                const service = try accessor.get(groups.editor_groups_service_id);
+                const layout_service = try accessor.get(layout.layout_service_id);
+                const focus_new_group = layout_service.hasFocus(.editor);
+                const source = service.activeGroup() orelse return;
+                const group = try service.addGroup(source, direction);
+                service.activateGroup(group);
+                if (focus_new_group) group.focus();
+            }
+        }.run,
+    };
+}
+
+pub const new_group_actions = [_]actions.Action2{
+    newGroupAction("workbench.action.newGroupLeft", "New Editor Group to the Left", .LEFT),
+    newGroupAction("workbench.action.newGroupRight", "New Editor Group to the Right", .RIGHT),
+    newGroupAction("workbench.action.newGroupAbove", "New Editor Group Above", .UP),
+    newGroupAction("workbench.action.newGroupBelow", "New Editor Group Below", .DOWN),
+};
+
+fn moveGroupAction(comptime id: []const u8, title: []const u8, comptime direction: groups.GroupDirection, comptime arrow: key_codes.KeyCode) actions.Action2 {
+    return .{
+        .command = .{ .id = id, .title = title, .category = "View" },
+        .f1 = true,
+        .keybindings = &.{.{ .id = id, .weight = @backingInt(bindings.KeybindingWeight.WorkbenchContrib), .bindings = .{ .primary = key_codes.KeyChord(key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyK), @backingInt(arrow)) } }},
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, accessor: ServicesAccessor) !void {
+                const service = try accessor.get(groups.editor_groups_service_id);
+                const source = service.activeGroup() orelse return;
+                const directions: [3]groups.GroupDirection = switch (direction) {
+                    .LEFT, .RIGHT => .{ direction, .UP, .DOWN },
+                    .UP, .DOWN => .{ direction, .LEFT, .RIGHT },
+                };
+                for (directions) |candidate| {
+                    const target = try service.findGroup(.{ .direction = candidate }, source, false) orelse continue;
+                    if (target.id == source.id) continue;
+                    const moved = try service.moveGroup(source, target, direction);
+                    service.activateGroup(moved);
+                    return;
+                }
+            }
+        }.run,
+    };
+}
+
+pub const move_group_actions = [_]actions.Action2{
+    moveGroupAction("workbench.action.moveActiveEditorGroupLeft", "Move Editor Group Left", .LEFT, .LeftArrow),
+    moveGroupAction("workbench.action.moveActiveEditorGroupRight", "Move Editor Group Right", .RIGHT, .RightArrow),
+    moveGroupAction("workbench.action.moveActiveEditorGroupUp", "Move Editor Group Up", .UP, .UpArrow),
+    moveGroupAction("workbench.action.moveActiveEditorGroupDown", "Move Editor Group Down", .DOWN, .DownArrow),
+};

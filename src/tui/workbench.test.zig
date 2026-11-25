@@ -828,6 +828,27 @@ test "Workbench: editor group focus, new group and close group commands" {
     try std.testing.expectEqual(@as(usize, 1), workbench.groupCount());
 }
 
+test "Workbench: new editor group preserves sidebar focus" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "new_group_focus.txt", "alpha");
+    defer allocator.free(path);
+    const window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    defer window.deinit();
+    const workbench = window.workbench;
+    try workbench.setWorkspaceFolders(&.{std.fs.path.dirname(path).?});
+    try workbench.showExplorer();
+    try std.testing.expectEqual(Focus.sidebar, workbench.focus);
+    const source = workbench.activePane().?;
+    try workbench.commands.execute("workbench.action.newGroupRight");
+    try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
+    try std.testing.expect(workbench.activePane().? != source);
+    try std.testing.expect(workbench.activePane().?.activeTab() == null);
+    try std.testing.expectEqual(Focus.sidebar, workbench.focus);
+}
+
 test "Workbench: new group below and above focus commands" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

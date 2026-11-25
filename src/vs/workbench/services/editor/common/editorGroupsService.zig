@@ -66,6 +66,9 @@ pub const IEditorGroupsService = struct {
     active_group: *const fn (*anyopaque) ?IEditorGroup,
     arrange_groups: *const fn (*anyopaque, GroupsArrangement) void,
     find_group: *const fn (*anyopaque, IFindGroupScope, GroupIdentifier, bool) anyerror!?IEditorGroup,
+    add_group: *const fn (*anyopaque, GroupIdentifier, GroupDirection) anyerror!IEditorGroup,
+    activate_group: *const fn (*anyopaque, GroupIdentifier) void,
+    move_group: *const fn (*anyopaque, GroupIdentifier, GroupIdentifier, GroupDirection) anyerror!IEditorGroup,
 
     pub fn arrangeGroups(self: IEditorGroupsService, arrangement: GroupsArrangement) void {
         self.arrange_groups(self.context, arrangement);
@@ -73,6 +76,18 @@ pub const IEditorGroupsService = struct {
 
     pub fn activeGroup(self: IEditorGroupsService) ?IEditorGroup {
         return self.active_group(self.context);
+    }
+
+    pub fn addGroup(self: IEditorGroupsService, source: IEditorGroup, direction: GroupDirection) !IEditorGroup {
+        return self.add_group(self.context, source.id, direction);
+    }
+
+    pub fn activateGroup(self: IEditorGroupsService, group: IEditorGroup) void {
+        self.activate_group(self.context, group.id);
+    }
+
+    pub fn moveGroup(self: IEditorGroupsService, source: IEditorGroup, target: IEditorGroup, direction: GroupDirection) !IEditorGroup {
+        return self.move_group(self.context, source.id, target.id, direction);
     }
 
     pub fn findGroup(self: IEditorGroupsService, scope: IFindGroupScope, source: IEditorGroup, wrap: bool) !?IEditorGroup {

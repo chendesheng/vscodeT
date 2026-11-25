@@ -217,7 +217,46 @@ pub fn EditorPart(comptime GroupView: type) type {
         }
 
         pub fn interface(self: *Self) editor_groups.IEditorGroupsService {
-            return .{ .context = self, .active_group = activeGroup, .find_group = findGroupView, .arrange_groups = arrangeGroupsContext };
+            return .{ .context = self, .active_group = activeGroup, .find_group = findGroupView, .arrange_groups = arrangeGroupsContext, .add_group = addGroupContext, .activate_group = activateGroupContext, .move_group = moveGroupContext };
+        }
+
+        fn addGroupContext(context: *anyopaque, source: editor_mod.GroupIdentifier, direction: GroupDirection) !editor_groups.IEditorGroup {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const group = self.service.getGroup(source) orelse return error.ViewNotFound;
+            const view = self.viewForGroup(group) orelse return error.ViewNotFound;
+            return (try self.addGroup(view, direction)).interface();
+        }
+
+        fn activateGroupContext(context: *anyopaque, id: editor_mod.GroupIdentifier) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const group = self.service.getGroup(id) orelse return;
+            self.service.activateGroup(group);
+        }
+
+        fn moveGroupContext(context: *anyopaque, source: editor_mod.GroupIdentifier, target: editor_mod.GroupIdentifier, direction: GroupDirection) !editor_groups.IEditorGroup {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const source_group = self.service.getGroup(source) orelse return error.ViewNotFound;
+            const target_group = self.service.getGroup(target) orelse return error.ViewNotFound;
+            const source_view = self.viewForGroup(source_group) orelse return error.ViewNotFound;
+            const target_view = self.viewForGroup(target_group) orelse return error.ViewNotFound;
+            self.setMaximizedGroup(null);
+            self.active_sash = null;
+            try self.moveGroupView(source_view, target_view, orientationForDirection(direction), direction == .LEFT or direction == .UP);
+            return source_view.interface();
+        }
+
+        fn orientationForDirection(direction: GroupDirection) Orientation {
+            return switch (direction) {
+                .LEFT, .RIGHT => .horizontal,
+                .UP, .DOWN => .vertical,
+            };
+        }
+
+        /// Upstream addGroup: create the adjacent group in the shared grid.
+        pub fn addGroup(self: *Self, source: *GroupView, direction: GroupDirection) !*GroupView {
+            self.setMaximizedGroup(null);
+            self.active_sash = null;
+            return self.splitGroup(source, orientationForDirection(direction), direction == .LEFT or direction == .UP);
         }
 
         fn arrangeGroupsContext(context: *anyopaque, arrangement: editor_groups.GroupsArrangement) void {

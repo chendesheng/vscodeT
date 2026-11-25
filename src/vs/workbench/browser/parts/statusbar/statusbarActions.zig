@@ -59,6 +59,18 @@ pub const ManageExtensionAction = struct {
     }
 };
 
+pub const focus_statusbar_action: @import("../../../../platform/actions/common/actions.zig").Action2 = .{
+    .command = .{ .id = "workbench.action.focusStatusBar", .title = "Focus Status Bar", .category = "View" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = focusStatusBar,
+};
+
+fn focusStatusBar(_: *anyopaque, accessor: @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor) !void {
+    const layout = @import("../../../services/layout/browser/layoutService.zig");
+    (try accessor.get(layout.layout_service_id)).focusPart(.statusbar);
+}
+
 test "statusbarActions: toggle, hide and manage extension" {
     const allocator = std.testing.allocator;
     var model = StatusbarModel.init(allocator);
