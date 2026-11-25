@@ -1672,19 +1672,19 @@ test "Search palette actions open the named view after the activity bar changes"
     try workbench.initSidebarFromWorkspace();
     try workbench.activity_bar_part.removeActivity("explorer");
     try std.testing.expectEqualStrings("search", workbench.activity_bar_part.activityAtVisibleIndex(0).?.id);
-    try std.testing.expect(workbench.search_view != null);
+    try std.testing.expect(workbench.search_window.view != null);
 
     try std.testing.expect(try workbench.showActivityById("scm"));
     try std.testing.expect(views.getActiveViewWithId(SearchView) == null);
     try workbench.commands.execute("toggleSearchCaseSensitive");
-    try std.testing.expect(!workbench.search_view.?.widget.match_case);
+    try std.testing.expect(!workbench.search_window.view.?.widget.match_case);
     try workbench.commands.execute("search.action.focusNextSearchResult");
     try std.testing.expectEqualStrings("search", workbench.activity_bar_part.active_id.?);
-    try std.testing.expectEqual(workbench.search_view.?, views.getActiveViewWithId(SearchView).?);
+    try std.testing.expectEqual(workbench.search_window.view.?, views.getActiveViewWithId(SearchView).?);
     try workbench.commands.execute("toggleSearchCaseSensitive");
-    try std.testing.expect(workbench.search_view.?.widget.match_case);
+    try std.testing.expect(workbench.search_window.view.?.widget.match_case);
     try workbench.commands.execute("search.action.viewAsTree");
-    try std.testing.expectEqual(.tree, workbench.search_view.?.controller.view_mode);
+    try std.testing.expectEqual(.tree, workbench.search_window.view.?.controller.view_mode);
 }
 
 // Exercise the same deadlines and native worker wakeups as an idle window.
@@ -1697,7 +1697,7 @@ fn waitForSearch(workbench: *Workbench) !void {
     defer workbench.window_events.setWake(null);
     const end = clock.milliTimestamp() + 5000;
     while (true) {
-        const sidebar_busy = if (workbench.search_view) |view| view.isSearchPending() else false;
+        const sidebar_busy = if (workbench.search_window.view) |view| view.isSearchPending() else false;
         const tab = workbench.activeTab();
         const editor_busy = if (tab != null and tab.?.search_editor_input != null) tab.?.search_editor_input.?.search_editor.isSearchPending() else false;
         if (!sidebar_busy and !editor_busy) return;
@@ -1739,7 +1739,7 @@ test "Workbench: workspace search streams results and opens a match" {
     pumpSidebarForTests(workbench);
 
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
     try waitForSearch(workbench);
@@ -1774,7 +1774,7 @@ test "Workbench: opening a search match selects its range" {
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
     try waitForSearch(workbench);
@@ -1825,7 +1825,7 @@ test "Workbench: opening a search result from another file does not restart the 
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
     try waitForSearch(workbench);
@@ -1871,7 +1871,7 @@ test "Workbench: an inactive result model updates only its file and can regain m
     const w = window.workbench;
     try w.initSidebar(root);
     try w.findInFiles();
-    const view = w.search_view.?;
+    const view = w.search_window.view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
     try waitForSearch(w);
@@ -1917,7 +1917,7 @@ test "Workbench: search chevron and replace all confirmation update an open edit
     pumpSidebarForTests(workbench);
 
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
@@ -2927,7 +2927,7 @@ test "Workbench: search shows no-results and honors showLineNumbers" {
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
 
     try view.widget.setValue(.search, "zzz-not-found");
     try view.startSearch();
@@ -2973,7 +2973,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
-    const sidebar = workbench.search_view.?;
+    const sidebar = workbench.search_window.view.?;
     try sidebar.widget.setValue(.search, "alpha");
     try sidebar.startSearch();
     try waitForSearch(workbench);
@@ -3105,7 +3105,7 @@ test "Workbench: typing a search query restarts results without stale collapse k
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
 
     for ([_][]const u8{ "t", "te", "tes", "test" }) |query| {
         try view.widget.setValue(.search, query);
@@ -3167,7 +3167,7 @@ test "Workbench: wheel scrolls search results without moving the selection" {
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
     try waitForSearch(workbench);
@@ -3209,7 +3209,7 @@ test "Workbench: search input focus follows presses, not hover" {
     try workbench.initSidebar(root);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     view.focusReplace();
 
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -7403,7 +7403,7 @@ test "Workbench: side bar part paints the title and runs its actions" {
     );
 
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
     try waitForSearch(workbench);
@@ -7463,7 +7463,7 @@ test "Workbench: search guides, preview ellipses and the Open in editor link" {
     try workbench.layout.setSize(.sidebar, 45);
     pumpSidebarForTests(workbench);
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();
     try waitForSearch(workbench);
@@ -7552,7 +7552,7 @@ test "Workbench: search aligns nested guides and keeps the link inline at the re
     const caps = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,half,center,round,outside,radius\x1b\\").?;
     workbench.setCellBorderCapabilities(caps);
     try workbench.findInFiles();
-    const view = workbench.search_view.?;
+    const view = workbench.search_window.view.?;
     view.commandViewAsTree(true);
     try view.widget.setValue(.search, "alpha");
     try view.startSearch();

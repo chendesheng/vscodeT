@@ -1892,3 +1892,301 @@ const search_keybinding_rules = [_]keybinding_registry.IKeybindingRule{
         .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | key_codes.KeyMod.Alt | @backingInt(key_codes.KeyCode.Enter) },
     },
 };
+
+const NativeSearchService = @import("../../../services/search/common/searchService.zig").SearchService;
+const NativeTab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
+const NativeGroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*NativeTab);
+const NativeEditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(NativeGroupView);
+const EditorService = @import("../../../services/editor/browser/editorService.zig").EditorService;
+const EditorOpening = @import("../../../services/editor/browser/editorService.zig").EditorOpening;
+const SearchEditorFactory = @import("../../searchEditor/browser/searchEditor.contribution.zig").SearchEditorFactory;
+const NativeReplaceHost = @import("replaceService.zig").NativeEditorHost;
+const NativeReplaceEdit = @import("replaceService.zig").Edit;
+const NativeDialogs = @import("../../../../platform/dialogs/common/dialogs.zig");
+const DialogService = @import("../../../services/dialogs/common/dialogService.zig").DialogService;
+const NativeEditorBrowser = @import("../../../../editor/browser/editorBrowser.zig");
+
+/// Native Search contribution lifetime. The workbench supplies only window
+/// focus/layout/configuration dependencies; the Search view owns its service,
+/// editor factory, activity registration and editor/file query adapters.
+pub const SearchWindow = struct {
+    allocator: Allocator,
+    io: std.Io,
+    part: *NativeEditorPart,
+    workspace: *WorkspaceContextService,
+    configuration: *const ?*ConfigurationService,
+    editor_opening: *EditorOpening,
+    activity_service: *ActivityService,
+    dialog_service: *DialogService,
+    window: *@import("../../../../base/common/windowDispatch.zig").Queue,
+    view_factory: @import("../../../browser/parts/editor/editorPane.zig").EditorViewFactory,
+    host: struct {
+        context: *anyopaque,
+        ensure_configuration: *const fn (*anyopaque) anyerror!void,
+        configure_tab: *const fn (*anyopaque, *NativeTab) void,
+        update_focus: *const fn (*anyopaque) anyerror!void,
+        layout: *const fn (*anyopaque) void,
+        focus_editor: *const fn (*anyopaque) void,
+        focus_result: *const fn (*anyopaque) void,
+    },
+    service: ?*NativeSearchService = null,
+    view: ?*SearchView = null,
+    factory: SearchEditorFactory = undefined,
+
+    /// The CLI can replace the workspace context service when it switches
+    /// folders. Both the view's next search and existing Search Editor
+    /// inputs must resolve the replacement, not retain the disposed service.
+    pub fn setWorkspace(self: *SearchWindow, workspace: *WorkspaceContextService) void {
+        self.workspace = workspace;
+        self.factory.workspace = workspace;
+    }
+
+    pub fn bindEditorFactory(self: *SearchWindow) void {
+        self.factory = .{
+            .allocator = self.allocator,
+            .io = self.io,
+            .part = self.part,
+            .workspace = self.workspace,
+            .configuration = self.configuration,
+            .view_factory = self.view_factory,
+            .window = self.window,
+            .host = .{
+                .context = self,
+                .start_search = startSearchEditorJob,
+                .extra_files = searchExtraFiles,
+                .ensure_configuration = struct {
+                    fn run(context: *anyopaque) !void {
+                        const window: *SearchWindow = @ptrCast(@alignCast(context));
+                        try window.host.ensure_configuration(window.host.context);
+                    }
+                }.run,
+                .configure_tab = struct {
+                    fn run(context: *anyopaque, tab: *NativeTab) void {
+                        const window: *SearchWindow = @ptrCast(@alignCast(context));
+                        window.host.configure_tab(window.host.context, tab);
+                    }
+                }.run,
+                .update_focus = struct {
+                    fn run(context: *anyopaque) !void {
+                        const window: *SearchWindow = @ptrCast(@alignCast(context));
+                        try window.host.update_focus(window.host.context);
+                    }
+                }.run,
+                .layout = struct {
+                    fn run(context: *anyopaque) void {
+                        const window: *SearchWindow = @ptrCast(@alignCast(context));
+                        window.host.layout(window.host.context);
+                    }
+                }.run,
+                .focus_editor = struct {
+                    fn run(context: *anyopaque) void {
+                        const window: *SearchWindow = @ptrCast(@alignCast(context));
+                        window.host.focus_editor(window.host.context);
+                    }
+                }.run,
+                .open_match = searchOpenMatch,
+            },
+        };
+    }
+
+    fn activeTab(self: *SearchWindow) ?*NativeTab {
+        const pane = self.part.activeView() orelse return null;
+        return pane.activeTab();
+    }
+
+    fn startSearchEditorJob(context: *anyopaque, query: *const search.TextQuery) !search.ISearchJob {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        if (self.service == null) try self.initFromWorkspace();
+        return self.service.?.startTextSearch(query);
+    }
+
+    fn searchOpenResults(context: *anyopaque, config: search_editor_view.Config, snapshot: search_editor.Snapshot) !void {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        try self.factory.openResults(config, snapshot);
+    }
+
+    fn searchApplyEdits(context: *anyopaque, path: []const u8, edits: []const NativeReplaceEdit) !void {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        var host = NativeReplaceHost{ .allocator = self.allocator, .io = self.io, .part = self.part };
+        try host.applyEdits(path, edits);
+    }
+
+    fn searchSaveFile(context: *anyopaque, path: []const u8) !void {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        var host = NativeReplaceHost{ .allocator = self.allocator, .io = self.io, .part = self.part };
+        try host.saveFile(path);
+    }
+
+    pub fn initFromWorkspace(self: *SearchWindow) !void {
+        self.destroy();
+        const service = try self.allocator.create(NativeSearchService);
+        errdefer self.allocator.destroy(service);
+        service.* = NativeSearchService.init(self.allocator, self.io, self.workspace, .{
+            .context = self,
+            .read = searchReadFile,
+            .extra_files = searchExtraFiles,
+            .open_files = searchOpenFiles,
+            .free_paths = searchFreePaths,
+        });
+        const view = try SearchView.init(
+            self.allocator,
+            self.workspace,
+            self.configuration.*.?,
+            service.interface(),
+            .{
+                .context = self,
+                .open_match = searchOpenMatch,
+                .open_results = searchOpenResults,
+                .highlight_range = searchHighlightRange,
+                .read_file = searchReadFile,
+                .extra_files = searchExtraFiles,
+                .free_paths = searchFreePaths,
+                .apply_edits = searchApplyEdits,
+                .save_file = searchSaveFile,
+                .active_selection_text = searchActiveSelectionText,
+                .confirm_replace_all = searchConfirmReplaceAll,
+            },
+        );
+        errdefer view.deinit();
+        try view.attachActivity(self.activity_service);
+        view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = self.window };
+        self.service = service;
+        view.model.delivery.attach(self.window, view, SearchView.dispatchSearch);
+        self.view = view;
+    }
+
+    pub fn destroy(self: *SearchWindow) void {
+        if (self.view) |view| view.deinit();
+        self.view = null;
+        if (self.service) |service| self.allocator.destroy(service);
+        self.service = null;
+    }
+
+    fn searchOpenMatch(context: *anyopaque, path: []const u8, range: ?Range) anyerror!void {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        try self.editor_opening.openPathWithOptions(path, .{});
+        self.host.focus_result(self.host.context);
+        if (self.activeTab()) |tab| {
+            if (range) |value| try tab.editor.setSelection(value);
+            tab.focusEditor();
+        }
+        if (range) |value| searchHighlightRange(context, path, value) else searchHighlightRange(context, path, null);
+    }
+
+    fn searchHighlightRange(context: *anyopaque, path: []const u8, range: ?Range) void {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (range != null and std.mem.eql(u8, tab.editor.path, path)) {
+                    const decorations = [_]NativeEditorBrowser.Decoration{.{ .range = range.?, .kind = .search_range_highlight }};
+                    tab.view.setSearchHighlights(&decorations) catch {};
+                } else {
+                    tab.view.setSearchHighlights(&.{}) catch {};
+                }
+            }
+        }
+    }
+
+    fn searchReadFile(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?[]u8 {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (!std.mem.eql(u8, tab.editor.path, path)) continue;
+                var value = try tab.editor.model.getValue(null, false);
+                defer value.deinit();
+                return try allocator.dupe(u8, value.items);
+            }
+        }
+        return null;
+    }
+
+    fn searchOpenFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        var paths = std.array_list.Managed([]u8).init(allocator);
+        errdefer {
+            for (paths.items) |path| allocator.free(path);
+            paths.deinit();
+        }
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.search_editor_input != null) continue;
+                var duplicate = false;
+                for (paths.items) |existing| {
+                    if (std.mem.eql(u8, existing, tab.editor.path)) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) try paths.append(try allocator.dupe(u8, tab.editor.path));
+            }
+        }
+        return try paths.toOwnedSlice();
+    }
+
+    fn searchExtraFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        var paths = std.array_list.Managed([]u8).init(allocator);
+        errdefer {
+            for (paths.items) |path| allocator.free(path);
+            paths.deinit();
+        }
+        for (self.part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| {
+                if (tab.search_editor_input != null) continue;
+                if (self.workspace.isInsideWorkspace(tab.editor.path)) continue;
+                var duplicate = false;
+                for (paths.items) |existing| {
+                    if (std.mem.eql(u8, existing, tab.editor.path)) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) try paths.append(try allocator.dupe(u8, tab.editor.path));
+            }
+        }
+        return try paths.toOwnedSlice();
+    }
+
+    fn searchFreePaths(_: *anyopaque, allocator: Allocator, paths: [][]u8) void {
+        for (paths) |path| allocator.free(path);
+        allocator.free(paths);
+    }
+
+    fn searchActiveSelectionText(context: *anyopaque, allocator: Allocator) anyerror!?[]u8 {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        const tab = self.activeTab() orelse return null;
+        const selections = try tab.editor.getSelections();
+        defer self.allocator.free(selections);
+        for (selections) |selection| {
+            if (selection.isEmpty()) continue;
+            var value = try tab.editor.model.getValueInRange(Range.init(
+                selection.startLineNumber,
+                selection.startColumn,
+                selection.endLineNumber,
+                selection.endColumn,
+            ), null);
+            defer value.deinit();
+            return try allocator.dupe(u8, value.items);
+        }
+        return null;
+    }
+
+    fn searchConfirmReplaceAll(context: *anyopaque, message: []const u8) !void {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        if (self.dialog_service.hasDialog()) return error.DialogAlreadyOpen;
+        _ = try self.dialog_service.confirm(.{ .message = message, .primary_button = "Replace" }, .{ .context = self, .complete = onSearchReplaceAllConfirmed });
+    }
+
+    fn onSearchReplaceAllConfirmed(context: *anyopaque, result: NativeDialogs.IConfirmationResult) void {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        if (self.view) |view| {
+            if (result.confirmed) view.confirmReplaceAll() else view.clearReplaceConfirmation();
+        }
+    }
+
+    fn searchTextModel(context: *anyopaque, path: []const u8) ?*@import("../../../../editor/common/model/textModel.zig").TextModel {
+        const self: *SearchWindow = @ptrCast(@alignCast(context));
+        const input = (EditorService{ .part = self.part }).findOpenFileInput(self.io, path) orelse return null;
+        return input.editor.model;
+    }
+};

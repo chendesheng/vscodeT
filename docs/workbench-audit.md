@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 6,723 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
+The browser shell is 6,435 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -203,3 +203,5 @@ with its owning port.
 * SymbolNavigationAction now owns provider results, native reference picks and Action2 registration in goToCommands. GotoSymbolQuickAccessProvider owns its outline subscription, result labels and async stale-editor check. The native window supplies resource opening and focus through explicit callbacks. The terminal list substitutes for the browser reference peek widget; full upstream alternative-command and peek behavior remains unported.
 
 * EditorService owns the native editor-opening adapter, including synchronous and asynchronous text/image opening, pending read cancellation, external-change reload completion, and preview replacement cleanup. Image inputs now have one ownership-transfer path. The file-system change event reaches the service directly; the window only supplies status, view setup, reveal and focus hooks.
+
+* SearchViewTerminal owns the native Search view/service lifetime and document queries. SearchEditorFactory in searchEditor.contribution creates and navigates Search Editor inputs and registers the two palette actions; ReplaceService owns the native open/closed file edit adapter. The window supplies only editor focus/configuration/layout hooks. The closed-file adapter still uses the terminal byte-offset path rather than the full upstream bulk-edit service.

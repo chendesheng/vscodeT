@@ -51,7 +51,6 @@ const FileEditorSerializer = @import("../contrib/files/browser/editors/fileEdito
 const editor_factory = @import("../common/editor/editorFactory.zig");
 const tui_editor_mod = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 const Editor = tui_editor_mod.Editor;
-const TextEdit = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const terminal_editor_config = @import("../../editor/browser/config/terminalEditorConfiguration.zig");
 const editor_options = @import("../../editor/common/config/editorOptions.zig");
 const tab_bar = @import("./parts/editor/multiEditorTabsControl.zig");
@@ -157,21 +156,13 @@ const ViewDescriptorService = view_descriptor_service_mod.ViewDescriptorService;
 const range_highlight_mod = @import("./codeeditor.zig");
 const RangeHighlightDecorations = range_highlight_mod.RangeHighlightDecorations;
 
-const search_editor = @import("../contrib/searchEditor/browser/searchEditor.zig");
-const search_editor_serialization = @import("../contrib/searchEditor/browser/searchEditorSerialization.zig");
-const search_editor_input_mod = @import("../contrib/searchEditor/browser/searchEditorInput.zig");
-const SearchEditorInput = search_editor_input_mod.SearchEditorInput;
 const search_command_ids = @import("../contrib/search/common/constants.zig").SearchCommandIds;
 const search_view_mod = @import("../contrib/search/browser/searchViewTerminal.zig");
 const SearchView = search_view_mod.SearchView;
 const search_widget_mod = @import("../contrib/search/browser/searchWidget.zig");
-const search_service_mod = @import("../services/search/common/searchService.zig");
-const SearchService = search_service_mod.SearchService;
-const search_types = @import("../services/search/common/search.zig");
 const glob = @import("../../base/common/glob.zig");
+const search_types = @import("../services/search/common/search.zig");
 const FileContentProvider = search_types.FileContentProvider;
-const replace_service_mod = @import("../contrib/search/browser/replaceService.zig");
-const replace_types = replace_service_mod;
 const search_configuration = @import("../contrib/search/common/searchConfiguration.zig");
 const tree = @import("../contrib/search/browser/searchTreeModel/searchTreeCommon.zig");
 const group_mod = @import("../common/editor/editorGroupModel.zig");
@@ -183,7 +174,6 @@ const json_language = @import("../services/language/common/jsonLanguageClient.zi
 const configuration_extension_point = @import("../api/common/configurationExtensionPoint.zig");
 const editor_input = @import("../common/editor/editorInput.zig");
 const EditorInput = editor_input.EditorInput;
-const editorBrowser = @import("../../editor/browser/editorBrowser.zig");
 const Range = @import("../../editor/common/core/range.zig").Range;
 const LanguageFeaturesService = @import("../../editor/common/services/languageFeaturesService.zig").LanguageFeaturesService;
 const languages = @import("../../editor/common/languages.zig");
@@ -337,7 +327,7 @@ const WindowViews = struct {
         const self: *WindowViews = @ptrCast(@alignCast(context));
         const active = self.workbench.sidebar_part.pane.active_id orelse return null;
         if (std.mem.eql(u8, id, SearchView.ID))
-            return if (std.mem.eql(u8, active, "search")) self.workbench.search_view else null;
+            return if (std.mem.eql(u8, active, "search")) self.workbench.search_window.view else null;
         const local_id: []const u8 = if (std.mem.eql(u8, id, OutlinePane.ID)) "outline" else if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) "changes" else if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) "graph" else return null;
         const container = self.workbench.view_descriptor_service.getViewContainerByViewId(local_id) orelse return null;
         return if (std.mem.eql(u8, active, container.container.id)) getView(context, id) else null;
@@ -345,7 +335,7 @@ const WindowViews = struct {
 
     fn getView(context: *anyopaque, id: []const u8) ?*anyopaque {
         const self: *WindowViews = @ptrCast(@alignCast(context));
-        if (std.mem.eql(u8, id, SearchView.ID)) return self.workbench.search_view;
+        if (std.mem.eql(u8, id, SearchView.ID)) return self.workbench.search_window.view;
         if (std.mem.eql(u8, id, OutlinePane.ID)) return self.workbench.outline_view;
         if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) return self.workbench.scm.changes;
         if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) return self.workbench.scm.history;
@@ -360,7 +350,7 @@ const WindowViews = struct {
         }
         if (!std.mem.eql(u8, id, SearchView.ID)) return null;
         try self.workbench.openActivity("search", focus);
-        return self.workbench.search_view;
+        return self.workbench.search_window.view;
     }
 };
 
@@ -405,8 +395,7 @@ pub const Workbench = struct {
     explorer_view_model: ?*view_container_model_mod.ViewContainerModel = null,
     explorer_panes: ?[]view_pane_container_mod.Pane = null,
     window_events: @import("../../base/common/windowDispatch.zig").Queue,
-    search_view: ?*SearchView = null,
-    search_service: ?*SearchService = null,
+    search_window: search_view_mod.SearchWindow,
     layout: Layout,
     activity_bar_part: ActivityBarPart,
     sidebar_part: SidebarPart,
@@ -606,8 +595,9 @@ pub const Workbench = struct {
         self.user_keybindings = try user_keybindings_mod.UserKeybindingsLoader.create(allocator, io, self.async_io, &self.window_events);
         errdefer self.user_keybindings.destroy();
         _ = try self.user_keybindings.on_did_change.listen(self, onUserKeybindingsChanged);
-        self.search_view = null;
-        self.search_service = null;
+        self.search_window = undefined;
+        self.search_window.view = null;
+        self.search_window.service = null;
         try self.initShellModels();
         errdefer self.deinitShellModels();
         self.layout.reset_layout = options.reset_layout;
@@ -834,6 +824,53 @@ pub const Workbench = struct {
                 }.dimensions,
             },
         };
+        self.search_window = .{
+            .allocator = allocator,
+            .io = self.io,
+            .part = self.part,
+            .workspace = self.workspace,
+            .configuration = &self.configuration,
+            .editor_opening = &self.editor_opening,
+            .activity_service = &self.activity_service,
+            .dialog_service = &self.dialog_service,
+            .window = &self.window_events,
+            .view_factory = self.view_factory,
+            .host = .{
+                .context = self,
+                .ensure_configuration = struct {
+                    fn run(context: *anyopaque) !void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        try host.ensureConfiguration();
+                    }
+                }.run,
+                .configure_tab = struct {
+                    fn run(context: *anyopaque, tab: *Tab) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.applyEditorSettingsToTab(tab);
+                    }
+                }.run,
+                .update_focus = struct {
+                    fn run(context: *anyopaque) !void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        try host.updatePartFocus();
+                    }
+                }.run,
+                .layout = struct {
+                    fn run(context: *anyopaque) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.layoutAll();
+                    }
+                }.run,
+                .focus_editor = focusWindowEditor,
+                .focus_result = struct {
+                    fn run(context: *anyopaque) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.setFocus(.editor);
+                    }
+                }.run,
+            },
+        };
+        self.search_window.bindEditorFactory();
         self.symbol_navigation = .{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
@@ -1334,7 +1371,7 @@ pub const Workbench = struct {
             self.allocator.free(panes);
             self.explorer_panes = null;
         }
-        if (self.search_view) |view| view.detachActivity();
+        if (self.search_window.view) |view| view.detachActivity();
         self.activity_service.deinit();
         if (self.notification_controller) |controller| controller.deinit();
         self.statusbar.deinit();
@@ -1619,11 +1656,7 @@ pub const Workbench = struct {
         try self.commands.register(.{ .id = media_actions.open_in_text_id, .label = media_actions.open_in_text_title, .category = media_actions.category, .requires_editor = true, .context = self, .run = commandImageOpenInTextEditor });
         const search_contribution = @import("../contrib/search/browser/search.contribution.zig");
         for (search_contribution.search_actions) |action| try self.commands.registerAction(&self.instantiation, action);
-        const search_editor_commands = [_]commands_mod.CommandInfo{
-            .{ .id = "search.action.openNewEditor", .label = "Open New Search Editor", .category = "Search", .context = self, .run = commandOpenNewSearchEditor },
-            .{ .id = "rerunSearchEditorSearch", .label = "Search Again", .category = "Search Editor", .context = self, .run = commandRerunSearchEditor },
-        };
-        for (search_editor_commands) |command| try self.commands.register(command);
+        for (self.search_window.factory.actionDescriptors()) |action| try self.commands.registerAction(&self.instantiation, action);
         for (search_contribution.result_actions) |action| try self.commands.registerAction(&self.instantiation, action);
         const editor_commands_1 = [_]commands_mod.CommandInfo{
             .{ .id = "actions.find", .label = "Find", .context = self, .requires_editor = true, .run = commandFind },
@@ -1815,7 +1848,7 @@ pub const Workbench = struct {
         self.markdown_previews.deinit();
         self.service.deinit();
         if (self.sidebar) |sidebar| sidebar.deinit();
-        self.destroySearch();
+        self.search_window.destroy();
         if (self.settings_watcher) |watcher| watcher.deinit();
         if (self.workspace_watcher) |watcher| {
             watcher.deinit();
@@ -1909,7 +1942,7 @@ pub const Workbench = struct {
     pub fn updateSidebarTitleActions(self: *Workbench) void {
         const container = self.sidebar_part.pane.active_id orelse "";
         if (std.mem.eql(u8, container, "search")) {
-            const view = self.search_view orelse return;
+            const view = self.search_window.view orelse return;
             const tree_mode = view.controller.viewMode() == .tree;
             const expanded = view.hasExpandedResults();
             const has_results = view.matchCount() != 0;
@@ -2012,7 +2045,7 @@ pub const Workbench = struct {
             sidebar.deinit();
             self.sidebar = null;
         }
-        self.destroySearch();
+        self.search_window.destroy();
         // The contribution watches the current workspace/configuration; stop
         // it before either is replaced and recreate it below when startup has
         // already reached the AfterRestored phase.
@@ -2042,6 +2075,7 @@ pub const Workbench = struct {
         self.saveSidebarViewStates() catch {};
         self.workspace.deinit();
         self.workspace = replacement;
+        self.search_window.setWorkspace(replacement);
         replacement_owned = true;
         if (self.view_state_storage != null) {
             const has_scm = self.scm_view_model != null;
@@ -2168,7 +2202,7 @@ pub const Workbench = struct {
     fn onSettingsReloaded(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyConfiguredLanguageAssociationsToAllEditors();
-        if (self.search_view) |view| view.onConfigurationChanged();
+        if (self.search_window.view) |view| view.onConfigurationChanged();
         self.markdown_previews.updateConfiguration();
         if (self.git_model.repository != null) self.refreshGitStatus();
     }
@@ -2294,7 +2328,7 @@ pub const Workbench = struct {
 
     fn registerWorkingCopy(self: *Workbench, tab: *Tab) void {
         tab.editor.undo_redo.setNotificationService(self.notification_api);
-        if (self.search_view) |view| view.model.result.onModelAdded(tab.editor.path, tab.editor.model) catch {};
+        if (self.search_window.view) |view| view.model.result.onModelAdded(tab.editor.path, tab.editor.model) catch {};
         self.working_copy_service.registerWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor)) catch {};
     }
 
@@ -2380,7 +2414,7 @@ pub const Workbench = struct {
                 &self.window_events,
             );
         }
-        if (self.search_view == null) try self.initSearchFromWorkspace();
+        if (self.search_window.view == null) try self.search_window.initFromWorkspace();
         self.sidebar.?.theme_service = self.theme_service;
         self.sidebar.?.setOpenEditorQuery(.{ .context = self, .is_open = isPathOpen });
         try self.setSidebarVisible(true);
@@ -2388,51 +2422,6 @@ pub const Workbench = struct {
         _ = try self.sidebar_part.openPaneComposite(self.activity_bar_part.activities.items[0].id);
         self.updateSidebarTitleActions();
         self.layoutAll();
-    }
-
-    fn initSearchFromWorkspace(self: *Workbench) !void {
-        self.destroySearch();
-        const service = try self.allocator.create(SearchService);
-        errdefer self.allocator.destroy(service);
-        service.* = SearchService.init(self.allocator, self.io, self.workspace, .{
-            .context = self,
-            .read = searchReadFile,
-            .extra_files = searchExtraFiles,
-            .open_files = searchOpenFiles,
-            .free_paths = searchFreePaths,
-        });
-        const view = try SearchView.init(
-            self.allocator,
-            self.workspace,
-            self.configuration.?,
-            service.interface(),
-            .{
-                .context = self,
-                .open_match = searchOpenMatch,
-                .open_results = searchOpenResults,
-                .highlight_range = searchHighlightRange,
-                .read_file = searchReadFile,
-                .extra_files = searchExtraFiles,
-                .free_paths = searchFreePaths,
-                .apply_edits = searchApplyEdits,
-                .save_file = searchSaveFile,
-                .active_selection_text = searchActiveSelectionText,
-                .confirm_replace_all = searchConfirmReplaceAll,
-            },
-        );
-        errdefer view.deinit();
-        try view.attachActivity(&self.activity_service);
-        view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = &self.window_events };
-        self.search_service = service;
-        view.model.delivery.attach(&self.window_events, view, SearchView.dispatchSearch);
-        self.search_view = view;
-    }
-
-    fn destroySearch(self: *Workbench) void {
-        if (self.search_view) |view| view.deinit();
-        self.search_view = null;
-        if (self.search_service) |service| self.allocator.destroy(service);
-        self.search_service = null;
     }
 
     /// The activity-bar ellipsis lists the entries that do not fit the rail.
@@ -2464,7 +2453,7 @@ pub const Workbench = struct {
     }
 
     fn openActivity(self: *Workbench, id: []const u8, focus: bool) !void {
-        if (self.sidebar == null or self.search_view == null) try self.initSidebarFromWorkspace();
+        if (self.sidebar == null or self.search_window.view == null) try self.initSidebarFromWorkspace();
         // Switching the visible view container invalidates the hover state
         // painted by the previous one.
         self.clearSidebarViewHover();
@@ -2478,7 +2467,7 @@ pub const Workbench = struct {
             self.setFocus(.sidebar);
             self.statusbar.main_part.clearFocus();
             if (std.mem.eql(u8, id, "search")) {
-                if (self.search_view) |view| view.focus();
+                if (self.search_window.view) |view| view.focus();
             }
         }
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
@@ -2508,7 +2497,7 @@ pub const Workbench = struct {
         if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
         self.statusbar.main_part.clearFocus();
         if (std.mem.eql(u8, self.activity_bar_part.active_id orelse "", "search")) {
-            if (self.search_view) |view| view.focus();
+            if (self.search_window.view) |view| view.focus();
         }
     }
 
@@ -2522,7 +2511,7 @@ pub const Workbench = struct {
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
         self.statusbar.main_part.clearFocus();
-        if (self.search_view) |view| view.blur();
+        if (self.search_window.view) |view| view.blur();
     }
 
     pub fn focusStatusBar(self: *Workbench) void {
@@ -2540,7 +2529,7 @@ pub const Workbench = struct {
             }
         }
         if (self.activeTab()) |tab| tab.focusEditor();
-        if (self.search_view) |view| view.blur();
+        if (self.search_window.view) |view| view.blur();
     }
 
     fn ensureProblemsView(self: *Workbench) !void {
@@ -2568,7 +2557,7 @@ pub const Workbench = struct {
         self.setFocus(.problems);
         self.statusbar.main_part.clearFocus();
         if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
-        if (self.search_view) |view| view.blur();
+        if (self.search_window.view) |view| view.blur();
         self.updateProblemsHighlight();
         self.layoutAll();
     }
@@ -2628,7 +2617,7 @@ pub const Workbench = struct {
         }
         self.statusbar.main_part.clearFocus();
         if (self.breadcrumbs.activeControl()) |control| control.setFocused(false);
-        if (self.search_view) |view| view.blur();
+        if (self.search_window.view) |view| view.blur();
         self.updateProblemsHighlight();
         self.layoutAll();
         return true;
@@ -4346,7 +4335,7 @@ pub const Workbench = struct {
         const explorer_active = std.mem.eql(u8, active_activity, "explorer");
         const search_active = std.mem.eql(u8, active_activity, "search");
         const scm_active = std.mem.eql(u8, active_activity, "scm");
-        const search_results_focused = if (self.search_view) |view| view.results_focused else false;
+        const search_results_focused = if (self.search_window.view) |view| view.results_focused else false;
         const editor_focused = self.focus == .editor;
         keys.editor_focus.set(.{ .boolean = editor_focused });
         const active = self.activeTab();
@@ -4444,7 +4433,7 @@ pub const Workbench = struct {
                 if (!tab.isDiff()) tab.editor.reloadShortcutKeybindings(removals);
             }
         }
-        if (self.search_view) |view| view.reloadKeybindings(removals);
+        if (self.search_window.view) |view| view.reloadKeybindings(removals);
     }
 
     fn ensureThemeService(self: *Workbench) !*theme_service_mod.ThemeService {
@@ -4488,7 +4477,7 @@ pub const Workbench = struct {
 
     fn applyThemeToParts(self: *Workbench, palette: ?*const theme_colors_mod.ThemeColors) void {
         if (self.sidebar) |sidebar| sidebar.setThemeColors(palette);
-        if (self.search_view) |view| view.setThemeColors(palette);
+        if (self.search_window.view) |view| view.setThemeColors(palette);
         if (self.scm.changes) |view| view.setThemeColors(palette);
         if (self.scm.history) |view| view.setThemeColors(palette);
         self.breadcrumbs.setThemeColors(palette);
@@ -4787,7 +4776,7 @@ pub const Workbench = struct {
     /// pointer motion leaves the view content for the chrome or another part.
     pub fn clearSidebarViewHover(self: *Workbench) void {
         if (self.sidebar) |sidebar| sidebar.clearHover();
-        if (self.search_view) |view| view.clearHover();
+        if (self.search_window.view) |view| view.clearHover();
         if (self.scm_container) |container| container.clearHover();
         if (self.scm.changes) |view| view.clearHover();
         if (self.explorer_container) |container| container.clearHover();
@@ -5077,7 +5066,7 @@ pub const Workbench = struct {
                     self.setFocus(.terminal);
                 } else return self.focusEditor();
                 self.statusbar.main_part.clearFocus();
-                if (self.search_view) |view| view.blur();
+                if (self.search_window.view) |view| view.blur();
             },
             .statusbar => if (self.geometry().statusBarVisible()) self.focusStatusBar() else self.focusEditor(),
             else => self.focusEditor(),
@@ -5146,7 +5135,7 @@ pub const Workbench = struct {
         const control = self.ensureBreadcrumbsControl(pane) catch return false;
         self.setFocus(.breadcrumbs);
         self.statusbar.main_part.clearFocus();
-        if (self.search_view) |view| view.blur();
+        if (self.search_window.view) |view| view.blur();
         control.setFocused(true);
         if (select) {
             _ = control.focusAndSelect();
@@ -6129,7 +6118,7 @@ fn runListCommand(context: *anyopaque, command: []const u8) anyerror!void {
         }
     }
     if (std.mem.eql(u8, active_id, "search")) {
-        if (self.search_view) |view| {
+        if (self.search_window.view) |view| {
             _ = view.handleKey(&event);
             return;
         }
@@ -6297,283 +6286,6 @@ fn commandWordHighlightPrevious(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
     try tab.ensureControllers();
     tab.controllers.?.word_highlighter.moveBack();
-}
-
-fn startSearchEditorJob(context: *anyopaque, query: *const search_types.TextQuery) !search_types.ISearchJob {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.search_service == null) try self.initSearchFromWorkspace();
-    return self.search_service.?.startTextSearch(query);
-}
-
-fn searchEditorEnvironment(context: *anyopaque) ?search_editor_input_mod.Environment {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    return .{ .workspace = self.workspace, .configuration = self.configuration orelse return null };
-}
-
-fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot: search_editor_serialization.Snapshot) !void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const pane = self.activePane() orelse return error.GroupPaneMissing;
-    try self.ensureConfiguration();
-    const configuration = self.configuration.?;
-    const dims = pane.contentDimensions();
-    const query = try search_editor.SearchEditor.init(self.allocator, .{ .context = self, .start_text_search = startSearchEditorJob }, config, configuration);
-    _ = query.on_did_change_query_focus.listenSignal(self, Workbench.updatePartFocus) catch |err| {
-        query.deinit();
-        return err;
-    };
-    const input = SearchEditorInput.init(self.allocator, self.io, config.query, query, snapshot.text, dims.width, dims.height) catch |err| {
-        query.deinit();
-        return err;
-    };
-    const tab = Tab.initSearchEditor(self.view_factory, self.allocator, input) catch |err| {
-        input.deinit();
-        return err;
-    };
-    errdefer tab.deinit();
-    try tab.view.setStatusBarVisible(false);
-    try input.setMatchRanges(snapshot.match_ranges);
-    try query.setLocations(snapshot.files);
-    input.attach(&self.window_events, .{ .context = self, .environment = searchEditorEnvironment, .extra_files = searchExtraFiles, .free_paths = searchFreePaths });
-    try pane.tabs.ensureUnusedCapacity(1);
-    _ = try pane.group.model.openEditor(tab.input, .{ .pinned = true, .active = true });
-    try pane.addTab(tab);
-    self.applyEditorSettingsToTab(tab);
-    self.layoutAll();
-    self.focusEditor();
-    if (config.query.len > 0 and query.form.contextLines() > 0) query.triggerSearch(0, true);
-}
-
-pub fn searchEditorOpenTarget(self: *Workbench, tab: *Tab) bool {
-    const query = tab.search_editor_input.?.search_editor;
-    const target = (query.targetAtCursor(tab.editor) catch null) orelse return false;
-    searchOpenMatch(self, target.path, target.range) catch |err| {
-        tab.editor.setMessage("Open failed: {s}", .{@errorName(err)});
-    };
-    return true;
-}
-
-fn searchOpenMatch(context: *anyopaque, path: []const u8, range: ?Range) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.openPath(path);
-    self.setFocus(.editor);
-    if (self.activeTab()) |tab| {
-        if (range) |value| try tab.editor.setSelection(value);
-        tab.focusEditor();
-    }
-    if (range) |value| searchHighlightRange(context, path, value) else searchHighlightRange(context, path, null);
-}
-
-fn searchHighlightRange(context: *anyopaque, path: []const u8, range: ?Range) void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    for (self.part.group_views.items) |pane| {
-        for (pane.tabs.items) |tab| {
-            if (range != null and std.mem.eql(u8, tab.editor.path, path)) {
-                const decorations = [_]editorBrowser.Decoration{.{ .range = range.?, .kind = .search_range_highlight }};
-                tab.view.setSearchHighlights(&decorations) catch {};
-            } else {
-                tab.view.setSearchHighlights(&.{}) catch {};
-            }
-        }
-    }
-}
-
-fn searchReadFile(context: *anyopaque, allocator: Allocator, path: []const u8) anyerror!?[]u8 {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    for (self.part.group_views.items) |pane| {
-        for (pane.tabs.items) |tab| {
-            if (!std.mem.eql(u8, tab.editor.path, path)) continue;
-            var value = try tab.editor.model.getValue(null, false);
-            return try value.toOwnedSlice();
-        }
-    }
-    _ = allocator;
-    return null;
-}
-
-fn searchOpenFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    var paths = std.array_list.Managed([]u8).init(allocator);
-    errdefer {
-        for (paths.items) |path| allocator.free(path);
-        paths.deinit();
-    }
-    for (self.part.group_views.items) |pane| {
-        for (pane.tabs.items) |tab| {
-            if (tab.search_editor_input != null) continue;
-            var duplicate = false;
-            for (paths.items) |existing| {
-                if (std.mem.eql(u8, existing, tab.editor.path)) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (!duplicate) try paths.append(try allocator.dupe(u8, tab.editor.path));
-        }
-    }
-    return try paths.toOwnedSlice();
-}
-
-fn searchExtraFiles(context: *anyopaque, allocator: Allocator) anyerror![][]u8 {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    var paths = std.array_list.Managed([]u8).init(allocator);
-    errdefer {
-        for (paths.items) |path| allocator.free(path);
-        paths.deinit();
-    }
-    for (self.part.group_views.items) |pane| {
-        for (pane.tabs.items) |tab| {
-            if (tab.search_editor_input != null) continue;
-            if (self.workspace.isInsideWorkspace(tab.editor.path)) continue;
-            var duplicate = false;
-            for (paths.items) |existing| {
-                if (std.mem.eql(u8, existing, tab.editor.path)) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (!duplicate) try paths.append(try allocator.dupe(u8, tab.editor.path));
-        }
-    }
-    return try paths.toOwnedSlice();
-}
-
-fn searchFreePaths(_: *anyopaque, allocator: Allocator, paths: [][]u8) void {
-    for (paths) |path| allocator.free(path);
-    allocator.free(paths);
-}
-
-fn searchApplyEdits(context: *anyopaque, path: []const u8, edits: []const replace_types.Edit) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    for (self.part.group_views.items) |pane| {
-        for (pane.tabs.items) |tab| {
-            if (!pathsEqual(tab.editor.path, path)) continue;
-            const converted = try self.allocator.alloc(TextEdit, edits.len);
-            defer self.allocator.free(converted);
-            for (edits, 0..) |edit, index| {
-                converted[index] = .{ .range = edit.range, .text = edit.text };
-            }
-            try tab.editor.applyTextEdits(converted, &.{});
-            return;
-        }
-    }
-    return applyClosedFileEdits(self, path, edits);
-}
-
-fn applyClosedFileEdits(self: *Workbench, path: []const u8, edits: []const replace_types.Edit) !void {
-    const content = try Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(64 * 1024 * 1024));
-    defer self.allocator.free(content);
-
-    var starts = std.array_list.Managed(usize).init(self.allocator);
-    defer starts.deinit();
-    var bom_len: usize = 0;
-    if (content.len >= 3 and content[0] == 0xef and content[1] == 0xbb and content[2] == 0xbf) bom_len = 3;
-    try starts.append(bom_len);
-    for (content, 0..) |ch, index| {
-        if (ch == '\n' and index + 1 <= content.len) try starts.append(index + 1);
-    }
-
-    const Resolved = struct { start: usize, end: usize, text: []const u8 };
-    var resolved = std.array_list.Managed(Resolved).init(self.allocator);
-    defer resolved.deinit();
-    for (edits) |edit| {
-        const start = offsetAt(starts.items, edit.range.startLineNumber, edit.range.startColumn);
-        const end = offsetAt(starts.items, edit.range.endLineNumber, edit.range.endColumn);
-        try resolved.append(.{ .start = @min(start, content.len), .end = @min(end, content.len), .text = edit.text });
-    }
-    std.sort.heap(Resolved, resolved.items, {}, struct {
-        fn lessThan(_: void, a: Resolved, b: Resolved) bool {
-            return a.start > b.start;
-        }
-    }.lessThan);
-
-    var buffer = std.array_list.Managed(u8).init(self.allocator);
-    defer buffer.deinit();
-    try buffer.appendSlice(content);
-    for (resolved.items) |edit| {
-        if (edit.end < edit.start or edit.end > buffer.items.len) continue;
-        try buffer.replaceRange(edit.start, edit.end - edit.start, edit.text);
-    }
-    try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = buffer.items });
-}
-
-fn offsetAt(starts: []const usize, line: usize, column: usize) usize {
-    if (starts.len == 0) return 0;
-    const index = @min(line -| 1, starts.len - 1);
-    return starts[index] + (column -| 1);
-}
-
-fn searchSaveFile(context: *anyopaque, path: []const u8) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    for (self.part.group_views.items) |pane| {
-        for (pane.tabs.items) |tab| {
-            if (!tab.isDiff() and pathsEqual(tab.editor.path, path)) {
-                try tab.editor.save();
-                return;
-            }
-        }
-    }
-}
-
-/// Compares resource paths across the CLI/test boundary. Windows tests and
-/// callers can mix `/` and `\`, and Windows paths are case-insensitive.
-fn pathsEqual(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |left, right| {
-        if (left == right) continue;
-        const separators = (left == '/' or left == '\\') and (right == '/' or right == '\\');
-        if (separators) continue;
-        if (builtin.os.tag == .windows and std.ascii.toLower(left) == std.ascii.toLower(right)) continue;
-        return false;
-    }
-    return true;
-}
-
-fn searchActiveSelectionText(context: *anyopaque, allocator: Allocator) anyerror!?[]u8 {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return null;
-    const selections = try tab.editor.getSelections();
-    defer self.allocator.free(selections);
-    for (selections) |selection| {
-        if (selection.isEmpty()) continue;
-        var value = try tab.editor.model.getValueInRange(Range.init(
-            selection.startLineNumber,
-            selection.startColumn,
-            selection.endLineNumber,
-            selection.endColumn,
-        ), null);
-        return try value.toOwnedSlice();
-    }
-    _ = allocator;
-    return null;
-}
-
-fn searchConfirmReplaceAll(context: *anyopaque, message: []const u8) !void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.isDialogOpen()) return error.DialogAlreadyOpen;
-    _ = try self.dialog_service.confirm(.{ .message = message, .primary_button = "Replace" }, .{ .context = self, .complete = onSearchReplaceAllConfirmed });
-}
-
-fn onSearchReplaceAllConfirmed(context: *anyopaque, result: dialogs.IConfirmationResult) void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.search_view) |view| {
-        if (result.confirmed) view.confirmReplaceAll() else view.clearReplaceConfirmation();
-    }
-}
-
-fn searchTextModel(context: *anyopaque, path: []const u8) ?*@import("../../editor/common/model/textModel.zig").TextModel {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const input = self.findOpenInput(path) orelse return null;
-    return input.editor.model;
-}
-
-fn commandOpenNewSearchEditor(context: *anyopaque) anyerror!void {
-    try searchOpenResults(context, .{}, .{ .text = "", .match_ranges = &.{} });
-}
-
-fn commandRerunSearchEditor(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return;
-    if (tab.search_editor_input) |input| input.search_editor.triggerSearch(0, true);
 }
 
 const tab_keybinding_rules = [_]keybinding_registry.IKeybindingRule{

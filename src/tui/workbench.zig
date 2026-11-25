@@ -342,7 +342,7 @@ fn paintSidebarContents(self: *Workbench) !void {
             renderPlaceholder(self, content, focused);
         }
     } else if (std.mem.eql(u8, active_id, "search")) {
-        if (self.search_view) |view| {
+        if (self.search_window.view) |view| {
             if (self.theme_palette) |palette| view.setThemeColors(palette);
             try view.render(&self.frame.next, content, .{
                 .show_header = false,
@@ -1039,7 +1039,7 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
             self.service.activateGroup(pane.group);
             self.setFocus(.breadcrumbs);
             self.statusbar.main_part.clearFocus();
-            if (self.search_view) |view| view.blur();
+            if (self.search_window.view) |view| view.blur();
             if (self.ensureBreadcrumbsControl(pane)) |control| {
                 control.setFocused(true);
                 // Populate the hit rectangles before handling the click;
@@ -1779,7 +1779,7 @@ pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         const ch = event.key.char;
         if (ch == 'f' or ch == 'F') {
             try self.showActivity(1);
-            if (self.search_view) |view| {
+            if (self.search_window.view) |view| {
                 view.seedFromSelection() catch {};
                 view.focus();
             }
@@ -1840,7 +1840,7 @@ pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
         return true;
     }
     if (std.mem.eql(u8, active_id, "search")) {
-        if (self.search_view) |view| {
+        if (self.search_window.view) |view| {
             switch (view.handleKey(event)) {
                 .handled => return true,
                 .focus_editor => {
@@ -2005,7 +2005,7 @@ pub fn handleSidebarMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
         return true;
     }
     if (std.mem.eql(u8, active_id, "search")) {
-        if (self.search_view) |view| {
+        if (self.search_window.view) |view| {
             _ = view.handleMouse(event);
             if (event.kind == .move) self.pointer = view.pointerAt(event.x, event.y);
         }
@@ -2151,7 +2151,7 @@ pub fn handleSearchEditorKey(self: *Workbench, event: *ui.KeyEvent) bool {
     const input = tab.search_editor_input orelse return false;
     const query = input.search_editor;
     if (event.key == .enter and !event.mods.alt and !event.mods.ctrl and !query.query_focused) {
-        return shell.searchEditorOpenTarget(self, tab);
+        return self.search_window.factory.openTarget(tab);
     }
     return query.handleKey(event);
 }
@@ -2183,7 +2183,7 @@ pub fn handleSearchEditorMouse(self: *Workbench, event: *const ui.MouseEvent) bo
                 std.mem.eql(u8, behavior.?.string, "goToLocation");
             if (go_to_location and previous != null and previous.?.x == event.x and previous.?.y == event.y and now - previous.?.at <= 500) {
                 query.last_result_click = null;
-                return shell.searchEditorOpenTarget(self, tab);
+                return self.search_window.factory.openTarget(tab);
             }
         }
         return false;
