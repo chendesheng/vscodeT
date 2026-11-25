@@ -47,10 +47,6 @@ pub const IndentGuidesOverlay = struct {
     /// One guide list per view line starting at `render_start_line_number`.
     render_result: ?[]LineGuides,
     render_start_line_number: usize,
-    /// Terminal performance gate: skip bracket-pair guides while the model
-    /// part defers its first AST build. Indentation guides and the active
-    /// indentation scope are unaffected.
-    bracket_guides_enabled: bool,
 
     pub fn init(self: *IndentGuidesOverlay, allocator: Allocator, context: *ViewContext) void {
         self.* = .{
@@ -61,7 +57,6 @@ pub const IndentGuidesOverlay = struct {
             .options = .{},
             .render_result = null,
             .render_start_line_number = 1,
-            .bracket_guides_enabled = true,
         };
         self.readConfig();
         self.base.initWithHandlerContext(context, self, callbacks(), prepareRenderCallback, renderCallback);
@@ -70,12 +65,6 @@ pub const IndentGuidesOverlay = struct {
     pub fn deinit(self: *IndentGuidesOverlay) void {
         self.base.deinit();
         self.clearRenderResult();
-    }
-
-    pub fn setBracketGuidesEnabled(self: *IndentGuidesOverlay, enabled: bool) void {
-        if (self.bracket_guides_enabled == enabled) return;
-        self.bracket_guides_enabled = enabled;
-        self.base.handler.forceShouldRender();
     }
 
     fn readConfig(self: *IndentGuidesOverlay) void {
@@ -227,7 +216,7 @@ pub const IndentGuidesOverlay = struct {
         const vm = self.context.view_model;
 
         var bracket_guides: ?[]LineGuides = null;
-        if (self.options.bracket_pairs != .off and self.bracket_guides_enabled) {
+        if (self.options.bracket_pairs != .off) {
             bracket_guides = try vm.bracketGuidesInRangeByLine(
                 start_line_number,
                 end_line_number,

@@ -19,7 +19,6 @@ const Selection = @import("../../../common/core/selection.zig").Selection;
 const editorBrowser = @import("../../editorBrowser.zig");
 const CursorColumns = @import("../../../common/core/cursorColumns.zig").CursorColumns;
 const TextModel = @import("../../../common/model/textModel.zig").TextModel;
-const bracket_pairs_tree = @import("../../../common/model/bracketPairsTextModelPart/bracketPairsTree/bracketPairsTree.zig");
 const TextModelCreationOptions = @import("../../../common/model.zig").TextModelCreationOptions;
 const PositionAffinity = @import("../../../common/model.zig").PositionAffinity;
 const IdentifiedSingleEditOperation = @import("../../../common/model.zig").IdentifiedSingleEditOperation;
@@ -103,7 +102,7 @@ const MirrorTextModel = @import("../../../common/model/mirrorTextModel.zig").Mir
 const JsonContentChange = json_language.Client.ContentChange;
 const json_language = @import("../../../../workbench/services/language/common/jsonLanguageClient.zig");
 const time_compat = @import("../../../../base/common/timeCompat.zig");
-const async_mod = @import("../../../../base/common/async.zig");
+const window_dispatch = @import("../../../../base/common/windowDispatch.zig");
 const languagesAssociations = @import("../../../common/services/languagesAssociations.zig");
 const input = @import("ui").input;
 const ui_scroll = @import("ui").scroll;
@@ -553,16 +552,9 @@ pub const Editor = struct {
     /// them on the next view rebuild rather than inside the model change event,
     /// where moving selections would be re-entrant.
     folding_dirty: bool,
-    /// Upstream schedules folding ranges through a Delayer with a 200 ms
-    /// minimum debounce. The terminal drives it from the main-loop tick.
-    folding_delayer: async_mod.ThrottledDelayer,
-    folding_due: bool,
+    /// Upstream Delayer for folding model updates.
+    folding_task: window_dispatch.Task = .{},
     folding_delay_ms: i64,
-    /// Deferred bracket-pair AST/guide build for large documents. Building
-    /// the AST scans every line, so the first paint and key echo skip it and
-    /// the main loop refreshes it after the debounce.
-    bracket_guides_delayer: async_mod.ThrottledDelayer,
-    bracket_guides_due: bool,
     smart_select: smart_select.SmartSelectController,
     in_place_replace_deadline: ?i64,
     language_config_service: *LanguageConfigurationService,
@@ -873,11 +865,7 @@ pub const Editor = struct {
             .bracket_matching = BracketMatchingController.init(allocator, model),
             .folding = undefined,
             .folding_dirty = false,
-            .folding_delayer = undefined,
-            .folding_due = false,
             .folding_delay_ms = folding_debounce_min_ms,
-            .bracket_guides_delayer = undefined,
-            .bracket_guides_due = false,
             .smart_select = smart_select.SmartSelectController.init(allocator, &.{}, .{}),
             .in_place_replace_deadline = null,
             .language_config_service = language_config_service,
@@ -920,8 +908,6 @@ pub const Editor = struct {
             .find_start_fn = null,
         };
         errdefer editor.view_event_dispatcher.deinit();
-        editor.folding_delayer = async_mod.ThrottledDelayer.init(editor, foldingDue, folding_debounce_min_ms);
-        editor.bracket_guides_delayer = async_mod.ThrottledDelayer.init(editor, bracketGuidesDue, bracket_guides_debounce_ms);
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         _ = try editor.view_layout.onDidScroll().listen(editor, onViewLayoutScroll);
         if (editor.character_pair) |*pair_support| {
@@ -949,7 +935,6 @@ pub const Editor = struct {
         editor.folding = folding_controller;
         try editor.refreshFoldingRules();
         editor.triggerFoldingUpdate(time_compat.milliTimestamp());
-        editor.triggerBracketGuidesUpdate(time_compat.milliTimestamp());
 
         editor.content_listener_id = try model.onDidChangeContentWithContextId(editor, contentChangedCallback);
         editor.decorations_listener_id = try model.onDidChangeDecorationsWithContextId(editor, decorationChangedCallback);
@@ -1676,6 +1661,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        self.folding_task.schedule(null);
         if (self.document.editors.items.len == 1) self.detachJsonLanguage();
         // Unregister the shared-model listeners first: the model may outlive
         // this view while a split copy stays open.
@@ -1795,7 +1781,6 @@ pub const Editor = struct {
         self.folding.hidden_model.notifyChangeModelContent(has_line_changes);
         self.refreshDirtyState();
         self.triggerFoldingUpdate(time_compat.milliTimestamp());
-        self.triggerBracketGuidesUpdate(time_compat.milliTimestamp());
         self.emitModelContentChangedEvents();
         self.recoverCursorFromModel(event);
         for (self.working_copy_content_listeners.items) |listener| listener.callback(listener.context);
@@ -2089,8 +2074,7 @@ pub const Editor = struct {
 
     /// Recomputes the provider ranges and applies the resulting hidden areas.
     fn refreshFolding(self: *Editor) !void {
-        self.folding_delayer.cancel();
-        self.folding_due = false;
+        self.folding_task.schedule(null);
         const start_us = std.Io.Timestamp.now(time_compat.io, .awake).toMicroseconds();
         // A line-count change may leave the wrapping model one change behind;
         // rebuild it before a hidden range can point past its projections.
@@ -2103,7 +2087,6 @@ pub const Editor = struct {
         const elapsed_ms: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(time_compat.io, .awake).toMicroseconds() - start_us, 1000));
         if (elapsed_ms > 0) {
             self.folding_delay_ms = @max(folding_debounce_min_ms, @min(elapsed_ms, folding_debounce_max_ms));
-            self.folding_delayer.delay_ms = self.folding_delay_ms;
         }
     }
 
@@ -2138,99 +2121,24 @@ pub const Editor = struct {
 
     const folding_debounce_min_ms: i64 = 200;
     const folding_debounce_max_ms: i64 = 40_000;
-    const bracket_guides_debounce_ms: i64 = 200;
-    // Shared with the parser's eager-tokenization cut-off so a document that
-    // is too large for an eager AST build is also the one whose initial build
-    // is deferred to the maintenance pass.
-    const bracket_guides_defer_line_count: usize = bracket_pairs_tree.eager_build_line_count;
-
-    fn foldingDue(context: *anyopaque) void {
-        const self: *Editor = @ptrCast(@alignCast(context));
-        self.folding_due = true;
+    pub fn attachWindow(self: *Editor, window: *window_dispatch.Queue) void {
+        if (self.folding_task.queue == window) return;
+        self.folding_task.schedule(null);
+        self.folding_task = .{ .queue = window, .context = self, .run = onFoldingDeadline };
+        if (self.folding_dirty) self.triggerFoldingUpdate(time_compat.milliTimestamp());
+        self.model.tokenization().tokens.attachWindow(window);
     }
 
-    fn bracketGuidesDue(context: *anyopaque) void {
-        const self: *Editor = @ptrCast(@alignCast(context));
-        self.bracket_guides_due = true;
-    }
-
-    /// True when the view should skip bracket guides this frame: the AST is
-    /// dirty and building it would scan the whole document.
-    pub fn shouldDeferBracketGuides(self: *Editor) bool {
-        return self.model.getLineCount() > bracket_guides_defer_line_count and
-            self.model.bracketPairs().isDirty();
-    }
-
-    /// Builds the bracket AST before the view resolves colorization
-    /// decorations. Only a large document's first whole-document build is
-    /// deferred to the maintenance pass; incremental edits and the
-    /// token-aware rebuild stay on the paint path so decorations never come
-    /// from a stale tree. Returns true while that initial build is deferred;
-    /// the view then skips bracket-match queries, which would otherwise build
-    /// the AST synchronously from the paint path.
-    pub fn prepareBracketPairs(self: *Editor, now_ms: i64) bool {
-        const pairs = self.model.bracketPairs();
-        if (!pairs.isDirty()) return false;
-        if (!pairs.hasDocument() and self.model.getLineCount() > bracket_guides_defer_line_count) {
-            self.triggerBracketGuidesUpdate(now_ms);
-            return true;
-        }
-        pairs.updateNow() catch {};
-        return false;
-    }
-
-    /// Reschedules the deferred bracket guides when the view noticed that
-    /// token updates made the AST stale.
-    pub fn scheduleBracketGuides(self: *Editor, now_ms: i64) void {
-        self.triggerBracketGuidesUpdate(now_ms);
-    }
-
-    fn triggerBracketGuidesUpdate(self: *Editor, now_ms: i64) void {
-        if (self.model.getLineCount() <= bracket_guides_defer_line_count) {
-            self.bracket_guides_delayer.cancel();
-            return;
-        }
-        self.bracket_guides_delayer.trigger(now_ms, null);
-    }
-
-    /// Drives the deferred bracket-pair AST/guide build. Returns true when a
-    /// repaint is needed.
-    pub fn pollBracketGuides(self: *Editor, now_ms: i64) bool {
-        if (!self.bracket_guides_delayer.poll(now_ms)) return false;
-        if (!self.bracket_guides_due) return false;
-        self.bracket_guides_due = false;
-        self.model.bracketPairs().updateNow() catch return true;
-        return true;
-    }
-
-    pub fn bracketGuidesTimeout(self: *const Editor, now_ms: i64) ?u32 {
-        return self.bracket_guides_delayer.nextTimeout(now_ms);
-    }
-
-    /// Schedules a folding recompute. Content changes reset the deadline, so
-    /// rapid typing coalesces into one range computation, like upstream's
-    /// `Delayer`-based `triggerFoldingModelChanged`.
+    /// Content and language changes reset the folding model update deadline.
     fn triggerFoldingUpdate(self: *Editor, now_ms: i64) void {
         self.folding_dirty = true;
-        self.folding_delayer.trigger(now_ms, null);
+        self.folding_task.schedule(now_ms + self.folding_delay_ms);
     }
 
-    /// Drives the debounced folding pass from the main loop. Returns true when
-    /// ranges were recomputed and the view should repaint.
-    pub fn pollFolding(self: *Editor, now_ms: i64) bool {
-        if (!self.folding_delayer.poll(now_ms)) return false;
-        if (!self.folding_due) return false;
-        self.folding_due = false;
-        self.refreshFolding() catch |err| {
-            self.folding_dirty = false;
-            self.setMessage("folding failed: {s}", .{@errorName(err)});
-            return true;
-        };
+    fn onFoldingDeadline(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Editor = @ptrCast(@alignCast(context));
+        self.refreshFoldingIfDirty();
         return true;
-    }
-
-    pub fn foldingTimeout(self: *const Editor, now_ms: i64) ?u32 {
-        return self.folding_delayer.nextTimeout(now_ms);
     }
 
     pub fn setTextEditorSelectionSource(self: *Editor, source: TextEditorSelectionSource) void {
@@ -6816,16 +6724,20 @@ test "Editor: folding is scheduled with the upstream debounce" {
         editor.deinit();
         allocator.destroy(editor);
     }
+    var window = window_dispatch.Queue{ .io = std.testing.io };
+    editor.attachWindow(&window);
     const now = time_compat.milliTimestamp();
     // Re-arm with a known "now" so a slow create cannot already have passed
     // the initial 200 ms deadline.
     editor.triggerFoldingUpdate(now);
     try std.testing.expect(editor.folding_dirty);
     try std.testing.expectEqual(folding.FoldState.none, editor.foldStateAtModelLine(1));
-    try std.testing.expect(!editor.pollFolding(now));
-    try std.testing.expect(editor.pollFolding(now + 200));
+    _ = window.dispatch(now);
+    try std.testing.expect(editor.folding_dirty);
+    while (window.nextTimeout(now + 200, 1) == 0) _ = window.dispatch(now + 200);
     try std.testing.expectEqual(folding.FoldState.expanded, editor.foldStateAtModelLine(1));
-    try std.testing.expect(!editor.pollFolding(now + 400));
+    try std.testing.expect(!editor.folding_dirty);
+    try std.testing.expect(editor.folding_task.at == null);
 }
 
 test "Editor: reserving the scrollbar avoids a second wrapping pass" {
@@ -6919,7 +6831,7 @@ test "Editor: bracket colorization is enabled by default" {
     try std.testing.expectEqual(Position.init(3, 1), pair.?[1].getStartPosition());
 }
 
-test "Editor: large document defers the initial bracket AST build" {
+test "Editor: large document builds bracket AST on request" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var text: std.Io.Writer.Allocating = .init(allocator);
@@ -6935,14 +6847,11 @@ test "Editor: large document defers the initial bracket AST build" {
 
     const pairs = editor.model.bracketPairs();
     try std.testing.expect(pairs.isDirty());
-    try std.testing.expect(editor.prepareBracketPairs(0));
-    try std.testing.expect(pairs.isDirty());
-    try std.testing.expect(!pairs.hasDocument());
-
-    try std.testing.expect(editor.pollBracketGuides(250));
+    var brackets = try pairs.getBracketsInRange(Range.init(1, 1, 1, editor.model.getLineMaxColumn(1)), false);
+    defer brackets.deinit();
+    try std.testing.expect(brackets.items.len > 0);
     try std.testing.expect(!pairs.isDirty());
     try std.testing.expect(pairs.hasDocument());
-    try std.testing.expect(!editor.prepareBracketPairs(0));
 }
 
 test "Editor: AST bracket matching (colorization disabled)" {

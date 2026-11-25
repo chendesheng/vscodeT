@@ -453,7 +453,7 @@ test "sticky fold glyph toggles the indentation folding region" {
     defer fixture.deinit();
     try fixture.createView();
     try fixture.updateProvider();
-    _ = fixture.editor.pollFolding(std.math.maxInt(i64));
+    fixture.editor.refreshFoldingIfDirty();
     _ = fixture.editor.setTopViewLine(3);
     try fixture.view.?.refresh();
     try fixture.view.?.paint();

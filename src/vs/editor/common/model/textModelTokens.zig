@@ -455,8 +455,9 @@ fn safeTokenize(scratch: Allocator, state_allocator: Allocator, languageIdCodec:
 
 pub const DefaultBackgroundTokenizer = struct {
     _isDisposed: bool = false,
+    idle_task: @import("../../../base/common/windowDispatch.zig").Task = .{},
     /// Set by content/attach/visible-range changes; cleared when the store has
-    /// no invalid lines left. The main loop calls `poll` to advance it.
+    /// no invalid lines left. A model-owned task advances the idle callback.
     _hasPendingWork: bool = false,
     tokenizerWithStateStore: *TokenizerWithStateStoreAndTextModel,
     backgroundTokenStore: IBackgroundTokenizationStore,
@@ -468,7 +469,22 @@ pub const DefaultBackgroundTokenizer = struct {
     }
 
     pub fn dispose(self: *BackgroundSelf) void {
+        self.idle_task.schedule(null);
         self._isDisposed = true;
+    }
+
+    pub fn attachWindow(self: *BackgroundSelf, window: *@import("../../../base/common/windowDispatch.zig").Queue) void {
+        if (self.idle_task.queue == window) return;
+        self.idle_task.schedule(null);
+        self.idle_task = .{ .queue = window, .context = self, .run = backgroundTokenizeWithDeadline };
+        self.handleChanges();
+    }
+
+    fn backgroundTokenizeWithDeadline(context: *anyopaque, now: i64, _: bool) bool {
+        const self: *BackgroundSelf = @ptrCast(@alignCast(context));
+        const changed = self.poll();
+        if (self.isPending()) self.idle_task.schedule(now + 1);
+        return changed;
     }
 
     pub fn handleChanges(self: *BackgroundSelf) void {
@@ -478,6 +494,7 @@ pub const DefaultBackgroundTokenizer = struct {
             return;
         }
         self._hasPendingWork = true;
+        if (self.idle_task.at == null) self.idle_task.schedule(@import("../../../base/common/timeCompat.zig").milliTimestamp());
     }
 
     /// Advances the background pass for at most ~1 ms, like upstream's idle
@@ -544,7 +561,7 @@ pub const DefaultBackgroundTokenizer = struct {
 
     pub fn requestTokens(self: *BackgroundSelf, startLineNumber: usize, endLineNumberExclusive: usize) void {
         self.tokenizerWithStateStore.getStore().invalidateEndStateRange(LineRange.init(startLineNumber, endLineNumberExclusive)) catch {};
-        if (!self._isDisposed and self.tokenizerWithStateStore.textModel().isAttachedToEditor()) self._hasPendingWork = true;
+        self.handleChanges();
     }
 };
 

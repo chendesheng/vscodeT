@@ -305,6 +305,11 @@ pub const Tab = struct {
 
     /// Creates the editor contributions on first activation. The tab must have
     /// been attached to a view before any key/mouse event is routed to it.
+    pub fn attachWindow(self: *Tab, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.editor.attachWindow(window);
+        if (self.diff) |diff| diff.widget.original_editor.attachWindow(window);
+    }
+
     pub fn ensureControllers(self: *Tab) !void {
         if (self.controllers != null or self.markdown_preview != null or self.diff != null or self.image_preview != null or self.terminal_input != null) return;
 

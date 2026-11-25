@@ -860,6 +860,7 @@ pub const Workbench = struct {
         errdefer self.service.deinit();
         self.part = try editor_part.EditorPart(GroupPane).initWithState(allocator, self.service, if (state) |previous| previous.data.serialized_grid else null);
         errdefer self.part.deinit();
+        self.part.attachWindow(&self.window_events);
         try self.part.base.register(self.layout.interface());
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
@@ -1702,6 +1703,7 @@ pub const Workbench = struct {
     pub fn enableAsyncTokenization(self: *Workbench) void {
         if (self.textmate_background != null) return;
         const factory = textmate_background_mod.Factory.init(self.allocator) catch return;
+        factory.attachWindow(&self.window_events);
         self.textmate_background = factory;
         TokenizationRegistry.instance.setBackgroundTokenizerFactory(factory.interface());
 
@@ -3945,75 +3947,6 @@ pub const Workbench = struct {
                 tab.editor.setJsonLanguageClient(client);
             }
         }
-    }
-
-    /// Applies completed worker deltas for every open editor. Called on every
-    /// TUI loop tick so the worker result channel is drained even while input
-    /// is buffered.
-    pub fn drainBackgroundTokenization(self: *Workbench) bool {
-        var changed = false;
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.editor.drainBackgroundTokenization()) changed = true;
-                if (tab.diff) |diff| {
-                    if (diff.widget.original_editor.drainBackgroundTokenization()) changed = true;
-                }
-            }
-        }
-        return changed;
-    }
-
-    /// Advances the ported background tokenizer for every open editor, like
-    /// upstream's per-model background tokenization. Returns true when the
-    /// active editor's tokens changed and the view should repaint.
-    pub fn pollBackgroundTokenization(self: *Workbench) bool {
-        const active = self.activeTab();
-        var active_changed = false;
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                const changed = tab.editor.pollBackgroundTokenization();
-                if (changed and active == tab) active_changed = true;
-                if (tab.diff) |diff| {
-                    _ = diff.widget.original_editor.pollBackgroundTokenization();
-                }
-            }
-        }
-        return active_changed;
-    }
-
-    pub fn backgroundTokenizationPending(self: *Workbench) bool {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.editor.backgroundTokenizationPending()) return true;
-                if (tab.diff) |diff| {
-                    if (diff.widget.original_editor.backgroundTokenizationPending()) return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /// Drives the active editor's debounced folding pass. Called from the
-    /// main-loop tick so a full-document range scan never blocks a key echo.
-    pub fn pollFolding(self: *Workbench, now_ms: i64) bool {
-        const tab = self.activeTab() orelse return false;
-        return tab.editor.pollFolding(now_ms);
-    }
-
-    pub fn foldingTimeout(self: *Workbench, now_ms: i64) ?u32 {
-        const tab = self.activeTab() orelse return null;
-        return tab.editor.foldingTimeout(now_ms);
-    }
-
-    /// Drives the deferred bracket-pair AST/guide build for large documents.
-    pub fn pollBracketGuides(self: *Workbench, now_ms: i64) bool {
-        const tab = self.activeTab() orelse return false;
-        return tab.editor.pollBracketGuides(now_ms);
-    }
-
-    pub fn bracketGuidesTimeout(self: *Workbench, now_ms: i64) ?u32 {
-        const tab = self.activeTab() orelse return null;
-        return tab.editor.bracketGuidesTimeout(now_ms);
     }
 
     // --- begin git / source control

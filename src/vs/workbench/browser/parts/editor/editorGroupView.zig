@@ -85,6 +85,7 @@ pub fn EditorGroupView(comptime View: type) type {
         panes: editorPanes.EditorPanes(View) = .{},
         dom: ?GroupDom = null,
         watermark: ?EditorGroupWatermark = null,
+        window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
         /// Upstream `EditorGroupView.onDidFocus`. The part listens to this to
         /// make a focused group the active group (`doSetGroupActive`).
         on_did_focus: Emitter(*Self),
@@ -273,8 +274,14 @@ pub fn EditorGroupView(comptime View: type) type {
 
         /// Registers the view for an input that is already in the group model.
         /// A new active editor becomes the visible pane right away.
+        pub fn attachWindow(self: *Self, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+            self.window = window;
+            if (@hasDecl(@typeInfo(View).pointer.child, "attachWindow")) for (self.tabs.items) |tab| tab.attachWindow(window);
+        }
+
         pub fn addTab(self: *Self, tab: View) !void {
             try self.tabs.append(tab);
+            if (@hasDecl(@typeInfo(View).pointer.child, "attachWindow")) if (self.window) |window| tab.attachWindow(window);
             if (self.group.model.isActive(.{ .input = tab.editorInput() })) {
                 self.setActivePane(tab);
             }

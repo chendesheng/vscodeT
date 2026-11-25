@@ -157,8 +157,7 @@ pub const BracketPairsTextModelPart = struct {
         try self._onDidChange.event(ctx, callback);
     }
 
-    /// Whether an AST has been built already. The view uses this to defer only
-    /// the initial whole-document build for large documents.
+    /// Whether an AST has been built already.
     pub fn hasDocument(self: *const Self) bool {
         return self._document != null;
     }

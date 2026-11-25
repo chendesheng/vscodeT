@@ -1494,15 +1494,13 @@ Bracket-pair colorization:
 - `TextModel.bracketPairs()` exposes `getBracketPairsInRange`,
   `getBracketsInRange`, matching/enclosing/navigation helpers, and
   unmatched-closing detection. The upstream non-AST fallback matcher is ported
-  as well; the TUI uses it when bracket-pair colorization is disabled. The AST
-  is built for the visible bracket guides and colorization and is deferred for
-  large documents.
+  as well; it is used for documents above the AST length limit. The AST
+  is built lazily by visible bracket-guide and colorization queries, subject
+  to upstream’s maximum supported document length.
 - `ColorizedBracketPairsDecorationProvider` turns colorized brackets into
   `bracket-highlighting-N` / `unexpected-closing-bracket` decorations, honoring
   `bracketPairColorizationOptions`. The view resolves them before decorations,
-  and the AST's change event invalidates the resolved decoration cache. A dirty
-  AST produces no colorization decorations, so a paint never triggers a
-  whole-document parse.
+  and the AST's change event invalidates the resolved decoration cache. Dirty AST ranges are updated when queried, as in upstream.
 - Colorization is enabled by default, matching
   `EDITOR_MODEL_DEFAULTS`/upstream. `editor.bracketPairColorization.enabled` and
   `editor.bracketPairColorization.independentColorPoolPerBracketType` are read

@@ -691,8 +691,6 @@ pub fn main(init: std.process.Init) !void {
     });
 
     defer workbench.lifecycle.shutdown(.quit) catch |err| report(log_service, "shutdown failed: {s}", .{@errorName(err)});
-    // Last frame that was only caused by a background-tokenization chunk.
-    var last_token_render_ms: i64 = 0;
     const outline_models = try workbench.instantiation.invokeFunction(@import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").getOutlineModelService, .{});
     while (true) {
         const now_ms = time_compat.milliTimestamp();
@@ -736,13 +734,6 @@ pub fn main(init: std.process.Init) !void {
             timeout = @min(timeout, @as(i32, @intCast(@min(preview_timeout, 250))));
         }
         timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), timeout);
-        if (workbench.foldingTimeout(now_ms)) |folding_timeout| {
-            timeout = @min(timeout, @as(i32, @intCast(@min(folding_timeout, 250))));
-        }
-        if (workbench.bracketGuidesTimeout(now_ms)) |guides_timeout| {
-            timeout = @min(timeout, @as(i32, @intCast(@min(guides_timeout, 250))));
-        }
-        if (workbench.backgroundTokenizationPending()) timeout = @min(timeout, 4);
         if (workbench.hasLatencySensitiveReads()) timeout = @min(timeout, 4);
 
         timeout = restore_timer.nextTimeout(timeout);
@@ -752,27 +743,8 @@ pub fn main(init: std.process.Init) !void {
         try restore_timer.dispatch(!ready and !needs_render);
         const resized = try terminal_host.handleResize();
 
-        if (workbench.drainBackgroundTokenization()) needs_render = true;
-
         if (!ready) {
-            // Only spend deferred analysis when no input is buffered, so rapid
-            // typing is echoed before syntax colors/folding/guides catch up.
-            // Run at most one heavy pass per idle tick.
-            var maintenance = workbench.pollFolding(now_ms);
-            if (!maintenance) maintenance = workbench.pollBracketGuides(now_ms);
-            const token_maintenance = workbench.pollBackgroundTokenization();
-            if (token_maintenance) maintenance = true;
-            if (maintenance) needs_render = true;
-            // Background tokenization yields ~1 ms chunks. Repainting every
-            // chunk made the frame cost part of tokenization; coalesce those
-            // repaints to roughly one per 8 ms. The final chunk always paints
-            // (the pending flag is false), and input/folding/guide passes are
-            // not delayed.
-            const coalesce_token_frame = token_maintenance and
-                !resized and
-                workbench.backgroundTokenizationPending() and
-                now_ms - last_token_render_ms < 8;
-            if (resized or (needs_render and !coalesce_token_frame)) {
+            if (resized or needs_render) {
                 if (workbench.activeTab()) |current| {
                     current.onEditorChanged(now_ms);
                     try current.refresh();
@@ -780,7 +752,6 @@ pub fn main(init: std.process.Init) !void {
                 workbench.refreshStatus();
                 needs_render = false;
                 try terminal_host.render();
-                if (token_maintenance) last_token_render_ms = now_ms;
             }
             continue;
         }

@@ -70,6 +70,7 @@ pub fn EditorPart(comptime GroupView: type) type {
         active_sash: ?*LayoutNode = null,
         /// Last viewport assigned by `layout`; sash resizes reuse it.
         viewport: ui.Rect = .{},
+        window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
 
         /// Creates the part and the group view for the service's first group.
         pub fn init(
@@ -490,10 +491,16 @@ pub fn EditorPart(comptime GroupView: type) type {
             return self.gap(direction, rect);
         }
 
+        pub fn attachWindow(self: *Self, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+            self.window = window;
+            if (@hasDecl(GroupView, "attachWindow")) for (self.group_views.items) |view| view.attachWindow(window);
+        }
+
         fn createView(self: *Self, group: *editor_groups.EditorGroup) !*GroupView {
             const view = try self.allocator.create(GroupView);
             errdefer self.allocator.destroy(view);
             view.* = GroupView.init(self.allocator, group);
+            if (@hasDecl(GroupView, "attachWindow")) if (self.window) |window| view.attachWindow(window);
             errdefer view.deinit();
             // Upstream `doCreateGroupView`: a focused group becomes the active
             // group (`doSetGroupActive`); the group view owns the focus event.

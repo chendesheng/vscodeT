@@ -46,6 +46,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
     _debugBackgroundStates: ?TrackingTokenizationStateStore = null,
     _debugBackgroundTokenizer: ?IBackgroundTokenizer = null,
     _defaultBackgroundTokenizer: ?DefaultBackgroundTokenizer = null,
+    window: ?*@import("../../../../base/common/windowDispatch.zig").Queue = null,
     _backgroundTokenizer: ?IBackgroundTokenizer = null,
     _attachedViewStates: AutoHashMap(*AttachedView, AttachedViewHandler),
     _languageId: []const u8,
@@ -194,6 +195,7 @@ pub const TokenizerSyntaxTokenBackend = struct {
             }
             if (self._backgroundTokenizer == null and !self.textModel().isTooLargeForTokenization()) {
                 self._defaultBackgroundTokenizer = DefaultBackgroundTokenizer.init(tokenizer, store);
+                if (self.window) |window| self._defaultBackgroundTokenizer.?.attachWindow(window);
                 self._defaultBackgroundTokenizer.?.handleChanges();
             }
 
@@ -276,6 +278,11 @@ pub const TokenizerSyntaxTokenBackend = struct {
                 }
             }.f,
         };
+    }
+
+    pub fn attachWindow(self: *TokenizerSyntaxTokenBackend, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.window = window;
+        if (self._defaultBackgroundTokenizer) |*tokenizer| tokenizer.attachWindow(window);
     }
 
     pub fn handleDidChangeAttached(self: *TokenizerSyntaxTokenBackend) void {

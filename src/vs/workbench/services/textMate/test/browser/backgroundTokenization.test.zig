@@ -10,14 +10,14 @@ const textMateTokenizer = @import("../../../../../editor/common/model/tokens/tex
 const TextModel = @import("../../../../../editor/common/model/textModel.zig").TextModel;
 const Factory = @import("../../browser/backgroundTokenization/threadedBackgroundTokenizerFactory.zig").Factory;
 
-fn waitForWorker(factory: *Factory, model: *TextModel) !void {
+fn waitForWorker(factory: *Factory, window: *@import("../../../../../base/common/windowDispatch.zig").Queue) !void {
     var spins: usize = 0;
     while (factory.hasPendingWork() and spins < 20_000) : (spins += 1) {
-        _ = model.drainBackgroundTokenization();
+        _ = window.dispatch(time_compat.milliTimestamp());
         time_compat.sleepMillis(1);
     }
     try std.testing.expect(spins < 20_000);
-    _ = model.drainBackgroundTokenization();
+    _ = window.dispatch(time_compat.milliTimestamp());
 }
 
 fn hasCommentToken(model: *TextModel, line: usize) !bool {
@@ -35,6 +35,8 @@ test "threaded textmate tokenizer: initial tokens and edits reach the renderer" 
 
     var factory = try Factory.init(allocator);
     defer factory.deinit();
+    var window = @import("../../../../../base/common/windowDispatch.zig").Queue{ .io = std.testing.io };
+    factory.attachWindow(&window);
     TokenizationRegistry.instance.setBackgroundTokenizerFactory(factory.interface());
     defer TokenizationRegistry.instance.setBackgroundTokenizerFactory(null);
 
@@ -47,11 +49,11 @@ test "threaded textmate tokenizer: initial tokens and edits reach the renderer" 
         ctx.allocator.destroy(view);
     }
 
-    try waitForWorker(factory, ctx.model);
+    try waitForWorker(factory, &window);
     try std.testing.expect(try hasCommentToken(ctx.model, 2));
 
     try ctx.applyEdit(Range.init(1, 1, 1, 1), "// exported\n");
-    try waitForWorker(factory, ctx.model);
+    try waitForWorker(factory, &window);
     try std.testing.expect(try hasCommentToken(ctx.model, 1));
     try std.testing.expect(try hasCommentToken(ctx.model, 3));
 }

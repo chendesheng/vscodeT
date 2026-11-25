@@ -1844,12 +1844,13 @@ test "Workbench: an inactive result model updates only its file and can regain m
     try std.testing.expect(w.activeTab().?.editor != editor);
     try editor.applyTextEdits(&.{.{ .range = .init(1, 1, 1, 6), .text = "beta" }}, &.{});
     const deadline = edited.scheduler.at orelse return error.MissingFileMatchUpdate;
-    try std.testing.expect(!w.window_events.dispatch(deadline - 1));
+    while (w.window_events.nextTimeout(deadline - 1, 1) == 0) _ = w.window_events.dispatch(deadline - 1);
     try std.testing.expectEqual(2, view.matchCount());
-    try std.testing.expect(w.window_events.dispatch(deadline));
+    while (w.window_events.nextTimeout(deadline, 1) == 0) _ = w.window_events.dispatch(deadline);
     try std.testing.expectEqual(1, view.matchCount());
     try editor.applyTextEdits(&.{.{ .range = .init(1, 1, 1, 5), .text = "alpha alpha" }}, &.{});
-    try std.testing.expect(w.window_events.dispatch(edited.scheduler.at.?));
+    const second_deadline = edited.scheduler.at.?;
+    while (w.window_events.nextTimeout(second_deadline, 1) == 0) _ = w.window_events.dispatch(second_deadline);
     try std.testing.expectEqual(3, view.matchCount());
     try std.testing.expect(other.matches()[0] == original_match);
     try std.testing.expect(!view.model.isSearching());

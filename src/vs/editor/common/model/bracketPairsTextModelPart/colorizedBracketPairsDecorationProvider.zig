@@ -1,9 +1,6 @@
 // Port of `src/vs/editor/common/model/bracketPairsTextModelPart/colorizedBracketPairsDecorationProvider.ts`.
 //
-// Terminal adaptation: the view builds the AST before resolving decorations,
-// so the provider reports no decorations while the tree is dirty instead of
-// triggering a parse from a decoration query. Decoration ids are stable
-// range+level hashes in the provider's high-id range (upstream uses strings).
+// Decoration ids use stable range+level hashes (upstream uses strings).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -19,12 +16,6 @@ const Emitter = @import("../../../../base/common/event.zig").Emitter;
 /// Decoration provider that materializes bracket-pair colorization as
 /// decorations with `bracket-highlighting-N` inline class names.
 ///
-/// Terminal adaptation: the view builds the bracket AST before it resolves
-/// decorations, so this provider never builds it from a decoration query.
-/// While the AST is dirty it reports no decorations, which keeps a paint from
-/// triggering a whole-document tokenization/parse. The rebuilt AST notifies
-/// `onDidChange`, and `TextModel` forwards that to the decoration-change event
-/// so the view refreshes with the new ranges.
 pub const ColorizedBracketPairsDecorationProvider = struct {
     allocator: Allocator,
     textModel: *TextModel,
@@ -76,7 +67,6 @@ pub const ColorizedBracketPairsDecorationProvider = struct {
         var result = ArrayList(ModelDecoration).init(self.allocator);
         if (onlyMinimapDecorations) return result;
         if (!self.textModel.getOptions().bracketPairColorizationOptions.enabled) return result;
-        if (self.textModel.bracketPairs().isDirty()) return result;
 
         var brackets = try self.textModel.bracketPairs().getBracketsInRange(range, true);
         defer brackets.deinit();

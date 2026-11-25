@@ -360,23 +360,22 @@ test "benchmark: deferred maintenance" {
     try tab.view.refresh();
     try tab.view.paint();
 
-    const now = time_compat.milliTimestamp();
     var start = nowUs(io);
     var background_polls: usize = 0;
     while (tab.editor.pollBackgroundTokenization() and background_polls < 100_000) background_polls += 1;
     const background_us = nowUs(io) - start;
 
     start = nowUs(io);
-    const folded = tab.editor.pollFolding(now + 200);
+    tab.editor.refreshFoldingIfDirty();
     const folding_us = nowUs(io) - start;
 
     start = nowUs(io);
-    const guides = tab.editor.pollBracketGuides(now + 200);
+    try tab.editor.model.bracketPairs().updateNow();
     const guides_us = nowUs(io) - start;
 
     std.debug.print(
-        "[bench] deferred maintenance {s}: background={d}us(polls={d}) folding={d}us({}) bracket_guides={d}us({})\n",
-        .{ path, background_us, background_polls, folding_us, folded, guides_us, guides },
+        "[bench] deferred maintenance {s}: background={d}us(polls={d}) folding={d}us bracket_guides={d}us\n",
+        .{ path, background_us, background_polls, folding_us, guides_us },
     );
 }
 

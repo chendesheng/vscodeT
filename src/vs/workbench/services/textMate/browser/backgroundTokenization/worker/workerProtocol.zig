@@ -119,6 +119,7 @@ pub const Context = struct {
     io: Io,
     commands: *CommandQueue,
     results: *ResultQueue,
+    delivery: @import("../../../../../../base/common/windowDispatch.zig").Task = .{},
     command_count: std.atomic.Value(usize) = .init(0),
     working: std.atomic.Value(bool) = .init(false),
     results_pending: std.atomic.Value(usize) = .init(0),
@@ -160,7 +161,7 @@ pub const Context = struct {
             _ = self.results_pending.fetchSub(1, .seq_cst);
             var owned = result;
             owned.deinit(std.heap.page_allocator);
-        }
+        } else self.delivery.post();
     }
 
     pub fn getResults(self: *Context, buffer: []TokensAndStates) usize {

@@ -71,7 +71,6 @@ const cellMetrics = @import("./cellMetrics.zig");
 const Editor = @import("../vs/editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 const TerminalViewHost = @import("../vs/editor/browser/widget/codeEditor/terminalViewHost.zig").TerminalViewHost;
 const tokenization = @import("../vs/editor/common/tokenizationRegistry.zig");
-const time_compat = @import("../vs/base/common/timeCompat.zig");
 const CursorColumns = @import("../vs/editor/common/core/cursorColumns.zig").CursorColumns;
 const CursorState = @import("../vs/editor/common/cursorCommon.zig").CursorState;
 const Position = @import("../vs/editor/common/core/position.zig").Position;
@@ -1906,22 +1905,11 @@ pub const View = struct {
         editor.setScrollbarWidth(overviewRulerWidth(editor));
         self.scrollbar_width = editor.scrollbar_width;
         editor.ensureTokensVisible();
-        // Colorization decorations are derived from the bracket AST, so it
-        // must exist before line decorations are resolved. Small documents
-        // build it here; a large document's initial build is deferred and the
-        // decorations are refreshed by the AST's change event.
-        const bracket_ast_deferred = editor.prepareBracketPairs(time_compat.milliTimestamp());
-        // Folding is scheduled by the debounced main-loop pass; rebuilding
-        // must not block on a full-document range scan.
         // The cursor is revealed by cursor moves and edits, not on every
         // rebuild: a wheel scroll is allowed to leave it off-screen.
         _ = editor.scrollViewLines(0);
 
-        // A bracket-match query builds the AST when colorization is enabled.
-        // While the initial large-document build is deferred, leave the
-        // bracket highlight for the frame after the maintenance pass instead
-        // of forcing that build from paint.
-        if (!bracket_ast_deferred) {
+        {
             const bracket_data = try editor.updateBracketMatches(self.hasEditorFocus());
             const bracket_generation = editor.bracketMatchGeneration();
             if (self.last_bracket_generation == null or self.last_bracket_generation.? != bracket_generation) {
@@ -2083,13 +2071,6 @@ pub const View = struct {
         const total = editor.viewLineCount();
         const top = editor.topViewLine();
         const tab_size = editor.tabSize();
-
-        // Terminal performance gate: while a large document's bracket AST is
-        // deferred, the ported overlay skips bracket guides but still paints
-        // indentation guides and the active indentation scope.
-        const defer_bracket_guides = editor.shouldDeferBracketGuides();
-        if (defer_bracket_guides) editor.scheduleBracketGuides(time_compat.milliTimestamp());
-        self.terminal_view_host.indentGuides().setBracketGuidesEnabled(!defer_bracket_guides);
 
         if (top <= total) {
             try self.terminal_view_host.renderViewport();

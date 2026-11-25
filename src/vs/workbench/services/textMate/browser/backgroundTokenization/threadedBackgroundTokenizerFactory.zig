@@ -3,8 +3,7 @@
 //
 // Upstream creates a web worker and talks to it through `postMessage`. The
 // terminal creates one dedicated thread for the whole process; commands and
-// results cross through `std.Io.Queue`, and the renderer drains results from
-// its main loop.
+// results cross through `std.Io.Queue`; each worker result wakes the window.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AutoHashMap = std.AutoHashMap;
@@ -54,6 +53,14 @@ pub const Factory = struct {
         return self;
     }
 
+    pub fn attachWindow(self: *Factory, window: *@import("../../../../../base/common/windowDispatch.zig").Queue) void {
+        self.context.delivery = .{ .queue = window, .context = self, .run = onResults, .progress = true };
+    }
+
+    fn onResults(context: *anyopaque, _: i64, _: bool) bool {
+        return pump(context);
+    }
+
     pub fn interface(self: *Factory) IBackgroundTokenizerFactory {
         return .{ .context = self, .create = create };
     }
@@ -76,6 +83,7 @@ pub const Factory = struct {
             thread.join();
             self.thread = null;
         }
+        self.context.delivery.schedule(null);
         self.result_queue.close(self.io);
         self.drainQueues();
     }
