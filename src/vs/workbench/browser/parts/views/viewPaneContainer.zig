@@ -219,6 +219,11 @@ pub const ViewPaneContainer = struct {
         }
     }
 
+    pub fn isBodyVisible(self: *const ViewPaneContainer, id: []const u8) bool {
+        const index = self.paneIndex(id) orelse return false;
+        return self.visibility[index].body;
+    }
+
     pub fn setFocused(self: *ViewPaneContainer, focused: bool) void {
         self.focused = focused;
         self.updateFocusedBody();

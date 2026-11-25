@@ -265,64 +265,8 @@ pub const IWorkbenchOptions = workbench_core.IWorkbenchOptions;
 
 const views_service = @import("../vs/workbench/services/views/common/viewsService.zig");
 
-/// The terminal Search view is a single pane in its activity container.
-const WindowViews = struct {
-    workbench: *TerminalWorkbench,
-
-    pub fn interface(self: *WindowViews) views_service.IViewsService {
-        return .{ .context = self, .get_active_view = getActiveView, .get_view = getView, .open_view = openView, .is_view_visible = isViewVisible, .close_view = closeView };
-    }
-
-    fn getActiveView(context: *anyopaque, id: []const u8) ?*anyopaque {
-        const self: *WindowViews = @ptrCast(@alignCast(context));
-        if (std.mem.eql(u8, id, MarkersView.ID))
-            return if (self.workbench.problemsVisible()) getView(context, id) else null;
-        const active = self.workbench.sidebar_part.pane.active_id orelse return null;
-        if (std.mem.eql(u8, id, SearchView.ID))
-            return if (std.mem.eql(u8, active, "search")) self.workbench.search_window.view else null;
-        const local_id: []const u8 = if (std.mem.eql(u8, id, OutlinePane.ID)) "outline" else if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) "changes" else if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) "graph" else return null;
-        const container = self.workbench.view_descriptor_service.getViewContainerByViewId(local_id) orelse return null;
-        return if (std.mem.eql(u8, active, container.container.id)) getView(context, id) else null;
-    }
-
-    fn getView(context: *anyopaque, id: []const u8) ?*anyopaque {
-        const self: *WindowViews = @ptrCast(@alignCast(context));
-        if (std.mem.eql(u8, id, MarkersView.ID)) return if (self.workbench.problems_view) |*view| view else null;
-        if (std.mem.eql(u8, id, SearchView.ID)) return self.workbench.search_window.view;
-        if (std.mem.eql(u8, id, OutlinePane.ID)) return self.workbench.outline_view;
-        if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) return self.workbench.scm.changes;
-        if (std.mem.eql(u8, id, scm_history_view_mod.SCMHistoryViewPane.ID)) return self.workbench.scm.history;
-        return null;
-    }
-
-    fn openView(context: *anyopaque, id: []const u8, focus: bool) !?*anyopaque {
-        const self: *WindowViews = @ptrCast(@alignCast(context));
-        if (std.mem.eql(u8, id, MarkersView.ID)) {
-            _ = try self.workbench.openPanelContainerWithFocus(PROBLEMS_CONTAINER_ID, focus);
-            return getView(context, id);
-        }
-        if (std.mem.eql(u8, id, OutlinePane.ID)) {
-            try self.workbench.openOutlineView(focus);
-            return self.workbench.outline_view;
-        }
-        if (!std.mem.eql(u8, id, SearchView.ID)) return null;
-        try self.workbench.openActivity("search", focus);
-        return self.workbench.search_window.view;
-    }
-
-    fn isViewVisible(context: *anyopaque, id: []const u8) bool {
-        const self: *WindowViews = @ptrCast(@alignCast(context));
-        if (std.mem.eql(u8, id, MarkersView.ID)) return self.workbench.problemsVisible();
-        return self.workbench.geometry().sidebarShown() and getActiveView(context, id) != null;
-    }
-
-    fn closeView(context: *anyopaque, id: []const u8) !void {
-        const self: *WindowViews = @ptrCast(@alignCast(context));
-        if (std.mem.eql(u8, id, MarkersView.ID) and self.workbench.problemsVisible()) {
-            try self.workbench.layout.setPartHidden(true, .panel);
-        }
-    }
-};
+const ViewsService = @import("../vs/workbench/services/views/browser/viewsService.zig").ViewsService;
+const ViewRegistration = @import("../vs/workbench/services/views/browser/viewsService.zig").ViewRegistration;
 
 pub const TerminalWorkbench = struct {
     core: workbench_core.Workbench,
@@ -332,7 +276,7 @@ pub const TerminalWorkbench = struct {
     host_api: @import("../vs/workbench/services/host/browser/host.zig").IHostService,
     storage_api: storage_mod.IStorageService,
     code_editors: CodeEditorService,
-    window_views: WindowViews,
+    window_views: ViewsService,
     views_api: views_service.IViewsService,
     code_editor_api: code_editor_service.ICodeEditorService,
     editors: editor_service_mod.EditorService,
@@ -1155,9 +1099,6 @@ pub const TerminalWorkbench = struct {
 
         self.lifecycle_api = self.lifecycle.interface();
         self.layout_api = self.layout.interface();
-        self.window_views = .{ .workbench = self };
-        self.views_api = self.window_views.interface();
-        _ = try self.services.set(views_service.views_service_id, &self.views_api);
         self.pane_composite_service = .{
             .sidebar = &self.sidebar_part,
             .panel = &self.panel_part,
@@ -1167,6 +1108,16 @@ pub const TerminalWorkbench = struct {
         _ = try self.services.set(@import("../vs/workbench/services/panecomposite/browser/panecomposite.zig").pane_composite_part_service_id, &self.pane_composite_api);
         self.layout.pane_composite_service = self.pane_composite_api;
         self.layout.view_descriptor_service = &self.view_descriptor_service;
+        self.window_views.attach(self.pane_composite_api, self.layout_api);
+        for ([_]ViewRegistration{
+            ViewRegistration.valueSlot(MarkersView, &self.problems_view, .{ .container = PROBLEMS_CONTAINER_ID }),
+            ViewRegistration.pointerSlot(SearchView, &self.search_window.view, .{ .container = "search" }),
+            ViewRegistration.pointerSlot(OutlinePane, &self.outline_view, .{ .descriptor = "outline" }),
+            ViewRegistration.pointerSlot(scm_view_mod.SCMViewPane, &self.scm.changes, .{ .descriptor = "changes" }),
+            ViewRegistration.pointerSlot(scm_history_view_mod.SCMHistoryViewPane, &self.scm.history, .{ .descriptor = "graph" }),
+        }) |registration| try self.window_views.registerView(registration);
+        self.views_api = self.window_views.interface();
+        _ = try self.services.set(views_service.views_service_id, &self.views_api);
         self.editor_groups_api = self.part.interface();
         _ = try self.services.set(editor_groups.editor_groups_service_id, &self.editor_groups_api);
         self.code_editors = .{ .part = self.part };
@@ -1266,6 +1217,8 @@ pub const TerminalWorkbench = struct {
         errdefer self.view_containers_registry.deinit();
         self.view_descriptor_service = ViewDescriptorService.init(self.allocator, &self.view_containers_registry);
         errdefer self.view_descriptor_service.deinit();
+        self.window_views = ViewsService.init(self.allocator, &self.view_descriptor_service, &self.sidebar_part);
+        errdefer self.window_views.deinit();
         try self.view_descriptor_service.attach();
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
         self.notification_storage = storage_mod.InMemoryStorageService.init(self.allocator);
@@ -1470,6 +1423,7 @@ pub const TerminalWorkbench = struct {
         self.notification_service.deinit();
         self.notification_storage.deinit();
         self.panel_part.deinit();
+        self.window_views.deinit();
         self.sidebar_part.deinit();
         self.view_descriptor_service.deinit();
         self.view_containers_registry.deinit();
@@ -4121,18 +4075,6 @@ pub const TerminalWorkbench = struct {
 
     pub fn ensureBreadcrumbsControl(self: *TerminalWorkbench, pane: *GroupPane) !*BreadcrumbsControl {
         return self.breadcrumbs.getControl(pane) orelse error.NoActiveTab;
-    }
-
-    fn openOutlineView(self: *TerminalWorkbench, focus: bool) !void {
-        const location = if (self.scm.view_model) |model| if (model.contains("outline")) "scm" else "explorer" else "explorer";
-        try self.openActivity(location, focus);
-        if (self.activeSidebarViewContainer()) |container| {
-            container.model.setVisible("outline", true);
-            container.model.setCollapsed("outline", false);
-            container.setActive("outline");
-        }
-        if (focus) self.focusSidebar();
-        if (focus) if (self.outline_view) |view| view.setPaneFocused(true);
     }
 
     fn ensureOutlineView(self: *TerminalWorkbench) !*OutlinePane {

@@ -112,7 +112,9 @@ OutlinePane now subscribes to active/visible-editor, outline-creator and marker 
 
 ViewPaneContainer emits title-area updates from its descriptor and pane events. SidebarPart collects the merged view toolbar and registered container overflow; Search owns its title updates on composite open. SCM registers its own overflow rather than the native window filtering feature-specific command IDs.
 
-The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,575 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+ViewsService now resolves registered view IDs, their descriptor containers, active composites and visible bodies through the view descriptor, layout and pane-composite services. The native window registers borrowed view slots instead of branching on contribution IDs; open and close use the same view-container path for moved views. The upstream alternate-window layout modes/auxiliary-bar keybinding test remains unported because neither has a terminal part.
+
+The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,517 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -239,9 +241,10 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * The terminal host owns its input buffer, descriptor waits, resize handling
   and frame composition. It paints parts, active editor panes, terminal overlays, group and part borders, sashes, emits image
   and ANSI updates, and positions the hardware cursor. Breadcrumb and outline updates request a frame from their
-  model listeners. The command table, editor and terminal menu construction, feature
-  wiring and command implementations still live in the browser shell.
-  The native CLI still schedules background work and performs startup wiring.
+  model listeners. Contribution actions and menus are registered through the
+  platform registries; only the native service bindings and cross-part
+  window adapters remain in the composition root. The native CLI schedules
+  OS readiness, deadlines and startup wiring.
 
 The startup sequence below describes the pinned target. The composition port,
 notification center and toasts, full layout restoration and event-driven

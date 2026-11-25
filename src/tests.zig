@@ -123,6 +123,7 @@ comptime {
     _ = @import("./vs/workbench/browser/parts/views/viewPaneContainer.zig");
     _ = @import("./vs/workbench/test/browser/parts/views/viewPaneContainer.test.zig");
     _ = @import("./vs/workbench/services/views/test/browser/viewContainerModel.test.zig");
+    _ = @import("./vs/workbench/services/views/test/browser/viewsService.test.zig").Tests(@import("./tui/workbench.zig").TerminalWorkbench, @import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/contrib/git/common/gitService.zig");
     _ = @import("./vs/workbench/contrib/git/browser/gitService.zig");
     _ = @import("./vs/workbench/contrib/git/test/common/gitService.test.zig");
