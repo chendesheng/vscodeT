@@ -126,6 +126,7 @@ pub const Tab = struct {
     last_width: usize = 0,
     last_height: usize = 0,
     top_view_zone_rows: usize = 0,
+    on_will_dispose: ?@import("../../../../base/common/event.zig").Emitter(void) = null,
     selection_listeners: ?*std.array_list.Managed(SelectionListener) = null,
     selection_handler: ViewEventHandler = .{},
     selection_handler_added: bool = false,
@@ -743,7 +744,22 @@ pub const Tab = struct {
         }
     }
 
+    pub fn listenWillDispose(self: *Tab, ctx: anytype, callback: fn (void, @TypeOf(ctx)) anyerror!void) !usize {
+        if (self.on_will_dispose == null) self.on_will_dispose = .init(self.allocator);
+        return self.on_will_dispose.?.listen(ctx, callback);
+    }
+    pub fn unlistenWillDispose(self: *Tab, id: usize) void {
+        if (self.on_will_dispose) |*event| event.unlisten(id);
+    }
+
     pub fn deinit(self: *Tab) void {
+        // Disposable.onWillDispose: detach consumers while the code editor's
+        // event handlers and its model still exist.
+        if (self.on_will_dispose) |*event| {
+            event.fire({}) catch {};
+            event.deinit();
+            self.on_will_dispose = null;
+        }
         const instance_element = self.element;
         defer if (instance_element) |element| element.document.destroy(element);
         if (self.selection_handler_added) {

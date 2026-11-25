@@ -1,7 +1,7 @@
 // Port of `src/vs/workbench/api/browser/mainThreadEditorTabs.ts`.
 //
 // Terminal adaptation: the adapter owns the tab list; this actor owns the tab
-// model signature and emits `$acceptEditorTabModel` only when the list changes.
+// model signature and suppresses duplicate `$acceptEditorTabModel` deliveries within editor/group event batches.
 // Move/close operations are forwarded to the adapter.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -21,7 +21,7 @@ pub const Host = struct {
 pub const MainThreadEditorTabs = struct {
     allocator: Allocator,
     host: Host,
-    signature: u64 = 0,
+    signature: ?u64 = null,
 
     pub fn init(allocator: Allocator, host: Host) MainThreadEditorTabs {
         return .{ .allocator = allocator, .host = host };
@@ -45,7 +45,7 @@ pub const MainThreadEditorTabs = struct {
                     if (value == .string) _ = self.host.close_tab(self.host.context, value.string) catch false;
                 }
             }
-            self.signature = 0;
+            self.signature = null;
             return .{ .json = .{ .bool = true } };
         }
         if (std.mem.eql(u8, method, "$closeGroup")) {
@@ -54,7 +54,7 @@ pub const MainThreadEditorTabs = struct {
                     if (value == .integer) _ = self.host.close_group(self.host.context, value.integer) catch false;
                 }
             }
-            self.signature = 0;
+            self.signature = null;
             return .{ .json = .{ .bool = true } };
         }
         if (methodKind(method) == .request) {
@@ -69,14 +69,16 @@ pub const MainThreadEditorTabs = struct {
         for (tabs) |tab| {
             signature = signature *% 1099511628211;
             signature ^= std.hash.Wyhash.hash(0, tab.path);
+            signature ^= std.hash.Wyhash.hash(1, tab.label);
+            if (tab.is_pinned) signature ^= 0x243f6a8885a308d3;
+            if (tab.is_preview) signature ^= 0x13198a2e03707344;
             if (tab.is_dirty) signature ^= 0x9e3779b97f4a7c15;
             if (tab.is_active) signature ^= 0x517cc1b727220a95;
         }
         if (signature == self.signature) return;
-        self.signature = signature;
         const model = try documents_and_editors.tabModel(arena, active_path, tabs);
-        if (model == .null) return;
         try self.host.notify(self.host.context, model);
+        self.signature = signature;
     }
 };
 
@@ -116,4 +118,8 @@ test "MainThreadEditorTabs: emits only when the tab model changes" {
     try std.testing.expectEqual(@as(usize, 1), Fake.notifications);
     try actor.sync(arena.allocator(), "/a.ts", &tabs);
     try std.testing.expectEqual(@as(usize, 1), Fake.notifications);
+    try actor.sync(arena.allocator(), "", &.{});
+    try std.testing.expectEqual(@as(usize, 2), Fake.notifications);
+    try actor.sync(arena.allocator(), "", &.{});
+    try std.testing.expectEqual(@as(usize, 2), Fake.notifications);
 }

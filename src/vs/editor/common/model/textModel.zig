@@ -246,6 +246,13 @@ pub const TextModel = struct {
         try self._tokenizationTextModelPart.onDidChangeLanguage(ctx, callback);
     }
 
+    pub fn listenDidChangeLanguage(self: *TextModel, ctx: anytype, callback: fn (ModelLanguageChangedEvent, @TypeOf(ctx)) anyerror!void) !usize {
+        return self._tokenizationTextModelPart._onDidChangeLanguage.listen(ctx, callback);
+    }
+    pub fn removeDidChangeLanguageListener(self: *TextModel, id: usize) void {
+        self._tokenizationTextModelPart._onDidChangeLanguage.unlisten(id);
+    }
+
     pub fn onDidChangeLanguageConfiguration(self: *TextModel, ctx: anytype, callback: fn (ModelLanguageConfigurationChangedEvent, @TypeOf(ctx)) anyerror!void) !void {
         try self._tokenizationTextModelPart.onDidChangeLanguageConfiguration(ctx, callback);
     }

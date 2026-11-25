@@ -67,6 +67,15 @@ const terminal_service_mod = @import("../vs/workbench/contrib/terminal/browser/t
 const terminal_view = @import("../vs/workbench/contrib/terminal/browser/terminalRenderer.zig");
 const TerminalService = terminal_service_mod.TerminalService;
 
+// The lifetime test compares an editor pointer against currently owned tabs
+// without dereferencing a closed editor; production listeners use disposal.
+fn ownsEditor(workbench: *const Workbench, editor: *const Editor) bool {
+    for (workbench.part.group_views.items) |pane| {
+        for (pane.tabs.items) |tab| if (tab.editor == editor) return true;
+    }
+    return false;
+}
+
 fn clickStatusEntry(workbench: *Workbench, id: []const u8) !bool {
     const part = workbench.statusbar.main_part;
     const handle = part.model.findHandle(id) orelse return false;
@@ -429,16 +438,16 @@ test "Workbench: ownsEditor follows tab ownership across close" {
 
     const closed = workbench.activeTab().?.editor;
     const kept = workbench.part.group_views.items[0].tabs.items[0].editor;
-    try std.testing.expect(workbench.ownsEditor(closed));
-    try std.testing.expect(workbench.ownsEditor(kept));
+    try std.testing.expect(ownsEditor(workbench, closed));
+    try std.testing.expect(ownsEditor(workbench, kept));
 
     try workbench.activeTab().?.ensureControllers();
     const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
     try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     // `closed` is only compared, never dereferenced: the tab close freed it.
-    try std.testing.expect(!workbench.ownsEditor(closed));
-    try std.testing.expect(workbench.ownsEditor(kept));
+    try std.testing.expect(!ownsEditor(workbench, closed));
+    try std.testing.expect(ownsEditor(workbench, kept));
 }
 
 test "Workbench: reopening an open file reuses its tab and editor" {

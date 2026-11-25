@@ -130,7 +130,6 @@ pub fn tabModel(arena: Allocator, active_path: []const u8, tabs: []const TabSpec
         try tab_object.put(arena, "isDirty", .{ .bool = tab.is_dirty });
         try tab_array.append(.{ .object = tab_object });
     }
-    if (tab_array.items.len == 0) return .null;
     var group: std.json.ObjectMap = .empty;
     try group.put(arena, "isActive", .{ .bool = true });
     try group.put(arena, "viewColumn", .{ .integer = 1 });

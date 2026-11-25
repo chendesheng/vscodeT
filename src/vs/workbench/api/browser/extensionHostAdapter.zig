@@ -22,6 +22,14 @@ const LastContentChange = @import("../../../editor/browser/widget/codeEditor/cod
 const ChangeListener = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").ChangeListener;
 const TextEdit = @import("../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").TextEdit;
 const Workbench = @import("../../browser/workbench.zig").Workbench;
+const GroupPane = @import("../../browser/workbench.zig").GroupPane;
+const Tab = @import("../../browser/parts/editor/editorPane.zig").Tab;
+const EditorInput = @import("../../common/editor/editorInput.zig").EditorInput;
+const EditorService = @import("../../services/editor/browser/editorService.zig").EditorService;
+const GroupModelChangeEvent = @import("../../common/editor/editorGroupModel.zig").GroupModelChangeEvent;
+const Task = @import("../../../base/common/windowDispatch.zig").Task;
+const ModelLanguageChangedEvent = @import("../../../editor/common/textModelEvents.zig").ModelLanguageChangedEvent;
+const EditorPaneSelectionChangeReason = @import("../../common/editor.zig").EditorPaneSelectionChangeReason;
 const GroupDirection = @import("../../services/editor/common/editorGroupsService.zig").GroupDirection;
 const statusbar = @import("../../services/statusbar/browser/statusbar.zig");
 const statusbar_part = @import("../../browser/parts/statusbar/statusbarPart.zig");
@@ -61,6 +69,9 @@ const TextEditorRevealType = @import("./mainThreadTextEditors.zig").TextEditorRe
 const EntryAccessor = statusbar_part.EntryAccessor;
 
 const ActiveDocument = struct {
+    tab: *Tab,
+    dispose_listener: usize,
+    language_listener: usize,
     editor: *Editor,
     uri: []u8,
     id: []const u8 = "1",
@@ -166,17 +177,23 @@ pub const Extensions = struct {
     activated: bool = false,
     activation_tracker: extension_service.ActivationTracker,
     needs_render: bool = false,
-    /// Signature of the last tab set sent to the editor-tabs actor. The pump
-    /// runs on every loop iteration, so an unchanged tab rail must not rebuild
-    /// its arena/spec list or call the actor.
-    tabs_signature: u64 = 0,
+    editor_service: EditorService,
+    active_editor_listener: ?usize = null,
+    visible_editors_listener: ?usize = null,
+    group_model_listener: ?usize = null,
+    add_group_listener: ?usize = null,
+    remove_group_listener: ?usize = null,
+    move_group_listener: ?usize = null,
+    tabs_task: Task = .{},
+    selection_task: Task = .{},
+    visible_ranges_task: Task = .{},
+    pending_selection_source: SelectionSource = .keyboard,
     /// The active editor whose scroll events are mirrored to the host.
     scroll_listener_editor: ?*Editor = null,
     /// The active editor whose content changes are mirrored to the host. This
     /// is the single content-event path for host edits, terminal typing and
     /// built-in extensions such as native Vim.
     content_listener_editor: ?*Editor = null,
-    visible_ranges_dirty: bool = false,
     inline_completions: @import("inlineCompletionSession.zig").Session = undefined,
     language_features_actor: ?MainThreadLanguageFeatures = null,
     diagnostics_actor: ?*MainThreadDiagnostics = null,
@@ -241,6 +258,7 @@ pub const Extensions = struct {
             .allocator = allocator,
             .io = io,
             .workbench = workbench,
+            .editor_service = .{ .part = workbench.part },
             .host = undefined,
             .descriptions = owned_descriptions,
             .extension_ptrs = extension_ptrs,
@@ -249,6 +267,9 @@ pub const Extensions = struct {
             .last_selections = std.array_list.Managed(Selection).init(allocator),
         };
 
+        self.tabs_task = .{ .queue = &workbench.window_events, .context = self, .run = updateTabs, .progress = true };
+        self.selection_task = .{ .queue = &workbench.window_events, .context = self, .run = updateSelection, .progress = true };
+        self.visible_ranges_task = .{ .queue = &workbench.window_events, .context = self, .run = updateVisibleRanges, .progress = true };
         const host_script = try std.fs.path.join(allocator, &.{ runtime_dir, "extensionHost.mjs" });
         defer allocator.free(host_script);
         // Fail before spawning node: without the bundle the host can never
@@ -349,7 +370,9 @@ pub const Extensions = struct {
         self.initLanguageActors() catch |err| {
             std.log.warn("language feature actors unavailable: {s}", .{@errorName(err)});
         };
+        errdefer self.removeActiveDocument() catch {};
         try self.boot(runtime_dir);
+        try self.registerEditorListeners();
         return self;
     }
 
@@ -362,8 +385,8 @@ pub const Extensions = struct {
         self.task_actor.deinit();
         self.task_service.deinit();
         self.inline_completions.deinit();
-        self.setScrollListener(null);
-        self.setContentListener(null);
+        self.unregisterEditorListeners();
+        self.removeActiveDocument() catch {};
         if (self.diagnostics_actor) |actor| {
             actor.deinit();
             self.diagnostics_actor = null;
@@ -374,11 +397,6 @@ pub const Extensions = struct {
         if (self.commands_actor) |*actor| actor.deinit();
         if (self.configuration_actor) |*actor| actor.deinit();
         if (self.editor_tabs_actor) |*actor| actor.deinit();
-        if (self.active) |*active| {
-            self.allocator.free(active.uri);
-            self.allocator.free(active.language_id);
-            freeDocumentLines(self.allocator, &active.lines);
-        }
         self.activation_tracker.deinit();
         self.last_selections.deinit();
         self.host.deinit();
@@ -834,7 +852,7 @@ pub const Extensions = struct {
         );
 
         try self.syncActiveDocument();
-        self.activateActiveLanguage();
+        try self.syncTabs();
         try self.host.activateByEvent("onStartupFinished", 0);
     }
 
@@ -856,30 +874,91 @@ pub const Extensions = struct {
         if (wait.failed) return rejected;
     }
 
-    /// Fires `onLanguage:<id>` once per language, after the document delta has
-    /// been queued. Upstream's workbench language service does the same; the
-    /// terminal has a per-editor language service, so the extension bridge
-    /// derives the event from the active document.
-    fn activateActiveLanguage(self: *Extensions) void {
-        const tab = self.workbench.activeTab() orelse return;
-        self.activation_tracker.activateLanguage(self.host, tab.editor.languageId());
+    // Upstream MainThreadDocumentAndEditorStateComputer and MainThreadEditorTabs
+    // subscribe to editor/model/group lifecycle events. A terminal group model
+    // changes before its pane is mounted, so use the mounted EditorService pane
+    // for the document mirror and coalesce group-tab changes on the window.
+    fn registerEditorListeners(self: *Extensions) !void {
+        errdefer self.unregisterEditorListeners();
+        self.active_editor_listener = try self.editor_service.onDidActiveEditorChange().listen(self, onActiveEditorChanged);
+        self.visible_editors_listener = try self.editor_service.onDidVisibleEditorsChange().listen(self, onVisibleEditorsChanged);
+        const part = self.editor_service.part;
+        self.group_model_listener = try part.service.on_did_change_group_model.listen(self, onGroupModelChanged);
+        self.add_group_listener = try part.on_did_add_group.listen(self, onGroupChanged);
+        self.remove_group_listener = try part.on_did_remove_group.listen(self, onGroupChanged);
+        self.move_group_listener = try part.on_did_move_group.listen(self, onGroupChanged);
+    }
+    fn unregisterEditorListeners(self: *Extensions) void {
+        if (self.active_editor_listener) |id| self.editor_service.onDidActiveEditorChange().unlisten(id);
+        if (self.visible_editors_listener) |id| self.editor_service.onDidVisibleEditorsChange().unlisten(id);
+        const part = self.editor_service.part;
+        if (self.group_model_listener) |id| part.service.on_did_change_group_model.unlisten(id);
+        if (self.add_group_listener) |id| part.on_did_add_group.unlisten(id);
+        if (self.remove_group_listener) |id| part.on_did_remove_group.unlisten(id);
+        if (self.move_group_listener) |id| part.on_did_move_group.unlisten(id);
+        self.tabs_task.schedule(null);
+        self.selection_task.schedule(null);
+        self.visible_ranges_task.schedule(null);
+    }
+    fn onActiveEditorChanged(_: ?*EditorInput, self: *Extensions) !void {
+        self.syncActiveDocument() catch {};
+        self.tabs_task.post();
+    }
+    fn onVisibleEditorsChanged(_: void, self: *Extensions) !void {
+        self.syncActiveDocument() catch {};
+        self.tabs_task.post();
+    }
+    fn onGroupChanged(_: *GroupPane, self: *Extensions) !void {
+        self.syncActiveDocument() catch {};
+        self.tabs_task.post();
+    }
+    fn onGroupModelChanged(event: GroupModelChangeEvent, self: *Extensions) !void {
+        switch (event) {
+            .EDITOR_OPEN, .EDITOR_CLOSE, .EDITOR_MOVE, .EDITOR_ACTIVE, .EDITOR_DIRTY, .EDITOR_LABEL, .EDITOR_PIN, .EDITOR_STICKY, .EDITOR_TRANSIENT => self.tabs_task.post(),
+            else => {},
+        }
+    }
+    fn updateTabs(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.syncTabs() catch {};
+        return true;
+    }
+    fn onSelectionChanged(context: *anyopaque, _: EditorPaneSelectionChangeReason) void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.pending_selection_source = self.selection_source;
+        self.selection_task.post();
+    }
+    fn updateSelection(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.syncSelectionFrom(self.pending_selection_source) catch {};
+        return true;
+    }
+    fn updateVisibleRanges(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.sendVisibleRanges() catch {};
+        return true;
+    }
+    fn onActiveTabWillDispose(_: void, self: *Extensions) !void {
+        // Do not wait for the next host pump: the editor and its listeners
+        // are still alive at this point in the pane's disposal lifecycle.
+        self.removeActiveDocument() catch {};
+    }
+    fn onActiveLanguageChanged(event: ModelLanguageChangedEvent, self: *Extensions) !void {
+        const active = if (self.active) |*value| value else return;
+        const language = try self.allocator.dupe(u8, event.newLanguage);
+        self.allocator.free(active.language_id);
+        active.language_id = language;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocuments), "$acceptModelLanguageChanged", &.{ .{ .json = try std_uri.jsonComponents(arena.allocator(), active.editor.model.uri()) }, .{ .json = .{ .string = language } } });
+        self.activation_tracker.activateLanguage(self.host, event.newLanguage);
     }
 
     /// Drains incoming extension messages. Returns true when the TUI should
     /// repaint (an edit, selection, or status entry changed).
     pub fn pump(self: *Extensions) bool {
-        self.needs_render = false;
-        // A closed tab frees its editor before this pump observes the active
-        // document change. Retire the mirror first: the frames dispatched by
-        // `host.pump` below can carry editor requests, and their handlers must
-        // not dereference the freed editor.
-        self.removeClosedActiveDocument();
         _ = self.host.pump();
         if (self.diagnostics_actor) |actor| actor.flush() catch {};
-        self.syncActiveDocument() catch {};
-        self.activateActiveLanguage();
-        self.syncSelection() catch {};
-        if (self.visible_ranges_dirty) self.sendVisibleRanges() catch {};
         if (self.accounts.changed) {
             self.accounts.changed = false;
             self.needs_render = true;
@@ -889,27 +968,13 @@ pub const Extensions = struct {
         return result;
     }
 
-    /// Retires the document mirror when its editor was freed by a tab close.
-    /// Called before dispatching host frames, because handlers for those
-    /// frames dereference the active editor.
-    fn removeClosedActiveDocument(self: *Extensions) void {
-        const active = self.active orelse return;
-        if (self.workbench.ownsEditor(active.editor)) return;
-        self.removeActiveDocument() catch {};
-    }
-
     fn syncActiveDocument(self: *Extensions) !void {
-        const tab = self.workbench.activeTab() orelse {
-            // Closing the last tab frees its editor. Drop the mirror before
-            // any handler or selection sync can dereference it.
+        const tab = self.editor_service.activeEditorPane() orelse {
             if (self.active != null) try self.removeActiveDocument();
             return;
         };
         if (self.active) |active| {
-            if (active.editor == tab.editor) {
-                try self.syncTabs();
-                return;
-            }
+            if (active.tab == tab) return;
             try self.removeActiveDocument();
         }
 
@@ -949,71 +1014,62 @@ pub const Extensions = struct {
 
         var lines = try captureDocumentLines(self.allocator, tab.editor.model);
         errdefer freeDocumentLines(self.allocator, &lines);
-        self.active = .{ .editor = tab.editor, .uri = uri, .language_id = language, .lines = lines };
+        const dispose_listener = try tab.listenWillDispose(self, onActiveTabWillDispose);
+        errdefer tab.unlistenWillDispose(dispose_listener);
+        const language_listener = try tab.editor.model.listenDidChangeLanguage(self, onActiveLanguageChanged);
+        errdefer tab.editor.model.removeDidChangeLanguageListener(language_listener);
+        try tab.addSelectionListener(.{ .context = self, .callback = onSelectionChanged });
+        self.active = .{ .tab = tab, .dispose_listener = dispose_listener, .language_listener = language_listener, .editor = tab.editor, .uri = uri, .language_id = language, .lines = lines };
         self.setScrollListener(tab.editor);
         self.setContentListener(tab.editor);
         self.captureSelections(tab.editor);
-        try self.syncTabs();
+        self.activation_tracker.activateLanguage(self.host, tab.editor.languageId());
         self.needs_render = true;
     }
 
     fn syncTabs(self: *Extensions) !void {
-        const active_tab = self.workbench.activeTab() orelse return;
-        // The tab rail is mostly static; pumping it on every loop iteration
-        // rebuilt the spec list and called the actor even when nothing moved.
-        var hasher = std.hash.Wyhash.init(0);
-        var tab_count: usize = 0;
-        for (self.workbench.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                tab_count += 1;
-                const editor_ptr: usize = @intFromPtr(tab.editor);
-                hasher.update(std.mem.asBytes(&editor_ptr));
-                hasher.update(&[_]u8{@intFromBool(tab.editor.dirty_state)});
-            }
-        }
-        const active_ptr: usize = @intFromPtr(active_tab.editor);
-        hasher.update(std.mem.asBytes(&active_ptr));
-        hasher.update(std.mem.asBytes(&tab_count));
-        const signature = hasher.final();
-        if (signature == self.tabs_signature) return;
-
+        const active_tab = self.editor_service.activeEditorPane();
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
         var specs = std.array_list.Managed(documents_and_editors.TabSpec).init(arena);
-        for (self.workbench.part.group_views.items) |pane| {
+        for (self.editor_service.part.group_views.items) |pane| {
             for (pane.tabs.items) |tab| {
                 try specs.append(.{
                     .path = try std_uri.fsPath(tab.editor.model.uri(), arena),
                     .label = std.fs.path.basename(tab.editor.path),
                     .is_active = tab == active_tab,
                     .is_dirty = tab.editor.dirty_state,
+                    .is_pinned = pane.group.model.isPinned(.{ .editor = tab.input }),
+                    .is_preview = pane.group.model.previewEditor() == tab.input,
                 });
             }
         }
         if (self.editor_tabs_actor) |*actor| {
-            try actor.sync(arena, try std_uri.fsPath(active_tab.editor.model.uri(), arena), specs.items);
-            // Only remember a delivered state; do not skip a later retry when
-            // there was no actor yet.
-            self.tabs_signature = signature;
+            try actor.sync(arena, if (active_tab) |tab| try std_uri.fsPath(tab.editor.model.uri(), arena) else "", specs.items);
         }
     }
 
     fn removeActiveDocument(self: *Extensions) !void {
         var active = self.active orelse return;
+        self.active = null;
+        self.selection_task.schedule(null);
+        self.visible_ranges_task.schedule(null);
+        active.tab.unlistenWillDispose(active.dispose_listener);
+        active.tab.removeSelectionListener(.{ .context = self, .callback = onSelectionChanged });
+        active.editor.model.removeDidChangeLanguageListener(active.language_listener);
+        self.setScrollListener(null);
+        self.setContentListener(null);
+        defer self.allocator.free(active.uri);
+        defer self.allocator.free(active.language_id);
+        defer freeDocumentLines(self.allocator, &active.lines);
+        self.needs_render = true;
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
         const delta = try documents_and_editors.removedDocumentDelta(arena, active.uri);
         var args = [_]rpc.Arg{.{ .json = delta }};
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDocumentsAndEditors), "$acceptDocumentsAndEditorsDelta", &args, null, manager.noop_callback) catch {};
-        self.setScrollListener(null);
-        self.setContentListener(null);
-        self.allocator.free(active.uri);
-        self.allocator.free(active.language_id);
-        freeDocumentLines(self.allocator, &active.lines);
-        self.active = null;
-        self.needs_render = true;
     }
 
     fn executeCommand(self: *Extensions, command: []const u8, command_args: []const std.json.Value) void {
@@ -1155,7 +1211,7 @@ pub const Extensions = struct {
             .{ .json = value.array.items[1] },
         };
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
-        self.visible_ranges_dirty = false;
+        self.visible_ranges_task.schedule(null);
         self.captureSelections(active.editor);
     }
 
@@ -1171,12 +1227,7 @@ pub const Extensions = struct {
     fn setContentListener(self: *Extensions, editor: ?*Editor) void {
         if (self.content_listener_editor == editor) return;
         if (self.content_listener_editor) |old| {
-            detachEditorListenerIfOwned(
-                self.workbench,
-                old,
-                .content,
-                .{ .context = self, .callback = onEditorContent },
-            );
+            old.removeWorkingCopyContentListener(.{ .context = self, .callback = onEditorContent });
         }
         self.content_listener_editor = null;
         if (editor) |value| {
@@ -1187,19 +1238,14 @@ pub const Extensions = struct {
 
     fn onEditorScroll(context: *anyopaque) void {
         const self: *Extensions = @ptrCast(@alignCast(context));
-        self.visible_ranges_dirty = true;
+        self.visible_ranges_task.post();
         self.needs_render = true;
     }
 
     fn setScrollListener(self: *Extensions, editor: ?*Editor) void {
         if (self.scroll_listener_editor == editor) return;
         if (self.scroll_listener_editor) |old| {
-            detachEditorListenerIfOwned(
-                self.workbench,
-                old,
-                .scroll,
-                .{ .context = self, .callback = onEditorScroll },
-            );
+            old.removeScrollListener(.{ .context = self, .callback = onEditorScroll });
         }
         self.scroll_listener_editor = null;
         if (editor) |value| {
@@ -1221,7 +1267,7 @@ pub const Extensions = struct {
             .{ .json = value.array.items[1] },
         };
         _ = self.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostEditors), "$acceptEditorPropertiesChanged", &args, null, manager.noop_callback) catch {};
-        self.visible_ranges_dirty = false;
+        self.visible_ranges_task.schedule(null);
     }
 
     /// Records the selections the extension host now has, without a round
@@ -1248,39 +1294,18 @@ pub const Extensions = struct {
     /// Keep the extension host's selection mirror in step with a caret move
     /// the TUI made itself.
     fn syncSelection(self: *Extensions) !void {
+        try self.syncSelectionFrom(self.selection_source);
+    }
+    fn syncSelectionFrom(self: *Extensions, source: SelectionSource) !void {
         const active = self.active orelse return;
         const selections = try active.editor.getSelections();
         defer active.editor.allocator.free(selections);
         if (sameSelections(self.last_selections.items, selections)) return;
         var arena_instance = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_instance.deinit();
-        try self.sendSelection(arena_instance.allocator(), self.selection_source);
+        try self.sendSelection(arena_instance.allocator(), source);
     }
 };
-
-const EditorListenerKind = enum { scroll, content };
-
-/// Detaches one of the extension bridge's editor listeners, but only while the
-/// workbench still owns the editor.
-///
-/// Closing a tab frees its editor immediately, while the bridge only observes
-/// the active-document change on the next `pump`. The raw pointer kept by
-/// `Extensions` is therefore stale until then, and the workbench's live tab
-/// views are the only safe way to test it: dereferencing the freed editor to
-/// remove the listener is a use-after-free (the `removeChangeListener` crash
-/// in `codeEditorWidgetTerminal.zig`).
-fn detachEditorListenerIfOwned(
-    workbench: *const Workbench,
-    editor: *Editor,
-    kind: EditorListenerKind,
-    listener: ChangeListener,
-) void {
-    if (!workbench.ownsEditor(editor)) return;
-    switch (kind) {
-        .scroll => editor.removeScrollListener(listener),
-        .content => editor.removeWorkingCopyContentListener(listener),
-    }
-}
 
 /// Maps command ids issued by Node extensions to the workbench LSP
 /// actions. Returns true when the command was recognized, even when the
@@ -1827,7 +1852,7 @@ fn countListenerCall(context: *anyopaque) void {
     calls.* += 1;
 }
 
-test "Extensions: listener detach ignores editors the workbench no longer owns" {
+test "Extensions: editor-pane disposal detaches listeners before the editor is destroyed" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
@@ -1849,8 +1874,8 @@ test "Extensions: listener detach ignores editors the workbench no longer owns" 
     const owned = workbench.activeTab().?.editor;
     owned.addWorkingCopyContentListener(content_listener);
     owned.addScrollListener(scroll_listener);
-    detachEditorListenerIfOwned(workbench, owned, .content, content_listener);
-    detachEditorListenerIfOwned(workbench, owned, .scroll, scroll_listener);
+    owned.removeWorkingCopyContentListener(content_listener);
+    owned.removeScrollListener(scroll_listener);
     try owned.typeCharacter("x");
     owned.emitCurrentViewState();
     try std.testing.expectEqual(@as(usize, 0), content_calls);
@@ -1858,10 +1883,7 @@ test "Extensions: listener detach ignores editors the workbench no longer owns" 
     // A clean editor closes without the dirty confirmation.
     try owned.save();
 
-    // A live editor outside the tab views stands in for one freed by a tab
-    // close. Detaching must skip it: the real pointer is already freed by the
-    // close, and dereferencing it to remove the listener is the crash this
-    // guard prevents (`removeChangeListener` in codeEditorWidgetTerminal.zig).
+    // A live editor outside this pane must keep its own listeners.
     var stale = try Editor.createFromText(allocator, io, "beta", "stale.txt", 40, 9);
     defer {
         stale.deinit();
@@ -1869,25 +1891,38 @@ test "Extensions: listener detach ignores editors the workbench no longer owns" 
     }
     stale.addWorkingCopyContentListener(content_listener);
     stale.addScrollListener(scroll_listener);
-    detachEditorListenerIfOwned(workbench, stale, .content, content_listener);
-    detachEditorListenerIfOwned(workbench, stale, .scroll, scroll_listener);
     try stale.typeCharacter("y");
     stale.emitCurrentViewState();
     try std.testing.expect(content_calls > 0);
     try std.testing.expect(scroll_calls > 0);
 
-    // The exact crash sequence: Ctrl-W frees the active editor, and the next
-    // pump's `removeActiveDocument` detaches its listeners. The freed pointer
-    // must only be compared against the live tab views; dereferencing it here
-    // crashed in `removeChangeListener`.
+    // The former Ctrl-W crash now retires subscriptions before tab deinit
+    // releases the editor. The callback must run exactly once.
     try workbench.activeTab().?.ensureControllers();
-    const closed = workbench.activeTab().?.editor;
+    const tab = workbench.activeTab().?;
+    const closed = tab.editor;
+    const Detach = struct {
+        editor: ?*Editor,
+        content: ChangeListener,
+        scroll: ChangeListener,
+        count: usize = 0,
+        fn onDispose(_: void, self: *@This()) !void {
+            const editor = self.editor orelse return error.AlreadyDisposed;
+            editor.removeWorkingCopyContentListener(self.content);
+            editor.removeScrollListener(self.scroll);
+            self.editor = null;
+            self.count += 1;
+        }
+    };
+    var detach: Detach = .{ .editor = closed, .content = content_listener, .scroll = scroll_listener };
+    closed.addWorkingCopyContentListener(content_listener);
+    closed.addScrollListener(scroll_listener);
+    _ = try tab.listenWillDispose(&detach, Detach.onDispose);
     const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
     const TabKeyResult = @import("../../browser/workbench.zig").TabKeyResult;
     try std.testing.expectEqual(TabKeyResult.handled, try workbench.handleTabKey(&ctrl_w));
-    try std.testing.expect(!workbench.ownsEditor(closed));
-    detachEditorListenerIfOwned(workbench, closed, .content, content_listener);
-    detachEditorListenerIfOwned(workbench, closed, .scroll, scroll_listener);
+    try std.testing.expect(detach.editor == null);
+    try std.testing.expectEqual(@as(usize, 1), detach.count);
 }
 
 test "Extensions: insert-mode Backspace and Delete run the core editor commands" {
@@ -2115,6 +2150,30 @@ test "Extensions: relative paths mirror the model URI language features use" {
     }
     try std.testing.expect(navigated);
     try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
+
+    // Opening, selecting and closing tabs now deliver the document delta on
+    // editor events, even if the host's message pump has not been called.
+    try tmp.dir.writeFile(io, .{ .sub_path = "second.json", .data = "{\n}\n" });
+    var second_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const second_length = try tmp.dir.realPathFile(io, "second.json", &second_buffer);
+    try workbench.openPath(second_buffer[0..second_length]);
+    const second = workbench.activeTab().?;
+    try std.testing.expect(extension_host.active.?.tab == second);
+    try std.testing.expect(extension_host.tabs_task.at != null);
+    try second.editor.setCursorPosition(Position.init(2, 1));
+    try std.testing.expect(extension_host.selection_task.at != null);
+    second.editor.emitCurrentViewState();
+    try std.testing.expect(extension_host.visible_ranges_task.at != null);
+    second.editor.model.setLanguage("plaintext");
+    try std.testing.expectEqualStrings("plaintext", extension_host.active.?.language_id);
+    for (0..256) |_| {
+        if (extension_host.tabs_task.at == null and extension_host.selection_task.at == null and extension_host.visible_ranges_task.at == null) break;
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+    }
+    try std.testing.expect(extension_host.tabs_task.at == null and extension_host.selection_task.at == null and extension_host.visible_ranges_task.at == null);
+    try std.testing.expectEqual(@as(usize, 2), extension_host.last_selections.items[0].endLineNumber);
+    _ = try workbench.closeActive();
+    try std.testing.expect(extension_host.active.?.tab == tab);
 }
 
 test "Extensions: real TypeScript extension drives the language features" {

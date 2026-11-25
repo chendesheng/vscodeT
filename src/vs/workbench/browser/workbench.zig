@@ -936,6 +936,8 @@ pub const Workbench = struct {
         _ = try self.lifecycle_api.on_did_shutdown.listen(self, onDidShutdown);
         _ = try self.part.on_did_focus.listen(self, onEditorPartFocus);
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
+        _ = try self.service.on_did_active_editor_change.listen(self, onActiveHistoryEditor);
+        _ = try self.service.on_did_visible_editors_change.listen(self, onHistoryVisibleEditorsChanged);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
     }
 
@@ -3710,11 +3712,16 @@ pub const Workbench = struct {
 
     pub fn activeTab(self: *Workbench) ?*Tab {
         const pane = self.activePane() orelse return null;
-        const tab = pane.activeTab();
-        self.syncHistorySelectionTab(tab);
-        return tab;
+        return pane.activeTab();
     }
 
+    fn onActiveHistoryEditor(_: ?*EditorInput, self: *Workbench) !void {
+        try onHistoryVisibleEditorsChanged({}, self);
+    }
+    fn onHistoryVisibleEditorsChanged(_: void, self: *Workbench) !void {
+        const editor_service = @import("../services/editor/browser/editorService.zig").EditorService{ .part = self.part };
+        self.syncHistorySelectionTab(editor_service.activeEditorPane());
+    }
     fn syncHistorySelectionTab(self: *Workbench, active_tab: ?*Tab) void {
         const tab = if (active_tab != null and active_tab.?.terminal_input != null) null else active_tab;
         if (self.history_tab == tab) return;
@@ -3757,20 +3764,6 @@ pub const Workbench = struct {
         // A bare USER cursor move must not add a jump-list entry.
         if (reason == .USER) return;
         self.recordNavigationWithReason(reason);
-    }
-
-    /// Whether `editor` still belongs to an open tab. The extension-host
-    /// bridge stores a raw pointer to the editor that owns its scroll
-    /// listener; closing a tab frees that editor before the next `pump`
-    /// observes the active-editor change, so callers validate the pointer
-    /// against the live tab views instead of dereferencing it.
-    pub fn ownsEditor(self: *const Workbench, editor: *const Editor) bool {
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.editor == editor) return true;
-            }
-        }
-        return false;
     }
 
     pub fn tabCount(self: *Workbench) usize {

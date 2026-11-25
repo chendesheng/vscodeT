@@ -120,6 +120,9 @@ pub const EditorGroupsService = struct {
     active: *EditorGroup,
     on_did_visible_editors_change: Emitter(void),
     on_did_active_editor_change: Emitter(?*EditorInput),
+    // Multiplex each IEditorGroup.onDidModelChange without retaining a group
+    // pointer after its model is disposed.
+    on_did_change_group_model: Emitter(group_mod.GroupModelChangeEvent),
     next_creation_order: u64 = 1,
     most_recent_active_groups: std.ArrayList(*EditorGroup) = .empty,
 
@@ -133,6 +136,7 @@ pub const EditorGroupsService = struct {
             .active = undefined,
             .on_did_visible_editors_change = .init(allocator),
             .on_did_active_editor_change = Emitter(?*EditorInput).init(allocator),
+            .on_did_change_group_model = .init(allocator),
         };
 
         errdefer self.groups.deinit();
@@ -151,6 +155,7 @@ pub const EditorGroupsService = struct {
         self.most_recent_active_groups.deinit(self.allocator);
         self.on_did_visible_editors_change.deinit();
         self.on_did_active_editor_change.deinit();
+        self.on_did_change_group_model.deinit();
         self.groups.deinit();
         self.allocator.destroy(self);
     }
@@ -369,6 +374,7 @@ pub const EditorGroupsService = struct {
         if (event == .EDITOR_ACTIVE and group.service.active == group) {
             try group.service.on_did_active_editor_change.fire(group.model.activeEditor());
         }
+        try group.service.on_did_change_group_model.fire(event);
     }
 
     fn indexOf(self: *const EditorGroupsService, group: *EditorGroup) ?usize {
