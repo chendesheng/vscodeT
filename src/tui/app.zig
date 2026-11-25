@@ -107,7 +107,7 @@ const SessionOnShutdown = struct {
     fn save(_: WillShutdownEvent, self: *@This()) !void {
         if (self.workbench.tabCount() == 0) return;
         const allocator = self.workbench.allocator;
-        var data = self.workbench.serializePart(allocator, self.registry) catch |err| {
+        var data = self.workbench.part.createState(allocator, self.registry) catch |err| {
             report(self.log, "session serialize failed: {s}", .{@errorName(err)});
             return;
         };
@@ -524,7 +524,7 @@ pub fn main(init: std.process.Init) !void {
     if (history_path) |path| {
         history_storage = .{ .history = &workbench.history, .allocator = allocator, .io = io, .path = path };
         try history_storage.load();
-        _ = try workbench.lifecycle.on_will_shutdown.listen(&history_storage, HistoryStorage.save);
+        _ = try workbench.on_will_shutdown.listen(&history_storage, HistoryStorage.save);
     }
 
     if (folders.items.len > 0) {
@@ -600,7 +600,7 @@ pub fn main(init: std.process.Init) !void {
     var session_writer: SessionOnShutdown = undefined;
     if (args.session) |session_path| {
         session_writer = .{ .workbench = workbench, .registry = &registry.?, .path = session_path, .log = log_service };
-        _ = try workbench.lifecycle.on_will_shutdown.listen(&session_writer, SessionOnShutdown.save);
+        _ = try workbench.on_will_shutdown.listen(&session_writer, SessionOnShutdown.save);
     }
 
     workbench.initGit() catch {};
@@ -612,7 +612,7 @@ pub fn main(init: std.process.Init) !void {
     if (layout_storage) |*storage| {
         if (storage.load(workbench.layout.reset_layout)) |saved| {
             saved_layout = saved;
-            _ = try workbench.lifecycle.on_will_shutdown.listen(storage, LayoutStorage.save);
+            _ = try workbench.on_will_shutdown.listen(storage, LayoutStorage.save);
         } else |err| report(log_service, "layout restore failed: {s}", .{@errorName(err)});
     }
     if (workbench.activeTab()) |active| {
@@ -2258,11 +2258,17 @@ test "app: shutdown writes the current editor groups before didShutdown" {
     var file = workbench.createFileSerializer();
     try serializers.registerEditorSerializer(FileEditorInput.TYPE_ID, file.interface());
     var writer = SessionOnShutdown{ .workbench = workbench, .registry = &serializers, .path = path, .log = null };
-    _ = try workbench.lifecycle.on_will_shutdown.listen(&writer, SessionOnShutdown.save);
+    _ = try workbench.on_will_shutdown.listen(&writer, SessionOnShutdown.save);
     const DidShutdown = struct {
         writer: *SessionOnShutdown,
+        will_calls: u8 = 0,
         calls: u8 = 0,
+        fn will(event: WillShutdownEvent, self: *@This()) !void {
+            try std.testing.expectEqual(.quit, event.reason);
+            self.will_calls += 1;
+        }
         fn check(_: void, self: *@This()) !void {
+            try std.testing.expectEqual(@as(u8, 1), self.will_calls);
             var restored = (try session.loadPart(self.writer.workbench.allocator, self.writer.workbench.io, self.writer.path)).?;
             defer restored.deinit(self.writer.workbench.allocator);
             try std.testing.expectEqual(@as(usize, 2), restored.groups[0].editors.len);
@@ -2270,7 +2276,8 @@ test "app: shutdown writes the current editor groups before didShutdown" {
         }
     };
     var did = DidShutdown{ .writer = &writer };
-    _ = try workbench.lifecycle.on_did_shutdown.listen(&did, DidShutdown.check);
+    _ = try workbench.on_will_shutdown.listen(&did, DidShutdown.will);
+    _ = try workbench.on_did_shutdown.listen(&did, DidShutdown.check);
     try workbench.openPath(two);
     try std.testing.expect((try session.loadPart(allocator, io, path)) == null);
     try workbench.lifecycle.shutdown(.quit);

@@ -1315,7 +1315,8 @@ console API for raw mode, sizing and input polling.
   files uses an empty workspace, as upstream does.
 - The terminal host supplies the window document and initial services, calls
   `Workbench.startup()`, then opens command-line files. Startup mounts the editor
-  part before the first frame.
+  part before the first frame. On shutdown, the window saves its session, history
+  and layout before it delivers the did-shutdown event and releases the terminal.
   Editor groups mount their active panes beneath the editor part’s grid. Directional
   focus chooses the most recently active group sharing the requested edge. At the
   outside edge, focus wraps within the same row or column. The group focus actions

@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,381 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
+The browser shell is 13,380 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -90,7 +90,8 @@ Show All Commands resolves the quick input service through its Action2 handler.
   two seconds, then schedules Eventually after 2.5 seconds and a window idle
   callback capped at another 2.5 seconds. The terminal host supplies monotonic
   time and idle opportunities. Contributions observe lifecycle phases and session saving runs
-  on shutdown. Document symbols use one shared outline-model service.
+  on the workbench will-shutdown event. The workbench forwards did-shutdown after
+  persistence. The native host releases the window after event dispatch returns. Document symbols use one shared outline-model service.
 * Task providers, authentication account choices, file-icon theme data and
   sidebar moves have service owners. Simple Browser uses its bundled command
   handler and launches Lynx in a terminal editor. The bundled references view

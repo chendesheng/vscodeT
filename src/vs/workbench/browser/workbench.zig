@@ -141,6 +141,7 @@ const IOutlineCreator = outline_mod.IOutlineCreator;
 const DocumentSymbolsOutlineCreator = @import("../contrib/codeEditor/browser/outline/documentSymbolsOutline.zig").DocumentSymbolsOutlineCreator;
 const outline_model = @import("../../editor/contrib/documentSymbols/browser/outlineModel.zig");
 const OutlineModel = outline_model.OutlineModel;
+const Emitter = @import("../../base/common/event.zig").Emitter;
 const lifecycle_mod = @import("../services/lifecycle/common/lifecycle.zig");
 const ServiceCollection = @import("../../platform/instantiation/common/serviceCollection.zig").ServiceCollection;
 const InstantiationService = @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService;
@@ -567,7 +568,7 @@ pub const Workbench = struct {
     scm_placeholder_buf: [160]u8 = undefined,
     markers_status: ?*MarkersStatusBar = null,
     problems_view: ?MarkersView = null,
-    marker_listener: ?@import("../../base/common/event.zig").Emitter(MarkerChangeEvent).ListenerId = null,
+    marker_listener: ?Emitter(MarkerChangeEvent).ListenerId = null,
     range_highlights: ?*RangeHighlightDecorations = null,
     search_badge_buf: [32]u8 = undefined,
     search_badge_count: usize = 0,
@@ -626,6 +627,8 @@ pub const Workbench = struct {
     instantiation: InstantiationService,
     layout_api: layout_service_mod.IWorkbenchLayoutService,
     lifecycle_api: lifecycle_mod.ILifecycleService,
+    on_will_shutdown: Emitter(lifecycle_mod.WillShutdownEvent),
+    on_did_shutdown: Emitter(void),
     /// Terminal Outline side panel (`outline` view container).
     outline_view: ?*OutlinePane = null,
     breadcrumbs_service: BreadcrumbsService,
@@ -858,6 +861,8 @@ pub const Workbench = struct {
         self.file_watcher_service = null;
         self.workspace_watcher = null;
         self.contributions = contributions_mod.WorkbenchContributions.init(allocator);
+        self.on_will_shutdown = .init(allocator);
+        self.on_did_shutdown = .init(allocator);
         self.lifecycle = .init(allocator);
         errdefer self.lifecycle.deinit();
         errdefer self.contributions.deinit();
@@ -907,9 +912,19 @@ pub const Workbench = struct {
     }
 
     fn registerListeners(self: *Workbench) !void {
+        _ = try self.lifecycle_api.on_will_shutdown.listen(self, onWillShutdown);
+        _ = try self.lifecycle_api.on_did_shutdown.listen(self, onDidShutdown);
         _ = try self.part.on_did_focus.listen(self, onEditorPartFocus);
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
+    }
+
+    fn onWillShutdown(event: lifecycle_mod.WillShutdownEvent, self: *Workbench) !void {
+        try self.on_will_shutdown.fire(event);
+    }
+
+    fn onDidShutdown(_: void, self: *Workbench) !void {
+        try self.on_did_shutdown.fire({});
     }
 
     fn initServices(self: *Workbench) !void {
@@ -985,24 +1000,6 @@ pub const Workbench = struct {
     fn onWindowIdle(context: *anyopaque) !void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         try self.lifecycle_api.setPhase(.Eventually);
-    }
-
-    /// Stores group models, their grid layout and activation history.
-    pub fn serializePart(
-        self: *Workbench,
-        allocator: Allocator,
-        registry: *editor_factory.EditorFactoryRegistry,
-    ) !editor_groups.SerializedEditorPart {
-        return self.part.createState(allocator, registry);
-    }
-
-    /// Serializes the active group.
-    pub fn serialize(
-        self: *Workbench,
-        allocator: Allocator,
-        registry: *editor_factory.EditorFactoryRegistry,
-    ) !group_mod.SerializedEditorGroupModel {
-        return self.service.activeGroup().model.serialize(allocator, registry);
     }
 
     pub fn createFileSerializer(self: *Workbench) FileEditorSerializer {
@@ -1884,6 +1881,8 @@ pub const Workbench = struct {
             self.file_watcher_service = null;
         }
         self.contributions.deinit();
+        self.on_will_shutdown.deinit();
+        self.on_did_shutdown.deinit();
         self.lifecycle.deinit();
         if (self.configuration) |configuration| configuration.deinit();
         freeOwnedPaths(self.allocator, self.user_settings_paths);

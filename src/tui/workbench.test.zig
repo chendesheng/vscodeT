@@ -1490,7 +1490,7 @@ test "Workbench: serialize and restore a group" {
     defer registry.deinit();
     try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, serializer.interface());
 
-    var data = try workbench.serialize(allocator, &registry);
+    var data = try workbench.service.activeGroup().model.serialize(allocator, &registry);
     defer data.deinit(allocator);
 
     var groups = [_]@TypeOf(data){data};
@@ -1545,7 +1545,7 @@ test "Workbench: serialize and restore multiple groups" {
     defer registry.deinit();
     try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, serializer.interface());
 
-    var data = try workbench.serializePart(allocator, &registry);
+    var data = try workbench.part.createState(allocator, &registry);
     defer data.deinit(allocator);
 
     const session = @import("../vs/workbench/browser/parts/editor/editorSession.zig");
@@ -4900,7 +4900,7 @@ test "Workbench: session serialization restores image tabs" {
     var image_serializer = ImagePreviewEditorInputSerializer.init(allocator);
     _ = try registry.registerEditorSerializer(ImagePreviewEditorInput.ID, image_serializer.interface());
 
-    var serialized = try workbench.serializePart(allocator, &registry);
+    var serialized = try workbench.part.createState(allocator, &registry);
     defer serialized.deinit(allocator);
 
     const restored_window = try TestWindow.initWithOptions(allocator, io, &.{}, 40, 12, .{}, .{ .data = serialized, .registry = &registry });
@@ -7910,7 +7910,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     defer registry.deinit();
     var file_serializer = workbench.createFileSerializer();
     try registry.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.interface());
-    var serialized = try workbench.serializePart(allocator, &registry);
+    var serialized = try workbench.part.createState(allocator, &registry);
     defer serialized.deinit(allocator);
     var serialized_editors: usize = 0;
     for (serialized.groups) |group_data| serialized_editors += group_data.editors.len;
@@ -8324,7 +8324,7 @@ test "workbench restores scoped layout and honors zenMode.restore on reopening" 
         try std.testing.expect(wb.layout.isMainEditorCentered());
         var storage = try LayoutStorage.init(wb, root, null);
         defer storage.deinit();
-        _ = try wb.lifecycle.on_will_shutdown.listen(&storage, LayoutStorage.save);
+        _ = try wb.on_will_shutdown.listen(&storage, LayoutStorage.save);
         try wb.lifecycle.shutdown(.quit);
     }
 
