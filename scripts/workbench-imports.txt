@@ -1,9 +1,4 @@
 src/tui/workbench.test.zig -> src/vs/workbench/browser/workbench.zig
 src/tui/workbench.zig -> src/vs/workbench/browser/workbench.zig
-src/vs/editor/browser/widget/diffEditor/diffEditorWidget.zig -> src/tui/editorView.zig
-src/vs/editor/contrib/find/test/browser/findController.test.zig -> src/tui/editorView.zig
-src/vs/editor/contrib/stickyScroll/test/browser/stickyScroll.test.zig -> src/tui/editorView.zig
-src/vs/editor/contrib/suggest/test/browser/suggest.test.zig -> src/tui/editorView.zig
 src/vs/workbench/browser/parts/editor/editorPane.zig -> src/tui/editorView.zig
-src/vs/workbench/browser/parts/editor/textDiffEditor.zig -> src/tui/editorView.zig
 src/vs/workbench/test/browser/workbenchTestServices.zig -> src/vs/workbench/browser/workbench.zig

@@ -20,9 +20,7 @@ const diff_editor_input = @import("../../../common/editor/diffEditorInput.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const editor_mod = @import("../../../common/editor.zig");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const View = @import("../../../../../tui/editorView.zig").View;
 
-pub const DiffEditorWidget = widget_mod.DiffEditorWidget;
 pub const Options = widget_mod.Options;
 
 // Project the diffEditor configuration merged by upstream TextDiffEditor.
@@ -153,237 +151,190 @@ pub const DiffEditorModel = struct {
 };
 
 /// The terminal diff pane: the diff widget plus the snapshot/diff inputs.
-pub const DiffView = struct {
-    allocator: Allocator,
-    io: Io,
-    model: DiffEditorModel,
-    widget: *DiffEditorWidget,
-    original_input: *SnapshotEditorInput,
-    modified_input: *SnapshotEditorInput,
-    diff_input: *diff_editor_input.DiffEditorInput,
-
-    pub fn create(
+/// The concrete cell view is injected by the editor pane composition root.
+pub fn DiffView(comptime View: type) type {
+    const DiffEditorWidget = widget_mod.DiffEditorWidget(View);
+    return struct {
+        const Self = @This();
         allocator: Allocator,
         io: Io,
         model: DiffEditorModel,
-        original_text: []const u8,
-        modified_text: []const u8,
-        width: usize,
-        height: usize,
-        options: Options,
-    ) !*DiffView {
-        const self = try allocator.create(DiffView);
-        errdefer allocator.destroy(self);
+        widget: *DiffEditorWidget,
+        original_input: *SnapshotEditorInput,
+        modified_input: *SnapshotEditorInput,
+        diff_input: *diff_editor_input.DiffEditorInput,
 
-        // SCM refreshes and history updates can discard the source strings
-        // while the diff tab and its input are still open.
-        const original_path = try allocator.dupe(u8, model.original_path);
-        errdefer allocator.free(original_path);
-        const modified_path = try allocator.dupe(u8, model.modified_path);
-        errdefer allocator.free(modified_path);
-        const original_label = try allocator.dupe(u8, model.original_label);
-        errdefer allocator.free(original_label);
-        const modified_label = try allocator.dupe(u8, model.modified_label);
-        errdefer allocator.free(modified_label);
+        pub fn create(
+            allocator: Allocator,
+            io: Io,
+            model: DiffEditorModel,
+            original_text: []const u8,
+            modified_text: []const u8,
+            width: usize,
+            height: usize,
+            options: Options,
+        ) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
 
-        const widget = try DiffEditorWidget.create(
-            allocator,
-            io,
-            model.original_path,
-            model.modified_path,
-            original_text,
-            modified_text,
-            model.original_label,
-            model.modified_label,
-            width,
-            height,
-            options,
-        );
-        errdefer widget.destroy();
+            // SCM refreshes and history updates can discard the source strings
+            // while the diff tab and its input are still open.
+            const original_path = try allocator.dupe(u8, model.original_path);
+            errdefer allocator.free(original_path);
+            const modified_path = try allocator.dupe(u8, model.modified_path);
+            errdefer allocator.free(modified_path);
+            const original_label = try allocator.dupe(u8, model.original_label);
+            errdefer allocator.free(original_label);
+            const modified_label = try allocator.dupe(u8, model.modified_label);
+            errdefer allocator.free(modified_label);
 
-        const original_key = try std.fmt.allocPrint(
-            allocator,
-            "{s}::{s}::original",
-            .{ model.original_path, model.original_label },
-        );
-        defer allocator.free(original_key);
-        const modified_key = try std.fmt.allocPrint(
-            allocator,
-            "{s}::{s}::modified",
-            .{ model.modified_path, model.modified_label },
-        );
-        defer allocator.free(modified_key);
+            const widget = try DiffEditorWidget.create(
+                allocator,
+                io,
+                model.original_path,
+                model.modified_path,
+                original_text,
+                modified_text,
+                model.original_label,
+                model.modified_label,
+                width,
+                height,
+                options,
+            );
+            errdefer widget.destroy();
 
-        const original_input = try SnapshotEditorInput.init(allocator, original_path, original_label, original_key);
-        errdefer original_input.destroy();
-        const modified_input = try SnapshotEditorInput.init(allocator, modified_path, modified_label, modified_key);
-        errdefer modified_input.destroy();
+            const original_key = try std.fmt.allocPrint(
+                allocator,
+                "{s}::{s}::original",
+                .{ model.original_path, model.original_label },
+            );
+            defer allocator.free(original_key);
+            const modified_key = try std.fmt.allocPrint(
+                allocator,
+                "{s}::{s}::modified",
+                .{ model.modified_path, model.modified_label },
+            );
+            defer allocator.free(modified_key);
 
-        const basename = std.fs.path.basename(model.modified_path);
-        const title = try std.fmt.allocPrint(
-            allocator,
-            "{s} ({s} \u{2194} {s})",
-            .{ basename, model.original_label, model.modified_label },
-        );
-        defer allocator.free(title);
-        const diff_input = try diff_editor_input.DiffEditorInput.init(
-            allocator,
-            title,
-            null,
-            &original_input.base,
-            &modified_input.base,
-        );
-        errdefer diff_input.destroy();
+            const original_input = try SnapshotEditorInput.init(allocator, original_path, original_label, original_key);
+            errdefer original_input.destroy();
+            const modified_input = try SnapshotEditorInput.init(allocator, modified_path, modified_label, modified_key);
+            errdefer modified_input.destroy();
 
-        self.* = .{
-            .allocator = allocator,
-            .io = io,
-            .model = .{
-                .original_path = original_path,
-                .modified_path = modified_path,
-                .original_label = original_label,
-                .modified_label = modified_label,
-            },
-            .widget = widget,
-            .original_input = original_input,
-            .modified_input = modified_input,
-            .diff_input = diff_input,
-        };
-        return self;
-    }
+            const basename = std.fs.path.basename(model.modified_path);
+            const title = try std.fmt.allocPrint(
+                allocator,
+                "{s} ({s} \u{2194} {s})",
+                .{ basename, model.original_label, model.modified_label },
+            );
+            defer allocator.free(title);
+            const diff_input = try diff_editor_input.DiffEditorInput.init(
+                allocator,
+                title,
+                null,
+                &original_input.base,
+                &modified_input.base,
+            );
+            errdefer diff_input.destroy();
 
-    pub fn destroy(self: *DiffView) void {
-        const allocator = self.allocator;
-        self.diff_input.destroy();
-        self.original_input.destroy();
-        self.modified_input.destroy();
-        self.widget.destroy();
-        allocator.free(self.model.original_path);
-        allocator.free(self.model.modified_path);
-        allocator.free(self.model.original_label);
-        allocator.free(self.model.modified_label);
-        allocator.destroy(self);
-    }
+            self.* = .{
+                .allocator = allocator,
+                .io = io,
+                .model = .{
+                    .original_path = original_path,
+                    .modified_path = modified_path,
+                    .original_label = original_label,
+                    .modified_label = modified_label,
+                },
+                .widget = widget,
+                .original_input = original_input,
+                .modified_input = modified_input,
+                .diff_input = diff_input,
+            };
+            return self;
+        }
 
-    /// Replaces the snapshot texts in place, recreating the diff widget with
-    /// the new content while keeping the input identity/tab.
-    pub fn replace(self: *DiffView, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options) !void {
-        const widget = try DiffEditorWidget.create(
-            self.allocator,
-            self.io,
-            self.model.original_path,
-            self.model.modified_path,
-            original_text,
-            modified_text,
-            self.model.original_label,
-            self.model.modified_label,
-            width,
-            height,
-            options,
-        );
-        self.widget.destroy();
-        self.widget = widget;
-    }
+        pub fn destroy(self: *Self) void {
+            const allocator = self.allocator;
+            self.diff_input.destroy();
+            self.original_input.destroy();
+            self.modified_input.destroy();
+            self.widget.destroy();
+            allocator.free(self.model.original_path);
+            allocator.free(self.model.modified_path);
+            allocator.free(self.model.original_label);
+            allocator.free(self.model.modified_label);
+            allocator.destroy(self);
+        }
 
-    pub fn paint(self: *DiffView, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
-        try self.widget.paint(frame, x, y, w, h);
-    }
+        /// Replaces the snapshot texts in place, recreating the diff widget with
+        /// the new content while keeping the input identity/tab.
+        pub fn replace(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options) !void {
+            const widget = try DiffEditorWidget.create(
+                self.allocator,
+                self.io,
+                self.model.original_path,
+                self.model.modified_path,
+                original_text,
+                modified_text,
+                self.model.original_label,
+                self.model.modified_label,
+                width,
+                height,
+                options,
+            );
+            self.widget.destroy();
+            self.widget = widget;
+        }
 
-    pub fn layout(self: *DiffView, width: usize, height: usize) void {
-        self.widget.layout(width, height);
-    }
+        pub fn paint(self: *Self, frame: *ui.Frame, x: usize, y: usize, w: usize, h: usize) !void {
+            try self.widget.paint(frame, x, y, w, h);
+        }
 
-    pub fn cursorCell(self: *DiffView) ?struct { row: usize, col: usize } {
-        const cell = self.widget.cursorCell() orelse return null;
-        return .{ .row = cell.row, .col = cell.col };
-    }
+        pub fn layout(self: *Self, width: usize, height: usize) void {
+            self.widget.layout(width, height);
+        }
 
-    pub fn focus(self: *DiffView) void {
-        self.widget.setFocus(.modified);
-    }
+        pub fn cursorCell(self: *Self) ?struct { row: usize, col: usize } {
+            const cell = self.widget.cursorCell() orelse return null;
+            return .{ .row = cell.row, .col = cell.col };
+        }
 
-    pub fn handleKey(self: *DiffView, event: *ui.KeyEvent) bool {
-        return self.widget.dispatchKey(event);
-    }
+        pub fn focus(self: *Self) void {
+            self.widget.setFocus(.modified);
+        }
 
-    pub fn handleMouse(self: *DiffView, event: *ui.MouseEvent) !bool {
-        return self.widget.dispatchMouse(event);
-    }
+        pub fn handleKey(self: *Self, event: *ui.KeyEvent) bool {
+            return self.widget.dispatchKey(event);
+        }
 
-    pub fn nextChange(self: *DiffView) bool {
-        return self.widget.nextChange();
-    }
+        pub fn handleMouse(self: *Self, event: *ui.MouseEvent) !bool {
+            return self.widget.dispatchMouse(event);
+        }
 
-    pub fn previousChange(self: *DiffView) bool {
-        return self.widget.previousChange();
-    }
+        pub fn nextChange(self: *Self) bool {
+            return self.widget.nextChange();
+        }
 
-    pub fn swapSides(self: *DiffView) void {
-        self.widget.swapSides();
-    }
+        pub fn previousChange(self: *Self) bool {
+            return self.widget.previousChange();
+        }
 
-    pub fn input(self: *DiffView) *editor_input.EditorInput {
-        return &self.diff_input.base;
-    }
+        pub fn swapSides(self: *Self) void {
+            self.widget.swapSides();
+        }
 
-    /// Whether this diff view shows the same path/ref pair. Used by the
-    /// workbench to refresh an existing diff tab instead of opening a new one.
-    pub fn matches(self: *const DiffView, path: []const u8, left_label: []const u8, right_label: []const u8) bool {
-        return std.mem.eql(u8, self.model.original_path, path) and
-            std.mem.eql(u8, self.model.modified_path, path) and
-            std.mem.eql(u8, self.model.original_label, left_label) and
-            std.mem.eql(u8, self.model.modified_label, right_label);
-    }
-};
+        pub fn input(self: *Self) *editor_input.EditorInput {
+            return &self.diff_input.base;
+        }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-const testing = std.testing;
-
-test "SnapshotEditorInput: identity, read-only and no dirty state" {
-    const allocator = testing.allocator;
-    const original = try SnapshotEditorInput.init(allocator, "/repo/a.zig", "HEAD", "/repo/a.zig::HEAD::original");
-    defer original.destroy();
-    const modified = try SnapshotEditorInput.init(allocator, "/repo/a.zig", "Working Tree", "/repo/a.zig::working::modified");
-    defer modified.destroy();
-
-    try testing.expectEqualStrings("a.zig", original.base.getName());
-    try testing.expectEqualStrings("HEAD", original.base.getDescription(.SHORT).?);
-    try testing.expect(original.base.isReadonly());
-    try testing.expect(!original.base.isDirty());
-    try testing.expect(original.base.matches(.{ .input = &original.base }));
-    try testing.expect(!original.base.matches(.{ .input = &modified.base }));
-    try testing.expect((try original.base.save(0)) != null);
-}
-
-test "DiffView: opens a diff tab input with distinct snapshot keys" {
-    const allocator = testing.allocator;
-    const io = Io.Threaded.global_single_threaded.io();
-    const view = try DiffView.create(
-        allocator,
-        io,
-        .{
-            .original_path = "/repo/a.zig",
-            .modified_path = "/repo/a.zig",
-            .original_label = "HEAD",
-            .modified_label = "Working Tree",
-        },
-        "a\nb",
-        "a\nB",
-        80,
-        10,
-        .{},
-    );
-    defer view.destroy();
-
-    try testing.expect(std.mem.indexOf(u8, view.input().getName(), "HEAD") != null);
-    try testing.expect(std.mem.indexOf(u8, view.input().getName(), "Working Tree") != null);
-    try testing.expect(view.widget.changeCount() == 1);
-    try testing.expect(view.widget.modified_editor.isReadOnly());
-    try testing.expect(view.widget.original_editor.isReadOnly());
-
-    try view.replace("a\nb\nc", "a\nB", 80, 10, .{});
-    try testing.expectEqual(@as(usize, 1), view.widget.changeCount());
+        /// Whether this diff view shows the same path/ref pair. Used by the
+        /// workbench to refresh an existing diff tab instead of opening a new one.
+        pub fn matches(self: *const Self, path: []const u8, left_label: []const u8, right_label: []const u8) bool {
+            return std.mem.eql(u8, self.model.original_path, path) and
+                std.mem.eql(u8, self.model.modified_path, path) and
+                std.mem.eql(u8, self.model.original_label, left_label) and
+                std.mem.eql(u8, self.model.modified_label, right_label);
+        }
+    };
 }

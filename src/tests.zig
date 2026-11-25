@@ -91,6 +91,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/scm/browser/scmViewPane.zig");
     _ = @import("./tui/vscodeProfile.zig");
     _ = @import("./vs/workbench/browser/parts/editor/textDiffEditor.zig");
+    _ = @import("./vs/workbench/test/browser/parts/editor/textDiffEditor.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./tui/benchmark.zig");
     _ = @import("./vs/base/test/browser/ui/breadcrumbs/breadcrumbsWidget.test.zig");
     _ = @import("./vs/workbench/test/browser/parts/editor/breadcrumbModel.test.zig");
@@ -413,7 +414,7 @@ comptime {
     _ = @import("./vs/editor/contrib/find/browser/findController.zig");
     _ = @import("./vs/editor/contrib/find/test/browser/replacePattern.test.zig");
     _ = @import("./vs/editor/contrib/find/test/browser/findModel.test.zig");
-    _ = @import("./vs/editor/contrib/find/test/browser/findController.test.zig");
+    _ = @import("./vs/editor/contrib/find/test/browser/findController.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./vs/editor/contrib/lineSelection/browser/lineSelection.zig");
     _ = @import("./vs/editor/contrib/anchorSelect/browser/anchorSelect.zig");
     _ = @import("./vs/editor/contrib/caretOperations/browser/moveCaretCommand.zig");
@@ -430,7 +431,7 @@ comptime {
     _ = @import("./vs/editor/contrib/folding/test/browser/foldingRanges.test.zig");
     _ = @import("./vs/editor/contrib/folding/test/browser/indentRangeProvider.test.zig");
     _ = @import("./vs/editor/contrib/folding/test/browser/hiddenRangeModel.test.zig");
-    _ = @import("./vs/editor/contrib/stickyScroll/test/browser/stickyScroll.test.zig");
+    _ = @import("./vs/editor/contrib/stickyScroll/test/browser/stickyScroll.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./vs/editor/contrib/folding/browser/foldingDecorations.zig");
     _ = @import("./vs/editor/contrib/insertFinalNewLine/browser/insertFinalNewLineCommand.zig");
     _ = @import("./vs/editor/contrib/linesOperations/browser/copyLinesCommand.zig");
@@ -497,7 +498,7 @@ comptime {
     _ = @import("./vs/editor/contrib/find/browser/findController.zig");
     _ = @import("./vs/editor/contrib/find/test/browser/replacePattern.test.zig");
     _ = @import("./vs/editor/contrib/find/test/browser/findModel.test.zig");
-    _ = @import("./vs/editor/contrib/find/test/browser/findController.test.zig");
+    _ = @import("./vs/editor/contrib/find/test/browser/findController.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./vs/editor/contrib/lineSelection/browser/lineSelection.zig");
     _ = @import("./vs/editor/contrib/anchorSelect/browser/anchorSelect.zig");
     _ = @import("./vs/editor/contrib/caretOperations/browser/moveCaretCommand.zig");
@@ -514,7 +515,7 @@ comptime {
     _ = @import("./vs/editor/contrib/folding/test/browser/foldingRanges.test.zig");
     _ = @import("./vs/editor/contrib/folding/test/browser/indentRangeProvider.test.zig");
     _ = @import("./vs/editor/contrib/folding/test/browser/hiddenRangeModel.test.zig");
-    _ = @import("./vs/editor/contrib/stickyScroll/test/browser/stickyScroll.test.zig");
+    _ = @import("./vs/editor/contrib/stickyScroll/test/browser/stickyScroll.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./vs/editor/contrib/folding/browser/foldingDecorations.zig");
     _ = @import("./vs/editor/test/common/port/commandTestSupport.zig");
     _ = @import("./vs/editor/contrib/linesOperations/test/browser/copyLinesCommand.test.zig");
@@ -532,7 +533,7 @@ comptime {
     _ = @import("./vs/editor/contrib/suggest/browser/suggestModel.zig");
     _ = @import("./vs/editor/contrib/suggest/browser/suggestWidget.zig");
     _ = @import("./vs/editor/contrib/suggest/browser/suggestController.zig");
-    _ = @import("./vs/editor/contrib/suggest/test/browser/suggest.test.zig");
+    _ = @import("./vs/editor/contrib/suggest/test/browser/suggest.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./vs/editor/contrib/suggest/test/browser/suggestOvertypingCapturer.test.zig");
     _ = @import("./vs/editor/contrib/snippet/test/browser/snippetParser.test.zig");
     _ = @import("./vs/editor/contrib/snippet/test/browser/snippetSession.test.zig");
@@ -657,6 +658,7 @@ comptime {
     _ = @import("./vs/editor/browser/widget/diffEditor/features/gutterFeature.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/features/overviewRulerFeature.zig");
     _ = @import("./vs/editor/browser/widget/diffEditor/diffEditorWidget.zig");
+    _ = @import("./vs/editor/test/browser/widget/diffEditorWidget.test.zig").Tests(@import("./tui/editorView.zig").View);
     _ = @import("./vs/editor/browser/viewParts/linesDecorations/linesDecorations.zig");
     _ = @import("./vs/editor/browser/viewParts/marginDecorations/marginDecorations.zig");
     _ = @import("./vs/editor/browser/viewParts/blockDecorations/blockDecorations.zig");

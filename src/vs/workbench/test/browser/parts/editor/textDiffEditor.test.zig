@@ -1,0 +1,59 @@
+// Terminal snapshot input and diff pane integration cases for
+// `src/vs/workbench/browser/parts/editor/textDiffEditor.ts`.
+// The test root injects the real terminal editor view.
+const std = @import("std");
+const Io = std.Io;
+const testing = std.testing;
+const diff = @import("../../../../browser/parts/editor/textDiffEditor.zig");
+const SnapshotEditorInput = diff.SnapshotEditorInput;
+
+pub fn Tests(comptime View: type) type {
+    return struct {
+        const DiffView = diff.DiffView(View);
+        test "SnapshotEditorInput: identity, read-only and no dirty state" {
+            const allocator = testing.allocator;
+            const original = try SnapshotEditorInput.init(allocator, "/repo/a.zig", "HEAD", "/repo/a.zig::HEAD::original");
+            defer original.destroy();
+            const modified = try SnapshotEditorInput.init(allocator, "/repo/a.zig", "Working Tree", "/repo/a.zig::working::modified");
+            defer modified.destroy();
+
+            try testing.expectEqualStrings("a.zig", original.base.getName());
+            try testing.expectEqualStrings("HEAD", original.base.getDescription(.SHORT).?);
+            try testing.expect(original.base.isReadonly());
+            try testing.expect(!original.base.isDirty());
+            try testing.expect(original.base.matches(.{ .input = &original.base }));
+            try testing.expect(!original.base.matches(.{ .input = &modified.base }));
+            try testing.expect((try original.base.save(0)) != null);
+        }
+
+        test "DiffView: opens a diff tab input with distinct snapshot keys" {
+            const allocator = testing.allocator;
+            const io = Io.Threaded.global_single_threaded.io();
+            const view = try DiffView.create(
+                allocator,
+                io,
+                .{
+                    .original_path = "/repo/a.zig",
+                    .modified_path = "/repo/a.zig",
+                    .original_label = "HEAD",
+                    .modified_label = "Working Tree",
+                },
+                "a\nb",
+                "a\nB",
+                80,
+                10,
+                .{},
+            );
+            defer view.destroy();
+
+            try testing.expect(std.mem.indexOf(u8, view.input().getName(), "HEAD") != null);
+            try testing.expect(std.mem.indexOf(u8, view.input().getName(), "Working Tree") != null);
+            try testing.expect(view.widget.changeCount() == 1);
+            try testing.expect(view.widget.modified_editor.isReadOnly());
+            try testing.expect(view.widget.original_editor.isReadOnly());
+
+            try view.replace("a\nb\nc", "a\nB", 80, 10, .{});
+            try testing.expectEqual(@as(usize, 1), view.widget.changeCount());
+        }
+    };
+}

@@ -8,7 +8,8 @@ const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorW
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 const text_files = @import("../../textfile/common/textFileService.zig");
-const Tab = @import("../../../browser/parts/editor/editorPane.zig").Tab;
+const editor_pane = @import("../../../browser/parts/editor/editorPane.zig");
+const Tab = editor_pane.Tab;
 const GroupView = @import("../../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
 const EditorPart = @import("../../../browser/parts/editor/editorPart.zig").EditorPart(GroupView);
 const text_diff_editor_mod = @import("../../../browser/parts/editor/textDiffEditor.zig");
@@ -130,7 +131,7 @@ pub const EditorService = struct {
         const pane = self.part.activeView() orelse return error.GroupPaneMissing;
         const dims = pane.contentDimensions();
         const tab = blk: {
-            const view = try text_diff_editor_mod.DiffView.create(
+            const view = try editor_pane.DiffView.create(
                 self.part.allocator,
                 io,
                 .{
