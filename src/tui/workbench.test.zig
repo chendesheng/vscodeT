@@ -2212,7 +2212,7 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
     // The Terminal container shares the panel title; upstream order puts
     // Problems (order 0) before Terminal (order 3).
     const terminal_service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
-    workbench.terminal_service = terminal_service;
+    try workbench.attachTerminalService(terminal_service);
     workbench.newTerminal() catch |err| switch (err) {
         error.PtyOpenFailed => return error.SkipZigTest,
         else => return err,
@@ -2962,7 +2962,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
         try renderFrame(workbench, &rendered.writer);
     }
     try std.testing.expect(workbench.activeTab() == tab);
-    query.query_focused = true;
+    query.setQueryFocused(true);
 
     try query.form.setValue(.search, "beta");
     var enter = ui.KeyEvent{ .key = .enter };
@@ -3005,7 +3005,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
     try waitForSearch(workbench);
 
-    query.query_focused = false;
+    query.setQueryFocused(false);
     try tab.editor.setCursorPosition(.{ .lineNumber = 4, .column = 6 });
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
     try std.testing.expect(workbench.activeTab() != tab);
@@ -3013,7 +3013,7 @@ test "Workbench: search editor shows query controls and reruns with independent 
 
     try workbench.switchTab(1);
     try std.testing.expect(workbench.activeTab() == tab);
-    query.query_focused = true;
+    query.setQueryFocused(true);
     query.form.focusField(.search);
     try query.form.setValue(.search, "");
     try std.testing.expect(workbench.handleSearchEditorKey(&enter));
@@ -4708,7 +4708,7 @@ test "Workbench: new terminal creates one tab and hover does not act" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
-    workbench.terminal_service = service;
+    try workbench.attachTerminalService(service);
 
     workbench.newTerminal() catch |err| switch (err) {
         error.PtyOpenFailed => return error.SkipZigTest,
@@ -4780,13 +4780,14 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
-    workbench.terminal_service = service;
+    try workbench.attachTerminalService(service);
     workbench.newTerminal() catch |err| switch (err) {
         error.PtyOpenFailed => return error.SkipZigTest,
         else => return err,
     };
 
     const instance = service.at(0).?;
+    try std.testing.expect(instance.view_focused);
     const content = workbench.terminal_tabbed_view.layoutForService(workbench.panelRect(), service).terminal;
     const local_rect = ui.Rect{ .x = 0, .y = 0, .w = content.w, .h = content.h };
 
@@ -4805,7 +4806,8 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
 
     // Wheel-up over the content scrolls into the scrollback but must not steal
     // keyboard focus from the editor.
-    workbench.focus = .editor;
+    workbench.setFocus(.editor);
+    try std.testing.expect(!instance.view_focused);
     var wheel_up = ui.MouseEvent{
         .kind = .wheel,
         .x = ui.cell.snap(content.x) + 1,
@@ -4841,6 +4843,7 @@ test "Workbench: wheel scrolls the terminal viewport without moving focus" {
     };
     try std.testing.expect(workbench.handleTerminalMouse(&click));
     try std.testing.expect(workbench.focus == .terminal);
+    try std.testing.expect(instance.view_focused);
 }
 
 test "Workbench: image files open in an image preview tab without touching the file" {
@@ -6653,7 +6656,7 @@ test "Workbench: terminal splits share one group and preserve panel geometry on 
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
-    workbench.terminal_service = service;
+    try workbench.attachTerminalService(service);
     workbench.commands.execute(terminal_ids.new) catch |err| switch (err) {
         error.PtyOpenFailed => return error.SkipZigTest,
         else => return err,
@@ -6776,7 +6779,7 @@ test "Workbench: terminal editor moves the live instance between hosts and close
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     const service = try TerminalService.init(allocator, io, .{ .launch = launchTestTerminal });
-    workbench.terminal_service = service;
+    try workbench.attachTerminalService(service);
     workbench.commands.execute(terminal_ids.new) catch |err| switch (err) {
         error.PtyOpenFailed => return error.SkipZigTest,
         else => return err,
@@ -8784,4 +8787,38 @@ test "built-in extension active editor event follows mounted controls without an
     try wb.activateIndex(0);
     try std.testing.expect(state.last == .first);
     try std.testing.expectEqual(@as(usize, 3), state.count);
+}
+
+test "editor and quick input focus events precede the next terminal frame" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const first = try seedFile(allocator, io, &tmp, "first.txt", "one");
+    defer allocator.free(first);
+    const second = try seedFile(allocator, io, &tmp, "second.txt", "two");
+    defer allocator.free(second);
+    const window = try TestWindow.init(allocator, io, &.{}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.openPath(first);
+    const a = wb.activeTab().?;
+    try std.testing.expect(a.view.isFocused());
+    try wb.openPath(second);
+    const b = wb.activeTab().?;
+    try std.testing.expect(!a.view.isFocused());
+    try std.testing.expect(b.view.isFocused());
+    try wb.activateIndex(0);
+    try std.testing.expect(a.view.isFocused());
+    try std.testing.expect(!b.view.isFocused());
+
+    try wb.quick_access.showCommandPicker();
+    try std.testing.expect(!a.view.isFocused());
+    wb.quick_access.controller.hide();
+    try std.testing.expect(a.view.isFocused());
+
+    wb.focusStatusBar();
+    try std.testing.expect(!a.view.isFocused());
+    wb.focusEditor();
+    try std.testing.expect(a.view.isFocused());
 }

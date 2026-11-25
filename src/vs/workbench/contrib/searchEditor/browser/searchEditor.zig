@@ -31,6 +31,7 @@ pub const SearchEditor = struct {
     form: *widget.SearchWidget,
     model: *SearchModel,
     query_focused: bool = true,
+    on_did_change_query_focus: @import("../../../../base/common/event.zig").Emitter(bool),
     pending_at: ?i64 = null,
     reset_cursor: bool = true,
     focus_results_on_search: bool = false,
@@ -46,7 +47,8 @@ pub const SearchEditor = struct {
         errdefer form.deinit();
         const model = try SearchModel.init(allocator, service);
         errdefer model.deinit();
-        self.* = .{ .allocator = allocator, .form = form, .model = model };
+        self.* = .{ .allocator = allocator, .form = form, .model = model, .on_did_change_query_focus = .init(allocator) };
+        errdefer self.on_did_change_query_focus.deinit();
 
         form.editor_mode = true;
         try form.setValue(.search, config.query);
@@ -76,6 +78,7 @@ pub const SearchEditor = struct {
 
     pub fn deinit(self: *SearchEditor) void {
         serialization.freeLocations(self.allocator, self.files);
+        self.on_did_change_query_focus.deinit();
         self.model.deinit();
         self.form.deinit();
         self.allocator.destroy(self);
@@ -104,10 +107,16 @@ pub const SearchEditor = struct {
         return self.pending_at != null or self.model.isSearching();
     }
 
+    pub fn setQueryFocused(self: *SearchEditor, focused: bool) void {
+        if (self.query_focused == focused) return;
+        self.query_focused = focused;
+        self.on_did_change_query_focus.fire(focused) catch {};
+    }
+
     pub fn handleKey(self: *SearchEditor, event: *ui.KeyEvent) bool {
         if (!self.query_focused) {
             if (event.key != .tab and event.key != .backtab) return false;
-            self.query_focused = true;
+            self.setQueryFocused(true);
             self.form.focusField(.search);
             return true;
         }
@@ -115,11 +124,11 @@ pub const SearchEditor = struct {
             self.pending_at = null;
             self.model.delivery.timer.schedule(null);
             _ = self.model.cancelSearch();
-            self.query_focused = false;
+            self.setQueryFocused(false);
             return true;
         }
         if (event.key == .tab or event.key == .backtab) {
-            if (!self.form.cycleFocus(event.key == .backtab)) self.query_focused = false;
+            if (!self.form.cycleFocus(event.key == .backtab)) self.setQueryFocused(false);
             return true;
         }
         if ((event.mods.alt or event.mods.ctrl) and self.form.focus_control != null and self.form.focus_control != .context_lines) return false;
@@ -184,7 +193,7 @@ pub const SearchEditor = struct {
         try view.editor.replaceGeneratedContents(snapshot.text, self.reset_cursor);
         try self.setLocations(snapshot.files);
         try setMatchRanges(self.allocator, view, snapshot);
-        if (self.focus_results_on_search) self.query_focused = false;
+        if (self.focus_results_on_search) self.setQueryFocused(false);
         return true;
     }
 

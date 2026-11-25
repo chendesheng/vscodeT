@@ -193,6 +193,17 @@ pub const TerminalService = struct {
         }
     }
 
+    /// Focus comes from the host's active-part and group events, not from a
+    /// terminal paint pass. Returns whether mouse capture must be cleared.
+    pub fn setFocusedInstance(self: *TerminalService, focused_instance: ?*TerminalInstance) bool {
+        var changed = false;
+        for (0..self.instanceCount()) |index| {
+            const instance = self.instanceAt(index).?;
+            changed = instance.setFocused(instance == focused_instance) or changed;
+        }
+        return changed;
+    }
+
     pub fn getInstanceFromId(self: *const TerminalService, id: usize) ?*TerminalInstance {
         for (0..self.instanceCount()) |index| {
             const instance = self.instanceAt(index).?;

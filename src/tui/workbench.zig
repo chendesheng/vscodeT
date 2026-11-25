@@ -199,7 +199,7 @@ const sash_highlight_width: u8 = 64;
 /// resulting frame. The benchmark and host integration tests use this path.
 pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
     if (workbench.pointer_shapes) try workbench.pointer_state.update(writer, workbench.pointer);
-    const editor_surface = try workbench.preparePartsForRender();
+    const editor_surface = try workbench.synchronizeEditorDom();
     workbench.frame.begin();
     if (workbench.theme_palette) |palette| {
         workbench.frame.next.fillRect(
@@ -1028,7 +1028,7 @@ pub fn handleTabMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
     if (event.y == breadcrumb_y and pane.breadcrumbsVisible()) {
         if (event.kind == .down and pane.tabs.items.len > 0) {
             self.service.activateGroup(pane.group);
-            self.focus = .breadcrumbs;
+            self.setFocus(.breadcrumbs);
             self.statusbar.main_part.clearFocus();
             if (self.search_view) |view| view.blur();
             if (self.ensureBreadcrumbsControl(pane)) |control| {

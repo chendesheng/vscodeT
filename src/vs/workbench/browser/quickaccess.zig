@@ -106,6 +106,8 @@ pub const QuickAccessService = struct {
     files_provider: *AnythingQuickAccessProvider,
     commands_provider: *CommandsQuickAccessProvider,
     input: *QuickInputService,
+    on_show: @import("../../base/common/event.zig").Emitter(void),
+    on_hide: @import("../../base/common/event.zig").Emitter(void),
 
     pub fn init(
         allocator: Allocator,
@@ -137,6 +139,10 @@ pub const QuickAccessService = struct {
         self.commands = commands;
         self.host = host;
         self.file_session_active = false;
+        self.on_show = .init(allocator);
+        errdefer self.on_show.deinit();
+        self.on_hide = .init(allocator);
+        errdefer self.on_hide.deinit();
 
         self.animation = .{ .queue = host.window, .context = self, .run = animationFrame };
         self.file_results = .{ .queue = host.window, .context = self, .run = fileSearchChanged, .progress = true };
@@ -208,6 +214,8 @@ pub const QuickAccessService = struct {
     pub fn deinit(self: *QuickAccessService) void {
         self.input.deinit();
         self.controller.deinit();
+        self.on_show.deinit();
+        self.on_hide.deinit();
         self.registry.deinit();
         self.widget.deinit();
         self.file_search.deinit();
@@ -389,9 +397,13 @@ pub const QuickAccessService = struct {
         const self: *QuickAccessService = @ptrCast(@alignCast(context));
         self.widget.resetInteraction();
         self.host.cancel_popups(self.host.context);
+        try self.on_show.fire({});
     }
 
-    fn presenterInputHide(_: *anyopaque) void {}
+    fn presenterInputHide(context: *anyopaque) void {
+        const self: *QuickAccessService = @ptrCast(@alignCast(context));
+        if (!self.isOpen()) self.on_hide.fire({}) catch {};
+    }
 
     // File source callbacks -------------------------------------------------
 
@@ -532,11 +544,13 @@ pub const QuickAccessService = struct {
         const self: *QuickAccessService = @ptrCast(@alignCast(context));
         self.widget.resetInteraction();
         self.host.cancel_popups(self.host.context);
+        try self.on_show.fire({});
     }
 
     fn presenterHide(context: *anyopaque) void {
         const self: *QuickAccessService = @ptrCast(@alignCast(context));
         self.endFileSession();
+        if (!self.isOpen()) self.on_hide.fire({}) catch {};
     }
 };
 

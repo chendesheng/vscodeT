@@ -194,6 +194,24 @@ pub fn EditorPart(comptime GroupView: type) type {
             return if (!self.cell_borders and width >= 24 and height >= 14) width + 2 else width;
         }
 
+        /// Terminal adapter for EditorPart's DOM focus tracker. Invoke only
+        /// for part focus, active-editor, or overlay focus events.
+        pub fn setEditorFocus(self: *Self, focused: bool) void {
+            const active = self.activeView();
+            for (self.group_views.items) |pane| {
+                const group_focused = focused and active == pane;
+                if (!group_focused) {
+                    if (pane.watermark) |*watermark| watermark.blur();
+                }
+                for (pane.tabs.items) |tab| {
+                    const desired = group_focused and pane.activeTab() == tab and
+                        tab.terminal_input == null and tab.markdown_preview == null and
+                        (tab.search_editor_input == null or !tab.search_editor_input.?.search_editor.query_focused);
+                    _ = tab.view.setFocused(desired);
+                }
+            }
+        }
+
         pub fn activeView(self: *const Self) ?*GroupView {
             return self.viewForGroup(self.service.activeGroup());
         }

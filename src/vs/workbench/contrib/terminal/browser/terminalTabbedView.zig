@@ -14,6 +14,13 @@ const terminal_view = @import("./terminalRenderer.zig");
 pub const TerminalTabbedView = struct {
     tab_list: tabs.TerminalTabList = .{},
     width_storage_path: ?[]u8 = null,
+    on_list_focus: ?struct { context: *anyopaque, changed: *const fn (*anyopaque) void } = null,
+
+    pub fn setListFocused(self: *TerminalTabbedView, focused: bool) void {
+        if (self.tab_list.focused == focused) return;
+        self.tab_list.focused = focused;
+        if (self.on_list_focus) |listener| listener.changed(listener.context);
+    }
 
     pub fn setProfileStorage(self: *TerminalTabbedView, allocator: std.mem.Allocator, io: std.Io, user_data_dir: []const u8) !void {
         const path = try std.fs.path.join(allocator, &.{ user_data_dir, "User", "globalStorage", "tabs-list-width-horizontal" });
@@ -174,7 +181,7 @@ pub const TerminalTabbedView = struct {
                     list.last_click_ms = now;
                     list.dragged_instance = id;
                     list.drag_start_y = event.y;
-                    list.focused = !double_click and config.tabs_focus_mode == .doubleClick;
+                    self.setListFocused(!double_click and config.tabs_focus_mode == .doubleClick);
                     host.focus_panel(host.context);
                 }
                 return true;
@@ -236,7 +243,7 @@ pub const TerminalTabbedView = struct {
             .content => |pane| {
                 if (left_press) {
                     host.focus_panel(host.context);
-                    list.focused = false;
+                    self.setListFocused(false);
                     _ = service.setActive(pane.index);
                 }
                 return host.dispatch(host.context, .{ .content = .{ .index = pane.index, .rect = pane.rect } }, event);
@@ -265,6 +272,15 @@ pub const TerminalTabbedView = struct {
         self.tab_list.reveal(service.group.active, service.count(), ui.cell.snap(l.tabs.h));
     }
 
+    pub fn focusedInstance(self: *const TerminalTabbedView, service: *TerminalService) ?*@import("terminalInstance.zig").TerminalInstance {
+        return if (self.tab_list.focused) null else service.active();
+    }
+
+    pub fn focusAdjacentGroup(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, next: bool) void {
+        if (next) service.next() else service.previous();
+        self.revealActive(service, rect);
+    }
+
     pub fn focusListRow(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, next: bool) void {
         if (service.count() == 0) return;
         const index = if (next) @min(service.count() - 1, service.group.active + 1) else service.group.active -| 1;
@@ -274,9 +290,15 @@ pub const TerminalTabbedView = struct {
 
     pub fn focusPane(self: *TerminalTabbedView, service: *TerminalService, rect: ui.Rect, next: bool) bool {
         if (!service.group.focusPane(next)) return false;
-        self.tab_list.focused = false;
+        self.setListFocused(false);
         self.revealActive(service, rect);
         return true;
+    }
+
+    pub fn layoutInstances(self: *TerminalTabbedView, rect: ui.Rect, service: *TerminalService) void {
+        const geometry = self.layoutForService(rect, service);
+        if (geometry.sash_x == null) self.setListFocused(false);
+        service.layout(geometry.terminal);
     }
 
     pub fn layoutForService(self: *const TerminalTabbedView, rect: ui.Rect, service: *const TerminalService) Layout {

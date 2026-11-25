@@ -11,36 +11,42 @@ pub const TerminalGroup = struct {
     allocator: Allocator,
     instances: std.array_list.Managed(*TerminalInstance),
     active: usize = 0,
+    on_did_change_active_instance: @import("../../../../base/common/event.zig").Emitter(?*TerminalInstance),
 
     pub fn init(allocator: Allocator) TerminalGroup {
         return .{
             .allocator = allocator,
             .instances = std.array_list.Managed(*TerminalInstance).init(allocator),
+            .on_did_change_active_instance = .init(allocator),
         };
     }
 
     pub fn deinit(self: *TerminalGroup) void {
         for (self.instances.items) |instance| instance.deinit();
         self.instances.deinit();
+        self.on_did_change_active_instance.deinit();
     }
 
     pub fn add(self: *TerminalGroup, instance: *TerminalInstance) !void {
+        const previous_instance = self.activeInstance();
         try self.instances.append(instance);
         instance.panel_group_id = instance.id;
         instance.panel_group_active = true;
         instance.split_weight = 1;
-        _ = self.setActive(self.instances.items.len - 1);
+        _ = self.setActiveFrom(self.instances.items.len - 1, previous_instance);
     }
 
     pub fn split(self: *TerminalGroup, parent: usize, instance: *TerminalInstance) !void {
+        const previous_instance = self.activeInstance();
         try self.instances.insert(parent + 1, instance);
         instance.panel_group_id = self.instances.items[parent].panel_group_id;
         self.resetPaneSizes(parent);
-        _ = self.setActive(parent + 1);
+        _ = self.setActiveFrom(parent + 1, previous_instance);
     }
 
     pub fn detach(self: *TerminalGroup, index: usize) ?*TerminalInstance {
         if (index >= self.instances.items.len) return null;
+        const previous_instance = self.activeInstance();
         const instance = self.instances.orderedRemove(index);
         if (self.instances.items.len == 0) {
             self.active = 0;
@@ -55,9 +61,11 @@ pub const TerminalGroup = struct {
             }
         }
         if (self.at(self.active)) |active| {
-            if (active.panel_group_id == instance.panel_group_id) _ = self.setActive(self.active);
+            if (active.panel_group_id == instance.panel_group_id) _ = self.setActiveFrom(self.active, self.activeInstance());
         }
         instance.tab_selected = false;
+        _ = instance.setFocused(false);
+        if (previous_instance != self.activeInstance()) self.on_did_change_active_instance.fire(self.activeInstance()) catch {};
         return instance;
     }
 
@@ -140,6 +148,7 @@ pub const TerminalGroup = struct {
         const source_group = self.groupRange(source);
         const target_group = if (target) |index| self.groupRange(index) else GroupRange{ .first = items.len, .end = items.len };
         if (source_group.first == target_group.first) return;
+        const previous_instance = self.activeInstance();
         const instance = items[source];
         if (target_group.first < source_group.first) {
             std.mem.rotate(*TerminalInstance, items[target_group.first..source_group.end], source_group.first - target_group.first);
@@ -148,7 +157,7 @@ pub const TerminalGroup = struct {
         }
         for (items, 0..) |candidate, index| {
             if (candidate == instance) {
-                _ = self.setActive(index);
+                _ = self.setActiveFrom(index, previous_instance);
                 break;
             }
         }
@@ -234,12 +243,17 @@ pub const TerminalGroup = struct {
     }
 
     pub fn setActive(self: *TerminalGroup, index: usize) bool {
+        return self.setActiveFrom(index, self.activeInstance());
+    }
+
+    fn setActiveFrom(self: *TerminalGroup, index: usize, previous_instance: ?*TerminalInstance) bool {
         if (index >= self.instances.items.len) return false;
         self.active = index;
         const range = self.groupRange(index);
         for (self.instances.items[range.first..range.end], range.first..) |instance, i| {
             instance.panel_group_active = i == index;
         }
+        if (previous_instance != self.activeInstance()) self.on_did_change_active_instance.fire(self.activeInstance()) catch {};
         return true;
     }
 

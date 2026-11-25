@@ -670,6 +670,8 @@ pub const Workbench = struct {
     word_completion_registration: ?IDisposable = null,
     outline_creator: ?DocumentSymbolsOutlineCreator = null,
     focus: Focus = .editor,
+    focus_subscriptions: [4]?@import("../../base/common/event.zig").SignalSubscription = .{ null, null, null, null },
+    terminal_focus_subscription: ?@import("../../base/common/event.zig").SignalSubscription = null,
     is_pasting: bool = false,
     terminal_service: ?*TerminalService = null,
     terminal_input: terminal_input_mod.Encoder = .{},
@@ -745,7 +747,9 @@ pub const Workbench = struct {
         self.is_pasting = false;
         self.terminal_service = null;
         self.terminal_input = .{};
-        self.terminal_tabbed_view = .{};
+        self.terminal_tabbed_view = .{ .on_list_focus = .{ .context = self, .changed = onTerminalListFocus } };
+        self.terminal_focus_subscription = null;
+        self.focus_subscriptions = .{ null, null, null, null };
         self.terminal_rename_id = null;
         self.suppress_global_command = false;
         self.git_model = git_model_mod.Model.init(allocator);
@@ -916,6 +920,10 @@ pub const Workbench = struct {
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveHistoryEditor);
         _ = try self.service.on_did_visible_editors_change.listen(self, onHistoryVisibleEditorsChanged);
+        self.focus_subscriptions[0] = try self.service.on_did_active_editor_change.listenSignal(self, updatePartFocus);
+        self.focus_subscriptions[1] = try self.service.on_did_visible_editors_change.listenSignal(self, updatePartFocus);
+        self.focus_subscriptions[2] = try self.quick_access.on_show.listenSignal(self, updatePartFocus);
+        self.focus_subscriptions[3] = try self.quick_access.on_hide.listenSignal(self, updatePartFocus);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
         const editor_service = @import("../services/editor/browser/editorService.zig").EditorService{ .part = self.part };
         if (self.editor_status) |status| try status.bindActiveEditor(editor_service);
@@ -1787,6 +1795,9 @@ pub const Workbench = struct {
     }
 
     pub fn deinit(self: *Workbench) void {
+        for (self.focus_subscriptions) |subscription| if (subscription) |value| value.dispose();
+        if (self.terminal_focus_subscription) |subscription| subscription.dispose();
+        self.terminal_tabbed_view.on_list_focus = null;
         self.cancelRestoreTimer();
         if (self.context_keys != null) self.workbench_context.deinit();
         self.saveSidebarViewStates() catch {};
@@ -2070,6 +2081,7 @@ pub const Workbench = struct {
 
     fn onGridChanged(_: void, self: *Workbench) !void {
         self.layoutAll();
+        self.updatePartFocus() catch {};
     }
 
     /// Port of the composite action collection: the active side bar view
@@ -2700,7 +2712,7 @@ pub const Workbench = struct {
         try self.syncActivityBarVisibility();
         self.updateSidebarTitleActions();
         if (focus) {
-            self.focus = .sidebar;
+            self.setFocus(.sidebar);
             self.statusbar.main_part.clearFocus();
             if (std.mem.eql(u8, id, "search")) {
                 if (self.search_view) |view| view.focus();
@@ -2713,12 +2725,12 @@ pub const Workbench = struct {
     pub fn toggleSidebar(self: *Workbench) !void {
         if (self.sidebar == null) {
             try self.initSidebarFromWorkspace();
-            self.focus = .sidebar;
+            self.setFocus(.sidebar);
             return;
         }
         const visible = !self.layout.isVisible(.sidebar);
         try self.setSidebarVisible(visible);
-        self.focus = if (visible) .sidebar else .editor;
+        self.setFocus(if (visible) .sidebar else .editor);
         self.statusbar.main_part.clearFocus();
         if (!visible) {
             if (self.range_highlights) |highlights| highlights.removeHighlightRange();
@@ -2728,7 +2740,7 @@ pub const Workbench = struct {
 
     pub fn focusSidebar(self: *Workbench) void {
         if (!self.sidebarShown()) return;
-        self.focus = .sidebar;
+        self.setFocus(.sidebar);
         self.updateProblemsHighlight();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
         self.statusbar.main_part.clearFocus();
@@ -2738,7 +2750,7 @@ pub const Workbench = struct {
     }
 
     pub fn focusEditor(self: *Workbench) void {
-        self.focus = .editor;
+        self.setFocus(.editor);
         if (self.activeSidebarViewContainer()) |container| {
             container.cancelHeaderDrag();
             container.focused_header = null;
@@ -2752,7 +2764,7 @@ pub const Workbench = struct {
 
     pub fn focusStatusBar(self: *Workbench) void {
         if (!self.statusBarVisible()) return;
-        self.focus = .statusbar;
+        self.setFocus(.statusbar);
         self.updateProblemsHighlight();
         if (self.range_highlights) |highlights| highlights.removeHighlightRange();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
@@ -2790,7 +2802,7 @@ pub const Workbench = struct {
         try self.ensureProblemsView();
         if (!try self.panel_part.openPaneComposite(PROBLEMS_CONTAINER_ID)) return;
         try self.syncPanelContainerVisibility();
-        self.focus = .problems;
+        self.setFocus(.problems);
         self.statusbar.main_part.clearFocus();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
         if (self.search_view) |view| view.blur();
@@ -2815,7 +2827,7 @@ pub const Workbench = struct {
         self.panel_part.hideActivePaneComposite() catch {};
         self.panel_part.setHovered(null);
         if (self.focus == .terminal or self.focus == .problems) {
-            self.focus = .editor;
+            self.setFocus(.editor);
         }
         self.updateProblemsHighlight();
         self.layoutAll();
@@ -2835,7 +2847,7 @@ pub const Workbench = struct {
         self.panel_part.setHovered(null);
         self.layout.setPartHidden(true, .panel) catch {};
         if (self.focus == .terminal or self.focus == .problems) {
-            self.focus = .editor;
+            self.setFocus(.editor);
         }
         self.updateProblemsHighlight();
         self.layoutAll();
@@ -2847,9 +2859,9 @@ pub const Workbench = struct {
         try self.syncPanelContainerVisibility();
         if (std.mem.eql(u8, id, PROBLEMS_CONTAINER_ID)) {
             try self.ensureProblemsView();
-            self.focus = .problems;
+            self.setFocus(.problems);
         } else if (std.mem.eql(u8, id, TERMINAL_CONTAINER_ID)) {
-            self.focus = .terminal;
+            self.setFocus(.terminal);
         }
         self.statusbar.main_part.clearFocus();
         if (self.breadcrumbs_control) |control| control.setFocused(false);
@@ -2961,14 +2973,20 @@ pub const Workbench = struct {
             .configuration = self.configuration,
             .multi_root = self.workspace.getWorkspace().folders.items.len > 1,
         });
-        self.terminal_service = service;
+        try self.attachTerminalService(service);
         return service;
+    }
+
+    pub fn attachTerminalService(self: *Workbench, service: *TerminalService) !void {
+        errdefer service.deinit();
+        self.terminal_focus_subscription = try service.group.on_did_change_active_instance.listenSignal(self, updatePartFocus);
+        self.terminal_service = service;
     }
 
     pub fn showTerminal(self: *Workbench) !void {
         const service = try self.ensureTerminalService();
         if (service.count() == 0) _ = try service.create();
-        self.terminal_tabbed_view.tab_list.focused = false;
+        self.terminal_tabbed_view.setListFocused(false);
         _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
         self.revealActiveTerminalTab();
     }
@@ -2990,10 +3008,7 @@ pub const Workbench = struct {
     }
 
     pub fn focusedTerminal(self: *const Workbench) ?*terminal_service_mod.TerminalInstance {
-        if (self.focus == .terminal and self.terminalVisible()) {
-            if (self.terminal_tabbed_view.tab_list.focused) return null;
-            return self.terminal_service.?.active();
-        }
+        if (self.focus == .terminal and self.terminalVisible()) return self.terminal_tabbed_view.focusedInstance(self.terminal_service.?);
         if (self.focus != .editor) return null;
         const pane = self.part.viewForGroup(self.service.activeGroup()) orelse return null;
         const tab = pane.activeTab() orelse return null;
@@ -3011,7 +3026,7 @@ pub const Workbench = struct {
     pub fn launchTerminalProcess(self: *Workbench, name: []const u8, executable: []const u8, args: []const []const u8, cwd: ?[]const u8) !*terminal_service_mod.TerminalInstance {
         const service = try self.ensureTerminalService();
         const instance = try service.createForTask(.{ .path = executable, .args = args, .profile_name = name }, cwd);
-        self.terminal_tabbed_view.tab_list.focused = false;
+        self.terminal_tabbed_view.setListFocused(false);
         _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
         self.revealActiveTerminalTab();
         return instance;
@@ -3020,7 +3035,7 @@ pub const Workbench = struct {
     fn newPanelTerminal(self: *Workbench) !void {
         const service = try self.ensureTerminalService();
         _ = try service.create();
-        self.terminal_tabbed_view.tab_list.focused = false;
+        self.terminal_tabbed_view.setListFocused(false);
         _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
         self.revealActiveTerminalTab();
     }
@@ -3124,7 +3139,7 @@ pub const Workbench = struct {
     fn splitPanelTerminal(self: *Workbench, index: usize) !void {
         const service = self.terminal_service orelse return;
         try service.split(index);
-        self.terminal_tabbed_view.tab_list.focused = false;
+        self.terminal_tabbed_view.setListFocused(false);
         _ = try self.openPanelContainer(TERMINAL_CONTAINER_ID);
         self.revealActiveTerminalTab();
     }
@@ -3158,7 +3173,7 @@ pub const Workbench = struct {
     fn focusPanelPane(self: *Workbench, next: bool) bool {
         const service = self.terminal_service orelse return false;
         if (!self.terminal_tabbed_view.focusPane(service, self.panelRect(), next)) return false;
-        self.focus = .terminal;
+        self.setFocus(.terminal);
         return true;
     }
 
@@ -3182,16 +3197,14 @@ pub const Workbench = struct {
 
     pub fn focusNextTerminal(self: *Workbench) void {
         const service = self.terminal_service orelse return;
-        service.next();
-        self.revealActiveTerminalTab();
-        self.focus = .terminal;
+        self.terminal_tabbed_view.focusAdjacentGroup(service, self.panelRect(), true);
+        self.setFocus(.terminal);
     }
 
     pub fn focusPreviousTerminal(self: *Workbench) void {
         const service = self.terminal_service orelse return;
-        service.previous();
-        self.revealActiveTerminalTab();
-        self.focus = .terminal;
+        self.terminal_tabbed_view.focusAdjacentGroup(service, self.panelRect(), false);
+        self.setFocus(.terminal);
     }
 
     pub fn resizeTerminalPanel(self: *Workbench, delta: isize) void {
@@ -3229,7 +3242,7 @@ pub const Workbench = struct {
                     .up => self.focusTerminalListRow(false),
                     .down => self.focusTerminalListRow(true),
                     .delete => if (self.terminal_service) |service| try self.killTerminalTabs(service.group.active),
-                    .enter, .escape, .tab => self.terminal_tabbed_view.tab_list.focused = false,
+                    .enter, .escape, .tab => self.terminal_tabbed_view.setListFocused(false),
                     else => {},
                 }
                 return true;
@@ -3336,7 +3349,7 @@ pub const Workbench = struct {
 
     fn focusTerminalTabbedView(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
-        self.focus = .terminal;
+        self.setFocus(.terminal);
     }
 
     fn dispatchTerminalTabbedViewAction(context: *anyopaque, action: terminal_panel.TerminalTabbedView.MouseAction, event: *const ui.MouseEvent) bool {
@@ -3522,9 +3535,7 @@ pub const Workbench = struct {
     fn syncTerminalSize(self: *Workbench) void {
         const service = self.terminal_service orelse return;
         if (!self.terminalVisible()) return;
-        const l = self.terminal_tabbed_view.layoutForService(self.panelRect(), service);
-        if (l.sash_x == null) self.terminal_tabbed_view.tab_list.focused = false;
-        service.layout(l.terminal);
+        self.terminal_tabbed_view.layoutInstances(self.panelRect(), service);
     }
 
     fn paneExists(self: *const Workbench, pane: *GroupPane) bool {
@@ -4116,7 +4127,7 @@ pub const Workbench = struct {
         );
         dialog.theme = self.dialogTheme();
         dialog.focused = 1;
-        self.dialog = dialog;
+        self.setDialog(dialog);
         self.pending_dialog = .{ .discard_scm = .{ .root = root, .path = path, .untracked = untracked } };
         self.pointer = .default;
     }
@@ -6231,7 +6242,7 @@ pub const Workbench = struct {
         tab.focusEditor();
 
         prompt.deinit();
-        self.dialog = dialog;
+        self.setDialog(dialog);
         self.pointer = .default;
         self.pending_dialog = .{ .close_tab = .{ .pane = pane, .tab = tab } };
     }
@@ -6284,7 +6295,7 @@ pub const Workbench = struct {
         self.focusActiveEditor();
 
         prompt.deinit();
-        self.dialog = dialog;
+        self.setDialog(dialog);
         self.pointer = .default;
         self.pending_dialog = .quit;
     }
@@ -6301,7 +6312,7 @@ pub const Workbench = struct {
     fn resolveDialog(self: *Workbench, result: dialogs.ConfirmResult) void {
         const dialog = self.dialog orelse return;
         const request = self.pending_dialog;
-        self.dialog = null;
+        self.setDialog(null);
         self.pending_dialog = null;
         dialog.deinit();
 
@@ -7755,7 +7766,7 @@ pub const Workbench = struct {
                         .{tab.input.getName()},
                     );
                     self.service.activateGroup(dest.group);
-                    self.focus = .editor;
+                    self.setFocus(.editor);
                     return target_tab;
                 }
             }
@@ -7779,14 +7790,14 @@ pub const Workbench = struct {
             // workbench registration before destroying it.
             self.discardTab(tab);
             self.service.activateGroup(dest.group);
-            self.focus = .editor;
+            self.setFocus(.editor);
             return existing;
         }
 
         try dest.addTab(tab);
         self.service.activateGroup(dest.group);
         tab.focusEditor();
-        self.focus = .editor;
+        self.setFocus(.editor);
         return tab;
     }
 
@@ -8252,7 +8263,7 @@ pub const Workbench = struct {
         switch (try self.sidebar.?.handleKey(event)) {
             .open => |path| {
                 self.requestOpenPath(path);
-                self.focus = .editor;
+                self.setFocus(.editor);
                 return true;
             },
             .handled, .none => return true,
@@ -8289,7 +8300,7 @@ pub const Workbench = struct {
         const outcome = container.handleHeaderMouse(event, content) orelse return false;
         if (event.kind == .move) _ = container.handleHeaderDrop(event, target, &self.view_descriptor_service);
         if (event.kind == .down) {
-            self.focus = .sidebar;
+            self.setFocus(.sidebar);
             if (self.scm.changes) |view| view.blurInput();
         }
         switch (outcome) {
@@ -8464,12 +8475,12 @@ pub const Workbench = struct {
             // A click on the chrome without an action only moves focus into
             // the part, like the browser title area.
             if (event.kind != .wheel) self.pointer = .default;
-            if (event.kind == .down) self.focus = .sidebar;
+            if (event.kind == .down) self.setFocus(.sidebar);
             return true;
         }
 
         if (event.kind == .move) sidebar_part_mod.setHovered(&self.sidebar_part, null);
-        if (event.kind == .down) self.focus = .sidebar;
+        if (event.kind == .down) self.setFocus(.sidebar);
         const active_id = self.activity_bar_part.active_id orelse "";
         if (self.activeSidebarViewContainer()) |container| {
             if (self.handleSidebarPaneHeader(container, event, content)) return true;
@@ -8552,7 +8563,7 @@ pub const Workbench = struct {
                 // text-open job, like Enter. The status hint reports a failed
                 // read when the read completes.
                 self.requestOpenPathWithOptions(path, .{ .pinned = false });
-                self.focus = .editor;
+                self.setFocus(.editor);
             }
         }
         return true;
@@ -8601,7 +8612,7 @@ pub const Workbench = struct {
         self.panel_part.setHovered(null);
         if (std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) {
             if (event.kind == .down) {
-                self.focus = .problems;
+                self.setFocus(.problems);
                 self.updateProblemsHighlight();
             }
             const content = panel_part_mod.contentRect(rect);
@@ -8662,7 +8673,7 @@ pub const Workbench = struct {
         if (event.y >= top + query.headerRows()) {
             query.form.clearHover();
             if (activate) {
-                query.query_focused = false;
+                query.setQueryFocused(false);
                 if (event.x -| ui.cell.snap(pane.rect.x) < tab.editor.gutterWidth()) {
                     query.last_result_click = null;
                     return false;
@@ -8690,7 +8701,7 @@ pub const Workbench = struct {
         if (activate) {
             self.service.activateGroup(pane.group);
             self.focusEditor();
-            query.query_focused = true;
+            query.setQueryFocused(true);
         }
         _ = query.form.handleMouse(local.x, local.y, &local);
         self.pointer = query.form.pointerAt(local.x, local.y);
@@ -8803,44 +8814,27 @@ pub const Workbench = struct {
         return surface;
     }
 
-    /// The terminal boundary for upstream editor focus/blur: only the active
-    /// tab of the active group receives focus while the editor owns focus.
-    fn syncEditorFocus(self: *Workbench) void {
-        self.syncTerminalFocus();
-        const active_pane = self.activePane();
-        for (self.part.group_views.items) |pane| {
-            if (pane.watermark) |*watermark| {
-                if (pane != active_pane or self.focus != .editor or self.quick_access.isOpen()) watermark.blur();
-            }
-            for (pane.tabs.items) |tab| {
-                const desired = tab.terminal_input == null and tab.markdown_preview == null and self.focus == .editor and
-                    pane == active_pane and pane.activeTab() == tab and
-                    (tab.search_editor_input == null or !tab.search_editor_input.?.search_editor.query_focused);
-                if (tab.view.isFocused() != desired) _ = tab.view.setFocused(desired);
-            }
-        }
+    pub fn setFocus(self: *Workbench, focus: Focus) void {
+        self.focus = focus;
+        self.updatePartFocus() catch {};
     }
 
-    fn syncTerminalFocus(self: *Workbench) void {
-        const service = self.terminal_service orelse return;
-        const active = if (self.dialog == null and !self.quick_access.isOpen()) self.focusedTerminal() else null;
-        for (0..service.instanceCount()) |index| {
-            const instance = service.instanceAt(index).?;
-            const focused = instance == active;
-            if (instance.view_focused == focused) continue;
-            instance.view_focused = focused;
-            self.terminal_input.button_down = null;
-            var bytes: [32]u8 = undefined;
-            var writer = Io.Writer.fixed(&bytes);
-            instance.emulator.encodeFocus(&writer, focused) catch continue;
-            instance.writeInput(writer.buffered());
-        }
+    fn setDialog(self: *Workbench, dialog: ?*ui.Dialog) void {
+        self.dialog = dialog;
+        self.updatePartFocus() catch {};
     }
 
-    pub fn preparePartsForRender(self: *Workbench) !*ui.Surface {
-        const editor_surface = try self.synchronizeEditorDom();
-        self.syncEditorFocus();
-        return editor_surface;
+    fn onTerminalListFocus(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.updatePartFocus() catch {};
+    }
+
+    fn updatePartFocus(self: *Workbench) !void {
+        const blocked = self.dialog != null or self.quick_access.isOpen();
+        self.part.setEditorFocus(!blocked and self.focus == .editor);
+        if (self.terminal_service) |service| {
+            if (service.setFocusedInstance(if (blocked) null else self.focusedTerminal())) self.terminal_input.button_down = null;
+        }
     }
 
     fn disposeBreadcrumbs(self: *Workbench) void {
@@ -8937,10 +8931,10 @@ pub const Workbench = struct {
             .sidebar => if (self.sidebarShown()) self.focusSidebar() else self.focusEditor(),
             .panel => {
                 if (self.problemsVisible()) {
-                    self.focus = .problems;
+                    self.setFocus(.problems);
                     self.updateProblemsHighlight();
                 } else if (self.terminalVisible()) {
-                    self.focus = .terminal;
+                    self.setFocus(.terminal);
                 } else return self.focusEditor();
                 self.statusbar.main_part.clearFocus();
                 if (self.search_view) |view| view.blur();
@@ -9136,7 +9130,7 @@ pub const Workbench = struct {
     pub fn focusBreadcrumbs(self: *Workbench, select: bool) bool {
         const pane = self.activePane() orelse return false;
         const control = self.ensureBreadcrumbsControl(pane) catch return false;
-        self.focus = .breadcrumbs;
+        self.setFocus(.breadcrumbs);
         self.statusbar.main_part.clearFocus();
         if (self.search_view) |view| view.blur();
         control.setFocused(true);
@@ -9365,7 +9359,7 @@ fn explorerPaneHandleKey(context: *anyopaque, event: *ui.KeyEvent) !bool {
     switch (try sidebar.handleKey(event)) {
         .open => |path| {
             self.requestOpenPath(path);
-            self.focus = .editor;
+            self.setFocus(.editor);
             return true;
         },
         .handled, .none => return true,
@@ -9956,9 +9950,9 @@ fn commandFocusPanel(context: *anyopaque) anyerror!void {
         return;
     }
     if (std.mem.eql(u8, self.activePanelId(), PROBLEMS_CONTAINER_ID)) {
-        self.focus = .problems;
+        self.setFocus(.problems);
     } else if (std.mem.eql(u8, self.activePanelId(), TERMINAL_CONTAINER_ID)) {
-        self.focus = .terminal;
+        self.setFocus(.terminal);
     }
     self.updateProblemsHighlight();
 }
@@ -10692,7 +10686,7 @@ fn commandCloseSidebar(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     if (!self.sidebar_part.isVisible()) return;
     try self.setSidebarVisible(false);
-    self.focus = .editor;
+    self.setFocus(.editor);
     self.layoutAll();
 }
 
@@ -10936,7 +10930,7 @@ fn commandFocusTerminalTabs(context: *anyopaque) anyerror!void {
     if (self.terminal_tabbed_view.layoutForService(self.panelRect(), service).sash_x == null) {
         try self.showTerminalPicker();
     } else {
-        self.terminal_tabbed_view.tab_list.focused = true;
+        self.terminal_tabbed_view.setListFocused(true);
     }
 }
 
@@ -11109,6 +11103,10 @@ fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot
     const configuration = self.configuration.?;
     const dims = pane.contentDimensions();
     const query = try search_editor.SearchEditor.init(self.allocator, .{ .context = self, .start_text_search = startSearchEditorJob }, config, configuration);
+    _ = query.on_did_change_query_focus.listenSignal(self, Workbench.updatePartFocus) catch |err| {
+        query.deinit();
+        return err;
+    };
     const input = SearchEditorInput.init(self.allocator, self.io, config.query, query, snapshot.text, dims.width, dims.height) catch |err| {
         query.deinit();
         return err;
@@ -11143,7 +11141,7 @@ fn searchEditorOpenTarget(self: *Workbench, tab: *Tab) bool {
 fn searchOpenMatch(context: *anyopaque, path: []const u8, range: ?Range) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.openPath(path);
-    self.focus = .editor;
+    self.setFocus(.editor);
     if (self.activeTab()) |tab| {
         if (range) |value| try tab.editor.setSelection(value);
         tab.focusEditor();
@@ -11340,7 +11338,7 @@ fn searchConfirmReplaceAll(context: *anyopaque, message: []const u8) !void {
     if (self.dialog != null) return error.DialogAlreadyOpen;
     const dialog = try ui.Dialog.init(self.allocator, message, "", &.{ "Replace", dialogs.cancel_label });
     dialog.theme = self.dialogTheme();
-    self.dialog = dialog;
+    self.setDialog(dialog);
     self.pending_dialog = .replace_all;
     self.pointer = .default;
 }

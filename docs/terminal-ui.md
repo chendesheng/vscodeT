@@ -2256,3 +2256,8 @@ is replaced atomically on shutdown. An explicit session path identifies an
 empty window across launches. A window without a folder or session path has
 only profile-level sizing. Restoring a terminal panel opens the pane without
 restarting processes from the previous session.
+
+Workbench focus changes are delivered from the active editor/group, quick-input
+show/hide, modal dialog, search-input focus and terminal active-instance events.
+EditorPart forwards these to the mounted editor views and TerminalInstance owns
+encoding its PTY focus report; frame painting does not synchronize focus.

@@ -187,6 +187,16 @@ pub const TerminalInstance = struct {
         self.onExit.fire(result) catch |err| std.log.err("Terminal exit listener failed: {s}", .{@errorName(err)});
     }
 
+    pub fn setFocused(self: *TerminalInstance, focused: bool) bool {
+        if (self.view_focused == focused) return false;
+        self.view_focused = focused;
+        var bytes: [32]u8 = undefined;
+        var writer = Io.Writer.fixed(&bytes);
+        self.emulator.encodeFocus(&writer, focused) catch return true;
+        self.writeInput(writer.buffered());
+        return true;
+    }
+
     pub fn writeInput(self: *TerminalInstance, bytes: []const u8) void {
         self.process.write(bytes) catch {
             self.title_error = true;
