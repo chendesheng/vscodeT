@@ -6,8 +6,7 @@
 // - `MenuId` is a name-backed value (262 upstream ids are mirrored below) and
 //   menus are keyed by that name.
 // - `Action2` takes its run callback, keybinding and menu contribution as
-//   fields instead of constructor side effects; `register` wires them into the
-//   explicit registries. Registrations last for the registry lifetime.
+//   fields. registerAction2 owns its action until the registration is disposed.
 // - Title/tooltip localized strings are plain English strings.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -438,17 +437,16 @@ pub const MenuRegistry = struct {
         when: ?*const contextkey.Expr = null,
         group: ?[]const u8 = null,
         group_title: ?[]const u8 = null,
+        implicit_command: bool = false,
 
         pub fn dispose(self: Registration) void {
             if (self.group) |group| {
                 self.registry.removeMenuGroup(self.menu, group, self.group_title orelse return);
                 return;
             }
-            if (self.command_id) |command_id| {
-                if (MenuId.eql(self.menu, menu_ids.CommandPalette)) {
-                    self.registry.removeCommand(command_id);
-                    return;
-                }
+            if (self.implicit_command) {
+                self.registry.removeCommand(self.command_id.?);
+                return;
             }
             self.registry.removeRegistration(self);
         }
@@ -512,7 +510,7 @@ pub const MenuRegistry = struct {
 
     pub fn addCommandTracked(self: *MenuRegistry, command: ICommandAction) !Registration {
         try self.addCommand(command);
-        return .{ .registry = self, .menu = menu_ids.CommandPalette, .command_id = command.id };
+        return .{ .registry = self, .menu = menu_ids.CommandPalette, .command_id = command.id, .implicit_command = true };
     }
 
     pub fn removeCommand(self: *MenuRegistry, id: []const u8) void {
@@ -567,75 +565,99 @@ pub const ActionRegistries = struct {
 
 pub const MenuRegistration = struct {
     id: MenuId,
-    group: []const u8 = "navigation",
+    group: []const u8 = "",
     order: i64 = 0,
     when: ?*const contextkey.Expr = null,
+    // Represents the upstream menu item's explicit precondition: null.
+    omit_precondition: bool = false,
     is_hidden_by_default: bool = false,
 };
 
 pub const ActionRun = *const fn (context: *anyopaque, accessor: ?*const anyopaque) anyerror!void;
 
-/// Upstream `Action2`: an id + title, optional precondition/keybinding/menu
-/// contribution, and a run callback.
 pub const Action2 = struct {
-    id: []const u8,
-    title: []const u8,
-    tooltip: ?[]const u8 = null,
-    category: ?[]const u8 = null,
-    precondition: ?*const contextkey.Expr = null,
-    keybinding: ?keybindings_registry.IKeybindingRule = null,
-    menu: ?MenuRegistration = null,
+    command: ICommandAction,
+    f1: bool = false,
+    menus: []const MenuRegistration = &.{},
+    keybindings: []const keybindings_registry.IKeybindingRule = &.{},
     context: *anyopaque,
     run_fn: ActionRun,
+};
 
-    pub fn init(id: []const u8, title: []const u8, context: *anyopaque, run_fn: ActionRun) Action2 {
-        return .{ .id = id, .title = title, .context = context, .run_fn = run_fn };
-    }
+pub const ActionRegistration = struct {
+    allocator: Allocator,
+    commands: *commands.CommandRegistry,
+    id: []const u8,
+    context: *anyopaque,
+    run_fn: ActionRun,
+    menus: std.ArrayList(MenuRegistry.Registration) = .empty,
+    keybindings: std.ArrayList(keybindings_registry.Registration) = .empty,
+    exprs: contextkey.ContextKeyExpr,
 
-    pub fn register(self: *Action2, registries: *ActionRegistries) !void {
-        try registries.commands.register(.{
-            .id = self.id,
-            .context = self,
-            .run = runCommand,
-        });
-        try registries.menus.addCommand(.{
-            .id = self.id,
-            .title = self.title,
-            .tooltip = self.tooltip,
-            .category = self.category,
-            .precondition = self.precondition,
-        });
-
-        if (self.keybinding) |keybinding| {
-            var rule = keybinding;
-            rule.id = self.id;
-            if (rule.when == null) rule.when = self.precondition;
-            var registration = try registries.keybindings.registerKeybindingRule(rule);
-            registration.disposed = true;
-        }
-
-        if (self.menu) |menu| {
-            try registries.menus.appendMenuItem(menu.id, .{
-                .command = .{
-                    .id = self.id,
-                    .title = self.title,
-                    .tooltip = self.tooltip,
-                    .category = self.category,
-                    .precondition = self.precondition,
-                },
-                .when = menu.when orelse self.precondition,
-                .group = menu.group,
-                .order = menu.order,
-                .is_hidden_by_default = menu.is_hidden_by_default,
-            });
-        }
-    }
-
-    fn runCommand(context: *anyopaque) anyerror!void {
-        const self: *Action2 = @ptrCast(@alignCast(context));
+    fn run(context: *anyopaque) anyerror!void {
+        const self: *ActionRegistration = @ptrCast(@alignCast(context));
         return self.run_fn(self.context, null);
     }
+
+    pub fn dispose(self: *ActionRegistration) void {
+        if (self.commands.get(self.id)) |command| {
+            if (command.context == @as(*anyopaque, @ptrCast(self))) self.commands.unregister(self.id);
+        }
+        for (self.menus.items) |menu| menu.dispose();
+        for (self.keybindings.items) |*rule| rule.dispose();
+        self.menus.deinit(self.allocator);
+        self.keybindings.deinit(self.allocator);
+        self.exprs.deinit();
+        self.allocator.destroy(self);
+    }
 };
+
+/// Port of registerAction2. The registration owns the command handler and the
+/// context expressions composed during registration. Descriptors borrow their
+/// strings and callback context for the registration lifetime.
+pub fn registerAction2(registries: ActionRegistries, action2: Action2) !*ActionRegistration {
+    const command = action2.command;
+    if (registries.commands.get(command.id) != null) return error.DuplicateCommand;
+    const allocator = registries.commands.allocator;
+    const registration = try allocator.create(ActionRegistration);
+    registration.* = .{
+        .allocator = allocator,
+        .commands = registries.commands,
+        .id = command.id,
+        .context = action2.context,
+        .run_fn = action2.run_fn,
+        .exprs = contextkey.ContextKeyExpr.init(allocator),
+    };
+    errdefer registration.dispose();
+    try registration.menus.ensureTotalCapacity(allocator, action2.menus.len + @as(usize, if (action2.f1) 2 else 0));
+    try registration.keybindings.ensureTotalCapacity(allocator, action2.keybindings.len);
+    try registries.commands.register(.{ .id = command.id, .context = registration, .run = ActionRegistration.run });
+    for (action2.menus) |menu| {
+        var menu_command = command;
+        if (menu.omit_precondition) menu_command.precondition = null;
+        registration.menus.appendAssumeCapacity(try registries.menus.appendMenuItemTracked(menu.id, .{
+            .command = menu_command,
+            .when = menu.when,
+            .group = menu.group,
+            .order = menu.order,
+            .is_hidden_by_default = menu.is_hidden_by_default,
+        }));
+    }
+    if (action2.f1) {
+        registration.menus.appendAssumeCapacity(try registries.menus.appendMenuItemTracked(menu_ids.CommandPalette, .{
+            .command = command,
+            .when = command.precondition,
+        }));
+        registration.menus.appendAssumeCapacity(try registries.menus.addCommandTracked(command));
+    }
+    for (action2.keybindings) |binding| {
+        var rule = binding;
+        rule.id = command.id;
+        if (command.precondition) |precondition| rule.when = try registration.exprs.andExpr(&.{ precondition, rule.when });
+        registration.keybindings.appendAssumeCapacity(try registries.keybindings.registerKeybindingRule(rule));
+    }
+    return registration;
+}
 
 test "menu registry keeps insertion order and kinds" {
     const allocator = std.testing.allocator;
@@ -681,20 +703,27 @@ test "Action2 registers command, keybinding and menu contribution" {
     var menu_registry = MenuRegistry.init(allocator);
     defer menu_registry.deinit();
 
-    var registries = ActionRegistries{
+    const registries = ActionRegistries{
         .commands = &command_registry,
         .keybindings = &keybinding_registry,
         .menus = &menu_registry,
     };
 
-    var action2 = Action2.init("test.action", "Test Action", &counter, Counter.run);
-    action2.keybinding = .{
-        .id = "test.action",
-        .weight = 200,
-        .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyT) },
+    const descriptor = Action2{
+        .command = .{ .id = "test.action", .title = "Test Action" },
+        .context = &counter,
+        .run_fn = Counter.run,
+        .keybindings = &.{.{
+            .id = "",
+            .weight = 200,
+            .bindings = .{ .primary = key_codes.KeyMod.CtrlCmd | @backingInt(key_codes.KeyCode.KeyT) },
+        }},
+        .menus = &.{.{ .id = menu_ids.CommandPalette, .group = "navigation", .order = 5 }},
     };
-    action2.menu = .{ .id = menu_ids.CommandPalette, .group = "navigation", .order = 5 };
-    try action2.register(&registries);
+    const registration = try registerAction2(registries, descriptor);
+    defer registration.dispose();
+    try std.testing.expectError(error.DuplicateCommand, registerAction2(registries, descriptor));
+    try std.testing.expect(menu_registry.getCommand("test.action") == null);
 
     try std.testing.expect(try command_registry.execute("test.action"));
     try std.testing.expectEqual(@as(usize, 1), counter.count);
@@ -703,6 +732,29 @@ test "Action2 registers command, keybinding and menu contribution" {
     try std.testing.expectEqual(@as(usize, 1), items.len);
     try std.testing.expectEqualStrings("Test Action", items[0].command.command.title);
     try std.testing.expectEqual(@as(i64, 5), items[0].command.order);
+
+    var hidden = descriptor;
+    hidden.command = .{ .id = "test.internal", .title = "Internal" };
+    hidden.menus = &.{};
+    hidden.keybindings = &.{};
+    const internal = try registerAction2(registries, hidden);
+    defer internal.dispose();
+    try std.testing.expect(try command_registry.execute(hidden.command.id));
+    try std.testing.expectEqual(@as(usize, 1), menu_registry.getMenuItems(menu_ids.CommandPalette).len);
+
+    const precondition = contextkey.Expr{ .Defined = "editorFocus" };
+    var visible = hidden;
+    visible.command = .{ .id = "test.visible", .title = "Visible", .precondition = &precondition };
+    visible.f1 = true;
+    const palette_action = try registerAction2(registries, visible);
+    const palette = menu_registry.getMenuItems(menu_ids.CommandPalette);
+    try std.testing.expectEqual(@as(usize, 2), palette.len);
+    try std.testing.expect(palette[1].command.when == &precondition);
+    try std.testing.expect(menu_registry.getCommand(visible.command.id) != null);
+    palette_action.dispose();
+    try std.testing.expectEqual(@as(usize, 1), menu_registry.getMenuItems(menu_ids.CommandPalette).len);
+    try std.testing.expect(menu_registry.getCommand(visible.command.id) == null);
+    try std.testing.expect(command_registry.get(visible.command.id) == null);
 
     const keybindings = try keybinding_registry.getDefaultKeybindings(allocator);
     defer allocator.free(keybindings);
