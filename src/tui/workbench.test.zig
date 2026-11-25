@@ -6699,6 +6699,36 @@ test "Workbench: activity bar top moves the composite bar into the side bar" {
     try std.testing.expect(std.mem.indexOf(u8, search_title, "SEARCH") != null);
 }
 
+test "Workbench: list commands follow last focused list without a render or activity scan" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "last-list.txt", "alpha");
+    defer allocator.free(path);
+    const root = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer allocator.free(root);
+    const window = try TestWindow.init(allocator, io, &.{path}, 80, 20);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.initSidebar(root);
+    pumpSidebarForTests(wb);
+    wb.focusSidebar();
+    const explorer = wb.sidebar.?;
+    try std.testing.expect(wb.lists.lastFocusedList().?.focus == &explorer.list_focus);
+    try wb.showActivity(1); // the search input, not the results list
+    try std.testing.expect(wb.lists.lastFocusedList().?.focus == &explorer.list_focus);
+    try wb.commands.execute("list.focusLast");
+    try std.testing.expect(explorer.selectedNode() != null);
+    const search = wb.search_window.view.?;
+    search.focusResults();
+    try std.testing.expect(wb.lists.lastFocusedList().?.focus == &search.list_focus);
+    wb.focusEditor();
+    try std.testing.expect(wb.lists.lastFocusedList().?.focus == &search.list_focus);
+    try wb.setWorkspaceFolders(&.{root});
+    try std.testing.expect(wb.lists.lastFocusedList() == null);
+}
+
 test "Workbench: closing the side bar keeps the activity bar" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

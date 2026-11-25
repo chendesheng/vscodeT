@@ -128,6 +128,9 @@ pub const RenderOptions = struct {
     cell_borders: bool = false,
 };
 
+const list_service = @import("../../../../../platform/list/browser/listService.zig");
+const IEditorService = @import("../../../../services/editor/common/editorService.zig").IEditorService;
+
 pub const Sidebar = struct {
     allocator: Allocator,
     io: Io,
@@ -136,6 +139,8 @@ pub const Sidebar = struct {
     theme_service: ?*@import("../../../../services/themes/browser/workbenchThemeService.zig").ThemeService = null,
     data_source: explorer_viewer.ExplorerDataSource,
     tree: *AsyncTree,
+    list_focus: list_service.ListFocus,
+    list_editors: ?*const IEditorService = null,
     compression_enabled: bool = true,
     sort_order: explorer.SortOrder = .FilesFirst,
     show_roots: bool = false,
@@ -188,10 +193,12 @@ pub const Sidebar = struct {
             .files_filter = FilesFilter.init(allocator, io, configuration),
             .data_source = undefined,
             .tree = undefined,
+            .list_focus = .init(allocator),
             .compression_enabled = compression_enabled,
             .sort_order = readSortOrder(configuration, explorer_model),
         };
         errdefer self.files_filter.deinit();
+        errdefer self.list_focus.deinit();
 
         self.show_roots = context.getWorkbenchState() != .FOLDER or self.model.roots.items.len != 1;
         self.indent_cells = readIndentCells(configuration);
@@ -246,6 +253,7 @@ pub const Sidebar = struct {
     }
 
     pub fn deinit(self: *Sidebar) void {
+        self.list_focus.deinit();
         self.cancelLoad();
         if (self.pending_reveal) |path| self.allocator.free(path);
         self.tree.deinit();
@@ -317,6 +325,27 @@ pub const Sidebar = struct {
         } else if (node.children.items.len > 0) {
             if (node.children.items[0].element) |child| self.selectElement(child);
         }
+    }
+
+    pub fn registerList(self: *Sidebar, service: *list_service.ListService, editors: *const IEditorService) !void {
+        self.list_editors = editors;
+        try service.register(.{ .context = self, .focus = &self.list_focus, .run = runListCommand });
+    }
+
+    pub fn setPaneFocused(self: *Sidebar, focused: bool) void {
+        self.tree.setFocus(focused);
+        self.list_focus.setFocused(focused);
+    }
+
+    fn runListCommand(context: *anyopaque, operation: list_service.Navigation) !void {
+        const self: *Sidebar = @ptrCast(@alignCast(context));
+        self.tree.setFocus(true);
+        const action = try self.handleKey(&.{ .key = operation.key() });
+        switch (action) {
+            .open => |path| if (self.list_editors) |editors| try editors.requestOpenEditor(path, .{}, .active),
+            else => {},
+        }
+        self.tree.setFocus(self.list_focus.focused);
     }
 
     pub fn handleKey(self: *Sidebar, event: *const ui.KeyEvent) !Action {

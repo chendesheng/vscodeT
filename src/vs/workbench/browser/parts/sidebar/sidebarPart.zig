@@ -52,6 +52,7 @@ pub const SidebarPart = struct {
     pane: pane.PaneCompositePart,
     /// Layout visibility, like `layoutService.isVisible(Parts.SIDEBAR_PART)`.
     visible: bool = false,
+    focused: bool = false,
     /// Terminal cells. The layout model keeps the same value.
     width: usize = 28,
     position: Position = .left,
@@ -193,9 +194,20 @@ pub const SidebarPart = struct {
         self.activity_bar = bar;
     }
 
+    fn focusActiveContainer(self: *SidebarPart, focused: bool) void {
+        const id = self.pane.active_id orelse return;
+        if (self.getViewPaneContainer(id)) |container| container.setFocused(focused);
+    }
+
+    pub fn setFocused(self: *SidebarPart, focused: bool) void {
+        self.focused = focused;
+        self.focusActiveContainer(focused and self.visible);
+    }
+
     pub fn setVisible(self: *SidebarPart, visible: bool) !void {
         if (self.visible == visible) return;
         self.visible = visible;
+        self.focusActiveContainer(self.focused and visible);
         try self.pane.setVisible(visible);
         try self.base.setVisible(visible);
         try self.on_did_change.fire({});
@@ -294,6 +306,7 @@ pub const SidebarPart = struct {
     }
 
     pub fn openPaneComposite(self: *SidebarPart, id: []const u8) !bool {
+        self.focusActiveContainer(false);
         const opened = try self.pane.openPaneComposite(id, true);
         if (opened == null) return false;
         if (!self.visible) {
@@ -301,6 +314,7 @@ pub const SidebarPart = struct {
             try self.base.setVisible(true);
             try self.on_did_change.fire({});
         }
+        self.focusActiveContainer(self.focused);
         return true;
     }
 
@@ -309,6 +323,7 @@ pub const SidebarPart = struct {
     }
 
     pub fn hideActivePaneComposite(self: *SidebarPart) !void {
+        self.focusActiveContainer(false);
         if (self.visible) {
             self.visible = false;
             try self.base.setVisible(false);

@@ -335,6 +335,8 @@ const WindowViews = struct {
 
 pub const TerminalWorkbench = struct {
     core: workbench_core.Workbench,
+    lists: @import("../vs/platform/list/browser/listService.zig").ListService,
+    list_api: @import("../vs/platform/list/browser/listService.zig").IListService,
     host_service: @import("../vs/workbench/services/host/browser/browserHostService.zig").BrowserHostService,
     host_api: @import("../vs/workbench/services/host/browser/host.zig").IHostService,
     storage_api: storage_mod.IStorageService,
@@ -876,6 +878,7 @@ pub const TerminalWorkbench = struct {
             },
         };
         self.search_window = .{
+            .lists = &self.lists,
             .allocator = allocator,
             .io = self.io,
             .part = self.part,
@@ -1086,6 +1089,9 @@ pub const TerminalWorkbench = struct {
     }
 
     fn registerNativeServices(self: *TerminalWorkbench) !void {
+        self.list_api = self.lists.interface();
+        _ = try self.services.set(@import("../vs/platform/list/browser/listService.zig").list_service_id, &self.list_api);
+
         self.lifecycle_api = self.lifecycle.interface();
         self.layout_api = self.layout.interface();
         self.window_views = .{ .workbench = self };
@@ -1149,6 +1155,8 @@ pub const TerminalWorkbench = struct {
     }
 
     fn initShellModels(self: *TerminalWorkbench, parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool) !void {
+        self.lists = .init(self.allocator);
+        errdefer self.lists.deinit();
         self.host_service = .init(self.allocator);
         errdefer self.host_service.deinit();
         self.dialog_service = .init(self.allocator);
@@ -1251,6 +1259,12 @@ pub const TerminalWorkbench = struct {
             .context = self,
             .render_body = explorerPaneRenderBody,
             .handle_key = explorerPaneHandleKey,
+            .set_focused = struct {
+                fn run(context: *anyopaque, focused: bool) void {
+                    const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    if (host.sidebar) |pane| pane.setPaneFocused(focused);
+                }
+            }.run,
             .handle_mouse = explorerPaneHandleMouse,
             .title_actions = explorerPaneTitleActions,
         };
@@ -1260,6 +1274,12 @@ pub const TerminalWorkbench = struct {
             .context = self,
             .render_body = outlinePaneRenderBody,
             .handle_key = outlinePaneHandleKey,
+            .set_focused = struct {
+                fn run(context: *anyopaque, focused: bool) void {
+                    const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    if (host.outline_view) |pane| pane.setPaneFocused(focused);
+                }
+            }.run,
             .handle_mouse = outlinePaneHandleMouse,
             .title_actions = outlinePaneTitleActions,
         };
@@ -1269,6 +1289,12 @@ pub const TerminalWorkbench = struct {
             .context = self,
             .render_body = scmChangesRenderBody,
             .handle_key = scmChangesHandleKey,
+            .set_focused = struct {
+                fn run(context: *anyopaque, focused: bool) void {
+                    const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    if (host.scm.changes) |pane| pane.setPaneFocused(focused);
+                }
+            }.run,
             .handle_mouse = scmChangesHandleMouse,
             .title_actions = scmChangesTitleActions,
         };
@@ -1278,6 +1304,12 @@ pub const TerminalWorkbench = struct {
             .context = self,
             .render_body = scmHistoryRenderBody,
             .handle_key = scmHistoryHandleKey,
+            .set_focused = struct {
+                fn run(context: *anyopaque, focused: bool) void {
+                    const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    if (host.scm.history) |pane| pane.setPaneFocused(focused);
+                }
+            }.run,
             .handle_mouse = scmHistoryHandleMouse,
             .title_actions = scmHistoryTitleActions,
             .show_actions = .when_expanded,
@@ -1310,6 +1342,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn deinitShellModels(self: *TerminalWorkbench) void {
+        self.lists.deinit();
         self.core.disposeListeners();
         self.dialog_handler.destroy();
         self.dialog_service.deinit();
@@ -1484,17 +1517,8 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
         for (self.editor_status.?.actionDescriptors()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/contrib/files/browser/fileCommands.zig").editor_actions) |action| try self.commands.registerAction(self.instantiation, action);
+        for (@import("../vs/workbench/browser/actions/listCommands.zig").list_actions) |action| try self.commands.registerAction(self.instantiation, action);
         const after_file_actions = [_]commands_mod.CommandInfo{
-            .{ .id = "list.focusUp", .label = "Focus Previous Item", .category = "List", .context = self, .run = commandListFocusUp },
-            .{ .id = "list.focusDown", .label = "Focus Next Item", .category = "List", .context = self, .run = commandListFocusDown },
-            .{ .id = "list.focusFirst", .label = "Focus First Item", .category = "List", .context = self, .run = commandListFocusFirst },
-            .{ .id = "list.focusLast", .label = "Focus Last Item", .category = "List", .context = self, .run = commandListFocusLast },
-            .{ .id = "list.focusPageUp", .label = "Focus Previous Page", .category = "List", .context = self, .run = commandListFocusPageUp },
-            .{ .id = "list.focusPageDown", .label = "Focus Next Page", .category = "List", .context = self, .run = commandListFocusPageDown },
-            .{ .id = "list.collapse", .label = "Collapse", .category = "List", .context = self, .run = commandListCollapse },
-            .{ .id = "list.expand", .label = "Expand", .category = "List", .context = self, .run = commandListExpand },
-            .{ .id = "list.toggleExpand", .label = "Toggle Expand", .category = "List", .context = self, .run = commandListToggleExpand },
-            .{ .id = "list.select", .label = "Select", .category = "List", .context = self, .run = commandListSelect },
             .{ .id = "github.publish", .label = "Publish to GitHub", .category = "GitHub", .context = self, .run = commandGithubPublish },
             .{ .id = "simpleBrowser.show", .label = "Show", .category = "Simple Browser", .context = &self.simple_browser, .run = SimpleBrowserManager.run },
             .{ .id = "workbench.action.browser.open", .label = "Open Integrated Browser", .show_in_palette = false, .context = &self.simple_browser, .run = SimpleBrowserManager.run },
@@ -1659,6 +1683,7 @@ pub const TerminalWorkbench = struct {
     }
 
     pub fn deinit(self: *TerminalWorkbench) void {
+        self.sidebar_part.setFocused(false);
         for (self.focus_subscriptions) |subscription| if (subscription) |value| value.dispose();
         if (self.terminal_focus_subscription) |subscription| subscription.dispose();
         self.terminal_tabbed_view.on_list_focus = null;
@@ -1907,6 +1932,7 @@ pub const TerminalWorkbench = struct {
         const replacement = try WorkspaceContextService.initWithFolders(self.allocator, "workspace", folders);
         var replacement_owned = false;
         errdefer if (!replacement_owned) replacement.deinit();
+        self.sidebar_part.setFocused(false);
         if (self.sidebar) |sidebar| {
             sidebar.deinit();
             self.sidebar = null;
@@ -2165,6 +2191,7 @@ pub const TerminalWorkbench = struct {
                 self.configuration.?,
                 &self.window_events,
             );
+            try self.sidebar.?.registerList(&self.lists, &self.editor_api);
         }
         if (self.search_window.view == null) try self.search_window.initFromWorkspace();
         self.sidebar.?.theme_service = self.theme_service;
@@ -2172,6 +2199,7 @@ pub const TerminalWorkbench = struct {
         _ = try self.activity_bar_part.setActive(self.activity_bar_part.activities.items[0].id);
         _ = try self.sidebar_part.openPaneComposite(self.activity_bar_part.activities.items[0].id);
         try self.setSidebarVisible(true);
+        self.sidebar_part.setFocused(self.focus == .sidebar);
         self.updateSidebarTitleActions();
         self.layoutAll();
     }
@@ -2211,6 +2239,7 @@ pub const TerminalWorkbench = struct {
         self.clearSidebarViewHover();
         if (self.activeSidebarViewContainer()) |container| container.cancelHeaderDrag();
         _ = try self.activity_bar_part.setActive(id);
+        if (!std.mem.eql(u8, id, "search")) if (self.search_window.view) |view| view.blur();
         _ = try self.sidebar_part.openPaneComposite(id);
         try self.setSidebarVisible(true);
         try self.syncActivityBarVisibility();
@@ -2891,6 +2920,8 @@ pub const TerminalWorkbench = struct {
             },
         });
         self.scm.attachHistoryProvider(provider.interface(), self.theme_palette);
+        if (self.scm.changes) |view| try view.registerList(&self.lists);
+        if (self.scm.history) |view| try view.registerList(&self.lists);
 
         const view_model = try self.allocator.create(view_container_model_mod.ViewContainerModel);
         var model_owned = true;
@@ -4340,6 +4371,7 @@ pub const TerminalWorkbench = struct {
 
     pub fn setFocus(self: *TerminalWorkbench, focus: Focus) void {
         self.focus = focus;
+        self.sidebar_part.setFocused(focus == .sidebar);
         self.updatePartFocus() catch {};
     }
 
@@ -4469,7 +4501,7 @@ pub const TerminalWorkbench = struct {
         }
         if (focus) self.focusSidebar();
         self.syncOutlineView() catch {};
-        if (focus) if (self.outline_view) |view| view.setFocused(true);
+        if (focus) if (self.outline_view) |view| view.setPaneFocused(true);
         self.updateSidebarTitleActions();
     }
 
@@ -4490,6 +4522,8 @@ pub const TerminalWorkbench = struct {
             .focus_editor = outlineFocusEditor,
             .is_symbol_visible = outlineSymbolVisible,
         }, &self.outline_service);
+        errdefer view.deinit();
+        try view.registerList(&self.lists);
         view.setThemeColors(self.theme_palette);
         view.setBorderRendering(self.part.cell_borders);
         self.outline_view = view;
@@ -4978,80 +5012,6 @@ fn reportEditorMessage(context: *anyopaque, message: []const u8) bool {
 fn commandViewExplorer(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     try self.showExplorer();
-}
-
-fn listCommandKey(command: []const u8) ?ui.Key {
-    if (std.mem.eql(u8, command, "list.focusUp")) return .up;
-    if (std.mem.eql(u8, command, "list.focusDown")) return .down;
-    if (std.mem.eql(u8, command, "list.focusFirst")) return .home;
-    if (std.mem.eql(u8, command, "list.focusLast")) return .end;
-    if (std.mem.eql(u8, command, "list.focusPageUp")) return .page_up;
-    if (std.mem.eql(u8, command, "list.focusPageDown")) return .page_down;
-    if (std.mem.eql(u8, command, "list.collapse")) return .left;
-    if (std.mem.eql(u8, command, "list.expand")) return .right;
-    if (std.mem.eql(u8, command, "list.toggleExpand")) return .{ .char = ' ' };
-    if (std.mem.eql(u8, command, "list.select")) return .enter;
-    return null;
-}
-
-fn runListCommand(context: *anyopaque, command: []const u8) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const key = listCommandKey(command) orelse return;
-    var event = ui.KeyEvent{ .key = key };
-    const active_id = self.activity_bar_part.active_id orelse "";
-    if (std.mem.eql(u8, active_id, "explorer")) {
-        if (self.sidebar) |sidebar| {
-            _ = try sidebar.handleKey(&event);
-            return;
-        }
-    }
-    if (std.mem.eql(u8, active_id, "search")) {
-        if (self.search_window.view) |view| {
-            _ = view.handleKey(&event);
-            return;
-        }
-    }
-    if (std.mem.eql(u8, active_id, "scm")) {
-        if (self.scm.container) |container| {
-            _ = try container.handleKey(&event);
-            return;
-        }
-        if (self.scm.changes) |view| {
-            _ = try view.handleKey(&event);
-            return;
-        }
-    }
-}
-
-fn commandListFocusUp(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.focusUp");
-}
-fn commandListFocusDown(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.focusDown");
-}
-fn commandListFocusFirst(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.focusFirst");
-}
-fn commandListFocusLast(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.focusLast");
-}
-fn commandListFocusPageUp(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.focusPageUp");
-}
-fn commandListFocusPageDown(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.focusPageDown");
-}
-fn commandListCollapse(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.collapse");
-}
-fn commandListExpand(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.expand");
-}
-fn commandListToggleExpand(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.toggleExpand");
-}
-fn commandListSelect(context: *anyopaque) anyerror!void {
-    return runListCommand(context, "list.select");
 }
 
 fn statusFocusEditor(context: *anyopaque) void {

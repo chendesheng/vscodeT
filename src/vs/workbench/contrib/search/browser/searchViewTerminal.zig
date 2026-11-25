@@ -146,6 +146,8 @@ pub const RenderOptions = struct {
 const PaneCompositePart = @import("../../../browser/parts/paneCompositePart.zig").PaneCompositePart;
 const SearchCommandIds = @import("../common/constants.zig").SearchCommandIds;
 
+const list_service = @import("../../../../platform/list/browser/listService.zig");
+
 pub const SearchView = struct {
     pub const ID = @import("../../../services/search/common/search.zig").VIEW_ID;
     allocator: Allocator,
@@ -176,6 +178,7 @@ pub const SearchView = struct {
     header_rows: usize = 1,
     focus_field: Field = .search,
     results_focused: bool = false,
+    list_focus: list_service.ListFocus,
     on_did_change_focus: @import("../../../../base/common/event.zig").Emitter(void),
     panel_focused: bool = false,
     started_once: bool = false,
@@ -202,6 +205,7 @@ pub const SearchView = struct {
         self.* = .{
             .allocator = allocator,
             .on_did_change_focus = .init(allocator),
+            .list_focus = .init(allocator),
             .workspace = workspace,
             .configuration = configuration,
             .host = host,
@@ -215,6 +219,7 @@ pub const SearchView = struct {
         };
 
         errdefer self.on_did_change_focus.deinit();
+        errdefer self.list_focus.deinit();
         const controller = try Controller.init(
             allocator,
             workspace,
@@ -268,6 +273,7 @@ pub const SearchView = struct {
     }
 
     pub fn deinit(self: *SearchView) void {
+        self.list_focus.deinit();
         self.detachConfiguration();
         self.detachActivity();
         self.clearHighlight();
@@ -337,6 +343,7 @@ pub const SearchView = struct {
     fn setResultsFocused(self: *SearchView, focused: bool) void {
         if (self.results_focused == focused) return;
         self.results_focused = focused;
+        self.list_focus.setFocused(focused);
         self.on_did_change_focus.fire({}) catch {};
     }
 
@@ -361,6 +368,17 @@ pub const SearchView = struct {
         self.setResultsFocused(false);
         self.widget.focused = false;
         self.controller.setPanelFocused(false);
+    }
+
+    pub fn registerList(self: *SearchView, service: *list_service.ListService) !void {
+        try service.register(.{ .context = self, .focus = &self.list_focus, .run = runListCommand });
+    }
+
+    fn runListCommand(context: *anyopaque, operation: list_service.Navigation) !void {
+        const self: *SearchView = @ptrCast(@alignCast(context));
+        self.focusResults();
+        var event = ui.KeyEvent{ .key = operation.key() };
+        _ = self.handleKey(&event);
     }
 
     pub fn focusResults(self: *SearchView) void {
@@ -1979,6 +1997,7 @@ const NativeEditorBrowser = @import("../../../../editor/browser/editorBrowser.zi
 /// focus/layout/configuration dependencies; the Search view owns its service,
 /// editor factory, activity registration and editor/file query adapters.
 pub const SearchWindow = struct {
+    lists: *list_service.ListService,
     allocator: Allocator,
     io: std.Io,
     part: *NativeEditorPart,
@@ -2118,6 +2137,7 @@ pub const SearchWindow = struct {
             },
         );
         errdefer view.deinit();
+        try view.registerList(self.lists);
         try view.attachActivity(self.activity_service);
         view.attachTitleActions(self.title_pane);
         view.model.result.model_host = .{ .context = self, .get = searchTextModel, .queue = self.window };

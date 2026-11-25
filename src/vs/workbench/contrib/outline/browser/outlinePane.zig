@@ -59,6 +59,8 @@ const SortContext = struct {
 
 const OutlineTree = data_tree_mod.DataTree(*const TreeElement);
 
+const list_service = @import("../../../../platform/list/browser/listService.zig");
+
 pub const OutlinePane = struct {
     pub const ID = @import("outline.zig").outline_id;
     allocator: Allocator,
@@ -79,6 +81,7 @@ pub const OutlinePane = struct {
     message: ?[]const u8 = null,
     theme: ?*const theme_colors_mod.ThemeColors = null,
     focused: bool = false,
+    list_focus: list_service.ListFocus,
     border: bool = false,
     action_buf: [2]views.TitleAction = undefined,
 
@@ -95,6 +98,7 @@ pub const OutlinePane = struct {
             .outline_service = outline_service,
             .view_state = OutlineViewState.init(allocator),
             .tree = undefined,
+            .list_focus = .init(allocator),
             .tree_arena = std.heap.ArenaAllocator.init(allocator),
             .view_handler = ViewEventHandler.init(self, .{
                 .onCursorStateChanged = onCursorStateChanged,
@@ -105,6 +109,7 @@ pub const OutlinePane = struct {
             }),
             .filter_text = std.array_list.Managed(u8).init(allocator),
         };
+        errdefer self.list_focus.deinit();
         self.root = .{ .element = @ptrCast(self), .label = "" };
         self.tree = try OutlineTree.init(allocator, "OutlinePane", .{
             .context = @ptrCast(self),
@@ -121,6 +126,7 @@ pub const OutlinePane = struct {
     }
 
     pub fn deinit(self: *OutlinePane) void {
+        self.list_focus.deinit();
         self.detachEditor();
         self.disposeOutline();
         self.tree.deinit();
@@ -157,6 +163,22 @@ pub const OutlinePane = struct {
 
     pub fn isFocused(self: *const OutlinePane) bool {
         return self.focused;
+    }
+
+    pub fn registerList(self: *OutlinePane, service: *list_service.ListService) !void {
+        try service.register(.{ .context = self, .focus = &self.list_focus, .run = runListCommand });
+    }
+
+    pub fn setPaneFocused(self: *OutlinePane, focused: bool) void {
+        self.setFocused(focused);
+        self.list_focus.setFocused(focused);
+    }
+
+    fn runListCommand(context: *anyopaque, operation: list_service.Navigation) !void {
+        const self: *OutlinePane = @ptrCast(@alignCast(context));
+        self.setFocused(true);
+        defer self.setFocused(self.list_focus.focused);
+        _ = try self.handleKey(&.{ .key = operation.key() });
     }
 
     pub fn setFocused(self: *OutlinePane, focused: bool) void {

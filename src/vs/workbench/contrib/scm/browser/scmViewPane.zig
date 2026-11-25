@@ -225,6 +225,8 @@ const RowIdentity = struct {
     }
 };
 
+const list_service = @import("../../../../platform/list/browser/listService.zig");
+
 pub const SCMViewPane = struct {
     pub const ID = scm.VIEW_PANE_ID;
 
@@ -246,6 +248,8 @@ pub const SCMViewPane = struct {
     hovered_col: ?usize = null,
     list_hovered: bool = false,
     list_focused: bool = false,
+    pane_focused: bool = false,
+    list_focus: list_service.ListFocus,
     fresh_repository: bool = false,
     visible_rows: usize = 0,
     /// Rows above the list: the section header plus its divider while the view
@@ -269,6 +273,7 @@ pub const SCMViewPane = struct {
     pub fn init(allocator: Allocator, service: *ISCMService, host: Host) SCMViewPane {
         return .{
             .allocator = allocator,
+            .list_focus = .init(allocator),
             .service = service,
             .host = host,
             .rows = std.array_list.Managed(Row).init(allocator),
@@ -281,6 +286,7 @@ pub const SCMViewPane = struct {
     }
 
     pub fn deinit(self: *SCMViewPane) void {
+        self.list_focus.deinit();
         self.rows.deinit();
         self.input_box.deinit();
         if (self.input_surface) |*surface| surface.deinit();
@@ -456,14 +462,14 @@ pub const SCMViewPane = struct {
 
     fn syncInput(self: *SCMViewPane) void {
         const repository = self.activeRepository() orelse {
-            self.input_focused = false;
+            self.setInputFocused(false);
             return;
         };
         const input = repository.input;
         self.input_box.setEnabled(input.enabled());
         self.input_box.placeholder = input.placeholder();
         self.input_box.setValue(input.value()) catch {};
-        if (!input.visible() or !input.enabled()) self.input_focused = false;
+        if (!input.visible() or !input.enabled()) self.setInputFocused(false);
     }
 
     /// Commits the current message through the host. The terminal has no
@@ -508,7 +514,7 @@ pub const SCMViewPane = struct {
 
     fn onInputEscape(context: ?*anyopaque) void {
         const self: *SCMViewPane = @ptrCast(@alignCast(context orelse return));
-        self.input_focused = false;
+        self.setInputFocused(false);
         self.input_box.focused = false;
         self.host.focus_editor(self.host.context);
     }
@@ -873,6 +879,27 @@ pub const SCMViewPane = struct {
     // Interaction
     // ------------------------------------------------------------------
 
+    pub fn registerList(self: *SCMViewPane, service: *list_service.ListService) !void {
+        try service.register(.{ .context = self, .focus = &self.list_focus, .run = runListCommand });
+    }
+
+    pub fn setPaneFocused(self: *SCMViewPane, focused: bool) void {
+        self.pane_focused = focused;
+        self.list_focus.setFocused(focused and !self.input_focused);
+    }
+
+    fn setInputFocused(self: *SCMViewPane, focused: bool) void {
+        self.input_focused = focused;
+        self.list_focus.setFocused(self.pane_focused and !focused);
+    }
+
+    fn runListCommand(context: *anyopaque, operation: list_service.Navigation) !void {
+        const self: *SCMViewPane = @ptrCast(@alignCast(context));
+        self.blurInput();
+        var event = ui.KeyEvent{ .key = operation.key() };
+        _ = try self.handleKey(&event);
+    }
+
     pub fn handleKey(self: *SCMViewPane, event: *ui.KeyEvent) !bool {
         self.ensureInputConfigured();
 
@@ -885,17 +912,17 @@ pub const SCMViewPane = struct {
             if (self.input_box.handleKey(event)) return true;
             switch (event.key) {
                 .up => {
-                    self.input_focused = false;
+                    self.setInputFocused(false);
                     self.input_box.focused = false;
                     return self.moveSelection(-1);
                 },
                 .down => {
-                    self.input_focused = false;
+                    self.setInputFocused(false);
                     self.input_box.focused = false;
                     return self.moveSelection(1);
                 },
                 .page_up, .page_down => {
-                    self.input_focused = false;
+                    self.setInputFocused(false);
                     self.input_box.focused = false;
                     return self.handleKey(event);
                 },
@@ -910,7 +937,7 @@ pub const SCMViewPane = struct {
                     const input = self.activeInput() orelse return false;
                     if (!input.enabled()) return false;
                     self.scroll = 0;
-                    self.input_focused = true;
+                    self.setInputFocused(true);
                     self.input_box.focused = true;
                     return true;
                 }
@@ -1027,7 +1054,7 @@ pub const SCMViewPane = struct {
             },
             .down, .click => {
                 if (event.button != .left or col >= list_width) return false;
-                self.input_focused = false;
+                self.setInputFocused(false);
                 self.input_box.focused = false;
                 const row_index = self.resourceRowAt(row) orelse {
                     const changed = self.selection != null;
@@ -1169,7 +1196,7 @@ pub const SCMViewPane = struct {
                     }
                 } else {
                     const enabled = if (self.activeInput()) |input| input.enabled() else false;
-                    self.input_focused = over_input and enabled;
+                    self.setInputFocused(over_input and enabled);
                     self.input_box.focused = self.input_focused;
                     if (self.input_focused) _ = self.input_box.handleMouse(local);
                 }
@@ -1207,7 +1234,7 @@ pub const SCMViewPane = struct {
     /// calls this when focus leaves the side bar so stale input focus cannot
     /// capture keys when the SCM view becomes active again.
     pub fn blurInput(self: *SCMViewPane) void {
-        self.input_focused = false;
+        self.setInputFocused(false);
         self.input_box.focused = false;
         self.hovered_input_action = null;
     }

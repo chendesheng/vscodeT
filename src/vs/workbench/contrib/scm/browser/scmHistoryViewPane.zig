@@ -128,6 +128,8 @@ const QuickInputService = @import("../../../../platform/quickinput/browser/quick
 const QuickPick = @import("../../../../platform/quickinput/browser/quickInput.zig").QuickPick;
 const QuickPickItem = @import("../../../../platform/quickinput/common/quickInput.zig").QuickPickItem;
 
+const list_service = @import("../../../../platform/list/browser/listService.zig");
+
 pub const SCMHistoryViewPane = struct {
     pub const ID = HISTORY_VIEW_PANE_ID;
 
@@ -176,6 +178,7 @@ pub const SCMHistoryViewPane = struct {
     hovered_row: ?usize = null,
     hovered_action: bool = false,
     list_focused: bool = false,
+    list_focus: list_service.ListFocus,
     hover_content: ?[]u8 = null,
     hover_surface: ?ui.Surface = null,
     last_rect: ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -185,6 +188,7 @@ pub const SCMHistoryViewPane = struct {
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
+            .list_focus = .init(allocator),
             .host = host,
             .storage = storage,
             .arena = std.heap.ArenaAllocator.init(allocator),
@@ -201,6 +205,7 @@ pub const SCMHistoryViewPane = struct {
     }
 
     pub fn deinit(self: *SCMHistoryViewPane) void {
+        self.list_focus.deinit();
         if (self.ref_picker != null) self.quick_input.?.hide();
         self.clearOwnedKeys(&self.expanded);
         self.clearOwnedKeys(&self.collapsed_folders);
@@ -794,6 +799,19 @@ pub const SCMHistoryViewPane = struct {
             .{ .id = GRAPH_MENU_ACTION_ID, .label = "More Actions", .glyph = '…' },
         };
         return &self.actions;
+    }
+
+    pub fn registerList(self: *SCMHistoryViewPane, service: *list_service.ListService) !void {
+        try service.register(.{ .context = self, .focus = &self.list_focus, .run = runListCommand });
+    }
+
+    pub fn setPaneFocused(self: *SCMHistoryViewPane, focused: bool) void {
+        self.list_focus.setFocused(focused);
+    }
+
+    fn runListCommand(context: *anyopaque, operation: list_service.Navigation) !void {
+        const self: *SCMHistoryViewPane = @ptrCast(@alignCast(context));
+        _ = try self.handleKey(&.{ .key = operation.key() });
     }
 
     pub fn handleKey(self: *SCMHistoryViewPane, event: *const ui.KeyEvent) !bool {

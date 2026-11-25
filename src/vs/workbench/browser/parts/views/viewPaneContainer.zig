@@ -19,6 +19,7 @@ pub const Pane = struct {
     context: *anyopaque,
     render_body: *const fn (context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) anyerror!void,
     handle_key: *const fn (context: *anyopaque, event: *ui.KeyEvent) anyerror!bool,
+    set_focused: ?*const fn (*anyopaque, bool) void = null,
     handle_mouse: *const fn (context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) anyerror!bool,
     title_actions: *const fn (context: *anyopaque) []const views.TitleAction,
     show_actions: view_pane.ShowActions = .default,
@@ -92,6 +93,8 @@ pub const ViewPaneContainer = struct {
     merge_view_with_container_when_single_view: bool = true,
     always_show_header_actions: bool = false,
     focused_header: ?[]const u8 = null,
+    focused: bool = false,
+    focused_body: ?[]const u8 = null,
     focused_action: ?usize = null,
     hovered_pane: ?[]const u8 = null,
     header_press: ?HeaderPress = null,
@@ -142,6 +145,26 @@ pub const ViewPaneContainer = struct {
         self.* = undefined;
     }
 
+    pub fn setFocused(self: *ViewPaneContainer, focused: bool) void {
+        self.focused = focused;
+        self.updateFocusedBody();
+    }
+
+    fn updateFocusedBody(self: *ViewPaneContainer) void {
+        const next = if (self.focused and self.focused_header == null and self.active_id != null and !self.model.isCollapsed(self.active_id.?)) self.active_id else null;
+        if (next == null and self.focused_body == null) return;
+        if (next) |id| if (idEquals(self.focused_body, id)) return;
+        if (self.focused_body) |id| if (self.paneIndex(id)) |index| {
+            const pane = self.panes[index];
+            if (pane.set_focused) |callback| callback(pane.context, false);
+        };
+        self.focused_body = next;
+        if (next) |id| if (self.paneIndex(id)) |index| {
+            const pane = self.panes[index];
+            if (pane.set_focused) |callback| callback(pane.context, true);
+        };
+    }
+
     pub fn activeView(self: *const ViewPaneContainer) ?[]const u8 {
         return self.active_id;
     }
@@ -152,6 +175,7 @@ pub const ViewPaneContainer = struct {
         self.focused_header = null;
         self.focused_action = null;
         self.model.setActiveView(id);
+        self.updateFocusedBody();
     }
 
     /// Recomputes section rectangles for the container content area.
@@ -172,7 +196,7 @@ pub const ViewPaneContainer = struct {
                 .collapsed = false,
                 .merged = true,
             });
-            self.setActive(visible[0].id);
+            if (!idEquals(self.active_id, visible[0].id)) self.setActive(visible[0].id);
             return;
         }
 
@@ -458,8 +482,12 @@ pub const ViewPaneContainer = struct {
     }
 
     fn focusHeader(self: *ViewPaneContainer, id: []const u8) void {
-        self.setActive(id);
+        if (!self.model.isVisible(id)) return;
+        self.active_id = id;
         self.focused_header = id;
+        self.focused_action = null;
+        self.model.setActiveView(id);
+        self.updateFocusedBody();
     }
 
     pub fn handleKey(self: *ViewPaneContainer, event: *ui.KeyEvent) !bool {
@@ -547,6 +575,7 @@ pub const ViewPaneContainer = struct {
             self.focusNextHeader(section_index);
         } else {
             self.focused_header = null;
+            self.updateFocusedBody();
         }
     }
 

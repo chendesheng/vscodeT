@@ -323,6 +323,7 @@ comptime {
     _ = @import("./vs/base/test/browser/ui/list/rangeMap.test.zig");
     _ = @import("./vs/base/test/browser/ui/list/listView.test.zig");
     _ = @import("./vs/base/test/browser/ui/list/listWidget.test.zig");
+    _ = @import("./vs/platform/list/test/browser/listService.test.zig");
     _ = @import("./vs/base/test/browser/ui/tree/indexTreeModel.test.zig");
     _ = @import("./vs/base/test/browser/ui/tree/objectTreeModel.test.zig");
     _ = @import("./vs/base/test/browser/ui/tree/abstractTree.test.zig");
