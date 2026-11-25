@@ -208,6 +208,19 @@ pub fn EditorGroupView(comptime View: type) type {
             return ordered.items[index];
         }
 
+        /// Upstream restores the active pane and passes all editors to the title
+        /// control. Terminal groups retain one tab view per supported input.
+        pub fn restoreEditors(self: *Self, panes: anytype) !void {
+            const editors = try self.group.model.getEditors(self.allocator, .SEQUENTIAL, false);
+            defer self.allocator.free(editors);
+            try self.tabs.ensureUnusedCapacity(editors.len);
+            for (editors) |input| {
+                const tab = try panes.createPane(self.allocator, input) orelse continue;
+                try self.addTab(tab);
+                try panes.didRestore(tab);
+            }
+        }
+
         /// Registers the view for an input that is already in the group model.
         /// A new active editor becomes the visible pane right away.
         pub fn addTab(self: *Self, tab: View) !void {

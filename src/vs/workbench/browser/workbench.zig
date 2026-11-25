@@ -1040,40 +1040,15 @@ pub const Workbench = struct {
     }
 
     fn restoreEditors(self: *Workbench) !void {
-        const allocator = self.allocator;
-        for (self.service.groups.items, 0..) |group, index| {
-            const pane = self.part.group_views.items[index];
-
-            const editors = try group.model.getEditors(allocator, .SEQUENTIAL, false);
-            defer allocator.free(editors);
-            try pane.tabs.ensureUnusedCapacity(editors.len);
-            for (editors) |input| {
-                if (std.mem.eql(u8, input.type_id, ImagePreviewEditorInput.ID)) {
-                    const image_input: *ImagePreviewEditorInput = @ptrCast(@alignCast(input.impl.?));
-                    const tab = try Tab.initImageFromInput(
-                        allocator,
-                        self.io,
-                        image_input,
-                        self.cols,
-                        @max(self.rows -| 2, 1),
-                        &self.images,
-                        null,
-                    );
-                    try pane.addTab(tab);
-                    try tab.view.setStatusBarVisible(false);
-                    try self.history.add(image_input.path);
-                    continue;
-                }
-                if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) continue;
-                const file_input: *FileEditorInput = @ptrCast(@alignCast(input.impl.?));
-                const tab = try Tab.initFromInput(allocator, file_input);
-                tab.setImageRuntime(&self.images);
-                try pane.addTab(tab);
-                try tab.view.setStatusBarVisible(false);
-                self.registerWorkingCopy(tab);
-                try self.history.add(file_input.editor.path);
-            }
-        }
+        const panes = @import("parts/editor/editorPane.zig").RestoredEditorPanes{
+            .io = self.io,
+            .width = self.cols,
+            .height = @max(self.rows -| 2, 1),
+            .images = &self.images,
+            .history = &self.history,
+            .working_copies = &self.working_copy_service,
+        };
+        for (self.part.group_views.items) |group| try group.restoreEditors(panes);
     }
 
     /// Serializes every group and the active group index.

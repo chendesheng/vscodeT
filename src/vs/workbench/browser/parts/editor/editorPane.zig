@@ -59,6 +59,40 @@ const TerminalEditorInput = @import("../../../contrib/terminal/browser/terminalE
 const TerminalInstance = @import("../../../contrib/terminal/browser/terminalInstance.zig").TerminalInstance;
 const terminal_editor = @import("../../../contrib/terminal/browser/terminalEditor.zig");
 
+/// Restores the terminal view for an input already deserialized by its group.
+/// The group owns the view from addTab onward. The model keeps its original
+/// active, pinned, sticky and preview selections.
+pub const RestoredEditorPanes = struct {
+    io: Io,
+    width: usize,
+    height: usize,
+    images: *ui.image.Runtime,
+    history: *@import("../../../services/history/common/history.zig").HistoryService,
+    working_copies: *@import("../../../services/workingCopy/common/workingCopyService.zig").WorkingCopyService,
+
+    pub fn createPane(self: RestoredEditorPanes, allocator: Allocator, input: *EditorInput) !?*Tab {
+        if (std.mem.eql(u8, input.type_id, ImagePreviewEditorInput.ID)) {
+            return try Tab.initImageFromInput(allocator, self.io, @ptrCast(@alignCast(input.impl.?)), self.width, self.height, self.images, null);
+        }
+        if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) return null;
+        const tab = try Tab.initFromInput(allocator, @ptrCast(@alignCast(input.impl.?)));
+        tab.setImageRuntime(self.images);
+        return tab;
+    }
+
+    pub fn didRestore(self: RestoredEditorPanes, tab: *Tab) !void {
+        try tab.view.setStatusBarVisible(false);
+        if (tab.file_input != null) {
+            const widget = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
+            self.working_copies.registerWorkingCopy(widget.workingCopyInterface(tab.editor)) catch |err| switch (err) {
+                error.AlreadyRegistered => {},
+                else => return err,
+            };
+        }
+        try self.history.add(tab.editor.path);
+    }
+};
+
 pub const Tab = struct {
     allocator: Allocator,
     /// Modified/first editor. For a diff tab this is the modified pane.
