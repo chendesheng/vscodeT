@@ -296,33 +296,8 @@ pub const ChangeListener = struct {
     callback: *const fn (context: *anyopaque) void,
 };
 
-/// Text already read and decoded off the TUI thread. The open job owns these
-/// slices until `Editor.create*FromLoadedText` has built the model; the
-/// constructor copies what the model keeps.
-pub const LoadedText = struct {
-    text: []u8,
-    encoding: encoding_mod.Encoding,
-    absolute_path: []u8,
-
-    pub fn deinit(self: *LoadedText, allocator: Allocator) void {
-        allocator.free(self.text);
-        allocator.free(self.absolute_path);
-        self.* = undefined;
-    }
-};
-
-/// Content read from disk for an external-change reload. `text` is owned by
-/// the reader until `Editor.applyReloadedContent` returns; the job pattern in
-/// `Workbench` reads/decodes on the async Io and applies on the TUI thread.
-pub const ReloadedContent = struct {
-    text: []u8,
-    encoding: encoding_mod.Encoding,
-
-    pub fn deinit(self: *ReloadedContent, allocator: Allocator) void {
-        allocator.free(self.text);
-        self.* = undefined;
-    }
-};
+const text_files = @import("../../../../workbench/services/textfile/common/textFileService.zig");
+const LoadedText = text_files.ResolvedTextFile;
 
 /// The shared document behind one or more editor views.
 ///
@@ -4761,23 +4736,13 @@ pub const Editor = struct {
         try self.executeCommands(&[_]?ICommand{command.interface()});
     }
 
-    /// Reads and decodes a file for an external-change reload. Runs on a worker
-    /// thread; does not touch the editor/model.
-    pub fn readReloadedContent(allocator: Allocator, io: Io, path: []const u8) !ReloadedContent {
-        const bytes = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
-        defer allocator.free(bytes);
-        const encoding = if (encoding_mod.detectBOM(bytes)) |bom| bom.encoding else .utf8;
-        const decoded = try encoding_mod.decode(allocator, bytes, encoding);
-        return .{ .text = decoded, .encoding = encoding };
-    }
-
     /// Applies a reloaded file on the TUI thread. Replacement starts a new edit
     /// history, like VS Code's `_setValueFromTextBuffer` clearing the command
-    /// manager; the caller keeps ownership of `content.text`.
-    pub fn applyReloadedContent(self: *Editor, content: *const ReloadedContent) !void {
+    /// manager; the caller keeps ownership of the decoded text.
+    pub fn applyReloadedContent(self: *Editor, text: []const u8, encoding: encoding_mod.Encoding) !void {
         if (self.read_only) return error.ReadOnly;
-        self.document.encoding = content.encoding;
-        try self.replaceGeneratedContents(content.text, true);
+        self.document.encoding = encoding;
+        try self.replaceGeneratedContents(text, true);
     }
 
     /// Replaces the text of a generated editor, such as the Search Editor.
@@ -4805,12 +4770,16 @@ pub const Editor = struct {
 
     /// Reloads the editor content from disk (used for external file changes).
     /// Synchronous wrapper for tests/commands; the watcher path uses
-    /// `readReloadedContent` on the async Io and `applyReloadedContent` here.
+    /// the text-file service on the async Io and applies the result here.
     pub fn reloadFromDisk(self: *Editor) !void {
         if (self.read_only) return error.ReadOnly;
-        var content = try readReloadedContent(self.allocator, self.io, self.path);
+        var files = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(self.allocator, self.io);
+        defer files.deinit();
+        var service = text_files.TextFileService.init(self.allocator, &files);
+        defer service.deinit();
+        var content = try service.readWithEncoding(self.path, self.allocator);
         defer content.deinit(self.allocator);
-        try self.applyReloadedContent(&content);
+        try self.applyReloadedContent(content.text, content.encoding);
     }
 
     /// Marks an external-change conflict (the file changed while dirty).
@@ -4929,21 +4898,6 @@ fn resolvedLanguageConfigurationForBrackets(
     return service.resolved(language_id);
 }
 
-/// Resolves a possibly-relative editor path to the canonical absolute spelling
-/// used by the text model URI. Language providers return absolute `file:` URIs;
-/// keeping a relative model URI would make the same buffer look like a
-/// different document and send navigation to a non-existent path.
-pub fn absolutePath(allocator: Allocator, io: Io, path: []const u8) ![]u8 {
-    if (std.fs.path.isAbsolute(path)) return std.fs.path.resolve(allocator, &.{path});
-    var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
-    if (Io.Dir.cwd().realPathFile(io, path, &buffer)) |length| {
-        return try allocator.dupe(u8, buffer[0..length]);
-    } else |_| {}
-    var cwd_buffer: [Io.Dir.max_path_bytes]u8 = undefined;
-    const cwd_length = try Io.Dir.cwd().realPathFile(io, ".", &cwd_buffer);
-    return std.fs.path.resolve(allocator, &.{ cwd_buffer[0..cwd_length], path });
-}
-
 fn createModel(
     allocator: Allocator,
     io: Io,
@@ -4970,47 +4924,32 @@ fn createModel(
         .bracketPairColorizationOptions = .{ .enabled = true, .independentColorPoolPerBracketType = false },
     };
 
-    if (loaded) |value| {
-        // The open job already read, decoded and canonicalized the file on a
-        // worker thread; building the model must not touch the disk again.
-        encoding_out.* = value.encoding;
-        var fixed = Io.Reader.fixed(value.text);
-        const associated = std.Uri{
-            .scheme = "file",
-            .user = null,
-            .password = null,
-            .host = .{ .raw = "" },
-            .port = null,
-            .path = .{ .raw = try allocator.dupe(u8, value.absolute_path) },
-            .query = null,
-            .fragment = null,
-        };
-        return try TextModel.init(allocator, &fixed, language_id, options, associated, undo_redo, language_service);
-    }
-
-    const raw: []u8 = if (text) |content|
-        try allocator.dupe(u8, content)
-    else
-        Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| switch (err) {
-            error.FileNotFound => try allocator.alloc(u8, 0),
-            else => return err,
-        };
-    defer allocator.free(raw);
-
-    const encoding = if (encoding_mod.detectBOM(raw)) |bom| bom.encoding else .utf8;
-    encoding_out.* = encoding;
-    const decoded = try encoding_mod.decode(allocator, raw, encoding);
-    defer allocator.free(decoded);
-    var fixed = Io.Reader.fixed(decoded);
-    const absolute = try absolutePath(allocator, io, path);
-    defer allocator.free(absolute);
+    var owned: ?LoadedText = null;
+    defer if (owned) |*value| value.deinit(allocator);
+    const value = loaded orelse blk: {
+        if (text) |bytes| {
+            const encoding = if (encoding_mod.detectBOM(bytes)) |bom| bom.encoding else .utf8;
+            const decoded = try encoding_mod.decode(allocator, bytes, encoding);
+            errdefer allocator.free(decoded);
+            owned = .{ .text = decoded, .encoding = encoding, .absolute_path = try text_files.absolutePath(allocator, io, path) };
+        } else {
+            var files = @import("../../../../platform/files/common/fileService.zig").DiskFileService.init(allocator, io);
+            defer files.deinit();
+            var service = text_files.TextFileService.init(allocator, &files);
+            defer service.deinit();
+            owned = try service.resolve(path, true);
+        }
+        break :blk &owned.?;
+    };
+    encoding_out.* = value.encoding;
+    var fixed = Io.Reader.fixed(value.text);
     const associated = std.Uri{
         .scheme = "file",
         .user = null,
         .password = null,
         .host = .{ .raw = "" },
         .port = null,
-        .path = .{ .raw = try allocator.dupe(u8, absolute) },
+        .path = .{ .raw = try allocator.dupe(u8, value.absolute_path) },
         .query = null,
         .fragment = null,
     };

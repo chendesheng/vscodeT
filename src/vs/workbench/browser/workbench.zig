@@ -381,21 +381,10 @@ const editor_mod = @import("../common/editor.zig");
 const text_editor_selection_mod = @import("./parts/editor/textEditor.zig");
 const editor_widget = @import("../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig");
 
-/// Result of reading and decoding a file on the async Io. The text is owned by
-/// the job until `Editor.create*FromLoadedText` has copied what the model
-/// needs.
-const OpenOutcome = union(enum) {
-    text: editor_widget.LoadedText,
-    err: anyerror,
-};
-
-/// One interactive text open on the async Io. No generic Task/Promise layer:
-/// the job owns the raw `Io.Future`, the completion flag and the request data.
+const text_files = @import("../services/textfile/common/textFileService.zig");
+const TextFileRead = text_files.TextFileRead;
 const OpenJob = struct {
-    owner: *Workbench,
-    future: Io.Future(OpenOutcome),
-    done: std.atomic.Value(bool) = .init(false),
-    path: []u8,
+    read: *TextFileRead,
     generation: u64,
     options: Workbench.OpenOptions,
 };
@@ -457,30 +446,6 @@ fn runKeybindingsJob(job: *KeybindingsJob) KeybindingsOutcome {
     return .{ .bindings = bindings };
 }
 
-const ReloadOutcome = union(enum) {
-    content: editor_widget.ReloadedContent,
-    err: anyerror,
-};
-
-/// One external-change reload on the async Io. The job stores only the path;
-/// the tab is resolved again when the result lands, so closing a tab while the
-/// read is in flight cannot leave a dangling pointer.
-const ReloadJob = struct {
-    allocator: Allocator,
-    io: Io,
-    future: Io.Future(ReloadOutcome),
-    done: std.atomic.Value(bool) = .init(false),
-    path: []u8,
-};
-
-fn runReloadJob(job: *ReloadJob) ReloadOutcome {
-    defer job.done.store(true, .release);
-    const content = editor_widget.Editor.readReloadedContent(job.allocator, job.io, job.path) catch |err| {
-        return .{ .err = err };
-    };
-    return .{ .content = content };
-}
-
 const context_menus = @import("../../platform/contextview/browser/contextMenuService.zig");
 const Menu = context_menus.Menu;
 const MenuAnchor = context_menus.Anchor;
@@ -512,11 +477,13 @@ pub const Workbench = struct {
     /// terminal/synchronous-startup instance.
     async_io_state: Io.Threaded,
     async_io: Io,
+    disk_files: @import("../../platform/files/common/fileService.zig").DiskFileService,
+    text_file_service: text_files.TextFileService,
     /// The single interactive open currently in flight. A newer request
     /// supersedes it; the generation is checked again when the result lands.
-    pending_open: ?*OpenJob = null,
+    pending_open: ?OpenJob = null,
     open_generation: u64 = 0,
-    reload_jobs: std.array_list.Managed(*ReloadJob),
+    reload_jobs: std.array_list.Managed(*TextFileRead),
     theme_job: ?*ThemeLoadJob = null,
     keybindings_job: ?*KeybindingsJob = null,
     keybindings_reload_pending: bool = false,
@@ -751,9 +718,13 @@ pub const Workbench = struct {
         });
         errdefer self.async_io_state.deinit();
         self.async_io = self.async_io_state.io();
+        self.disk_files = .init(allocator, self.async_io);
+        errdefer self.disk_files.deinit();
+        self.text_file_service = .init(allocator, &self.disk_files);
+        errdefer self.text_file_service.deinit();
         self.pending_open = null;
         self.open_generation = 0;
-        self.reload_jobs = std.array_list.Managed(*ReloadJob).init(allocator);
+        self.reload_jobs = std.array_list.Managed(*TextFileRead).init(allocator);
         self.theme_job = null;
         self.theme_candidates = .{ null, null, null };
         self.theme_candidate_index = 0;
@@ -1938,6 +1909,8 @@ pub const Workbench = struct {
         }
         self.frame.deinit();
         self.reload_jobs.deinit();
+        self.text_file_service.deinit();
+        self.disk_files.deinit();
         self.async_io_state.deinit();
         self.allocator.destroy(self);
     }
@@ -5866,35 +5839,19 @@ pub const Workbench = struct {
             return;
         }
 
-        const job = self.allocator.create(OpenJob) catch {
-            self.setStatusHint("Open failed: out of memory", .{});
-            return;
-        };
-        const path_copy = self.allocator.dupe(u8, path) catch {
-            self.allocator.destroy(job);
-            self.setStatusHint("Open failed: out of memory", .{});
+        const read = TextFileRead.start(&self.text_file_service, path, true) catch |err| {
+            self.setStatusHint("Open failed: {s}", .{@errorName(err)});
             return;
         };
         self.open_generation += 1;
-        job.* = .{
-            .owner = self,
-            .future = undefined,
-            .path = path_copy,
-            .generation = self.open_generation,
-            .options = options,
-        };
-        job.future = self.async_io.async(runOpenJob, .{job});
-        self.pending_open = job;
+        self.pending_open = .{ .read = read, .generation = self.open_generation, .options = options };
         self.setStatusHint("Opening {s}...", .{std.fs.path.basename(path)});
     }
 
     fn cancelPendingOpen(self: *Workbench) void {
         const job = self.pending_open orelse return;
         self.pending_open = null;
-        const outcome = job.future.cancel(self.async_io);
-        self.freeOpenOutcome(outcome);
-        self.allocator.free(job.path);
-        self.allocator.destroy(job);
+        job.read.cancel();
     }
 
     /// Starts one external-change reload per path. Results are applied by
@@ -5903,27 +5860,8 @@ pub const Workbench = struct {
         for (self.reload_jobs.items) |job| {
             if (self.samePath(job.path, path)) return;
         }
-        const path_copy = self.allocator.dupe(u8, path) catch return;
-        const job = self.allocator.create(ReloadJob) catch {
-            self.allocator.free(path_copy);
-            return;
-        };
-        job.* = .{
-            .allocator = self.allocator,
-            .io = self.async_io,
-            .future = undefined,
-            .path = path_copy,
-        };
-        job.future = self.async_io.async(runReloadJob, .{job});
-        self.reload_jobs.append(job) catch {
-            const result = job.future.cancel(self.async_io);
-            if (result == .content) {
-                var content = result.content;
-                content.deinit(self.allocator);
-            }
-            self.allocator.free(job.path);
-            self.allocator.destroy(job);
-        };
+        const read = TextFileRead.start(&self.text_file_service, path, false) catch return;
+        self.reload_jobs.append(read) catch read.cancel();
     }
 
     fn pollReloadJobs(self: *Workbench) bool {
@@ -5933,53 +5871,31 @@ pub const Workbench = struct {
             index -= 1;
             const job = self.reload_jobs.items[index];
             if (!job.done.load(.acquire)) continue;
-            const result = job.future.await(self.async_io);
+            const result = job.awaitResult();
             _ = self.reload_jobs.orderedRemove(index);
-            switch (result) {
-                .content => |content_value| {
-                    var content = content_value;
-                    defer content.deinit(self.allocator);
-                    if (self.findOpenInput(job.path)) |input| {
-                        if (input.editor.isDirty()) {
-                            input.editor.markConflict();
-                        } else {
-                            input.editor.applyReloadedContent(&content) catch {};
-                        }
-                        changed = true;
+            defer job.destroy();
+            if (result) |content_value| {
+                var content = content_value;
+                defer content.deinit(self.allocator);
+                if (self.findOpenInput(job.path)) |input| {
+                    if (input.editor.isDirty()) {
+                        input.editor.markConflict();
+                    } else {
+                        input.editor.applyReloadedContent(content.text, content.encoding) catch {};
                     }
-                },
-                .err => {},
-            }
-            self.allocator.free(job.path);
-            self.allocator.destroy(job);
+                    changed = true;
+                }
+            } else |_| {}
         }
         return changed;
     }
 
     fn cancelReloadJobs(self: *Workbench) void {
-        for (self.reload_jobs.items) |job| {
-            const result = job.future.cancel(self.async_io);
-            if (result == .content) {
-                var content = result.content;
-                content.deinit(self.allocator);
-            }
-            self.allocator.free(job.path);
-            self.allocator.destroy(job);
-        }
+        for (self.reload_jobs.items) |job| job.cancel();
         self.reload_jobs.clearRetainingCapacity();
     }
 
-    fn freeOpenOutcome(self: *Workbench, outcome: OpenOutcome) void {
-        switch (outcome) {
-            .text => |value| {
-                var loaded = value;
-                loaded.deinit(self.allocator);
-            },
-            .err => {},
-        }
-    }
-
-    fn openLoadedTextEditor(self: *Workbench, path: []const u8, loaded: *const editor_widget.LoadedText, options: OpenOptions) !void {
+    fn openLoadedTextEditor(self: *Workbench, path: []const u8, loaded: *const text_files.ResolvedTextFile, options: OpenOptions) !void {
         const size = self.editorDimensions(self.activePane() orelse return error.GroupPaneMissing);
         const editor = try Editor.createWithExtensionsFromLoadedText(
             self.allocator,
@@ -6043,31 +5959,30 @@ pub const Workbench = struct {
     pub fn pollAsyncReads(self: *Workbench) bool {
         var changed = false;
         if (self.pending_open) |job| {
-            if (job.done.load(.acquire)) {
-                const outcome = job.future.await(self.async_io);
+            if (job.read.done.load(.acquire)) {
+                const outcome = job.read.awaitResult();
                 self.pending_open = null;
-                const path = job.path;
+                const path = job.read.path;
                 const options = job.options;
                 const generation = job.generation;
-                self.allocator.destroy(job);
-                defer self.allocator.free(path);
+                defer job.read.destroy();
                 if (generation != self.open_generation) {
-                    self.freeOpenOutcome(outcome);
+                    if (outcome) |resolved| {
+                        var loaded = resolved;
+                        loaded.deinit(self.allocator);
+                    } else |_| {}
                     return true;
                 }
-                switch (outcome) {
-                    .text => |value| {
-                        var loaded = value;
-                        defer loaded.deinit(self.allocator);
-                        self.recordNavigation();
-                        self.openLoadedTextEditor(path, &loaded, options) catch |err| {
-                            self.setStatusHint("Open failed: {s}", .{@errorName(err)});
-                            return true;
-                        };
-                        self.clearStatusHint();
-                    },
-                    .err => |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)}),
-                }
+                if (outcome) |value| {
+                    var loaded = value;
+                    defer loaded.deinit(self.allocator);
+                    self.recordNavigation();
+                    self.openLoadedTextEditor(path, &loaded, options) catch |err| {
+                        self.setStatusHint("Open failed: {s}", .{@errorName(err)});
+                        return true;
+                    };
+                    self.clearStatusHint();
+                } else |err| self.setStatusHint("Open failed: {s}", .{@errorName(err)});
                 changed = true;
             }
         }
@@ -13675,27 +13590,4 @@ fn asyncEnviron() std.process.Environ {
         else
             .empty,
     };
-}
-
-/// Reads, BOM-detects, decodes and canonicalizes a file. Runs on the async Io,
-/// never on the TUI thread for interactive opens.
-fn loadOpenText(allocator: Allocator, io: Io, path: []const u8) !editor_widget.LoadedText {
-    const raw = Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| switch (err) {
-        // The synchronous open path treats a missing file as a new, empty
-        // buffer; keep that behavior for interactive opens too.
-        error.FileNotFound => try allocator.alloc(u8, 0),
-        else => return err,
-    };
-    defer allocator.free(raw);
-
-    const encoding = if (encoding_mod.detectBOM(raw)) |bom| bom.encoding else .utf8;
-    const text = try encoding_mod.decode(allocator, raw, encoding);
-    errdefer allocator.free(text);
-    const absolute = try editor_widget.absolutePath(allocator, io, path);
-    return .{ .text = text, .encoding = encoding, .absolute_path = absolute };
-}
-
-fn runOpenJob(job: *OpenJob) OpenOutcome {
-    defer job.done.store(true, .release);
-    return .{ .text = loadOpenText(job.owner.allocator, job.owner.async_io, job.path) catch |err| return .{ .err = err } };
 }
