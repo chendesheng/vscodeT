@@ -304,7 +304,7 @@ const TerminalColorSchemeHost = struct {
         };
     }
 };
-pub const DiffRef = enum { head, index, working, empty };
+pub const DiffRef = git_mod.DiffRef;
 
 const SymbolActionContext = struct {
     workbench: *Workbench,
@@ -542,6 +542,7 @@ pub const Workbench = struct {
     notification_storage: storage_mod.InMemoryStorageService,
     notification_service: *@import("../services/notification/common/notificationService.zig").NotificationService,
     notification_api: @import("../../platform/notification/common/notification.zig").INotificationService,
+    notification_controller: ?*@import("parts/notifications/notificationsCommands.zig").NotificationsController = null,
     images: ui.image.Runtime,
     /// Desired OSC 22 mouse pointer shape for the next frame. Only the
     /// composited renderer writes it; pane surfaces resolve shapes but never
@@ -893,8 +894,40 @@ pub const Workbench = struct {
         _ = try self.ensureContextKeys();
         try self.registerListeners();
         try self.renderWorkbench(parent, options);
+        try self.createNotificationsHandlers();
         try self.layout.createWorkbenchLayout();
         self.layoutAll();
+    }
+
+    fn createNotificationsHandlers(self: *Workbench) !void {
+        const notifications = @import("parts/notifications/notificationsCommands.zig");
+        const controller = try notifications.NotificationsController.create(self.allocator, self.notification_service, &self.statusbar, &self.window_events, (try self.ensureContextKeys()).interface(), .{
+            .context = self,
+            .request_frame = notificationFrame,
+            .open_link = notificationOpenLink,
+            .focus_editor = notificationFocusEditor,
+        });
+        errdefer controller.deinit();
+        _ = try self.services.set(notifications.controller_id, controller);
+        try notifications.registerNotificationCommands(&self.commands, &self.instantiation);
+        self.notification_controller = controller;
+    }
+
+    fn notificationFrame(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.requestFrame();
+    }
+    fn notificationFocusEditor(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.focusEditor();
+    }
+    fn notificationOpenLink(context: *anyopaque, href: []const u8) !void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        if (std.mem.startsWith(u8, href, "command:")) {
+            try self.commands.execute(href["command:".len..]);
+        } else if (std.mem.startsWith(u8, href, "file://")) {
+            try self.openPath(href["file://".len..]);
+        } else _ = try @import("../../platform/opener/common/opener.zig").openExternal(self.allocator, self.io, href);
     }
 
     fn registerListeners(self: *Workbench) !void {
@@ -977,6 +1010,7 @@ pub const Workbench = struct {
         if (self.restore_timer == null or self.lifecycle.phase.reached(.Restored)) return;
         defer self.restore_timer.?.setTimeout(2500, .{ .context = self, .run = scheduleEventually });
         try self.lifecycle_api.setPhase(.Restored);
+        if (self.notification_controller) |controller| try controller.toasts.start();
     }
 
     fn scheduleEventually(context: *anyopaque) !void {
@@ -1028,6 +1062,7 @@ pub const Workbench = struct {
         errdefer self.view_descriptor_service.deinit();
         try self.view_descriptor_service.attach();
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
+        self.notification_controller = null;
         self.notification_storage = storage_mod.InMemoryStorageService.init(self.allocator);
         errdefer self.notification_storage.deinit();
         self.notification_service = try @import("../services/notification/common/notificationService.zig").NotificationService.create(self.allocator, &self.notification_storage);
@@ -1251,6 +1286,7 @@ pub const Workbench = struct {
             self.explorer_panes = null;
         }
         self.activity_service.deinit();
+        if (self.notification_controller) |controller| controller.deinit();
         self.statusbar.deinit();
         self.notification_service.deinit();
         self.notification_storage.deinit();
@@ -4252,10 +4288,15 @@ pub const Workbench = struct {
         const relative = relativeToRoot(path, root) orelse return error.OutsideRepository;
         const git = self.git orelse return error.NoGit;
 
-        const left_label = diffRefLabel(left_ref);
-        const right_label = diffRefLabel(right_ref);
+        const left_label = left_ref.label();
+        const right_label = right_ref.label();
 
-        const text = try self.resolveDiffTexts(git, path, relative, left_ref, right_ref);
+        const working = if (left_ref == .working or right_ref == .working) if (self.findOpenInput(path)) |input| blk: {
+            var value = try input.editor.model.getValue(.TextDefined, true);
+            break :blk try value.toOwnedSlice();
+        } else null else null;
+        defer if (working) |text| self.allocator.free(text);
+        const text = try git.resolveDiffTexts(root, relative, working, left_ref, right_ref);
         defer self.allocator.free(text.original);
         defer self.allocator.free(text.modified);
         if (text.original.len == 0 and text.modified.len == 0 and self.findDiffTab(path, left_label, right_label) == null) {
@@ -4381,50 +4422,6 @@ pub const Workbench = struct {
         tab.focusEditor();
         self.focusEditor();
         self.refreshStatus();
-    }
-
-    const ResolvedDiffTexts = struct {
-        original: []u8,
-        modified: []u8,
-    };
-
-    fn resolveDiffTexts(
-        self: *Workbench,
-        git: *git_mod.Git,
-        path: []const u8,
-        relative: []const u8,
-        left_ref: DiffRef,
-        right_ref: DiffRef,
-    ) !ResolvedDiffTexts {
-        const original = try self.diffTextFor(git, path, relative, left_ref);
-        errdefer self.allocator.free(original);
-        const modified = try self.diffTextFor(git, path, relative, right_ref);
-        return .{ .original = original, .modified = modified };
-    }
-
-    fn diffTextFor(
-        self: *Workbench,
-        git: *git_mod.Git,
-        path: []const u8,
-        relative: []const u8,
-        ref: DiffRef,
-    ) ![]u8 {
-        if (ref == .empty) return self.allocator.dupe(u8, "");
-        if (ref == .working) {
-            if (self.findOpenInput(path)) |input| {
-                var value = try input.editor.model.getValue(.TextDefined, true);
-                return value.toOwnedSlice();
-            }
-        }
-        const kind: git_mod.RefKind = switch (ref) {
-            .head => .head,
-            .index => .index,
-            .working => .working,
-            .empty => unreachable,
-        };
-        const root = self.git_root orelse return self.allocator.dupe(u8, "");
-        if (try git.readRef(root, relative, kind)) |content| return content;
-        return self.allocator.dupe(u8, "");
     }
 
     fn findDiffTab(self: *Workbench, path: []const u8, left_label: []const u8, right_label: []const u8) ?struct { pane: *GroupPane, tab: *Tab } {
@@ -5041,15 +5038,6 @@ pub const Workbench = struct {
         } else {
             view.setFilterRefs(&.{item.id}) catch {};
         }
-    }
-
-    fn diffRefLabel(ref: DiffRef) []const u8 {
-        return switch (ref) {
-            .head => "HEAD",
-            .index => "Index",
-            .working => "Working Tree",
-            .empty => "Empty",
-        };
     }
 
     const ShowTabs = layout_service_mod.EditorTabsMode;

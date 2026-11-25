@@ -770,6 +770,7 @@ pub fn main(init: std.process.Init) !void {
             switch (item.*) {
                 .focus => |focused| {
                     if (workbench.repository) |repo| repo.onWindowFocus(focused);
+                    if (workbench.notification_controller) |controller| controller.toasts.onWindowFocus(focused);
                     if (!focused) {
                         if (workbench.context_menu_service.current != null) {
                             workbench.context_menu_service.hideContextMenu();
@@ -799,6 +800,7 @@ pub fn main(init: std.process.Init) !void {
                     workbench.clearStatusHover();
 
                     if (try workbench.handleQuickAccessKey(event)) continue;
+                    if (workbench.notification_controller) |controller| if (controller.handleKey(event)) continue;
                     if (try workbench.handleTerminalKey(event)) continue;
                     if (try workbench.handlePanelKey(event)) continue;
                     if (try workbench.handleSidebarKey(event)) {
@@ -889,6 +891,7 @@ pub fn main(init: std.process.Init) !void {
                     if (workbench.handleBreadcrumbPopupMouse(event)) continue;
                     if (workbench.handleTabDragMouse(event)) continue;
                     if (workbench.handleQuickAccessMouse(event)) continue;
+                    if (workbench.notification_controller) |controller| if (controller.handleMouse(event)) continue;
                     if (workbench.handleSashMouse(event)) continue;
                     if (workbench.handleStatusbarMouse(event)) continue;
                     if (workbench.handlePanelMouse(event)) continue;

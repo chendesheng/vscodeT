@@ -8660,3 +8660,33 @@ test "line actions resolve the active code editor when focus leaves it and honor
     try workbench.commands.execute("editor.action.copyLinesDownAction");
     try std.testing.expectEqual(@as(usize, 2), tab.editor.model.getLineCount());
 }
+
+test "Workbench: notification center commands render an actionable notification and close it" {
+    const allocator = std.testing.allocator;
+    const window = try TestWindow.init(allocator, std.testing.io, &.{}, 80, 24);
+    defer window.deinit();
+    const wb = window.workbench;
+    const controller = wb.notification_controller.?;
+    var count: usize = 0;
+    const handle = wb.notification_api.prompt(.Info, .{ .text = "Complete the operation" }, &.{.{ .label = "Complete", .context = &count, .run_fn = struct {
+        fn run(ctx: *anyopaque) void {
+            const calls: *usize = @ptrCast(@alignCast(ctx));
+            calls.* += 1;
+        }
+    }.run }}, null);
+    defer handle.release();
+    try wb.commands.execute("notifications.showList");
+    try std.testing.expect(controller.center.is_visible);
+    try std.testing.expectEqual(true, handle.visible().?);
+    try controller.render(window.surface.document(), &wb.frame.next, wb.theme_palette);
+    var hit: ?@import("../vs/workbench/browser/parts/notifications/notificationsList.zig").NotificationsList.Hit = null;
+    for (controller.list.hits.items) |candidate| if (candidate.action == .primary) {
+        hit = candidate;
+        break;
+    };
+    const action = hit orelse return error.MissingNotificationAction;
+    try std.testing.expect(controller.handleMouse(&.{ .kind = .down, .button = .left, .x = ui.cell.snap(action.rect.x), .y = ui.cell.snap(action.rect.y) }));
+    try std.testing.expectEqual(@as(usize, 1), count);
+    try std.testing.expectEqual(@as(usize, 0), wb.notification_service.model.notifications.items.len);
+    try std.testing.expect(!controller.center.is_visible);
+}

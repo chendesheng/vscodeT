@@ -75,6 +75,23 @@ const GitVersion = struct { major: usize, minor: usize };
 const stderr_limit: usize = 64 * 1024;
 
 /// A revision that `readRef` can materialize.
+/// Terminal equivalent of the Git extension's resource URI references.
+pub const DiffRef = enum {
+    head,
+    index,
+    working,
+    empty,
+    pub fn label(self: DiffRef) []const u8 {
+        return switch (self) {
+            .head => "HEAD",
+            .index => "Index",
+            .working => "Working Tree",
+            .empty => "Empty",
+        };
+    }
+};
+pub const ResolvedDiffTexts = struct { original: []u8, modified: []u8 };
+
 pub const RefKind = enum {
     head,
     index,
@@ -519,6 +536,22 @@ pub const Git = struct {
     /// oversized blobs and pathological paths. Git failures are reported as
     /// null so a diff request can degrade to an empty side; only allocation
     /// failures propagate.
+    pub fn resolveDiffTexts(self: *Git, root: []const u8, relative: []const u8, working: ?[]const u8, left: DiffRef, right: DiffRef) !ResolvedDiffTexts {
+        const original = try self.diffTextFor(root, relative, working, left);
+        errdefer self.allocator.free(original);
+        return .{ .original = original, .modified = try self.diffTextFor(root, relative, working, right) };
+    }
+    fn diffTextFor(self: *Git, root: []const u8, relative: []const u8, working: ?[]const u8, ref: DiffRef) ![]u8 {
+        if (ref == .working) if (working) |text| return self.allocator.dupe(u8, text);
+        const kind: RefKind = switch (ref) {
+            .head => .head,
+            .index => .index,
+            .working => .working,
+            .empty => return self.allocator.dupe(u8, ""),
+        };
+        return (try self.readRef(root, relative, kind)) orelse try self.allocator.dupe(u8, "");
+    }
+
     pub fn readRef(self: *Git, root: []const u8, path: []const u8, ref: RefKind) !?[]u8 {
         if (!isSafeRelativePath(path)) return null;
         return switch (ref) {

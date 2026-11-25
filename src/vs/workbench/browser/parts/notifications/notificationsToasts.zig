@@ -191,8 +191,7 @@ pub const NotificationsToasts = struct {
         self.layoutContainer();
     }
     pub fn heightFor(self: *const NotificationsToasts, item: *Item) usize {
-        const text_height = if (item.expanded) (item.message.raw.len +| @max(self.max_width -| 6, 1) - 1) / @max(self.max_width -| 6, 1) else 1;
-        return self.row_height +| text_height -| 1 +| @intFromBool(item.actions.primary.len != 0 or item.actions.secondary.len != 0);
+        return @import("./notificationsList.zig").NotificationsList.rowHeight(item, self.max_width, self.row_height);
     }
     fn layoutContainer(self: *NotificationsToasts) void {
         var single = self.max_height;

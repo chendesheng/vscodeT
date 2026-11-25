@@ -257,6 +257,7 @@ pub fn renderFrame(workbench: *Workbench, writer: *std.Io.Writer) !void {
 }
 
 pub fn cursorCell(workbench: *Workbench) ?@import("editorView.zig").Cell {
+    if (workbench.notification_controller) |controller| if (controller.focusedItem() != null or (controller.center.is_visible and controller.center_focus)) return null;
     if (workbench.quick_access.isOpen()) return null;
     if (workbench.dialog != null or workbench.context_menu_service.current != null) return null;
     if (workbench.breadcrumbPopupVisible()) return null;
@@ -377,6 +378,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
             .part_focused = self.focus == .statusbar,
         });
     }
+    if (self.notification_controller) |controller| try controller.render(self.editor_surface.document(), &self.frame.next, self.theme_palette);
     if (self.scm_history_view) |graph| try graph.renderHover(&self.frame.next, self.workbenchGridLayout().editor_column, self.layout_api.getSideBarPosition(), self.part.cell_borders, self.part.cell_border_capabilities);
     if (self.quick_access.isOpen()) {
         self.quick_access.widget.caps = if (self.part.cell_borders) self.part.cell_border_capabilities else .{};
