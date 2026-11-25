@@ -348,7 +348,7 @@ fn paintSidebarContents(self: *Workbench) !void {
             container.native_outline = self.part.cell_borders and self.part.cell_border_capabilities.has(.rect);
             container.always_show_header_actions = if (self.configuration) |config| config.getBool("workbench.view.alwaysShowHeaderActions", false) else false;
             try container.render(&self.frame.next, content, focused, self.theme_palette);
-        } else if (self.scm_view) |view| {
+        } else if (self.scm.changes) |view| {
             if (self.theme_palette) |palette| view.setThemeColors(palette);
             try view.render(&self.frame.next, content, focused, .{ .show_header = false });
         } else {
@@ -380,7 +380,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
         });
     }
     if (self.notification_controller) |controller| try controller.render(self.editor_surface.document(), &self.frame.next, self.theme_palette);
-    if (self.scm_history_view) |graph| try graph.renderHover(&self.frame.next, self.workbenchGridLayout().editor_column, self.layout_api.getSideBarPosition(), self.part.cell_borders, self.part.cell_border_capabilities);
+    if (self.scm.history) |graph| try graph.renderHover(&self.frame.next, self.workbenchGridLayout().editor_column, self.layout_api.getSideBarPosition(), self.part.cell_borders, self.part.cell_border_capabilities);
     if (self.quick_access.isOpen()) {
         self.quick_access.widget.caps = if (self.part.cell_borders) self.part.cell_border_capabilities else .{};
         self.quick_access.widget.open_to_bottom = self.preferredSideBySideDirection() == .DOWN;

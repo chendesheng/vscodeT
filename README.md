@@ -1128,7 +1128,8 @@ console API for raw mode, sizing and input polling.
   unmerged entries, maps porcelain statuses to the upstream letters, tooltips
   and theme colors (`M`/`U`/`!`, `Modified`/`Untracked`/`Conflict: ...`), and
   registers primary (`working ↔ index`) and secondary (`index ↔ HEAD`)
-  quick-diff providers. The SCM sidebar
+  quick-diff providers. The SCM contribution (`scm.contribution.zig`) owns
+  the Changes/Graph views, SCM service and quick-diff controllers. The SCM sidebar
   (`src/vs/workbench/contrib/scm/browser/scmViewPane.zig`) ports the Changes
   view: with one repository the resource groups sit at the top level, while
   `scm.alwaysShowRepositories` adds the repository header (whose count follows

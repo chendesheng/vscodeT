@@ -1,0 +1,119 @@
+// Port of the SCM view contribution registrations in
+// `src/vs/workbench/contrib/scm/browser/scm.contribution.ts`.
+// The terminal uses explicit construction rather than SyncDescriptor and
+// singleton decorators. The contribution owns the service and the Changes,
+// Graph and quick-diff controllers, while the sidebar hosts its view panes.
+// The native extension supplies ISCMProvider and QuickDiffProvider objects;
+// multi-repository view and working-set controllers remain unported.
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const scm = @import("../common/scm.zig");
+const SCMService = @import("../common/scmService.zig").SCMService;
+const quick_diff = @import("../common/quickDiffService.zig");
+const QuickDiffWorkbenchController = @import("quickDiffDecorator.zig").QuickDiffWorkbenchController;
+const scm_view = @import("scmViewPane.zig");
+const scm_history = @import("scmHistoryViewPane.zig");
+const Storage = @import("../../../../platform/storage/common/storage.zig").InMemoryStorageService;
+const ConfigurationService = @import("../../../services/configuration/browser/configurationService.zig").ConfigurationService;
+const EditorService = @import("../../../services/editor/browser/editorService.zig").EditorService;
+const ThemeColors = @import("../../../browser/themeColors.zig").ThemeColors;
+const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
+
+pub const SCMContribution = struct {
+    allocator: Allocator,
+    service: ?*SCMService = null,
+    service_api: ?*scm.ISCMService = null,
+    storage: ?*Storage = null,
+    quick_diff_service: ?*quick_diff.QuickDiffService = null,
+    quick_diff_controller: ?*QuickDiffWorkbenchController = null,
+    changes: ?*scm_view.SCMViewPane = null,
+    history: ?*scm_history.SCMHistoryViewPane = null,
+
+    pub fn init(allocator: Allocator) SCMContribution {
+        return .{ .allocator = allocator };
+    }
+
+    pub const Options = struct {
+        editors: EditorService,
+        window: *WindowQueue,
+        configuration: ?*ConfigurationService,
+        changes_host: scm_view.Host,
+        history_host: scm_history.Host,
+    };
+
+    pub fn attachProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider, options: Options) !void {
+        const allocator = self.allocator;
+        if (self.service != null) return error.ProviderAlreadyExists;
+        errdefer self.deinit();
+        const service = try allocator.create(SCMService);
+        service.* = SCMService.init(allocator);
+        self.service = service;
+        _ = try service.registerSCMProvider(provider);
+
+        const storage = try allocator.create(Storage);
+        storage.* = Storage.init(allocator);
+        self.storage = storage;
+        const quick_service = try allocator.create(quick_diff.QuickDiffService);
+        quick_service.* = quick_diff.QuickDiffService.init(allocator, storage);
+        self.quick_diff_service = quick_service;
+        for (quick_providers) |quick| {
+            _ = quick_service.addQuickDiffProvider(quick) catch {};
+        }
+
+        const controller = try allocator.create(QuickDiffWorkbenchController);
+        controller.* = QuickDiffWorkbenchController.init(allocator, quick_service, options.window);
+        self.quick_diff_controller = controller;
+        controller.resources_changed = provider.on_did_change_resources;
+        try controller.start(options.editors, options.configuration);
+
+        const api = try allocator.create(scm.ISCMService);
+        api.* = service.interface();
+        self.service_api = api;
+        const view = try allocator.create(scm_view.SCMViewPane);
+        view.* = scm_view.SCMViewPane.init(allocator, api, options.changes_host);
+        self.changes = view;
+
+        const history = try scm_history.SCMHistoryViewPane.init(allocator, options.history_host, storage);
+        self.history = history;
+    }
+
+    /// Configure the view before mounting its history provider (initial query
+    /// uses the configured filter and graph options).
+    pub fn attachHistoryProvider(self: *SCMContribution, provider: *const scm.ISCMProvider, theme: ?*const ThemeColors) void {
+        const history = self.history orelse return;
+        if (theme) |palette| history.setThemeColors(palette);
+        if (provider.history_provider) |history_provider| history.setProvider(history_provider);
+    }
+
+    /// The attached providers are borrowed. Tear down their listeners and
+    /// destroy all views and services before the extension releases them.
+    pub fn deinit(self: *SCMContribution) void {
+        const allocator = self.allocator;
+        if (self.history) |view| {
+            view.deinit();
+            allocator.destroy(view);
+        }
+        if (self.quick_diff_controller) |controller| {
+            controller.deinit();
+            allocator.destroy(controller);
+        }
+        if (self.changes) |view| {
+            view.deinit();
+            allocator.destroy(view);
+        }
+        if (self.service_api) |api| allocator.destroy(api);
+        if (self.quick_diff_service) |service| {
+            service.deinit();
+            allocator.destroy(service);
+        }
+        if (self.service) |service| {
+            service.deinit();
+            allocator.destroy(service);
+        }
+        if (self.storage) |storage| {
+            storage.deinit();
+            allocator.destroy(storage);
+        }
+        self.* = init(allocator);
+    }
+};

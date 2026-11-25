@@ -94,6 +94,9 @@ with the documented omissions listed at the end of this document.
   port the per-provider originals, the 200 ms recompute trigger, the
   primary/secondary overlap split, and the `dirty-diff-*` whole-line/gutter/
   overview decorations.
+- `src/vs/workbench/contrib/scm/browser/scm.contribution.zig` constructs and
+  owns the SCM service, Changes/Graph views and quick-diff controllers from
+  the native extension provider. View-container routing remains in the shell.
 - `src/extensions/git/src/model.zig` owns single-workspace repository discovery,
   Git CLI configuration and delegate/repository lifetime. The full upstream
   multi-repository discovery and parent/ignored/unsafe repository tracking

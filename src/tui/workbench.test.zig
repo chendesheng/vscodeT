@@ -7698,9 +7698,9 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try workbench.initGit();
 
     try std.testing.expect(workbench.git_model.repository != null);
-    try std.testing.expect(workbench.scm_view != null);
-    try std.testing.expect(workbench.quick_diff_controller != null);
-    const quick_diff = workbench.quick_diff_controller.?;
+    try std.testing.expect(workbench.scm.changes != null);
+    try std.testing.expect(workbench.scm.quick_diff_controller != null);
+    const quick_diff = workbench.scm.quick_diff_controller.?;
     try std.testing.expectEqual(@as(usize, 1), quick_diff.count());
     try std.testing.expect(!quick_diff.ignore_trim_whitespace);
     try std.testing.expect(!quick_diff.config.gutter_pattern.added);
@@ -7716,10 +7716,10 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const initial_tabs = workbench.tabCount();
     const provider = workbench.git_model.repository.?;
     try std.testing.expect(provider.count() >= 3);
-    try std.testing.expect(workbench.scm_view.?.resourceCount() >= 3);
+    try std.testing.expect(workbench.scm.changes.?.resourceCount() >= 3);
 
     // Direct configuration edits reach both views before the host polls files.
-    const graph = workbench.scm_history_view.?;
+    const graph = workbench.scm.history.?;
     try workbench.setUserConfigurationValue("scm.graph.pageSize", .{ .integer = 1001 });
     try std.testing.expectEqual(@as(usize, 1000), graph.config.page_size);
     try workbench.setUserConfigurationValue("scm.graph.pageSize", .{ .integer = 0 });
@@ -7727,7 +7727,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try workbench.setUserConfigurationValue("scm.graph.pageSize", null);
     try std.testing.expectEqual(@as(usize, 50), graph.config.page_size);
     try workbench.setUserConfigurationValue("scm.defaultViewMode", .{ .string = "tree" });
-    try std.testing.expectEqual(scm_common.ViewMode.tree, workbench.scm_view.?.viewMode());
+    try std.testing.expectEqual(scm_common.ViewMode.tree, workbench.scm.changes.?.viewMode());
     try std.testing.expectEqual(.tree, graph.viewMode());
     graph.setViewMode(.list);
     graph.setViewMode(.tree);
@@ -7737,7 +7737,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
 
     // The Changes view honors the upstream view-mode and sort commands.
     {
-        const view = workbench.scm_view.?;
+        const view = workbench.scm.changes.?;
         try std.testing.expectEqual(scm_common.ViewMode.list, view.viewMode());
         try std.testing.expectEqual(scm_view_mod.ViewSortKey.path, view.viewSortKey());
         _ = try workbench.commands.execute(scm_view_mod.SET_SORT_BY_NAME_ACTION_ID);
@@ -7755,7 +7755,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // lists the repository commits.
     try std.testing.expect(workbench.scm_container != null);
     try std.testing.expect(workbench.scm_view_model != null);
-    try std.testing.expect(workbench.scm_history_view != null);
+    try std.testing.expect(workbench.scm.history != null);
     const visible_views = try workbench.scm_view_model.?.visibleViews(allocator);
     defer allocator.free(visible_views);
     try std.testing.expectEqual(@as(usize, 2), visible_views.len);
@@ -7763,7 +7763,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expectEqualStrings("graph", visible_views[1].id);
 
     workbench.refreshGitStatus();
-    const history_view = workbench.scm_history_view.?;
+    const history_view = workbench.scm.history.?;
     try history_view.refresh(.reload);
     try std.testing.expect(history_view.view_models.len > 0);
     try std.testing.expect(history_view.rows.items.len > 0);
@@ -7788,7 +7788,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(std.mem.indexOf(u8, scm_frame.written(), "\u{2713} Commit") != null);
     try std.testing.expectEqualStrings(
         "Message (Enter to commit on \"main\")",
-        workbench.scm_interface.?.repositories()[0].input.placeholder(),
+        workbench.scm.service_api.?.repositories()[0].input.placeholder(),
     );
     workbench.scm_view_model.?.setCollapsed("graph", false);
 
@@ -7895,7 +7895,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // until the next refresh.
     const working_resource = provider.groups[2].resources.items[0];
     try std.testing.expectEqualStrings("a.txt", working_resource.relative_path);
-    try workbench.scm_view.?.host.open_change(workbench.scm_view.?.host.context, &working_resource.iface);
+    try workbench.scm.changes.?.host.open_change(workbench.scm.changes.?.host.context, &working_resource.iface);
     var tab = workbench.activeTab() orelse return error.TestExpectedTab;
     try std.testing.expect(tab.isDiff());
     try std.testing.expectEqual(@as(usize, 2), tab.diff.?.widget.changeCount());
@@ -7961,7 +7961,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     workbench.refreshGitStatus();
     const refreshed_resource = provider.groups[2].resources.items[0];
     try std.testing.expectEqualStrings("a.txt", refreshed_resource.relative_path);
-    try workbench.scm_view.?.host.open_change(workbench.scm_view.?.host.context, &refreshed_resource.iface);
+    try workbench.scm.changes.?.host.open_change(workbench.scm.changes.?.host.context, &refreshed_resource.iface);
     try std.testing.expectEqual(tab, workbench.activeTab().?);
     try std.testing.expectEqual(initial_tabs + 4, workbench.tabCount());
 
@@ -8012,9 +8012,9 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // The commit input commits the index. The `git.commit` command reads the
     // SCM input model, like upstream's command.
     {
-        var input = workbench.scm_interface.?.repositories()[0].input;
+        var input = workbench.scm.service_api.?.repositories()[0].input;
         input.setValue("scm commit message", false);
-        workbench.scm_view.?.refresh();
+        workbench.scm.changes.?.refresh();
         try std.testing.expect(provider.repository.stateRef().index_changes.len > 0);
         _ = try workbench.commands.execute("git.commit");
         const after_commit = provider.repository.stateRef();
@@ -8029,7 +8029,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
         // With an empty index the terminal's smart-commit path stages the
         // changed files before committing.
         input.setValue("smart commit", false);
-        workbench.scm_view.?.refresh();
+        workbench.scm.changes.?.refresh();
         _ = try workbench.commands.execute("git.commit");
         const after_smart = provider.repository.stateRef();
         try std.testing.expectEqual(@as(usize, 0), after_smart.index_changes.len);
@@ -8079,7 +8079,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     _ = try workbench.showActivityById("scm");
     try workbench.layout.setSize(.sidebar, 40);
 
-    const view = workbench.scm_history_view orelse return error.TestExpectedHistoryView;
+    const view = workbench.scm.history orelse return error.TestExpectedHistoryView;
     view.setConfig(.{ .page_size = 2, .page_on_scroll = false });
     try view.refresh(.reload);
     try std.testing.expectEqual(@as(usize, 3), view.rows.items.len);
@@ -8143,7 +8143,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     try std.testing.expectEqual(.tree, view.viewMode());
     view.setViewMode(mode_before);
 
-    const changes = workbench.scm_view.?;
+    const changes = workbench.scm.changes.?;
     changes.setViewMode(.tree);
     try workbench.commands.execute(scm_view_mod.CHANGES_MENU_ACTION_ID);
     const changes_menu = workbench.context_menu_service.current.?.popup.?;
