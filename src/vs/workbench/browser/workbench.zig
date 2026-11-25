@@ -4430,7 +4430,7 @@ pub const Workbench = struct {
             try target.tabs.ensureUnusedCapacity(1);
             _ = try target.group.model.openEditor(&input.base, .{ .active = true, .pinned = true });
             errdefer _ = target.group.model.closeEditor(&input.base, .UNKNOWN, true) catch {};
-            try self.finishCopiedTab(target, source);
+            try target.finishCopiedEditor(source, self.copyEditorHost());
         }
         try self.focusPane(target);
     }
@@ -5733,103 +5733,34 @@ pub const Workbench = struct {
         return self.copyTabIntoPaneWithOptions(target, tab, .{ .pinned = true, .active = true });
     }
 
-    fn copyTabIntoPaneWithOptions(
-        self: *Workbench,
-        target: *GroupPane,
-        tab: *Tab,
-        options: group_mod.EditorOpenOptions,
-    ) !*Tab {
-        if (tab.terminalInstance()) |parent| {
-            const copy = try self.createTerminalInEditor(target, parent);
-            if (options.index) |index| _ = try target.group.model.moveEditor(copy.input, index);
-            if (options.sticky) _ = try target.group.model.stick(copy.input);
-            return copy;
-        }
-        if (tab.file_input) |file_input| {
-            const copied_input = try file_input.copyInput();
-            var input_owned = true;
-            errdefer if (input_owned) copied_input.deinit();
-            var tab_owned: ?*Tab = null;
-            errdefer if (tab_owned) |owned| owned.deinit();
-
-            const opened = try target.group.model.openEditor(
-                &copied_input.base,
-                options,
-            );
-            if (!opened.is_new) {
-                // The target already shows this document; upstream's
-                // `copyEditor` reveals that pane instead of adding a duplicate.
-                const existing = target.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
-                copied_input.deinit();
-                input_owned = false;
-                return existing;
-            }
-            errdefer _ = target.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
-
-            const copied = try Tab.initFromInput(self.view_factory, self.allocator, copied_input);
-            tab_owned = copied;
-            input_owned = false;
-            try self.finishCopiedTab(target, copied);
-            return copied;
-        }
-
-        if (tab.image_input) |image_input| {
-            const copied_input = try ImagePreviewEditorInput.init(self.allocator, image_input.path);
-            var input_owned = true;
-            errdefer if (input_owned) copied_input.deinit();
-            var tab_owned: ?*Tab = null;
-            errdefer if (tab_owned) |owned| owned.deinit();
-
-            const opened = try target.group.model.openEditor(
-                &copied_input.base,
-                options,
-            );
-            if (!opened.is_new) {
-                const existing = target.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
-                copied_input.deinit();
-                input_owned = false;
-                return existing;
-            }
-            errdefer _ = target.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
-
-            const dims = target.contentDimensions();
-            const copied = try Tab.initImageFromInput(
-                self.view_factory,
-                self.allocator,
-                self.io,
-                copied_input,
-                dims.width,
-                dims.height,
-                &self.images,
-                &self.window_events,
-            );
-            tab_owned = copied;
-            input_owned = false;
-            try self.finishCopiedTab(target, copied);
-            return copied;
-        }
-
-        // Diff/snapshot tabs own their models and inputs. Upstream copies the
-        // side-by-side input; the terminal diff view is not model/view split
-        // yet, so there is nothing safe to duplicate. Leave the layout
-        // unchanged rather than opening an empty group.
-        return error.SplitUnsupported;
+    fn copyTabIntoPaneWithOptions(self: *Workbench, target: *GroupPane, tab: *Tab, options: group_mod.EditorOpenOptions) !*Tab {
+        return target.copyEditor(tab, options, self.copyEditorHost());
     }
 
-    fn finishCopiedTab(self: *Workbench, pane: *GroupPane, tab: *Tab) !void {
-        tab.setAsyncIo(self.async_io);
-        tab.setImageRuntime(&self.images);
-        try tab.view.setStatusBarVisible(false);
-        try pane.addTab(tab);
-        errdefer _ = pane.removeTab(tab);
+    fn copyEditorHost(self: *Workbench) GroupPane.CopyEditorHost {
+        return .{
+            .context = self,
+            .view_factory = self.view_factory,
+            .io = self.io,
+            .async_io = self.async_io,
+            .images = &self.images,
+            .window = &self.window_events,
+            .configure = configureCopiedPane,
+            .discard = discardTransferPane,
+            .create_terminal = copyTerminalPane,
+        };
+    }
+
+    fn configureCopiedPane(context: *anyopaque, tab: *Tab) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyEditorSettingsToTab(tab);
-        if (!tab.isImage()) {
-            self.registerWorkingCopy(tab);
-        }
+        if (!tab.isImage()) self.registerWorkingCopy(tab);
         if (self.language_features) |features| tab.attachLanguageRegistry(features);
-        try tab.ensureControllers();
-        try pane.activateTab(tab);
-        try tab.refresh();
+    }
+
+    fn copyTerminalPane(context: *anyopaque, target: *GroupPane, parent: *terminal_service_mod.TerminalInstance) !*Tab {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        return self.createTerminalInEditor(target, parent);
     }
 
     pub fn closeActive(self: *Workbench) !bool {
@@ -7424,71 +7355,23 @@ pub const Workbench = struct {
         _ = try self.moveTabToPaneWithOptions(source, dest, tab, .{ .pinned = true, .active = true, .index = index });
     }
 
-    fn moveTabToPaneWithOptions(
-        self: *Workbench,
-        source: *GroupPane,
-        dest: *GroupPane,
-        tab: *Tab,
-        options: group_mod.EditorOpenOptions,
-    ) !*Tab {
-        try dest.tabs.ensureUnusedCapacity(1);
-        try tab.ensureControllers();
+    fn moveTabToPaneWithOptions(self: *Workbench, source: *GroupPane, dest: *GroupPane, tab: *Tab, options: group_mod.EditorOpenOptions) !*Tab {
+        return source.moveEditor(dest, tab, options, .{ .context = self, .will_move = willMoveEditor, .discard = discardTransferPane, .focus_editor = focusEditorAfterTransfer });
+    }
+
+    fn willMoveEditor(context: *anyopaque, source: *GroupPane, tab: *Tab) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
         self.invalidateDragTab(source, tab);
-        // Open first, like upstream `doMoveOrCopyEditorAcrossGroups`: when the
-        // target already shows a matching input (split copies have distinct
-        // inputs over one model) the model reuses that editor and the moved
-        // view is disposed instead of adding a second tab for the same model.
-        const opened = try dest.group.model.openEditor(
-            tab.input,
-            options,
-        );
+    }
 
-        if (!opened.is_new) {
-            const existing = dest.tabForInput(opened.editor);
-            // Split copies share one document, so discarding the moved view is
-            // safe. A session-restored duplicate can own a different document;
-            // never discard unsaved edits from it.
-            if (existing) |target_tab| {
-                if (target_tab.editor.model != tab.editor.model and tab.editor.isDirty()) {
-                    try dest.activateTab(target_tab);
-                    tab.editor.setMessage(
-                        "Move blocked: {s} is already open with unsaved changes in the target group",
-                        .{tab.input.getName()},
-                    );
-                    self.service.activateGroup(dest.group);
-                    self.setFocus(.editor);
-                    return target_tab;
-                }
-            }
-        }
+    fn discardTransferPane(context: *anyopaque, tab: *Tab) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
+        self.discardTab(tab);
+    }
 
-        _ = try source.group.model.closeEditor(tab.input, .MOVE, false);
-        _ = source.removeTab(tab);
-        source.syncActivePane();
-        // Moving the last active tab leaves the model without an active editor
-        // even when the group still has tabs; activate one so the group keeps
-        // its breadcrumb/editor chrome.
-        if (source.activeTab() == null and source.tabs.items.len > 0) {
-            try source.activateTab(source.tabs.items[0]);
-        }
-
-        if (!opened.is_new) {
-            const existing = dest.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
-            try dest.activateTab(existing);
-            existing.focusEditor();
-            // The moved view loses to the already-open tab; detach every
-            // workbench registration before destroying it.
-            self.discardTab(tab);
-            self.service.activateGroup(dest.group);
-            self.setFocus(.editor);
-            return existing;
-        }
-
-        try dest.addTab(tab);
-        self.service.activateGroup(dest.group);
-        tab.focusEditor();
+    fn focusEditorAfterTransfer(context: *anyopaque) void {
+        const self: *Workbench = @ptrCast(@alignCast(context));
         self.setFocus(.editor);
-        return tab;
     }
 
     /// Checks the editor operations before a drop can change the split tree.

@@ -299,6 +299,185 @@ pub fn EditorGroupView(comptime View: type) type {
             if (@hasDecl(@typeInfo(View).pointer.child, "attachWindow")) for (self.tabs.items) |tab| tab.attachWindow(window);
         }
 
+        pub const CopyEditorHost = struct {
+            context: *anyopaque,
+            view_factory: @import("editorPane.zig").EditorViewFactory,
+            io: std.Io,
+            async_io: std.Io,
+            images: *ui.image.Runtime,
+            window: *@import("../../../../base/common/windowDispatch.zig").Queue,
+            configure: *const fn (*anyopaque, View) void,
+            discard: *const fn (*anyopaque, View) void,
+            create_terminal: *const fn (*anyopaque, *Self, *@import("../../../contrib/terminal/browser/terminalInstance.zig").TerminalInstance) anyerror!View,
+        };
+
+        /// Upstream copyEditor/doMoveOrCopyEditorAcrossGroups, adapted to the
+        /// target's persistent editor views. The terminal editor copy retains
+        /// the source document while creating a new independent view.
+        pub fn copyEditor(self: *Self, tab: View, options: @import("../../../common/editor/editorGroupModel.zig").EditorOpenOptions, host: CopyEditorHost) !View {
+            const TabType = @typeInfo(View).pointer.child;
+            const ImagePreviewEditorInput = @import("../../../contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
+            if (tab.terminalInstance()) |parent| {
+                const copy = try host.create_terminal(host.context, self, parent);
+                if (options.index) |index| _ = try self.group.model.moveEditor(copy.input, index);
+                if (options.sticky) _ = try self.group.model.stick(copy.input);
+                return copy;
+            }
+            if (tab.file_input) |file_input| {
+                const copied_input = try file_input.copyInput();
+                var input_owned = true;
+                errdefer if (input_owned) copied_input.deinit();
+                var tab_owned: ?View = null;
+                errdefer if (tab_owned) |owned| host.discard(host.context, owned);
+
+                const opened = try self.group.model.openEditor(
+                    &copied_input.base,
+                    options,
+                );
+                if (!opened.is_new) {
+                    // The target already shows this document; upstream's
+                    // `copyEditor` reveals that pane instead of adding a duplicate.
+                    const existing = self.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
+                    copied_input.deinit();
+                    input_owned = false;
+                    return existing;
+                }
+                errdefer _ = self.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
+
+                const copied = try TabType.initFromInput(host.view_factory, self.allocator, copied_input);
+                tab_owned = copied;
+                input_owned = false;
+                try self.finishCopiedEditor(copied, host);
+                return copied;
+            }
+
+            if (tab.image_input) |image_input| {
+                const copied_input = try ImagePreviewEditorInput.init(self.allocator, image_input.path);
+                var input_owned = true;
+                errdefer if (input_owned) copied_input.deinit();
+                var tab_owned: ?View = null;
+                errdefer if (tab_owned) |owned| host.discard(host.context, owned);
+
+                const opened = try self.group.model.openEditor(
+                    &copied_input.base,
+                    options,
+                );
+                if (!opened.is_new) {
+                    const existing = self.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
+                    copied_input.deinit();
+                    input_owned = false;
+                    return existing;
+                }
+                errdefer _ = self.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
+
+                const dims = self.contentDimensions();
+                const copied = try TabType.initImageFromInput(
+                    host.view_factory,
+                    self.allocator,
+                    host.io,
+                    copied_input,
+                    dims.width,
+                    dims.height,
+                    host.images,
+                    host.window,
+                );
+                tab_owned = copied;
+                input_owned = false;
+                try self.finishCopiedEditor(copied, host);
+                return copied;
+            }
+
+            // Diff/snapshot tabs own their models and inputs. Upstream copies the
+            // side-by-side input; the terminal diff view is not model/view split
+            // yet, so there is nothing safe to duplicate. Leave the layout
+            // unchanged rather than opening an empty group.
+            return error.SplitUnsupported;
+        }
+
+        pub fn finishCopiedEditor(self: *Self, tab: View, host: CopyEditorHost) !void {
+            tab.setAsyncIo(host.async_io);
+            tab.setImageRuntime(host.images);
+            try tab.view.setStatusBarVisible(false);
+            try self.addTab(tab);
+            errdefer _ = self.removeTab(tab);
+            host.configure(host.context, tab);
+            try tab.ensureControllers();
+            try self.activateTab(tab);
+            try tab.refresh();
+        }
+
+        pub const MoveEditorHost = struct {
+            context: *anyopaque,
+            will_move: *const fn (*anyopaque, *Self, View) void,
+            discard: *const fn (*anyopaque, View) void,
+            focus_editor: *const fn (*anyopaque) void,
+        };
+
+        /// Upstream moveEditor/doMoveOrCopyEditorAcrossGroups: open in the
+        /// target before closing the source. The terminal host only handles
+        /// drag cancellation, the losing pane's external registrations and
+        /// terminal focus after a transfer.
+        pub fn moveEditor(self: *Self, dest: *Self, tab: View, options: @import("../../../common/editor/editorGroupModel.zig").EditorOpenOptions, host: MoveEditorHost) !View {
+            try dest.tabs.ensureUnusedCapacity(1);
+            try tab.ensureControllers();
+            host.will_move(host.context, self, tab);
+            // Open first, like upstream `doMoveOrCopyEditorAcrossGroups`: when the
+            // target already shows a matching input (split copies have distinct
+            // inputs over one model) the model reuses that editor and the moved
+            // view is disposed instead of adding a second tab for the same model.
+            const opened = try dest.group.model.openEditor(
+                tab.input,
+                options,
+            );
+
+            if (!opened.is_new) {
+                const existing = dest.tabForInput(opened.editor);
+                // Split copies share one document, so discarding the moved view is
+                // safe. A session-restored duplicate can own a different document;
+                // never discard unsaved edits from it.
+                if (existing) |target_tab| {
+                    if (target_tab.editor.model != tab.editor.model and tab.editor.isDirty()) {
+                        try dest.activateTab(target_tab);
+                        tab.editor.setMessage(
+                            "Move blocked: {s} is already open with unsaved changes in the target group",
+                            .{tab.input.getName()},
+                        );
+                        self.group.service.activateGroup(dest.group);
+                        host.focus_editor(host.context);
+                        return target_tab;
+                    }
+                }
+            }
+
+            _ = try self.group.model.closeEditor(tab.input, .MOVE, false);
+            _ = self.removeTab(tab);
+            self.syncActivePane();
+            // Moving the last active tab leaves the model without an active editor
+            // even when the group still has tabs; activate one so the group keeps
+            // its breadcrumb/editor chrome.
+            if (self.activeTab() == null and self.tabs.items.len > 0) {
+                try self.activateTab(self.tabs.items[0]);
+            }
+
+            if (!opened.is_new) {
+                const existing = dest.tabForInput(opened.editor) orelse return error.EditorAlreadyOpen;
+                try dest.activateTab(existing);
+                existing.focusEditor();
+                // The moved view loses to the already-open tab; detach every
+                // workbench registration before destroying it.
+                host.discard(host.context, tab);
+                self.group.service.activateGroup(dest.group);
+                host.focus_editor(host.context);
+                return existing;
+            }
+
+            try dest.addTab(tab);
+            self.group.service.activateGroup(dest.group);
+            tab.focusEditor();
+            host.focus_editor(host.context);
+            return tab;
+        }
+
         pub fn addTab(self: *Self, tab: View) !void {
             try self.tabs.append(tab);
             if (@hasDecl(@typeInfo(View).pointer.child, "attachWindow")) if (self.window) |window| tab.attachWindow(window);
