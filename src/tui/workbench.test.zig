@@ -4038,9 +4038,9 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     var click = ui.MouseEvent{ .kind = .down, .x = hit.start, .y = 1, .button = .left };
     try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &click));
     try std.testing.expect(!workbench.quick_access.inputService().isVisible());
-    try std.testing.expect(workbench.breadcrumbPopupVisible());
-    try std.testing.expect(workbench.breadcrumb_popup.?.file != null);
-    const picker = workbench.breadcrumb_popup.?.file.?;
+    try std.testing.expect(workbench.breadcrumbs.pickerVisible());
+    try std.testing.expect(workbench.breadcrumbs.picker.?.file != null);
+    const picker = workbench.breadcrumbs.picker.?.file.?;
     try std.testing.expect(picker.selectedPath() != null);
     const rounded = ui.cell_border.parseReply("\x1bP1+bcell-border;ok;1;pen,rect,round,outside,radius\x1b\\").?;
     for ([_]?ui.cell_border.Capabilities{ null, rounded }) |caps| {
@@ -4068,7 +4068,12 @@ test "Workbench: breadcrumb row shows the workspace-relative path" {
     }
     var escape = ui.KeyEvent{ .key = .escape };
     try std.testing.expect(terminal_workbench.handleBreadcrumbPopupKey(workbench, &escape));
-    try std.testing.expect(!workbench.breadcrumbPopupVisible());
+    try std.testing.expect(!workbench.breadcrumbs.pickerVisible());
+    // Reopening creates a fresh data tree before reclaiming the old nodes.
+    try std.testing.expect(terminal_workbench.handleTabMouse(workbench, &click));
+    try std.testing.expect(workbench.breadcrumbs.pickerVisible());
+    try std.testing.expect(workbench.breadcrumbs.picker.?.file.?.selectedPath() != null);
+    try std.testing.expect(terminal_workbench.handleBreadcrumbPopupKey(workbench, &escape));
 }
 
 test "Workbench: breadcrumb symbols come from a registered outline provider" {

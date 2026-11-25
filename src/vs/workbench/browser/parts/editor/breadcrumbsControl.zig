@@ -5,13 +5,12 @@
 // `OutlineItem` instances from the model, opens a tree picker on select and
 // handles the upstream focus/navigation commands. The terminal control keeps
 // that split: it builds items from `BreadcrumbsModel`, drives the cell widget,
-// and delegates file opening, symbol reveal and picker display to a host. The
-// host is the workbench; this file stays independent of `Tab` and the TUI.
+// and owns the anchored picker through the group control collection. Resource
+// opening and native focus are supplied by the host.
 //
 // Not ported here (documented in README/docs/terminal-ui.md): the editor-type
-// dropdown, drag data, hover tooltips, context-view anchoring and the symbol
-// kind filters. Selection uses the existing terminal quick pick instead of the
-// browser tree picker.
+// dropdown, drag data, hover tooltips and browser-only context-view geometry.
+// The picker uses the terminal cell geometry and the ported async data tree.
 //
 // `update()` is called when the active editor/group changes or settings are
 // reloaded. Focus/selection reset on update, matching upstream's new widget
@@ -43,17 +42,14 @@ const BreadcrumbsWidget = widget_mod.BreadcrumbsWidget;
 const Item = widget_mod.Item;
 const ItemKind = widget_mod.ItemKind;
 const file_icon_mod = @import("../../../services/themes/browser/fileIconThemeData.zig");
+const picker_mod = @import("breadcrumbsPicker.zig");
 
 pub const SelectMode = enum { pick, reveal };
 
 /// Geometry of the breadcrumb item that opened the picker. Upstream anchors
 /// the context view to the item node and, for a mouse click, points the arrow
 /// at the cursor within that item.
-pub const Anchor = struct {
-    start: usize,
-    end: usize,
-    cursor: ?usize = null,
-};
+pub const Anchor = picker_mod.Anchor;
 
 pub const Selection = union(enum) {
     file: *const FileElement,
@@ -481,6 +477,9 @@ pub const BreadcrumbsControlCollection = struct {
     settings: Settings,
     service: breadcrumbs.BreadcrumbsService,
     factories: std.AutoHashMapUnmanaged(GroupIdentifier, *BreadcrumbsControlFactory) = .empty,
+    io: std.Io,
+    picker_arena: std.heap.ArenaAllocator,
+    picker: ?*picker_mod.Picker = null,
     add_listener: ?usize = null,
     remove_listener: ?usize = null,
     suspended: bool = false,
@@ -489,16 +488,14 @@ pub const BreadcrumbsControlCollection = struct {
     pub const CollectionHost = struct {
         context: *anyopaque,
         file_icon_theme: *const fn (*anyopaque) file_icon_mod.FileIconThemeData,
-        open_element: *const fn (*anyopaque, Selection, SelectMode, Anchor) anyerror!void,
-        reveal_element: *const fn (*anyopaque, *IOutline, *anyopaque) anyerror!void,
-        close_popup: *const fn (*anyopaque) void,
+        open_file: *const fn (*anyopaque, []const u8) anyerror!void,
         request_render: *const fn (*anyopaque) void,
         focus_editor: *const fn (*anyopaque) void,
         layout_changed: *const fn (*anyopaque) void,
     };
 
-    pub fn init(self: *BreadcrumbsControlCollection, allocator: Allocator, part: *EditorPart, workspace: *WorkspaceContextService, outline_service: *OutlineService, home: ?[]const u8, host: CollectionHost) !void {
-        self.* = .{ .allocator = allocator, .part = part, .workspace = workspace, .outline_service = outline_service, .home = home, .settings = Settings.load(null), .service = breadcrumbs.BreadcrumbsService.init(allocator), .host = host };
+    pub fn init(self: *BreadcrumbsControlCollection, allocator: Allocator, io: std.Io, part: *EditorPart, workspace: *WorkspaceContextService, outline_service: *OutlineService, home: ?[]const u8, host: CollectionHost) !void {
+        self.* = .{ .allocator = allocator, .part = part, .workspace = workspace, .outline_service = outline_service, .home = home, .settings = Settings.load(null), .service = breadcrumbs.BreadcrumbsService.init(allocator), .host = host, .io = io, .picker_arena = std.heap.ArenaAllocator.init(allocator) };
         errdefer self.deinit();
         self.add_listener = try part.on_did_add_group.listen(self, onAddGroup);
         self.remove_listener = try part.on_did_remove_group.listen(self, onRemoveGroup);
@@ -513,6 +510,8 @@ pub const BreadcrumbsControlCollection = struct {
         while (it.next()) |entry| entry.*.destroy();
         self.factories.deinit(self.allocator);
         self.service.deinit();
+        if (self.picker) |picker| picker.deinit();
+        self.picker_arena.deinit();
     }
 
     pub fn detachServices(self: *BreadcrumbsControlCollection) void {
@@ -520,7 +519,7 @@ pub const BreadcrumbsControlCollection = struct {
         if (self.configuration_listener) |id| self.configuration.?.unlistenConfigurationChange(id);
         self.configuration_listener = null;
         self.configuration = null;
-        self.host.close_popup(self.host.context);
+        self.closePicker();
         var it = self.factories.valueIterator();
         while (it.next()) |entry| entry.*.disposeControl();
     }
@@ -539,7 +538,7 @@ pub const BreadcrumbsControlCollection = struct {
     fn onConfigurationChanged(change: configuration_types.Change, self: *BreadcrumbsControlCollection) !void {
         if (!configuration_types.affectsConfiguration(change, "breadcrumbs")) return;
         self.settings = Settings.load(self.configuration);
-        self.host.close_popup(self.host.context);
+        self.closePicker();
         var it = self.factories.valueIterator();
         while (it.next()) |entry| try entry.*.sync();
         self.host.layout_changed(self.host.context);
@@ -577,11 +576,81 @@ pub const BreadcrumbsControlCollection = struct {
 
     pub fn setThemeColors(self: *BreadcrumbsControlCollection, palette: ?*const theme_colors_mod.ThemeColors) void {
         self.theme = palette;
+        if (self.picker) |picker| picker.setThemeColors(palette);
         var it = self.factories.valueIterator();
         while (it.next()) |entry| if (entry.*.control) |control| {
             control.setThemeColors(palette);
             control.rebuildItems() catch {};
         };
+    }
+
+    pub fn pickerVisible(self: *const BreadcrumbsControlCollection) bool {
+        return if (self.picker) |picker| picker.isVisible() else false;
+    }
+
+    pub fn closePicker(self: *BreadcrumbsControlCollection) void {
+        if (self.picker) |picker| picker.close();
+    }
+
+    /// The control selects the upstream file or outline tree. Dispose the old
+    /// tree before reclaiming the arena that owns its data-source elements.
+    fn showPicker(self: *BreadcrumbsControlCollection, pane: *GroupPane, selection: Selection, anchor: Anchor) !void {
+        if (self.picker) |picker| picker.deinit();
+        self.picker = null;
+        _ = self.picker_arena.reset(.retain_capacity);
+        const arena = self.picker_arena.allocator();
+        const picker = try picker_mod.Picker.init(self.allocator, .{
+            .context = self,
+            .io = self.io,
+            .arena = arena,
+            .open_file = openFile,
+            .file_icon = pickerFileIcon,
+            .request_render = pickerRequestRender,
+        }, .{
+            .context = self,
+            .arena = arena,
+            .reveal = revealOutline,
+            .request_render = pickerRequestRender,
+        });
+        self.picker = picker;
+        picker.setThemeColors(self.theme);
+        const anchor_y = ui.cell.snap(pane.rect.y) + pane.titleHeight();
+        switch (selection) {
+            .file => |file| if (file.kind == .ROOT_FOLDER) {
+                var folders = std.array_list.Managed(picker_mod.FolderRef).init(arena);
+                for (self.workspace.getWorkspace().folders.items) |folder| {
+                    try folders.append(.{ .path = folder.resource, .name = folder.name });
+                }
+                try picker.showFileWorkspace(folders.items, file.path, anchor, anchor_y);
+            } else {
+                try picker.showFileDirectory(picker_mod.inputDirectory(file), file.path, anchor, anchor_y);
+            },
+            .outline => |outline| try picker.showOutline(outline.outline, outline.element, anchor, anchor_y),
+            .placeholder => {},
+        }
+        self.host.request_render(self.host.context);
+    }
+
+    fn openFile(context: *anyopaque, path: []const u8) anyerror!void {
+        const self: *BreadcrumbsControlCollection = @ptrCast(@alignCast(context));
+        try self.host.open_file(self.host.context, path);
+        self.host.focus_editor(self.host.context);
+    }
+
+    fn revealOutline(context: *anyopaque, outline: *IOutline, element: *anyopaque) anyerror!void {
+        const self: *BreadcrumbsControlCollection = @ptrCast(@alignCast(context));
+        try outline.reveal(element, .{});
+        self.host.focus_editor(self.host.context);
+    }
+
+    fn pickerFileIcon(context: *anyopaque, path: []const u8) file_icon_mod.Icon {
+        const self: *BreadcrumbsControlCollection = @ptrCast(@alignCast(context));
+        return self.host.file_icon_theme(self.host.context).forFile(std.fs.path.basename(path), null);
+    }
+
+    fn pickerRequestRender(context: *anyopaque) void {
+        const self: *BreadcrumbsControlCollection = @ptrCast(@alignCast(context));
+        self.host.request_render(self.host.context);
     }
 
     pub fn draw(self: *const BreadcrumbsControlCollection, grid: *ui.CellGrid, pane: *GroupPane, rect: ui.Rect, active_group: bool) !void {
@@ -609,6 +678,7 @@ pub const BreadcrumbsControlFactory = struct {
     }
 
     fn disposeControl(self: *BreadcrumbsControlFactory) void {
+        if (self.control != null and self.owner.part.activeView() == self.pane) self.owner.closePicker();
         if (self.registration) |registration| registration.dispose();
         self.registration = null;
         if (self.control) |control| control.deinit();
@@ -635,7 +705,7 @@ pub const BreadcrumbsControlFactory = struct {
         const input = if (self.currentTab()) |tab| tab.editorInput() else null;
         if (self.control) |control| {
             if (self.input != input) {
-                if (owner.part.activeView() == self.pane) owner.host.close_popup(owner.host.context);
+                if (owner.part.activeView() == self.pane) owner.closePicker();
                 control.disposeModel();
                 control.setFocused(false);
                 self.input = input;
@@ -701,11 +771,19 @@ pub const BreadcrumbsControlFactory = struct {
         const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
         self.pane.group.service.activateGroup(self.pane.group);
         self.pane.syncActivePane();
-        try self.owner.host.open_element(self.owner.host.context, selection, mode, anchor);
+        switch (selection) {
+            .file => |file| if (mode == .reveal and file.kind == .FILE) {
+                try BreadcrumbsControlCollection.openFile(self.owner, file.path);
+            } else try self.owner.showPicker(self.pane, selection, anchor),
+            .outline => |outline| if (mode == .pick) {
+                try self.owner.showPicker(self.pane, selection, anchor);
+            } else try BreadcrumbsControlCollection.revealOutline(self.owner, outline.outline, outline.element),
+            .placeholder => {},
+        }
     }
     fn revealElement(context: *anyopaque, outline: *IOutline, element: *anyopaque) !void {
         const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));
-        try self.owner.host.reveal_element(self.owner.host.context, outline, element);
+        try BreadcrumbsControlCollection.revealOutline(self.owner, outline, element);
     }
     fn requestRender(context: *anyopaque) void {
         const self: *BreadcrumbsControlFactory = @ptrCast(@alignCast(context));

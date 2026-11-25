@@ -271,7 +271,7 @@ pub fn cursorCell(workbench: *Workbench) ?@import("editorView.zig").Cell {
     if (workbench.core.notification_controller) |controller| if (controller.focusedItem() != null or (controller.center.is_visible and controller.center_focus)) return null;
     if (workbench.quick_access.isOpen()) return null;
     if (workbench.isDialogOpen() or workbench.context_menu_service.current != null) return null;
-    if (workbench.breadcrumbPopupVisible()) return null;
+    if (workbench.breadcrumbs.pickerVisible()) return null;
     if (workbench.focus == .terminal) {
         if (!workbench.terminalVisible()) return null;
         const service = workbench.terminal_service orelse return null;
@@ -395,7 +395,7 @@ fn paintOverlaysAndStatus(self: *Workbench) !void {
         self.quick_access.widget.open_to_bottom = self.preferredSideBySideDirection() == .DOWN;
         try self.quick_access.render(&self.frame.next);
     }
-    if (self.breadcrumb_popup) |popup| try popup.render(&self.frame.next, self.part.cell_border_capabilities);
+    if (self.breadcrumbs.picker) |popup| try popup.render(&self.frame.next, self.part.cell_border_capabilities);
     if (self.context_menu_service.current) |menu| menu.popup.?.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
     if (self.dialog_handler.current) |dialog| dialog.renderWithBorderCapabilities(&self.frame.next, self.part.cell_border_capabilities);
     try self.editor_drop_target.editor_drag.paintImage(&self.frame.next, self.editor_drop_target.drag_tab_drop != null);
@@ -2246,7 +2246,7 @@ pub fn handleDialogMouse(self: *Workbench, event: *ui.MouseEvent) bool {
 }
 
 pub fn handleBreadcrumbPopupKey(self: *Workbench, event: *const ui.KeyEvent) bool {
-    const popup = self.breadcrumb_popup orelse return false;
+    const popup = self.breadcrumbs.picker orelse return false;
     if (!popup.isVisible()) return false;
     _ = popup.handleKey(event);
     self.requestFrame();
@@ -2254,7 +2254,7 @@ pub fn handleBreadcrumbPopupKey(self: *Workbench, event: *const ui.KeyEvent) boo
 }
 
 pub fn handleBreadcrumbPopupMouse(self: *Workbench, event: *const ui.MouseEvent) bool {
-    const popup = self.breadcrumb_popup orelse return false;
+    const popup = self.breadcrumbs.picker orelse return false;
     if (!popup.isVisible()) return false;
     _ = popup.handleMouse(event);
     self.requestFrame();

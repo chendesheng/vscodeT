@@ -115,13 +115,8 @@ const TokenizationRegistry = @import("../vs/editor/common/tokenizationRegistry.z
 const theme_colors_mod = @import("../vs/workbench/browser/themeColors.zig");
 const SettingsWatcher = configuration_mod.SettingsWatcher;
 const IDisposable = @import("../vs/base/common/lifecycle.zig").IDisposable;
-const breadcrumbs_model = @import("../vs/workbench/browser/parts/editor/breadcrumbsModel.zig");
-const breadcrumbs_picker = @import("../vs/workbench/browser/parts/editor/breadcrumbsPicker.zig");
 const breadcrumbs_control_mod = @import("../vs/workbench/browser/parts/editor/breadcrumbsControl.zig");
 const BreadcrumbsControl = breadcrumbs_control_mod.BreadcrumbsControl;
-const BreadcrumbsSelection = breadcrumbs_control_mod.Selection;
-const BreadcrumbsSelectMode = breadcrumbs_control_mod.SelectMode;
-const BreadcrumbsAnchor = breadcrumbs_control_mod.Anchor;
 const outline_service_mod = @import("../vs/workbench/services/outline/browser/outlineService.zig");
 const OutlineService = outline_service_mod.OutlineService;
 const outline_mod = @import("../vs/workbench/services/outline/browser/outline.zig");
@@ -470,7 +465,6 @@ pub const TerminalWorkbench = struct {
     outline_view: ?*OutlinePane = null,
     breadcrumbs: breadcrumbs_control_mod.BreadcrumbsControlCollection,
     home_path: ?[]u8 = null,
-    breadcrumbs_arena: std.heap.ArenaAllocator,
     symbol_navigation: go_to_commands.SymbolNavigationActionHost,
     symbol_quick_access: goto_symbol_quick_access.GotoSymbolQuickAccessProvider,
     builtin_host: *@import("../vs/workbench/api/browser/builtinExtensionHost.zig").BuiltinExtensionHost,
@@ -480,9 +474,6 @@ pub const TerminalWorkbench = struct {
         context: *anyopaque,
         request: *const fn (*anyopaque) void,
     } = null,
-    /// Anchored breadcrumb picker (upstream context-view tree). The popup
-    /// borrows its item strings and symbol handles from `breadcrumbs_arena`.
-    breadcrumb_popup: ?*breadcrumbs_picker.Picker = null,
     context_menu_service: context_menus.ContextMenuService,
     menu_service: @import("../vs/platform/actions/common/menuService.zig").MenuService,
     hovered_tab: ?*Tab = null,
@@ -591,12 +582,9 @@ pub const TerminalWorkbench = struct {
         self.layout.reset_layout = options.reset_layout;
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
-        self.breadcrumbs_arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer self.breadcrumbs_arena.deinit();
         self.home_path = readHomePath(allocator);
         errdefer if (self.home_path) |path| allocator.free(path);
         self.frame_scheduler = null;
-        self.breadcrumb_popup = null;
         self.context_menu_service = .init(allocator, self, reportMenuError);
         errdefer self.context_menu_service.deinit();
         self.hovered_tab = null;
@@ -668,7 +656,7 @@ pub const TerminalWorkbench = struct {
         try self.part.base.register(self.layout.interface());
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
         errdefer self.frame.deinit();
-        try self.breadcrumbs.init(allocator, self.part, self.workspace, &self.outline_service, self.home_path, .{
+        try self.breadcrumbs.init(allocator, self.io, self.part, self.workspace, &self.outline_service, self.home_path, .{
             .context = self,
             .file_icon_theme = struct {
                 fn run(context: *anyopaque) file_icon.FileIconThemeData {
@@ -676,12 +664,10 @@ pub const TerminalWorkbench = struct {
                     return host.getFileIconTheme();
                 }
             }.run,
-            .open_element = breadcrumbOpenElement,
-            .reveal_element = breadcrumbRevealElement,
-            .close_popup = struct {
-                fn run(context: *anyopaque) void {
+            .open_file = struct {
+                fn run(context: *anyopaque, path: []const u8) anyerror!void {
                     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                    if (host.breadcrumb_popup) |popup| popup.close();
+                    host.requestOpenPath(path);
                 }
             }.run,
             .request_render = requestWorkbenchFrame,
@@ -1700,10 +1686,6 @@ pub const TerminalWorkbench = struct {
             TokenizationRegistry.instance.setBackgroundTokenizerFactory(null);
             factory.shutdown();
         }
-        if (self.breadcrumb_popup) |popup| {
-            popup.deinit();
-            self.breadcrumb_popup = null;
-        }
         self.breadcrumbs.deinit();
         self.symbol_navigation.deinit();
         self.symbol_quick_access.deinit();
@@ -1713,7 +1695,6 @@ pub const TerminalWorkbench = struct {
             self.allocator.free(home);
             self.home_path = null;
         }
-        self.breadcrumbs_arena.deinit();
         if (self.references_view_registered) self.references_view.deinit();
         self.builtin_host.deinit();
         if (self.outline_view) |view| {
@@ -4705,100 +4686,6 @@ pub const TerminalWorkbench = struct {
         return true;
     }
 
-    /// Opens the anchored file picker for `file`. Upstream
-    /// `BreadcrumbsFilePicker` sets the tree input to the workspace for a root
-    /// folder and to the clicked element's parent directory otherwise.
-    pub fn showBreadcrumbPicker(self: *TerminalWorkbench, file: *const breadcrumbs_model.FileElement, anchor: BreadcrumbsAnchor) !void {
-        if (self.breadcrumb_popup) |popup| popup.close();
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const arena = self.breadcrumbs_arena.allocator();
-        const anchor_y = self.breadcrumbAnchorY();
-        const picker = try self.ensureBreadcrumbPopup();
-
-        if (file.kind == .ROOT_FOLDER) {
-            const workspace = self.workspace.getWorkspace();
-            var folders = std.array_list.Managed(breadcrumbs_picker.FolderRef).init(arena);
-            for (workspace.folders.items) |folder| {
-                try folders.append(.{ .path = folder.resource, .name = folder.name });
-            }
-            try picker.showFileWorkspace(folders.items, file.path, pickerAnchor(anchor), anchor_y);
-        } else {
-            const directory = breadcrumbs_picker.inputDirectory(file);
-            try picker.showFileDirectory(directory, file.path, pickerAnchor(anchor), anchor_y);
-        }
-        self.requestFrame();
-    }
-
-    /// Upstream `BreadcrumbsOutlinePicker`: input the outline tree and reveal
-    /// the clicked element.
-    pub fn showBreadcrumbOutlinePicker(
-        self: *TerminalWorkbench,
-        outline: *outline_mod.IOutline,
-        element: *anyopaque,
-        anchor: BreadcrumbsAnchor,
-    ) !void {
-        if (self.breadcrumb_popup) |popup| popup.close();
-        _ = self.breadcrumbs_arena.reset(.retain_capacity);
-        const picker = try self.ensureBreadcrumbPopup();
-        try picker.showOutline(outline, element, pickerAnchor(anchor), self.breadcrumbAnchorY());
-        self.requestFrame();
-    }
-
-    fn pickerAnchor(anchor: BreadcrumbsAnchor) breadcrumbs_picker.Anchor {
-        return .{
-            .start = anchor.start,
-            .end = anchor.end,
-            .cursor = anchor.cursor,
-        };
-    }
-
-    fn breadcrumbAnchorY(self: *TerminalWorkbench) usize {
-        const pane = self.activePane() orelse return 0;
-        return ui.cell.snap(pane.rect.y) + pane.titleHeight();
-    }
-
-    fn ensureBreadcrumbPopup(self: *TerminalWorkbench) !*breadcrumbs_picker.Picker {
-        if (self.breadcrumb_popup) |popup| {
-            popup.setThemeColors(self.theme_palette);
-            return popup;
-        }
-        const popup = try breadcrumbs_picker.Picker.init(
-            self.allocator,
-            .{
-                .context = self,
-                .io = self.io,
-                .arena = self.breadcrumbs_arena.allocator(),
-                .open_file = onBreadcrumbPickerOpenFile,
-                .file_icon = onBreadcrumbPickerFileIcon,
-                .request_render = requestWorkbenchFrame,
-            },
-            .{
-                .context = self,
-                .arena = self.breadcrumbs_arena.allocator(),
-                .reveal = onBreadcrumbPickerReveal,
-                .request_render = requestWorkbenchFrame,
-            },
-        );
-        popup.setThemeColors(self.theme_palette);
-        self.breadcrumb_popup = popup;
-        return popup;
-    }
-
-    pub fn breadcrumbPopupVisible(self: *const TerminalWorkbench) bool {
-        const popup = self.breadcrumb_popup orelse return false;
-        return popup.isVisible();
-    }
-
-    fn openBreadcrumbFile(self: *TerminalWorkbench, path: []const u8) !void {
-        self.requestOpenPath(path);
-        self.focusEditor();
-    }
-
-    fn revealBreadcrumbElement(self: *TerminalWorkbench, outline: *outline_mod.IOutline, element: *anyopaque) !void {
-        try outline.reveal(element, .{});
-        self.focusEditor();
-    }
-
     pub fn resize(self: *TerminalWorkbench, cols: usize, rows: usize) !void {
         _ = self.cancelSashDrag();
         self.editor_drop_target.clearTabDrag();
@@ -4962,32 +4849,6 @@ fn outlineSymbolVisible(context: *anyopaque, kind: u32) bool {
     return self.boolSetting(outline_contrib.showConfigForKind(kind), true);
 }
 
-fn breadcrumbOpenElement(context: *anyopaque, selection: BreadcrumbsSelection, mode: BreadcrumbsSelectMode, anchor: BreadcrumbsAnchor) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    switch (selection) {
-        .file => |file| {
-            if (mode == .reveal and file.kind == .FILE) {
-                try self.openBreadcrumbFile(file.path);
-            } else {
-                try self.showBreadcrumbPicker(file, anchor);
-            }
-        },
-        .outline => |outline| {
-            if (mode == .pick) {
-                try self.showBreadcrumbOutlinePicker(outline.outline, outline.element, anchor);
-            } else {
-                try self.revealBreadcrumbElement(outline.outline, outline.element);
-            }
-        },
-        .placeholder => {},
-    }
-}
-
-fn breadcrumbRevealElement(context: *anyopaque, outline: *outline_mod.IOutline, element: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.revealBreadcrumbElement(outline, element);
-}
-
 fn breadcrumbFocusEditor(context: *anyopaque) void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     self.focusEditor();
@@ -5083,21 +4944,6 @@ const ToggleStatusbarVisibilityAction = struct {
         if (!self.workbench.geometry().statusBarVisible() and self.workbench.focus == .statusbar) self.workbench.focusEditor();
     }
 };
-
-fn onBreadcrumbPickerOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.openBreadcrumbFile(path);
-}
-
-fn onBreadcrumbPickerFileIcon(context: *anyopaque, path: []const u8) file_icon.Icon {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    return self.getFileIconTheme().forFile(std.fs.path.basename(path), null);
-}
-
-fn onBreadcrumbPickerReveal(context: *anyopaque, outline: *outline_mod.IOutline, element: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.revealBreadcrumbElement(outline, element);
-}
 
 fn navigationActiveEditor(context: *anyopaque) ?*Editor {
     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
