@@ -31,7 +31,7 @@ pub const TerminalSuggestAddon = struct {
 
     pub fn init(self: *TerminalSuggestAddon, allocator: std.mem.Allocator, host: TerminalHost, service: api.ITerminalCompletionService, commands: *CommandRegistry, quick_access: *QuickAccessService) !void {
         self.* = .{ .host = host, .service = service, .commands = commands, .quick_access = quick_access, .arena = .init(allocator) };
-        try commands.register(.{ .id = command, .label = "Request Completions", .category = "Terminal", .context = self, .run = request });
+        try commands.registerCommand(.{ .id = command, .context = self, .run = request }, .{ .id = command, .title = "Request Completions", .category = "Terminal" }, .{});
     }
 
     pub fn deinit(self: *TerminalSuggestAddon) void {

@@ -1728,7 +1728,7 @@ pub const TerminalWorkbench = struct {
         try self.commands.registerAction(self.instantiation, statusbar_actions.focus_statusbar_action);
         for (statusbar_actions.navigation_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (terminal_actions.terminal_actions) |action| try self.commands.registerAction(self.instantiation, action);
-        try self.markdown_previews.registerCommands(&self.commands);
+        try self.markdown_previews.registerCommands(&self.commands, self.instantiation);
         for (media_actions.zoom_actions) |action| try self.commands.registerEditorAction(self.instantiation, action);
         try self.commands.registerEditorAction(self.instantiation, media_actions.open_in_text_action);
         const search_contribution = @import("../vs/workbench/contrib/search/browser/search.contribution.zig");

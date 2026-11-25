@@ -490,13 +490,7 @@ fn registerCommand(
     state.* = .{ .host = self, .id = id_copy, .label = label_copy, .handler = handler };
     const registration = try self.allocator.create(CommandRegistration);
     errdefer self.allocator.destroy(registration);
-    try self.services.commands.register(.{
-        .id = state.id,
-        .label = state.label,
-        .category = handler.category,
-        .context = state,
-        .run = runRegisteredCommand,
-    });
+    try self.services.commands.registerCommand(.{ .id = state.id, .context = state, .run = runRegisteredCommand }, .{ .id = state.id, .title = state.label, .category = handler.category }, .{});
     registration.* = .{ .host = self, .state = state };
     return .{ .context = registration, .disposeFn = CommandRegistration.dispose };
 }

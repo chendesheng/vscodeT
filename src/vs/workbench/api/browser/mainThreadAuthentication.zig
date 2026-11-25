@@ -48,7 +48,7 @@ pub const Accounts = struct {
             .extensions = extensions,
             .choices = .init(allocator),
         } };
-        try commands.register(.{ .id = command, .label = "Manage Accounts", .category = "Accounts", .context = &self.action, .run = ManageAccountsAction.chooseProvider });
+        try commands.registerCommand(.{ .id = command, .context = &self.action, .run = ManageAccountsAction.chooseProvider }, .{ .id = command, .title = "Manage Accounts", .category = "Accounts" }, .{});
     }
 
     pub fn deinit(self: *Accounts) void {

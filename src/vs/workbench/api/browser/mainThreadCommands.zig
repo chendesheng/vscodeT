@@ -18,15 +18,7 @@ const ContributedCommand = struct {
     host: *manager.HostManager,
     id: []const u8,
     arena: std.heap.ArenaAllocator,
-    keys: ?*keys.ContextKeyService,
     enablement: ?*const keys.Expr = null,
-
-    fn enabled(context: *anyopaque) bool {
-        const self: *@This() = @ptrCast(@alignCast(context));
-        const condition = self.enablement orelse return true;
-        const service = self.keys orelse return false;
-        return service.contextMatchesRules(condition);
-    }
 
     fn run(context: *anyopaque) !void {
         const self: *@This() = @ptrCast(@alignCast(context));
@@ -51,7 +43,6 @@ pub const MainThreadCommands = struct {
     command_host: CommandHost,
     registry: *CommandRegistry,
     extensions: []const manager.ExtensionDescription,
-    context_keys: ?*keys.ContextKeyService,
     registrations: std.StringHashMap(?*ContributedCommand),
 
     pub fn init(
@@ -62,13 +53,13 @@ pub const MainThreadCommands = struct {
         extensions: []const manager.ExtensionDescription,
         context_keys: ?*keys.ContextKeyService,
     ) !MainThreadCommands {
+        if (context_keys) |service| registry.context_keys = service.interface();
         return .{
             .allocator = allocator,
             .host = host,
             .command_host = command_host,
             .registry = registry,
             .extensions = extensions,
-            .context_keys = context_keys,
             .registrations = .init(allocator),
         };
     }
@@ -106,7 +97,7 @@ pub const MainThreadCommands = struct {
                 if (title != .string) continue;
                 const binding = try self.allocator.create(ContributedCommand);
                 errdefer self.allocator.destroy(binding);
-                binding.* = .{ .host = self.host, .id = id, .keys = self.context_keys, .arena = .init(self.allocator) };
+                binding.* = .{ .host = self.host, .id = id, .arena = .init(self.allocator) };
                 errdefer binding.arena.deinit();
                 var valid = true;
                 if (item.object.get("enablement")) |rule| {
@@ -122,7 +113,7 @@ pub const MainThreadCommands = struct {
                 // The picker can expose them once it evaluates their when clause.
                 const visible = valid and !hasPaletteCondition(points.object, id);
                 errdefer self.registry.unregister(id);
-                try self.registry.register(.{ .id = id, .label = title.string, .category = if (category != null and category.? == .string) category.?.string else "", .context = binding, .run = ContributedCommand.run, .precondition = ContributedCommand.enabled, .show_in_palette = visible });
+                try self.registry.registerCommand(.{ .id = id, .context = binding, .run = ContributedCommand.run }, .{ .id = id, .title = title.string, .category = if (category != null and category.? == .string) category.?.string else "", .precondition = binding.enablement }, .{ .show_in_palette = visible });
                 return binding;
             }
         }
@@ -169,7 +160,7 @@ pub const MainThreadCommands = struct {
         }
         if (std.mem.eql(u8, method, "$getCommands")) {
             var list = std.json.Array.init(arena);
-            for (self.registry.infos.values()) |command| {
+            for (self.registry.platform.commands.items) |command| {
                 if (!self.registrations.contains(command.id)) try list.append(.{ .string = try arena.dupe(u8, command.id) });
             }
             var iterator = self.registrations.keyIterator();
@@ -220,7 +211,7 @@ test "MainThreadCommands: tracks registrations and dispatches" {
 
     var register = [_]rpc.Arg{.{ .json = .{ .string = "echo" } }};
     try std.testing.expectEqual(rpc.HandlerReply.empty, try actor.invoke("$registerCommand", &register, arena.allocator()));
-    try std.testing.expectEqualStrings("Fixture Echo", registry.get("echo").?.label);
+    try std.testing.expectEqualStrings("Fixture Echo", registry.getRegistration("echo").?.descriptor.title);
     const commands = try actor.invoke("$getCommands", &.{}, arena.allocator());
     try std.testing.expect(commands == .json);
     try std.testing.expectEqual(@as(usize, 1), commands.json.array.items.len);

@@ -2613,8 +2613,8 @@ pub fn Tests(comptime terminal_window_type: type, comptime factory: anytype) typ
                 _ = host.pump();
                 time_compat.sleepMillis(10);
             }
-            const action = workbench.commands.get(command) orelse return error.MissingMergeCommand;
-            try std.testing.expect(action.show_in_palette and action.precondition.?(action.context));
+            const action = workbench.commands.getRegistration(command) orelse return error.MissingMergeCommand;
+            try std.testing.expect(action.isInPalette() and (try workbench.ensureContextKeys()).contextMatchesRules(action.descriptor.precondition.?));
             try workbench.commands.execute(command);
             while (time_compat.milliTimestamp() < deadline) {
                 _ = host.pump();

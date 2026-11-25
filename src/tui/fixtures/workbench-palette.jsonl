@@ -277,7 +277,7 @@
 ["notifications.showList","Show Notifications","Notifications","",true,false,false,true,true]
 ["notifications.hideList","Hide Notifications","Notifications","",true,false,true,false,false]
 ["notifications.toggleList","Toggle Notifications","Notifications","",false,false,false,false,false]
-["notifications.hideToasts","Hide Notification Toasts","Notifications","",false,false,false,false,false]
+["notifications.hideToasts","Hide Notification Toasts","Notifications","",false,false,true,false,false]
 ["notifications.focusToasts","Focus Notification Toast","Notifications","",true,false,true,false,false]
 ["notifications.focusNextToast","Focus Next Notification Toast","Notifications","",false,false,false,false,false]
 ["notifications.focusPreviousToast","Focus Previous Notification Toast","Notifications","",false,false,false,false,false]

@@ -3470,12 +3470,7 @@ test "Workbench: clicking a status entry focuses it and runs its command" {
         }
     };
     var state = State{};
-    try workbench.commands.register(.{
-        .id = "test.statusbar.command",
-        .label = "Status Command",
-        .context = &state,
-        .run = State.run,
-    });
+    try workbench.commands.registerCommand(.{ .id = "test.statusbar.command", .context = &state, .run = State.run }, .{ .id = "test.statusbar.command", .title = "Status Command" }, .{});
     const accessor = try workbench.statusbar.addEntry(.{
         .name = "Status command",
         .text = "CMD",
@@ -6056,12 +6051,14 @@ test "command palette preserves registration order, metadata and editor precondi
     defer snapshot.deinit();
     var empty_index: usize = 0;
     var editing_index: usize = 0;
-    for (workbench.commands.infos.values()) |info| {
-        const in_empty = empty_index < empty.len and std.mem.eql(u8, empty[empty_index].command_id, info.id);
-        const in_editing = editing_index < editing.len and std.mem.eql(u8, editing[editing_index].command_id, info.id);
-        const menu_item = workbench.commands.menus.getMenuItemPtr(@import("../vs/platform/actions/common/actions.zig").menu_ids.CommandPalette, info.id);
-        const has_precondition = info.precondition != null or (menu_item != null and menu_item.?.command.precondition != null);
-        const entry = .{ info.id, info.label, info.category, info.description, info.show_in_palette, info.requires_editor, has_precondition, in_empty, in_editing };
+    for (workbench.commands.platform.commands.items) |command| {
+        const registration = workbench.commands.getRegistration(command.id) orelse continue;
+        const descriptor = registration.descriptor;
+        const in_empty = empty_index < empty.len and std.mem.eql(u8, empty[empty_index].command_id, command.id);
+        const in_editing = editing_index < editing.len and std.mem.eql(u8, editing[editing_index].command_id, command.id);
+        const menu_item = workbench.commands.menus.getMenuItemPtr(@import("../vs/platform/actions/common/actions.zig").menu_ids.CommandPalette, command.id);
+        const has_precondition = descriptor.precondition != null or (menu_item != null and menu_item.?.command.precondition != null);
+        const entry = .{ command.id, descriptor.title, descriptor.category orelse "", descriptor.tooltip orelse "", registration.isInPalette(), registration.requires_editor, has_precondition, in_empty, in_editing };
         try std.json.Stringify.value(entry, .{}, &snapshot.writer);
         try snapshot.writer.writeByte('\n');
         empty_index += @intFromBool(in_empty);

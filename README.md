@@ -1,6 +1,6 @@
 # vscodeT
 
-**Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. See the [Workbench port audit](docs/workbench-audit.md) for the live boundary, line budgets, and remaining port omissions.
+**Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. No production feature imports the portable Workbench or the native window. The old workbench polling methods are replaced by events and I/O readiness/deadline adapters. See the [Workbench port audit](docs/workbench-audit.md) for the live boundary, line budgets, and remaining port omissions.
 
 `vscodeT` is a Zig 0.17 port of Visual Studio Code's editor and workbench
 internals to a terminal UI. It started as a port of the editor's pieceTree text
@@ -1060,7 +1060,7 @@ console API for raw mode, sizing and input polling.
   entry reopens the side bar.
 - The primary side bar is a ported pane-composite part
   (`src/vs/workbench/browser/parts/sidebar/sidebarPart.zig`), the same way as
-  the bottom panel. The part owns the side bar width/position/visibility, the
+  the panel. The part owns the side bar width/position/visibility, the
   active viewlet, its title row and its
   toolbar actions; the row is built with the `ui` DOM (`Document` painted
   through a `Surface`) exactly like the panel title, and the view pane
@@ -1468,7 +1468,9 @@ console API for raw mode, sizing and input polling.
   resize the panel. The sidebar, panel and editor sashes highlight with
   `sash.hoverBorder` on hover and during a drag. Terminals without OSC 22 ignore
   the pointer sequence.
-  Double-click and context menus are not wired. Horizontal wheel/Shift+wheel
+  Tabs, activity overflow, sidebar views, terminal and status-bar entries use
+  owner context-menu actions. Tab and sash double-click behavior follows the
+  corresponding parts. Horizontal wheel/Shift+wheel
   scroll the line content when wrapping is off; the editor still has no
   horizontal scrollbar.
 - Keyboard events and focus are library features: nodes take listeners, the

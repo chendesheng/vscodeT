@@ -1,6 +1,6 @@
 // Workbench command registration and the CommandPalette pick source. The
-// palette reads MenuRegistry on demand. Legacy registrations retain their
-// callback-based enablement until each owner ports its context expression.
+// palette reads MenuRegistry and the contributed context expressions. The
+// executable handler and registration order come solely from CommandsRegistry.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const platform_commands = @import("../../platform/commands/common/commands.zig");
@@ -14,23 +14,27 @@ const KeybindingsRegistry = @import("../../platform/keybinding/common/keybinding
 const InstantiationService = @import("../../platform/instantiation/common/instantiationService.zig").InstantiationService;
 const palette = actions.menu_ids.CommandPalette;
 
-pub const CommandInfo = struct {
-    id: []const u8,
-    label: []const u8,
-    category: []const u8 = "",
-    description: []const u8 = "",
-    /// Editor commands are omitted while the workbench has no active tab.
+/// Owns a registration's menu/action disposables. The executable command
+/// and its callback live only in CommandsRegistry, not in a second table.
+pub const CommandRegistration = struct {
+    descriptor: actions.ICommandAction,
+    action_registration: ?*actions.ActionRegistration = null,
+    palette_registration: ?actions.MenuRegistry.Registration = null,
     requires_editor: bool = false,
+
+    pub fn isInPalette(self: CommandRegistration) bool {
+        return if (self.action_registration) |action| action.palette_item != null else self.palette_registration != null;
+    }
+};
+
+pub const CommandOptions = struct {
     show_in_palette: bool = true,
-    precondition: ?*const fn (context: *anyopaque) bool = null,
-    registration: ?*actions.ActionRegistration = null,
-    context: *anyopaque,
-    run: *const fn (context: *anyopaque) anyerror!void,
+    requires_editor: bool = false,
 };
 
 pub const CommandRegistry = struct {
     allocator: Allocator,
-    infos: std.array_hash_map.String(CommandInfo) = .empty,
+    registrations: std.StringHashMapUnmanaged(CommandRegistration) = .empty,
     menus: actions.MenuRegistry,
     bindings: KeybindingsRegistry,
     context_keys: ?contextkey.IContextKeyService = null,
@@ -48,10 +52,11 @@ pub const CommandRegistry = struct {
     }
 
     pub fn deinit(self: *CommandRegistry) void {
-        for (self.infos.values()) |info| if (info.registration) |action| action.dispose();
+        var iterator = self.registrations.valueIterator();
+        while (iterator.next()) |registration| if (registration.action_registration) |action| action.dispose();
         self.bindings.deinit();
         self.platform.deinit();
-        self.infos.deinit(self.allocator);
+        self.registrations.deinit(self.allocator);
         self.menus.deinit();
     }
 
@@ -65,92 +70,82 @@ pub const CommandRegistry = struct {
     }
 
     pub fn registerAction(self: *CommandRegistry, instantiation: *InstantiationService, desc: actions.Action2) !void {
-        try self.infos.ensureUnusedCapacity(self.allocator, 1);
+        try self.registrations.ensureUnusedCapacity(self.allocator, 1);
         const registration = try actions.registerAction2(.{
             .instantiation = instantiation,
             .commands = &self.platform,
             .menus = &self.menus,
             .keybindings = &self.bindings,
         }, desc);
-        const command = self.platform.get(desc.command.id).?;
-        self.infos.putAssumeCapacity(command.id, .{
-            .id = command.id,
-            .label = desc.command.title,
-            .category = desc.command.category orelse "",
-            .description = desc.command.tooltip orelse "",
-            .context = command.context,
-            .run = command.run,
-            .show_in_palette = desc.f1,
-            .registration = registration,
-        });
+        self.registrations.putAssumeCapacity(desc.command.id, .{ .descriptor = desc.command, .action_registration = registration });
     }
 
     /// Editor commands reach the palette only for a workbench with an active
     /// editor, mirroring getCodeEditorCommandPicks in editorCommandsQuickAccess.
     pub fn registerEditorAction(self: *CommandRegistry, instantiation: *InstantiationService, action: actions.Action2) !void {
         try self.registerAction(instantiation, action);
-        self.infos.getPtr(action.command.id).?.requires_editor = true;
+        self.registrations.getPtr(action.command.id).?.requires_editor = true;
     }
 
-    pub fn register(self: *CommandRegistry, info: CommandInfo) !void {
-        try self.infos.ensureUnusedCapacity(self.allocator, 1);
+    /// Extension API registration: the handler belongs to CommandsRegistry,
+    /// while the actual ICommandAction and its visibility belong to MenuRegistry.
+    pub fn registerCommand(self: *CommandRegistry, command: platform_commands.Command, descriptor: actions.ICommandAction, options: CommandOptions) !void {
+        if (!std.mem.eql(u8, command.id, descriptor.id)) return error.CommandIdMismatch;
+        try self.registrations.ensureUnusedCapacity(self.allocator, 1);
         try self.platform.commands.ensureUnusedCapacity(1);
-        const previous = self.infos.getIndex(info.id);
-        const old_info = self.infos.get(info.id);
-        const old_command = self.platform.get(info.id);
-        if (previous) |i| self.infos.keys()[i] = info.id;
-        self.infos.putAssumeCapacity(info.id, info);
-        try self.platform.register(.{ .id = info.id, .context = info.context, .run = info.run });
+        const previous_command = self.platform.get(command.id);
+        try self.platform.register(command);
+        errdefer if (previous_command) |old| self.platform.register(old) catch unreachable else self.platform.unregister(command.id);
+        var registration: CommandRegistration = .{ .descriptor = descriptor, .requires_editor = options.requires_editor };
+        // Register metadata before menu events, like the platform command.
+        // Retain the old value until the replacement has committed.
+        const previous = self.registrations.fetchRemove(command.id);
+        self.registrations.putAssumeCapacity(command.id, registration);
         errdefer {
-            if (old_info) |old| {
-                self.infos.keys()[previous.?] = old.id;
-                self.infos.putAssumeCapacity(old.id, old);
-            } else _ = self.infos.orderedRemove(info.id);
-            if (old_command) |old| self.platform.register(old) catch unreachable else self.platform.unregister(info.id);
+            _ = self.registrations.remove(command.id);
+            if (previous) |old| self.registrations.putAssumeCapacity(old.key, old.value);
         }
-        const was_visible = if (old_info) |old| old.show_in_palette else false;
-        const command = actions.ICommandAction{ .id = info.id, .title = info.label, .category = info.category };
-        if (info.show_in_palette) {
+        const was_visible = if (previous) |old| old.value.isInPalette() else false;
+        if (options.show_in_palette) {
             if (was_visible) {
-                const item = self.menus.getMenuItemPtr(palette, info.id).?;
-                item.command = command;
+                const item = self.menus.getMenuItemPtr(palette, command.id).?;
+                item.command = descriptor;
                 item.when = null;
-                self.menus.on_did_change.fire(.{ .menu = palette }) catch |err| std.log.err("Menu listener failed: {s}", .{@errorName(err)});
+                registration.palette_registration = .{ .registry = &self.menus, .menu = palette, .command_id = command.id };
+                self.menus.on_did_change.fire(.{ .menu = palette }) catch {};
             } else {
-                try self.menus.appendMenuItem(palette, .{ .command = command });
+                registration.palette_registration = try self.menus.appendMenuItemTracked(palette, .{ .command = descriptor });
             }
         } else if (was_visible) {
-            const item = self.menus.getMenuItemPtr(palette, info.id).?;
-            (actions.MenuRegistry.Registration{ .registry = &self.menus, .menu = palette, .command_id = info.id, .when = item.when }).dispose();
+            const item = self.menus.getMenuItemPtr(palette, command.id).?;
+            (actions.MenuRegistry.Registration{ .registry = &self.menus, .menu = palette, .command_id = command.id, .when = item.when }).dispose();
         }
-        if (old_info) |old| if (old.registration) |registration| {
-            // The legacy replacement takes ownership of the explicit F1 row.
-            // Dispose the remaining menu, command and binding contributions.
-            registration.palette_item = null;
-            registration.dispose();
+        if (previous) |old| if (old.value.action_registration) |action| {
+            // The explicit palette row is now owned by the extension
+            // registration; dispose the previous action's other contributions.
+            action.palette_item = null;
+            action.dispose();
         };
-    }
-
-    fn removePaletteEntry(self: *CommandRegistry, id: []const u8) void {
-        const registration = actions.MenuRegistry.Registration{ .registry = &self.menus, .menu = palette, .command_id = id };
-        registration.dispose();
+        self.registrations.getPtr(command.id).?.* = registration;
     }
 
     pub fn execute(self: *const CommandRegistry, id: []const u8) !void {
         _ = try self.platform.execute(id);
     }
 
-    /// Removes a command from both the picker metadata and the execution
-    /// registry. Used by built-in extension disposal.
     pub fn unregister(self: *CommandRegistry, id: []const u8) void {
-        const removed = self.infos.fetchOrderedRemove(id) orelse return;
-        if (removed.value.registration) |registration| return registration.dispose();
+        const removed = self.registrations.fetchRemove(id) orelse return;
+        if (removed.value.action_registration) |registration| return registration.dispose();
         self.platform.unregister(id);
-        if (removed.value.show_in_palette) self.removePaletteEntry(id);
+        if (removed.value.palette_registration) |registration| registration.dispose();
     }
 
-    pub fn get(self: *const CommandRegistry, id: []const u8) ?CommandInfo {
-        return self.infos.get(id);
+    pub fn get(self: *const CommandRegistry, id: []const u8) ?platform_commands.Command {
+        return self.platform.get(id);
+    }
+
+    pub fn getRegistration(self: *const CommandRegistry, id: []const u8) ?CommandRegistration {
+        return self.registrations.get(id);
     }
 
     pub fn source(self: *CommandRegistry) CommandPickSource {
@@ -179,16 +174,14 @@ pub const CommandRegistry = struct {
                 const keys = self.context_keys orelse continue;
                 if (!keys.contextMatchesRules(condition)) continue;
             }
-            const info = self.get(item.command.id);
-            if (info) |legacy| {
-                if (legacy.precondition) |enabled| if (!enabled(legacy.context)) continue;
-                if (legacy.requires_editor and !self.editorAvailable()) continue;
+            if (self.getRegistration(item.command.id)) |registration| {
+                if (registration.requires_editor and !self.editorAvailable()) continue;
             }
             try picks.append(.{
                 .command_id = item.command.id,
                 .label = item.command.title,
                 .category = item.command.category orelse "",
-                .description = if (info) |legacy| legacy.description else "",
+                .description = item.command.tooltip orelse "",
             });
         }
         return try picks.toOwnedSlice();
@@ -214,20 +207,8 @@ test "CommandRegistry: registers once, filters editor commands and lists picks" 
     defer registry.deinit();
     registry.setEditorAvailability(&state, State.hasEditor);
 
-    try registry.register(.{
-        .id = "workbench.action.files.save",
-        .label = "Save",
-        .category = "File",
-        .context = &state,
-        .run = State.run,
-    });
-    try registry.register(.{
-        .id = "actions.find",
-        .label = "Find",
-        .requires_editor = true,
-        .context = &state,
-        .run = State.run,
-    });
+    try registry.registerCommand(.{ .id = "workbench.action.files.save", .context = &state, .run = State.run }, .{ .id = "workbench.action.files.save", .title = "Save", .category = "File" }, .{});
+    try registry.registerCommand(.{ .id = "actions.find", .context = &state, .run = State.run }, .{ .id = "actions.find", .title = "Find" }, .{ .requires_editor = true });
 
     var picks = std.array_list.Managed(CommandPick).init(std.testing.allocator);
     defer picks.deinit();
@@ -278,4 +259,54 @@ test "palette reads contributed menu items and evaluates their live context" {
     registration.dispose();
     visible.set(.{ .boolean = true });
     try Check.count(source, 0);
+}
+
+test "extension commands use registry metadata and live palette preconditions" {
+    const allocator = std.testing.allocator;
+    var registry = CommandRegistry.init(allocator);
+    defer registry.deinit();
+    var keys = contextkey.ContextKeyService.init(allocator);
+    defer keys.deinit();
+    registry.context_keys = keys.interface();
+    const enabled = try keys.createKey("extension.enabled", .{ .boolean = false });
+    const condition: contextkey.Expr = .{ .Defined = "extension.enabled" };
+    const State = struct {
+        count: usize = 0,
+        fn run(context: *anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+        }
+    };
+    var first = State{};
+    var replacement = State{};
+    const id = "extension.first";
+    try registry.registerCommand(.{ .id = id, .context = &first, .run = State.run }, .{ .id = id, .title = "First", .precondition = &condition }, .{});
+    try registry.registerCommand(.{ .id = "extension.second", .context = &first, .run = State.run }, .{ .id = "extension.second", .title = "Second" }, .{});
+    const source = registry.source();
+    {
+        const picks = try source.get_picks(source.context, allocator);
+        defer allocator.free(picks);
+        try std.testing.expectEqual(@as(usize, 1), picks.len);
+        try std.testing.expectEqualStrings("Second", picks[0].label);
+    }
+    enabled.set(.{ .boolean = true });
+    try registry.registerCommand(.{ .id = id, .context = &replacement, .run = State.run }, .{ .id = id, .title = "Replacement", .precondition = &condition }, .{});
+    try std.testing.expectEqual(@as(usize, 2), registry.platform.commands.items.len);
+    try std.testing.expectEqualStrings(id, registry.platform.commands.items[0].id);
+    {
+        const picks = try source.get_picks(source.context, allocator);
+        defer allocator.free(picks);
+        try std.testing.expectEqual(@as(usize, 2), picks.len);
+        try std.testing.expectEqualStrings("Replacement", picks[0].label);
+    }
+    try registry.execute(id);
+    try std.testing.expectEqual(@as(usize, 0), first.count);
+    try std.testing.expectEqual(@as(usize, 1), replacement.count);
+    registry.unregister(id);
+    try std.testing.expect(registry.get(id) == null);
+    try std.testing.expect(registry.getRegistration(id) == null);
+    const picks = try source.get_picks(source.context, allocator);
+    defer allocator.free(picks);
+    try std.testing.expectEqual(@as(usize, 1), picks.len);
+    try std.testing.expectEqualStrings("Second", picks[0].label);
 }

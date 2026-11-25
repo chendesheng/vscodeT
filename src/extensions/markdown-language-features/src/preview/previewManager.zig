@@ -55,15 +55,27 @@ pub const MarkdownPreviewManager = struct {
         self.active_editor_listener = null;
     }
 
-    pub fn registerCommands(self: *MarkdownPreviewManager, commands: *commands_mod.CommandRegistry) !void {
-        const descriptors = [_]commands_mod.CommandInfo{
-            .{ .id = "markdown.showSource", .label = "Show Source", .category = "Markdown", .requires_editor = true, .context = self, .run = commandShowMarkdownSource },
-            .{ .id = "markdown.showPreview", .label = "Open Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandOpenMarkdownPreview },
-            .{ .id = "markdown.showPreviewToSide", .label = "Open Preview to the Side", .category = "Markdown", .requires_editor = true, .context = self, .run = commandShowMarkdownPreview },
-            .{ .id = "markdown.togglePreview", .label = "Toggle Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandToggleMarkdownPreview },
-            .{ .id = "markdown.preview.refresh", .label = "Refresh Preview", .category = "Markdown", .requires_editor = true, .context = self, .run = commandRefreshMarkdownPreview },
+    fn action(self: *MarkdownPreviewManager, id: []const u8, title: []const u8, comptime handler: fn (*anyopaque) anyerror!void) @import("../../../../vs/platform/actions/common/actions.zig").Action2 {
+        return .{
+            .command = .{ .id = id, .title = title, .category = "Markdown" },
+            .f1 = true,
+            .context = self,
+            .run_fn = struct {
+                fn run(context: *anyopaque, _: @import("../../../../vs/platform/instantiation/common/instantiation.zig").ServicesAccessor) !void {
+                    try handler(context);
+                }
+            }.run,
         };
-        for (descriptors) |command| try commands.register(command);
+    }
+
+    pub fn registerCommands(self: *MarkdownPreviewManager, commands: *commands_mod.CommandRegistry, instantiation: *@import("../../../../vs/platform/instantiation/common/instantiationService.zig").InstantiationService) !void {
+        for ([_]@import("../../../../vs/platform/actions/common/actions.zig").Action2{
+            self.action("markdown.showSource", "Show Source", commandShowMarkdownSource),
+            self.action("markdown.showPreview", "Open Preview", commandOpenMarkdownPreview),
+            self.action("markdown.showPreviewToSide", "Open Preview to the Side", commandShowMarkdownPreview),
+            self.action("markdown.togglePreview", "Toggle Preview", commandToggleMarkdownPreview),
+            self.action("markdown.preview.refresh", "Refresh Preview", commandRefreshMarkdownPreview),
+        }) |descriptor| try commands.registerEditorAction(instantiation, descriptor);
     }
 
     fn focusPane(pane: *GroupPane) !void {

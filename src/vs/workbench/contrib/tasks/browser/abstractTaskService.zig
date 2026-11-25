@@ -58,7 +58,7 @@ pub const AbstractTaskService = struct {
         };
         for (extensions) |extension| {
             if (definitions(extension) == null) continue;
-            try commands.register(.{ .id = run_command, .label = "Run Task", .category = "Tasks", .context = self, .run = chooseType });
+            try commands.registerCommand(.{ .id = run_command, .context = self, .run = chooseType }, .{ .id = run_command, .title = "Run Task", .category = "Tasks" }, .{});
             break;
         }
     }
