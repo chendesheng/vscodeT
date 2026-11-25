@@ -5169,9 +5169,27 @@ test "Workbench: session serialization restores image tabs" {
     var serialized = try workbench.part.createState(allocator, &registry);
     defer serialized.deinit(allocator);
 
-    const restored_window = try TestWindow.initWithOptions(allocator, io, &.{}, 40, 12, .{}, .{ .data = serialized, .registry = &registry });
+    const Probe = struct {
+        serializer: *ImagePreviewEditorInputSerializer,
+        started: bool = false,
+        fn create(context: *anyopaque, accessor: @import("../vs/platform/instantiation/common/instantiation.zig").ServicesAccessor) !editor_factory.IEditorSerializer {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const lifecycle = try accessor.get(@import("../vs/workbench/services/lifecycle/common/lifecycle.zig").lifecycle_service_id);
+            try std.testing.expectEqual(.Ready, lifecycle.phase());
+            self.started = true;
+            return self.serializer.interface();
+        }
+    };
+    var probe = Probe{ .serializer = &image_serializer };
+    var restore_registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer restore_registry.deinit();
+    try restore_registry.registerEditorSerializerFactory(ImagePreviewEditorInput.ID, .{ .context = &probe, .create = Probe.create });
+    try std.testing.expect(!probe.started);
+    try std.testing.expect(restore_registry.getEditorSerializerByType(ImagePreviewEditorInput.ID) == null);
+    const restored_window = try TestWindow.initWithOptions(allocator, io, &.{}, 40, 12, .{}, .{ .data = serialized, .registry = &restore_registry });
     const restored = restored_window.workbench;
     defer restored_window.deinit();
+    try std.testing.expect(probe.started);
     const restored_tab = restored.activeTab().?;
     try std.testing.expect(restored_tab.isImage());
     try std.testing.expectEqualStrings("logo.png", restored_tab.input.getName());

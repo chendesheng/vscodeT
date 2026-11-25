@@ -38,6 +38,7 @@ pub const IWorkbenchOptions = struct {
 pub const Workbench = struct {
     allocator: Allocator,
     layout: Layout,
+    editor_factory_registry: @import("../common/editor/editorFactory.zig").EditorFactoryRegistry,
     startup_window: ?struct { parent: *ui.Node, options: IWorkbenchOptions, has_previous_state: bool },
     instantiation: InstantiationService = undefined,
     instantiation_ready: bool = false,
@@ -61,6 +62,7 @@ pub const Workbench = struct {
         return .{
             .allocator = allocator,
             .layout = layout,
+            .editor_factory_registry = .init(allocator),
             .on_will_shutdown = .init(allocator),
             .on_did_shutdown = .init(allocator),
             .startup_window = .{ .parent = parent, .options = options, .has_previous_state = has_previous_state },
@@ -84,6 +86,7 @@ pub const Workbench = struct {
         try host.register_commands(host.context);
         try @import("../workbench.common.main.zig").registerMenus(&host.commands.menus);
         try host.contributions.start(accessor);
+        try (host.editor_factory_registry orelse &self.editor_factory_registry).start(accessor);
         // Context Keys
         self.context_keys = try host.context_keys(host.context);
         // Listeners, Parts and Notifications
@@ -277,6 +280,7 @@ pub const Workbench = struct {
     pub fn disposeInstantiation(self: *Workbench) void {
         if (!self.instantiation_ready) return;
         self.instantiation_ready = false;
+        (self.host.editor_factory_registry orelse &self.editor_factory_registry).stop(&self.instantiation);
         self.instantiation.deinit();
     }
 
@@ -284,6 +288,7 @@ pub const Workbench = struct {
         self.disposeListeners();
         self.disposeNotifications();
         self.disposeInstantiation();
+        self.editor_factory_registry.deinit();
         self.restore_state_ready.deinit(self.allocator);
         self.on_will_shutdown.deinit();
         self.on_did_shutdown.deinit();

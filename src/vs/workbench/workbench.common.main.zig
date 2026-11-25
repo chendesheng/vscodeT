@@ -11,6 +11,14 @@ pub fn createServices(allocator: std.mem.Allocator) !ServiceCollection {
     return services;
 }
 
+pub fn registerViewContainers(registry: *@import("common/views.zig").ViewContainersRegistry) !void {
+    try @import("contrib/files/browser/explorerViewlet.zig").registerViewContainer(registry);
+    try @import("contrib/search/browser/search.contribution.zig").registerViewContainer(registry);
+    try @import("contrib/scm/browser/scm.contribution.zig").registerViewContainer(registry);
+    try @import("contrib/markers/browser/markers.contribution.zig").registerViewContainer(registry);
+    try @import("contrib/terminal/browser/terminal.contribution.zig").registerViewContainer(registry);
+}
+
 pub fn registerMenus(menus: *MenuRegistry) !void {
     try @import("contrib/scm/browser/scmViewPane.zig").registerMenus(menus);
     try @import("contrib/scm/browser/scmHistoryViewPane.zig").registerMenus(menus);

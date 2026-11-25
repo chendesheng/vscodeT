@@ -2,6 +2,14 @@
 
 **Current Workbench architecture:** `src/vs/workbench/browser/workbench.zig` owns the portable Workbench startup, Layout, registered parts, notifications and lifecycle. `src/tui/workbenchWindow.zig` owns the native TerminalWorkbench window and remaining service/feature adapters; `src/tui/workbenchServices.zig` constructs the native service contracts; `src/tui/workbench.zig` owns the terminal event loop, rendering, and input. No production feature imports the portable Workbench or the native window. The old workbench polling methods are replaced by events and I/O readiness/deadline adapters. Outline editor subscriptions follow the view body visibility and active/visible-editor events, without render-time synchronization. ViewsService resolves registered views, active composites and body visibility through the layout and descriptor services. Sidebar title-area events drive the active toolbar. See the [Workbench port audit](docs/workbench-audit.md) for the live boundary, line budgets, and remaining port omissions.
 
+The Workbench's portable service/part/lifecycle behavior follows the pinned
+VS Code source. Browser font measurement and macOS font smoothing, DOM grid
+pixel effects, floating/auxiliary windows, traffic-light title-bar controls,
+ARIA live regions/accessible view and browser-managed text selection/IME have
+no equivalent in the single terminal window. Cell geometry, terminal input and
+image protocols are adapted at the host boundary; portable notification logic
+is retained. See [terminal UI adaptations](docs/terminal-ui.md).
+
 `vscodeT` is a Zig 0.17 port of Visual Studio Code's editor and workbench
 internals to a terminal UI. It started as a port of the editor's pieceTree text
 buffer; the target is now the whole pinned VS Code tree in the `vscode/`

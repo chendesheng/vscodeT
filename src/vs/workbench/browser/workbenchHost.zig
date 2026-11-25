@@ -22,6 +22,7 @@ pub const IWorkbenchHost = struct {
     part: *EditorPart,
     commands: *CommandRegistry,
     contributions: *WorkbenchContributions,
+    editor_factory_registry: ?*@import("../common/editor/editorFactory.zig").EditorFactoryRegistry = null,
     lifecycle: *LifecycleService,
     notification_service: *NotificationService,
     statusbar: *StatusbarService,

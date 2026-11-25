@@ -118,7 +118,9 @@ ExplorerView now handles active-editor reveal through the editor service event a
 
 Shared Action2 and menu registration now lives in `workbench.common.main.zig`, the explicit Zig equivalent of upstream side-effect imports. The native window supplies only bound contribution instances and extension descriptors, preserving palette order. Existing tab rendering/hit tests (including the baseline close-button setting case) now run at `src/vs/workbench/test/browser/parts/editor/multiEditorTabsControl.test.zig` without exposing private implementation constants.
 
-The portable browser Workbench is 292 lines and has no inline tests. The native TerminalWorkbench window is 4,421 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+EditorFactoryRegistry now retains deferred serializer factories and starts after the Workbench contributions registry, before context keys and rendering. Session restore prepares group identities/grid first, then materializes editor inputs after the registry has started. Native profile/session serializers are explicit borrowed factories. The integration test restores an image using a deferred serializer and checks that its factory sees LifecyclePhase.Ready. The five lines added to restore the upstream registry phase are matched by five lines removed from the native window (combined budget unchanged).
+
+The portable browser Workbench is 297 lines and has no inline tests. The native TerminalWorkbench window is 4,416 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -253,6 +255,35 @@ Show All Commands resolves the quick input service through its Action2 handler.
 The startup sequence below describes the pinned target. The composition port,
 notification center and toasts, full layout restoration and event-driven
 background services are implemented in part; see the current scope described above.
+
+## Terminal boundaries and remaining portable gaps
+
+The pinned Workbench's DOM grid uses pixel dimensions, auxiliary windows,
+floating panels and traffic-light title controls. The single terminal window
+uses cell geometry and cannot provide those browser/window APIs. Browser font
+metrics and macOS font smoothing belong to the browser renderer, while the
+terminal supplies cell width. ARIA live regions and accessible view require
+browser accessibility infrastructure; browser text selection and IME are
+replaced by the terminal input boundary. Notification model, center, toast,
+status and action handling are retained. The JavaScript global rejection/error
+handler and performance marks do not have a browser window or promise runtime
+in Zig; native errors propagate through typed errors and logging. The terminal
+contribution renderers provide their own code-block and hover delegates rather
+than installing browser DOM delegates at Workbench startup.
+
+The original Workbench-state polls have been removed. Remaining methods with a
+`poll` name in the owner modules are adapters to a posted worker completion or
+a deadline (Explorer listing, Markdown rendering/top-line throttling,
+TextMate worker replies, experimental-settings scheduler tests), not scans
+from Workbench or the terminal frame loop. The input loop waits for fd/handle
+readiness and dispatches registered deadlines or completion events.
+
+Other portable feature gaps are called out in the individual owner notes
+above. They are not treated as browser-only omissions or as completed ports;
+the Workbench composition split does not claim to implement every VS Code
+contribution. Native composition still supplies the explicit service factories,
+terminal view factories, profile/workspace setup and cross-part focus/I/O
+callbacks.
 
 ## Implementation owners
 

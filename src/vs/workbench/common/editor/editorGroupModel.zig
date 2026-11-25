@@ -724,6 +724,15 @@ pub const EditorGroupModel = struct {
         };
     }
 
+    /// Restore the group identity before constructing its grid leaf. Editor
+    /// inputs themselves are deserialized after EditorFactoryRegistry.start.
+    pub fn restoreIdentity(self: *EditorGroupModel, id: GroupIdentifier) void {
+        if (id > 0) {
+            self.id = id;
+            next_group_id = @max(next_group_id, id +% 1);
+        }
+    }
+
     /// Mirrors upstream `deserialize`: restore editors through the registry,
     /// drop inputs that cannot be deserialized while keeping sticky indexes
     /// consistent, and rebuild the MRU/selection/preview state.
@@ -732,10 +741,7 @@ pub const EditorGroupModel = struct {
         data: SerializedEditorGroupModel,
         registry: *editor_factory.EditorFactoryRegistry,
     ) !void {
-        if (data.id > 0) {
-            self.id = data.id;
-            next_group_id = @max(next_group_id, data.id +% 1);
-        }
+        self.restoreIdentity(data.id);
         if (data.locked) self.locked = true;
 
         var sticky = data.sticky;

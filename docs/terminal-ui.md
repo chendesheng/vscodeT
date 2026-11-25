@@ -9,7 +9,8 @@ across reads, waits on terminal and worker-completion handles, composites the
 editor, sidebar, panel, status bar and overlays, and flushes completed frames.
 Terminal cells supply part bounds and pointer input. Browser DOM
 font measurement, macOS font smoothing, auxiliary windows, floating panels,
-ARIA live regions and browser-managed text selection and IME lack equivalent
+traffic-light title controls, ARIA live regions/accessible view and browser-managed
+text selection and IME lack equivalent
 host APIs here. Notification center and toast rows use terminal cell bounds,
 explicit link and button hit regions, and the status-bar bell in lieu of the
 browser title bar. Notification deadlines use the shared window scheduler;

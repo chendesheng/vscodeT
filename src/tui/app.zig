@@ -24,7 +24,8 @@ const FileEditorSerializer = @import("../vs/workbench/contrib/files/browser/edit
 const ImagePreviewEditorInput = @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInput;
 const ImagePreviewEditorInputSerializer = @import("../vs/workbench/contrib/mediaPreview/browser/imagePreviewEditorInput.zig").ImagePreviewEditorInputSerializer;
 const FileEditorInput = @import("../vs/workbench/contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
-const EditorFactoryRegistry = @import("../vs/workbench/common/editor/editorFactory.zig").EditorFactoryRegistry;
+const factory_registry = @import("../vs/workbench/common/editor/editorFactory.zig");
+const EditorFactoryRegistry = factory_registry.EditorFactoryRegistry;
 const FindController = @import("../vs/editor/contrib/find/browser/findController.zig").FindController;
 const word_character_classifier = @import("../vs/editor/common/core/wordCharacterClassifier.zig");
 const editorBrowser = @import("../vs/editor/browser/editorBrowser.zig");
@@ -458,6 +459,7 @@ pub fn main(init: std.process.Init) !void {
     var file_serializer: ?FileEditorSerializer = null;
     var image_serializer: ?ImagePreviewEditorInputSerializer = null;
     var registry: ?EditorFactoryRegistry = null;
+    defer if (registry) |*value| value.deinit();
     if (args.session != null) {
         // The workbench status bar takes one row and each group's tab strip
         // takes one; restored editors are opened as workbench panes, so their
@@ -466,10 +468,9 @@ pub fn main(init: std.process.Init) !void {
         file_serializer = FileEditorSerializer.init(allocator, io, size.width, restored_editor_height);
         image_serializer = ImagePreviewEditorInputSerializer.init(allocator);
         registry = EditorFactoryRegistry.init(allocator);
-        try registry.?.registerEditorSerializer(FileEditorInput.TYPE_ID, file_serializer.?.interface());
-        try registry.?.registerEditorSerializer(ImagePreviewEditorInput.ID, image_serializer.?.interface());
+        try registry.?.registerEditorSerializerFactory(FileEditorInput.TYPE_ID, factory_registry.SerializerFactory.bound(FileEditorSerializer, &file_serializer.?));
+        try registry.?.registerEditorSerializerFactory(ImagePreviewEditorInput.ID, factory_registry.SerializerFactory.bound(ImagePreviewEditorInputSerializer, &image_serializer.?));
     }
-    defer if (registry) |*value| value.deinit();
 
     var surface: ui.Surface = undefined;
     try terminal_workbench.initWindowSurface(&surface, allocator, size.width, size.height);
@@ -505,7 +506,7 @@ pub fn main(init: std.process.Init) !void {
             report(log_service, "no files or folders to open and no restorable session", .{});
             return;
         }
-        workbench = try startWorkbench(allocator, io, &surface, &.{}, null);
+        workbench = try startWorkbench(allocator, io, &surface, &.{}, if (registry) |*value| .{ .registry = value } else null);
     }
     infoLog(log_service, "startup: workbench-init={d}ms", .{
         std.Io.Timestamp.now(io, .awake).toMilliseconds() - startup_start_ms,

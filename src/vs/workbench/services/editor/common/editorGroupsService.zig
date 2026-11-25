@@ -357,12 +357,11 @@ pub const EditorGroupsService = struct {
         };
     }
 
-    /// Restores a serialized editor part. Upstream restores the split grid
-    /// separately; the TUI rebuilds the split tree when it creates panes.
-    pub fn initFromSerializedPart(
+    /// Restore group identities and MRU first so the part can create its grid
+    /// before the editor factory registry is started.
+    pub fn prepareSerializedPart(
         allocator: Allocator,
         data: SerializedEditorPart,
-        registry: *editor_factory.EditorFactoryRegistry,
         config: group_mod.Configuration,
     ) !*EditorGroupsService {
         if (data.groups.len == 0) return error.NoGroups;
@@ -370,11 +369,11 @@ pub const EditorGroupsService = struct {
         const self = try EditorGroupsService.init(allocator, config);
         errdefer self.deinit();
 
-        // EditorGroupModel's input listeners retain its address. Deserialize on
-        // the group's final model, preserving its active-editor subscription.
+        // EditorGroupModel and group-view listeners retain their addresses.
+        // Only restore identity here; leave the model empty until startup.
         for (data.groups, 0..) |serialized, index| {
             const group = if (index == 0) self.activeGroup() else try self.createGroup(config);
-            try group.model.deserialize(serialized, registry);
+            group.model.restoreIdentity(serialized.id);
             group.id = group.model.id;
         }
 
@@ -394,6 +393,21 @@ pub const EditorGroupsService = struct {
             self.most_recent_active_groups.clearRetainingCapacity();
             self.most_recent_active_groups.appendSliceAssumeCapacity(self.groups.items);
         }
+        return self;
+    }
+
+    pub fn restoreSerializedEditors(self: *EditorGroupsService, data: SerializedEditorPart, registry: *editor_factory.EditorFactoryRegistry) !void {
+        if (self.groups.items.len != data.groups.len) return error.InvalidGroupState;
+        for (self.groups.items, data.groups) |group, serialized| {
+            if (group.model.count() != 0) return error.GroupAlreadyRestored;
+            try group.model.deserialize(serialized, registry);
+        }
+    }
+
+    pub fn initFromSerializedPart(allocator: Allocator, data: SerializedEditorPart, registry: *editor_factory.EditorFactoryRegistry, config: group_mod.Configuration) !*EditorGroupsService {
+        const self = try prepareSerializedPart(allocator, data, config);
+        errdefer self.deinit();
+        try self.restoreSerializedEditors(data, registry);
         return self;
     }
 

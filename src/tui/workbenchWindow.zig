@@ -269,6 +269,7 @@ const ViewRegistration = @import("../vs/workbench/services/views/browser/viewsSe
 
 pub const TerminalWorkbench = struct {
     core: workbench_core.Workbench,
+    previous_state: ?PreviousState,
     lists: @import("../vs/platform/list/browser/listService.zig").ListService,
     list_api: @import("../vs/platform/list/browser/listService.zig").IListService,
     host_service: @import("../vs/workbench/services/host/browser/browserHostService.zig").BrowserHostService,
@@ -448,7 +449,7 @@ pub const TerminalWorkbench = struct {
     dialog_api: dialogs.IDialogService,
 
     pub const PreviousState = struct {
-        data: editor_groups.SerializedEditorPart,
+        data: ?editor_groups.SerializedEditorPart = null,
         registry: *editor_factory.EditorFactoryRegistry,
     };
 
@@ -460,6 +461,8 @@ pub const TerminalWorkbench = struct {
         errdefer allocator.destroy(self);
 
         self.* = undefined;
+        self.previous_state = state;
+        const previous_editor_state = if (state) |previous| previous.data else null;
         self.references_view_registered = false;
         self.allocator = allocator;
         self.view_factory = view_factory;
@@ -514,7 +517,7 @@ pub const TerminalWorkbench = struct {
         self.search_window = undefined;
         self.search_window.view = null;
         self.search_window.service = null;
-        try self.initShellModels(parent, options, state != null);
+        try self.initShellModels(parent, options, previous_editor_state != null);
         errdefer self.deinitShellModels();
         self.outline_service = OutlineService.init(allocator);
         errdefer self.outline_service.deinit();
@@ -551,12 +554,12 @@ pub const TerminalWorkbench = struct {
         try self.contributions.register(.after_restored, self, initAfterRestoredWorkspaceWatcher);
         self.user_settings_paths = &.{};
 
-        self.service = if (state) |previous|
-            try editor_groups.EditorGroupsService.initFromSerializedPart(allocator, previous.data, previous.registry, .{})
+        self.service = if (previous_editor_state) |previous|
+            try editor_groups.EditorGroupsService.prepareSerializedPart(allocator, previous, .{})
         else
             try editor_groups.EditorGroupsService.init(allocator, .{});
         errdefer self.service.deinit();
-        self.part = try editor_part.EditorPart(GroupPane).initWithState(allocator, self.service, if (state) |previous| previous.data.serialized_grid else null);
+        self.part = try editor_part.EditorPart(GroupPane).initWithState(allocator, self.service, if (previous_editor_state) |previous| previous.serialized_grid else null);
         errdefer self.part.deinit();
         self.configured_languages = .{ .allocator = allocator, .part = self.part, .configuration = &self.configuration_binding };
         try self.configured_languages.attach();
@@ -950,6 +953,7 @@ pub const TerminalWorkbench = struct {
             .part = self.part,
             .commands = &self.commands,
             .contributions = &self.contributions,
+            .editor_factory_registry = if (self.previous_state) |previous| previous.registry else null,
             .lifecycle = &self.lifecycle,
             .notification_service = self.notification_service,
             .statusbar = &self.statusbar,
@@ -1149,6 +1153,8 @@ pub const TerminalWorkbench = struct {
     }
 
     fn restoreEditors(self: *TerminalWorkbench) !void {
+        if (self.previous_state) |previous| if (previous.data) |data| try self.service.restoreSerializedEditors(data, previous.registry);
+        self.previous_state = null;
         const panes = @import("../vs/workbench/browser/parts/editor/editorPane.zig").RestoredEditorPanes{
             .view_factory = self.view_factory,
             .io = self.io,
@@ -1230,22 +1236,11 @@ pub const TerminalWorkbench = struct {
         }
         try self.activity_bar_part.setVisible(true);
 
-        try self.registerViewContainers();
+        try @import("../vs/workbench/workbench.common.main.zig").registerViewContainers(&self.view_containers_registry);
+        try @import("../vs/workbench/browser/parts/paneCompositePartService.zig").PaneCompositePartService.populateParts(&self.sidebar_part, &self.panel_part, &self.view_descriptor_service);
         try self.initExplorerContainer();
         try self.sidebar_part.setWidth(28);
         try self.initStatusHint();
-    }
-
-    /// Registers the portable view containers at their upstream locations and
-    /// fills the side bar and panel composite bars from the registry.
-    fn registerViewContainers(self: *TerminalWorkbench) !void {
-        const registry = &self.view_containers_registry;
-        try @import("../vs/workbench/contrib/files/browser/explorerViewlet.zig").registerViewContainer(registry);
-        try @import("../vs/workbench/contrib/search/browser/search.contribution.zig").registerViewContainer(registry);
-        try scm_contribution.registerViewContainer(registry);
-        try markers_contribution.registerViewContainer(registry);
-        try @import("../vs/workbench/contrib/terminal/browser/terminal.contribution.zig").registerViewContainer(registry);
-        try @import("../vs/workbench/browser/parts/paneCompositePartService.zig").PaneCompositePartService.populateParts(&self.sidebar_part, &self.panel_part, &self.view_descriptor_service);
     }
 
     /// Port of the Explorer viewlet's two stacked views. Upstream registers
