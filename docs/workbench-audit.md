@@ -76,6 +76,8 @@ is resolved by the Git contribution.
 
 TextEditorConfiguration and the workbench language service now subscribe directly to the configuration binding, applying resource/language overrides, file associations and temporary Zen line-number options at the owning controls. The per-document language service is a terminal adaptation; a shared global registry is still unported.
 
+The legacy CommandInfo table is gone from TerminalWorkbench. The startup registry now registers owner Action2 descriptors in the preserved palette order. The sidebar menu owner builds view visibility/move/overflow actions, uses the contributed pane secondary actions, and displays them through IContextMenuService; native code supplies anchors and theme.
+
 Media preview reopening follows the upstream getEditors/replaceEditors resource-override path, preserving group, index, pinned/sticky state and the REPLACE close event. GitHub publish and task-process creation now reside in their extension/terminal owners; the GitHub CLI workflow remains a terminal adaptation.
 
 Breadcrumb commands now resolve the active group widget and open its picker on Focus and Select. Explorer/SCM and Simple Browser actions are registered in their owners; group maximization and restore are EditorPart operations with the actual maximized-group event driving native layout.
@@ -88,7 +90,7 @@ Workbench.startup now initiates restore immediately after layout, deferring save
 
 Layout now closes the active sidebar composite on hide, restores the last active/default/visible composite on show, and preserves upstream panel/editor focus preference. Sidebar visibility and focus commands resolve IWorkbenchLayoutService and IPaneCompositePartService.
 
-The portable browser Workbench is 291 lines and has no inline tests. The native TerminalWorkbench window is 5,106 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+The portable browser Workbench is 291 lines and has no inline tests. The native TerminalWorkbench window is 5,033 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

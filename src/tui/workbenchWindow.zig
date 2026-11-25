@@ -265,8 +265,6 @@ const MenuActionContext = struct {
     workbench: *TerminalWorkbench,
     group_id: ?editor_mod.GroupIdentifier = null,
     tabs: []const *Tab = &.{},
-    container_id: ?[]const u8 = null,
-    view_id: ?[]const u8 = null,
 };
 
 pub const IWorkbenchOptions = workbench_core.IWorkbenchOptions;
@@ -474,6 +472,8 @@ pub const TerminalWorkbench = struct {
         request: *const fn (*anyopaque) void,
     } = null,
     context_menu_service: context_menus.ContextMenuService,
+    context_menu_api: context_menus.IContextMenuService,
+    sidebar_menus: sidebar_part_mod.SidebarViewMenus,
     menu_service: @import("../vs/platform/actions/common/menuService.zig").MenuService,
     hovered_tab: ?*Tab = null,
     hovered_pane: ?*GroupPane = null,
@@ -1014,7 +1014,7 @@ pub const TerminalWorkbench = struct {
             .register_commands = struct {
                 fn run(context: *anyopaque) !void {
                     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
-                    try host.registerDefaultCommands();
+                    try host.registerActions();
                 }
             }.run,
             .context_keys = struct {
@@ -1098,6 +1098,33 @@ pub const TerminalWorkbench = struct {
     }
 
     fn registerNativeServices(self: *TerminalWorkbench) !void {
+        self.context_menu_api = self.context_menu_service.interface();
+        _ = try self.services.set(context_menus.context_menu_service_id, &self.context_menu_api);
+        self.sidebar_menus = .{
+            .allocator = self.allocator,
+            .sidebar = &self.sidebar_part,
+            .descriptors = &self.view_descriptor_service,
+            .context_menu = self.context_menu_api,
+            .menus = &self.menu_service,
+            .context_keys = &self.core.context_keys,
+            .commands = &self.commands,
+            .host = .{
+                .context = self,
+                .anchor = struct {
+                    fn run(context: *anyopaque, id: []const u8) MenuAnchor {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        return host.sidebarMenuAnchor(id);
+                    }
+                }.run,
+                .on_change = struct {
+                    fn run(context: *anyopaque) void {
+                        const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                        host.updateSidebarTitleActions();
+                    }
+                }.run,
+            },
+        };
+        _ = try self.services.set(sidebar_part_mod.sidebar_view_menus_id, &self.sidebar_menus);
         self.list_api = self.lists.interface();
         _ = try self.services.set(@import("../vs/platform/list/browser/listService.zig").list_service_id, &self.list_api);
 
@@ -1300,6 +1327,12 @@ pub const TerminalWorkbench = struct {
             }.run,
             .handle_mouse = outlinePaneHandleMouse,
             .title_actions = outlinePaneTitleActions,
+            .append_secondary_actions = struct {
+                fn run(context: *anyopaque, menu: *Menu, service: *@import("../vs/platform/actions/common/menuService.zig").MenuService, keys: @import("../vs/platform/contextkey/common/contextkey.zig").IContext) !void {
+                    const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    if (host.outline_view) |view| try @import("../vs/workbench/contrib/outline/browser/outlineActions.zig").appendSecondary(menu, service, keys, &view.view_state);
+                }
+            }.run,
         };
         panes[2] = .{
             .id = "changes",
@@ -1315,6 +1348,12 @@ pub const TerminalWorkbench = struct {
             }.run,
             .handle_mouse = scmChangesHandleMouse,
             .title_actions = scmChangesTitleActions,
+            .append_secondary_actions = struct {
+                fn run(context: *anyopaque, menu: *Menu, service: *@import("../vs/platform/actions/common/menuService.zig").MenuService, keys: @import("../vs/platform/contextkey/common/contextkey.zig").IContext) !void {
+                    const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    if (host.scm.changes) |view| try scm_view_mod.appendSecondary(menu, service, keys, view);
+                }
+            }.run,
         };
         panes[3] = .{
             .id = "graph",
@@ -1330,6 +1369,12 @@ pub const TerminalWorkbench = struct {
             }.run,
             .handle_mouse = scmHistoryHandleMouse,
             .title_actions = scmHistoryTitleActions,
+            .append_secondary_actions = struct {
+                fn run(context: *anyopaque, menu: *Menu, service: *@import("../vs/platform/actions/common/menuService.zig").MenuService, keys: @import("../vs/platform/contextkey/common/contextkey.zig").IContext) !void {
+                    const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
+                    if (host.scm.history) |view| try scm_history_view_mod.appendSecondary(menu, service, keys, view);
+                }
+            }.run,
             .show_actions = .when_expanded,
         };
         for (panes) |*pane| pane.run_title_action = runPaneTitleAction;
@@ -1529,7 +1574,7 @@ pub const TerminalWorkbench = struct {
         };
     }
 
-    fn registerDefaultCommands(self: *TerminalWorkbench) !void {
+    fn registerActions(self: *TerminalWorkbench) !void {
         const panel_actions = @import("../vs/workbench/browser/parts/panel/panelActions.zig");
         try self.commands.registerAction(self.instantiation, quick_access_mod.quick_open_action);
         try self.commands.registerAction(self.instantiation, @import("../vs/workbench/contrib/quickaccess/browser/commandsQuickAccess.zig").ShowAllCommandsAction.descriptor);
@@ -1543,7 +1588,7 @@ pub const TerminalWorkbench = struct {
         for (self.breadcrumbs.focusActions()) |action| try self.commands.registerAction(self.instantiation, action);
         const outline_actions = @import("../vs/workbench/contrib/outline/browser/outlineActions.zig");
         try self.commands.registerAction(self.instantiation, outline_actions.focus_action);
-        try self.commands.register(.{ .id = OutlinePane.more_actions_id, .label = "Outline More Actions", .show_in_palette = false, .context = self, .run = commandOutlineMoreActions });
+        try self.commands.registerAction(self.instantiation, outline_actions.more_actions);
         for (outline_actions.outline_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.group_actions.splitActions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (@import("../vs/workbench/browser/parts/editor/editorActions.zig").focus_group_actions) |action| try self.commands.registerAction(self.instantiation, action);
@@ -1572,12 +1617,9 @@ pub const TerminalWorkbench = struct {
         for (@import("../vs/workbench/browser/actions/layoutActions.zig").zen_tabs_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (panel_actions.focus_and_switch_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.git_commands.refreshActions()) |action| try self.commands.registerAction(self.instantiation, action);
-        const scm_menus = [_]commands_mod.CommandInfo{
-            .{ .id = scm_view_mod.CHANGES_MENU_ACTION_ID, .label = "Changes More Actions", .show_in_palette = false, .context = self, .run = commandScmChangesMenu },
-            .{ .id = scm_history_view_mod.GRAPH_MENU_ACTION_ID, .label = "Graph More Actions", .show_in_palette = false, .context = self, .run = commandScmGraphMenu },
-            .{ .id = "workbench.scm.action.showMenu", .label = "Source Control More Actions", .show_in_palette = false, .context = self, .run = commandScmMenu },
-        };
-        for (scm_menus) |command| try self.commands.register(command);
+        try self.commands.registerAction(self.instantiation, scm_view_mod.changes_menu_action);
+        try self.commands.registerAction(self.instantiation, scm_history_view_mod.graph_menu_action);
+        try self.commands.registerAction(self.instantiation, scm_contribution.show_menu_action);
         for (self.git_commands.remoteActions()) |action| try self.commands.registerAction(self.instantiation, action);
         for (scm_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
         for (self.git_commands.openActions()) |action| try self.commands.registerAction(self.instantiation, action);
@@ -1633,18 +1675,22 @@ pub const TerminalWorkbench = struct {
         if (self.activeTab()) |tab| tab.editor.setMessage("Menu action failed: {s}", .{@errorName(err)});
     }
 
-    fn showContextMenu(self: *TerminalWorkbench, menu: *Menu, anchor: MenuAnchor) !void {
+    fn applyContextMenuTheme(self: *TerminalWorkbench, palette: ?*const theme_colors_mod.ThemeColors) void {
         var theme = ui.ContextMenuTheme{};
-        if (self.theme_palette) |palette| {
-            theme.background = palette.colorOr("menu.background", theme.background);
-            theme.foreground = palette.colorOr("menu.foreground", theme.foreground);
-            theme.border = palette.colorOr("menu.border", theme.border);
-            theme.separator = palette.colorOr("menu.separatorBackground", theme.separator);
-            theme.selection_background = palette.colorOr("menu.selectionBackground", theme.selection_background);
-            theme.selection_foreground = palette.colorOr("menu.selectionForeground", theme.selection_foreground);
-            theme.disabled = palette.colorOr("disabledForeground", theme.disabled);
+        if (palette) |colors| {
+            theme.background = colors.colorOr("menu.background", theme.background);
+            theme.foreground = colors.colorOr("menu.foreground", theme.foreground);
+            theme.border = colors.colorOr("menu.border", theme.border);
+            theme.separator = colors.colorOr("menu.separatorBackground", theme.separator);
+            theme.selection_background = colors.colorOr("menu.selectionBackground", theme.selection_background);
+            theme.selection_foreground = colors.colorOr("menu.selectionForeground", theme.selection_foreground);
+            theme.disabled = colors.colorOr("disabledForeground", theme.disabled);
         }
-        try self.context_menu_service.showContextMenu(menu, anchor, theme);
+        self.context_menu_service.theme = theme;
+    }
+
+    fn showContextMenu(self: *TerminalWorkbench, menu: *Menu, anchor: MenuAnchor) !void {
+        try self.context_menu_api.showContextMenu(menu, anchor);
     }
 
     pub fn isDialogOpen(self: *const TerminalWorkbench) bool {
@@ -3894,6 +3940,7 @@ pub const TerminalWorkbench = struct {
     }
 
     fn applyThemeToParts(self: *TerminalWorkbench, palette: ?*const theme_colors_mod.ThemeColors) void {
+        self.applyContextMenuTheme(palette);
         if (self.sidebar) |sidebar| sidebar.setThemeColors(palette);
         if (self.search_window.view) |view| view.setThemeColors(palette);
         if (self.scm.changes) |view| view.setThemeColors(palette);
@@ -4219,95 +4266,8 @@ pub const TerminalWorkbench = struct {
         try self.saveSidebarViewStates();
     }
 
-    pub fn showSidebarViewMenu(
-        self: *TerminalWorkbench,
-        container: *view_pane_container_mod.ViewPaneContainer,
-        source: enum { header, container, overflow },
-        header_id: ?[]const u8,
-        anchor: MenuAnchor,
-    ) !void {
-        const model = container.model;
-        const menu = try self.newContextMenu(runSidebarViewAction);
-        errdefer menu.deinit();
-        const arena = menu.arena.allocator();
-        menu.getActionsContext(MenuActionContext).?.container_id = try arena.dupe(u8, model.container.id);
-        const visible = try model.visibleViews(arena);
-        const selected_id = header_id orelse if (visible.len == 1 and source != .overflow) visible[0].id else null;
-        if (selected_id) |id| {
-            for (visible) |view| {
-                if (!std.mem.eql(u8, view.id, id)) continue;
-                menu.getActionsContext(MenuActionContext).?.view_id = try arena.dupe(u8, view.id);
-                const other = if (container == self.scm.container) self.explorer_container else self.scm.container;
-                if (other != null and model.canMoveTo(view.id, other.?.model)) {
-                    try menu.add("moveView", .{ .label = try std.fmt.allocPrint(arena, "Move View to {s}", .{other.?.model.container.title}) });
-                }
-                if (source == .header) {
-                    try menu.add("hideView", .{
-                        .label = try std.fmt.allocPrint(arena, "Hide '{s}'", .{view.name}),
-                        .enabled = view.can_toggle_visibility and visible.len > 1,
-                    });
-                }
-                if (menu.items.items.len != 0) try menu.separator();
-                break;
-            }
-        }
-        for (model.views.items) |view| {
-            if (!view.in_container or !view.available) continue;
-            try menu.add(try arena.dupe(u8, view.id), .{
-                .label = view.name,
-                .type = .checkbox,
-                .checked = view.visible,
-                .enabled = view.can_toggle_visibility and (!view.visible or visible.len > 1),
-            });
-        }
-        if (source == .overflow) {
-            // PaneComposite.getSecondaryActions flattens Views when it is the
-            // only group, and combines it with a merged pane's secondary actions.
-            const has_enabled = for (menu.items.items) |item| {
-                if (item.enabled) break true;
-            } else false;
-            if (!has_enabled) menu.items.clearRetainingCapacity();
-            if (visible.len == 1 and container.merge_view_with_container_when_single_view) {
-                const pane_id = visible[0].id;
-                const views = menu.items;
-                menu.items = .empty;
-                if (std.mem.eql(u8, pane_id, "changes")) {
-                    if (self.scm.changes) |view| try scm_view_mod.appendSecondary(menu, &self.menu_service, (try self.ensureContextKeys()).interface().getContext(), view);
-                } else if (std.mem.eql(u8, pane_id, "graph")) {
-                    if (self.scm.history) |view| try scm_history_view_mod.appendSecondary(menu, &self.menu_service, (try self.ensureContextKeys()).interface().getContext(), view);
-                } else if (std.mem.eql(u8, pane_id, "outline")) {
-                    if (self.outline_view) |view| try @import("../vs/workbench/contrib/outline/browser/outlineActions.zig").appendSecondary(menu, &self.menu_service, (try self.ensureContextKeys()).interface().getContext(), &view.view_state);
-                }
-                if (menu.items.items.len == 0) {
-                    menu.items = views;
-                } else if (views.items.len > 0) {
-                    try menu.items.insertSlice(arena, 0, &.{
-                        .{ .type = .submenu, .label = "Views", .submenu = views.items },
-                        .{ .type = .separator },
-                    });
-                }
-            }
-        }
-        if (menu.items.items.len == 0) {
-            menu.deinit();
-            return;
-        }
-        try self.showContextMenu(menu, anchor);
-    }
-
-    fn runSidebarViewAction(self: *TerminalWorkbench, menu: *MenuActionContext, id: []const u8) anyerror!void {
-        const container = self.sidebar_part.getViewPaneContainer(menu.container_id.?) orelse return;
-        if (std.mem.eql(u8, id, "moveView")) {
-            const other = if (container == self.scm.container) self.explorer_container else self.scm.container;
-            if (other) |destination| _ = self.view_descriptor_service.moveViewsToContainer(&.{menu.view_id.?}, destination.model);
-            return;
-        }
-        if (std.mem.eql(u8, id, "hideView")) {
-            if (container.model.isVisible(menu.view_id.?)) container.model.toggleVisibility(menu.view_id.?);
-        } else if (container.model.contains(id)) {
-            container.model.toggleVisibility(id);
-        } else return self.commands.execute(id);
-        self.updateSidebarTitleActions();
+    pub fn showSidebarViewMenu(self: *TerminalWorkbench, container: *view_pane_container_mod.ViewPaneContainer, source: sidebar_part_mod.ViewMenuSource, header_id: ?[]const u8, anchor: MenuAnchor) !void {
+        try self.sidebar_menus.show(container, source, header_id, anchor);
     }
 
     pub fn clearTabHover(self: *TerminalWorkbench) void {
@@ -4871,41 +4831,8 @@ fn problemsFocusEditor(context: *anyopaque) void {
     if (self.activeTab()) |tab| tab.focusEditor();
 }
 
-fn commandScmMenu(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const container = self.scm.container orelse return;
-    try self.showSidebarViewMenu(container, .overflow, null, self.sidebarMenuAnchor("workbench.scm.action.showMenu"));
-}
-
-fn commandScmChangesMenu(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const view = self.scm.changes orelse return;
-    const menu = try self.newContextMenu(runTitleMenuAction);
-    errdefer menu.deinit();
-    try scm_view_mod.appendSecondary(menu, &self.menu_service, (try self.ensureContextKeys()).interface().getContext(), view);
-    try self.showContextMenu(menu, self.sidebarMenuAnchor(scm_view_mod.CHANGES_MENU_ACTION_ID));
-}
-
-fn commandScmGraphMenu(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const view = self.scm.history orelse return;
-    const menu = try self.newContextMenu(runTitleMenuAction);
-    errdefer menu.deinit();
-    try scm_history_view_mod.appendSecondary(menu, &self.menu_service, (try self.ensureContextKeys()).interface().getContext(), view);
-    try self.showContextMenu(menu, self.sidebarMenuAnchor(scm_history_view_mod.GRAPH_MENU_ACTION_ID));
-}
-
 fn runTitleMenuAction(self: *TerminalWorkbench, _: *MenuActionContext, id: []const u8) anyerror!void {
     try self.commands.execute(id);
-}
-
-fn commandOutlineMoreActions(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    const view = self.outline_view orelse return;
-    const menu = try self.newContextMenu(runTitleMenuAction);
-    errdefer menu.deinit();
-    try @import("../vs/workbench/contrib/outline/browser/outlineActions.zig").appendSecondary(menu, &self.menu_service, (try self.ensureContextKeys()).interface().getContext(), &view.view_state);
-    try self.showContextMenu(menu, self.sidebarMenuAnchor(OutlinePane.more_actions_id));
 }
 
 fn focusWindowEditor(context: *anyopaque) void {

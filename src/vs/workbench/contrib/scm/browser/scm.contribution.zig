@@ -249,3 +249,5 @@ fn showSourceControl(_: *anyopaque, accessor: Accessor) !void {
     const views = try accessor.get(views_service.views_service_id);
     if (views.getViewWithId(scm_view.SCMViewPane)) |view| view.refresh();
 }
+
+pub const show_menu_action = @import("../../../browser/parts/sidebar/sidebarPart.zig").containerMenuAction("workbench.scm.action.showMenu", "Source Control More Actions", "scm");

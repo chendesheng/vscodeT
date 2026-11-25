@@ -1668,3 +1668,5 @@ pub const view_actions = [_]@import("../../../../platform/actions/common/actions
     viewAction(SCMHistoryViewPane, .registered, .{ .id = SET_LIST_VIEW_MODE_ACTION_ID, .title = "Source Control Graph: View as List", .category = "Source Control" }, true, SCMHistoryViewPane.setViewMode, .{@as(ViewMode, .list)}),
     viewAction(SCMHistoryViewPane, .registered, .{ .id = SET_TREE_VIEW_MODE_ACTION_ID, .title = "Source Control Graph: View as Tree", .category = "Source Control" }, true, SCMHistoryViewPane.setViewMode, .{@as(ViewMode, .tree)}),
 };
+
+pub const graph_menu_action = @import("../../../browser/parts/sidebar/sidebarPart.zig").viewMenuAction(GRAPH_MENU_ACTION_ID, "Graph More Actions", "graph");

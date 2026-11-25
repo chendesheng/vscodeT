@@ -68,3 +68,5 @@ pub const outline_actions = [_]actions.Action2{
     viewAction(OutlinePane, .registered, .{ .id = "outline.sortByName", .title = "Sort By: Name", .category = "View" }, true, OutlinePane.setSortBy, .{outline.OutlineSortOrder.ByName}),
     viewAction(OutlinePane, .registered, .{ .id = "outline.sortByKind", .title = "Sort By: Category", .category = "View" }, true, OutlinePane.setSortBy, .{outline.OutlineSortOrder.ByKind}),
 };
+
+pub const more_actions = @import("../../../browser/parts/sidebar/sidebarPart.zig").viewMenuAction(OutlinePane.more_actions_id, "Outline More Actions", "outline");

@@ -2833,3 +2833,5 @@ pub const view_actions = [_]@import("../../../../platform/actions/common/actions
     viewAction(SCMViewPane, .registered, .{ .id = SET_SORT_BY_PATH_ACTION_ID, .title = "Sort Changes by Path", .category = "Source Control" }, true, SCMViewPane.setViewSortKey, .{@as(ViewSortKey, .path)}),
     viewAction(SCMViewPane, .registered, .{ .id = SET_SORT_BY_STATUS_ACTION_ID, .title = "Sort Changes by Status", .category = "Source Control" }, true, SCMViewPane.setViewSortKey, .{@as(ViewSortKey, .status)}),
 };
+
+pub const changes_menu_action = @import("../../../browser/parts/sidebar/sidebarPart.zig").viewMenuAction(CHANGES_MENU_ACTION_ID, "Changes More Actions", "changes");

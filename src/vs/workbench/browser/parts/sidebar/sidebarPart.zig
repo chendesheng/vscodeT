@@ -1003,3 +1003,167 @@ test "sidebarPart: switching views follows the visible bar order" {
     part.attachActivityBar(&bar);
     try std.testing.expectEqualStrings("explorer", (try part.switchViewTarget(1, allocator)).?);
 }
+
+const context_menus = @import("../../../../platform/contextview/browser/contextMenuService.zig");
+const Menu = context_menus.Menu;
+const MenuAnchor = context_menus.Anchor;
+const MenuService = @import("../../../../platform/actions/common/menuService.zig").MenuService;
+const ContextKeys = @import("../../../../platform/contextkey/common/contextkey.zig").IContextKeyService;
+const CommandRegistry = @import("../../commands.zig").CommandRegistry;
+const ViewDescriptorService = @import("../../../services/views/browser/viewDescriptorService.zig").ViewDescriptorService;
+
+pub const ViewMenuSource = enum { header, container, overflow };
+
+/// Terminal context view adapter for the ViewPaneContainer/PaneCompositePart
+/// menu actions. The native host supplies the anchor, not the action content
+/// or the view move/toggle behavior.
+pub const SidebarViewMenus = struct {
+    allocator: Allocator,
+    sidebar: *SidebarPart,
+    descriptors: *ViewDescriptorService,
+    context_menu: context_menus.IContextMenuService,
+    menus: *MenuService,
+    context_keys: *const ContextKeys,
+    commands: *CommandRegistry,
+    host: struct {
+        context: *anyopaque,
+        anchor: *const fn (*anyopaque, []const u8) MenuAnchor,
+        on_change: *const fn (*anyopaque) void,
+    },
+
+    const ActionContext = struct {
+        service: *SidebarViewMenus,
+        container_id: []const u8 = "",
+        view_id: ?[]const u8 = null,
+    };
+
+    fn otherContainer(self: *SidebarViewMenus, container: *ViewPaneContainer) ?*ViewPaneContainer {
+        var it = self.sidebar.view_pane_containers.valueIterator();
+        while (it.next()) |candidate| {
+            if (candidate.* != container) return candidate.*;
+        }
+        return null;
+    }
+
+    pub fn showContainerMenu(self: *SidebarViewMenus, container_id: []const u8, action_id: []const u8) !void {
+        const container = self.sidebar.getViewPaneContainer(container_id) orelse return;
+        try self.show(container, .overflow, null, self.host.anchor(self.host.context, action_id));
+    }
+
+    pub fn showSecondaryMenu(self: *SidebarViewMenus, view_id: []const u8, action_id: []const u8) !void {
+        const model = self.descriptors.getViewContainerByViewId(view_id) orelse return;
+        const container = self.sidebar.getViewPaneContainer(model.container.id) orelse return;
+        const menu = try Menu.init(self.allocator, ActionContext{ .service = self }, runAction);
+        errdefer menu.deinit();
+        try container.appendSecondaryActions(view_id, menu, self.menus, self.context_keys.getContext());
+        try self.context_menu.showContextMenu(menu, self.host.anchor(self.host.context, action_id));
+    }
+
+    pub fn show(self: *SidebarViewMenus, container: *ViewPaneContainer, source: ViewMenuSource, header_id: ?[]const u8, anchor: MenuAnchor) !void {
+        const model = container.model;
+        const menu = try Menu.init(self.allocator, ActionContext{ .service = self }, runAction);
+        errdefer menu.deinit();
+        const arena = menu.arena.allocator();
+        const action = menu.getActionsContext(ActionContext).?;
+        action.container_id = try arena.dupe(u8, model.container.id);
+        const visible = try model.visibleViews(arena);
+        const selected_id = header_id orelse if (visible.len == 1 and source != .overflow) visible[0].id else null;
+        if (selected_id) |id| {
+            for (visible) |view| {
+                if (!std.mem.eql(u8, view.id, id)) continue;
+                action.view_id = try arena.dupe(u8, view.id);
+                const other = self.otherContainer(container);
+                if (other != null and model.canMoveTo(view.id, other.?.model)) {
+                    try menu.add("moveView", .{ .label = try std.fmt.allocPrint(arena, "Move View to {s}", .{other.?.model.container.title}) });
+                }
+                if (source == .header) {
+                    try menu.add("hideView", .{
+                        .label = try std.fmt.allocPrint(arena, "Hide '{s}'", .{view.name}),
+                        .enabled = view.can_toggle_visibility and visible.len > 1,
+                    });
+                }
+                if (menu.items.items.len != 0) try menu.separator();
+                break;
+            }
+        }
+        for (model.views.items) |view| {
+            if (!view.in_container or !view.available) continue;
+            try menu.add(try arena.dupe(u8, view.id), .{
+                .label = view.name,
+                .type = .checkbox,
+                .checked = view.visible,
+                .enabled = view.can_toggle_visibility and (!view.visible or visible.len > 1),
+            });
+        }
+        if (source == .overflow) {
+            // PaneComposite.getSecondaryActions flattens Views when it is
+            // the only group, and combines it with a merged pane's actions.
+            const has_enabled = for (menu.items.items) |item| {
+                if (item.enabled) break true;
+            } else false;
+            if (!has_enabled) menu.items.clearRetainingCapacity();
+            if (visible.len == 1 and container.merge_view_with_container_when_single_view) {
+                const view_actions = menu.items;
+                menu.items = .empty;
+                try container.appendSecondaryActions(visible[0].id, menu, self.menus, self.context_keys.getContext());
+                if (menu.items.items.len == 0) {
+                    menu.items = view_actions;
+                } else if (view_actions.items.len > 0) {
+                    try menu.items.insertSlice(arena, 0, &.{
+                        .{ .type = .submenu, .label = "Views", .submenu = view_actions.items },
+                        .{ .type = .separator },
+                    });
+                }
+            }
+        }
+        try self.context_menu.showContextMenu(menu, anchor);
+    }
+
+    fn runAction(action: *ActionContext, id: []const u8) !void {
+        const self = action.service;
+        const container = self.sidebar.getViewPaneContainer(action.container_id) orelse return self.commands.execute(id);
+        if (std.mem.eql(u8, id, "moveView")) {
+            if (self.otherContainer(container)) |destination| _ = self.descriptors.moveViewsToContainer(&.{action.view_id.?}, destination.model);
+            return;
+        }
+        if (std.mem.eql(u8, id, "hideView")) {
+            if (container.model.isVisible(action.view_id.?)) container.model.toggleVisibility(action.view_id.?);
+        } else if (container.model.contains(id)) {
+            container.model.toggleVisibility(id);
+        } else return self.commands.execute(id);
+        self.host.on_change(self.host.context);
+    }
+};
+
+pub const sidebar_view_menus_id = @import("../../../../platform/instantiation/common/instantiation.zig").ServiceIdentifier(SidebarViewMenus, "sidebarViewMenus");
+
+const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
+const Accessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
+
+pub fn viewMenuAction(comptime id: []const u8, title: []const u8, comptime view_id: []const u8) Action2 {
+    return .{
+        .command = .{ .id = id, .title = title },
+        .f1 = false,
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, accessor: Accessor) !void {
+                const service = try accessor.get(sidebar_view_menus_id);
+                try service.showSecondaryMenu(view_id, id);
+            }
+        }.run,
+    };
+}
+
+pub fn containerMenuAction(comptime id: []const u8, title: []const u8, comptime container_id: []const u8) Action2 {
+    return .{
+        .command = .{ .id = id, .title = title },
+        .f1 = false,
+        .context = @constCast(&{}),
+        .run_fn = struct {
+            fn run(_: *anyopaque, accessor: Accessor) !void {
+                const service = try accessor.get(sidebar_view_menus_id);
+                try service.showContainerMenu(container_id, id);
+            }
+        }.run,
+    };
+}

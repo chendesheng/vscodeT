@@ -6,15 +6,54 @@ const Emitter = @import("../../../base/common/event.zig").Emitter;
 pub const Menu = @import("contextMenuHandler.zig").Menu;
 pub const Anchor = @import("contextMenuHandler.zig").Anchor;
 
+pub const IContextMenuService = struct {
+    context: *anyopaque,
+    show: *const fn (*anyopaque, *Menu, Anchor) anyerror!void,
+    hide: *const fn (*anyopaque) void,
+    on_did_show_context_menu: *Emitter(void),
+    on_did_hide_context_menu: *Emitter(void),
+
+    pub fn showContextMenu(self: IContextMenuService, menu: *Menu, anchor: Anchor) !void {
+        try self.show(self.context, menu, anchor);
+    }
+
+    pub fn hideContextMenu(self: IContextMenuService) void {
+        self.hide(self.context);
+    }
+};
+
+pub const context_menu_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(IContextMenuService, "contextMenuService");
+
 pub const ContextMenuService = struct {
     disposed: bool = false,
     current: ?*Menu = null,
+    theme: ui.ContextMenuTheme = .{},
     on_did_show_context_menu: Emitter(void),
     on_did_hide_context_menu: Emitter(void),
     errors: struct { context: *anyopaque, report: *const fn (*anyopaque, anyerror) void },
 
     pub fn init(allocator: std.mem.Allocator, context: *anyopaque, report: *const fn (*anyopaque, anyerror) void) ContextMenuService {
         return .{ .errors = .{ .context = context, .report = report }, .on_did_show_context_menu = .init(allocator), .on_did_hide_context_menu = .init(allocator) };
+    }
+
+    pub fn interface(self: *ContextMenuService) IContextMenuService {
+        return .{
+            .context = self,
+            .show = showContextMenuContext,
+            .hide = hideContextMenuContext,
+            .on_did_show_context_menu = &self.on_did_show_context_menu,
+            .on_did_hide_context_menu = &self.on_did_hide_context_menu,
+        };
+    }
+
+    fn showContextMenuContext(context: *anyopaque, menu: *Menu, anchor: Anchor) !void {
+        const self: *ContextMenuService = @ptrCast(@alignCast(context));
+        try self.showContextMenu(menu, anchor, self.theme);
+    }
+
+    fn hideContextMenuContext(context: *anyopaque) void {
+        const self: *ContextMenuService = @ptrCast(@alignCast(context));
+        self.hideContextMenu();
     }
 
     pub fn deinit(self: *ContextMenuService) void {

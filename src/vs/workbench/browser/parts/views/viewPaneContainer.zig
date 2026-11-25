@@ -13,6 +13,10 @@ const split_view = @import("../../../../base/browser/ui/splitview/splitview.zig"
 const time_compat = @import("../../../../base/common/timeCompat.zig");
 const theme_colors_mod = @import("../../themeColors.zig");
 
+const Menu = @import("../../../../platform/contextview/browser/contextMenuHandler.zig").Menu;
+const MenuService = @import("../../../../platform/actions/common/menuService.zig").MenuService;
+const IContext = @import("../../../../platform/contextkey/common/contextkey.zig").IContext;
+
 pub const Pane = struct {
     id: []const u8,
     title: []const u8,
@@ -20,6 +24,7 @@ pub const Pane = struct {
     render_body: *const fn (context: *anyopaque, grid: *ui.CellGrid, rect: ui.Rect, focused: bool) anyerror!void,
     handle_key: *const fn (context: *anyopaque, event: *ui.KeyEvent) anyerror!bool,
     set_focused: ?*const fn (*anyopaque, bool) void = null,
+    append_secondary_actions: ?*const fn (*anyopaque, *Menu, *MenuService, IContext) anyerror!void = null,
     handle_mouse: *const fn (context: *anyopaque, event: *const ui.MouseEvent, rect: ui.Rect) anyerror!bool,
     title_actions: *const fn (context: *anyopaque) []const views.TitleAction,
     show_actions: view_pane.ShowActions = .default,
@@ -710,6 +715,12 @@ pub const ViewPaneContainer = struct {
 
     /// Title actions for the side-bar title toolbar when a single view is
     /// merged with the container.
+    pub fn appendSecondaryActions(self: *const ViewPaneContainer, id: []const u8, menu: *Menu, service: *MenuService, context: IContext) !void {
+        const index = self.paneIndex(id) orelse return;
+        const pane = self.panes[index];
+        if (pane.append_secondary_actions) |append| try append(pane.context, menu, service, context);
+    }
+
     pub fn mergedTitleActions(self: *const ViewPaneContainer, allocator: Allocator) !?[]const views.TitleAction {
         _ = allocator;
         const visible = try self.model.visibleViews(self.allocator);
