@@ -1341,11 +1341,11 @@ pub fn handleTerminalKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
     if (event.mods.alt and event.mods.shift and !event.mods.ctrl) {
         switch (event.key) {
             .up => {
-                self.resizeTerminalPanel(1);
+                self.layout_api.resizePart(.panel, 0, 1) catch {};
                 return true;
             },
             .down => {
-                self.resizeTerminalPanel(-1);
+                self.layout_api.resizePart(.panel, 0, -1) catch {};
                 return true;
             },
             .char => |ch| switch (ch) {
@@ -1602,7 +1602,7 @@ pub fn handleWorkbenchSashMouse(self: *Workbench, event: *const ui.MouseEvent) b
                     self.layoutAll();
                 } else if (changed) self.layoutAll();
             },
-            .panel => self.resizePanelTo(size),
+            .panel => self.layout_api.setSize(.panel, .{ .height = size }) catch return true,
         }
         if (event.kind == .up or event.kind == .click) {
             const click = sash == .sidebar and grid.drag.?.click_y != null and self.geometry().sidebarShown();

@@ -233,7 +233,7 @@ pub const TerminalActionServices = struct {
     focused_terminal: *const fn (*anyopaque) ?*TerminalInstance,
     focus_panel: *const fn (*anyopaque) void,
     layout: *const fn (*anyopaque) void,
-    resize_panel: *const fn (*anyopaque, isize) void,
+    layout_service: @import("../../../services/layout/browser/layoutService.zig").IWorkbenchLayoutService,
     panel_instances_removed: *const fn (*anyopaque, *TerminalService) anyerror!void,
 
     /// Explicit Zig composition adapter: only these service and view hooks
@@ -277,9 +277,6 @@ pub const TerminalActionServices = struct {
             fn layout(context: *anyopaque) void {
                 get(context).layoutAll();
             }
-            fn resizePanel(context: *anyopaque, delta: isize) void {
-                get(context).resizeTerminalPanel(delta);
-            }
             fn panelInstancesRemoved(context: *anyopaque, service: *TerminalService) !void {
                 try get(context).onPanelTerminalsRemoved(service);
             }
@@ -305,7 +302,7 @@ pub const TerminalActionServices = struct {
             .focused_terminal = Adapter.focusedTerminal,
             .focus_panel = Adapter.focusPanel,
             .layout = Adapter.layout,
-            .resize_panel = Adapter.resizePanel,
+            .layout_service = host.layout_api,
             .panel_instances_removed = Adapter.panelInstancesRemoved,
         };
     }
@@ -420,7 +417,7 @@ pub const TerminalActionServices = struct {
                 self.tabbed_view.focusAdjacentGroup(service, self.panel_rect(self.context), action == .focus_next);
                 self.focus_panel(self.context);
             },
-            .resize_up, .resize_down => self.resize_panel(self.context, if (action == .resize_up) 1 else -1),
+            .resize_up, .resize_down => try self.layout_service.resizePart(.panel, 0, if (action == .resize_up) 1 else -1),
         }
     }
 };

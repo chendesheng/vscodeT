@@ -7252,14 +7252,14 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     try std.testing.expectEqual(alt_start - (alt_start - workbench.sidebar_part.minimum_width) / 2, workbench.layout.size(.sidebar));
 
     try workbench.showProblems();
-    try workbench.resizeEditorArea(-100, 0);
+    try workbench.layout.resizeEditorPart(-100, 0);
     try std.testing.expectEqual(@as(usize, 18), ui.cell.snap(workbench.panel_part.base.bounds.?.w));
     workbench.closePanel();
 
     // An uneven editor split must still reserve each group's minimum.
     try workbench.splitActive(.horizontal);
     workbench.part.root.kind.split.ratio = 0.8;
-    try workbench.resizeEditorArea(-100, 0);
+    try workbench.layout.resizeEditorPart(-100, 0);
     const split = workbench.part.root.kind.split;
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.first.rect.w));
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.second.rect.w));
@@ -7267,7 +7267,7 @@ test "Workbench: dragging the sidebar divider resizes the side bar" {
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.first.rect.w));
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(split.second.rect.w));
     workbench.maximizeActiveGroup();
-    try workbench.resizeEditorArea(-100, 0);
+    try workbench.layout.resizeEditorPart(-100, 0);
     try std.testing.expectEqual(editor_part.min_pane_width, ui.cell.snap(workbench.part.base.bounds.?.w));
 }
 
@@ -9011,4 +9011,37 @@ test "Git resource actions stage unstage and resolve discard confirmation agains
     defer allocator.free(restored);
     try std.testing.expectEqualStrings("base\n", restored);
     try std.testing.expectEqual(@as(usize, 0), provider.groups[2].resources.items.len);
+}
+
+test "Layout resizePart changes the active group before resizing the editor part" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "resize.txt", "alpha\n");
+    defer allocator.free(path);
+
+    const window = try TestWindow.init(allocator, io, &.{path}, 100, 40);
+    defer window.deinit();
+    const wb = window.workbench;
+    try wb.showProblems();
+    try wb.splitActive(.horizontal);
+    const group = wb.activePane().?;
+    const editor_size = wb.layout_api.getSize(.editor);
+    const group_size = wb.part.getSize(group);
+    const panel_size = wb.layout_api.getSize(.panel);
+    try std.testing.expectEqual(wb.layout.main_container, wb.layout_api.getContainer(null));
+    try std.testing.expectEqual(wb.part.base.getContainer(), wb.layout_api.getContainer(.editor));
+
+    // A horizontal group sash can absorb the width change without changing
+    // the size of the editor part or the neighboring workbench parts.
+    try wb.commands.execute("workbench.action.increaseViewWidth");
+    try std.testing.expectEqual(group_size.width + 4, wb.part.getSize(group).width);
+    try std.testing.expectEqual(editor_size.width, wb.layout_api.getSize(.editor).width);
+
+    // There is no vertical group sash. Grow the editor part instead.
+    try wb.commands.execute("workbench.action.decreaseViewHeight");
+    try std.testing.expectEqual(editor_size.height - 2, wb.layout_api.getSize(.editor).height);
+    try std.testing.expectEqual(panel_size.height + 2, wb.layout_api.getSize(.panel).height);
+    try std.testing.expectEqual(group_size.height - 2, wb.part.getSize(group).height);
 }

@@ -536,6 +536,39 @@ pub fn EditorPart(comptime GroupView: type) type {
             };
         }
 
+        /// Upstream EditorPart.getSize/setSize for the terminal binary grid.
+        pub fn getSize(_: *const Self, group: *GroupView) layout_service.IViewSize {
+            return .{ .width = ui.cell.snap(group.rect.w), .height = ui.cell.snap(group.rect.h) };
+        }
+
+        pub fn setSize(self: *Self, group: *GroupView, desired: layout_service.IViewSize) void {
+            if (self.maximized_group != null) return;
+            const before = self.getSize(group);
+            self.resizeGroupDimension(group, .horizontal, @as(isize, @intCast(desired.width)) - @as(isize, @intCast(before.width)));
+            const current = self.getSize(group);
+            self.resizeGroupDimension(group, .vertical, @as(isize, @intCast(desired.height)) - @as(isize, @intCast(current.height)));
+        }
+
+        const ResizeBranch = struct { node: *LayoutNode, first: bool };
+        fn findResizeBranch(node: *LayoutNode, group: *GroupView, direction: Orientation) ?ResizeBranch {
+            if (node.kind != .split) return null;
+            const split = node.kind.split;
+            const first = grid.findLeaf(*GroupView, split.first, group) != null;
+            const child = if (first) split.first else split.second;
+            if (findResizeBranch(child, group, direction)) |branch| return branch;
+            return if (split.direction == direction) .{ .node = node, .first = first } else null;
+        }
+
+        fn resizeGroupDimension(self: *Self, group: *GroupView, direction: Orientation, delta: isize) void {
+            if (delta == 0) return;
+            const branch = findResizeBranch(self.root, group, direction) orelse return;
+            const split = branch.node.kind.split;
+            const change = if (branch.first) delta else 0 -| delta;
+            const boundary = if (direction == .horizontal) ui.cell.snap(split.first.rect.right()) else ui.cell.snap(split.first.rect.bottom());
+            const target: usize = @intCast(@max(@as(isize, @intCast(boundary)) +| change, 0));
+            self.resizeSash(branch.node, if (direction == .horizontal) target else 0, if (direction == .vertical) target else 0);
+        }
+
         /// Starts, updates and ends a sash drag. Returns true while the pointer
         /// belongs to the sash.
         pub fn resizeSash(self: *Self, node: *LayoutNode, x: usize, y: usize) void {

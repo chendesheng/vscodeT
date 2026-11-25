@@ -193,6 +193,9 @@ pub const Layout = struct {
     states: [8]PartState = .{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} },
     sidebar_position: Position = .left,
     workbench_grid: WorkbenchGrid = .{},
+    // Like the browser grid, Layout retains the last laid-out container and
+    // its part geometry for subsequent resize commands.
+    terminal_geometry: ?TerminalGeometry = null,
     /// Port of `LayoutStateKeys.ZEN_MODE_ACTIVE` / `ZEN_MODE_EXIT_INFO`.
     zen_host: ?ZenModeHost = null,
     notification_service: ?@import("../../platform/notification/common/notification.zig").INotificationService = null,
@@ -259,7 +262,7 @@ pub const Layout = struct {
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
+        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .get_container = getContainerContext, .get_size = getSizeContext, .set_size = setSizeContext, .resize_part = resizePartContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .has_focus = hasFocusContext, .focus_part = focusPartContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
     }
 
     fn hasFocusContext(context: *anyopaque, part: Parts) bool {
@@ -273,6 +276,26 @@ pub const Layout = struct {
         if (!self.isVisible(part)) return;
         const host = self.zen_host orelse return;
         host.focus_part(host.context, part);
+    }
+
+    fn getContainerContext(context: *anyopaque, part: ?Parts) ?*ui.Node {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.getContainer(part);
+    }
+
+    fn getSizeContext(context: *anyopaque, part: Parts) layout_service.IViewSize {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        return self.getSize(part);
+    }
+
+    fn setSizeContext(context: *anyopaque, part: Parts, size_value: layout_service.IViewSize) !void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        try self.setViewSize(part, size_value);
+    }
+
+    fn resizePartContext(context: *anyopaque, part: Parts, width_delta: isize, height_delta: isize) !void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        try self.resizePart(part, width_delta, height_delta);
     }
 
     fn getSideBarPositionContext(context: *anyopaque) Position {
@@ -371,6 +394,7 @@ pub const Layout = struct {
     /// Terminal view of Layout.layout: apply the same grid rects to the
     /// registered parts and the editor group's centered/maximized layout.
     pub fn layoutTerminal(self: *Layout, geometry: TerminalGeometry) void {
+        self.terminal_geometry = geometry;
         if (self.workbench_grid.activeSash()) |sash| {
             const visible = switch (sash) {
                 .sidebar => geometry.sidebar_available, // snapped sash retains pointer capture
@@ -413,6 +437,90 @@ pub const Layout = struct {
     pub fn isVisible(self: *const Layout, part: Parts) bool {
         if (self.parts.get(part)) |binding| return binding.part.read_visible(binding.part);
         return self.states[@backingInt(part)].visible;
+    }
+
+    pub fn getContainer(self: *const Layout, part: ?Parts) ?*ui.Node {
+        const id = part orelse return self.main_container;
+        const binding = self.parts.get(id) orelse return null;
+        return binding.part.getContainer();
+    }
+
+    pub fn getSize(self: *const Layout, part: Parts) layout_service.IViewSize {
+        const binding = self.parts.get(part) orelse return .{};
+        const rect = binding.part.bounds orelse return .{};
+        return .{ .width = ui.cell.snap(rect.w), .height = ui.cell.snap(rect.h) };
+    }
+
+    /// Upstream setSize resizes the corresponding registered grid view. This
+    /// terminal subset has a vertical sidebar and horizontal bottom panel.
+    pub fn setViewSize(self: *Layout, part: Parts, value: layout_service.IViewSize) !void {
+        switch (part) {
+            .sidebar => {
+                const width = if (self.terminal_geometry) |geometry| geometry.clampSidebarWidth(value.width -| geometry.sidebarFrameInset()) else value.width;
+                try self.setSize(.sidebar, width);
+            },
+            .panel => {
+                const height = if (self.terminal_geometry) |geometry| geometry.clampPanelHeight(value.height) else value.height;
+                try self.setSize(.panel, height);
+            },
+            .editor => {
+                const before = self.getSize(.editor);
+                try self.resizeEditorPart(@as(isize, @intCast(value.width)) - @as(isize, @intCast(before.width)), @as(isize, @intCast(value.height)) - @as(isize, @intCast(before.height)));
+            },
+            else => {}, // fixed-size or unsupported native part
+        }
+    }
+
+    fn adjustSize(value: usize, delta: isize) usize {
+        return @intCast(@max(@as(isize, @intCast(value)) +| delta, 0));
+    }
+
+    /// Upstream resizePart applies the requested change to the active editor
+    /// group first. Only dimensions that could not change are then applied to
+    /// the whole editor part. Deltas are already in terminal cells here.
+    pub fn resizePart(self: *Layout, part: Parts, width_delta: isize, height_delta: isize) !void {
+        const size_value = self.getSize(part);
+        switch (part) {
+            .sidebar => try self.setViewSize(.sidebar, .{ .width = adjustSize(size_value.width, width_delta), .height = size_value.height }),
+            .panel => {
+                if (self.terminal_geometry) |geometry| if (!geometry.panelShown()) return;
+                try self.setViewSize(.panel, .{ .width = size_value.width, .height = adjustSize(size_value.height, height_delta) });
+            },
+            .editor => {
+                var remaining_width = width_delta;
+                var remaining_height = height_delta;
+                if (self.terminal_geometry) |geometry| {
+                    if (geometry.part.count() > 1) {
+                        if (geometry.part.activeView()) |group| {
+                            const before = geometry.part.getSize(group);
+                            geometry.part.setSize(group, .{ .width = adjustSize(before.width, width_delta), .height = adjustSize(before.height, height_delta) });
+                            const after = geometry.part.getSize(group);
+                            if (before.width != after.width) remaining_width = 0;
+                            if (before.height != after.height) remaining_height = 0;
+                        }
+                    }
+                }
+                try self.resizeEditorPart(remaining_width, remaining_height);
+            },
+            else => {},
+        }
+    }
+
+    /// Resize the outer editor view in the workbench grid, used by setSize and
+    /// by the resizePart fallback when there is no applicable group sash.
+    pub fn resizeEditorPart(self: *Layout, width_delta: isize, height_delta: isize) !void {
+        const geometry = self.terminal_geometry orelse return;
+        if (width_delta != 0 and geometry.sidebarShown()) {
+            const current: isize = @intCast(geometry.sidebarWidth());
+            try self.setSize(.sidebar, geometry.clampSidebarWidth(@intCast(@max(current -| width_delta, 0))));
+        }
+        if (height_delta != 0 and geometry.panelShown()) {
+            const current: isize = @intCast(geometry.panelHeight());
+            try self.setSize(.panel, geometry.clampPanelHeight(@intCast(@max(current -| height_delta, 0))));
+        }
+        // Group resize also needs the normal layout event when no outer part
+        // size changed (or a constrained value was already at its limit).
+        try self.on_did_change.fire({});
     }
 
     pub fn setSize(self: *Layout, part: Parts, value: usize) !void {

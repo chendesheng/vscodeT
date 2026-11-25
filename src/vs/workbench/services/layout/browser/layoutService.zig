@@ -2,12 +2,15 @@
 // from `src/vs/workbench/services/layout/browser/layoutService.ts`.
 // A terminal uses cell geometry and one main window for every part.
 const std = @import("std");
+const ui = @import("ui");
 const configuration = @import("../../../../platform/configuration/common/configuration.zig");
 const ConfigurationService = @import("../../configuration/browser/configurationService.zig").ConfigurationService;
 
 const Part = @import("../../../browser/part.zig").Part;
 const IDisposable = @import("../../../../base/common/lifecycle.zig").IDisposable;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
+
+pub const IViewSize = struct { width: usize = 0, height: usize = 0 };
 
 pub const IPartVisibilityChangeEvent = struct { part_id: Parts, visible: bool };
 
@@ -16,6 +19,10 @@ pub const layout_service_id = @import("../../../../platform/instantiation/common
 pub const IWorkbenchLayoutService = struct {
     context: *anyopaque,
     get_side_bar_position: *const fn (*anyopaque) Position,
+    get_container: *const fn (*anyopaque, ?Parts) ?*ui.Node,
+    get_size: *const fn (*anyopaque, Parts) IViewSize,
+    set_size: *const fn (*anyopaque, Parts, IViewSize) anyerror!void,
+    resize_part: *const fn (*anyopaque, Parts, isize, isize) anyerror!void,
     register_part: *const fn (*anyopaque, *Part) anyerror!IDisposable,
     set_part_hidden: *const fn (*anyopaque, bool, Parts) anyerror!void,
     is_visible: *const fn (*anyopaque, Parts) bool,
@@ -31,6 +38,22 @@ pub const IWorkbenchLayoutService = struct {
 
     pub fn getSideBarPosition(self: @This()) Position {
         return self.get_side_bar_position(self.context);
+    }
+
+    pub fn getContainer(self: @This(), part: ?Parts) ?*ui.Node {
+        return self.get_container(self.context, part);
+    }
+
+    pub fn getSize(self: @This(), part: Parts) IViewSize {
+        return self.get_size(self.context, part);
+    }
+
+    pub fn setSize(self: @This(), part: Parts, size: IViewSize) !void {
+        try self.set_size(self.context, part, size);
+    }
+
+    pub fn resizePart(self: @This(), part: Parts, width_delta: isize, height_delta: isize) !void {
+        try self.resize_part(self.context, part, width_delta, height_delta);
     }
 
     pub fn toggleZenMode(self: @This()) !void {

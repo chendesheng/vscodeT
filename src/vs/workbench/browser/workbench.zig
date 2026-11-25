@@ -1449,11 +1449,8 @@ pub const Workbench = struct {
         for (after_move_groups) |command| try self.commands.register(command);
         try self.commands.registerAction(&self.instantiation, editor_actions.navigate_between_groups_action);
         try self.commands.registerAction(&self.instantiation, editor_actions.reset_group_sizes_action);
+        for (@import("actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(&self.instantiation, action);
         const after_group_actions = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.increaseViewWidth", .label = "Increase Editor Width", .category = "View", .context = self, .run = commandIncreaseViewWidth },
-            .{ .id = "workbench.action.decreaseViewWidth", .label = "Decrease Editor Width", .category = "View", .context = self, .run = commandDecreaseViewWidth },
-            .{ .id = "workbench.action.increaseViewHeight", .label = "Increase Editor Height", .category = "View", .context = self, .run = commandIncreaseViewHeight },
-            .{ .id = "workbench.action.decreaseViewHeight", .label = "Decrease Editor Height", .category = "View", .context = self, .run = commandDecreaseViewHeight },
             .{ .id = "workbench.action.maximizeEditor", .label = "Maximize Editor Group", .category = "View", .context = self, .run = commandMaximizeEditor },
             .{ .id = "workbench.action.closePanel", .label = "Close Panel", .category = "View", .context = self, .run = commandClosePanel },
             .{ .id = "workbench.action.closeAllEditors", .label = "Close All Editors", .category = "View", .context = self, .run = commandCloseAllEditors },
@@ -2862,19 +2859,6 @@ pub const Workbench = struct {
 
     pub fn focusPreviousTerminal(self: *Workbench) void {
         self.terminal_action_services.run(.focus_previous) catch {};
-    }
-
-    pub fn resizeTerminalPanel(self: *Workbench, delta: isize) void {
-        if (!self.geometry().panelShown()) return;
-        const current: isize = @intCast(self.geometry().panelHeight());
-        self.resizePanelTo(@intCast(@max(current +| delta, 0)));
-    }
-
-    pub fn resizePanelTo(self: *Workbench, desired: usize) void {
-        const height = self.geometry().clampPanelHeight(desired);
-        if (height == self.geometry().panelHeight()) return;
-        self.layout.setSize(.panel, height) catch {};
-        self.layoutAll();
     }
 
     pub fn terminalAcceptsPaste(self: *const Workbench) bool {
@@ -4790,21 +4774,6 @@ pub const Workbench = struct {
             return;
         _ = try pane.group.model.moveEditor(tab.input, @intCast(target));
         pane.syncActivePane();
-        self.layoutAll();
-    }
-
-    /// Approximate the editor-part resize actions by changing the sidebar and
-    /// panel sizes that determine the editor area.
-    pub fn resizeEditorArea(self: *Workbench, width_delta: isize, height_delta: isize) !void {
-        if (width_delta != 0 and self.geometry().sidebarShown()) {
-            const current: isize = @intCast(self.geometry().sidebarWidth());
-            try self.layout.setSize(.sidebar, self.geometry().clampSidebarWidth(@intCast(@max(current -| width_delta, 0))));
-        }
-        if (height_delta != 0 and self.geometry().panelShown()) {
-            const current: isize = @intCast(self.geometry().panelHeight());
-            const next: usize = @intCast(@max(current -| height_delta, 0));
-            try self.layout.setSize(.panel, self.geometry().clampPanelHeight(next));
-        }
         self.layoutAll();
     }
 
@@ -7036,26 +7005,6 @@ fn commandNavigateUp(context: *anyopaque) anyerror!void {
 fn commandNavigateDown(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.navigateGroup(.down);
-}
-
-fn commandIncreaseViewWidth(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.resizeEditorArea(4, 0);
-}
-
-fn commandDecreaseViewWidth(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.resizeEditorArea(-4, 0);
-}
-
-fn commandIncreaseViewHeight(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.resizeEditorArea(0, 2);
-}
-
-fn commandDecreaseViewHeight(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.resizeEditorArea(0, -2);
 }
 
 fn commandMaximizeEditor(context: *anyopaque) anyerror!void {
