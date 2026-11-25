@@ -5511,3 +5511,36 @@ test "Workbench: breadcrumb symbol filtering survives editor group focus changes
         try std.testing.expect(std.mem.indexOf(u8, row, "HiddenFunction") == null);
     }
 }
+
+test "command palette preserves registration order, metadata and editor preconditions" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try seedFile(allocator, io, &tmp, "palette.txt", "palette");
+    defer allocator.free(path);
+    const workbench = try Workbench.init(allocator, io, &.{}, 80, 24);
+    defer workbench.deinit();
+    const source = workbench.commands.source();
+    const empty = try source.get_picks(source.context, allocator);
+    defer allocator.free(empty);
+    try workbench.openPath(path);
+    const editing = try source.get_picks(source.context, allocator);
+    defer allocator.free(editing);
+    var snapshot: std.Io.Writer.Allocating = .init(allocator);
+    defer snapshot.deinit();
+    var empty_index: usize = 0;
+    var editing_index: usize = 0;
+    for (workbench.commands.infos.items) |info| {
+        const in_empty = empty_index < empty.len and std.mem.eql(u8, empty[empty_index].command_id, info.id);
+        const in_editing = editing_index < editing.len and std.mem.eql(u8, editing[editing_index].command_id, info.id);
+        const entry = .{ info.id, info.label, info.category, info.description, info.show_in_palette, info.requires_editor, info.precondition != null, in_empty, in_editing };
+        try std.json.Stringify.value(entry, .{}, &snapshot.writer);
+        try snapshot.writer.writeByte('\n');
+        empty_index += @intFromBool(in_empty);
+        editing_index += @intFromBool(in_editing);
+    }
+    try std.testing.expectEqual(empty.len, empty_index);
+    try std.testing.expectEqual(editing.len, editing_index);
+    try std.testing.expectEqualStrings(@embedFile("fixtures/workbench-palette.jsonl"), snapshot.written());
+}
