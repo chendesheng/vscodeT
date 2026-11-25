@@ -410,8 +410,6 @@ test "benchmark: workbench scroll frame" {
         const scroll_start = nowUs(io);
         _ = tab.editor.scrollViewLines(3);
         scroll_us_total += nowUs(io) - scroll_start;
-
-        tab.onEditorChanged(time_compat.milliTimestamp());
         const refresh_start = nowUs(io);
         try tab.view.refresh();
         refresh_us_total += nowUs(io) - refresh_start;

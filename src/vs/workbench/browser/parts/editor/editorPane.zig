@@ -345,13 +345,6 @@ pub const Tab = struct {
         );
     }
 
-    pub fn onEditorChanged(self: *Tab, _: i64) void {
-        if (self.diff != null) return;
-        if (self.controllers) |controllers| {
-            _ = controllers.suggest.onEditorChanged() catch {};
-        }
-    }
-
     pub fn refresh(self: *Tab) !void {
         if (self.markdown_preview != null) return;
         if (self.terminal_input != null) return;

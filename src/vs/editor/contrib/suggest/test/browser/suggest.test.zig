@@ -38,12 +38,12 @@ const Harness = struct {
 test "SuggestController: typing opens suggestions and Enter accepts" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const editor = try Editor.createFromText(allocator, io, "alpha\nal", "test.txt", 40, 8);
+    const editor = try Editor.createFromText(allocator, io, "alpha\na", "test.txt", 40, 8);
     defer {
         editor.deinit();
         allocator.destroy(editor);
     }
-    try editor.setCursorPosition(Position.init(2, 3));
+    try editor.setCursorPosition(Position.init(2, 2));
 
     var provider = WordBasedCompletionProvider.init();
     const providers = [_]@import("../../../../common/languages/completion.zig").CompletionItemProvider{provider.interface()};
@@ -61,10 +61,11 @@ test "SuggestController: typing opens suggestions and Enter accepts" {
     controller.attachWindow(&queue);
 
     // No shortcut: a typed word character schedules the 10 ms quick trigger.
-    try std.testing.expect(!try controller.onTypedCharacter('l', 0));
+    try editor.typeCharacter("l");
     try std.testing.expect(!controller.isOpen());
-    try std.testing.expect(!queue.dispatch(9));
-    try std.testing.expect(queue.dispatch(10));
+    const deadline = controller.model.deadline_ms.?;
+    try std.testing.expect(!queue.dispatch(deadline - 1));
+    try std.testing.expect(queue.dispatch(deadline));
     try std.testing.expect(controller.isOpen());
     try std.testing.expectEqual(@as(usize, 1), controller.model.completionModel().?.count());
     try std.testing.expectEqualStrings("alpha", controller.model.completionModel().?.selected().?.label);
@@ -77,6 +78,10 @@ test "SuggestController: typing opens suggestions and Enter accepts" {
     defer line.deinit();
     try std.testing.expectEqualStrings("alpha", line.items);
     try std.testing.expectEqual(@as(usize, 6), editor.modelCursorPosition().column);
+    // The cursor event for bracketed paste has its upstream Paste reason,
+    // so it does not retrigger quick suggestions.
+    try editor.pasteText(" beta");
+    try std.testing.expect(!controller.model.hasPendingTrigger());
 }
 
 test "SuggestController: Escape dismisses and focus change cancels" {
@@ -115,6 +120,12 @@ test "SuggestController: Escape dismisses and focus change cancels" {
     _ = try controller.onTypedCharacter('l', 20);
     harness.editor_focused = false;
     try std.testing.expect(!try controller.onTick(40));
+    try std.testing.expect(!controller.isOpen());
+    // A real focus event cancels an already visible suggestion session.
+    harness.editor_focused = true;
+    _ = try controller.model.triggerExplicit(50);
+    try std.testing.expect(controller.isOpen());
+    editor.emitViewEvent(.{ .ViewFocusChanged = .{ .isFocused = false } });
     try std.testing.expect(!controller.isOpen());
 }
 
@@ -161,8 +172,7 @@ test "SuggestController: widget renders below the caret and filters" {
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "alpha") != null);
 
-    try editor.insertText("p");
-    _ = try controller.onTypedCharacter('p', 20);
+    try editor.typeCharacter("p");
     try view.refresh();
     try std.testing.expectEqual(@as(usize, 1), controller.model.completionModel().?.count());
 

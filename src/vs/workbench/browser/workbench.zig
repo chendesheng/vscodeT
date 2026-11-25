@@ -5840,7 +5840,6 @@ pub const Workbench = struct {
         try tab.ensureControllers();
         self.focusEditor();
         tab.focusEditor();
-        tab.onEditorChanged(@import("../../base/common/timeCompat.zig").milliTimestamp());
         try tab.refresh();
         if (tab.terminal_input == null) {
             try self.history.add(tab.editor.path);

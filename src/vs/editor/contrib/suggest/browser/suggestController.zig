@@ -34,6 +34,7 @@ pub const SuggestController = struct {
     choice_active: bool = false,
     overtyping_capturer: OvertypingCapturer,
     host: SuggestControllerHost,
+    will_type_listener: ?usize = null,
 
     pub fn init(
         allocator: Allocator,
@@ -71,10 +72,13 @@ pub const SuggestController = struct {
         errdefer self.widget.deinit();
         self.model.overtyping_capturer = self.overtyping_capturer.interface();
         self.model.listener = .{ .context = self, .on_change = onModelChanged };
+        try self.model.registerListeners();
+        self.will_type_listener = try editor.on_will_type.listen(self, onWillType);
         return self;
     }
 
     pub fn deinit(self: *SuggestController) void {
+        if (self.will_type_listener) |id| self.editor.on_will_type.unlisten(id);
         if (self.snippet_session) |session| session.deinit();
         self.snippet_session = null;
         self.overtyping_capturer.deinit();
@@ -152,7 +156,7 @@ pub const SuggestController = struct {
         return changed;
     }
 
-    /// App calls this for printable characters after they were inserted.
+    /// Allows isolated controller tests to deliver typed line context.
     pub fn onTypedCharacter(self: *SuggestController, ch: u8, now_ms: i64) !bool {
         if (!self.host.has_editor_focus(self.host.context)) {
             self.cancel();
@@ -163,13 +167,7 @@ pub const SuggestController = struct {
         return changed;
     }
 
-    pub fn onEditorChanged(self: *SuggestController) !bool {
-        const changed = try self.model.onEditorChanged();
-        if (self.model.isOpen()) self.showWidget() else self.hideWidget();
-        return changed;
-    }
-
-    pub fn beforeTyping(self: *SuggestController) void {
+    fn onWillType(_: []const u8, self: *SuggestController) !void {
         self.overtyping_capturer.capture(self.editor);
     }
 
@@ -336,6 +334,9 @@ pub const SuggestController = struct {
     }
 
     fn acceptSelected(self: *SuggestController) !bool {
+        const old_suspend = self.model.suspend_events;
+        self.model.suspend_events = true;
+        defer self.model.suspend_events = old_suspend;
         const was_choice = self.choice_active;
         if (!was_choice and self.snippet_session != null) {
             if (self.model.selectedItem()) |item| {
@@ -405,6 +406,7 @@ pub const SuggestController = struct {
     }
 
     fn hideWidget(self: *SuggestController) void {
+        if (!self.model.isOpen()) self.overtyping_capturer.unlock();
         self.widget.hide();
         self.host.request_frame(self.host.context);
     }

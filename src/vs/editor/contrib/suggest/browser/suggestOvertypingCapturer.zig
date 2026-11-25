@@ -1,7 +1,6 @@
 // Port of `src/vs/editor/contrib/suggest/browser/suggestOvertypingCapturer.ts`.
 //
-// Terminal adaptation: the TUI has no `onWillType` event, so the app calls
-// `capture` immediately before dispatching a typing key. Locking mirrors
+// The controller captures from the editor onWillType event. Locking mirrors
 // upstream: it is locked while the suggest widget is open.
 
 const std = @import("std");

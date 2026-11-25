@@ -11,6 +11,13 @@ const editor_mod = @import("../../../browser/widget/codeEditor/codeEditorWidgetT
 const Editor = editor_mod.Editor;
 const TextEdit = editor_mod.TextEdit;
 const Position = @import("../../../common/core/position.zig").Position;
+const Selection = @import("../../../common/core/selection.zig").Selection;
+const ICursorSelectionChangedEvent = @import("../../../common/cursorEvents.zig").ICursorSelectionChangedEvent;
+const ModelContentChange = @import("../../../common/textModelEvents.zig").InternalModelContentChangeEvent;
+const ModelLanguageChange = @import("../../../common/textModelEvents.zig").ModelLanguageChangedEvent;
+const ViewEventHandler = @import("../../../common/viewEventHandler.zig").ViewEventHandler;
+const ViewFocusChangedEvent = @import("../../../common/viewEvents.zig").ViewFocusChangedEvent;
+const time_compat = @import("../../../../base/common/timeCompat.zig");
 const Range = @import("../../../common/core/range.zig").Range;
 const completion = @import("../../../common/languages/completion.zig");
 const CancellationToken = @import("../../../../base/common/cancellation.zig").CancellationToken;
@@ -64,6 +71,15 @@ pub const SuggestModel = struct {
     deadline_ms: ?i64 = null,
     deadline_task: window_dispatch.Task = .{},
     listener: ?Listener = null,
+    current_selection: Selection,
+    cursor_listener: ?usize = null,
+    content_listener: ?usize = null,
+    language_listener: ?usize = null,
+    type_listener: ?usize = null,
+    focus_handler: ViewEventHandler = .{},
+    focus_handler_registered: bool = false,
+    refilter_task: window_dispatch.Task = .{},
+    suspend_events: bool = false,
 
     anchor: ?Position = null,
     empty_explicit: bool = false,
@@ -95,12 +111,101 @@ pub const SuggestModel = struct {
             .registry = registry,
             .active_providers = providers,
             .arena = std.heap.ArenaAllocator.init(allocator),
+            .current_selection = editor.modelSelection(),
         };
     }
 
     pub fn deinit(self: *SuggestModel) void {
+        if (self.cursor_listener) |id| self.editor.on_did_change_cursor_selection.unlisten(id);
+        if (self.type_listener) |id| self.editor.on_did_type.unlisten(id);
+        if (self.content_listener) |id| self.editor.model.removeDidChangeContentListener(id);
+        if (self.language_listener) |id| self.editor.model.removeDidChangeLanguageListener(id);
+        if (self.focus_handler_registered) self.editor.removeViewEventHandler(&self.focus_handler);
         self.resetSession();
         self.arena.deinit();
+    }
+
+    pub fn registerListeners(self: *SuggestModel) !void {
+        self.cursor_listener = try self.editor.on_did_change_cursor_selection.listen(self, onCursorSelectionChanged);
+        self.content_listener = try self.editor.model.onDidChangeContentWithContextId(self, onModelContentChanged);
+        self.language_listener = try self.editor.model.listenDidChangeLanguage(self, onLanguageChanged);
+        self.type_listener = try self.editor.on_did_type.listen(self, onDidType);
+        self.focus_handler = ViewEventHandler.init(self, .{ .onFocusChanged = onFocusChanged });
+        self.editor.addViewEventHandler(&self.focus_handler);
+        self.focus_handler_registered = true;
+    }
+
+    fn notifyChanged(self: *SuggestModel) void {
+        if (self.listener) |listener| listener.on_change(listener.context);
+    }
+
+    fn onCursorSelectionChanged(event: ICursorSelectionChangedEvent, self: *SuggestModel) !void {
+        const previous = self.current_selection;
+        self.current_selection = event.selection;
+        if (self.suspend_events) return;
+        const keyboard = std.mem.eql(u8, event.source, "keyboard") or std.mem.eql(u8, event.source, "deleteLeft");
+        if (!keyboard or !event.selection.isEmpty() or (event.reason != .NotSet and event.reason != .Explicit)) {
+            if (self.open or self.hasPendingTrigger()) {
+                self.cancel();
+                self.notifyChanged();
+            }
+            return;
+        }
+        if (self.open) {
+            // Cursor and content callbacks both describe the new line context.
+            // The cursor event follows terminal edit application.
+            self.refilter_task.schedule(null);
+            if (try self.refilterCompletionItems()) self.notifyChanged();
+        } else if (event.reason == .NotSet) {
+            const position = event.selection.getPosition();
+            const previous_range = Range.init(previous.startLineNumber, previous.startColumn, previous.endLineNumber, previous.endColumn);
+            if (previous_range.containsPosition(&position) or previous.getEndPosition().isBeforeOrEqual(position)) {
+                var line = try self.editor.model.getLineContent(position.lineNumber);
+                defer line.deinit();
+                if (wordStartColumn(line.items, position.column) < position.column) {
+                    self.setDeadline(time_compat.milliTimestamp() + quick_suggest_delay_ms);
+                } else self.setDeadline(null);
+            }
+        }
+    }
+
+    fn onModelContentChanged(_: ModelContentChange, self: *SuggestModel) !void {
+        if (self.suspend_events or !self.open) return;
+        // Model delivery precedes the terminal editor's final cursor state.
+        // Refilter on the window turn if no subsequent cursor event already
+        // did so; no host snapshot comparison or tick is needed.
+        self.refilter_task.post();
+    }
+
+    fn onRefilterDeadline(context: *anyopaque, _: i64, _: bool) bool {
+        const self: *SuggestModel = @ptrCast(@alignCast(context));
+        if (self.suspend_events or !self.open) return false;
+        const changed = self.refilterCompletionItems() catch false;
+        if (changed) self.notifyChanged();
+        return changed;
+    }
+
+    fn onLanguageChanged(_: ModelLanguageChange, self: *SuggestModel) !void {
+        if (!self.open and !self.hasPendingTrigger()) return;
+        self.cancel();
+        self.notifyChanged();
+    }
+
+    fn onDidType(text: []const u8, self: *SuggestModel) !void {
+        if (self.suspend_events or text.len == 0) return;
+        // Upstream's onDidType listener handles completion-provider trigger
+        // characters; quick suggestions originate in the cursor listener.
+        const ch = text[text.len - 1];
+        if (try self.triggerCharacter(ch, time_compat.milliTimestamp())) self.notifyChanged();
+    }
+
+    fn onFocusChanged(context: *anyopaque, event: *const ViewFocusChangedEvent) bool {
+        const self: *SuggestModel = @ptrCast(@alignCast(context));
+        if (!event.isFocused and (self.open or self.hasPendingTrigger())) {
+            self.cancel();
+            self.notifyChanged();
+        }
+        return false;
     }
 
     pub fn isOpen(self: *const SuggestModel) bool {
@@ -130,6 +235,8 @@ pub const SuggestModel = struct {
         self.deadline_task.schedule(null);
         self.deadline_task = .{ .queue = window, .context = context, .run = run };
         self.deadline_task.schedule(self.deadline_ms);
+        self.refilter_task.schedule(null);
+        self.refilter_task = .{ .queue = window, .context = self, .run = onRefilterDeadline };
     }
 
     fn setDeadline(self: *SuggestModel, deadline: ?i64) void {
@@ -156,8 +263,8 @@ pub const SuggestModel = struct {
         return was_open;
     }
 
-    /// Called after any editor change (paste, delete, backspace, etc.).
-    pub fn onEditorChanged(self: *SuggestModel) !bool {
+    /// Refilters an active completion session against its new line context.
+    fn refilterCompletionItems(self: *SuggestModel) !bool {
         if (!self.open) return false;
         if (self.editor.modelSelection().startLineNumber != self.anchor.?.lineNumber) {
             self.cancel();
@@ -289,6 +396,9 @@ pub const SuggestModel = struct {
     };
 
     pub fn accept(self: *SuggestModel) !?AcceptResult {
+        const old_suspend = self.suspend_events;
+        self.suspend_events = true;
+        defer self.suspend_events = old_suspend;
         const completion_model = if (self.completion) |*value| value else return null;
         const item = completion_model.selected() orelse return null;
 
@@ -587,6 +697,7 @@ pub const SuggestModel = struct {
     }
 
     fn resetSession(self: *SuggestModel) void {
+        self.refilter_task.schedule(null);
         if (self.completion) |*model| model.deinit();
         self.completion = null;
         self.open = false;

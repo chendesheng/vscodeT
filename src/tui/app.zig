@@ -713,7 +713,6 @@ pub fn main(init: std.process.Init) !void {
         if (!ready) {
             if (resized or needs_render) {
                 if (workbench.activeTab()) |current| {
-                    current.onEditorChanged(now_ms);
                     try current.refresh();
                 }
                 needs_render = false;
@@ -949,7 +948,6 @@ pub fn main(init: std.process.Init) !void {
         if (events.items.len == 0 or sidebar_event_count < events.items.len) {
             if (workbench.activeTab()) |current| {
                 if (!current.isImage()) {
-                    current.onEditorChanged(time_compat.milliTimestamp());
                     try current.refresh();
                 } else {
                     try current.refresh();

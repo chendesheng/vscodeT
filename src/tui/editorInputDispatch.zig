@@ -39,7 +39,7 @@ pub fn dispatch(editor: *Editor, event: input.KeyEvent, is_pasting: *bool) bool 
                 return false;
             },
             .text => |text| {
-                editor.insertText(text) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
+                editor.pasteText(text) catch |err| editor.setMessage("edit failed: {s}", .{@errorName(err)});
                 return false;
             },
             else => return false,
@@ -185,26 +185,5 @@ pub fn handleKeyEvent(
     }
     if (word_highlighter.handleKey(event)) return false;
     if (view.dispatchKey(event)) return false;
-    if (suggest) |controller| {
-        switch (event.key) {
-            .char, .text, .enter, .tab, .backspace, .delete => controller.beforeTyping(),
-            else => {},
-        }
-    }
-    if (dispatch(editor, fallback orelse event.*, is_pasting)) return true;
-    if (suggest) |controller| {
-        if (printableChar(event.*)) |ch| {
-            _ = try controller.onTypedCharacter(ch, now_ms);
-        }
-        _ = try controller.onEditorChanged();
-    }
-    return false;
-}
-
-fn printableChar(event: input.KeyEvent) ?u8 {
-    return switch (event.key) {
-        .char => |ch| if (ch >= 0x20 and ch <= 0x7e and !event.mods.ctrl and !event.mods.alt) @intCast(ch) else null,
-        .text => |text| if (text.len == 1 and text[0] >= 0x20 and text[0] <= 0x7e) text[0] else null,
-        else => null,
-    };
+    return dispatch(editor, fallback orelse event.*, is_pasting);
 }

@@ -49,6 +49,7 @@ const CursorContext = @import("../../../common/cursor/cursorContext.zig").Cursor
 const CursorState = cursorCommon.CursorState;
 const CursorChangeReason = @import("../../../common/cursorEvents.zig").CursorChangeReason;
 const ICursorPositionChangedEvent = @import("../../../common/cursorEvents.zig").ICursorPositionChangedEvent;
+const ICursorSelectionChangedEvent = @import("../../../common/cursorEvents.zig").ICursorSelectionChangedEvent;
 const TextEditorSelectionSource = @import("../../../common/cursorEvents.zig").TextEditorSelectionSource;
 const PartialCursorState = cursorCommon.PartialCursorState;
 const SingleCursorState = cursorCommon.SingleCursorState;
@@ -624,7 +625,12 @@ pub const Editor = struct {
     cursor_event_view_selections: []Selection = &.{},
     cursor_event_model_selections: []Selection = &.{},
     on_did_change_cursor_position: Emitter(ICursorPositionChangedEvent),
+    on_did_change_cursor_selection: Emitter(ICursorSelectionChangedEvent),
+    on_will_type: Emitter([]const u8),
+    on_did_type: Emitter([]const u8),
+    cursor_event_model_version: u32 = 0,
     cursor_event_source: ?[]const u8 = null,
+    cursor_event_reason: ?CursorChangeReason = null,
     /// Source attached to the next cursor/selection event. Callers that are
     /// restoring history or performing a navigation set this first; it resets
     /// to USER after the event is emitted.
@@ -863,6 +869,9 @@ pub const Editor = struct {
             .view_lines = view_lines,
             .view_event_dispatcher = ViewModelEventDispatcher.init(allocator),
             .on_did_change_cursor_position = Emitter(ICursorPositionChangedEvent).init(allocator),
+            .on_did_change_cursor_selection = Emitter(ICursorSelectionChangedEvent).init(allocator),
+            .on_will_type = Emitter([]const u8).init(allocator),
+            .on_did_type = Emitter([]const u8).init(allocator),
             .converter = undefined,
             .cursor_config = cursor_config,
             .cursor_context = null,
@@ -915,6 +924,9 @@ pub const Editor = struct {
         };
         errdefer editor.view_event_dispatcher.deinit();
         errdefer editor.on_did_change_cursor_position.deinit();
+        errdefer editor.on_did_change_cursor_selection.deinit();
+        errdefer editor.on_will_type.deinit();
+        errdefer editor.on_did_type.deinit();
         editor.converter = CoordinatesConverter.init(&editor.view_lines);
         _ = try editor.view_layout.onDidScroll().listen(editor, onViewLayoutScroll);
         if (editor.character_pair) |*pair_support| {
@@ -1709,6 +1721,9 @@ pub const Editor = struct {
         if (self.cursor_event_view_selections.len > 0) self.allocator.free(self.cursor_event_view_selections);
         if (self.cursor_event_model_selections.len > 0) self.allocator.free(self.cursor_event_model_selections);
         self.on_did_change_cursor_position.deinit();
+        self.on_did_change_cursor_selection.deinit();
+        self.on_will_type.deinit();
+        self.on_did_type.deinit();
         self.view_event_dispatcher.deinit();
         self.view_layout.deinit();
         self.view_lines.deinit();
@@ -3753,6 +3768,9 @@ pub const Editor = struct {
     }
 
     pub fn insertText(self: *Editor, text: []const u8) !void {
+        const previous_source = self.cursor_event_source;
+        if (previous_source == null) self.cursor_event_source = "api";
+        defer self.cursor_event_source = previous_source;
         if (self.read_only) return error.ReadOnly;
         if (text.len == 0) return;
         const selections = try self.cursorsRef().getSelections(self.allocator);
@@ -3762,7 +3780,30 @@ pub const Editor = struct {
         try self.executeTypeResult(result);
     }
 
+    pub fn pasteText(self: *Editor, text: []const u8) !void {
+        const previous_source = self.cursor_event_source;
+        const previous_reason = self.cursor_event_reason;
+        self.cursor_event_source = "paste";
+        self.cursor_event_reason = .Paste;
+        defer {
+            self.cursor_event_source = previous_source;
+            self.cursor_event_reason = previous_reason;
+        }
+        try self.insertText(text);
+    }
+
     pub fn typeCharacter(self: *Editor, text: []const u8) !void {
+        if (self.read_only) return error.ReadOnly;
+        if (text.len == 0) return;
+        const previous_source = self.cursor_event_source;
+        self.cursor_event_source = "keyboard";
+        defer self.cursor_event_source = previous_source;
+        self.on_will_type.fire(text) catch {};
+        try self.typeCharacterImpl(text);
+        self.on_did_type.fire(text) catch {};
+    }
+
+    fn typeCharacterImpl(self: *Editor, text: []const u8) !void {
         if (self.read_only) return error.ReadOnly;
         if (text.len == 0) return;
         // `default:type` from the extension host sends a newline as text rather
@@ -4211,7 +4252,7 @@ pub const Editor = struct {
     /// own; the editor is the terminal replacement for `CursorsController`,
     /// which emits `ViewCursorStateChangedEvent` after `setStates`.
     fn updateSelections(self: *Editor, selections: []const Selection) !void {
-        try self.updateSelectionsWithReason(selections, .NotSet);
+        try self.updateSelectionsWithReason(selections, self.cursor_event_reason orelse .NotSet);
     }
 
     fn updateSelectionsFromApi(self: *Editor, selections: []const Selection) !void {
@@ -4251,7 +4292,9 @@ pub const Editor = struct {
             return;
         };
         const model_changed = !selectionsEqual(self.cursor_event_model_selections, model);
-        if (!force and !model_changed and selectionsEqual(self.cursor_event_view_selections, view)) {
+        const view_changed = !selectionsEqual(self.cursor_event_view_selections, view);
+        const model_version = self.model.getVersionId();
+        if (!force and !model_changed and !view_changed) {
             self.allocator.free(view);
             self.allocator.free(model);
             return;
@@ -4265,22 +4308,27 @@ pub const Editor = struct {
         const selection_source = self.cursor_selection_source;
         self.cursor_selection_source = .USER;
 
-        // The terminal editor combines CursorsController and CodeEditorWidget.
-        // Only a model selection change delivers the public cursor-position
-        // event: initial view attachment and wrapped-line remapping emit view
-        // events without moving the model cursor.
-        const position_changed = !force and model_changed and model.len > 0;
-        const position: ?Position = if (position_changed) model[0].getPosition() else null;
-        const secondary = if (position_changed) self.allocator.alloc(Position, model.len - 1) catch null else null;
+        // CodeEditorWidget fires the public position and selection events
+        // from a model CursorStateChanged event. View remapping/attachment is
+        // not a model move. Content-only changes arrive on the separate
+        // model-content event.
+        const public_changed = !force and model_changed and model.len > 0;
+        const position: ?Position = if (public_changed) model[0].getPosition() else null;
+        const secondary = if (public_changed and self.on_did_change_cursor_position.hasListeners()) self.allocator.alloc(Position, model.len - 1) catch null else null;
         defer if (secondary) |values| self.allocator.free(values);
         if (secondary) |values| {
             for (model[1..], values) |selection, *value| value.* = selection.getPosition();
         }
+        const selection_copy = if (public_changed and self.on_did_change_cursor_selection.hasListeners()) self.allocator.dupe(Selection, model) catch null else null;
+        defer if (selection_copy) |values| self.allocator.free(values);
+        const old_model = self.cursor_event_model_selections;
+        const old_version = self.cursor_event_model_version;
+        defer if (old_model.len > 0) self.allocator.free(old_model);
         if (self.cursor_event_view_selections.len > 0) self.allocator.free(self.cursor_event_view_selections);
-        if (self.cursor_event_model_selections.len > 0) self.allocator.free(self.cursor_event_model_selections);
         self.cursor_event_view_selections = view;
         self.cursor_event_model_selections = model;
-        self.emitViewEvent(.{ .ViewCursorStateChanged = .{
+        if (public_changed or self.cursor_event_model_version == 0) self.cursor_event_model_version = model_version;
+        if (force or view_changed or model_changed) self.emitViewEvent(.{ .ViewCursorStateChanged = .{
             .selections = view,
             .modelSelections = model,
             .reason = reason,
@@ -4289,6 +4337,15 @@ pub const Editor = struct {
         if (position) |primary| self.on_did_change_cursor_position.fire(.{
             .position = primary,
             .secondaryPositions = secondary orelse &.{},
+            .reason = reason,
+            .source = event_source,
+        }) catch {};
+        if (selection_copy) |selections| self.on_did_change_cursor_selection.fire(.{
+            .selection = selections[0],
+            .secondarySelections = selections[1..],
+            .modelVersionId = model_version,
+            .oldSelections = if (old_model.len == 0) null else old_model,
+            .oldModelVersionId = old_version,
             .reason = reason,
             .source = event_source,
         }) catch {};
