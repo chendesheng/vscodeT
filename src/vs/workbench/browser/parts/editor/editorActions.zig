@@ -123,54 +123,88 @@ const Tab = @import("editorPane.zig").Tab;
 const GroupView = @import("editorGroupView.zig").EditorGroupView(*Tab);
 const EditorPart = @import("editorPart.zig").EditorPart(GroupView);
 
-/// Terminal window-close adaptation of AbstractCloseAllAction. The owner
-/// reveals the affected editors, requests one file confirmation, saves or
-/// reverts through EditorInput, then closes them. The exit flag and final
-/// disposal/focus calls belong to the window host. The upstream auto-save
-/// buckets, async custom confirmation and progress service are not yet ported.
-pub const CloseAllEditorsForWindow = struct {
+const HistoryService = @import("../../../services/history/browser/historyService.zig").HistoryService;
+const Capabilities = @import("../../../common/editor.zig").EditorInputCapabilities;
+
+/// Port of AbstractCloseAllAction's default file-confirmation bucket,
+/// revealEditorsToConfirm, revertEditors and doCloseAll. Native callbacks
+/// dispose mounted panes and restore focus. Autosave-on-focus and custom
+/// async-confirm buckets are not yet ported.
+pub const AbstractCloseAllAction = struct {
+    const Mode = enum { all, others, window };
+    const Target = struct { pane: *GroupView, tab: *Tab, confirm: bool };
+
     allocator: std.mem.Allocator,
     part: *EditorPart,
     host: GroupView.CloseHost,
-    on_exit: *const fn (*anyopaque) void,
+    targets: []Target,
+    history: ?*HistoryService = null,
+    on_exit: ?*const fn (*anyopaque) void = null,
 
-    pub fn hasDirtyEditors(part: *const EditorPart) bool {
-        for (part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.input.isDirty()) return true;
-            }
-        }
-        return false;
-    }
+    fn run(part: *EditorPart, dialog_service: dialogs.IDialogService, host: GroupView.CloseHost, mode: Mode, history: ?*HistoryService, on_exit: ?*const fn (*anyopaque) void) !void {
+        if (dialog_service.hasDialog()) return;
+        const active = part.activeView();
+        const except = if (mode == .others) if (active) |pane| pane.activeTab() else null else null;
+        if (mode == .others and except == null) return;
 
-    pub fn run(part: *EditorPart, dialog_service: dialogs.IDialogService, host: GroupView.CloseHost, on_exit: *const fn (*anyopaque) void) !void {
+        var targets: std.ArrayList(Target) = .empty;
+        defer targets.deinit(part.allocator);
         var names: std.ArrayList([]const u8) = .empty;
         defer names.deinit(part.allocator);
-        for (part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (tab.input.isDirty()) try names.append(part.allocator, tab.input.getName());
+        // groupsToClose: reverse grid appearance keeps the top-left group.
+        const ordered = try part.orderedViews(part.allocator);
+        defer part.allocator.free(ordered);
+        var index = ordered.len;
+        while (index > 0) {
+            index -= 1;
+            const pane = ordered[index];
+            if (mode == .others and pane != active) continue;
+            const editors = try pane.group.model.getEditors(part.allocator, .SEQUENTIAL, mode != .window);
+            defer part.allocator.free(editors);
+            for (editors) |input| {
+                if (mode != .window and input.hasCapability(Capabilities.CannotClose)) continue;
+                const tab = pane.tabForInput(input) orelse continue;
+                if (tab == except) continue;
+                const confirm = if (input.close_handler) |handler|
+                    handler.show_confirm(handler.context)
+                else
+                    input.isDirty() and !input.isSaving();
+                try targets.append(part.allocator, .{ .pane = pane, .tab = tab, .confirm = confirm });
+                if (confirm) try names.append(part.allocator, input.getName());
             }
         }
-        if (names.items.len == 0) return;
+        if (targets.items.len == 0) return;
+
+        var state = AbstractCloseAllAction{
+            .allocator = part.allocator,
+            .part = part,
+            .host = host,
+            .targets = targets.items,
+            .history = history,
+            .on_exit = on_exit,
+        };
+        if (names.items.len == 0) {
+            try state.doCloseAll();
+            return;
+        }
+
         host.prepare_dialog(host.context);
-        // Upstream revealEditorsToConfirm opens the first affected editor
-        // in every group, not each dirty editor in turn.
+        // Reveal the first affected editor in each group, not every dirty tab.
         var reveal_pane: ?*GroupView = null;
-        for (part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (!tab.input.isDirty()) continue;
-                try pane.activateTab(tab);
-                reveal_pane = pane;
-                break;
-            }
+        for (targets.items) |target| {
+            if (!target.confirm or target.pane == reveal_pane) continue;
+            try target.pane.activateTab(target.tab);
+            reveal_pane = target.pane;
         }
         if (reveal_pane) |pane| part.service.activateGroup(pane.group);
         if (part.activeView()) |pane| if (pane.activeTab()) |tab| try tab.ensureControllers();
         host.focus_editor(host.context, null);
 
-        const pending = try part.allocator.create(CloseAllEditorsForWindow);
+        const pending = try part.allocator.create(AbstractCloseAllAction);
         errdefer part.allocator.destroy(pending);
-        pending.* = .{ .allocator = part.allocator, .part = part, .host = host, .on_exit = on_exit };
+        state.targets = try targets.toOwnedSlice(part.allocator);
+        errdefer part.allocator.free(state.targets);
+        pending.* = state;
         _ = try file_dialogs.showSaveConfirm(part.allocator, dialog_service, names.items, .{
             .context = pending,
             .complete = complete,
@@ -179,63 +213,76 @@ pub const CloseAllEditorsForWindow = struct {
     }
 
     fn complete(context: *anyopaque, result: dialogs.ConfirmResult) void {
-        const self: *CloseAllEditorsForWindow = @ptrCast(@alignCast(context));
+        const self: *AbstractCloseAllAction = @ptrCast(@alignCast(context));
         self.resolve(result) catch |err| self.host.report_error(self.host.context, err);
     }
 
     fn dispose(context: *anyopaque) void {
-        const self: *CloseAllEditorsForWindow = @ptrCast(@alignCast(context));
+        const self: *AbstractCloseAllAction = @ptrCast(@alignCast(context));
+        self.allocator.free(self.targets);
         self.allocator.destroy(self);
     }
 
-    fn resolve(self: *CloseAllEditorsForWindow, result: dialogs.ConfirmResult) !void {
+    fn resolve(self: *AbstractCloseAllAction, result: dialogs.ConfirmResult) !void {
         const host = self.host;
         if (result == .CANCEL) {
             host.focus_editor(host.context, null);
             return;
         }
-        for (self.part.group_views.items) |pane| {
-            for (pane.tabs.items) |tab| {
-                if (!tab.input.isDirty()) continue;
-                switch (result) {
-                    .SAVE => {
-                        _ = tab.input.save(pane.group.id) catch |err| {
-                            tab.editor.setMessage("Unable to save {s}: {s}", .{ tab.input.getName(), @errorName(err) });
-                            try self.revealFailure(pane, tab);
-                            return;
-                        };
-                        if (tab.input.isDirty()) {
-                            try self.revealFailure(pane, tab);
-                            return;
-                        }
-                    },
-                    .DONT_SAVE => tab.input.revert(pane.group.id) catch {},
-                    .CANCEL => unreachable,
-                }
+        for (self.targets) |target| {
+            if (!target.confirm or !host.is_alive(host.context, target.pane, target.tab)) continue;
+            const tab = target.tab;
+            if (!tab.input.isDirty() and tab.input.close_handler == null) continue;
+            switch (result) {
+                .SAVE => {
+                    _ = tab.input.save(target.pane.group.id) catch |err| {
+                        tab.editor.setMessage("Unable to save {s}: {s}", .{ tab.input.getName(), @errorName(err) });
+                        try self.revealFailure(target.pane, tab);
+                        return;
+                    };
+                    if (tab.input.isDirty()) {
+                        try self.revealFailure(target.pane, tab);
+                        return;
+                    }
+                },
+                .DONT_SAVE => tab.input.revert(target.pane.group.id) catch {},
+                .CANCEL => unreachable,
             }
         }
         try self.doCloseAll();
-        self.on_exit(host.context);
     }
 
-    fn revealFailure(self: *CloseAllEditorsForWindow, pane: *GroupView, tab: *Tab) !void {
+    fn revealFailure(self: *AbstractCloseAllAction, pane: *GroupView, tab: *Tab) !void {
         self.part.service.activateGroup(pane.group);
         try pane.activateTab(tab);
         try tab.ensureControllers();
         self.host.focus_editor(self.host.context, tab);
     }
 
-    fn doCloseAll(self: *CloseAllEditorsForWindow) !void {
-        while (true) {
-            var closed = false;
-            for (self.part.group_views.items) |pane| {
-                if (pane.tabs.items.len == 0) continue;
-                try self.host.close_tab(self.host.context, pane, pane.tabs.items[0]);
-                closed = true;
-                break;
-            }
-            if (!closed) break;
+    fn doCloseAll(self: *AbstractCloseAllAction) !void {
+        if (self.history) |history| history.beginClosedBatch();
+        defer if (self.history) |history| history.endClosedBatch();
+        for (self.targets) |target| {
+            if (!self.host.is_alive(self.host.context, target.pane, target.tab)) continue;
+            try self.host.close_tab(self.host.context, target.pane, target.tab);
         }
+        self.host.focus_editor(self.host.context, null);
+        if (self.on_exit) |on_exit| on_exit(self.host.context);
+    }
+};
+
+/// Terminal-specific window quit uses the same confirmation flow but includes
+/// sticky editors. The host owns the actual decision to leave the input loop.
+pub const CloseAllEditorsForWindow = struct {
+    pub fn hasDirtyEditors(part: *const EditorPart) bool {
+        for (part.group_views.items) |pane| {
+            for (pane.tabs.items) |tab| if (tab.input.isDirty()) return true;
+        }
+        return false;
+    }
+
+    pub fn run(part: *EditorPart, dialog_service: dialogs.IDialogService, host: GroupView.CloseHost, on_exit: *const fn (*anyopaque) void) !void {
+        try AbstractCloseAllAction.run(part, dialog_service, host, .window, null, on_exit);
     }
 };
 
@@ -247,6 +294,9 @@ pub const GroupActions = struct {
     transfer: EditorPart.TransferHost,
     configuration: *const ?*@import("../../../services/configuration/browser/configurationService.zig").ConfigurationService,
     report_status: *const fn (*anyopaque, []const u8) void,
+    close_host: GroupView.CloseHost,
+    dialog_service: *const dialogs.IDialogService,
+    history: *HistoryService,
 
     const GroupTarget = enum { first, last, previous, next, left, right, up, down };
 
@@ -406,6 +456,21 @@ pub const GroupActions = struct {
     pub fn splitActiveInDirection(self: *GroupActions, direction: groups.GroupDirection) !void {
         const source = self.part.activeView() orelse return;
         try self.part.splitEditor(source, direction, self.transfer);
+    }
+
+    pub fn closeAllEditors(self: *GroupActions) !void {
+        try AbstractCloseAllAction.run(self.part, self.dialog_service.*, self.close_host, .all, self.history, null);
+    }
+
+    pub fn closeOtherEditors(self: *GroupActions) !void {
+        try AbstractCloseAllAction.run(self.part, self.dialog_service.*, self.close_host, .others, self.history, null);
+    }
+
+    pub fn closeEditorsActions(self: *GroupActions) [2]actions.Action2 {
+        return .{
+            self.action("workbench.action.closeAllEditors", "Close All Editors", closeAllEditors, .{}),
+            self.action("workbench.action.closeOtherEditors", "Close Other Editors", closeOtherEditors, .{}),
+        };
     }
 
     pub fn splitActions(self: *GroupActions) [6]actions.Action2 {

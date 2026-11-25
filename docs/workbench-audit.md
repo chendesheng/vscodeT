@@ -52,8 +52,13 @@ focus loss. Search toolbar state updates on query and tree/result events,
 not on frame painting. The portable budget grew by 12 lines solely to
 restore missing upstream composition behavior; the native budget shrank
 by 14, so the combined ratchet still decreases.
+Close All/Close Other Editors now use the AbstractCloseAllAction owner:
+collect editors in reverse grid appearance, exclude sticky editors for command
+operations, confirm all dirty editors together, retain cancel semantics and
+record one closed-editor history batch. The terminal quit uses the same
+confirmation flow while including sticky editors.
 
-The portable browser Workbench is 270 lines and has no inline tests. The native TerminalWorkbench window is 5,917 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
+The portable browser Workbench is 270 lines and has no inline tests. The native TerminalWorkbench window is 5,877 lines in `src/tui/workbenchWindow.zig`; the event loop and rendering are in `src/tui/workbench.zig`. Both sizes are ratcheted. Two files import the portable Workbench: the native window and the generic test fixture. No production feature module imports either window. No `src/vs` or `src/extensions` file imports `src/tui`. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and

@@ -647,6 +647,9 @@ pub const TerminalWorkbench = struct {
             .part = self.part,
             .transfer = self.groupTransferHost(),
             .configuration = &self.configuration,
+            .close_host = self.closeEditorHost(),
+            .dialog_service = &self.dialog_api,
+            .history = &self.history,
             .report_status = struct {
                 fn report(context: *anyopaque, message: []const u8) void {
                     const host: *TerminalWorkbench = @ptrCast(@alignCast(context));
@@ -1536,11 +1539,7 @@ pub const TerminalWorkbench = struct {
         for (@import("../vs/workbench/browser/actions/layoutActions.zig").resize_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.register(.{ .id = "workbench.action.maximizeEditor", .label = "Maximize Editor Group", .category = "View", .context = self, .run = commandMaximizeEditor });
         try self.commands.registerAction(self.instantiation, panel_actions.close_panel_action);
-        const before_join_all = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.closeAllEditors", .label = "Close All Editors", .category = "View", .context = self, .run = commandCloseAllEditors },
-            .{ .id = "workbench.action.closeOtherEditors", .label = "Close Other Editors", .category = "View", .context = self, .run = commandCloseOtherEditors },
-        };
-        for (before_join_all) |command| try self.commands.register(command);
+        for (self.group_actions.closeEditorsActions()) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, self.group_actions.joinAllAction());
         const after_group_actions = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.lastEditorInGroup", .label = "Last Editor in Group", .category = "View", .context = self, .run = commandLastEditorInGroup },
@@ -3738,41 +3737,12 @@ pub const TerminalWorkbench = struct {
         self.hidePanel();
     }
 
-    /// Close every editor in every group, stopping at the first dirty-close
-    /// confirmation instead of silently discarding the remaining editors.
     pub fn closeAllEditors(self: *TerminalWorkbench) !void {
-        self.history.beginClosedBatch();
-        defer self.history.endClosedBatch();
-        while (self.tabCount() > 0) {
-            var closed = false;
-            for (self.part.group_views.items) |pane| {
-                if (pane.tabs.items.len == 0) continue;
-                if (!try self.closeTab(pane, pane.tabs.items[0])) break;
-                closed = true;
-                break;
-            }
-            if (!closed) break;
-        }
+        try self.group_actions.closeAllEditors();
     }
 
-    /// Port of `workbench.action.closeOtherEditors`: close every tab in the
-    /// active group except the active one.
     pub fn closeOtherEditors(self: *TerminalWorkbench) !void {
-        self.history.beginClosedBatch();
-        defer self.history.endClosedBatch();
-        const pane = self.activePane() orelse return;
-        const active = pane.activeTab() orelse return;
-        while (pane.tabs.items.len > 1) {
-            var candidate: ?*Tab = null;
-            for (pane.tabs.items) |tab| {
-                if (tab != active) {
-                    candidate = tab;
-                    break;
-                }
-            }
-            const tab = candidate orelse break;
-            if (!try self.closeTab(pane, tab)) break;
-        }
+        try self.group_actions.closeOtherEditors();
     }
 
     pub fn lastEditorInGroup(self: *TerminalWorkbench) !void {
@@ -5567,16 +5537,6 @@ fn commandNavigateDown(context: *anyopaque) anyerror!void {
 fn commandMaximizeEditor(context: *anyopaque) anyerror!void {
     const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
     self.maximizeActiveGroup();
-}
-
-fn commandCloseAllEditors(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.closeAllEditors();
-}
-
-fn commandCloseOtherEditors(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.closeOtherEditors();
 }
 
 fn commandLastEditorInGroup(context: *anyopaque) anyerror!void {

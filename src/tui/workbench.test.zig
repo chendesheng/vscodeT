@@ -9237,3 +9237,59 @@ test "Search title actions follow query and tree events before painting" {
     view.commandClear();
     try std.testing.expect(!pane.primary_actions.items[0].enabled);
 }
+
+test "Close All and Close Other Editors close the entire selected set but preserve sticky editors" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const first = try seedFile(allocator, io, &tmp, "sticky.txt", "one");
+    defer allocator.free(first);
+    const second = try seedFile(allocator, io, &tmp, "other.txt", "two");
+    defer allocator.free(second);
+    const third = try seedFile(allocator, io, &tmp, "active.txt", "three");
+    defer allocator.free(third);
+    const window = try TestWindow.init(allocator, io, &.{ first, second, third }, 60, 15);
+    defer window.deinit();
+    const wb = window.workbench;
+    const pane = wb.activePane().?;
+    const sticky = pane.tabs.items[0];
+    _ = try pane.group.model.stick(sticky.input);
+    try wb.commands.execute("workbench.action.closeOtherEditors");
+    try std.testing.expectEqual(@as(usize, 2), wb.tabCount());
+    try std.testing.expect(pane.group.model.isSticky(.{ .editor = sticky.input }));
+    try wb.openPath(second);
+    try std.testing.expectEqual(@as(usize, 3), wb.tabCount());
+    try wb.commands.execute("workbench.action.closeAllEditors");
+    try std.testing.expectEqual(@as(usize, 1), wb.tabCount());
+    try std.testing.expectEqual(sticky, wb.activeTab().?);
+    try std.testing.expect(!wb.isDialogOpen());
+}
+
+test "Close All Editors confirms all dirty editors together and records one reopen batch" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const first = try seedFile(allocator, io, &tmp, "first.txt", "one");
+    defer allocator.free(first);
+    const second = try seedFile(allocator, io, &tmp, "second.txt", "two");
+    defer allocator.free(second);
+    const window = try TestWindow.init(allocator, io, &.{ first, second }, 60, 15);
+    defer window.deinit();
+    const wb = window.workbench;
+    for (wb.activePane().?.tabs.items) |tab| try tab.editor.insertText("changed");
+    try wb.commands.execute("workbench.action.closeAllEditors");
+    try std.testing.expectEqual(@as(usize, 1), wb.dialog_service.model.dialogs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), wb.tabCount());
+    wb.dialog_service.model.close(2); // Cancel
+    try std.testing.expectEqual(@as(usize, 2), wb.tabCount());
+    try std.testing.expect(!wb.isDialogOpen());
+    try wb.commands.execute("workbench.action.closeAllEditors");
+    wb.dialog_service.model.close(1); // Don't Save
+    try std.testing.expectEqual(@as(usize, 0), wb.tabCount());
+    try std.testing.expect(!wb.isDialogOpen());
+    try std.testing.expect(!wb.quit_requested);
+    try std.testing.expect(wb.reopenLastClosedEditor());
+    try std.testing.expectEqual(@as(usize, 2), wb.tabCount());
+}
