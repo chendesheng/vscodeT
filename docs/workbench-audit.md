@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,380 lines and has no inline tests. It has no direct imports from `src/tui`. Nine files import the shell. All 151 baseline
+The browser shell is 13,380 lines and has no inline tests. It has no direct imports from `src/tui`. Seven files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -101,6 +101,8 @@ Show All Commands resolves the quick input service through its Action2 handler.
   The RPC reply wakes the terminal view directly. The terminal host currently
   supports explicit requests to the bundled terminal-suggest provider and
   appending a suffix at the prompt cursor.
+* The Vim and Helix runtimes register their commands and persist user settings through
+  the built-in extension API. Each owns the key handlers for its activation.
 * The tunnel view owns the two Ports palette actions. The compiled-in extension
   registers its private local provider with the workspace API and uses the
   window terminal API.

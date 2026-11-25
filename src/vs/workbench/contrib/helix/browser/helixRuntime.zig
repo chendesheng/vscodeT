@@ -6,7 +6,7 @@
 // core still knows only the generic built-in extension and key-input contracts.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Workbench = @import("../../../browser/workbench.zig").Workbench;
+const IDisposable = @import("../../../api/common/extensionApi.zig").IDisposable;
 const BuiltinExtensionHost = @import("../../../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost;
 const helix_extension = @import("./helixExtension.zig");
 
@@ -17,22 +17,24 @@ pub const EnableListener = struct {
 
 pub const HelixRuntime = struct {
     allocator: Allocator,
-    workbench: *Workbench,
+    parent: *BuiltinExtensionHost,
+    enable_command: IDisposable = .none,
+    disable_command: IDisposable = .none,
     host: ?*BuiltinExtensionHost = null,
     on_enable: ?EnableListener = null,
 
-    pub fn init(allocator: Allocator, workbench: *Workbench) !*HelixRuntime {
+    pub fn init(allocator: Allocator, parent: *BuiltinExtensionHost) !*HelixRuntime {
         const self = try allocator.create(HelixRuntime);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .workbench = workbench };
+        self.* = .{ .allocator = allocator, .parent = parent };
         try self.registerCommands();
         return self;
     }
 
     pub fn deinit(self: *HelixRuntime) void {
         self.disable();
-        self.workbench.commands.unregister("helix.enable");
-        self.workbench.commands.unregister("helix.disable");
+        self.disable_command.dispose();
+        self.enable_command.dispose();
         self.allocator.destroy(self);
     }
 
@@ -42,7 +44,7 @@ pub const HelixRuntime = struct {
 
     pub fn enable(self: *HelixRuntime) !void {
         if (self.host != null) return;
-        const host = try BuiltinExtensionHost.init(self.allocator, self.workbench);
+        const host = try self.parent.createChild();
         errdefer host.deinit();
         try host.registerBuiltin(try helix_extension.create(self.allocator));
         host.activate();
@@ -68,30 +70,21 @@ pub const HelixRuntime = struct {
     pub fn setEnabledPersistent(self: *HelixRuntime, enabled: bool) !void {
         if (enabled) try self.enable() else self.disable();
         const value = std.json.Value{ .bool = enabled };
-        self.workbench.setUserConfigurationValue("helix.enabled", value) catch |err| {
-            if (self.workbench.activeTab()) |tab| tab.editor.setMessage("Unable to persist helix.enabled: {s}", .{@errorName(err)});
+        self.parent.context.workspace.updateUserConfiguration("helix.enabled", value) catch |err| {
+            var buffer: [256]u8 = undefined;
+            self.setMessage(std.fmt.bufPrint(&buffer, "Unable to persist helix.enabled: {s}", .{@errorName(err)}) catch "Unable to persist helix.enabled");
         };
     }
 
     fn setMessage(self: *HelixRuntime, text: []const u8) void {
-        if (self.workbench.activeTab()) |tab| tab.editor.setMessage("{s}", .{text});
+        if (self.parent.context.editors.activeTextEditor()) |editor| editor.setMessage(text);
     }
 
     fn registerCommands(self: *HelixRuntime) !void {
-        try self.workbench.commands.register(.{
-            .id = "helix.enable",
-            .label = "Helix: Enable",
-            .category = "Helix",
-            .context = self,
-            .run = enableCommand,
-        });
-        try self.workbench.commands.register(.{
-            .id = "helix.disable",
-            .label = "Helix: Disable",
-            .category = "Helix",
-            .context = self,
-            .run = disableCommand,
-        });
+        const commands = self.parent.context.commands;
+        self.enable_command = try commands.register("helix.enable", "Helix: Enable", .{ .category = "Helix", .context = self, .run = enableCommand });
+        errdefer self.enable_command.dispose();
+        self.disable_command = try commands.register("helix.disable", "Helix: Disable", .{ .category = "Helix", .context = self, .run = disableCommand });
     }
 
     fn enableCommand(context: *anyopaque) anyerror!void {

@@ -23,7 +23,7 @@ test "Vim runtime: enable/disable persist and control the key handler" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
-    const runtime = try VimRuntime.init(allocator, workbench);
+    const runtime = try VimRuntime.init(allocator, workbench.builtin_host);
     defer runtime.deinit();
 
     try std.testing.expect(workbench.commands.get("vim.enable") != null);

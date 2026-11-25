@@ -6,7 +6,7 @@
 // still knows only the generic built-in extension and key-input contracts.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Workbench = @import("../../../browser/workbench.zig").Workbench;
+const IDisposable = @import("../../../api/common/extensionApi.zig").IDisposable;
 const BuiltinExtensionHost = @import("../../../api/browser/builtinExtensionHost.zig").BuiltinExtensionHost;
 const vim_extension = @import("./vimExtension.zig");
 
@@ -17,22 +17,24 @@ pub const EnableListener = struct {
 
 pub const VimRuntime = struct {
     allocator: Allocator,
-    workbench: *Workbench,
+    parent: *BuiltinExtensionHost,
+    enable_command: IDisposable = .none,
+    disable_command: IDisposable = .none,
     host: ?*BuiltinExtensionHost = null,
     on_enable: ?EnableListener = null,
 
-    pub fn init(allocator: Allocator, workbench: *Workbench) !*VimRuntime {
+    pub fn init(allocator: Allocator, parent: *BuiltinExtensionHost) !*VimRuntime {
         const self = try allocator.create(VimRuntime);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator, .workbench = workbench };
+        self.* = .{ .allocator = allocator, .parent = parent };
         try self.registerCommands();
         return self;
     }
 
     pub fn deinit(self: *VimRuntime) void {
         self.disable();
-        self.workbench.commands.unregister("vim.enable");
-        self.workbench.commands.unregister("vim.disable");
+        self.disable_command.dispose();
+        self.enable_command.dispose();
         self.allocator.destroy(self);
     }
 
@@ -42,7 +44,7 @@ pub const VimRuntime = struct {
 
     pub fn enable(self: *VimRuntime) !void {
         if (self.host != null) return;
-        const host = try BuiltinExtensionHost.init(self.allocator, self.workbench);
+        const host = try self.parent.createChild();
         errdefer host.deinit();
         try host.registerBuiltin(try vim_extension.create(self.allocator));
         host.activate();
@@ -68,30 +70,21 @@ pub const VimRuntime = struct {
     pub fn setEnabledPersistent(self: *VimRuntime, enabled: bool) !void {
         if (enabled) try self.enable() else self.disable();
         const value = std.json.Value{ .bool = enabled };
-        self.workbench.setUserConfigurationValue("vim.enabled", value) catch |err| {
-            if (self.workbench.activeTab()) |tab| tab.editor.setMessage("Unable to persist vim.enabled: {s}", .{@errorName(err)});
+        self.parent.context.workspace.updateUserConfiguration("vim.enabled", value) catch |err| {
+            var buffer: [256]u8 = undefined;
+            self.setMessage(std.fmt.bufPrint(&buffer, "Unable to persist vim.enabled: {s}", .{@errorName(err)}) catch "Unable to persist vim.enabled");
         };
     }
 
     fn setMessage(self: *VimRuntime, text: []const u8) void {
-        if (self.workbench.activeTab()) |tab| tab.editor.setMessage("{s}", .{text});
+        if (self.parent.context.editors.activeTextEditor()) |editor| editor.setMessage(text);
     }
 
     fn registerCommands(self: *VimRuntime) !void {
-        try self.workbench.commands.register(.{
-            .id = "vim.enable",
-            .label = "Vim: Enable",
-            .category = "Vim",
-            .context = self,
-            .run = enableCommand,
-        });
-        try self.workbench.commands.register(.{
-            .id = "vim.disable",
-            .label = "Vim: Disable",
-            .category = "Vim",
-            .context = self,
-            .run = disableCommand,
-        });
+        const commands = self.parent.context.commands;
+        self.enable_command = try commands.register("vim.enable", "Vim: Enable", .{ .category = "Vim", .context = self, .run = enableCommand });
+        errdefer self.enable_command.dispose();
+        self.disable_command = try commands.register("vim.disable", "Vim: Disable", .{ .category = "Vim", .context = self, .run = disableCommand });
     }
 
     fn enableCommand(context: *anyopaque) anyerror!void {

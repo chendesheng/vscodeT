@@ -539,9 +539,9 @@ pub fn main(init: std.process.Init) !void {
     // register Enable/Disable even while the startup settings are false.
     // Only one modal built-in may consume keys at a time; enabling either one
     // disables and persists the other off.
-    const vim_runtime = try VimRuntime.init(allocator, workbench);
+    const vim_runtime = try VimRuntime.init(allocator, workbench.builtin_host);
     defer vim_runtime.deinit();
-    const helix_runtime = try HelixRuntime.init(allocator, workbench);
+    const helix_runtime = try HelixRuntime.init(allocator, workbench.builtin_host);
     defer helix_runtime.deinit();
     vim_runtime.setOnEnable(.{ .context = helix_runtime, .on_enable = disableHelixForVim });
     helix_runtime.setOnEnable(.{ .context = vim_runtime, .on_enable = disableVimForHelix });
@@ -2212,9 +2212,9 @@ test "app: Helix and Vim modal runtimes disable each other" {
     defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
 
-    const vim = try VimRuntime.init(allocator, workbench);
+    const vim = try VimRuntime.init(allocator, workbench.builtin_host);
     defer vim.deinit();
-    const helix = try HelixRuntime.init(allocator, workbench);
+    const helix = try HelixRuntime.init(allocator, workbench.builtin_host);
     defer helix.deinit();
     vim.setOnEnable(.{ .context = helix, .on_enable = disableHelixForVim });
     helix.setOnEnable(.{ .context = vim, .on_enable = disableVimForHelix });

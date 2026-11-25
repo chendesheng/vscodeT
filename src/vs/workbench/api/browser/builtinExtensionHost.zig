@@ -79,6 +79,7 @@ pub const BuiltinExtensionHost = struct {
                 .switch_tab_fn = switchTab,
             },
             .workspace = .{
+                .update_user_configuration_fn = updateUserConfiguration,
                 .register_tunnel_provider = registerTunnelProvider,
                 .context = self,
                 .text_document_fn = getTextDocument,
@@ -94,6 +95,11 @@ pub const BuiltinExtensionHost = struct {
         };
         try self.tunnel_provider.activate(&self.context);
         return self;
+    }
+
+    /// Modal extensions own independent key handlers and dispose them together.
+    pub fn createChild(self: *BuiltinExtensionHost) !*BuiltinExtensionHost {
+        return init(self.allocator, self.workbench);
     }
 
     pub fn deinit(self: *BuiltinExtensionHost) void {
@@ -529,6 +535,11 @@ fn sendTerminalText(context: *anyopaque, id: usize, text: []const u8) void {
     const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
     const service = self.workbench.terminal_service orelse return;
     if (service.getInstanceFromId(id)) |instance| instance.writeInput(text);
+}
+
+fn updateUserConfiguration(context: *anyopaque, key: []const u8, value: ?std.json.Value) !void {
+    const self: *BuiltinExtensionHost = @ptrCast(@alignCast(context));
+    try self.workbench.setUserConfigurationValue(key, value);
 }
 
 fn setWindowMessage(context: *anyopaque, text: []const u8) void {

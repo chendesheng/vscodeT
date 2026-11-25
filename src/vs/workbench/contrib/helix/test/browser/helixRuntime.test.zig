@@ -34,7 +34,7 @@ test "Helix runtime: enable/disable persist and control the key handler" {
     const workbench = workbench_window.workbench;
     defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
-    const runtime = try HelixRuntime.init(allocator, workbench);
+    const runtime = try HelixRuntime.init(allocator, workbench.builtin_host);
     defer runtime.deinit();
 
     try std.testing.expect(workbench.commands.get("helix.enable") != null);
@@ -76,9 +76,9 @@ test "Helix runtime: enabling Helix disables and persists Vim off" {
     defer workbench_window.deinit();
     try workbench.setUserSettingsPaths(&.{settings_path});
 
-    const vim = try VimRuntime.init(allocator, workbench);
+    const vim = try VimRuntime.init(allocator, workbench.builtin_host);
     defer vim.deinit();
-    const helix = try HelixRuntime.init(allocator, workbench);
+    const helix = try HelixRuntime.init(allocator, workbench.builtin_host);
     defer helix.deinit();
     vim.setOnEnable(.{ .context = helix, .on_enable = disableHelix });
     helix.setOnEnable(.{ .context = vim, .on_enable = disableVim });

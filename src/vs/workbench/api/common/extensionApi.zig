@@ -274,12 +274,20 @@ pub const IHistoryService = struct {
 pub const IWorkspaceService = struct {
     register_tunnel_provider: ?*const fn (*anyopaque, @import("../../../platform/tunnel/common/tunnel.zig").ITunnelProvider) anyerror!IDisposable = null,
 
+    /// workspace.getConfiguration().update(key, value, ConfigurationTarget.Global)
+    update_user_configuration_fn: ?*const fn (*anyopaque, []const u8, ?std.json.Value) anyerror!void = null,
+
     /// Looks up a document already open in the editor, as in workspace.textDocuments.
     text_document_fn: ?*const fn (*anyopaque, []const u8) ?*TextModel = null,
 
     context: *anyopaque,
     get_bool_fn: *const fn (context: *anyopaque, key: []const u8, default: bool) bool,
     get_string_fn: *const fn (context: *anyopaque, key: []const u8) ?[]const u8,
+
+    pub fn updateUserConfiguration(self: IWorkspaceService, key: []const u8, value: ?std.json.Value) !void {
+        const update = self.update_user_configuration_fn orelse return error.ConfigurationUnavailable;
+        try update(self.context, key, value);
+    }
 
     pub fn registerTunnelProvider(self: IWorkspaceService, provider: @import("../../../platform/tunnel/common/tunnel.zig").ITunnelProvider) !IDisposable {
         const register = self.register_tunnel_provider orelse return error.Unsupported;
