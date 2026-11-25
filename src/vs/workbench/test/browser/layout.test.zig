@@ -81,7 +81,7 @@ test "LayoutModel: zen mode and centered layout state fire their events" {
 
     try std.testing.expect(!layout.isMainEditorCentered());
     try std.testing.expect(!layout.isMainEditorCenteredEffective());
-    try layout.centerMainEditorLayout(true, .{}, false);
+    try layout.centerMainEditorLayout(true, false);
     try std.testing.expect(layout.isMainEditorCentered());
     try std.testing.expect(layout.isMainEditorCenteredEffective());
     try std.testing.expectEqual(@as(usize, 1), centered_changes);
@@ -124,4 +124,43 @@ test "registered panel changes reach layout listeners in grid notification order
     panel.deinit();
     panel_alive = false;
     try std.testing.expectError(error.UnknownPart, layout.getPart(.panel));
+}
+
+test "Layout.initLayout observes the active editor after group restore and detaches on disposal" {
+    const Tab = @import("../../browser/parts/editor/editorPane.zig").Tab;
+    const Group = @import("../../browser/parts/editor/editorGroupView.zig").EditorGroupView(*Tab);
+    const GroupService = @import("../../services/editor/common/editorGroupsService.zig").EditorGroupsService;
+    const EditorPart = @import("../../browser/parts/editor/editorPart.zig").EditorPart(Group);
+    const allocator = std.testing.allocator;
+    const service = try GroupService.init(allocator, .{});
+    defer service.deinit();
+    const part = try EditorPart.init(allocator, service);
+    defer part.deinit();
+    const before = service.on_did_active_editor_change.listenerCount();
+
+    // A window can be closed while its editor groups are still restoring.
+    {
+        var layout = LayoutModel.init(allocator);
+        defer layout.deinit();
+        try layout.initLayout(part);
+        try std.testing.expectEqual(before, service.on_did_active_editor_change.listenerCount());
+        try std.testing.expectEqual(1, part.on_did_add_group.listenerCount());
+    }
+    try std.testing.expectEqual(0, part.on_did_add_group.listenerCount());
+    {
+        var layout = LayoutModel.init(allocator);
+        defer layout.deinit();
+        try layout.initLayout(part);
+        try part.when_restored.open(allocator);
+        try std.testing.expectEqual(before + 1, service.on_did_active_editor_change.listenerCount());
+        var changes: usize = 0;
+        try layout.on_did_change_main_editor_centered.event(&changes, struct {
+            fn changed(_: bool, count: *usize) !void {
+                count.* += 1;
+            }
+        }.changed);
+        try service.on_did_active_editor_change.fire(null);
+        try std.testing.expectEqual(1, changes);
+    }
+    try std.testing.expectEqual(before, service.on_did_active_editor_change.listenerCount());
 }

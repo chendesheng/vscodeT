@@ -1,6 +1,17 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// Disposable subscription to an emitter whose payload the listener ignores.
+pub const SignalSubscription = struct {
+    emitter: *anyopaque,
+    listener_id: usize,
+    remove: *const fn (*anyopaque, usize) void,
+
+    pub fn dispose(self: SignalSubscription) void {
+        self.remove(self.emitter, self.listener_id);
+    }
+};
+
 pub fn Emitter(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -85,6 +96,22 @@ pub fn Emitter(comptime T: type) type {
 
             try self._listeners.append(listener);
             return self._listeners.items.len - 1;
+        }
+
+        /// Port of Event.signal. Subscribe to the original emitter in its
+        /// normal listener order, ignoring the event payload.
+        pub fn listenSignal(self: *Self, ctx: anytype, comptime notify: fn (@TypeOf(ctx)) anyerror!void) !SignalSubscription {
+            const Adapter = struct {
+                fn call(_: T, target: @TypeOf(ctx)) anyerror!void {
+                    try notify(target);
+                }
+
+                fn remove(source: *anyopaque, id: usize) void {
+                    const emitter: *Self = @ptrCast(@alignCast(source));
+                    emitter.unlisten(id);
+                }
+            };
+            return .{ .emitter = self, .listener_id = try self.listen(ctx, Adapter.call), .remove = Adapter.remove };
         }
 
         pub fn unlisten(self: *Self, id: ListenerId) void {

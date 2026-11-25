@@ -38,6 +38,16 @@ pub const Barrier = struct {
         try self.pending.append(allocator, callback);
     }
 
+    /// Detach a waiting owner before its callback context is destroyed.
+    pub fn cancelWait(self: *Barrier, callback: Continuation) void {
+        for (self.pending.items, 0..) |entry, i| {
+            if (entry.context == callback.context and entry.run == callback.run) {
+                _ = self.pending.orderedRemove(i);
+                return;
+            }
+        }
+    }
+
     pub fn open(self: *Barrier, allocator: Allocator) !void {
         if (self.is_open) return;
         self.is_open = true;

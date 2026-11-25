@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 13,986 lines and has no inline tests. All 151 baseline
+The browser shell is 13,966 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -60,7 +60,8 @@ Show All Commands resolves the quick input service through its Action2 handler.
   zen action and exit binding resolve the layout service. Layout restores
   workspace zen mode, editor centering and visibility, and profile part sizes. Centering considers the number of columns, the maximized
   group and the capabilities of visible editors. Stacked groups share one
-  column. Workbench context keys subscribe to layout and working-copy events.
+  column. Layout registers group listeners before contributions start and installs the
+  active editor listener after groups restore. Workbench context keys subscribe to layout and working-copy events.
 * The service collection and instantiation service support explicit lazy
   factories. Layout signals readiness after restoring part state and signals full
   restoration after editor groups finish. Workbench races full restoration against

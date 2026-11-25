@@ -13,6 +13,8 @@ const config_keys = @import("../../platform/configuration/common/configuration.z
 const zen = @import("workbench.zenMode.contribution.zig");
 const layout_service = @import("../services/layout/browser/layoutService.zig");
 
+const EditorInput = @import("../common/editor/editorInput.zig").EditorInput;
+const SignalSubscription = @import("../../base/common/event.zig").SignalSubscription;
 const Part = @import("part.zig").Part;
 const IDisposable = @import("../../base/common/lifecycle.zig").IDisposable;
 pub const Parts = layout_service.Parts;
@@ -137,6 +139,20 @@ pub const Layout = struct {
         }
     };
 
+    const EditorListeners = struct {
+        restored: *Barrier,
+        active_editor_event: *Emitter(?*EditorInput),
+        group_subscriptions: [4]?SignalSubscription = @splat(null),
+        active_editor: ?SignalSubscription = null,
+
+        fn dispose(self: EditorListeners, layout_model: *Layout) void {
+            self.restored.cancelWait(.{ .context = layout_model, .run = afterEditorsRestored });
+            if (self.active_editor) |subscription| subscription.dispose();
+            for (self.group_subscriptions) |entry| if (entry) |subscription| subscription.dispose();
+        }
+    };
+
+    editor_listeners: ?EditorListeners = null,
     when_ready: Barrier = .{},
     when_restored: Barrier = .{},
     parts: std.EnumArray(Parts, ?Binding) = .initFill(null),
@@ -174,7 +190,35 @@ pub const Layout = struct {
         };
     }
 
+    /// Register group listeners before starting contributions. The active editor
+    /// listener waits for restored groups, as in Layout.initLayout.
+    pub fn initLayout(self: *Layout, part: anytype) !void {
+        self.editor_listeners = .{ .restored = &part.when_restored, .active_editor_event = &part.service.on_did_active_editor_change };
+        const listeners = &self.editor_listeners.?;
+        errdefer {
+            listeners.dispose(self);
+            self.editor_listeners = null;
+        }
+        // The cell grid also revalidates when a group moves across a split.
+        inline for (.{ &part.on_did_add_group, &part.on_did_remove_group, &part.on_did_change_group_maximized, &part.on_did_move_group }, 0..) |source, index| {
+            listeners.group_subscriptions[index] = try source.listenSignal(self, revalidateCenteredLayout);
+        }
+        try part.when_restored.wait(self.allocator, .{ .context = self, .run = afterEditorsRestored });
+    }
+
+    fn afterEditorsRestored(context: *anyopaque) !void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        const listeners = &self.editor_listeners.?;
+        listeners.active_editor = try listeners.active_editor_event.listenSignal(self, revalidateCenteredLayout);
+        try self.revalidateCenteredLayout();
+    }
+
+    fn revalidateCenteredLayout(self: *Layout) anyerror!void {
+        try self.centerMainEditorLayout(self.isMainEditorCentered(), false);
+    }
+
     pub fn deinit(self: *Layout) void {
+        if (self.editor_listeners) |listeners| listeners.dispose(self);
         self.when_ready.deinit(self.allocator);
         self.when_restored.deinit(self.allocator);
         for (&self.parts.values) |*entry| if (entry.*) |*binding| Binding.dispose(binding);
@@ -367,7 +411,7 @@ pub const Layout = struct {
             self.setZenModeActive(!host.get_configuration(host.context).restore);
             try self.toggleZenMode(false, true);
         }
-        if (self.isMainEditorCentered()) try self.centerMainEditorLayout(true, host.get_centered_options(host.context), true);
+        if (self.isMainEditorCentered()) try self.centerMainEditorLayout(true, true);
     }
 
     pub fn restoreParts(self: *Layout, saved: ?WorkspaceState, editors_restored: *Barrier) !void {
@@ -438,14 +482,14 @@ pub const Layout = struct {
             if (config.hide_activity_bar) try self.setPartHidden(true, .activitybar);
             if (config.hide_status_bar) try self.setPartHidden(true, .statusbar);
             if (config.hide_line_numbers) self.setZenLineNumbers(host, true);
-            if (config.center_layout) try self.centerMainEditorLayout(true, host.get_centered_options(host.context), true);
+            if (config.center_layout) try self.centerMainEditorLayout(true, true);
         } else {
             const info = self.zen_mode_exit_info;
             if (info.wasVisible.panel) try self.setPartHidden(false, .panel);
             if (info.wasVisible.sideBar) try self.setPartHidden(false, .sidebar);
             try self.setPartHidden(!host.configured_visible(host.context, .activitybar), .activitybar);
             try self.setPartHidden(!self.configured_statusbar_visible, .statusbar);
-            if (info.transitionedToCenteredEditorLayout) try self.centerMainEditorLayout(false, host.get_centered_options(host.context), true);
+            if (info.transitionedToCenteredEditorLayout) try self.centerMainEditorLayout(false, true);
             self.setZenLineNumbers(host, false);
         }
         if (!skip_layout) try self.on_did_change.fire({});
@@ -469,7 +513,7 @@ pub const Layout = struct {
             try self.setPartHidden(config.hide_activity_bar or !host.configured_visible(host.context, .activitybar), .activitybar);
         if (affects(change, settings.hide_status_bar)) try self.setPartHidden(config.hide_status_bar, .statusbar);
         if (affects(change, settings.center_layout))
-            try self.centerMainEditorLayout(config.center_layout, host.get_centered_options(host.context), true);
+            try self.centerMainEditorLayout(config.center_layout, true);
         if (affects(change, settings.hide_line_numbers)) self.setZenLineNumbers(host, config.hide_line_numbers);
         // Tabs are enforced by the editor part when the grid lays out.
         try self.on_did_change.fire({});
@@ -511,7 +555,8 @@ pub const Layout = struct {
         }
     };
 
-    pub fn centerMainEditorLayout(self: *Layout, active: bool, options: CenteredEditorOptions, skip_layout: bool) !void {
+    pub fn centerMainEditorLayout(self: *Layout, active: bool, skip_layout: bool) !void {
+        const options: CenteredEditorOptions = if (self.zen_host) |host| host.get_centered_options(host.context) else .{};
         self.main_editor_centered = active;
         const disable = options.auto_resize and ((options.multiple_columns and !options.maximized_group) or options.complex_editor);
         const effective = active and !disable;

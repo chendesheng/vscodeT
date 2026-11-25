@@ -929,6 +929,7 @@ pub const Workbench = struct {
     }
 
     fn startup(self: *Workbench, options: IWorkbenchOptions) !void {
+        try self.layout.initLayout(self.part);
         try self.instantiation.invokeFunction(startContributions, .{&self.contributions});
         _ = try self.ensureContextKeys();
         try self.registerListeners();
@@ -939,11 +940,6 @@ pub const Workbench = struct {
 
     fn registerListeners(self: *Workbench) !void {
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
-        _ = try self.service.on_did_active_editor_change.listen(self, centeredLayoutEditorChanged);
-        _ = try self.part.on_did_add_group.listen(self, centeredLayoutGroupChanged);
-        _ = try self.part.on_did_remove_group.listen(self, centeredLayoutGroupChanged);
-        _ = try self.part.on_did_move_group.listen(self, centeredLayoutGroupChanged);
-        _ = try self.part.on_did_change_group_maximized.listen(self, centeredLayoutMaximizedChanged);
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
     }
 
@@ -2433,7 +2429,7 @@ pub const Workbench = struct {
         if (config.affectsConfiguration(change, layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize) or
             config.affectsConfiguration(change, "diffEditor.renderSideBySide"))
         {
-            self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
+            try self.layout.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
         }
         if (config.affectsConfiguration(change, "editor")) self.applyEditorSettingsToAllTabs();
     }
@@ -10885,24 +10881,8 @@ pub const Workbench = struct {
         }
     }
 
-    pub fn centerMainEditorLayout(self: *Workbench, active: bool, skip_layout: bool) void {
-        self.layout.centerMainEditorLayout(active, .fromEditorPart(self.part, self.configuration), skip_layout) catch {};
-    }
-
-    fn centeredLayoutEditorChanged(_: ?*EditorInput, self: *Workbench) anyerror!void {
-        self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
-    }
-
-    fn centeredLayoutGroupChanged(_: *GroupPane, self: *Workbench) anyerror!void {
-        self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
-    }
-
-    fn centeredLayoutMaximizedChanged(_: bool, self: *Workbench) anyerror!void {
-        self.centerMainEditorLayout(self.layout.isMainEditorCentered(), false);
-    }
-
     pub fn toggleCenteredLayout(self: *Workbench) void {
-        self.centerMainEditorLayout(!self.layout.isMainEditorCentered(), false);
+        self.layout.centerMainEditorLayout(!self.layout.isMainEditorCentered(), false) catch return;
         if (self.activeTab()) |tab| tab.focusEditor();
     }
 
