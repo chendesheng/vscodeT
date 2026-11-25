@@ -515,9 +515,8 @@ pub const Workbench = struct {
     terminal_tabbed_view: terminal_panel.TerminalTabbedView = .{},
     suppress_global_command: bool = false,
     git_model: git_model_mod.Model,
+    git_commands: @import("../../../extensions/git/src/commands.zig").CommandContribution,
     scm: SCMContribution,
-    scm_view_model: ?*view_container_model_mod.ViewContainerModel = null,
-    scm_container: ?*view_pane_container_mod.ViewPaneContainer = null,
     /// Set when the quit confirmation commits to closing the window.
     quit_requested: bool = false,
     /// The modal save confirmation, if one is open.
@@ -577,8 +576,6 @@ pub const Workbench = struct {
         self.suppress_global_command = false;
         self.git_model = git_model_mod.Model.init(allocator);
         self.scm = SCMContribution.init(allocator);
-        self.scm_view_model = null;
-        self.scm_container = null;
         self.quit_requested = false;
         self.images = ui.image.Runtime.init(allocator);
         self.pointer = .default;
@@ -765,6 +762,75 @@ pub const Workbench = struct {
         std.mem.swap(ServiceCollection, services, &self.services);
         errdefer self.services.deinit();
         try self.initQuickAccess();
+        self.git_commands = .{
+            .allocator = allocator,
+            .model = &self.git_model,
+            .io = self.io,
+            .quick_input = self.quick_access.inputService(),
+            .publish_arena = std.heap.ArenaAllocator.init(allocator),
+            .host = .{
+                .context = self,
+                .commands_for = struct {
+                    fn commands(context: *anyopaque, repository: *repository_mod.Repository) @import("../../../extensions/git/src/commands.zig").Commands {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        return host.gitCommandsFor(repository);
+                    }
+                }.commands,
+                .report_status = scmViewStatus,
+                .working_text = struct {
+                    fn get(context: *anyopaque, allocator_: Allocator, path: []const u8) !?[]u8 {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        const input = host.findOpenInput(path) orelse return null;
+                        var value = try input.editor.model.getValue(.TextDefined, true);
+                        defer value.deinit();
+                        return try allocator_.dupe(u8, value.items);
+                    }
+                }.get,
+                .has_diff = struct {
+                    fn get(context: *anyopaque, path: []const u8, left: []const u8, right: []const u8) bool {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        return (editor_service_mod.EditorService{ .part = host.part }).findDiffTab(path, left, right) != null;
+                    }
+                }.get,
+                .open_snapshot = struct {
+                    fn open(context: *anyopaque, path: []const u8, original: []const u8, modified: []const u8, left: []const u8, right: []const u8) !void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        try host.openSnapshotDiff(path, original, modified, left, right);
+                    }
+                }.open,
+                .refresh = struct {
+                    fn refresh(context: *anyopaque) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        host.refreshGitStatus();
+                        if (host.scm.history) |view| {
+                            view.outdated = false;
+                            view.refresh(.reload) catch {};
+                        }
+                    }
+                }.refresh,
+                .commit_input = struct {
+                    fn commit(context: *anyopaque) void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        if (host.scm.changes) |view| _ = view.commitInput();
+                    }
+                }.commit,
+                .selected_resource = struct {
+                    fn selected(context: *anyopaque) ?*scm_common.ISCMResource {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        const view = host.scm.changes orelse return null;
+                        return view.selectedResource();
+                    }
+                }.selected,
+                .open_active_diff = struct {
+                    fn open(context: *anyopaque) !void {
+                        const host: *Workbench = @ptrCast(@alignCast(context));
+                        const tab = host.activeTab() orelse return;
+                        const diff = tab.diff orelse return;
+                        try host.openPath(diff.model.modified_path);
+                    }
+                }.open,
+            },
+        };
         self.editor_opening = .{
             .allocator = allocator,
             .part = self.part,
@@ -1288,22 +1354,10 @@ pub const Workbench = struct {
             .show_actions = .when_expanded,
         };
         for (panes) |*pane| pane.run_title_action = runPaneTitleAction;
-        const container = try self.createSidebarContainer(model, panes);
+        const container = try self.sidebar_part.createViewPaneContainer(&self.view_descriptor_service, model, panes);
         self.explorer_panes = panes;
         self.explorer_view_model = model;
         self.explorer_container = container;
-    }
-
-    fn createSidebarContainer(self: *Workbench, model: *view_container_model_mod.ViewContainerModel, panes: []const view_pane_container_mod.Pane) !*view_pane_container_mod.ViewPaneContainer {
-        try self.view_descriptor_service.registerViewContainerModel(model);
-        errdefer self.view_descriptor_service.unregisterViewContainerModel(model);
-        const container = try view_pane_container_mod.ViewPaneContainer.init(self.allocator, model, panes);
-        errdefer {
-            container.deinit();
-            self.allocator.destroy(container);
-        }
-        try self.sidebar_part.registerViewPaneContainer(container);
-        return container;
     }
 
     fn addSidebarViewDescriptors(model: *view_container_model_mod.ViewContainerModel, has_scm: bool, has_history: bool) !void {
@@ -1356,10 +1410,7 @@ pub const Workbench = struct {
             self.markers_status = null;
         }
         if (self.explorer_container) |container| {
-            self.sidebar_part.unregisterViewPaneContainer(container);
-            self.view_descriptor_service.unregisterViewContainerModel(container.model);
-            container.deinit();
-            self.allocator.destroy(container);
+            self.sidebar_part.disposeViewPaneContainer(&self.view_descriptor_service, container);
             self.explorer_container = null;
         }
         if (self.explorer_view_model) |model| {
@@ -1623,21 +1674,19 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.focusPanel", .label = "View: Focus Panel", .category = "View", .context = self, .run = commandFocusPanel },
             .{ .id = "workbench.action.previousPanelView", .label = "View: Previous Panel View", .category = "View", .context = self, .run = commandPreviousPanelView },
             .{ .id = "workbench.action.nextPanelView", .label = "View: Next Panel View", .category = "View", .context = self, .run = commandNextPanelView },
-            .{ .id = "git.refresh", .label = "Refresh", .category = "Source Control", .context = self, .run = commandGitRefresh },
-            .{ .id = "git.commit", .label = "Commit", .category = "Source Control", .context = self, .run = commandGitCommit },
+        };
+        for (before_scm) |command| try self.commands.register(command);
+        for (self.git_commands.refreshActions()) |action| try self.commands.registerAction(&self.instantiation, action);
+        const scm_menus = [_]commands_mod.CommandInfo{
             .{ .id = scm_view_mod.CHANGES_MENU_ACTION_ID, .label = "Changes More Actions", .show_in_palette = false, .context = self, .run = commandScmChangesMenu },
             .{ .id = scm_history_view_mod.GRAPH_MENU_ACTION_ID, .label = "Graph More Actions", .show_in_palette = false, .context = self, .run = commandScmGraphMenu },
             .{ .id = "workbench.scm.action.showMenu", .label = "Source Control More Actions", .show_in_palette = false, .context = self, .run = commandScmMenu },
-            .{ .id = "git.fetchAll", .label = "Fetch From All Remotes", .category = "Source Control", .context = self, .run = commandGitFetch },
-            .{ .id = "git.pullRef", .label = "Pull", .category = "Source Control", .context = self, .run = commandGitPull },
-            .{ .id = "git.pushRef", .label = "Push", .category = "Source Control", .context = self, .run = commandGitPush },
-            .{ .id = "git.publish", .label = "Publish Branch", .category = "Source Control", .context = self, .run = commandGitPublish },
         };
-        for (before_scm) |command| try self.commands.register(command);
+        for (scm_menus) |command| try self.commands.register(command);
+        for (self.git_commands.remoteActions()) |action| try self.commands.registerAction(&self.instantiation, action);
         for (scm_contribution.view_actions) |action| try self.commands.registerAction(&self.instantiation, action);
+        for (self.git_commands.openActions()) |action| try self.commands.registerAction(&self.instantiation, action);
         const before_search = [_]commands_mod.CommandInfo{
-            .{ .id = "git.openChange", .label = "Open Change", .category = "Source Control", .context = self, .run = commandGitOpenChange },
-            .{ .id = "git.openFile", .label = "Open File", .category = "Source Control", .context = self, .run = commandGitOpenFile },
             .{ .id = "workbench.action.compareEditor.nextChange", .label = "Go to Next Change", .category = "Diff", .context = self, .run = commandDiffNext },
             .{ .id = "workbench.action.compareEditor.previousChange", .label = "Go to Previous Change", .category = "Diff", .context = self, .run = commandDiffPrevious },
             .{ .id = "workbench.action.compareEditor.swapSides", .label = "Swap Sides", .category = "Diff", .context = self, .run = commandDiffSwap },
@@ -1822,6 +1871,7 @@ pub const Workbench = struct {
             status.deinit();
             self.editor_status = null;
         }
+        self.git_commands.deinit();
         self.deinitGit();
         self.deinitShellModels();
         if (self.tab_service) |service| service.deinit();
@@ -1961,7 +2011,7 @@ pub const Workbench = struct {
                     .{ .id = search_command_ids.expand_search_results, .label = "Expand All", .glyph = '⊞' },
             }, &.{}) catch {};
         } else if (std.mem.eql(u8, container, "scm")) {
-            const merged = if (self.scm_container) |value|
+            const merged = if (self.scm.container) |value|
                 value.mergedTitleActions(self.allocator) catch null
             else
                 null;
@@ -2078,10 +2128,10 @@ pub const Workbench = struct {
         self.search_window.setWorkspace(replacement);
         replacement_owned = true;
         if (self.view_state_storage != null) {
-            const has_scm = self.scm_view_model != null;
+            const has_scm = self.scm.view_model != null;
             const has_history = if (self.git_model.repository) |provider| provider.historyProvider() != null else false;
             if (self.explorer_view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
-            if (self.scm_view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
+            if (self.scm.view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
             try self.restoreSidebarViewStates();
             self.updateSidebarTitleActions();
         }
@@ -3173,18 +3223,6 @@ pub const Workbench = struct {
     // --- begin git / source control
 
     fn deinitGit(self: *Workbench) void {
-        if (self.scm_container) |container| {
-            self.sidebar_part.unregisterViewPaneContainer(container);
-            self.view_descriptor_service.unregisterViewContainerModel(container.model);
-            container.deinit();
-            self.allocator.destroy(container);
-            self.scm_container = null;
-        }
-        if (self.scm_view_model) |model| {
-            model.deinit();
-            self.allocator.destroy(model);
-            self.scm_view_model = null;
-        }
         self.scm.deinit();
         self.git_model.deinit();
     }
@@ -3233,12 +3271,14 @@ pub const Workbench = struct {
         self.scm.attachHistoryProvider(provider.interface(), self.theme_palette);
 
         const view_model = try self.allocator.create(view_container_model_mod.ViewContainerModel);
+        var model_owned = true;
+        errdefer if (model_owned) self.allocator.destroy(view_model);
         view_model.* = view_container_model_mod.ViewContainerModel.init(self.allocator, .{
             .id = "scm",
             .title = "Source Control",
             .icon = "",
         });
-        self.scm_view_model = view_model;
+        errdefer if (model_owned) view_model.deinit();
         const has_history = provider.historyProvider() != null;
         try addSidebarViewDescriptors(view_model, true, has_history);
         if (self.explorer_view_model) |model| {
@@ -3249,10 +3289,8 @@ pub const Workbench = struct {
         }
         view_model.setActiveView("changes");
 
-        self.scm_container = try self.createSidebarContainer(
-            view_model,
-            self.explorer_panes.?,
-        );
+        try self.scm.attachContainer(&self.sidebar_part, &self.view_descriptor_service, view_model, self.explorer_panes.?);
+        model_owned = false;
 
         if (self.file_watcher_service) |files_service| provider.watch(files_service) catch {};
     }
@@ -3270,53 +3308,15 @@ pub const Workbench = struct {
     /// Opens a diff between two refs of `path`. `working` uses the open buffer
     /// (including unsaved edits) when the file is open, otherwise the file on
     /// disk. `empty` produces the untracked/deleted side.
-    pub fn openDiff(
-        self: *Workbench,
-        path: []const u8,
-        left_ref: DiffRef,
-        right_ref: DiffRef,
-    ) !void {
-        if (self.git_model.repository == null) return error.NoRepository;
-        const left_label = left_ref.label();
-        const right_label = right_ref.label();
-
-        const working = if (left_ref == .working or right_ref == .working) if (self.findOpenInput(path)) |input| blk: {
-            var value = try input.editor.model.getValue(.TextDefined, true);
-            break :blk try value.toOwnedSlice();
-        } else null else null;
-        defer if (working) |text| self.allocator.free(text);
-        const text = try self.git_model.resolveDiffTexts(path, working, left_ref, right_ref);
-        defer self.allocator.free(text.original);
-        defer self.allocator.free(text.modified);
-        if (text.original.len == 0 and text.modified.len == 0 and (editor_service_mod.EditorService{ .part = self.part }).findDiffTab(path, left_label, right_label) == null) {
-            const file_exists = if (std.Io.Dir.cwd().access(self.io, path, .{})) |_| true else |_| false;
-            if (file_exists) {
-                if (self.status_hint_accessor) |hint| {
-                    hint.update(.{ .name = "Source Control", .text = "Diff skipped: binary or too large" });
-                }
-                return error.DiffUnavailable;
-            }
-        }
-
-        try self.openSnapshotDiff(path, text.original, text.modified, left_label, right_label);
+    pub fn openDiff(self: *Workbench, path: []const u8, left_ref: DiffRef, right_ref: DiffRef) !void {
+        try self.git_commands.openDiff(path, left_ref, right_ref);
     }
 
     /// Opens a read-only diff between the parent revision and a history item.
     /// `original_path` is the rename source; `left_rev == null` compares the
     /// root commit against the empty tree.
-    fn openRefDiff(
-        self: *Workbench,
-        path: []const u8,
-        original_path: ?[]const u8,
-        left_rev: ?[]const u8,
-        right_rev: []const u8,
-        left_label: []const u8,
-        right_label: []const u8,
-    ) !void {
-        const texts = try self.git_model.resolveRefDiffTexts(path, original_path, left_rev, right_rev);
-        defer self.allocator.free(texts.original);
-        defer self.allocator.free(texts.modified);
-        try self.openSnapshotDiff(path, texts.original, texts.modified, left_label, right_label);
+    fn openRefDiff(self: *Workbench, path: []const u8, original_path: ?[]const u8, left_rev: ?[]const u8, right_rev: []const u8, left_label: []const u8, right_label: []const u8) !void {
+        try self.git_commands.openRefDiff(path, original_path, left_rev, right_rev, left_label, right_label);
     }
 
     fn openSnapshotDiff(
@@ -3396,13 +3396,13 @@ pub const Workbench = struct {
     fn scmBranchAction(context: *anyopaque, action: scm_view_mod.BranchAction) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         switch (action) {
-            .publish => commandGitPublish(context) catch |err| self.setStatusHint("Publish failed: {s}", .{@errorName(err)}),
+            .publish => self.git_commands.publish() catch |err| self.setStatusHint("Publish failed: {s}", .{@errorName(err)}),
             .sync => {
-                self.runScmRemoteAction(.pull, null) catch |err| {
+                self.git_commands.runRemoteAction(.pull, null) catch |err| {
                     self.setStatusHint("Pull failed: {s}", .{@errorName(err)});
                     return;
                 };
-                commandGitPush(context) catch {};
+                self.git_commands.runRemoteCommand(.push);
             },
         }
     }
@@ -3459,10 +3459,6 @@ pub const Workbench = struct {
                 },
             },
         };
-    }
-
-    fn runScmRemoteAction(self: *Workbench, action: git_mod.Git.RemoteAction, remote: ?[]const u8) !void {
-        try (try self.gitCommands()).remote(action, remote);
     }
 
     fn onScmRemoteAction(context: *anyopaque) void {
@@ -3566,12 +3562,12 @@ pub const Workbench = struct {
 
     fn restoreSidebarViewStates(self: *Workbench) !void {
         const state = self.view_state_storage orelse return;
-        try state.restore(self.workspace.getWorkspace().folders.items, &.{ self.explorer_view_model, self.scm_view_model });
+        try state.restore(self.workspace.getWorkspace().folders.items, &.{ self.explorer_view_model, self.scm.view_model });
     }
 
     fn saveSidebarViewStates(self: *Workbench) !void {
         const state = self.view_state_storage orelse return;
-        try state.save(self.workspace.getWorkspace().folders.items, &.{ self.explorer_view_model, self.scm_view_model });
+        try state.save(self.workspace.getWorkspace().folders.items, &.{ self.explorer_view_model, self.scm.view_model });
     }
 
     /// Snapshots the active editor's pane selection into the ported editor
@@ -4777,7 +4773,7 @@ pub const Workbench = struct {
     pub fn clearSidebarViewHover(self: *Workbench) void {
         if (self.sidebar) |sidebar| sidebar.clearHover();
         if (self.search_window.view) |view| view.clearHover();
-        if (self.scm_container) |container| container.clearHover();
+        if (self.scm.container) |container| container.clearHover();
         if (self.scm.changes) |view| view.clearHover();
         if (self.explorer_container) |container| container.clearHover();
         if (self.scm.history) |view| view.clearHover();
@@ -4815,7 +4811,7 @@ pub const Workbench = struct {
             for (visible) |view| {
                 if (!std.mem.eql(u8, view.id, id)) continue;
                 menu.getActionsContext(MenuActionContext).?.view_id = try arena.dupe(u8, view.id);
-                const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
+                const other = if (container == self.scm.container) self.explorer_container else self.scm.container;
                 if (other != null and model.canMoveTo(view.id, other.?.model)) {
                     try menu.add("moveView", .{ .label = try std.fmt.allocPrint(arena, "Move View to {s}", .{other.?.model.container.title}) });
                 }
@@ -4876,7 +4872,7 @@ pub const Workbench = struct {
     fn runSidebarViewAction(self: *Workbench, menu: *MenuActionContext, id: []const u8) anyerror!void {
         const container = self.sidebar_part.getViewPaneContainer(menu.container_id.?) orelse return;
         if (std.mem.eql(u8, id, "moveView")) {
-            const other = if (container == self.scm_container) self.explorer_container else self.scm_container;
+            const other = if (container == self.scm.container) self.explorer_container else self.scm.container;
             if (other) |destination| _ = self.view_descriptor_service.moveViewsToContainer(&.{menu.view_id.?}, destination.model);
             return;
         }
@@ -5078,7 +5074,7 @@ pub const Workbench = struct {
     }
 
     fn openOutlineView(self: *Workbench, focus: bool) !void {
-        const location = if (self.scm_view_model) |model| if (model.contains("outline")) "scm" else "explorer" else "explorer";
+        const location = if (self.scm.view_model) |model| if (model.contains("outline")) "scm" else "explorer" else "explorer";
         try self.openActivity(location, focus);
         if (self.activeSidebarViewContainer()) |container| {
             container.model.setVisible("outline", true);
@@ -5776,24 +5772,9 @@ fn commandNextPanelView(context: *anyopaque) anyerror!void {
     _ = try self.cyclePanelView(1);
 }
 
-fn commandGitRefresh(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.refreshGitStatus();
-    if (self.scm.history) |view| {
-        view.outdated = false;
-        view.refresh(.reload) catch {};
-    }
-}
-
-fn commandGitCommit(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const view = self.scm.changes orelse return;
-    _ = view.commitInput();
-}
-
 fn commandScmMenu(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
-    const container = self.scm_container orelse return;
+    const container = self.scm.container orelse return;
     try self.showSidebarViewMenu(container, .overflow, null, self.sidebarMenuAnchor("workbench.scm.action.showMenu"));
 }
 
@@ -5817,57 +5798,6 @@ fn commandScmGraphMenu(context: *anyopaque) anyerror!void {
 
 fn runTitleMenuAction(self: *Workbench, _: *MenuActionContext, id: []const u8) anyerror!void {
     try self.commands.execute(id);
-}
-
-fn commandGitFetch(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.runScmRemoteAction(.fetch, null) catch |err| self.setStatusHint("Fetch failed: {s}", .{@errorName(err)});
-}
-
-fn commandGitPull(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.runScmRemoteAction(.pull, null) catch |err| self.setStatusHint("Pull failed: {s}", .{@errorName(err)});
-}
-
-fn commandGitPush(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.runScmRemoteAction(.push, null) catch |err| self.setStatusHint("Push failed: {s}", .{@errorName(err)});
-}
-
-fn commandGitPublish(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const provider = self.git_model.repository orelse return;
-    const remotes = provider.repository.stateRef().remotes;
-    var items: std.ArrayList(QuickPickItem) = .empty;
-    defer items.deinit(self.allocator);
-    for (remotes) |remote| {
-        if (!remote.is_read_only) try items.append(self.allocator, .{ .item = .{ .id = remote.name, .label = remote.name } });
-    }
-    if (items.items.len == 0) {
-        self.setStatusHint("No remote to publish to", .{});
-        return;
-    }
-    try self.quick_access.inputService().showPick(items.items, .{ .placeholder = "Select a Remote to Publish the Branch" }, onGitPublishPick, self);
-}
-
-fn onGitPublishPick(context: *anyopaque, picker: *QuickPick) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const item = picker.selectedItem() orelse picker.activeItem() orelse return;
-    self.runScmRemoteAction(.publish, item.id) catch |err| self.setStatusHint("Publish failed: {s}", .{@errorName(err)});
-}
-
-fn commandGitOpenChange(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const view = self.scm.changes orelse return;
-    const resource = view.selectedResource() orelse return;
-    try resource.open(false);
-}
-
-fn commandGitOpenFile(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return;
-    const diff = tab.diff orelse return;
-    try self.openPath(diff.model.modified_path);
 }
 
 /// The hover insets its content two cells on every side. Glyph borders use
@@ -6124,7 +6054,7 @@ fn runListCommand(context: *anyopaque, command: []const u8) anyerror!void {
         }
     }
     if (std.mem.eql(u8, active_id, "scm")) {
-        if (self.scm_container) |container| {
+        if (self.scm.container) |container| {
             _ = try container.handleKey(&event);
             return;
         }

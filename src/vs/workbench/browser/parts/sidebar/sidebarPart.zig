@@ -122,6 +122,36 @@ pub const SidebarPart = struct {
         _ = self.view_pane_containers.remove(container.model.container.id);
     }
 
+    /// Mounts the view model and its native view-pane container together.
+    /// Registration and allocation unwind in the reverse order on failure.
+    pub fn createViewPaneContainer(
+        self: *SidebarPart,
+        descriptors: *@import("../../../services/views/browser/viewDescriptorService.zig").ViewDescriptorService,
+        model: *@import("../../../services/views/common/viewContainerModel.zig").ViewContainerModel,
+        panes: []const @import("../views/viewPaneContainer.zig").Pane,
+    ) !*ViewPaneContainer {
+        try descriptors.registerViewContainerModel(model);
+        errdefer descriptors.unregisterViewContainerModel(model);
+        const container = try ViewPaneContainer.init(self.allocator, model, panes);
+        errdefer {
+            container.deinit();
+            self.allocator.destroy(container);
+        }
+        try self.registerViewPaneContainer(container);
+        return container;
+    }
+
+    pub fn disposeViewPaneContainer(
+        self: *SidebarPart,
+        descriptors: *@import("../../../services/views/browser/viewDescriptorService.zig").ViewDescriptorService,
+        container: *ViewPaneContainer,
+    ) void {
+        self.unregisterViewPaneContainer(container);
+        descriptors.unregisterViewContainerModel(container.model);
+        container.deinit();
+        self.allocator.destroy(container);
+    }
+
     pub fn getViewPaneContainer(self: *const SidebarPart, id: []const u8) ?*ViewPaneContainer {
         return self.view_pane_containers.get(id);
     }

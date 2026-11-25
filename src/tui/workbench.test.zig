@@ -7880,10 +7880,10 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
 
     // The SCM container stacks the Changes and Graph sections and the Graph
     // lists the repository commits.
-    try std.testing.expect(workbench.scm_container != null);
-    try std.testing.expect(workbench.scm_view_model != null);
+    try std.testing.expect(workbench.scm.container != null);
+    try std.testing.expect(workbench.scm.view_model != null);
     try std.testing.expect(workbench.scm.history != null);
-    const visible_views = try workbench.scm_view_model.?.visibleViews(allocator);
+    const visible_views = try workbench.scm.view_model.?.visibleViews(allocator);
     defer allocator.free(visible_views);
     try std.testing.expectEqual(@as(usize, 2), visible_views.len);
     try std.testing.expectEqualStrings("changes", visible_views[0].id);
@@ -7899,8 +7899,8 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     // Collapsing the Graph section keeps the header and gives the space to
     // Changes; rendering both states must not crash.
     _ = try workbench.showActivityById("scm");
-    workbench.scm_view_model.?.setCollapsed("graph", true);
-    try std.testing.expect(workbench.scm_view_model.?.isCollapsed("graph"));
+    workbench.scm.view_model.?.setCollapsed("graph", true);
+    try std.testing.expect(workbench.scm.view_model.?.isCollapsed("graph"));
     var scm_frame: std.Io.Writer.Allocating = .init(allocator);
     defer scm_frame.deinit();
     try renderFrame(workbench, &scm_frame.writer);
@@ -7917,12 +7917,12 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
         "Message (Enter to commit on \"main\")",
         workbench.scm.service_api.?.repositories()[0].input.placeholder(),
     );
-    workbench.scm_view_model.?.setCollapsed("graph", false);
+    workbench.scm.view_model.?.setCollapsed("graph", false);
 
     // A mode-1003 idle motion over a section header must not toggle it or run
     // its title actions; only a press does.
     {
-        const container = workbench.scm_container.?;
+        const container = workbench.scm.container.?;
         var changes_header: ?ui.Rect = null;
         for (container.sections.items) |section| {
             if (std.mem.eql(u8, section.id, "changes")) changes_header = section.header_rect;
@@ -7934,18 +7934,18 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
             .y = ui.cell.snap(header.y),
         };
         try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &hover));
-        try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
+        try std.testing.expect(!workbench.scm.view_model.?.isCollapsed("changes"));
         hover.kind = .click;
         hover.button = .left;
         try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &hover));
-        try std.testing.expect(workbench.scm_view_model.?.isCollapsed("changes"));
+        try std.testing.expect(workbench.scm.view_model.?.isCollapsed("changes"));
         try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &hover));
-        try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("changes"));
+        try std.testing.expect(!workbench.scm.view_model.?.isCollapsed("changes"));
     }
 
     // Dragging the separator increases Changes and leaves the Graph expanded.
     try renderFrame(workbench, &scm_frame.writer);
-    const scm_container = workbench.scm_container.?;
+    const scm_container = workbench.scm.container.?;
     const sash = scm_container.sashes.items[0].rect;
     const before = scm_container.bodyRect("changes").?.h;
     var drag_sash = ui.MouseEvent{
@@ -7962,7 +7962,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(terminal_workbench.handleSashMouse(workbench, &drag_sash));
     try renderFrame(workbench, &scm_frame.writer);
     try std.testing.expectEqual(before + 2, scm_container.bodyRect("changes").?.h);
-    try std.testing.expect(!workbench.scm_view_model.?.isCollapsed("graph"));
+    try std.testing.expect(!workbench.scm.view_model.?.isCollapsed("graph"));
 
     // Pointer motion over the Graph body still drives the row hover: body
     // moves are forwarded to the pane while header moves only track the
@@ -7970,7 +7970,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     var hover_frame: std.Io.Writer.Allocating = .init(allocator);
     defer hover_frame.deinit();
     try renderFrame(workbench, &hover_frame.writer);
-    const graph_body = workbench.scm_container.?.bodyRect("graph") orelse return error.TestExpectedGraphBody;
+    const graph_body = workbench.scm.container.?.bodyRect("graph") orelse return error.TestExpectedGraphBody;
     var body_move = ui.MouseEvent{ .kind = .move, .x = ui.cell.snap(graph_body.x) + 2, .y = ui.cell.snap(graph_body.y) };
     try std.testing.expect(terminal_workbench.handleSidebarMouse(workbench, &body_move));
     try std.testing.expect(history_view.hoveredRow() != null);
@@ -8241,7 +8241,7 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
 
-    const container = workbench.scm_container orelse return error.TestExpectedScmContainer;
+    const container = workbench.scm.container orelse return error.TestExpectedScmContainer;
 
     // Pointer motion over the Graph header never collapses the section and
     // never runs a title action; only a left click does. Hovering a title

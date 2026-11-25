@@ -353,7 +353,7 @@ fn paintSidebarContents(self: *Workbench) !void {
             renderPlaceholder(self, content, focused);
         }
     } else if (std.mem.eql(u8, active_id, "scm")) {
-        if (self.scm_container) |container| {
+        if (self.scm.container) |container| {
             container.native_outline = self.part.cell_borders and self.part.cell_border_capabilities.has(.rect);
             container.always_show_header_actions = if (self.configuration) |config| config.getBool("workbench.view.alwaysShowHeaderActions", false) else false;
             try container.render(&self.frame.next, content, focused, self.theme_palette);
@@ -1832,7 +1832,7 @@ pub fn handleSidebarKey(self: *Workbench, event: *const ui.KeyEvent) !bool {
 
     const active_id = self.activity_bar_part.active_id orelse "";
     if (std.mem.eql(u8, active_id, "scm")) {
-        if (self.scm_container) |container| {
+        if (self.scm.container) |container| {
             _ = container.handleKey(@constCast(event)) catch {};
         } else if (self.scm.changes) |view| {
             _ = view.handleKey(@constCast(event)) catch {};

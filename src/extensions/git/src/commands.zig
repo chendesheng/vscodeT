@@ -286,3 +286,185 @@ pub const Commands = struct {
         return paths.toOwnedSlice();
     }
 };
+
+// Native counterpart of the command registration and publish picker in
+// extensions/git/src/commands.ts. The UI host implements the generic selected
+// SCM resource, input commit and editor-opening contracts.
+const platform_actions = @import("../../../vs/platform/actions/common/actions.zig");
+const ServicesAccessor = @import("../../../vs/platform/instantiation/common/instantiation.zig").ServicesAccessor;
+const QuickInputService = @import("../../../vs/platform/quickinput/browser/quickInputService.zig").QuickInputService;
+const QuickPick = @import("../../../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
+const QuickPickItem = @import("../../../vs/platform/quickinput/common/quickInput.zig").QuickPickItem;
+const Model = @import("model.zig").Model;
+
+pub const CommandContribution = struct {
+    allocator: Allocator,
+    model: *Model,
+    io: std.Io,
+    quick_input: *QuickInputService,
+    publish_arena: std.heap.ArenaAllocator,
+    publish_root: ?[]const u8 = null,
+    host: struct {
+        context: *anyopaque,
+        commands_for: *const fn (*anyopaque, *repository_mod.Repository) Commands,
+        report_status: *const fn (*anyopaque, []const u8) void,
+        working_text: *const fn (*anyopaque, Allocator, []const u8) anyerror!?[]u8,
+        has_diff: *const fn (*anyopaque, []const u8, []const u8, []const u8) bool,
+        open_snapshot: *const fn (*anyopaque, []const u8, []const u8, []const u8, []const u8, []const u8) anyerror!void,
+        refresh: *const fn (*anyopaque) void,
+        commit_input: *const fn (*anyopaque) void,
+        selected_resource: *const fn (*anyopaque) ?*scm.ISCMResource,
+        open_active_diff: *const fn (*anyopaque) anyerror!void,
+    },
+
+    pub fn deinit(self: *CommandContribution) void {
+        if (self.quick_input.handler_context == @as(*anyopaque, self)) self.quick_input.hide();
+        self.publish_arena.deinit();
+    }
+
+    fn status(self: *CommandContribution, comptime fmt: []const u8, args: anytype) void {
+        var buffer: [256]u8 = undefined;
+        const message = std.fmt.bufPrint(&buffer, fmt, args) catch return;
+        self.host.report_status(self.host.context, message);
+    }
+
+    /// Resolve Git's original/modified resource contents, including the
+    /// unsaved working editor when present, then ask the editor service to
+    /// reveal or mount the diff input.
+    pub fn openDiff(self: *CommandContribution, path: []const u8, left: git_mod.DiffRef, right: git_mod.DiffRef) !void {
+        if (self.model.repository == null) return error.NoRepository;
+        const left_label = left.label();
+        const right_label = right.label();
+        const working = if (left == .working or right == .working) try self.host.working_text(self.host.context, self.allocator, path) else null;
+        defer if (working) |text| self.allocator.free(text);
+        const text = try self.model.resolveDiffTexts(path, working, left, right);
+        defer self.allocator.free(text.original);
+        defer self.allocator.free(text.modified);
+        if (text.original.len == 0 and text.modified.len == 0 and !self.host.has_diff(self.host.context, path, left_label, right_label)) {
+            const file_exists = if (std.Io.Dir.cwd().access(self.io, path, .{})) |_| true else |_| false;
+            if (file_exists) {
+                self.status("Diff skipped: binary or too large", .{});
+                return error.DiffUnavailable;
+            }
+        }
+        try self.host.open_snapshot(self.host.context, path, text.original, text.modified, left_label, right_label);
+    }
+
+    pub fn openRefDiff(self: *CommandContribution, path: []const u8, original_path: ?[]const u8, left: ?[]const u8, right: []const u8, left_label: []const u8, right_label: []const u8) !void {
+        const text = try self.model.resolveRefDiffTexts(path, original_path, left, right);
+        defer self.allocator.free(text.original);
+        defer self.allocator.free(text.modified);
+        try self.host.open_snapshot(self.host.context, path, text.original, text.modified, left_label, right_label);
+    }
+
+    pub fn runRemoteAction(self: *CommandContribution, action: git_mod.Git.RemoteAction, remote: ?[]const u8) !void {
+        const repository = self.model.repository orelse return error.NoRepository;
+        try self.host.commands_for(self.host.context, repository).remote(action, remote);
+    }
+
+    pub fn runRemoteCommand(self: *CommandContribution, comptime action: git_mod.Git.RemoteAction) void {
+        self.runRemoteAction(action, null) catch |err| switch (action) {
+            .fetch => self.status("Fetch failed: {s}", .{@errorName(err)}),
+            .pull => self.status("Pull failed: {s}", .{@errorName(err)}),
+            .push => self.status("Push failed: {s}", .{@errorName(err)}),
+            .publish => self.status("Publish failed: {s}", .{@errorName(err)}),
+        };
+    }
+
+    pub fn publish(self: *CommandContribution) !void {
+        const provider = self.model.repository orelse return;
+        if (self.quick_input.isVisible()) self.quick_input.hide();
+        _ = self.publish_arena.reset(.retain_capacity);
+        const arena = self.publish_arena.allocator();
+        const remotes = provider.repository.stateRef().remotes;
+        var items: std.ArrayList(QuickPickItem) = .empty;
+        for (remotes) |remote| {
+            if (remote.is_read_only) continue;
+            const name = try arena.dupe(u8, remote.name);
+            try items.append(arena, .{ .item = .{ .id = name, .label = name } });
+        }
+        if (items.items.len == 0) {
+            self.status("No remote to publish to", .{});
+            return;
+        }
+        self.publish_root = try arena.dupe(u8, provider.root);
+        errdefer self.publish_root = null;
+        try self.quick_input.showPick(items.items, .{
+            .placeholder = "Select a Remote to Publish the Branch",
+            .cleanup = cleanupPublish,
+            .cleanup_context = self,
+        }, onPublishPick, self);
+    }
+
+    fn cleanupPublish(context: *anyopaque) void {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        self.publish_root = null;
+    }
+
+    fn onPublishPick(context: *anyopaque, picker: *QuickPick) !void {
+        const self: *CommandContribution = @ptrCast(@alignCast(context));
+        const repository = self.model.repository orelse return;
+        const root = self.publish_root orelse return;
+        if (!std.mem.eql(u8, root, repository.root)) return;
+        const item = picker.selectedItem() orelse picker.activeItem() orelse return;
+        self.runRemoteAction(.publish, item.id) catch |err| self.status("Publish failed: {s}", .{@errorName(err)});
+    }
+
+    fn refresh(self: *CommandContribution) !void {
+        self.host.refresh(self.host.context);
+    }
+
+    fn commit(self: *CommandContribution) !void {
+        self.host.commit_input(self.host.context);
+    }
+
+    fn remoteCommand(self: *CommandContribution, comptime action: git_mod.Git.RemoteAction) !void {
+        self.runRemoteCommand(action);
+    }
+
+    fn openChange(self: *CommandContribution) !void {
+        const resource = self.host.selected_resource(self.host.context) orelse return;
+        try resource.open(false);
+    }
+
+    fn openFile(self: *CommandContribution) !void {
+        try self.host.open_active_diff(self.host.context);
+    }
+
+    fn actionDescriptor(self: *CommandContribution, id: []const u8, title: []const u8, comptime run: anytype, comptime args: anytype) platform_actions.Action2 {
+        return .{
+            .command = .{ .id = id, .title = title, .category = "Source Control" },
+            .f1 = true,
+            .context = self,
+            .run_fn = struct {
+                fn invoke(context: *anyopaque, _: ServicesAccessor) !void {
+                    const contribution: *CommandContribution = @ptrCast(@alignCast(context));
+                    try @call(.auto, run, .{contribution} ++ args);
+                }
+            }.invoke,
+        };
+    }
+
+    pub fn refreshActions(self: *CommandContribution) [2]platform_actions.Action2 {
+        return .{
+            self.actionDescriptor("git.refresh", "Refresh", refresh, .{}),
+            self.actionDescriptor("git.commit", "Commit", commit, .{}),
+        };
+    }
+
+    pub fn remoteActions(self: *CommandContribution) [4]platform_actions.Action2 {
+        return .{
+            self.actionDescriptor("git.fetchAll", "Fetch From All Remotes", remoteCommand, .{git_mod.Git.RemoteAction.fetch}),
+            self.actionDescriptor("git.pullRef", "Pull", remoteCommand, .{git_mod.Git.RemoteAction.pull}),
+            self.actionDescriptor("git.pushRef", "Push", remoteCommand, .{git_mod.Git.RemoteAction.push}),
+            self.actionDescriptor("git.publish", "Publish Branch", publish, .{}),
+        };
+    }
+
+    pub fn openActions(self: *CommandContribution) [2]platform_actions.Action2 {
+        return .{
+            self.actionDescriptor("git.openChange", "Open Change", openChange, .{}),
+            self.actionDescriptor("git.openFile", "Open File", openFile, .{}),
+        };
+    }
+};

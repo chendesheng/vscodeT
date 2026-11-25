@@ -22,8 +22,17 @@ const SCMActiveRepositoryController = @import("activity.zig").SCMActiveRepositor
 const ActivityService = @import("../../../services/activity/browser/activityService.zig").ActivityService;
 const WindowQueue = @import("../../../../base/common/windowDispatch.zig").Queue;
 
+const SidebarPart = @import("../../../browser/parts/sidebar/sidebarPart.zig").SidebarPart;
+const ViewDescriptorService = @import("../../../services/views/browser/viewDescriptorService.zig").ViewDescriptorService;
+const ViewContainerModel = @import("../../../services/views/common/viewContainerModel.zig").ViewContainerModel;
+const pane_container = @import("../../../browser/parts/views/viewPaneContainer.zig");
+
 pub const SCMContribution = struct {
     allocator: Allocator,
+    view_model: ?*ViewContainerModel = null,
+    container: ?*pane_container.ViewPaneContainer = null,
+    sidebar: ?*SidebarPart = null,
+    view_descriptors: ?*ViewDescriptorService = null,
     service: ?*SCMService = null,
     service_api: ?*scm.ISCMService = null,
     storage: ?*Storage = null,
@@ -51,6 +60,17 @@ pub const SCMContribution = struct {
         history_host: scm_history.Host,
         quick_input: *@import("../../../../platform/quickinput/browser/quickInputService.zig").QuickInputService,
     };
+
+    /// Receives the registered SCM view descriptors from the composition root.
+    /// The contribution owns their container and model after a successful mount.
+    pub fn attachContainer(self: *SCMContribution, sidebar: *SidebarPart, descriptors: *ViewDescriptorService, model: *ViewContainerModel, panes: []const pane_container.Pane) !void {
+        if (self.container != null) return error.ContainerAlreadyExists;
+        const container = try sidebar.createViewPaneContainer(descriptors, model, panes);
+        self.sidebar = sidebar;
+        self.view_descriptors = descriptors;
+        self.container = container;
+        self.view_model = model;
+    }
 
     pub fn attachProvider(self: *SCMContribution, provider: *scm.ISCMProvider, quick_providers: []const *quick_diff.QuickDiffProvider, options: Options) !void {
         const allocator = self.allocator;
@@ -160,6 +180,13 @@ pub const SCMContribution = struct {
     /// destroy all views and services before the extension releases them.
     pub fn deinit(self: *SCMContribution) void {
         const allocator = self.allocator;
+        if (self.container) |container| self.sidebar.?.disposeViewPaneContainer(self.view_descriptors.?, container);
+        if (self.view_model) |model| {
+            model.deinit();
+            allocator.destroy(model);
+        }
+        self.container = null;
+        self.view_model = null;
         self.detachConfiguration();
         if (self.provider_listener) |listener| self.provider_event.?.unlisten(listener);
         if (self.activity) |activity| activity.destroy();
