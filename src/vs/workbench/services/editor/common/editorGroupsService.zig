@@ -32,6 +32,8 @@ pub const GroupsOrder = enum {
 };
 
 pub const GroupDirection = enum { UP, DOWN, LEFT, RIGHT };
+pub const GroupLocation = enum { first, last, next, previous };
+pub const IFindGroupScope = union(enum) { direction: GroupDirection, location: GroupLocation };
 
 pub const OpenOptions = struct {
     /// Mirrors the `workbench.editor.revealIfOpen` setting. The terminal

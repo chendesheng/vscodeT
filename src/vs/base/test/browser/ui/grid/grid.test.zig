@@ -167,3 +167,156 @@ fn expectViewSizes(root: *grid.Node(*ViewData), deserializer: *TestViewDeseriali
         try std.testing.expectEqual(size[1], rect.h);
     }
 }
+
+const NeighborLayout = struct {
+    views: [5]u8 = .{ 1, 2, 3, 4, 5 },
+    root: *grid.Node(*u8) = undefined,
+    gutter: f64,
+
+    fn gapWidth(self: *NeighborLayout, _: grid.Orientation, _: ui.Rect) f64 {
+        return self.gutter;
+    }
+
+    fn layout(self: *NeighborLayout) void {
+        // Editor groups can start below the title or beside the sidebar.
+        grid.layoutRoot(*u8, self.root, .{ .x = 7, .y = 3, .w = 800, .h = 600 }, self, gapWidth);
+    }
+
+    fn addView(self: *NeighborLayout, id: usize, reference: usize, direction: grid.Direction) !void {
+        try grid.splitRoot(*u8, std.testing.allocator, &self.root, &self.views[reference - 1], switch (direction) {
+            .up, .down => .vertical,
+            .left, .right => .horizontal,
+        }, &self.views[id - 1], direction == .up or direction == .left);
+        self.layout();
+    }
+
+    fn expectNeighbors(self: *NeighborLayout, id: usize, direction: grid.Direction, wrap: bool, expected: []const u8) !void {
+        const actual = try grid.getNeighborViews(*u8, std.testing.allocator, self.root, &self.views[id - 1], direction, wrap);
+        defer std.testing.allocator.free(actual);
+        try std.testing.expectEqual(expected.len, actual.len);
+        for (expected, actual) |value, view| try std.testing.expectEqual(value, view.*);
+    }
+};
+
+test "getNeighborViews should work on single view layout" {
+    for ([_]f64{ 0, 1 }) |gutter| {
+        var layout = NeighborLayout{ .gutter = gutter };
+        layout.root = try grid.initNode(*u8, std.testing.allocator, &layout.views[0]);
+        defer grid.deinitRoot(*u8, std.testing.allocator, layout.root);
+        layout.layout();
+        try layout.expectNeighbors(1, .up, false, &.{});
+        try layout.expectNeighbors(1, .right, false, &.{});
+        try layout.expectNeighbors(1, .down, false, &.{});
+        try layout.expectNeighbors(1, .left, false, &.{});
+        try layout.expectNeighbors(1, .up, true, &.{1});
+        try layout.expectNeighbors(1, .right, true, &.{1});
+        try layout.expectNeighbors(1, .down, true, &.{1});
+        try layout.expectNeighbors(1, .left, true, &.{1});
+    }
+}
+
+test "getNeighborViews should work on simple layout" {
+    for ([_]f64{ 0, 1 }) |gutter| {
+        var layout = NeighborLayout{ .gutter = gutter };
+        layout.root = try grid.initNode(*u8, std.testing.allocator, &layout.views[0]);
+        defer grid.deinitRoot(*u8, std.testing.allocator, layout.root);
+        layout.layout();
+        try layout.addView(2, 1, .down);
+        try layout.addView(3, 2, .down);
+        try layout.expectNeighbors(1, .up, false, &.{});
+        try layout.expectNeighbors(1, .right, false, &.{});
+        try layout.expectNeighbors(1, .down, false, &.{2});
+        try layout.expectNeighbors(1, .left, false, &.{});
+        try layout.expectNeighbors(1, .up, true, &.{3});
+        try layout.expectNeighbors(1, .right, true, &.{1});
+        try layout.expectNeighbors(1, .down, true, &.{2});
+        try layout.expectNeighbors(1, .left, true, &.{1});
+        try layout.expectNeighbors(2, .up, false, &.{1});
+        try layout.expectNeighbors(2, .right, false, &.{});
+        try layout.expectNeighbors(2, .down, false, &.{3});
+        try layout.expectNeighbors(2, .left, false, &.{});
+        try layout.expectNeighbors(2, .up, true, &.{1});
+        try layout.expectNeighbors(2, .right, true, &.{2});
+        try layout.expectNeighbors(2, .down, true, &.{3});
+        try layout.expectNeighbors(2, .left, true, &.{2});
+        try layout.expectNeighbors(3, .up, false, &.{2});
+        try layout.expectNeighbors(3, .right, false, &.{});
+        try layout.expectNeighbors(3, .down, false, &.{});
+        try layout.expectNeighbors(3, .left, false, &.{});
+        try layout.expectNeighbors(3, .up, true, &.{2});
+        try layout.expectNeighbors(3, .right, true, &.{3});
+        try layout.expectNeighbors(3, .down, true, &.{1});
+        try layout.expectNeighbors(3, .left, true, &.{3});
+    }
+}
+
+test "getNeighborViews should work on a complex layout" {
+    for ([_]f64{ 0, 1 }) |gutter| {
+        var layout = NeighborLayout{ .gutter = gutter };
+        layout.root = try grid.initNode(*u8, std.testing.allocator, &layout.views[0]);
+        defer grid.deinitRoot(*u8, std.testing.allocator, layout.root);
+        layout.layout();
+        try layout.addView(2, 1, .down);
+        try layout.addView(3, 2, .down);
+        try layout.addView(4, 2, .right);
+        try layout.addView(5, 4, .down);
+        try layout.expectNeighbors(1, .up, false, &.{});
+        try layout.expectNeighbors(1, .right, false, &.{});
+        try layout.expectNeighbors(1, .down, false, &.{ 2, 4 });
+        try layout.expectNeighbors(1, .left, false, &.{});
+        try layout.expectNeighbors(2, .up, false, &.{1});
+        try layout.expectNeighbors(2, .right, false, &.{ 4, 5 });
+        try layout.expectNeighbors(2, .down, false, &.{3});
+        try layout.expectNeighbors(2, .left, false, &.{});
+        try layout.expectNeighbors(4, .up, false, &.{1});
+        try layout.expectNeighbors(4, .right, false, &.{});
+        try layout.expectNeighbors(4, .down, false, &.{5});
+        try layout.expectNeighbors(4, .left, false, &.{2});
+        try layout.expectNeighbors(5, .up, false, &.{4});
+        try layout.expectNeighbors(5, .right, false, &.{});
+        try layout.expectNeighbors(5, .down, false, &.{3});
+        try layout.expectNeighbors(5, .left, false, &.{2});
+        try layout.expectNeighbors(3, .up, false, &.{ 2, 5 });
+        try layout.expectNeighbors(3, .right, false, &.{});
+        try layout.expectNeighbors(3, .down, false, &.{});
+        try layout.expectNeighbors(3, .left, false, &.{});
+    }
+}
+
+test "getNeighborViews should work on another simple layout" {
+    for ([_]f64{ 0, 1 }) |gutter| {
+        var layout = NeighborLayout{ .gutter = gutter };
+        layout.root = try grid.initNode(*u8, std.testing.allocator, &layout.views[0]);
+        defer grid.deinitRoot(*u8, std.testing.allocator, layout.root);
+        layout.layout();
+        try layout.addView(2, 1, .right);
+        try layout.addView(3, 2, .down);
+        try layout.addView(4, 2, .right);
+        try layout.expectNeighbors(4, .up, false, &.{});
+        try layout.expectNeighbors(4, .right, false, &.{});
+        try layout.expectNeighbors(4, .down, false, &.{3});
+        try layout.expectNeighbors(4, .left, false, &.{2});
+    }
+}
+
+test "getNeighborViews should only return immediate neighbors" {
+    for ([_]f64{ 0, 1 }) |gutter| {
+        var layout = NeighborLayout{ .gutter = gutter };
+        layout.root = try grid.initNode(*u8, std.testing.allocator, &layout.views[0]);
+        defer grid.deinitRoot(*u8, std.testing.allocator, layout.root);
+        layout.layout();
+        try layout.addView(2, 1, .right);
+        try layout.addView(3, 2, .down);
+        try layout.addView(4, 2, .right);
+        try layout.expectNeighbors(1, .right, false, &.{ 2, 3 });
+    }
+}
+
+test "getNeighborViews requires a layout and a view belonging to the grid" {
+    var layout = NeighborLayout{ .gutter = 0 };
+    layout.root = try grid.initNode(*u8, std.testing.allocator, &layout.views[0]);
+    defer grid.deinitRoot(*u8, std.testing.allocator, layout.root);
+    try std.testing.expectError(error.GridNotLaidOut, grid.getNeighborViews(*u8, std.testing.allocator, layout.root, &layout.views[0], .right, false));
+    layout.layout();
+    try std.testing.expectError(error.ViewNotFound, grid.getNeighborViews(*u8, std.testing.allocator, layout.root, &layout.views[1], .right, false));
+}

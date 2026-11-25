@@ -1314,7 +1314,9 @@ console API for raw mode, sizing and input polling.
   editor group; files on the command line still open as tabs. Opening only
   files uses an empty workspace, as upstream does.
 - Startup creates the main terminal document and the editor part before the first frame.
-  Editor groups mount their active panes beneath the editor part’s grid.
+  Editor groups mount their active panes beneath the editor part’s grid. Directional
+  focus chooses the most recently active group sharing the requested edge. At the
+  outside edge, focus wraps within the same row or column.
 - An empty editor group centers a cell-art watermark. The sole empty group
   also shows Show All Commands, Toggle Terminal, and Find in Files with the
   current terminal keybindings. Click a row or use Tab, the arrow keys, and

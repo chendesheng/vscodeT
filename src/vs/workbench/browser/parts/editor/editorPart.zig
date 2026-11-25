@@ -184,6 +184,47 @@ pub fn EditorPart(comptime GroupView: type) type {
             return self.viewForGroup(self.service.activeGroup());
         }
 
+        pub fn findGroup(self: *Self, scope: editor_groups.IFindGroupScope, source: *GroupView, wrap: bool) !?*GroupView {
+            return switch (scope) {
+                .direction => |direction| self.doFindGroupByDirection(direction, source, wrap),
+                .location => |location| self.doFindGroupByLocation(location, source, wrap),
+            };
+        }
+
+        fn doFindGroupByLocation(self: *Self, location: editor_groups.GroupLocation, source: *GroupView, wrap: bool) !?*GroupView {
+            const groups = try self.orderedViews(self.allocator);
+            defer self.allocator.free(groups);
+            const index = std.mem.indexOfScalar(*GroupView, groups, source) orelse return error.ViewNotFound;
+            return switch (location) {
+                .first => groups[0],
+                .last => groups[groups.len - 1],
+                .next => if (index + 1 < groups.len) groups[index + 1] else if (wrap) groups[0] else null,
+                .previous => if (index > 0) groups[index - 1] else if (wrap) groups[groups.len - 1] else null,
+            };
+        }
+
+        fn doFindGroupByDirection(self: *Self, direction: GroupDirection, source: *GroupView, wrap: bool) !?*GroupView {
+            const neighbours = try grid.getNeighborViews(*GroupView, self.allocator, self.root, source, switch (direction) {
+                .UP => .up,
+                .RIGHT => .right,
+                .DOWN => .down,
+                .LEFT => .left,
+            }, wrap);
+            defer self.allocator.free(neighbours);
+            // Stable grid order breaks ties, as in the upstream stable MRU sort.
+            var first: ?*GroupView = null;
+            var best: isize = std.math.maxInt(isize);
+            const recent = self.service.most_recent_active_groups.items;
+            for (neighbours) |view| {
+                const rank: isize = if (std.mem.indexOfScalar(*editor_groups.EditorGroup, recent, view.group)) |index| @intCast(index) else -1;
+                if (rank < best) {
+                    first = view;
+                    best = rank;
+                }
+            }
+            return first;
+        }
+
         pub fn viewForGroup(self: *const Self, group: *editor_groups.EditorGroup) ?*GroupView {
             for (self.group_views.items) |view| {
                 if (view.group == group) return view;
@@ -563,6 +604,47 @@ test "EditorPart: splitGroup inserts a view and removeView demotes the branch" {
         .split => return error.TestUnexpectedResult,
     }
     try std.testing.expectEqual(@as(usize, 50), ui.cell.snap(first.rect.w));
+}
+
+test "EditorPart: directional focus prefers the most recently active adjoining group" {
+    const allocator = std.testing.allocator;
+    const service = try editor_groups.EditorGroupsService.init(allocator, .{});
+    defer service.deinit();
+    const part = try TestPart.init(allocator, service);
+    defer part.deinit();
+
+    const left = part.activeView().?;
+    const upper_right = try part.splitGroup(left, .horizontal, false);
+    const lower_right = try part.splitGroup(upper_right, .vertical, false);
+    part.layout(.{ .x = 5, .y = 2, .w = 100, .h = 30 });
+
+    service.activateGroup(upper_right.group);
+    service.activateGroup(lower_right.group);
+    service.activateGroup(left.group);
+    try std.testing.expectEqual(lower_right, (try part.findGroup(.{ .direction = .RIGHT }, left, false)).?);
+    service.activateGroup(upper_right.group);
+    service.activateGroup(left.group);
+    try std.testing.expectEqual(upper_right, (try part.findGroup(.{ .direction = .RIGHT }, left, false)).?);
+    try std.testing.expectEqual(left, (try part.findGroup(.{ .direction = .RIGHT }, lower_right, true)).?);
+}
+
+test "EditorPart: findGroup by location follows the grid and wraps only when requested" {
+    const service = try editor_groups.EditorGroupsService.init(std.testing.allocator, .{});
+    defer service.deinit();
+    const part = try TestPart.init(std.testing.allocator, service);
+    defer part.deinit();
+    const last = part.activeView().?;
+    const first = try part.splitGroup(last, .horizontal, true);
+    const middle = try part.splitGroup(first, .vertical, false);
+
+    try std.testing.expectEqual(first, (try part.findGroup(.{ .location = .first }, middle, false)).?);
+    try std.testing.expectEqual(last, (try part.findGroup(.{ .location = .last }, middle, false)).?);
+    try std.testing.expectEqual(middle, (try part.findGroup(.{ .location = .next }, first, false)).?);
+    try std.testing.expectEqual(middle, (try part.findGroup(.{ .location = .previous }, last, false)).?);
+    try std.testing.expect(try part.findGroup(.{ .location = .next }, last, false) == null);
+    try std.testing.expect(try part.findGroup(.{ .location = .previous }, first, false) == null);
+    try std.testing.expectEqual(first, (try part.findGroup(.{ .location = .next }, last, true)).?);
+    try std.testing.expectEqual(last, (try part.findGroup(.{ .location = .previous }, first, true)).?);
 }
 
 test "EditorPart: cell borders remove the gutter and expose both shared-edge cells" {

@@ -251,7 +251,7 @@ pub const SplitDirection = grid_mod.Orientation;
 /// Target selector shared by the move/copy editor and group commands, port of
 /// upstream `SelectedEditorsMoveCopyArguments.to`.
 pub const GroupTarget = enum { first, last, previous, next, left, right, up, down };
-pub const GroupLocation = enum { first, last, next, previous };
+pub const GroupLocation = editor_groups.GroupLocation;
 pub const Focus = enum { editor, sidebar, statusbar, breadcrumbs, terminal, problems };
 
 /// Handles for the context keys the workbench maintains. User keybindings use
@@ -3134,7 +3134,7 @@ pub const Workbench = struct {
     fn openTerminalEditorToSide(self: *Workbench, parent: ?*terminal_service_mod.TerminalInstance) !void {
         const source = self.activePane() orelse return error.GroupPaneMissing;
         const direction = self.preferredSideBySideDirection();
-        if (self.findAdjacentPane(direction, false)) |target| {
+        if (try self.findAdjacentPane(direction, false)) |target| {
             _ = try self.createTerminalInEditor(target, parent);
             return;
         }
@@ -5440,7 +5440,7 @@ pub const Workbench = struct {
         const source = tab.file_input orelse return;
         const direction = self.preferredSideBySideDirection();
         self.part.setMaximizedGroup(null);
-        const adjacent = if (beside) self.findAdjacentPane(direction, false) else pane;
+        const adjacent = if (beside) try self.findAdjacentPane(direction, false) else pane;
         const target = adjacent orelse try self.part.splitGroup(pane, if (direction == .DOWN) .vertical else .horizontal, false);
         errdefer if (adjacent == null and target.isEmpty()) self.collapseEmptyPane(target);
         // An unlocked dynamic preview matches by destination group. Repeated
@@ -6532,69 +6532,9 @@ pub const Workbench = struct {
 
     pub const GroupDirection = enum { left, right, up, down };
 
-    /// `<C-w>h/j/k/l`: focus the nearest pane in a direction using the laid-out
-    /// grid rectangles. This mirrors VS Code's directional group navigation
-    /// without needing the browser grid's DOM geometry.
-    fn findAdjacentPane(self: *Workbench, direction: editor_groups.GroupDirection, wrap: bool) ?*GroupPane {
+    fn findAdjacentPane(self: *Workbench, direction: editor_groups.GroupDirection, wrap: bool) !?*GroupPane {
         self.layoutAll();
-        const current = self.activePane() orelse return null;
-        const source = current.rect;
-        const source_left = ui.cell.snap(source.x);
-        const source_top = ui.cell.snap(source.y);
-        const source_right = ui.cell.snap(source.right());
-        const source_bottom = ui.cell.snap(source.bottom());
-
-        var best: ?*GroupPane = null;
-        var best_distance: usize = std.math.maxInt(usize);
-        for (self.part.group_views.items) |pane| {
-            if (pane == current) continue;
-            const rect = pane.rect;
-            const left = ui.cell.snap(rect.x);
-            const top = ui.cell.snap(rect.y);
-            const right = ui.cell.snap(rect.right());
-            const bottom = ui.cell.snap(rect.bottom());
-            const overlaps_x = left < source_right and right > source_left;
-            const overlaps_y = top < source_bottom and bottom > source_top;
-            const distance: ?usize = switch (direction) {
-                .LEFT => if (right <= source_left and overlaps_y) source_left - right else null,
-                .RIGHT => if (left >= source_right and overlaps_y) left - source_right else null,
-                .UP => if (bottom <= source_top and overlaps_x) source_top - bottom else null,
-                .DOWN => if (top >= source_bottom and overlaps_x) top - source_bottom else null,
-            };
-            if (distance) |value| {
-                if (value < best_distance) {
-                    best_distance = value;
-                    best = pane;
-                }
-            }
-        }
-        if (best != null or !wrap) return best;
-
-        // Grid `getNeighborViews(..., wrap=true)`: connect the opposite edges.
-        var extreme: ?*GroupPane = null;
-        var extreme_value: usize = switch (direction) {
-            .LEFT, .UP => 0,
-            .RIGHT, .DOWN => std.math.maxInt(usize),
-        };
-        for (self.part.group_views.items) |pane| {
-            if (pane == current) continue;
-            const rect = pane.rect;
-            const value: usize = switch (direction) {
-                .LEFT => ui.cell.snap(rect.right()),
-                .RIGHT => ui.cell.snap(rect.x),
-                .UP => ui.cell.snap(rect.bottom()),
-                .DOWN => ui.cell.snap(rect.y),
-            };
-            const better = switch (direction) {
-                .LEFT, .UP => value > extreme_value,
-                .RIGHT, .DOWN => value < extreme_value,
-            };
-            if (better) {
-                extreme_value = value;
-                extreme = pane;
-            }
-        }
-        return extreme;
+        return self.part.findGroup(.{ .direction = direction }, self.activePane() orelse return null, wrap);
     }
 
     fn focusPane(self: *Workbench, pane: *GroupPane) !void {
@@ -6613,7 +6553,7 @@ pub const Workbench = struct {
     /// grid rectangles. This mirrors VS Code's directional group navigation
     /// without needing the browser grid's DOM geometry.
     pub fn navigateGroup(self: *Workbench, direction: GroupDirection) !void {
-        const target = self.findAdjacentPane(switch (direction) {
+        const target = try self.findAdjacentPane(switch (direction) {
             .left => .LEFT,
             .right => .RIGHT,
             .up => .UP,
@@ -6631,26 +6571,14 @@ pub const Workbench = struct {
     /// Port of the `workbench.action.focus*Group` family. `wrap` matches
     /// upstream's focus actions, which wrap at the grid edge.
     pub fn focusGroupDirection(self: *Workbench, direction: editor_groups.GroupDirection) !void {
-        const target = self.findAdjacentPane(direction, true) orelse return;
+        const target = try self.findAdjacentPane(direction, true) orelse return;
         try self.focusPane(target);
     }
 
     pub fn focusGroupLocation(self: *Workbench, location: GroupLocation) !void {
         self.layoutAll();
-        const views = try self.part.orderedViews(self.allocator);
-        defer self.allocator.free(views);
-        if (views.len == 0) return;
-        const current = self.activePane() orelse return;
-        const current_index = for (views, 0..) |view, index| {
-            if (view == current) break index;
-        } else 0;
-        const target_index = switch (location) {
-            .first => 0,
-            .last => views.len - 1,
-            .next => (current_index + 1) % views.len,
-            .previous => (current_index + views.len - 1) % views.len,
-        };
-        try self.focusPane(views[target_index]);
+        const source = self.activePane() orelse return;
+        if (try self.part.findGroup(.{ .location = location }, source, true)) |view| try self.focusPane(view);
     }
 
     pub fn focusActiveGroup(self: *Workbench) !void {
@@ -6674,18 +6602,6 @@ pub const Workbench = struct {
         return view;
     }
 
-    fn orderedPanes(self: *Workbench) ![]*GroupPane {
-        self.layoutAll();
-        return self.part.orderedViews(self.allocator);
-    }
-
-    fn paneVisualIndex(views: []const *GroupPane, pane: *GroupPane) usize {
-        for (views, 0..) |view, index| {
-            if (view == pane) return index;
-        }
-        return 0;
-    }
-
     fn preferredOppositeDirection(self: *Workbench) editor_groups.GroupDirection {
         return if (self.preferredSideBySideDirection() == .RIGHT) .LEFT else .UP;
     }
@@ -6706,29 +6622,22 @@ pub const Workbench = struct {
                     .up => .UP,
                     else => .DOWN,
                 };
-                if (self.findAdjacentPane(direction, false)) |pane| return pane;
+                self.layoutAll();
+                if (try self.part.findGroup(.{ .direction = direction }, source, false)) |pane| return pane;
                 if (!create) return null;
                 return try self.newEmptyGroup(direction);
             },
-            .first, .last => {
-                const views = try self.orderedPanes();
-                defer self.allocator.free(views);
-                if (views.len == 0) return null;
-                return views[if (target == .first) 0 else views.len - 1];
-            },
-            .previous, .next => {
-                const views = try self.orderedPanes();
-                defer self.allocator.free(views);
-                if (views.len == 0) return null;
-                const index = paneVisualIndex(views, source);
-                if (target == .next) {
-                    if (index + 1 < views.len) return views[index + 1];
-                    if (!create) return null;
-                    return try self.newEmptyGroup(self.preferredSideBySideDirection());
-                }
-                if (index > 0) return views[index - 1];
+            .first, .last, .previous, .next => {
+                const location: GroupLocation = switch (target) {
+                    .first => .first,
+                    .last => .last,
+                    .previous => .previous,
+                    .next => .next,
+                    else => unreachable,
+                };
+                if (try self.part.findGroup(.{ .location = location }, source, false)) |view| return view;
                 if (!create) return null;
-                return try self.newEmptyGroup(self.preferredOppositeDirection());
+                return try self.newEmptyGroup(if (location == .next) self.preferredSideBySideDirection() else self.preferredOppositeDirection());
             },
         }
     }
@@ -6759,7 +6668,7 @@ pub const Workbench = struct {
         const source = self.activePane() orelse return;
         const directions = [_]editor_groups.GroupDirection{ .RIGHT, .DOWN, .LEFT, .UP };
         for (directions) |direction| {
-            if (self.findAdjacentPane(direction, false)) |target| {
+            if (try self.findAdjacentPane(direction, false)) |target| {
                 try self.mergePaneInto(source, target);
                 return;
             }
@@ -6798,7 +6707,7 @@ pub const Workbench = struct {
         self.part.active_sash = null;
         self.layoutAll();
         const source = self.activePane() orelse return;
-        const target = self.findGroupMoveTarget(source, direction) orelse return;
+        const target = try self.findGroupMoveTarget(source, direction) orelse return;
         if (target == source) return;
         const orientation: SplitDirection = switch (direction) {
             .LEFT, .RIGHT => .horizontal,
@@ -6809,7 +6718,7 @@ pub const Workbench = struct {
         try self.focusPane(source);
     }
 
-    fn findGroupMoveTarget(self: *Workbench, source: *GroupPane, direction: editor_groups.GroupDirection) ?*GroupPane {
+    fn findGroupMoveTarget(self: *Workbench, source: *GroupPane, direction: editor_groups.GroupDirection) !?*GroupPane {
         // Upstream allows the target neighbour to be on the other axis to
         // support more move scenarios (microsoft/vscode#50741).
         const directions: [3]editor_groups.GroupDirection = switch (direction) {
@@ -6817,7 +6726,7 @@ pub const Workbench = struct {
             .UP, .DOWN => .{ direction, .LEFT, .RIGHT },
         };
         for (directions) |candidate| {
-            if (self.findAdjacentPane(candidate, false)) |pane| {
+            if (try self.findAdjacentPane(candidate, false)) |pane| {
                 if (pane != source) return pane;
             }
         }
@@ -11534,7 +11443,7 @@ fn quickOpenFile(context: *anyopaque, path: []const u8) anyerror!void {
 fn quickOpenToSide(context: *anyopaque, path: []const u8) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     const direction = self.preferredSideBySideDirection();
-    const target = self.findAdjacentPane(direction, false) orelse try self.newEmptyGroup(direction);
+    const target = try self.findAdjacentPane(direction, false) orelse try self.newEmptyGroup(direction);
     for (self.part.group_views.items) |pane| {
         for (pane.tabs.items) |tab| {
             const resource = if (tab.file_input) |input| input.editor.path else tab.imagePath() orelse continue;

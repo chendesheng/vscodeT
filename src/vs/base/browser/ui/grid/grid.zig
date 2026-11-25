@@ -120,6 +120,7 @@ pub fn Node(comptime T: type) type {
             split: Split,
         },
         rect: ui.Rect = .{},
+        did_layout: bool = false,
 
         /// GridView branch constraints add along the split axis and take the
         /// largest child constraint across it.
@@ -146,6 +147,90 @@ pub fn Node(comptime T: type) type {
 
 /// GridView uses n-ary branches. Flatten consecutive binary terminal splits on
 /// the same axis when saving and rebuild the equivalent SplitViews on restore.
+pub const Direction = enum {
+    up,
+    right,
+    down,
+    left,
+
+    fn opposite(direction: Direction) Direction {
+        return switch (direction) {
+            .up => .down,
+            .right => .left,
+            .down => .up,
+            .left => .right,
+        };
+    }
+};
+
+const Boundary = struct { offset: f64, start: f64, end: f64 };
+
+fn getBoxBoundary(box: ui.Rect, direction: Direction) Boundary {
+    return switch (direction) {
+        .up, .down => .{ .offset = if (direction == .up) box.y else box.bottom(), .start = box.x, .end = box.right() },
+        .left, .right => .{ .offset = if (direction == .left) box.x else box.right(), .start = box.y, .end = box.bottom() },
+    };
+}
+
+/// The glyph fallback reserves a cell for a sash. Extend its first child to the
+/// second child's leading edge when comparing boundaries, so both share the
+/// same edge as in the browser grid. Painting still uses each node's own rect.
+fn childBoxes(box: ui.Rect, split: anytype) [2]ui.Rect {
+    var first = box;
+    var second = box;
+    switch (split.direction) {
+        .horizontal => {
+            second.x = split.second.rect.x;
+            first.w = second.x - box.x;
+            second.w = box.right() - second.x;
+        },
+        .vertical => {
+            second.y = split.second.rect.y;
+            first.h = second.y - box.y;
+            second.h = box.bottom() - second.y;
+        },
+    }
+    return .{ first, second };
+}
+
+fn getViewBox(comptime T: type, node: *const Node(T), box: ui.Rect, view: T) ?ui.Rect {
+    return switch (node.kind) {
+        .leaf => |leaf| if (leaf == view) box else null,
+        .split => |split| blk: {
+            const boxes = childBoxes(box, split);
+            break :blk getViewBox(T, split.first, boxes[0], view) orelse getViewBox(T, split.second, boxes[1], view);
+        },
+    };
+}
+
+fn findAdjacentBoxLeafNodes(comptime T: type, node: *const Node(T), box: ui.Rect, direction: Direction, boundary: Boundary, allocator: Allocator, result: *std.ArrayList(T)) !void {
+    switch (node.kind) {
+        .split => |split| {
+            const boxes = childBoxes(box, split);
+            try findAdjacentBoxLeafNodes(T, split.first, boxes[0], direction, boundary, allocator, result);
+            try findAdjacentBoxLeafNodes(T, split.second, boxes[1], direction, boundary, allocator, result);
+        },
+        .leaf => |view| {
+            const edge = getBoxBoundary(box, direction);
+            if (edge.offset == boundary.offset and edge.start < boundary.end and boundary.start < edge.end)
+                try result.append(allocator, view);
+        },
+    }
+}
+
+pub fn getNeighborViews(comptime T: type, allocator: Allocator, root: *const Node(T), view: T, direction: Direction, wrap: bool) ![]T {
+    if (!root.did_layout) return error.GridNotLaidOut;
+    const box = getViewBox(T, root, root.rect, view) orelse return error.ViewNotFound;
+    var boundary = getBoxBoundary(box, direction);
+    if (wrap and boundary.offset == getBoxBoundary(root.rect, direction).offset)
+        boundary.offset = getBoxBoundary(root.rect, direction.opposite()).offset;
+
+    var result: std.ArrayList(T) = .empty;
+    defer result.deinit(allocator);
+    try findAdjacentBoxLeafNodes(T, root, root.rect, direction.opposite(), boundary, allocator, &result);
+    return result.toOwnedSlice(allocator);
+}
+
 pub fn SerializableGrid(comptime View: type, comptime Data: type) type {
     return struct {
         const Tree = Node(View);
@@ -535,6 +620,7 @@ pub fn layoutNode(
     comptime gap: fn (@TypeOf(gap_context), Orientation, ui.Rect) f64,
     leaf_minimum_width: usize,
 ) void {
+    node.did_layout = true;
     node.rect = rect;
     switch (node.kind) {
         .leaf => {},
