@@ -1631,8 +1631,8 @@ Library constraints:
   other Explorer tree settings.
   The async data tree (`AsyncDataTree`/`CompressibleAsyncDataTree`) and the
   Explorer data source are ported: a directory's children are requested from
-  `Io.async` only when the tree needs them, and `pollLoad` applies the result
-  and resumes a pending reveal. Identity-aware smart splicing is ported
+  `Io.async` only when the tree needs them, and each completed listing wakes the window
+  to apply the children and resume a pending reveal. Identity-aware smart splicing is ported
   through the object/compressed tree models. Loading placeholders, Explorer
   file drag/drop and the compressed-label navigation controller (per-segment
   focus/hover) are not ported. The side-bar divider is a draggable part splitter, separate
@@ -1758,9 +1758,9 @@ Library constraints:
   `--user-data-dir`, then the platform application-data directory). Settings
   JSON accepts comments and trailing commas. The service exposes `getValue`, `inspect`, `keys`, `reload` and a
   change emitter; `getValue` resolves `[language]` override identifiers.
-  Native watching uses inotify on Linux, kqueue on macOS and overlapped
-  `ReadDirectoryChangesW` on Windows; the `@parcel/watcher` FSEvents backend is
-  not ported because it requires the CoreServices SDK and a CFRunLoop thread.
+  Settings subscribe to changes from the shared file service. Its worker uses
+  inotify on Linux, kqueue for individual files on macOS and overlapped
+  `ReadDirectoryChangesW` on Windows. The recursive macOS watcher uses FSEvents.
   The same watcher covers the user keybinding files, so editing them reloads the
   workbench. Not ported in this configuration-service port:
   - `updateValue` and settings editing; these need the JSONC-preserving
@@ -1884,8 +1884,8 @@ can block read from it:
   file in a job; the TUI thread only builds the editor from `LoadedText` when
   the worker posts its completion to the window.
 - Explorer expansion is driven by the ported async data tree. Each stale node
-  returns a pending `ExplorerDataSource` request; `Sidebar.pollLoad` drains
-  completed requests and the node is expanded/rendered on the poll tick.
+  returns a pending `ExplorerDataSource` request. A completed listing wakes
+  the window to expand and render the node.
   Already-resolved children use the synchronous data-source fast path. Multiple
   directories can be requested concurrently and a pending `explorer.autoReveal`
   walk resumes after each applied listing.
@@ -1900,8 +1900,8 @@ can block read from it:
 File reads, image tab decodes, keybindings and color themes post a completion
 callback to the window queue. A POSIX pipe or Windows event wakes terminal
 input waiting on another thread. The window thread consumes the completed
-future. Explorer and Markdown still have their own completion checks. The 4 ms
-input timeout applies to Explorer and local Markdown image loads.
+future. Explorer listings and workspace file changes also wake the window.
+The 4 ms input timeout still applies to local Markdown image loads.
 Shutdown cancels and joins every job before the async `Io.Threaded` and the
 services/panes that own the results are freed. Background workers (search,
 watcher JSON server, extension host) continue to use dedicated threads, which

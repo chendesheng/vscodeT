@@ -108,8 +108,8 @@ keeps its immutable text while edits invalidate the tree’s reference.
   canonical path), expanding an explorer directory, loading image tabs and
   Markdown images, and fetching remote Markdown images. File opens, external file
   reloads, image tabs, themes and keybindings wake the window on completion.
-  The window thread installs each result. Explorer and Markdown still check
-  pending work in the host loop. Startup and session restore use synchronous
+  The window thread installs each result. Explorer listings and watched
+  settings files use the same wakeup. Markdown image loads still use the host loop. Startup and session restore use synchronous
   file opens. Settings changes initiate the asynchronous
   configuration/theme/text-file reload flows. Startup scans and extension-host
   `openPath` calls still use the synchronous path; Explorer single clicks use
@@ -1206,7 +1206,8 @@ console API for raw mode, sizing and input polling.
   dimmed) and overview-ruler entries. `QuickDiffWorkbenchController` in `quickDiffDecorator.zig`
   attaches a `QuickDiffModel`/`QuickDiffDecorator` per visible file editor, skips diff
   tabs, and schedules worker diffs after model content events or Git status
-  changes with the upstream 200 ms debounce. Open files share a native editor
+  changes with the upstream 200 ms debounce. Git status refreshes on file
+  changes and resumes when the window regains focus. Open files share a native editor
   worker. It receives owned text snapshots and delivers versioned results to
   the decoration listener. It honors `scm.diffDecorations`,
   `scm.diffDecorationsIgnoreTrimWhitespace` (including `inherit`) and

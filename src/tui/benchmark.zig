@@ -459,7 +459,7 @@ test "benchmark: explorer sidebar scroll" {
 
     var load_guard: usize = 0;
     while (sidebar.hasPendingLoad() and load_guard < 5000) : (load_guard += 1) {
-        _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
+        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         if (sidebar.hasPendingLoad()) std.Io.sleep(workbench.async_io, .fromMilliseconds(1), .awake) catch {};
     }
 

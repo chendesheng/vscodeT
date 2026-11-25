@@ -417,11 +417,12 @@ fn relativePath(item: *ExplorerItem) []const u8 {
 /// children. A directory that has not been listed yet returns a pending
 /// request; the actual `readdir` and symlink `stat` run on the workbench async
 /// Io. Job-owned entry data uses the thread-safe smp allocator and is copied
-/// into `ExplorerItem`s on the TUI thread when the request is polled.
+/// into `ExplorerItem`s on the window thread when the listing completes.
 pub const ExplorerDataSource = struct {
     pub const Children = async_tree.Children(*ExplorerItem);
     pub const Interface = async_tree.IAsyncDataSource(ExplorerInput, *ExplorerItem);
 
+    delivery: @import("../../../../../base/common/windowDispatch.zig").Task = .{},
     allocator: Allocator,
     io: Io,
     filter: *FilesFilter,
@@ -522,6 +523,7 @@ pub const ExplorerDataSource = struct {
     }
 
     fn runLoad(job: *LoadJob) LoadResult {
+        defer job.owner.delivery.post();
         defer job.done.store(true, .release);
         const allocator = std.heap.smp_allocator;
         var dir = Io.Dir.cwd().openDir(job.io, job.path, .{ .iterate = true }) catch |err| return .{ .err = err };

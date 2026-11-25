@@ -3022,8 +3022,8 @@ test "Workbench: typing a search query restarts results without stale collapse k
     for ([_][]const u8{ "t", "te", "tes", "test" }) |query| {
         try view.widget.setValue(.search, query);
         const deadline = view.controller.debounce_at orelse return error.MissingSearchDebounce;
-        try std.testing.expectEqual(@as(i32, 1), workbench.window_events.nextTimeout(deadline - 1, 250));
-        try std.testing.expect(!workbench.window_events.dispatch(deadline - 1));
+        try std.testing.expectEqual(deadline, view.model.delivery.timer.at.?);
+        _ = workbench.window_events.dispatch(deadline - 1);
         try std.testing.expect(!view.model.isSearching());
         try waitForSearch(workbench);
     }
@@ -3603,7 +3603,6 @@ test "Workbench: AfterRestored watcher reloads a clean editor" {
 
     const ready_deadline = time_compat.milliTimestamp() + 3000;
     while (time_compat.milliTimestamp() < ready_deadline and !service.isReady()) {
-        _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
         _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         io.sleep(.fromMilliseconds(10), .awake) catch {};
     }
@@ -3614,7 +3613,6 @@ test "Workbench: AfterRestored watcher reloads a clean editor" {
     const deadline = time_compat.milliTimestamp() + 3000;
     var reloaded = false;
     while (time_compat.milliTimestamp() < deadline and !reloaded) {
-        _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
         _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         var value = tab.editor.model.getValue(.TextDefined, true) catch break;
         reloaded = std.mem.eql(u8, value.items, "after");
@@ -4915,9 +4913,16 @@ test "Workbench: image files reload on change and open in a text editor" {
     const pane = tab.image_preview.?;
     const before = pane.editor.load_id;
 
+    var frame_requested = false;
+    workbench.frame_scheduler = .{ .context = &frame_requested, .request = struct {
+        fn request(ctx: *anyopaque) void {
+            const requested: *bool = @ptrCast(@alignCast(ctx));
+            requested.* = true;
+        }
+    }.request };
     workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
     try std.testing.expect(pane.editor.load_id > before);
-    try std.testing.expect(workbench.pollFileWatcher(time_compat.milliTimestamp()));
+    try std.testing.expect(frame_requested);
 
     try workbench.openActiveImageAsText();
     const text_tab = workbench.activeTab().?;
@@ -6581,7 +6586,6 @@ test "Workbench: external file changes reload clean editors only" {
     workbench.handleFileChanges(&.{.{ .type = .UPDATED, .resource = path }});
     var reload_guard: usize = 0;
     while (workbench.reload_jobs.items.len != 0 and reload_guard < 2000) : (reload_guard += 1) {
-        _ = workbench.pollFileWatcher(time_compat.milliTimestamp());
         _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
         std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
     }

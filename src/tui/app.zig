@@ -696,7 +696,6 @@ pub fn main(init: std.process.Init) !void {
     const outline_models = try workbench.instantiation.invokeFunction(@import("../vs/editor/contrib/documentSymbols/browser/outlineModel.zig").getOutlineModelService, .{});
     while (true) {
         const now_ms = time_compat.milliTimestamp();
-        if (workbench.pollFileWatcher(now_ms)) needs_render = true;
         if (workbench.window_events.dispatch(now_ms)) needs_render = true;
         if (workbench.markdownPreviewTick(now_ms)) needs_render = true;
         if (workbench.tickEditorDrag(now_ms)) needs_render = true;
@@ -737,9 +736,6 @@ pub fn main(init: std.process.Init) !void {
             timeout = @min(timeout, @as(i32, @intCast(@min(preview_timeout, 250))));
         }
         timeout = workbench.window_events.nextTimeout(time_compat.milliTimestamp(), timeout);
-        if (workbench.fileWatcherTimeout(now_ms)) |watcher_timeout| {
-            timeout = @min(timeout, @as(i32, @intCast(@min(watcher_timeout, 250))));
-        }
         if (workbench.foldingTimeout(now_ms)) |folding_timeout| {
             timeout = @min(timeout, @as(i32, @intCast(@min(folding_timeout, 250))));
         }

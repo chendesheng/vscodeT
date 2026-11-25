@@ -750,16 +750,14 @@ fn deinitFolderModels(
 //
 // Terminal host for the watcher wiring that upstream keeps in the browser
 // `ConfigurationService` (a file-service change event triggers
-// `reloadConfiguration`). The TUI has no `IFileService`, so the composition
-// root supplies the ported `UniversalWatcher` and polls it; this type owns the
-// watch-request set and the reload trigger.
+// `reloadConfiguration`). Subscribe to changes from the shared file service,
+// debounce changes affecting configured resources, and apply completed reads on the window.
 // ---------------------------------------------------------------------------
 
 const files = @import("../../../../platform/files/common/files.zig");
-const universal_mod = @import("../../../../platform/files/node/watcher/watcher.zig");
-const WatchRequest = @import("../../../../platform/files/common/watcher.zig").WatchRequest;
+const watch_service = @import("../../../../platform/files/node/watcher/fileWatcherService.zig");
+const dispatch = @import("../../../../base/common/windowDispatch.zig");
 const FileChange = files.FileChange;
-const UniversalWatcher = universal_mod.UniversalWatcher;
 
 pub const ReloadCallback = struct {
     context: *anyopaque,
@@ -783,7 +781,7 @@ const AsyncReloadResult = union(enum) {
 const AsyncReloadJob = struct {
     watcher: *SettingsWatcher,
     future: Io.Future(AsyncReloadResult),
-    done: std.atomic.Value(bool) = .init(false),
+
     io: Io,
 
     fn deinit(self: *AsyncReloadJob, allocator: Allocator) void {
@@ -792,7 +790,7 @@ const AsyncReloadJob = struct {
 };
 
 fn runAsyncReload(job: *AsyncReloadJob) AsyncReloadResult {
-    defer job.done.store(true, .release);
+    defer job.watcher.reload_ready.post();
     const service = job.watcher.configuration_service;
     return .{ .sources = service.readSources(job.watcher.allocator, job.io) catch |err| return .{ .err = err } };
 }
@@ -801,16 +799,16 @@ pub const SettingsWatcher = struct {
     allocator: Allocator,
     io: Io,
     configuration_service: *ConfigurationService,
-    watcher: *UniversalWatcher,
-    /// Non-settings files that must trigger a reload as well, for example the
-    /// user keybindings files (they are watched but are not configuration
-    /// scopes).
-    extra_paths: std.array_list.Managed([]u8),
+    service: *watch_service.FileWatcherService,
+    subscriptions: std.ArrayList(*watch_service.WatchHandle) = .empty,
+    change_listener: usize,
+    reload_timer: dispatch.Task,
+    reload_ready: dispatch.Task,
     on_reload: ?ReloadCallback = null,
     reload_count: usize = 0,
     last_reload_failed: bool = false,
     /// When set, settings files are read on this Io and the models are applied
-    /// on the TUI thread by `poll`. Null keeps the synchronous test/startup
+    /// on the window thread when the read completes. Null keeps the synchronous test/startup
     /// path.
     async_io: ?Io = null,
     reload_job: ?*AsyncReloadJob = null,
@@ -820,40 +818,48 @@ pub const SettingsWatcher = struct {
         allocator: Allocator,
         io: Io,
         configuration_service: *ConfigurationService,
+        service: *watch_service.FileWatcherService,
+        window: *dispatch.Queue,
     ) !*SettingsWatcher {
         const self = try allocator.create(SettingsWatcher);
         errdefer allocator.destroy(self);
-
-        const watcher = try UniversalWatcher.init(allocator, io);
-        errdefer watcher.deinit();
-
         self.* = .{
             .allocator = allocator,
             .io = io,
             .configuration_service = configuration_service,
-            .watcher = watcher,
-            .extra_paths = std.array_list.Managed([]u8).init(allocator),
+            .service = service,
+            .change_listener = try service.on_did_change.listen(self, onFileChanges),
+            .reload_timer = .{ .queue = window, .context = self, .run = reload },
+            .reload_ready = .{ .queue = window, .context = self, .run = finishReload, .progress = true },
         };
-        _ = try watcher.on_change.listen(self, onFileChanges);
-        try self.update();
+        errdefer service.on_did_change.unlisten(self.change_listener);
+        try self.setExtraPaths(&.{});
         return self;
     }
 
     pub fn deinit(self: *SettingsWatcher) void {
+        self.service.on_did_change.unlisten(self.change_listener);
+        self.reload_timer.schedule(null);
         self.cancelReload();
-        self.setExtraPaths(&.{}) catch {};
-        self.extra_paths.deinit();
-        self.watcher.deinit();
+        self.disposeSubscriptions(&self.subscriptions);
         self.allocator.destroy(self);
     }
 
-    /// Replaces the extra watched files (owned copies) and refreshes the
-    /// watcher. Missing files are tolerated exactly like missing settings.
+    fn disposeSubscriptions(self: *SettingsWatcher, subscriptions: *std.ArrayList(*watch_service.WatchHandle)) void {
+        for (subscriptions.items) |handle| handle.dispose();
+        subscriptions.deinit(self.allocator);
+    }
+
     pub fn setExtraPaths(self: *SettingsWatcher, paths: []const []const u8) !void {
-        for (self.extra_paths.items) |path| self.allocator.free(path);
-        self.extra_paths.clearRetainingCapacity();
-        for (paths) |path| try self.extra_paths.append(try self.allocator.dupe(u8, path));
-        try self.update();
+        const settings = try self.configuration_service.settingsFilePaths(self.allocator);
+        defer self.configuration_service.freeSettingsFilePaths(self.allocator, settings);
+        var next: std.ArrayList(*watch_service.WatchHandle) = .empty;
+        errdefer self.disposeSubscriptions(&next);
+        try next.ensureTotalCapacity(self.allocator, settings.len + paths.len);
+        for (settings) |path| next.appendAssumeCapacity(try self.service.watch(path, .{ .recursive = false }));
+        for (paths) |path| next.appendAssumeCapacity(try self.service.watch(path, .{ .recursive = false }));
+        self.disposeSubscriptions(&self.subscriptions);
+        self.subscriptions = next;
     }
 
     pub fn setAsyncIo(self: *SettingsWatcher, io: Io) void {
@@ -880,12 +886,16 @@ pub const SettingsWatcher = struct {
         self.reload_job = job;
     }
 
-    fn pollReload(self: *SettingsWatcher) bool {
+    fn finishReload(ctx: *anyopaque, _: i64, _: bool) bool {
+        const self: *SettingsWatcher = @ptrCast(@alignCast(ctx));
         const job = self.reload_job orelse return false;
-        if (!job.done.load(.acquire)) return false;
         const result = job.future.await(job.io);
         self.reload_job = null;
         job.deinit(self.allocator);
+        defer if (self.reload_pending) {
+            self.reload_pending = false;
+            self.requestAsyncReload();
+        };
         switch (result) {
             .sources => |sources_value| {
                 var sources = sources_value;
@@ -900,10 +910,6 @@ pub const SettingsWatcher = struct {
             },
             .err => self.last_reload_failed = true,
         }
-        if (self.reload_pending) {
-            self.reload_pending = false;
-            self.requestAsyncReload();
-        }
         return true;
     }
 
@@ -912,6 +918,7 @@ pub const SettingsWatcher = struct {
         const job = self.reload_job orelse return;
         self.reload_job = null;
         const result = job.future.cancel(job.io);
+        self.reload_ready.schedule(null);
         if (result == .sources) {
             var sources = result.sources;
             sources.deinit();
@@ -919,54 +926,31 @@ pub const SettingsWatcher = struct {
         job.deinit(self.allocator);
     }
 
-    pub fn update(self: *SettingsWatcher) !void {
-        const paths = try self.configuration_service.settingsFilePaths(self.allocator);
-        defer self.configuration_service.freeSettingsFilePaths(self.allocator, paths);
-
-        var requests = std.array_list.Managed(WatchRequest).init(self.allocator);
-        defer requests.deinit();
-        for (paths) |path| {
-            try requests.append(.{
-                .path = path,
-                .recursive = false,
-            });
-        }
-        for (self.extra_paths.items) |path| {
-            try requests.append(.{
-                .path = path,
-                .recursive = false,
-            });
-        }
-        try self.watcher.watch(requests.items);
-    }
-
-    pub fn poll(self: *SettingsWatcher, now_ms: i64) !bool {
-        var changed = try self.watcher.poll(now_ms);
-        if (self.pollReload()) changed = true;
-        return changed;
-    }
-
-    pub fn waitHandle(self: *const SettingsWatcher) @import("../../../../platform/files/node/watcher/parcel/watcherLib/root.zig").WaitHandle {
-        return self.watcher.waitHandle();
-    }
-
-    pub fn nextTimeout(self: *const SettingsWatcher, now_ms: i64) ?u32 {
-        return self.watcher.nextTimeout(now_ms);
-    }
-
     fn onFileChanges(changes: []const FileChange, self: *SettingsWatcher) !void {
-        if (changes.len == 0) return;
+        var file_changes = try files.FileChangesEvent.init(self.allocator, changes, @import("builtin").os.tag == .windows);
+        defer file_changes.deinit();
+        for (self.subscriptions.items) |handle| {
+            if (file_changes.contains(handle.path, &.{})) {
+                self.reload_timer.schedule(@import("../../../../base/common/timeCompat.zig").milliTimestamp() + 100);
+                return;
+            }
+        }
+    }
+
+    fn reload(ctx: *anyopaque, _: i64, _: bool) bool {
+        const self: *SettingsWatcher = @ptrCast(@alignCast(ctx));
         if (self.async_io != null) {
             self.requestAsyncReload();
-            return;
+            return false;
         }
         self.configuration_service.reload() catch {
             self.last_reload_failed = true;
-            return;
+            return true;
         };
         self.last_reload_failed = false;
         self.reload_count += 1;
         if (self.on_reload) |callback| callback.callback(callback.context);
+        return true;
     }
 };
 
@@ -996,16 +980,24 @@ test "SettingsWatcher: reloads when a settings file changes" {
     const service = try ConfigurationService.init(allocator, io, context, .{});
     defer service.deinit();
 
-    var watcher = try SettingsWatcher.init(allocator, io, service);
+    var window = dispatch.Queue{ .io = std.testing.io };
+    const file_service = try watch_service.FileWatcherService.init(allocator, io);
+    defer file_service.deinit();
+    file_service.client.attachWindow(&window);
+    const watcher = try SettingsWatcher.init(allocator, io, service, file_service, &window);
     defer watcher.deinit();
 
+    const ready_by = std.Io.Timestamp.now(io, .real).toMilliseconds() + 3000;
+    while (!file_service.isReady() and std.Io.Timestamp.now(io, .real).toMilliseconds() < ready_by)
+        io.sleep(.fromMilliseconds(5), .awake) catch {};
+    try std.testing.expect(file_service.isReady());
     var file_write = try tmp.dir.createFile(io, ".vscode/settings.json", .{ .truncate = true });
     try file_write.writeStreamingAll(io, "{\"editor.tabSize\": 6}");
     file_write.close(io);
 
     const deadline = std.Io.Timestamp.now(io, .real).toMilliseconds() + 3000;
     while (std.Io.Timestamp.now(io, .real).toMilliseconds() < deadline and watcher.reload_count == 0) {
-        _ = try watcher.poll(std.Io.Timestamp.now(io, .real).toMilliseconds());
+        _ = window.dispatch(std.Io.Timestamp.now(io, .real).toMilliseconds());
         io.sleep(.fromMilliseconds(10), .awake) catch {};
     }
     try std.testing.expect(watcher.reload_count > 0);

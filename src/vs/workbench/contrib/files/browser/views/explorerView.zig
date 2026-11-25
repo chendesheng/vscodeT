@@ -163,7 +163,7 @@ pub const Sidebar = struct {
         context: *WorkspaceContextService,
         configuration: *ConfigurationService,
     ) !*Sidebar {
-        return initWithAsyncIo(allocator, io, io, context, configuration);
+        return initWithAsyncIo(allocator, io, io, context, configuration, null);
     }
 
     pub fn initWithAsyncIo(
@@ -172,6 +172,7 @@ pub const Sidebar = struct {
         async_io: Io,
         context: *WorkspaceContextService,
         configuration: *ConfigurationService,
+        window: ?*@import("../../../../../base/common/windowDispatch.zig").Queue,
     ) !*Sidebar {
         const self = try allocator.create(Sidebar);
         errdefer allocator.destroy(self);
@@ -201,6 +202,7 @@ pub const Sidebar = struct {
             &self.files_filter,
             self.sort_order,
         );
+        self.data_source.delivery = .{ .queue = window, .context = self, .run = onChildrenResolved, .progress = true };
         self.tree = try AsyncTree.init(allocator, "explorer", self.data_source.interface(), .{
             .context = @ptrCast(self),
             .render = renderRow,
@@ -212,7 +214,10 @@ pub const Sidebar = struct {
             .enable_sticky_scroll = readEnableStickyScroll(configuration),
             .sticky_scroll_max_item_count = readStickyScrollMaxItemCount(configuration),
         });
-        errdefer self.tree.deinit();
+        errdefer {
+            self.tree.deinit();
+            self.data_source.delivery.schedule(null);
+        }
         self.tree.setCompressionDelegate(.{
             .context = @ptrCast(self),
             .is_incompressible = isIncompressibleItem,
@@ -244,6 +249,7 @@ pub const Sidebar = struct {
         self.cancelLoad();
         if (self.pending_reveal) |path| self.allocator.free(path);
         self.tree.deinit();
+        self.data_source.delivery.schedule(null);
         self.files_filter.deinit();
         self.model.deinit();
         self.allocator.destroy(self);
@@ -261,6 +267,11 @@ pub const Sidebar = struct {
 
     /// Drains completed listings and resumes a pending reveal. Returns whether
     /// the rendered tree changed.
+    fn onChildrenResolved(ctx: *anyopaque, _: i64, _: bool) bool {
+        const self: *Sidebar = @ptrCast(@alignCast(ctx));
+        return self.pollLoad();
+    }
+
     pub fn pollLoad(self: *Sidebar) bool {
         var changed = self.tree.poll();
         if (self.pending_reveal) |path| {
@@ -1421,7 +1432,7 @@ test "explorer tree sidebar: expansion reads directories on the async Io" {
     var async_state = Io.Threaded.init(allocator, .{});
     defer async_state.deinit();
 
-    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, async_state.io(), context, configuration);
+    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, async_state.io(), context, configuration, null);
     defer sidebar.deinit();
     pumpSidebar(sidebar, io);
 
@@ -1467,7 +1478,7 @@ test "explorer tree sidebar: async expansion resolves a symbolic link directory"
     var async_state = Io.Threaded.init(allocator, .{});
     defer async_state.deinit();
 
-    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, async_state.io(), context, configuration);
+    const sidebar = try Sidebar.initWithAsyncIo(allocator, io, async_state.io(), context, configuration, null);
     defer sidebar.deinit();
     pumpSidebar(sidebar, io);
 

@@ -548,9 +548,6 @@ pub const Workbench = struct {
     pointer_state: ui.pointer.State = .{},
     pointer_shapes: bool = false,
     media_status: ?*MediaPreviewStatus = null,
-    /// Set when a file watcher change was applied so the TUI repaints even if
-    /// the change produced no other input.
-    files_changed: bool = false,
     activity_service: ActivityService,
     editor_status: ?*EditorStatus = null,
     status_hint_accessor: ?EntryAccessor = null,
@@ -568,9 +565,7 @@ pub const Workbench = struct {
     workspace: *WorkspaceContextService,
     configuration: ?*ConfigurationService,
     settings_watcher: ?*SettingsWatcher = null,
-    /// Workspace file watcher service. Kept separate from the settings watcher
-    /// so a workspace change never triggers a settings reload. The recursive
-    /// scan runs on the service's worker thread.
+    /// Window file service shared by workspace and configuration watchers.
     file_watcher_service: ?*FileWatcherService = null,
     /// Port of the `workspaceWatcher.ts` contribution. Instantiated by the
     /// upstream `AfterRestored` phase, after the first frame.
@@ -787,7 +782,6 @@ pub const Workbench = struct {
         self.pointer_state = .{};
         self.pointer_shapes = false;
         self.media_status = null;
-        self.files_changed = false;
         self.editor_drag = .{};
         self.drag_target = null;
         self.drag_tab_drop = null;
@@ -2277,7 +2271,7 @@ pub const Workbench = struct {
         try self.configuration.?.onDidChangeConfiguration(self, onWorkbenchConfigurationChange);
         if (self.declarative) |catalog| try self.applyExtensionDefaults(catalog);
         if (self.terminal_service) |service| service.options.configuration = self.configuration;
-        self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?) catch null;
+        self.settings_watcher = SettingsWatcher.init(self.allocator, self.io, self.configuration.?, try self.ensureFileService(), &self.window_events) catch null;
         if (self.settings_watcher) |watcher| {
             watcher.setOnReload(.{ .context = self, .callback = onSettingsReloaded });
             watcher.setAsyncIo(self.async_io);
@@ -2311,6 +2305,7 @@ pub const Workbench = struct {
     fn onSettingsReloaded(context: *anyopaque) void {
         const self: *Workbench = @ptrCast(@alignCast(context));
         self.applyConfiguredLanguageAssociationsToAllEditors();
+        if (self.search_view) |view| view.onConfigurationChanged();
         self.requestKeybindingsReload();
         self.applyThemeSettingsAsync();
         self.applyBreadcrumbsSettings();
@@ -2440,7 +2435,7 @@ pub const Workbench = struct {
             // FSEvents can report a pre-existing path as ADDED on its first
             // event because it has no initial directory snapshot. For an open
             // editor that is a content change just like UPDATED.
-            self.files_changed = true;
+            self.requestFrame();
             for (self.part.group_views.items) |pane| {
                 for (pane.tabs.items) |tab| {
                     if (tab.isImage()) {
@@ -2481,17 +2476,22 @@ pub const Workbench = struct {
         try self.ensureWorkspaceWatcher();
     }
 
-    fn ensureWorkspaceWatcher(self: *Workbench) !void {
-        if (self.workspace.getWorkspace().folders.items.len == 0) return;
-        if (self.configuration == null) try self.ensureConfiguration();
-        const configuration = self.configuration orelse return;
-
+    fn ensureFileService(self: *Workbench) !*FileWatcherService {
         if (self.file_watcher_service == null) {
             const service = try FileWatcherService.init(self.allocator, self.io);
             errdefer service.deinit();
             _ = try service.on_did_change.listen(self, onWorkspaceFileChanges);
+            service.client.attachWindow(&self.window_events);
             self.file_watcher_service = service;
         }
+
+        return self.file_watcher_service.?;
+    }
+
+    fn ensureWorkspaceWatcher(self: *Workbench) !void {
+        if (self.workspace.getWorkspace().folders.items.len == 0) return;
+        if (self.configuration == null) try self.ensureConfiguration();
+        const configuration = self.configuration orelse return;
 
         if (self.workspace_watcher == null) {
             self.workspace_watcher = try WorkspaceWatcher.init(
@@ -2511,54 +2511,6 @@ pub const Workbench = struct {
 
     fn reportWatcherMessage(_: *anyopaque, message: []const u8) void {
         std.log.scoped(.file_watcher).warn("{s}", .{message});
-    }
-
-    pub fn pollFileWatcher(self: *Workbench, now_ms: i64) bool {
-        var changed = false;
-        if (self.sidebar) |sidebar| {
-            if (sidebar.pollLoad()) changed = true;
-        }
-        if (self.settings_watcher) |watcher| {
-            if (watcher.poll(now_ms) catch false) {
-                changed = true;
-                if (self.search_view) |view| view.onConfigurationChanged();
-            }
-        }
-        if (self.file_watcher_service) |service| {
-            if (self.workspace_watcher != null) _ = service.poll();
-        }
-        if (self.files_changed) {
-            self.files_changed = false;
-            changed = true;
-        }
-        return changed;
-    }
-
-    pub fn fileWatcherFd(self: *const Workbench) ?std.posix.fd_t {
-        const watcher = self.settings_watcher orelse return null;
-        return switch (watcher.waitHandle()) {
-            .fd => |fd| fd,
-            else => null,
-        };
-    }
-
-    pub fn fileWatcherHandle(self: *const Workbench) ?*anyopaque {
-        const watcher = self.settings_watcher orelse return null;
-        return switch (watcher.waitHandle()) {
-            .handle => |handle| handle,
-            else => null,
-        };
-    }
-
-    pub fn fileWatcherTimeout(self: *Workbench, now_ms: i64) ?u32 {
-        var result: ?u32 = null;
-        if (self.settings_watcher) |watcher| result = watcher.nextTimeout(now_ms);
-        if (self.file_watcher_service) |service| {
-            if (service.nextTimeout()) |timeout| {
-                result = if (result) |current| @min(current, timeout) else timeout;
-            }
-        }
-        return result;
     }
 
     fn autoRevealEnabled(self: *const Workbench, resource: []const u8) bool {
@@ -2594,6 +2546,7 @@ pub const Workbench = struct {
                 self.async_io,
                 self.workspace,
                 self.configuration.?,
+                &self.window_events,
             );
         }
         if (self.search_view == null) try self.initSearchFromWorkspace();
@@ -4772,7 +4725,7 @@ pub const Workbench = struct {
             // A single-file unlink also refuses a directory that replaced the
             // file while the confirmation was open.
             try Io.Dir.cwd().deleteFile(self.io, absolute);
-            self.files_changed = true;
+            self.requestFrame();
             return;
         }
         if (change.status == 'R' and change.original_path != null) {
@@ -5901,9 +5854,6 @@ pub const Workbench = struct {
     /// poll timeout so the result is applied promptly without busy-spinning
     /// the idle maintenance work.
     pub fn hasLatencySensitiveReads(self: *Workbench) bool {
-        if (self.sidebar) |sidebar| {
-            if (sidebar.hasPendingLoad()) return true;
-        }
         if (self.activeTab()) |tab| {
             if (tab.markdown_preview) |preview| {
                 if (preview.hasPendingLocalImages()) return true;

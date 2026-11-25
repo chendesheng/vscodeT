@@ -6,8 +6,8 @@
 // Terminal adaptation: there is no Electron utility process, so the watcher
 // side runs on a dedicated worker thread. The client contract is the upstream
 // one: `watch` copies the request list and returns without waiting for the
-// recursive scan; changes/logs/errors are delivered from a poll queue that the
-// main loop drains. Restart-on-error keeps upstream's five-attempt limit and
+// recursive scan. Worker events wake the window, which delivers each batch
+// to the registered listeners. Restart-on-error keeps upstream's five-attempt limit and
 // its `No space left on device` / `EMFILE` exceptions.
 //
 // The watcher implementation itself (the in-process `UniversalWatcher`) is
@@ -69,6 +69,7 @@ pub const UniversalWatcherClient = struct {
     verbose_logging: bool = false,
     verbose_dirty: bool = false,
     watch_ready: bool = false,
+    delivery: @import("../../../../base/common/windowDispatch.zig").Task = .{},
     scan_cancel: std.atomic.Value(bool) = .init(false),
 
     changes: std.array_list.Managed(ChangeBatch),
@@ -113,6 +114,7 @@ pub const UniversalWatcherClient = struct {
 
     pub fn deinit(self: *UniversalWatcherClient) void {
         self.stop();
+        self.delivery.schedule(null);
         self.freeQueued();
         self.changes.deinit();
         self.logs.deinit();
@@ -170,6 +172,18 @@ pub const UniversalWatcherClient = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         return self.watch_ready;
+    }
+
+    pub fn attachWindow(self: *UniversalWatcherClient, window: *@import("../../../../base/common/windowDispatch.zig").Queue) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.delivery = .{ .queue = window, .context = self, .run = deliver, .progress = true };
+        if (self.changes.items.len != 0 or self.logs.items.len != 0 or self.errors.items.len != 0) self.delivery.post();
+    }
+
+    fn deliver(ctx: *anyopaque, _: i64, _: bool) bool {
+        const self: *UniversalWatcherClient = @ptrCast(@alignCast(ctx));
+        return self.poll();
     }
 
     pub fn hasQueuedEvents(self: *UniversalWatcherClient) bool {
@@ -287,14 +301,20 @@ pub const UniversalWatcherClient = struct {
         self.changes.append(.{ .items = items }) catch {
             for (items) |item| self.allocator.free(@constCast(item.resource));
             self.allocator.free(items);
+            return;
         };
+        self.delivery.post();
     }
 
     fn pushLog(self: *UniversalWatcherClient, message: ILogMessage) void {
         const copy = self.allocator.dupe(u8, message.message) catch return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        self.logs.append(.{ .type = message.type, .message = copy }) catch self.allocator.free(copy);
+        self.logs.append(.{ .type = message.type, .message = copy }) catch {
+            self.allocator.free(copy);
+            return;
+        };
+        self.delivery.post();
     }
 
     fn pushError(self: *UniversalWatcherClient, comptime fmt: []const u8, args: anytype, failed_request: bool) void {
@@ -303,7 +323,11 @@ pub const UniversalWatcherClient = struct {
         const copy = self.allocator.dupe(u8, text) catch return;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        self.errors.append(.{ .message = copy, .failed_request = failed_request }) catch self.allocator.free(copy);
+        self.errors.append(.{ .message = copy, .failed_request = failed_request }) catch {
+            self.allocator.free(copy);
+            return;
+        };
+        self.delivery.post();
     }
 
     fn onWorkerChanges(changes: []const FileChange, self: *UniversalWatcherClient) !void {
@@ -399,7 +423,7 @@ fn workerMain(self: *UniversalWatcherClient) void {
             };
             applied = true;
             self.mutex.lockUncancelable(self.io);
-            self.watch_ready = applied_ok;
+            self.watch_ready = applied_ok and self.pending_requests == null;
             self.mutex.unlock(self.io);
         }
 
