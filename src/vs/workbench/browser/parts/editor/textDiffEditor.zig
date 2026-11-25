@@ -19,6 +19,7 @@ const widget_mod = @import("../../../../editor/browser/widget/diffEditor/diffEdi
 const diff_editor_input = @import("../../../common/editor/diffEditorInput.zig");
 const editor_input = @import("../../../common/editor/editorInput.zig");
 const editor_mod = @import("../../../common/editor.zig");
+const text_files = @import("../../../services/textfile/common/textFileService.zig");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
 
 pub const Options = widget_mod.Options;
@@ -336,10 +337,10 @@ pub fn DiffView(comptime View: type) type {
         /// Whether this diff view shows the same path/ref pair. Used by the
         /// workbench to refresh an existing diff tab instead of opening a new one.
         pub fn matches(self: *const Self, path: []const u8, left_label: []const u8, right_label: []const u8) bool {
-            return std.mem.eql(u8, self.model.original_path, path) and
-                std.mem.eql(u8, self.model.modified_path, path) and
-                std.mem.eql(u8, self.model.original_label, left_label) and
-                std.mem.eql(u8, self.model.modified_label, right_label);
+            return std.mem.eql(u8, self.model.original_label, left_label) and
+                std.mem.eql(u8, self.model.modified_label, right_label) and
+                text_files.samePath(self.allocator, self.io, self.model.original_path, path) and
+                text_files.samePath(self.allocator, self.io, self.model.modified_path, path);
         }
     };
 }

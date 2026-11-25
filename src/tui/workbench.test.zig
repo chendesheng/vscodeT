@@ -8098,6 +8098,7 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     const root = root_buffer[0..root_len];
 
     if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "config", "core.autocrlf", "false" }));
     _ = try runGitTest(allocator, root, &.{ "symbolic-ref", "HEAD", "refs/heads/main" });
     _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
     _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
@@ -8396,6 +8397,10 @@ test "Workbench: git scm integration, diff tabs and read-only snapshots" {
     try std.testing.expect(index_working_tab.isDiff());
     try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Index") != null);
     try std.testing.expect(std.mem.indexOf(u8, index_working_tab.input.getName(), "Working Tree") != null);
+    // Snapshot identities use the filesystem path, not its spelling.
+    const staged_alias = try std.fmt.allocPrint(allocator, "{s}/./staged.txt", .{root});
+    defer allocator.free(staged_alias);
+    try std.testing.expect(index_working_tab.diff.?.matches(staged_alias, "Index", "Working Tree"));
 
     try workbench.openDiff(untracked_path, .empty, .working);
     const untracked_tab = workbench.activeTab().?;
@@ -9360,6 +9365,7 @@ test "Git resource actions stage unstage and resolve discard confirmation agains
     var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const root = root_buffer[0..try tmp.dir.realPath(io, &root_buffer)];
     if (!try runGitTest(allocator, root, &.{"init"})) return error.SkipZigTest;
+    try std.testing.expect(try runGitTest(allocator, root, &.{ "config", "core.autocrlf", "false" }));
     _ = try runGitTest(allocator, root, &.{ "config", "user.name", "Test User" });
     _ = try runGitTest(allocator, root, &.{ "config", "user.email", "test@example.com" });
     try tmp.dir.writeFile(io, .{ .sub_path = "resource.txt", .data = "base\n" });
