@@ -12,6 +12,12 @@ pub fn registerViewContainer(registry: *views.ViewContainersRegistry) !void {
     }, .sidebar, .{ .is_default = true });
 }
 
+pub fn registerViews(registry: *views.ViewsRegistry) !void {
+    // The terminal retains its existing single folders pane in both empty
+    // and folder workspaces; Open Editors/EmptyView remain unported.
+    try registry.registerViews(&.{.{ .id = "explorer", .name = "Explorer", .order = 0, .weight = 70, .can_toggle_visibility = false }}, "explorer");
+}
+
 const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;
 const Accessor = @import("../../../../platform/instantiation/common/instantiation.zig").ServicesAccessor;
 const pane_composite = @import("../../../services/panecomposite/browser/panecomposite.zig");

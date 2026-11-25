@@ -61,10 +61,20 @@ pub const SCMContribution = struct {
         quick_input: *@import("../../../../platform/quickinput/browser/quickInputService.zig").QuickInputService,
     };
 
-    /// Receives the registered SCM view descriptors from the composition root.
-    /// The contribution owns their container and model after a successful mount.
-    pub fn attachContainer(self: *SCMContribution, sidebar: *SidebarPart, descriptors: *ViewDescriptorService, model: *ViewContainerModel, panes: []const pane_container.Pane) !void {
+    /// Mount the registered SCM container after its provider becomes active.
+    pub fn attachContainer(self: *SCMContribution, sidebar: *SidebarPart, descriptors: *ViewDescriptorService, panes: []const pane_container.Pane, has_history: bool) !void {
         if (self.container != null) return error.ContainerAlreadyExists;
+        const registration = descriptors.getViewContainerById("scm") orelse return error.UnknownViewContainer;
+        const model = try self.allocator.create(ViewContainerModel);
+        errdefer self.allocator.destroy(model);
+        model.* = ViewContainerModel.init(self.allocator, .{ .id = registration.id, .title = registration.title, .icon = "" });
+        errdefer model.deinit();
+        descriptors.setViewAvailable("changes", true);
+        descriptors.setViewAvailable("graph", has_history);
+        errdefer {
+            descriptors.setViewAvailable("changes", false);
+            descriptors.setViewAvailable("graph", false);
+        }
         const container = try sidebar.createViewPaneContainer(descriptors, model, panes);
         self.sidebar = sidebar;
         self.view_descriptors = descriptors;
@@ -189,6 +199,10 @@ pub const SCMContribution = struct {
         }
         self.container = null;
         self.view_model = null;
+        if (self.view_descriptors) |descriptors| {
+            descriptors.setViewAvailable("changes", false);
+            descriptors.setViewAvailable("graph", false);
+        }
         self.detachConfiguration();
         if (self.provider_listener) |listener| self.provider_event.?.unlisten(listener);
         if (self.activity) |activity| activity.destroy();
@@ -231,6 +245,15 @@ pub fn registerViewContainer(registry: *@import("../../../common/views.zig").Vie
         .glyph = '\u{e702}',
         .order = 2,
     }, .sidebar, .{});
+}
+
+pub fn registerViews(registry: *@import("../../../common/views.zig").ViewsRegistry) !void {
+    // Repository-list view remains unported; native provider availability
+    // replaces the upstream SCM context-key when expressions.
+    try registry.registerViews(&.{
+        .{ .id = "changes", .name = "Changes", .order = 1, .weight = 40, .available = false },
+        .{ .id = "graph", .name = "Graph", .order = 2, .weight = 40, .available = false },
+    }, "scm");
 }
 
 const Action2 = @import("../../../../platform/actions/common/actions.zig").Action2;

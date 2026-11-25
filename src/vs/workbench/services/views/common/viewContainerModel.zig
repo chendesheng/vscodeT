@@ -7,20 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Emitter = @import("../../../../base/common/event.zig").Emitter;
 
-pub const ViewDescriptor = struct {
-    id: []const u8,
-    name: []const u8,
-    visible: bool = true,
-    available: bool = true,
-    in_container: bool = true,
-    can_toggle_visibility: bool = true,
-    can_move: bool = true,
-    collapsed: bool = false,
-    order: usize = 0,
-    /// Share of the container body; the terminal splits expanded views by it.
-    weight: usize = 20,
-    size: ?f64 = null,
-};
+pub const ViewDescriptor = @import("../../../common/views.zig").ViewDescriptor;
 
 pub const ViewState = struct {
     id: []const u8,
@@ -168,6 +155,17 @@ pub const ViewContainerModel = struct {
             if (std.mem.eql(u8, view.id, id)) return view.in_container and view.available;
         }
         return false;
+    }
+
+    pub fn setAvailable(self: *ViewContainerModel, id: []const u8, available: bool) void {
+        for (self.views.items) |*view| {
+            if (!std.mem.eql(u8, view.id, id)) continue;
+            if (view.available == available) return;
+            const before = descriptorVisible(view.*);
+            view.available = available;
+            self.fireVisibilityChange(before, descriptorVisible(view.*));
+            return;
+        }
     }
 
     pub fn isVisible(self: *const ViewContainerModel, id: []const u8) bool {

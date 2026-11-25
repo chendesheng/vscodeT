@@ -19,6 +19,12 @@ pub fn registerViewContainers(registry: *@import("common/views.zig").ViewContain
     try @import("contrib/terminal/browser/terminal.contribution.zig").registerViewContainer(registry);
 }
 
+pub fn registerViews(registry: *@import("common/views.zig").ViewsRegistry) !void {
+    try @import("contrib/files/browser/explorerViewlet.zig").registerViews(registry);
+    try @import("contrib/outline/browser/outline.contribution.zig").registerViews(registry);
+    try @import("contrib/scm/browser/scm.contribution.zig").registerViews(registry);
+}
+
 pub fn registerMenus(menus: *MenuRegistry) !void {
     try @import("contrib/scm/browser/scmViewPane.zig").registerMenus(menus);
     try @import("contrib/scm/browser/scmHistoryViewPane.zig").registerMenus(menus);

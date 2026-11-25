@@ -1,14 +1,12 @@
 // Port of the portable view-container location state in
 // `src/vs/workbench/services/views/browser/viewDescriptorService.ts`.
 //
-// The browser service also owns view descriptors, generated containers,
-// context-key scopes and profile storage. The terminal service keeps the
-// container registry, the per-container location overrides, the default
-// location lookup and the change events used by the side bar and panel parts.
-//
-// Terminal adaptation: customizations live in memory. The port has no profile
-// storage service in the workbench shell yet, so a moved container resets on
-// restart (upstream persists the same map under `views.customizations`).
+// The terminal service consumes registered views and containers, owns their
+// model registrations, availability changes, default locations and custom
+// moves. Generated containers and full view-scoped context keys are unported.
+// Workspace view state is persisted by ViewDescriptorsState; container
+// location overrides are not yet persisted in the profile
+// `views.customizations` key.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -37,6 +35,9 @@ pub const ContainerLocationChange = struct {
 pub const ViewDescriptorService = struct {
     allocator: Allocator,
     registry: *ViewContainersRegistry,
+    views_registry: ?*views.ViewsRegistry = null,
+    views_registered: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
+    views_deregistered: ?@import("../../../../base/common/event.zig").SignalSubscription = null,
     models: std.StringHashMapUnmanaged(*ViewContainerModel) = .empty,
     on_did_change_container: Emitter(ViewContainerChange),
     /// Container id -> location override, mirroring
@@ -68,6 +69,18 @@ pub const ViewDescriptorService = struct {
             self.register_listener = null;
         }
         self.deregister_listener = try self.registry.on_did_deregister.listen(self, onContainerDeregistered);
+        errdefer {
+            if (self.deregister_listener) |listener| self.registry.on_did_deregister.unlisten(listener);
+            self.deregister_listener = null;
+        }
+        if (self.views_registry) |registry| {
+            self.views_registered = try registry.on_views_registered.listenDisposable(self, onViewsRegistered);
+            errdefer {
+                self.views_registered.?.dispose();
+                self.views_registered = null;
+            }
+            self.views_deregistered = try registry.on_views_deregistered.listenDisposable(self, onViewsDeregistered);
+        }
     }
 
     fn onContainerRegistered(registration: views.ContainerRegistration, self: *ViewDescriptorService) !void {
@@ -80,7 +93,52 @@ pub const ViewDescriptorService = struct {
         try self.on_did_change_view_containers.fire(.{ .removed = &removed });
     }
 
+    fn descriptorInContainer(model: *ViewContainerModel, descriptor: views.ViewDescriptor, owner: []const u8) views.ViewDescriptor {
+        var result = descriptor;
+        // The terminal model retains templates for movable views so a move
+        // between native containers can preserve its state without DOM reparenting.
+        result.in_container = std.mem.eql(u8, model.container.id, owner);
+        return result;
+    }
+
+    fn onViewsRegistered(registration: views.ViewRegistration, self: *ViewDescriptorService) !void {
+        var models = self.models.valueIterator();
+        while (models.next()) |model| {
+            for (registration.views) |descriptor| try model.*.addView(descriptorInContainer(model.*, descriptor, registration.container_id));
+        }
+    }
+
+    fn onViewsDeregistered(registration: views.ViewRegistration, self: *ViewDescriptorService) !void {
+        var models = self.models.valueIterator();
+        while (models.next()) |model| for (registration.views) |descriptor| model.*.removeView(descriptor.id);
+    }
+
+    fn populateModel(self: *ViewDescriptorService, model: *ViewContainerModel) !void {
+        const registry = self.views_registry orelse return;
+        for (registry.entries.items) |entry| try model.addView(descriptorInContainer(model, entry.descriptor, entry.container_id));
+    }
+
+    /// Workspace storage loads view state on top of these default registrations.
+    pub fn resetRegisteredModels(self: *ViewDescriptorService) !void {
+        var models = self.models.valueIterator();
+        while (models.next()) |model| try self.populateModel(model.*);
+    }
+
+    /// The existing native provider checks adapt the upstream when expressions.
+    /// Deliver active/visible descriptor changes to mounted containers immediately.
+    pub fn setViewAvailable(self: *ViewDescriptorService, id: []const u8, available: bool) void {
+        const registry = self.views_registry orelse return;
+        for (registry.entries.items) |*entry| {
+            if (!std.mem.eql(u8, entry.descriptor.id, id)) continue;
+            entry.descriptor.available = available;
+            break;
+        }
+        var models = self.models.valueIterator();
+        while (models.next()) |model| model.*.setAvailable(id, available);
+    }
+
     pub fn registerViewContainerModel(self: *ViewDescriptorService, model: *ViewContainerModel) !void {
+        try self.populateModel(model);
         try self.models.putNoClobber(self.allocator, model.container.id, model);
     }
 
@@ -104,6 +162,8 @@ pub const ViewDescriptorService = struct {
     }
 
     pub fn deinit(self: *ViewDescriptorService) void {
+        if (self.views_registered) |listener| listener.dispose();
+        if (self.views_deregistered) |listener| listener.dispose();
         self.models.deinit(self.allocator);
         self.on_did_change_container.deinit();
         if (self.register_listener) |listener| self.registry.on_did_register.unlisten(listener);

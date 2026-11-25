@@ -324,6 +324,7 @@ pub const TerminalWorkbench = struct {
     pane_composite_service: @import("../vs/workbench/browser/parts/paneCompositePartService.zig").PaneCompositePartService,
     pane_composite_api: @import("../vs/workbench/services/panecomposite/browser/panecomposite.zig").IPaneCompositePartService,
     view_containers_registry: views_mod.ViewContainersRegistry,
+    views_registry: views_mod.ViewsRegistry,
     view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
     statusbar_api: statusbar_types.IStatusbarService,
@@ -1218,10 +1219,13 @@ pub const TerminalWorkbench = struct {
         try self.activity_bar_part.base.register(layout_service);
         self.view_containers_registry = views_mod.ViewContainersRegistry.init(self.allocator);
         errdefer self.view_containers_registry.deinit();
+        self.views_registry = .init(self.allocator);
+        errdefer self.views_registry.deinit();
         self.view_descriptor_service = ViewDescriptorService.init(self.allocator, &self.view_containers_registry);
         errdefer self.view_descriptor_service.deinit();
         self.window_views = ViewsService.init(self.allocator, &self.view_descriptor_service, &self.sidebar_part);
         errdefer self.window_views.deinit();
+        self.view_descriptor_service.views_registry = &self.views_registry;
         try self.view_descriptor_service.attach();
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
         self.notification_storage = storage_mod.InMemoryStorageService.init(self.allocator);
@@ -1244,6 +1248,7 @@ pub const TerminalWorkbench = struct {
         try self.activity_bar_part.setVisible(true);
 
         try @import("../vs/workbench/workbench.common.main.zig").registerViewContainers(&self.view_containers_registry);
+        try @import("../vs/workbench/workbench.common.main.zig").registerViews(&self.views_registry);
         try @import("../vs/workbench/browser/parts/paneCompositePartService.zig").PaneCompositePartService.populateParts(&self.sidebar_part, &self.panel_part, &self.view_descriptor_service);
         try self.initExplorerContainer();
         try self.sidebar_part.setWidth(28);
@@ -1262,8 +1267,6 @@ pub const TerminalWorkbench = struct {
             .icon = "E",
         });
         errdefer model.deinit();
-        try addSidebarViewDescriptors(model, false, false);
-        model.setActiveView("explorer");
 
         const panes = try self.allocator.alloc(view_pane_container_mod.Pane, 4);
         errdefer self.allocator.free(panes);
@@ -1359,14 +1362,6 @@ pub const TerminalWorkbench = struct {
         self.explorer_container = container;
     }
 
-    fn addSidebarViewDescriptors(model: *view_container_model_mod.ViewContainerModel, has_scm: bool, has_history: bool) !void {
-        const scm = std.mem.eql(u8, model.container.id, "scm");
-        try model.addView(.{ .id = "explorer", .name = "Explorer", .order = 0, .weight = 70, .in_container = !scm, .can_toggle_visibility = false });
-        try model.addView(.{ .id = "outline", .name = "Outline", .order = 1, .weight = 30, .in_container = !scm, .collapsed = true });
-        try model.addView(.{ .id = "changes", .name = "Changes", .order = 1, .weight = 40, .in_container = scm, .available = has_scm });
-        try model.addView(.{ .id = "graph", .name = "Graph", .order = 2, .weight = 40, .in_container = scm, .available = has_history });
-    }
-
     fn initStatusHint(self: *TerminalWorkbench) !void {
         // VS Code's status bar has no quit hint. The entry is kept for the
         // Source Control messages set through `status_hint_accessor`, but it
@@ -1419,6 +1414,7 @@ pub const TerminalWorkbench = struct {
         self.window_views.deinit();
         self.sidebar_part.deinit();
         self.view_descriptor_service.deinit();
+        self.views_registry.deinit();
         self.view_containers_registry.deinit();
         self.activity_bar_part.deinit();
         self.core.deinit();
@@ -1834,10 +1830,7 @@ pub const TerminalWorkbench = struct {
         self.search_window.setWorkspace(replacement);
         replacement_owned = true;
         if (self.view_state_storage != null) {
-            const has_scm = self.scm.view_model != null;
-            const has_history = if (self.git_model.repository) |provider| provider.historyProvider() != null else false;
-            if (self.explorer_view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
-            if (self.scm.view_model) |model| try addSidebarViewDescriptors(model, has_scm, has_history);
+            try self.view_descriptor_service.resetRegisteredModels();
             try self.restoreSidebarViewStates();
         }
         try self.ensureConfiguration();
@@ -2702,27 +2695,7 @@ pub const TerminalWorkbench = struct {
         }
         if (self.scm.history) |view| try view.registerList(&self.lists);
 
-        const view_model = try self.allocator.create(view_container_model_mod.ViewContainerModel);
-        var model_owned = true;
-        errdefer if (model_owned) self.allocator.destroy(view_model);
-        view_model.* = view_container_model_mod.ViewContainerModel.init(self.allocator, .{
-            .id = "scm",
-            .title = "Source Control",
-            .icon = "",
-        });
-        errdefer if (model_owned) view_model.deinit();
-        const has_history = provider.historyProvider() != null;
-        try addSidebarViewDescriptors(view_model, true, has_history);
-        if (self.explorer_view_model) |model| {
-            for (model.views.items) |*view| {
-                if (std.mem.eql(u8, view.id, "changes")) view.available = true;
-                if (std.mem.eql(u8, view.id, "graph")) view.available = has_history;
-            }
-        }
-        view_model.setActiveView("changes");
-
-        try self.scm.attachContainer(&self.sidebar_part, &self.view_descriptor_service, view_model, self.explorer_panes.?);
-        model_owned = false;
+        try self.scm.attachContainer(&self.sidebar_part, &self.view_descriptor_service, self.explorer_panes.?, provider.historyProvider() != null);
 
         if (self.file_watcher_service) |files_service| provider.watch(files_service) catch {};
     }

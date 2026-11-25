@@ -1,10 +1,10 @@
 // Port of the portable view-container registry in
 // `src/vs/workbench/common/views.ts`.
 //
-// The browser file also owns view descriptors, context keys, open commands,
-// extension points and the views registry. The terminal registry keeps the
-// container descriptors, their location and the registration options. The TUI
-// registers its containers directly because there is no extension host.
+// The registries retain named view and container descriptors, locations and
+// registration events. Explicit terminal factories mount their portable views;
+// extension-generated containers and view welcome-content registration are
+// still unported.
 //
 // Terminal adaptation: container icons are single-cell glyphs instead of
 // theme icons, and open commands are registered by the workbench command
@@ -65,8 +65,99 @@ pub const ContainerRegistration = struct {
     location: ViewContainerLocation,
 };
 
-/// Port of `IViewContainersRegistry`. View descriptors (`IViewsRegistry`) are
-/// not ported yet: every ported container owns a single content view.
+/// Terminal subset of IViewDescriptor. The actual view factory is supplied
+/// by its contribution; cell weights and native aliases preserve existing
+/// terminal settings/state. Availability adapts the upstream `when` condition.
+pub const ViewDescriptor = struct {
+    id: []const u8,
+    name: []const u8,
+    visible: bool = true,
+    available: bool = true,
+    in_container: bool = true,
+    can_toggle_visibility: bool = true,
+    can_move: bool = true,
+    collapsed: bool = false,
+    order: usize = 0,
+    /// Share of the container body; the terminal splits expanded views by it.
+    weight: usize = 20,
+    size: ?f64 = null,
+};
+
+pub const ViewRegistration = struct {
+    container_id: []const u8,
+    views: []const ViewDescriptor,
+};
+
+/// Port of the view registration and lookup portions of IViewsRegistry.
+/// Custom user view moves and workspace state remain in ViewDescriptorService
+/// and ViewContainerModel. View welcome-content contributions are not ported.
+pub const ViewsRegistry = struct {
+    allocator: Allocator,
+    entries: std.array_list.Managed(RegisteredView),
+    on_views_registered: Emitter(ViewRegistration),
+    on_views_deregistered: Emitter(ViewRegistration),
+
+    pub const RegisteredView = struct { container_id: []const u8, descriptor: ViewDescriptor };
+
+    pub fn init(allocator: Allocator) ViewsRegistry {
+        return .{
+            .allocator = allocator,
+            .entries = .init(allocator),
+            .on_views_registered = .init(allocator),
+            .on_views_deregistered = .init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *ViewsRegistry) void {
+        self.on_views_registered.deinit();
+        self.on_views_deregistered.deinit();
+        self.entries.deinit();
+    }
+
+    pub fn registerViews(self: *ViewsRegistry, descriptors: []const ViewDescriptor, container_id: []const u8) !void {
+        for (descriptors, 0..) |descriptor, index| {
+            if (self.getView(descriptor.id) != null) return error.AlreadyRegistered;
+            for (descriptors[0..index]) |previous| if (std.mem.eql(u8, previous.id, descriptor.id)) return error.AlreadyRegistered;
+        }
+        try self.entries.ensureUnusedCapacity(descriptors.len);
+        for (descriptors) |descriptor| self.entries.appendAssumeCapacity(.{ .container_id = container_id, .descriptor = descriptor });
+        try self.on_views_registered.fire(.{ .container_id = container_id, .views = descriptors });
+    }
+
+    pub fn deregisterViews(self: *ViewsRegistry, ids: []const []const u8, container_id: []const u8) !void {
+        var removed = std.array_list.Managed(ViewDescriptor).init(self.allocator);
+        defer removed.deinit();
+        try removed.ensureUnusedCapacity(ids.len);
+        for (ids) |id| {
+            for (self.entries.items, 0..) |entry, index| {
+                if (!std.mem.eql(u8, entry.container_id, container_id) or !std.mem.eql(u8, entry.descriptor.id, id)) continue;
+                removed.appendAssumeCapacity(entry.descriptor);
+                _ = self.entries.orderedRemove(index);
+                break;
+            }
+        }
+        if (removed.items.len > 0) try self.on_views_deregistered.fire(.{ .container_id = container_id, .views = removed.items });
+    }
+
+    pub fn getView(self: *const ViewsRegistry, id: []const u8) ?ViewDescriptor {
+        for (self.entries.items) |entry| if (std.mem.eql(u8, entry.descriptor.id, id)) return entry.descriptor;
+        return null;
+    }
+
+    pub fn getViewContainer(self: *const ViewsRegistry, id: []const u8) ?[]const u8 {
+        for (self.entries.items) |entry| if (std.mem.eql(u8, entry.descriptor.id, id)) return entry.container_id;
+        return null;
+    }
+
+    pub fn getViews(self: *const ViewsRegistry, container_id: []const u8, allocator: Allocator) ![]ViewDescriptor {
+        var result = std.array_list.Managed(ViewDescriptor).init(allocator);
+        errdefer result.deinit();
+        for (self.entries.items) |entry| if (std.mem.eql(u8, entry.container_id, container_id)) try result.append(entry.descriptor);
+        return result.toOwnedSlice();
+    }
+};
+
+/// Port of IViewContainersRegistry, with explicit native view factories.
 pub const ViewContainersRegistry = struct {
     allocator: Allocator,
     containers: std.array_list.Managed(*ViewContainer),
