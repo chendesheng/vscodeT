@@ -58,22 +58,22 @@ terminal cells (ANSI)
    ui/
      build.zig
      build.zig.zon
-     ui.zig              # public root module, re-exports the pieces below
-     dom.zig             # Node/Element/Text/Document, tree operations
-     css.zig             # document StyleTable, Sheet, integer class IDs
-     style.zig           # Style declaration, ComputedStyle, Dimension
-     box.zig             # derived layout box tree + node→box mapping
-     layout.zig          # formatting contexts over the box tree
-     paint.zig           # paints the box tree
-     cell.zig            # CellGrid, attributes, color, grapheme interning
-     frame.zig           # double buffer, damage bands, cell diff
-     ansi.zig            # ANSI writer / style-diff encoder
-     surface.zig         # Document + Frame + viewport + render()
-     tests.zig           # library unit tests
+     src/
+       ui.zig            # public module
+       surface.zig       # document, layout, painting and frame output
+       dom/              # node tree, focus and event dispatch
+       style/            # declarations, computed styles and class cascade
+       layout/           # box tree, layout solver and text wrapping
+       render/           # painting, cell grid and frame buffers
+       terminal/         # terminal input decoding and output protocols
+       widgets/          # controls, scrolling and drag interactions
+     tests/              # unit and stress tests, fixtures, test entry point
+     examples/           # runnable examples and gallery
+     bench/              # benchmark runner and scenarios
    ```
 
    The package/module name `ui` is provisional and easy to rename. The library
-   must not import anything from `src/`.
+   must not import from the editor’s `src/` directory.
 
 2. **No CSS parser, selector engine or HTML.** Styles are authored as `Style`
    declarations. A box carries `ComputedStyle`: inherited properties come from
@@ -317,7 +317,7 @@ Lightpanda's `EventTarget`/`EventManager` and TermDOM's browser layer:
 - The decoded editor key path is in `codeEditorWidgetTerminalInput.zig`;
   the terminal view implements `IEditorKeyTarget` for focused widget events.
   The host still owns raw input decoding and quit.
-- `ui/input.zig` decodes terminal bytes into key and mouse events: printable
+- `ui/src/terminal/input.zig` decodes terminal bytes into key and mouse events: printable
   runs, control bytes, cursor/editing keys (including modifier parameters),
   bracketed paste, and SGR mouse reports (`CSI < b ; x ; y M/m`). Text runs
   borrow the input buffer. Extended keyboard protocols (CSI u, kitty), key
@@ -347,7 +347,7 @@ paint (paint.zig) + geometry copied back to DOM rects
 
 ### 5.1 Box kinds
 
-`ui/box.zig` defines `LayoutBox`:
+`ui/src/layout/box.zig` defines `LayoutBox`:
 
 | kind | owner | meaning |
 |---|---|---|
@@ -383,8 +383,8 @@ final geometry.
 
 The block pass stacks children, supports horizontal auto margins, and derives
 auto content height from the children. Inline flow is a line-breaking pass:
-`ui/text_layout.zig` collects text and atomic inline leaves, renders CSS white
-space, finds UAX #14 breaks (`ui/linebreak.zig`), builds line boxes and writes
+`ui/src/layout/text_layout.zig` collects text and atomic inline leaves, renders CSS white
+space, finds UAX #14 breaks (`ui/src/layout/linebreak.zig`), builds line boxes and writes
 line fragments back to the text boxes. Non-atomic `display: inline_` boxes are
 flattened into start/end edges and their text joins the outer run; their border
 boxes fragment per line. `inline-block`/`inline-flex` boxes remain atomic inline
@@ -409,12 +409,12 @@ floor, so a shrunken item can overflow its neighbour unless `overflow` clips it.
 
 ### 5.2.1 Text flow
 
-`ui/text_layout.zig` is the CSS text pipeline: `renderLeaf`/`processWhitespace`
+`ui/src/layout/text_layout.zig` is the CSS text pipeline: `renderLeaf`/`processWhitespace`
 implement the `white-space` family (collapse/trim boundaries, hanging spaces,
 tabs, preserving newlines), `findBreaks` wraps UAX #14 opportunities with
 `word-break`/`overflow-wrap` and `nowrap`-leaf filtering, and `buildLines` is a
 port of TermDOM's binary-search line builder. The full UAX #14 rule set and
-Unicode 17 tables live in `ui/linebreak.zig`/`ui/linebreak_tables.zig`; the
+Unicode 17 tables live in `ui/src/layout/linebreak.zig`/`ui/src/layout/linebreak_tables.zig`; the
 checker includes the upstream conformance subset and VS Code-derived cases for
 tabs, wide cells, CJK/Kinsoku, punctuation and `keepAll`.
 
@@ -606,8 +606,8 @@ supported) and secondary cursors should be cell runs; this keeps IME viable.
 The host passes `measure_width: fn (u21) u2` so the renderer agrees with the
 editor's `CursorColumns.nextVisibleColumn` for CJK and emoji. Color depth and
 synchronized-output support are `Surface` options. Two terminal capabilities
-are probed: `ui/cell_border.zig` sends the cell-border DCS query followed by
-DA1, and `ui/image.zig` sends the kitty graphics/feature queries followed by
+are probed: `ui/src/render/cell_border.zig` sends the cell-border DCS query followed by
+DA1, and `ui/src/terminal/image.zig` sends the kitty graphics/feature queries followed by
 DA1. The host calls `Surface.setCellBorders` and
 `ui.image.Runtime.setProtocol`. `TIOCGWINSZ`'s `ws_xpixel`/`ws_ypixel` provide
 the cell pixel size used for image row counts (defaults 8x16 when a terminal
@@ -621,9 +621,9 @@ The renderer implements the draft cell-border protocol
 (`DCS 1 + b cell-border`, version 1) behind a capability probe. On the wire the
 `b` final byte is followed immediately by the payload: `ESC P 1 + b` then
 `cell-border;...`, with no separator space. The model is in
-`ui/cell_border.zig`: twelve segment bits, a stroke (width in 1/256 cell,
+`ui/src/render/cell_border.zig`: twelve segment bits, a stroke (width in 1/256 cell,
 colour, placement, layer, line style, priority), disjoint segment groups, and
-an interned set table. `ui/cell.zig` adds a parallel `u16` id plane to
+an interned set table. `ui/src/render/cell.zig` adds a parallel `u16` id plane to
 `CellGrid`; `Frame` owns one table shared by both buffers so ids compare across
 the diff.
 
@@ -731,7 +731,7 @@ Enter/quick open/CLI/session opens stay pinned, and an edit pins a preview.
 
 ### Editor close confirmation dialog
 
-`ui/dialog.zig` is the reusable modal message widget. The editor close path
+`ui/src/widgets/dialog.zig` is the reusable modal message widget. The editor close path
 feeds it the VS Code save confirmation built by
 `src/vs/platform/dialogs/common/dialogs.zig` and queued by the Workbench DialogService. It follows the native macOS save
 sheet from VS Code: a warning glyph above the bold, wrapped
@@ -770,7 +770,7 @@ The side bar, activity bar, panel and status bar still paint separately. Changin
 
 ### Native context menus
 
-`ui/contextmenu.zig` is the reusable native context menu. It mirrors the item
+`ui/src/widgets/contextmenu.zig` is the reusable native context menu. It mirrors the item
 and popup model from `src/vs/base/parts/contextmenu/common/contextmenu.ts` and
 the `NativeContextMenuService` path, not the browser `Menu` widget:
 `label`, `type` (`normal`/`separator`/`submenu`/`checkbox`/`radio`),
@@ -898,7 +898,7 @@ state needs clearing.
 ### 6.9 Terminal images (kitty Unicode placeholders)
 
 The workbench renders images with the kitty graphics protocol's Unicode
-placeholders, implemented in `ui/image.zig`. The image is transmitted once
+placeholders, implemented in `ui/src/terminal/image.zig`. The image is transmitted once
 (PNG `f=100`, or raw RGBA `f=32`), a virtual placement declares its
 `columns x rows` grid (`a=p,U=1,i=...,c=...,r=...`), and every cell of that grid
 is an ordinary one-cell grapheme: `U+10EEEE` plus a row diacritic and a column
@@ -947,7 +947,7 @@ The pointer is the terminal counterpart of CSS `cursor`. kitty's
 [pointer-shapes protocol](https://sw.kovidgoyal.net/kitty/pointer-shapes/)
 defines `OSC 22 ; <name> ST`, where `<name>` is a CSS cursor keyword
 (`text`, `pointer`, `ew-resize`, `default`, …); Ghostty, foot and recent xterm
-builds implement it too. `ui/pointer.zig` owns the names, the encoder and the
+builds implement it too. `ui/src/terminal/pointer.zig` owns the names, the encoder and the
 deduplicating `State`; it is separate from `ansi.zig` because the pointer is
 terminal-global state, not a cell attribute.
 
@@ -1090,10 +1090,10 @@ Public surface for the POC:
 - Ownership: the document owns all nodes; text/attribute buffers are
   document-allocated; `remove()` detaches and queues recycle; `Document.deinit`
   frees everything. The allocator is always explicit, no globals.
-- Events: `ui/event.zig` (keys, mouse, focus, listener dispatch),
-  `ui/box.zig`/`ui/surface.zig` (`elementFromPoint`, `pointerAt`) and
-  `ui/input.zig` (the terminal byte decoder, including SGR mouse reports).
-  `ui/pointer.zig` encodes OSC 22 pointer shapes; `Surface.Options.pointer_shapes`
+- Events: `ui/src/dom/event.zig` (keys, mouse, focus, listener dispatch),
+  `ui/src/layout/box.zig`/`ui/src/surface.zig` (`elementFromPoint`, `pointerAt`) and
+  `ui/src/terminal/input.zig` (the terminal byte decoder, including SGR mouse reports).
+  `ui/src/terminal/pointer.zig` encodes OSC 22 pointer shapes; `Surface.Options.pointer_shapes`
   / `setPointerShapes` and `setPointer` drive emission. The preview also handles
   Up/Down, PageUp/PageDown, Home/End and mouse-wheel scrolling, and Ctrl-Q to
   quit.
@@ -1464,7 +1464,7 @@ Library constraints:
   the "View Problem" status-bar action are not ported: the marker model has no
   related information and the TUI has no code-action controller. Hovering a
   squiggle and the keyboard `gh` command both show the marker message.
-- `ui/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
+- `ui/src/widgets/inputbox.zig` is the terminal single-line input: UTF-8 buffer,
   `(anchor, cursor)` selection with keyboard/mouse extension and selection
   paint, shell-like word movement/deletion, Ctrl+A, clipboard hooks
   (`on_copy`/`on_paste`; the library does no clipboard IO), snapshot
@@ -2148,7 +2148,7 @@ map, is tracked in the [TUI porting inventory](porting-inventory.md).
 - Upstream tests: ported where the behavior is portable (`viewLineRenderer`,
   layout helpers); adapted only where HTML/string output becomes structured
   parts.
-- No source-tree test duplication: library tests live under `ui/tests.zig`; editor
+- No source-tree test duplication: library tests live under `ui/tests/tests.zig`; editor
   tests mirror upstream paths under `src/vs/.../test/...`.
 
 ## 12. Deferred / explicit limitations

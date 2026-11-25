@@ -1002,11 +1002,7 @@ fn setupTests(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
 
     const ui_tests = b.addTest(.{
         .name = "ui_tests",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("ui/tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = b.dependency("ui", .{ .target = target, .optimize = optimize }).module("ui_tests"),
     });
     const run_ui_tests = b.addRunArtifact(ui_tests);
     test_step.dependOn(&run_ui_tests.step);

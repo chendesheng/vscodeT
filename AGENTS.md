@@ -73,9 +73,9 @@ state that in the comment and keep the behavioral contract intact.
   `src/vs/editor/browser/editorCss.zig`. Do not add a CSS parser or generator.
 - The renderer is a double-buffered cell grid with an ANSI frame diff; see
   `docs/terminal-ui.md`. Library tests read `Surface.grid()`, not ANSI strings.
-- Layout runs on the derived box tree in `ui/box.zig`, never on DOM nodes:
+- Layout runs on the derived box tree in `ui/src/layout/box.zig`, never on DOM nodes:
   viewport root, principal element boxes, anonymous inline/flex-item boxes and
-  text boxes. `ui/layout.zig` solves that tree; `ui/paint.zig` walks it. Copy
+  text boxes. `ui/src/layout/layout.zig` solves that tree; `ui/src/render/paint.zig` walks it. Copy
   geometry back to DOM rects only at the measurement boundary.
 - Invalidation is WebKit-like: DOM mutations notify the attached box tree,
   which marks boxes/tree dirty (`needs_rebuild`, `needs_layout`). Do not add a
@@ -96,8 +96,8 @@ state that in the comment and keep the behavioral contract intact.
   selectors, no subpixel units, no HTML parser), state it in the file comment and in
   `docs/terminal-ui.md`. Lightpanda remains a reference for DOM linking and
   ownership only; it has no layout engine.
-- Keyboard events and focus live in `ui/event.zig`; terminal byte decoding is
-  `ui/input.zig`. Key events capture/target/bubble and only `key_down` exists.
+- Keyboard events and focus live in `ui/src/dom/event.zig`; terminal byte decoding is
+  `ui/src/terminal/input.zig`. Key events capture/target/bubble and only `key_down` exists.
   Focus uses `Document.activeElement`, `Element.focusable` / `tab_index`, and
   `focus`/`blur` plus bubbling `focusin`/`focusout`; Tab is a default action,
   not a global shortcut. Keep these rules in the library, not in `src/tui/`.
@@ -116,7 +116,7 @@ state that in the comment and keep the behavioral contract intact.
   The find contribution is the first consumer: `findState`/`findModel` are the
   model, `findWidget` is the terminal view, and `findController` wires state,
   model, widget and the view's decoration sink.
-- `zig build test` builds and runs `ui/tests.zig` alongside the editor tests;
+- `zig build test` builds and runs `ui/tests/tests.zig` alongside the editor tests;
   `cd ui && zig build test` runs the library on its own.
 - Because `ui/` is a new package, it uses Zig 0.17 unmanaged `std.ArrayList`;
   the editor's `std.array_list.Managed` shim is the legacy side.
