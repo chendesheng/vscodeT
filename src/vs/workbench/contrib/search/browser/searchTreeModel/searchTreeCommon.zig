@@ -383,9 +383,9 @@ pub const FolderMatch = struct {
         silent: bool,
     ) !void {
         if (self.getDownstreamFileMatch(path)) |existing| {
-            try existing.createMatches(results);
+            try existing.addRawMatches(results);
             try existing.addContexts(contexts);
-            if (!silent) existing.notify(true, false);
+            if (!silent) existing.notify(true, false) else _ = try existing.parent_folder.syncFileVisibility(existing);
             return;
         }
         if (self.is_workspace_root and pathIsInside(self.path, path) and !std.mem.eql(u8, self.path, path)) {
@@ -415,10 +415,7 @@ pub const FolderMatch = struct {
         const file = try FileMatch.create(self.allocator, path, self);
         errdefer file.deinit();
         try file.createMatches(results);
-        try file.addContexts(contexts);
-        if (self.heading.parent_result.model_host) |host| {
-            if (host.get(host.context, path)) |model| try file.bindModel(model);
-        }
+        if (file.model == null) try file.addContexts(contexts);
         try self.addFile(file);
         if (!silent and file.count() > 0) file.notify(true, false);
     }
@@ -442,7 +439,7 @@ pub const FolderMatch = struct {
     pub fn addFile(self: *FolderMatch, file: *FileMatch) !void {
         try self.files.ensureUnusedCapacity(1);
         try self.file_map.put(file.path, file);
-        self.files.appendAssumeCapacity(file);
+        if (file.count() != 0) self.files.appendAssumeCapacity(file);
     }
 
     pub fn addFolder(self: *FolderMatch, folder: *FolderMatch) !void {
@@ -487,28 +484,35 @@ pub const FolderMatch = struct {
         }
     }
 
-    // file_map owns zero-match files while their model listener can restore them.
-    pub fn onModelMatchesUpdated(self: *FolderMatch, file: *FileMatch) void {
+    // Upstream keeps undisposed files available to their model listeners
+    // when their final match is removed.
+    fn syncFileVisibility(self: *FolderMatch, file: *FileMatch) !ChangeEvent {
         const visible = std.mem.indexOfScalar(*FileMatch, self.files.items, file);
         const empty = file.count() == 0;
         if (empty) {
             if (visible) |index| _ = self.files.orderedRemove(index);
         } else if (visible == null) {
-            self.files.append(file) catch return;
+            try self.files.append(file);
         }
-        const event = ChangeEvent{ .elements = &.{file}, .added = !empty and visible == null, .removed = empty and visible != null, .force_update_model = true };
+        return .{ .elements = &.{}, .added = !empty and visible == null, .removed = empty and visible != null };
+    }
+
+    pub fn onModelMatchesUpdated(self: *FolderMatch, file: *FileMatch) void {
+        var event = self.syncFileVisibility(file) catch return;
+        const elements = [1]*FileMatch{file};
+        event.elements = &elements;
+        event.force_update_model = true;
         emit(&self.on_change, event);
         self.heading.notifyChange(event);
     }
 
     pub fn onFileChanged(self: *FolderMatch, file: *FileMatch, removed: bool) void {
-        if (file.count() == 0) {
-            self.removeFile(file);
-            return;
-        }
+        var event = self.syncFileVisibility(file) catch return;
         const elements = [1]*FileMatch{file};
-        emit(&self.on_change, .{ .elements = elements[0..], .added = !removed, .removed = removed });
-        self.heading.notifyChange(.{ .elements = elements[0..], .added = !removed, .removed = removed });
+        event.elements = &elements;
+        event.removed = file.count() == 0 or removed;
+        emit(&self.on_change, event);
+        self.heading.notifyChange(event);
     }
 
     pub fn matches(self: *FolderMatch, allocator: Allocator) ![]Node {

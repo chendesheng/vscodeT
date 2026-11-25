@@ -106,16 +106,16 @@ pub const FileMatch = struct {
 
     fn modelWillDispose(_: void, self: *FileMatch) !void {
         defer self.unbindModel();
-        try self.updateMatchesForModel();
+        try self.updateMatchesForModel(true);
     }
 
     fn updateScheduled(ctx: *anyopaque, _: i64, _: bool) bool {
         const self: *FileMatch = @ptrCast(@alignCast(ctx));
-        self.updateMatchesForModel() catch return false;
+        self.updateMatchesForModel(true) catch return false;
         return true;
     }
 
-    fn updateMatchesForModel(self: *FileMatch) !void {
+    fn updateMatchesForModel(self: *FileMatch, notify_change: bool) !void {
         const model = self.model orelse return;
         const query = self.parent_folder.query;
         const separators = if (query.is_word_match) @constCast(@as([]const u8, DefaultWordSeparators)) else null;
@@ -173,11 +173,26 @@ pub const FileMatch = struct {
         std.mem.swap(@TypeOf(match_map), &match_map, &self.match_map);
         std.mem.swap(@TypeOf(matches_list), &matches_list, &self.matches_list);
         self.selected = selected;
-        self.on_change.fire(.{ .elements = &.{self}, .force_update_model = true }) catch {};
-        self.parent_folder.onModelMatchesUpdated(self);
+        if (notify_change) {
+            self.on_change.fire(.{ .elements = &.{self}, .force_update_model = true }) catch {};
+            self.parent_folder.onModelMatchesUpdated(self);
+        }
     }
 
     pub fn createMatches(self: *FileMatch, results: []const TextSearchMatch) !void {
+        if (self.model == null) {
+            if (self.parent_folder.heading.parent_result.model_host) |host| {
+                if (host.get(host.context, self.path)) |model| try self.bindModel(model);
+            }
+        }
+        if (self.model != null) {
+            try self.updateMatchesForModel(false);
+            return;
+        }
+        try self.addRawMatches(results);
+    }
+
+    pub fn addRawMatches(self: *FileMatch, results: []const TextSearchMatch) !void {
         for (results) |raw| {
             for (raw.range_locations) |location| {
                 const match = try Match.create(
@@ -207,12 +222,14 @@ pub const FileMatch = struct {
     }
 
     pub fn add(self: *FileMatch, match: *Match, trigger: bool) !void {
-        if (self.match_map.contains(match.id)) {
+        if (self.removed_matches.contains(match.id) or self.match_map.contains(match.id)) {
             match.deinit();
             return;
         }
-        try self.matches_list.append(match);
+        errdefer match.deinit();
+        try self.matches_list.ensureUnusedCapacity(1);
         try self.match_map.put(match.id, match);
+        self.matches_list.appendAssumeCapacity(match);
         if (trigger) self.notify(true, false);
     }
 
