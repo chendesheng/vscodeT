@@ -10,6 +10,7 @@ comptime {
     _ = @import("./vs/workbench/contrib/terminal/browser/terminalInstance.zig");
     _ = @import("./vs/workbench/contrib/terminal/browser/terminalGroup.zig");
     _ = @import("./vs/workbench/contrib/terminal/browser/terminalService.zig");
+    _ = @import("./vs/workbench/contrib/terminalContrib/suggest/browser/terminalSuggestAddon.zig");
     _ = @import("./vs/workbench/contrib/terminal/common/terminal.zig");
     _ = @import("./vs/workbench/contrib/terminal/common/terminalConfiguration.zig");
     _ = @import("./vs/workbench/contrib/terminal/browser/terminalInput.zig");

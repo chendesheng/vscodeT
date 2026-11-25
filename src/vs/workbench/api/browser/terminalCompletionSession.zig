@@ -1,113 +1,89 @@
-// Bridges manually requested shell completions to the upstream Terminal Suggest
-// extension. Only the current command's input cells are passed to the provider.
+// Extension-host terminal completion provider from src/vs/workbench/api/browser/mainThreadTerminalService.ts.
+// Mirrors the active terminal into the Node host and converts its completion DTOs.
 const std = @import("std");
-const Workbench = @import("../../browser/workbench.zig").Workbench;
 const manager = @import("../../services/extensions/common/extensionHostManager.zig");
 const protocol = @import("../common/extHost.protocol.zig");
 const rpc = @import("../../services/extensions/common/rpcProtocol.zig");
 const proxy = @import("../../services/extensions/common/proxyIdentifier.zig").identifierFromEnum;
 const shell_integration = proxy(protocol.ExtHostContext.ExtHostTerminalShellIntegration);
-const positions = @import("../common/positionConverter.zig");
-const QuickPick = @import("../../../platform/quickinput/browser/quickInput.zig").QuickPick;
-const Item = @import("../../../platform/quickinput/common/quickInput.zig").QuickPickItem;
+const api = @import("../../contrib/terminalContrib/suggest/browser/terminalCompletionService.zig");
+const TerminalInstance = @import("../../contrib/terminal/browser/terminalInstance.zig").TerminalInstance;
 const actor = proxy(protocol.ExtHostContext.ExtHostTerminalService);
-pub const command = "workbench.action.terminal.requestCompletions";
 
 pub const Session = struct {
-    workbench: *Workbench,
     host: *manager.HostManager,
-    arena: std.heap.ArenaAllocator,
-    terminal: ?usize = null,
-    line: []const u8 = "",
+    allocator: std.mem.Allocator,
+    mirrored_terminal: ?usize = null,
     pending: ?u32 = null,
-    changed: bool = false,
+    results: ?api.Results = null,
 
-    pub fn deinit(self: *Session) void {
-        if (self.pending) |id| self.host.rpc.cancel(id);
-        self.workbench.commands.unregister(command);
-        self.arena.deinit();
+    pub fn interface(self: *Session) api.ITerminalCompletionService {
+        return .{ .context = self, .provide = provide, .cancel_fn = cancel };
     }
 
-    pub fn request(context: *anyopaque) !void {
+    fn cancel(context: *anyopaque) void {
         const self: *Session = @ptrCast(@alignCast(context));
-        const instance = self.workbench.focusedTerminal() orelse return;
-        const shell = instance.shell_type orelse return;
         if (self.pending) |id| self.host.rpc.cancel(id);
         self.pending = null;
-        _ = self.arena.reset(.retain_capacity);
-        const a = self.arena.allocator();
-        self.line = try instance.emulator.promptInput(a) orelse return;
+        self.results = null;
+    }
+
+    fn provide(context: *anyopaque, instance: *TerminalInstance, line: []const u8, cursor: usize, results: api.Results) !void {
+        const self: *Session = @ptrCast(@alignCast(context));
+        var arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
         const terminal_id = rpc.Arg{ .json = .{ .integer = @intCast(instance.id) } };
-        if (self.terminal != instance.id) {
-            if (self.terminal) |old| try self.host.notify(actor, "$acceptTerminalClosed", &.{ .{ .json = .{ .integer = @intCast(old) } }, .undefined, .{ .json = .{ .integer = 0 } } });
+        if (self.mirrored_terminal != instance.id) {
+            if (self.mirrored_terminal) |old| try self.host.notify(actor, "$acceptTerminalClosed", &.{ .{ .json = .{ .integer = @intCast(old) } }, .undefined, .{ .json = .{ .integer = 0 } } });
             var launch: std.json.ObjectMap = .empty;
             if (instance.cwd orelse instance.initial_cwd) |cwd| try launch.put(a, "cwd", .{ .string = cwd });
             try self.host.notify(actor, "$acceptTerminalOpened", &.{ terminal_id, .undefined, .{ .json = .{ .string = instance.displayTitle() } }, .{ .json = .{ .object = launch } } });
             try self.host.notify(shell_integration, "$shellIntegrationChange", &.{ terminal_id, .{ .json = .{ .bool = false } } });
-            self.terminal = instance.id;
+            self.mirrored_terminal = instance.id;
         }
         if (instance.cwd orelse instance.initial_cwd) |cwd| {
             try self.host.notify(shell_integration, "$cwdChange", &.{ terminal_id, .{ .json = .{ .string = cwd } } });
         }
-        try self.host.notify(actor, "$acceptTerminalShellType", &.{ terminal_id, .{ .json = .{ .string = @tagName(shell) } } });
+        if (instance.shell_type) |shell| try self.host.notify(actor, "$acceptTerminalShellType", &.{ terminal_id, .{ .json = .{ .string = @tagName(shell) } } });
         try self.host.notify(actor, "$acceptActiveTerminalChanged", &.{terminal_id});
         _ = try self.host.requestSync(a, proxy(protocol.ExtHostContext.ExtHostExtensionService), "$activateByEvent", &.{ .{ .json = .{ .string = "onTerminalShellIntegration:*" } }, .{ .json = .{ .integer = 0 } } }, null, 5000);
         var ctx: std.json.ObjectMap = .empty;
-        try ctx.put(a, "commandLine", .{ .string = self.line });
-        try ctx.put(a, "cursorIndex", .{ .integer = @intCast(positions.utf16OffsetForColumn(self.line, self.line.len + 1) - 1) });
+        try ctx.put(a, "commandLine", .{ .string = line });
+        try ctx.put(a, "cursorIndex", .{ .integer = @intCast(cursor) });
         self.pending = try self.host.call(actor, "$provideTerminalCompletions", &.{ .{ .json = .{ .string = "vscode.terminal-suggest" } }, .{ .json = .{ .object = ctx } } }, null, .{ .context = self, .callback = receive });
+        self.results = results;
     }
 
     fn receive(context: *anyopaque, reply: rpc.Reply) void {
         const self: *Session = @ptrCast(@alignCast(context));
         self.pending = null;
-        if (reply != .json or reply.json != .object) return;
-        const items = reply.json.object.get("items") orelse return;
-        if (items != .array) return;
-        self.show(items.array.items) catch {};
-    }
-
-    fn show(self: *Session, entries: []const std.json.Value) !void {
-        const a = self.arena.allocator();
-        const instance = self.workbench.focusedTerminal() orelse return;
-        if (instance.id != self.terminal or self.workbench.quick_access.isOpen()) return;
-        const current = try instance.emulator.promptInput(a) orelse return;
-        if (!std.mem.eql(u8, current, self.line)) return;
-        var items: std.ArrayList(Item) = .empty;
-        const end = positions.utf16OffsetForColumn(self.line, self.line.len + 1) - 1;
-        for (entries) |entry| {
-            if (entry != .object) continue;
-            const label_data = entry.object.get("label") orelse continue;
-            const label = if (label_data == .object) label_data.object.get("label") orelse continue else label_data;
-            const range = entry.object.get("replacementRange") orelse continue;
-            if (label != .string or range != .array or range.array.items.len != 2) continue;
-            const bounds = range.array.items;
-            if (bounds[0] != .integer or bounds[1] != .integer or bounds[0].integer < 0 or bounds[1].integer != end or bounds[0].integer > end) continue;
-            const column = positions.columnForUtf16Offset(self.line, @as(usize, @intCast(bounds[0].integer)) + 1);
-            const prefix = self.line[column - 1 ..];
-            if (!std.mem.startsWith(u8, label.string, prefix) or label.string.len == prefix.len) continue;
-            for (label.string) |c| {
-                if (c < 32 or c == 127) break;
-            } else {
-                const owned = try a.dupe(u8, label.string);
-                try items.append(a, .{ .item = .{ .id = owned[prefix.len..], .label = owned } });
+        const results = self.results orelse return;
+        self.results = null;
+        var items: std.ArrayList(api.Completion) = .empty;
+        defer items.deinit(self.allocator);
+        if (reply == .json and reply.json == .object) {
+            if (reply.json.object.get("items")) |entries| {
+                if (entries == .array) for (entries.array.items) |entry| {
+                    const completion = parseCompletion(entry) orelse continue;
+                    items.append(self.allocator, completion) catch break;
+                };
             }
         }
-        if (items.items.len == 0) return;
-        try self.workbench.quick_access.inputService().showPick(items.items, .{ .placeholder = "Select a terminal suggestion" }, accept, self);
-        self.changed = true;
-    }
-
-    fn accept(context: *anyopaque, picker: *QuickPick) !void {
-        const self: *Session = @ptrCast(@alignCast(context));
-        const item = picker.selectedItem() orelse return;
-        const service = self.workbench.terminal_service orelse return;
-        for (0..service.instanceCount()) |i| {
-            const instance = service.instanceAt(i).?;
-            if (instance.id != self.terminal) continue;
-            const line = try instance.emulator.promptInput(self.arena.allocator()) orelse return;
-            if (std.mem.eql(u8, line, self.line)) instance.writeInput(item.id);
-            return;
-        }
+        results.accept(results.context, items.items);
     }
 };
+
+fn parseCompletion(entry: std.json.Value) ?api.Completion {
+    if (entry != .object) return null;
+    const raw = entry.object.get("label") orelse return null;
+    const label = if (raw == .object) raw.object.get("label") orelse return null else raw;
+    const range = entry.object.get("replacementRange") orelse return null;
+    if (label != .string or range != .array or range.array.items.len != 2) return null;
+    const start, const end = range.array.items[0..2].*;
+    if (start != .integer or end != .integer) return null;
+    return .{ .label = label.string, .replacement_range = .{
+        std.math.cast(usize, start.integer) orelse return null,
+        std.math.cast(usize, end.integer) orelse return null,
+    } };
+}

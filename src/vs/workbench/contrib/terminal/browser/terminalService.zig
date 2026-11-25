@@ -193,6 +193,14 @@ pub const TerminalService = struct {
         }
     }
 
+    pub fn getInstanceFromId(self: *const TerminalService, id: usize) ?*TerminalInstance {
+        for (0..self.instanceCount()) |index| {
+            const instance = self.instanceAt(index).?;
+            if (instance.id == id) return instance;
+        }
+        return null;
+    }
+
     pub fn instanceCount(self: *const TerminalService) usize {
         return self.count() + self.editor.instances.items.len;
     }

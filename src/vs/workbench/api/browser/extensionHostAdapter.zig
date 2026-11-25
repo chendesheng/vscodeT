@@ -36,6 +36,8 @@ const languageFeaturesHost = @import("./mainThreadLanguageFeatures.zig").HostPro
 const MainThreadDiagnostics = @import("./mainThreadDiagnostics.zig").MainThreadDiagnostics;
 const MainThreadStorage = @import("./mainThreadStorage.zig").MainThreadStorage;
 const MainThreadStatusBar = @import("./mainThreadStatusBar.zig").MainThreadStatusBar;
+const TerminalSuggestAddon = @import("../../contrib/terminalContrib/suggest/browser/terminalSuggestAddon.zig").TerminalSuggestAddon;
+const TerminalInstance = @import("../../contrib/terminal/browser/terminalInstance.zig").TerminalInstance;
 const MainThreadCommands = @import("./mainThreadCommands.zig").MainThreadCommands;
 const MainThreadConfiguration = @import("./mainThreadConfiguration.zig").MainThreadConfiguration;
 const documents_and_editors = @import("./mainThreadDocumentsAndEditors.zig");
@@ -179,7 +181,8 @@ pub const Extensions = struct {
     diagnostics_actor: ?*MainThreadDiagnostics = null,
     storage_actor: ?MainThreadStorage = null,
     statusbar_actor: ?MainThreadStatusBar = null,
-    terminal_completions: ?@import("terminalCompletionSession.zig").Session = null,
+    terminal_completion_provider: @import("terminalCompletionSession.zig").Session = undefined,
+    terminal_completions: ?TerminalSuggestAddon = null,
     secret_state: @import("mainThreadSecretState.zig").SecretState = .{},
     accounts: @import("mainThreadAuthentication.zig").Accounts = undefined,
     task_service: @import("../../contrib/tasks/browser/abstractTaskService.zig").AbstractTaskService = undefined,
@@ -315,9 +318,15 @@ pub const Extensions = struct {
         errdefer self.task_actor.deinit();
         for (self.descriptions) |extension| {
             if (!std.ascii.eqlIgnoreCase(extension.identifier, "vscode.terminal-suggest")) continue;
-            self.terminal_completions = .{ .workbench = workbench, .host = self.host, .arena = .init(allocator) };
-            const terminal_suggest = @import("terminalCompletionSession.zig");
-            try workbench.commands.register(.{ .id = terminal_suggest.command, .label = "Request Completions", .category = "Terminal", .context = &self.terminal_completions.?, .run = terminal_suggest.Session.request });
+            self.terminal_completion_provider = .{ .host = self.host, .allocator = allocator };
+            // Take the address only after the optional payload is in its final slot.
+            self.terminal_completions = @as(TerminalSuggestAddon, undefined);
+            try self.terminal_completions.?.init(allocator, .{
+                .context = self,
+                .focused = focusedTerminal,
+                .find = findTerminal,
+                .request_render = requestTerminalFrame,
+            }, self.terminal_completion_provider.interface(), &workbench.commands, workbench.quick_access);
             break;
         }
         errdefer if (self.terminal_completions) |*session| session.deinit();
@@ -429,6 +438,22 @@ pub const Extensions = struct {
     fn diagnosticsNotify(context: *anyopaque, method: []const u8, args: []const rpc.Arg) anyerror!void {
         const self: *Extensions = @ptrCast(@alignCast(context));
         try self.host.notify(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostDiagnostics), method, args);
+    }
+
+    fn focusedTerminal(context: *anyopaque) ?*TerminalInstance {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        return self.workbench.focusedTerminal();
+    }
+
+    fn findTerminal(context: *anyopaque, id: usize) ?*TerminalInstance {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        const service = self.workbench.terminal_service orelse return null;
+        return service.getInstanceFromId(id);
+    }
+
+    fn requestTerminalFrame(context: *anyopaque) void {
+        const self: *Extensions = @ptrCast(@alignCast(context));
+        self.needs_render = true;
     }
 
     fn showStatusHint(context: *anyopaque, message: []const u8) void {
@@ -841,10 +866,6 @@ pub const Extensions = struct {
         if (self.visible_ranges_dirty) self.sendVisibleRanges() catch {};
         if (self.language_features_actor) |*actor| {
             if (self.inline_completions.tick(actor) catch false) self.needs_render = true;
-        }
-        if (self.terminal_completions) |*session| {
-            if (session.changed) self.needs_render = true;
-            session.changed = false;
         }
         if (self.accounts.changed) {
             self.accounts.changed = false;

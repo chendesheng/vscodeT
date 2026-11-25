@@ -48,6 +48,10 @@ Show All Commands resolves the quick input service through its Action2 handler.
   handler and launches Lynx in a terminal editor. The bundled references view
   uses the extension command API to query reference and implementation providers
   and the window API to reveal a result.
+* TerminalSuggestAddon requests completions through ITerminalCompletionService.
+  The RPC reply wakes the terminal view directly. The terminal host currently
+  supports explicit requests to the bundled terminal-suggest provider and
+  appending a suffix at the prompt cursor. Fourteen files still import the shell.
 * The terminal host owns its input buffer, descriptor waits, resize handling
   and frame output. Breadcrumb and outline updates request a frame from their
   model listeners. The command table, native menu construction, feature
