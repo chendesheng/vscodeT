@@ -426,7 +426,8 @@ pub const MenuRegistry = struct {
     pub fn appendMenuItem(self: *MenuRegistry, id: MenuId, item: IMenuItem) !void {
         const list = try self.menuList(id);
         try list.append(.{ .command = item });
-        try self.on_did_change.fire(.{ .menu = id });
+        // The registration is committed before listeners run.
+        self.on_did_change.fire(.{ .menu = id }) catch |err| std.log.err("Menu listener failed: {s}", .{@errorName(err)});
     }
 
     pub const Registration = struct {

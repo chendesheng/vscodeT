@@ -340,6 +340,22 @@ pub const Layout = struct {
         multiple_columns: bool = false,
         maximized_group: bool = false,
         complex_editor: bool = false,
+
+        pub fn fromEditorPart(part: anytype, configuration: ?*@import("../services/configuration/browser/configurationService.zig").ConfigurationService) CenteredEditorOptions {
+            const side_by_side = if (configuration) |config| config.getBool("diffEditor.renderSideBySide", true) else true;
+            const complex = for (part.group_views.items) |view| {
+                const input = view.group.model.activeEditor() orelse continue;
+                if (std.mem.eql(u8, input.type_id, @import("../common/editor/diffEditorInput.zig").ID)) {
+                    if (side_by_side) break true;
+                } else if (input.hasCapability(@import("../common/editor.zig").EditorInputCapabilities.MultipleEditors)) break true;
+            } else false;
+            return .{
+                .auto_resize = if (configuration) |config| config.getBool(layout_service.LayoutSettings.editor_centered_layout_auto_resize, true) else true,
+                .multiple_columns = part.hasMoreThanOneColumn(),
+                .maximized_group = part.maximized_group != null,
+                .complex_editor = complex,
+            };
+        }
     };
 
     pub fn centerMainEditorLayout(self: *Layout, active: bool, options: CenteredEditorOptions, skip_layout: bool) !void {

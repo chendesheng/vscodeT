@@ -5545,7 +5545,7 @@ test "command palette preserves registration order, metadata and editor precondi
     defer snapshot.deinit();
     var empty_index: usize = 0;
     var editing_index: usize = 0;
-    for (workbench.commands.infos.items) |info| {
+    for (workbench.commands.infos.values()) |info| {
         const in_empty = empty_index < empty.len and std.mem.eql(u8, empty[empty_index].command_id, info.id);
         const in_editing = editing_index < editing.len and std.mem.eql(u8, editing[editing_index].command_id, info.id);
         const entry = .{ info.id, info.label, info.category, info.description, info.show_in_palette, info.requires_editor, info.precondition != null, in_empty, in_editing };

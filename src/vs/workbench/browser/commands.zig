@@ -1,21 +1,16 @@
-// TUI command table backing the command selector.
-//
-// Upstream workbench commands are `Action2`/menu contributions registered in
-// the actions registry; this port has no menu or keybinding registry, so the
-// workbench registers the commands it can actually run here and exposes them
-// to the command picker through `CommandPickSource`.
-//
-// The metadata keeps upstream ids/labels/categories where the action exists.
-// This is the terminal workbench's runnable-command table; the portable
-// execution registry lives in `src/vs/platform/commands/common/commands.zig`.
-// The ported `MenuRegistry`/`Action2` are the long-term owner of this metadata.
-
+// Workbench command registration and the CommandPalette pick source. The
+// palette reads MenuRegistry on demand. Legacy registrations retain their
+// callback-based enablement until each owner ports its context expression.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const platform_commands = @import("../../platform/commands/common/commands.zig");
 const commands_quick_access = @import("../../platform/quickinput/browser/commandsQuickAccess.zig");
 const CommandPick = commands_quick_access.CommandPick;
 const CommandPickSource = commands_quick_access.CommandPickSource;
+
+const actions = @import("../../platform/actions/common/actions.zig");
+const contextkey = @import("../../platform/contextkey/common/contextkey.zig");
+const palette = actions.menu_ids.CommandPalette;
 
 pub const CommandInfo = struct {
     id: []const u8,
@@ -32,7 +27,9 @@ pub const CommandInfo = struct {
 
 pub const CommandRegistry = struct {
     allocator: Allocator,
-    infos: std.array_list.Managed(CommandInfo),
+    infos: std.array_hash_map.String(CommandInfo) = .empty,
+    menus: actions.MenuRegistry,
+    context_keys: ?contextkey.IContextKeyService = null,
     platform: platform_commands.CommandRegistry,
     editor_available_context: ?*anyopaque = null,
     is_editor_available: ?*const fn (context: *anyopaque) bool = null,
@@ -40,14 +37,15 @@ pub const CommandRegistry = struct {
     pub fn init(allocator: Allocator) CommandRegistry {
         return .{
             .allocator = allocator,
-            .infos = std.array_list.Managed(CommandInfo).init(allocator),
+            .menus = actions.MenuRegistry.init(allocator),
             .platform = platform_commands.CommandRegistry.init(allocator),
         };
     }
 
     pub fn deinit(self: *CommandRegistry) void {
         self.platform.deinit();
-        self.infos.deinit();
+        self.infos.deinit(self.allocator);
+        self.menus.deinit();
     }
 
     pub fn setEditorAvailability(
@@ -60,23 +58,36 @@ pub const CommandRegistry = struct {
     }
 
     pub fn register(self: *CommandRegistry, info: CommandInfo) !void {
-        for (self.infos.items, 0..) |existing, index| {
-            if (std.mem.eql(u8, existing.id, info.id)) {
-                self.infos.items[index] = info;
-                try self.platform.register(.{
-                    .id = info.id,
-                    .context = info.context,
-                    .run = info.run,
-                });
-                return;
-            }
+        try self.infos.ensureUnusedCapacity(self.allocator, 1);
+        try self.platform.commands.ensureUnusedCapacity(1);
+        const previous = self.infos.getIndex(info.id);
+        const old_info = self.infos.get(info.id);
+        const old_command = self.platform.get(info.id);
+        if (previous) |i| self.infos.keys()[i] = info.id;
+        self.infos.putAssumeCapacity(info.id, info);
+        try self.platform.register(.{ .id = info.id, .context = info.context, .run = info.run });
+        errdefer {
+            if (old_info) |old| {
+                self.infos.keys()[previous.?] = old.id;
+                self.infos.putAssumeCapacity(old.id, old);
+            } else _ = self.infos.orderedRemove(info.id);
+            if (old_command) |old| self.platform.register(old) catch unreachable else self.platform.unregister(info.id);
         }
-        try self.infos.append(info);
-        try self.platform.register(.{
-            .id = info.id,
-            .context = info.context,
-            .run = info.run,
-        });
+        const was_visible = if (old_info) |old| old.show_in_palette else false;
+        const command = actions.ICommandAction{ .id = info.id, .title = info.label, .category = info.category };
+        if (info.show_in_palette) {
+            if (was_visible) {
+                self.menus.getMenuItemPtr(palette, info.id).?.command = command;
+                self.menus.on_did_change.fire(.{ .menu = palette }) catch |err| std.log.err("Menu listener failed: {s}", .{@errorName(err)});
+            } else {
+                try self.menus.appendMenuItem(palette, .{ .command = command });
+            }
+        } else if (was_visible) self.removePaletteEntry(info.id);
+    }
+
+    fn removePaletteEntry(self: *CommandRegistry, id: []const u8) void {
+        const registration = actions.MenuRegistry.Registration{ .registry = &self.menus, .menu = palette, .command_id = id };
+        registration.dispose();
     }
 
     pub fn execute(self: *const CommandRegistry, id: []const u8) !void {
@@ -86,20 +97,13 @@ pub const CommandRegistry = struct {
     /// Removes a command from both the picker metadata and the execution
     /// registry. Used by built-in extension disposal.
     pub fn unregister(self: *CommandRegistry, id: []const u8) void {
-        for (self.infos.items, 0..) |info, index| {
-            if (std.mem.eql(u8, info.id, id)) {
-                _ = self.infos.orderedRemove(index);
-                break;
-            }
-        }
+        const removed = self.infos.fetchOrderedRemove(id) orelse return;
         self.platform.unregister(id);
+        if (removed.value.show_in_palette) self.removePaletteEntry(id);
     }
 
     pub fn get(self: *const CommandRegistry, id: []const u8) ?CommandInfo {
-        for (self.infos.items) |info| {
-            if (std.mem.eql(u8, info.id, id)) return info;
-        }
-        return null;
+        return self.infos.get(id);
     }
 
     pub fn source(self: *CommandRegistry) CommandPickSource {
@@ -117,17 +121,27 @@ pub const CommandRegistry = struct {
         const self: *CommandRegistry = @ptrCast(@alignCast(context));
         var picks = std.array_list.Managed(CommandPick).init(allocator);
         errdefer picks.deinit();
-        for (self.infos.items) |info| {
-            if (!info.show_in_palette) continue;
-            if (info.precondition) |condition| {
-                if (!condition(info.context)) continue;
+        for (self.menus.getMenuItems(palette)) |entry| {
+            if (entry != .command) continue;
+            const item = entry.command;
+            if (item.when) |condition| {
+                const keys = self.context_keys orelse continue;
+                if (!keys.contextMatchesRules(condition)) continue;
             }
-            if (info.requires_editor and !self.editorAvailable()) continue;
+            if (item.command.precondition) |condition| {
+                const keys = self.context_keys orelse continue;
+                if (!keys.contextMatchesRules(condition)) continue;
+            }
+            const info = self.get(item.command.id);
+            if (info) |legacy| {
+                if (legacy.precondition) |enabled| if (!enabled(legacy.context)) continue;
+                if (legacy.requires_editor and !self.editorAvailable()) continue;
+            }
             try picks.append(.{
-                .command_id = info.id,
-                .label = info.label,
-                .category = info.category,
-                .description = info.description,
+                .command_id = item.command.id,
+                .label = item.command.title,
+                .category = item.command.category orelse "",
+                .description = if (info) |legacy| legacy.description else "",
             });
         }
         return try picks.toOwnedSlice();
@@ -183,4 +197,38 @@ test "CommandRegistry: registers once, filters editor commands and lists picks" 
 
     try registry.execute("workbench.action.files.save");
     try std.testing.expectEqual(@as(usize, 1), state.ran);
+}
+
+test "palette reads contributed menu items and evaluates their live context" {
+    const allocator = std.testing.allocator;
+    var registry = CommandRegistry.init(allocator);
+    defer registry.deinit();
+    var keys = contextkey.ContextKeyService.init(allocator);
+    defer keys.deinit();
+    registry.context_keys = keys.interface();
+    const visible = try keys.createKey("visible", .{ .boolean = true });
+    const enabled = try keys.createKey("enabled", .{ .boolean = false });
+    var expressions = contextkey.ContextKeyExpr.init(allocator);
+    defer expressions.deinit();
+    const registration = try registry.menus.appendMenuItemTracked(palette, .{
+        .command = .{ .id = "test.contributed", .title = "Contributed Action", .precondition = try expressions.has("enabled") },
+        .when = try expressions.has("visible"),
+    });
+    const source = registry.source();
+    const Check = struct {
+        fn count(picker: CommandPickSource, expected: usize) !void {
+            const items = try picker.get_picks(picker.context, std.testing.allocator);
+            defer std.testing.allocator.free(items);
+            try std.testing.expectEqual(expected, items.len);
+            if (items.len > 0) try std.testing.expectEqualStrings("Contributed Action", items[0].label);
+        }
+    };
+    try Check.count(source, 0);
+    enabled.set(.{ .boolean = true });
+    try Check.count(source, 1);
+    visible.set(.{ .boolean = false });
+    try Check.count(source, 0);
+    registration.dispose();
+    visible.set(.{ .boolean = true });
+    try Check.count(source, 0);
 }

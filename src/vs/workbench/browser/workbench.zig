@@ -806,7 +806,7 @@ pub const Workbench = struct {
     ) !*Workbench {
         const self = try initWorkbench(allocator, io, cols, rows, null);
         errdefer self.deinit();
-        self.layoutAll();
+        try self.startup();
         for (paths) |path| try self.openPath(path);
         return self;
     }
@@ -834,6 +834,7 @@ pub const Workbench = struct {
     ) !*Workbench {
         const self = try initWorkbench(allocator, io, cols, rows, .{ .data = data, .registry = registry });
         errdefer self.deinit();
+        try self.startup();
         try self.restoreEditors();
         self.layoutAll();
         return self;
@@ -989,21 +990,31 @@ pub const Workbench = struct {
         self.part = try editor_part.EditorPart(GroupPane).init(allocator, self.service);
         errdefer self.part.deinit();
         try self.part.base.register(self.layout.interface());
+        self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
+        errdefer self.frame.deinit();
+        try self.initServices();
+        errdefer self.services.deinit();
+        errdefer self.instantiation.deinit();
+        try self.initQuickAccess();
+        return self;
+    }
+
+    fn startup(self: *Workbench) !void {
+        try self.instantiation.invokeFunction(startContributions, .{&self.contributions});
+        _ = try self.ensureContextKeys();
+        try self.registerListeners();
+        try self.layout.createWorkbenchLayout();
+        self.layoutAll();
+    }
+
+    fn registerListeners(self: *Workbench) !void {
         _ = try self.service.on_did_active_editor_change.listen(self, onActiveMarkdownEditor);
         _ = try self.service.on_did_active_editor_change.listen(self, centeredLayoutEditorChanged);
         _ = try self.part.on_did_add_group.listen(self, centeredLayoutGroupChanged);
         _ = try self.part.on_did_remove_group.listen(self, centeredLayoutGroupChanged);
         _ = try self.part.on_did_move_group.listen(self, centeredLayoutGroupChanged);
         _ = try self.part.on_did_change_group_maximized.listen(self, centeredLayoutMaximizedChanged);
-        self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
-        errdefer self.frame.deinit();
-        try self.initServices();
-        errdefer self.services.deinit();
-        errdefer self.instantiation.deinit();
-        try self.instantiation.invokeFunction(startContributions, .{&self.contributions});
         _ = try self.layout.on_did_change.listen(self, onGridChanged);
-        try self.initQuickAccess();
-        return self;
     }
 
     fn initServices(self: *Workbench) !void {
@@ -1118,7 +1129,6 @@ pub const Workbench = struct {
         self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
         try self.statusbar.main_part.base.register(layout_service);
-        try self.layout.createWorkbenchLayout();
         self.activity_service = ActivityService.init(self.allocator);
         errdefer self.activity_service.deinit();
 
@@ -6795,7 +6805,6 @@ pub const Workbench = struct {
         return self.runLspAction(go_to_commands.find_references.id);
     }
 
-    /// Runs one of the ported `gotoSymbol` actions by its upstream command id.
     pub fn runLspAction(self: *Workbench, id: []const u8) !bool {
         const action = go_to_commands.find(id) orelse return false;
         return self.executeSymbolNavigation(action);
@@ -8367,6 +8376,7 @@ pub const Workbench = struct {
             .editor_read_only = try service.createKey("editorReadOnly", .{ .boolean = false }),
         };
         self.context_keys = service;
+        self.commands.context_keys = service.interface();
         self.updateContextKeys();
         return service;
     }
@@ -11986,19 +11996,7 @@ pub const Workbench = struct {
     }
 
     pub fn centerMainEditorLayout(self: *Workbench, active: bool, skip_layout: bool) void {
-        const side_by_side = self.configurationBool("diffEditor.renderSideBySide", true);
-        const complex = for (self.part.group_views.items) |view| {
-            const input = view.group.model.activeEditor() orelse continue;
-            if (std.mem.eql(u8, input.type_id, @import("../common/editor/diffEditorInput.zig").ID)) {
-                if (side_by_side) break true;
-            } else if (input.hasCapability(editor_mod.EditorInputCapabilities.MultipleEditors)) break true;
-        } else false;
-        self.layout.centerMainEditorLayout(active, .{
-            .auto_resize = self.configurationBool(layout_service_mod.LayoutSettings.editor_centered_layout_auto_resize, true),
-            .multiple_columns = self.part.hasMoreThanOneColumn(),
-            .maximized_group = self.part.maximized_group != null,
-            .complex_editor = complex,
-        }, skip_layout) catch {};
+        self.layout.centerMainEditorLayout(active, .fromEditorPart(self.part, self.configuration), skip_layout) catch {};
     }
 
     fn centeredLayoutEditorChanged(_: ?*EditorInput, self: *Workbench) anyerror!void {
@@ -12016,15 +12014,6 @@ pub const Workbench = struct {
     pub fn toggleCenteredLayout(self: *Workbench) void {
         self.centerMainEditorLayout(!self.layout.isMainEditorCentered(), false);
         if (self.activeTab()) |tab| tab.focusEditor();
-    }
-
-    fn configurationBool(self: *const Workbench, key: []const u8, default: bool) bool {
-        const configuration = self.configuration orelse return default;
-        const value = configuration.getValue(key, .{}) orelse return default;
-        return switch (value.*) {
-            .bool => |enabled| enabled,
-            else => default,
-        };
     }
 
     fn applyBreadcrumbsSettings(self: *Workbench) void {

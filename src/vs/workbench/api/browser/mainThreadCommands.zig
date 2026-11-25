@@ -169,7 +169,7 @@ pub const MainThreadCommands = struct {
         }
         if (std.mem.eql(u8, method, "$getCommands")) {
             var list = std.json.Array.init(arena);
-            for (self.registry.infos.items) |command| {
+            for (self.registry.infos.values()) |command| {
                 if (!self.registrations.contains(command.id)) try list.append(.{ .string = try arena.dupe(u8, command.id) });
             }
             var iterator = self.registrations.keyIterator();
