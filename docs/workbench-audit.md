@@ -35,7 +35,9 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * Fresh and restored workbenches share service construction. The editor part
   constructs group views from the registered group models. Each group restores
   its panes in model order and selects its active input. Restored inputs
-  participate in the same active-editor events as newly opened inputs.
+  participate in the same active-editor events as newly opened inputs. Sessions
+  save the active group ID and recent activation order. Closing the active
+  group selects the previously active group.
 * The layout service registers live parts and emits visibility, zen-mode and
   centering events. Centering considers the number of columns, the maximized
   group and the capabilities of visible editors. Stacked groups share one

@@ -52,8 +52,10 @@ pub const OpenResult = struct {
 pub const SerializedEditorPart = struct {
     groups: []group_mod.SerializedEditorGroupModel,
     active_group: usize,
+    most_recent_active_groups: []const GroupIdentifier = &.{},
 
     pub fn deinit(self: *SerializedEditorPart, allocator: Allocator) void {
+        allocator.free(self.most_recent_active_groups);
         for (self.groups) |*group| group.deinit(allocator);
         if (self.groups.len > 0) allocator.free(self.groups);
         self.* = .{ .groups = &.{}, .active_group = 0 };
@@ -65,7 +67,6 @@ pub const EditorGroup = struct {
     id: GroupIdentifier,
     model: EditorGroupModel,
     creation_order: u64,
-    activation_order: u64 = 0,
 
     pub fn openEditor(self: *EditorGroup, input: *EditorInput, options: EditorOpenOptions) !EditorOpenResult {
         return self.model.openEditor(input, options);
@@ -78,7 +79,7 @@ pub const EditorGroupsService = struct {
     active: *EditorGroup,
     on_did_active_editor_change: Emitter(?*EditorInput),
     next_creation_order: u64 = 1,
-    next_activation_order: u64 = 1,
+    most_recent_active_groups: std.ArrayList(*EditorGroup) = .empty,
 
     pub fn init(allocator: Allocator, config: group_mod.Configuration) !*EditorGroupsService {
         const self = try allocator.create(EditorGroupsService);
@@ -91,10 +92,11 @@ pub const EditorGroupsService = struct {
             .on_did_active_editor_change = Emitter(?*EditorInput).init(allocator),
         };
 
+        errdefer self.groups.deinit();
+        errdefer self.most_recent_active_groups.deinit(allocator);
         const group = try self.createGroup(config);
         self.active = group;
-        group.activation_order = self.next_activation_order;
-        self.next_activation_order += 1;
+        self.updateMostRecentActive(group, true);
         return self;
     }
 
@@ -103,6 +105,7 @@ pub const EditorGroupsService = struct {
             group.model.deinit();
             self.allocator.destroy(group);
         }
+        self.most_recent_active_groups.deinit(self.allocator);
         self.on_did_active_editor_change.deinit();
         self.groups.deinit();
         self.allocator.destroy(self);
@@ -118,19 +121,15 @@ pub const EditorGroupsService = struct {
 
     /// Returns an allocated slice; the caller owns it.
     pub fn getGroups(self: *EditorGroupsService, allocator: Allocator, order: GroupsOrder) ![]*EditorGroup {
-        const result = try allocator.dupe(*EditorGroup, self.groups.items);
-        if (order == .MOST_RECENTLY_ACTIVE) {
-            // Small N: insertion sort keeps equal activation timestamps stable
-            // without pulling in a comparator context.
-            var i: usize = 1;
-            while (i < result.len) : (i += 1) {
-                const value = result[i];
-                var j = i;
-                while (j > 0 and result[j - 1].activation_order < value.activation_order) : (j -= 1) {
-                    result[j] = result[j - 1];
-                }
-                result[j] = value;
-            }
+        if (order == .CREATION_TIME) return allocator.dupe(*EditorGroup, self.groups.items);
+        const result = try allocator.alloc(*EditorGroup, self.groups.items.len);
+        const recent = self.most_recent_active_groups.items;
+        @memcpy(result[0..recent.len], recent);
+        var index = recent.len;
+        for (self.groups.items) |group| {
+            if (std.mem.indexOfScalar(*EditorGroup, recent, group) != null) continue;
+            result[index] = group;
+            index += 1;
         }
         return result;
     }
@@ -145,9 +144,15 @@ pub const EditorGroupsService = struct {
     pub fn activateGroup(self: *EditorGroupsService, group: *EditorGroup) void {
         if (self.active == group) return;
         self.active = group;
-        group.activation_order = self.next_activation_order;
-        self.next_activation_order += 1;
+        self.updateMostRecentActive(group, true);
         self.on_did_active_editor_change.fire(group.model.activeEditor()) catch {};
+    }
+
+    fn updateMostRecentActive(self: *EditorGroupsService, group: *EditorGroup, make_most_recent: bool) void {
+        if (std.mem.indexOfScalar(*EditorGroup, self.most_recent_active_groups.items, group)) |index| {
+            _ = self.most_recent_active_groups.orderedRemove(index);
+        }
+        if (make_most_recent) self.most_recent_active_groups.insertAssumeCapacity(0, group);
     }
 
     /// Adds a group next to `location` (or after the active group). The TUI
@@ -166,11 +171,14 @@ pub const EditorGroupsService = struct {
         const index = self.indexOf(group) orelse return error.GroupNotFound;
         if (group.model.count() > 0) return error.GroupNotEmpty;
 
-        _ = self.groups.orderedRemove(index);
         if (self.active == group) {
-            const next_index = if (index < self.groups.items.len) index else self.groups.items.len - 1;
-            self.activateGroup(self.groups.items[next_index]);
+            const next = for (self.most_recent_active_groups.items) |other| {
+                if (other != group) break other;
+            } else self.groups.items[@intFromBool(index == 0)];
+            self.activateGroup(next);
         }
+        self.updateMostRecentActive(group, false);
+        _ = self.groups.orderedRemove(index);
 
         group.model.deinit();
         self.allocator.destroy(group);
@@ -246,9 +254,12 @@ pub const EditorGroupsService = struct {
             initialized += 1;
         }
 
+        const recent = try allocator.alloc(GroupIdentifier, self.most_recent_active_groups.items.len);
+        for (recent, self.most_recent_active_groups.items) |*id, group| id.* = group.id;
         return .{
             .groups = groups,
             .active_group = self.indexOf(self.active) orelse 0,
+            .most_recent_active_groups = recent,
         };
     }
 
@@ -273,13 +284,27 @@ pub const EditorGroupsService = struct {
             group.id = group.model.id;
         }
 
-        if (data.active_group < self.groups.items.len) {
-            self.activateGroup(self.groups.items[data.active_group]);
+        self.most_recent_active_groups.clearRetainingCapacity();
+        var valid_mru = true;
+        for (data.most_recent_active_groups) |id| {
+            const group = self.getGroup(id) orelse {
+                valid_mru = false;
+                break;
+            };
+            if (std.mem.indexOfScalar(*EditorGroup, self.most_recent_active_groups.items, group) == null)
+                self.most_recent_active_groups.appendAssumeCapacity(group);
+        }
+        self.active = if (data.active_group < self.groups.items.len) self.groups.items[data.active_group] else self.groups.items[0];
+        self.updateMostRecentActive(self.active, true);
+        if (!valid_mru) {
+            self.most_recent_active_groups.clearRetainingCapacity();
+            self.most_recent_active_groups.appendSliceAssumeCapacity(self.groups.items);
         }
         return self;
     }
 
     fn createGroup(self: *EditorGroupsService, config: group_mod.Configuration) !*EditorGroup {
+        try self.most_recent_active_groups.ensureTotalCapacity(self.allocator, self.groups.items.len + 1);
         const group = try self.allocator.create(EditorGroup);
         errdefer self.allocator.destroy(group);
         group.* = .{
@@ -341,6 +366,37 @@ test "EditorGroupsService: add, activate and remove groups" {
     try service.removeGroup(second);
     try std.testing.expectEqual(@as(usize, 1), service.count());
     try std.testing.expectError(error.LastGroup, service.removeGroup(first));
+}
+
+test "restoring groups preserves activation history when closing the active group" {
+    const allocator = std.testing.allocator;
+    const service = try EditorGroupsService.init(allocator, .{});
+    defer service.deinit();
+    const first = service.activeGroup();
+    const second = try service.addGroup(first, .RIGHT);
+    const third = try service.addGroup(second, .DOWN);
+    service.activateGroup(first);
+    service.activateGroup(third);
+
+    var registry = editor_factory.EditorFactoryRegistry.init(allocator);
+    defer registry.deinit();
+    var state = try service.serializePart(allocator, &registry);
+    defer state.deinit(allocator);
+    try std.testing.expectEqualSlices(GroupIdentifier, &.{ third.id, first.id, second.id }, state.most_recent_active_groups);
+
+    const restored = try EditorGroupsService.initFromSerializedPart(allocator, state, &registry, .{});
+    defer restored.deinit();
+    try std.testing.expectEqual(third.id, restored.activeGroup().id);
+    try restored.removeGroup(restored.activeGroup());
+    try std.testing.expectEqual(first.id, restored.activeGroup().id);
+
+    var stale = state;
+    stale.most_recent_active_groups = &.{std.math.maxInt(GroupIdentifier)};
+    const recovered = try EditorGroupsService.initFromSerializedPart(allocator, stale, &registry, .{});
+    defer recovered.deinit();
+    const order = try recovered.getGroups(allocator, .MOST_RECENTLY_ACTIVE);
+    defer allocator.free(order);
+    try std.testing.expectEqualSlices(*EditorGroup, recovered.groups.items, order);
 }
 
 const TestInput = struct {

@@ -54,7 +54,10 @@ test "session: loadPart returns null for a missing file" {
 
 const PartDto = struct {
     groups: []const SessionDto = &.{},
-    active_group: usize = 0,
+    activeGroup: ?u32 = null,
+    mostRecentActiveGroups: []const u32 = &.{},
+    // Input compatibility with sessions storing a group index.
+    active_group: ?usize = null,
 };
 
 pub fn savePart(
@@ -68,9 +71,10 @@ pub fn savePart(
 
     const dto = PartDto{
         .groups = @ptrCast(data.groups),
-        .active_group = data.active_group,
+        .activeGroup = if (data.active_group < data.groups.len) data.groups[data.active_group].id else null,
+        .mostRecentActiveGroups = data.most_recent_active_groups,
     };
-    try std.json.Stringify.value(dto, .{}, &out.writer);
+    try std.json.Stringify.value(dto, .{ .emit_null_optional_fields = false }, &out.writer);
 
     // Route the part through the storage service + memento, the same path the
     // workbench uses; the file is the terminal host for the memento value.
@@ -124,9 +128,16 @@ fn parsePart(allocator: Allocator, bytes: []const u8) !?editor_groups.Serialized
         initialized += 1;
     }
 
+    const active_group = if (parsed.value.activeGroup) |active_id| index: {
+        for (groups, 0..) |group, i| {
+            if (group.id == active_id) break :index i;
+        }
+        break :index 0;
+    } else @min(parsed.value.active_group orelse 0, groups.len - 1);
     return .{
         .groups = groups,
-        .active_group = @min(parsed.value.active_group, groups.len - 1),
+        .active_group = active_group,
+        .most_recent_active_groups = try allocator.dupe(u32, parsed.value.mostRecentActiveGroups),
     };
 }
 
@@ -141,8 +152,10 @@ fn copyGroup(allocator: Allocator, group: SessionDto) !group_mod.SerializedEdito
         allocator.free(editors);
     }
     for (group.editors, 0..) |editor, index| {
+        const id = try allocator.dupe(u8, editor.id);
+        errdefer allocator.free(id);
         editors[index] = .{
-            .id = try allocator.dupe(u8, editor.id),
+            .id = id,
             .value = try allocator.dupe(u8, editor.value),
         };
         initialized += 1;
@@ -224,6 +237,7 @@ test "session: save and load multiple groups" {
     var data = editor_groups.SerializedEditorPart{
         .groups = @constCast(&groups),
         .active_group = 1,
+        .most_recent_active_groups = &.{ 2, 1 },
     };
 
     try savePart(allocator, io, path, &data);
@@ -233,6 +247,7 @@ test "session: save and load multiple groups" {
 
     try std.testing.expectEqual(@as(usize, 2), loaded.groups.len);
     try std.testing.expectEqual(@as(usize, 1), loaded.active_group);
+    try std.testing.expectEqualSlices(u32, &.{ 2, 1 }, loaded.most_recent_active_groups);
     try std.testing.expectEqual(@as(u32, 2), loaded.groups[1].id);
     try std.testing.expect(loaded.groups[1].locked);
     try std.testing.expectEqualStrings("/tmp/b.txt", loaded.groups[1].editors[0].value);
