@@ -17,7 +17,7 @@ const pair = @import("../../../base/common/utils.zig").pair;
 const SingleModelEditStackElement = @import("../../../editor/common/model/editStack.zig").SingleModelEditStackElement;
 const Selection = @import("../../../editor/common/core/selection.zig").Selection;
 const String = @import("../../../base/common/strings.zig").String;
-const NotificationService = @import("../../../workbench/services/notification/common/notificationService.zig").NotificationService;
+const INotificationService = @import("../../notification/common/notification.zig").INotificationService;
 
 const DEBUG = false;
 
@@ -701,14 +701,21 @@ const KeyComputerPair = struct {
 pub const UndoRedoService = struct {
     _editStacks: std.StringHashMap(ResourceEditStack),
     _uriComparisonKeyComputers: ArrayList(KeyComputerPair),
-    _notificationService: NotificationService,
+    _notificationService: ?INotificationService = null,
 
     pub fn init(allocator: Allocator) UndoRedoService {
         return UndoRedoService{
             ._editStacks = std.StringHashMap(ResourceEditStack).init(allocator),
             ._uriComparisonKeyComputers = ArrayList(KeyComputerPair).init(allocator),
-            ._notificationService = NotificationService{},
         };
+    }
+
+    pub fn setNotificationService(self: *UndoRedoService, service: INotificationService) void {
+        self._notificationService = service;
+    }
+
+    fn notifyWarning(self: *UndoRedoService, message: []const u8) void {
+        if (self._notificationService) |service| service.warn(.{ .text = message }) else std.debug.print("WARNING: {s}\n", .{message});
     }
 
     pub fn deinit(self: *UndoRedoService) void {
@@ -1120,7 +1127,7 @@ pub const UndoRedoService = struct {
     fn _tryToSplitAndUndo(self: *UndoRedoService, strResource: []const u8, element: *WorkspaceStackElement, ignoreResources: ?RemovedResources, message: []const u8) !WorkspaceVerificationError {
         if (element.canSplit()) {
             try self._splitPastWorkspaceElement(element, ignoreResources);
-            self._notificationService.warn(message);
+            self.notifyWarning(message);
             try self._undo(strResource, 0, true);
             return WorkspaceVerificationError{ .returnValue = null };
         } else {
@@ -1128,7 +1135,7 @@ pub const UndoRedoService = struct {
             for (element.strResources.items) |str| {
                 try self.removeElementsStr(str.items());
             }
-            self._notificationService.warn(message);
+            self.notifyWarning(message);
             return WorkspaceVerificationError{ .returnValue = null };
         }
     }
@@ -1288,7 +1295,7 @@ pub const UndoRedoService = struct {
         }
         if (editStack.locked) {
             const message = "Could not undo '{0}' because there is already an undo or redo operation running."; //, element.label
-            self._notificationService.warn(message);
+            self.notifyWarning(message);
             return;
         }
         editStack.locked = true;
@@ -1472,7 +1479,7 @@ pub const UndoRedoService = struct {
     fn _tryToSplitAndRedo(self: *UndoRedoService, strResource: []const u8, element: *const WorkspaceStackElement, ignoreResources: ?RemovedResources, message: []const u8) !WorkspaceVerificationError {
         if (element.canSplit()) {
             try self._splitFutureWorkspaceElement(element, ignoreResources);
-            self._notificationService.warn(message);
+            self.notifyWarning(message);
             try self._redo(strResource);
             return WorkspaceVerificationError{ .returnValue = null };
         } else {
@@ -1480,7 +1487,7 @@ pub const UndoRedoService = struct {
             for (element.strResources.items) |str| {
                 try self.removeElementsStr(str.items());
             }
-            self._notificationService.warn(message);
+            self.notifyWarning(message);
             return WorkspaceVerificationError{ .returnValue = null };
         }
     }
@@ -1571,7 +1578,7 @@ pub const UndoRedoService = struct {
         }
         if (editStack.locked) {
             const message = "Could not redo '{0}' because there is already an undo or redo operation running."; //, element.label
-            self._notificationService.warn(message);
+            self.notifyWarning(message);
             return;
         }
         editStack.locked = true;

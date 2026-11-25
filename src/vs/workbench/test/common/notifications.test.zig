@@ -396,3 +396,71 @@ test "Notifications: Model" {
     duplicate.close();
     third.close();
 }
+
+test "NotificationService: filter changes are restored from storage and track source labels" {
+    const Storage = @import("../../../platform/storage/common/storage.zig").InMemoryStorageService;
+    const Service = @import("../../services/notification/common/notificationService.zig").NotificationService;
+    var storage = Storage.init(a);
+    defer storage.deinit();
+    {
+        const service = try Service.create(a, &storage);
+        defer service.deinit();
+        try service.setFilter(.ERROR);
+        try service.setSourceFilter(.{ .id = "extension", .label = "First label", .filter = .ERROR });
+    }
+    const service = try Service.create(a, &storage);
+    defer service.deinit();
+    try t.expectEqual(n.NotificationsFilter.ERROR, service.getFilter(null));
+    try t.expectEqual(n.NotificationsFilter.ERROR, service.getFilter(.{ .id = "extension", .label = "Different label" }));
+    const handle = service.interface().notify(.{ .severity = .Warning, .source = .{ .source = .{ .id = "extension", .label = "New label" } }, .message = .{ .text = "Warning" } });
+    defer handle.release();
+    try t.expectEqual(n.NotificationPriority.SILENT, service.model.notifications.items[0].priority);
+    const filters = try service.getFilters(a);
+    defer a.free(filters);
+    try t.expectEqual(@as(usize, 1), filters.len);
+    try t.expectEqualStrings("New label", filters[0].label);
+    try service.removeFilter("extension");
+    try t.expectEqual(n.NotificationsFilter.OFF, service.getFilter(.{ .id = "extension", .label = "New label" }));
+}
+
+test "NotificationService: prompts run choices, close unless kept open, and report cancellation" {
+    const Storage = @import("../../../platform/storage/common/storage.zig").InMemoryStorageService;
+    const Service = @import("../../services/notification/common/notificationService.zig").NotificationService;
+    var storage = Storage.init(a);
+    defer storage.deinit();
+    const service = try Service.create(a, &storage);
+    defer service.deinit();
+    const Counter = struct {
+        clicks: usize = 0,
+        cancels: usize = 0,
+        fn click(ctx: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.clicks += 1;
+        }
+        fn cancel(ctx: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.cancels += 1;
+        }
+    };
+    var count: Counter = .{};
+    const options: n.IPromptOptions = .{ .on_cancel = .{ .context = &count, .run_fn = Counter.cancel } };
+    const first = service.interface().prompt(.Info, .{ .text = "Choose" }, &.{
+        .{ .label = "Keep open", .keep_open = true, .context = &count, .run_fn = Counter.click },
+        .{ .label = "Close", .context = &count, .run_fn = Counter.click },
+        .{ .label = "Secondary", .is_secondary = true, .context = &count, .run_fn = Counter.click },
+    }, options);
+    defer first.release();
+    const item = service.model.notifications.items[0];
+    try t.expectEqual(@as(usize, 2), item.actions.primary.len);
+    try t.expectEqual(@as(usize, 1), item.actions.secondary.len);
+    try item.actions.primary[0].execute(null);
+    try t.expectEqual(@as(usize, 1), service.model.notifications.items.len);
+    try item.actions.primary[1].execute(null);
+    try t.expectEqual(@as(usize, 0), service.model.notifications.items.len);
+    try t.expectEqual(@as(usize, 2), count.clicks);
+    try t.expectEqual(@as(usize, 0), count.cancels);
+    const second = service.interface().prompt(.Info, .{ .text = "Can cancel" }, &.{.{ .label = "OK", .context = &count, .run_fn = Counter.click }}, options);
+    defer second.release();
+    second.close();
+    try t.expectEqual(@as(usize, 1), count.cancels);
+}

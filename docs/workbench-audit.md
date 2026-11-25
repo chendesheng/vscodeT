@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 12,774 lines and has no inline tests. It has no direct imports from `src/tui`. Five files import the shell. All 151 baseline
+The browser shell is 12,727 lines and has no inline tests. It has no direct imports from `src/tui`. Five files import the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -35,7 +35,8 @@ code editor through ICodeEditorService. A diff exposes its modified control as
 the active editor and its focused side for commands.
 Show All Commands resolves the quick input service through its Action2 handler.
 
-* The upstream NotificationsModel and NotificationViewItem now own deduplication, normalized message content, progress, visibility and filter events, and status-message replacement. The portable tests run at their original owner path; notification service and parts wiring is still outstanding.
+* The upstream NotificationsModel and NotificationViewItem now own deduplication, normalized message content, progress, visibility and filter events, and status-message replacement. The portable tests run at their original owner path; NotificationService owns source and global filters (using the storage service), prompt choices and status handles. The workbench registers its service interface; undo/redo warnings use it once the editor is mounted. Notification view parts and extension message integration are still outstanding.
+* TextDiffEditor reads its diff configuration through IConfigurationService rather than the shell.
 * EditorPart owns the group grid layout, maximized geometry and group chrome settings. Each EditorGroupView updates breadcrumb visibility with its active pane.
 * Centered layout, group cycling and resetting group sizes use Action2 and their layout/editor-group services.
 * Directional editor-group commands ask EditorPart for the most recently active group

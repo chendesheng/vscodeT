@@ -225,6 +225,7 @@ pub const NotificationViewItem = struct {
     source: ?[]const u8,
     source_id: ?[]const u8,
     actions: notification.INotificationActions = .{},
+    primary_action_keys: []const []const u8 = &.{},
     legacy_links: bool,
     expanded: bool = false,
     visible: bool = false,
@@ -287,8 +288,7 @@ pub const NotificationViewItem = struct {
     }
 
     pub fn deinit(self: *NotificationViewItem) void {
-        self.allocator.free(self.actions.primary);
-        self.allocator.free(self.actions.secondary);
+        self.freeActions();
         self.message.deinit();
         self.arena.deinit();
         self.on_did_change_expansion.deinit();
@@ -297,14 +297,29 @@ pub const NotificationViewItem = struct {
         self.on_did_close.deinit();
         self.allocator.destroy(self);
     }
+    fn freeActions(self: *NotificationViewItem) void {
+        self.allocator.free(self.actions.primary);
+        self.allocator.free(self.actions.secondary);
+        for (self.primary_action_keys) |key| self.allocator.free(key);
+        self.allocator.free(self.primary_action_keys);
+    }
     fn setActions(self: *NotificationViewItem, input: ?notification.INotificationActions) !void {
         const actions = input orelse notification.INotificationActions{};
         const primary = try self.allocator.dupe(IAction, actions.primary);
         errdefer self.allocator.free(primary);
         const secondary = try self.allocator.dupe(IAction, actions.secondary);
-        self.allocator.free(self.actions.primary);
-        self.allocator.free(self.actions.secondary);
+        errdefer self.allocator.free(secondary);
+        const keys = try self.allocator.alloc([]const u8, primary.len);
+        errdefer self.allocator.free(keys);
+        var initialized: usize = 0;
+        errdefer for (keys[0..initialized]) |key| self.allocator.free(key);
+        for (primary, keys) |action, *key| {
+            key.* = try std.mem.concat(self.allocator, u8, &.{ action.id(), action.label() });
+            initialized += 1;
+        }
+        self.freeActions();
         self.actions = .{ .primary = primary, .secondary = secondary };
+        self.primary_action_keys = keys;
         self.expanded = primary.len != 0;
     }
     pub fn canCollapse(self: *const NotificationViewItem) bool {
@@ -392,8 +407,8 @@ pub const NotificationViewItem = struct {
         if (!optionalEqual(self.source, other.source)) return false;
         if (self.source_id != null and !optionalEqual(self.source_id, other.source_id)) return false;
         if (!self.message.equals(other.message) or self.actions.primary.len != other.actions.primary.len) return false;
-        for (self.actions.primary, other.actions.primary) |a, b| {
-            if (!std.mem.eql(u8, a.id(), b.id()) or !std.mem.eql(u8, a.label(), b.label())) return false;
+        for (self.primary_action_keys, other.primary_action_keys) |a, b| {
+            if (!std.mem.eql(u8, a, b)) return false;
         }
         return true;
     }

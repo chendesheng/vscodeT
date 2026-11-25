@@ -305,7 +305,6 @@ const TerminalColorSchemeHost = struct {
     }
 };
 pub const DiffRef = enum { head, index, working, empty };
-const DiffWidgetOptions = diff_widget_mod.Options;
 
 const SymbolActionContext = struct {
     workbench: *Workbench,
@@ -540,6 +539,9 @@ pub const Workbench = struct {
     view_containers_registry: views_mod.ViewContainersRegistry,
     view_descriptor_service: ViewDescriptorService,
     statusbar: StatusbarService,
+    notification_storage: storage_mod.InMemoryStorageService,
+    notification_service: *@import("../services/notification/common/notificationService.zig").NotificationService,
+    notification_api: @import("../../platform/notification/common/notification.zig").INotificationService,
     images: ui.image.Runtime,
     /// Desired OSC 22 mouse pointer shape for the next frame. Only the
     /// composited renderer writes it; pane surfaces resolve shapes but never
@@ -925,6 +927,7 @@ pub const Workbench = struct {
         _ = try self.services.set(code_editor_service.code_editor_service_id, &self.code_editor_api);
         _ = try self.services.set(lifecycle_mod.lifecycle_service_id, &self.lifecycle_api);
         _ = try self.services.set(layout_service_mod.layout_service_id, &self.layout_api);
+        _ = try self.services.set(@import("../../platform/notification/common/notification.zig").notification_service_id, &self.notification_api);
         try self.instantiation.invokeFunction(setServicesReady, .{});
     }
 
@@ -1025,6 +1028,11 @@ pub const Workbench = struct {
         errdefer self.view_descriptor_service.deinit();
         try self.view_descriptor_service.attach();
         _ = try self.view_descriptor_service.on_did_change_container.listen(self, onViewContainerChanged);
+        self.notification_storage = storage_mod.InMemoryStorageService.init(self.allocator);
+        errdefer self.notification_storage.deinit();
+        self.notification_service = try @import("../services/notification/common/notificationService.zig").NotificationService.create(self.allocator, &self.notification_storage);
+        errdefer self.notification_service.deinit();
+        self.notification_api = self.notification_service.interface();
         self.statusbar = try StatusbarService.init(self.allocator);
         errdefer self.statusbar.deinit();
         try self.statusbar.main_part.base.register(layout_service);
@@ -1244,6 +1252,8 @@ pub const Workbench = struct {
         }
         self.activity_service.deinit();
         self.statusbar.deinit();
+        self.notification_service.deinit();
+        self.notification_storage.deinit();
         self.panel_part.deinit();
         self.sidebar_part.deinit();
         self.view_descriptor_service.deinit();
@@ -2446,6 +2456,7 @@ pub const Workbench = struct {
     }
 
     fn registerWorkingCopy(self: *Workbench, tab: *Tab) void {
+        tab.editor.undo_redo.setNotificationService(self.notification_api);
         if (self.search_view) |view| view.model.result.onModelAdded(tab.editor.path, tab.editor.model) catch {};
         self.working_copy_service.registerWorkingCopy(tui_editor_mod.workingCopyInterface(tab.editor)) catch {};
     }
@@ -4145,60 +4156,6 @@ pub const Workbench = struct {
         self.refreshStatus();
     }
 
-    fn diffEditorOptions(self: *Workbench) DiffWidgetOptions {
-        var options = DiffWidgetOptions{};
-        if (self.configuration) |configuration| {
-            options.ignore_trim_whitespace = configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
-            options.render_side_by_side = configuration.getBool("diffEditor.renderSideBySide", true);
-            options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
-            options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
-            options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
-            options.hide_unchanged_regions = configuration.getBool("diffEditor.hideUnchangedRegions.enabled", false);
-            if (configuration.getValue("diffEditor.hideUnchangedRegions.contextLineCount", .{})) |value| {
-                switch (value.*) {
-                    .integer => |number| if (number >= 0) {
-                        options.hide_unchanged_regions_context_line_count = @intCast(number);
-                    },
-                    else => {},
-                }
-            }
-            if (configuration.getValue("diffEditor.hideUnchangedRegions.minimumLineCount", .{})) |value| {
-                switch (value.*) {
-                    .integer => |number| if (number >= 0) {
-                        options.hide_unchanged_regions_minimum_line_count = @intCast(number);
-                    },
-                    else => {},
-                }
-            }
-            if (configuration.getValue("diffEditor.maxComputationTime", .{})) |value| {
-                switch (value.*) {
-                    .integer => |number| options.max_computation_time_ms = number,
-                    else => {},
-                }
-            }
-            if (configuration.getValue("diffEditor.splitViewDefaultRatio", .{})) |value| {
-                switch (value.*) {
-                    .float => |number| options.split_view_default_ratio = number,
-                    .integer => |number| options.split_view_default_ratio = @floatFromInt(number),
-                    else => {},
-                }
-            }
-            if (configuration.getValue("diffEditor.experimental.showMoves", .{})) |value| {
-                switch (value.*) {
-                    .bool => |enabled| options.show_moves = enabled,
-                    else => {},
-                }
-            }
-            if (configuration.getValue("diffEditor.diffAlgorithm", .{})) |value| {
-                switch (value.*) {
-                    .string => |name| options.diff_algorithm = diffAlgorithmFromName(name),
-                    else => {},
-                }
-            }
-        }
-        return options;
-    }
-
     fn gitAutoRefresh(context: *anyopaque) bool {
         const self: *Workbench = @ptrCast(@alignCast(context));
         return if (self.configuration) |config| config.getBool("git.autorefresh", true) else true;
@@ -4365,7 +4322,7 @@ pub const Workbench = struct {
         if (self.findDiffTab(path, left_label, right_label)) |existing| {
             const tab = existing.tab;
             const dims = editorDimensions(self, existing.pane);
-            try tab.diff.?.replace(original_text, modified_text, dims.width, dims.height, self.diffEditorOptions());
+            try tab.diff.?.replace(original_text, modified_text, dims.width, dims.height, text_diff_editor_mod.computeConfiguration(if (self.configuration) |config| config.interface() else null));
             tab.syncDiffViews();
             try existing.pane.activateTab(tab);
             self.service.activateGroup(existing.pane.group);
@@ -4392,7 +4349,7 @@ pub const Workbench = struct {
                 modified_text,
                 dims.width,
                 dims.height,
-                self.diffEditorOptions(),
+                text_diff_editor_mod.computeConfiguration(if (self.configuration) |config| config.interface() else null),
             );
             errdefer view.destroy();
             break :blk try Tab.initDiff(self.allocator, view);
@@ -5093,10 +5050,6 @@ pub const Workbench = struct {
             .working => "Working Tree",
             .empty => "Empty",
         };
-    }
-
-    fn diffAlgorithmFromName(name: []const u8) diff_widget_mod.DiffAlgorithmName {
-        return diff_widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced;
     }
 
     const ShowTabs = layout_service_mod.EditorTabsMode;

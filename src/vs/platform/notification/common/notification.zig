@@ -21,6 +21,8 @@ pub const NotificationMessage = union(enum) {
     cancelled,
 };
 
+pub const INotificationSourceFilter = struct { id: []const u8, label: []const u8, filter: NotificationsFilter };
+
 pub const INotificationSource = struct {
     id: []const u8,
     label: []const u8,
@@ -111,6 +113,7 @@ pub const INotificationHandle = struct {
 pub const IPromptChoice = struct {
     label: []const u8,
     keep_open: bool = false,
+    is_secondary: bool = false,
     context: *anyopaque,
     run_fn: *const fn (context: *anyopaque) void,
 
@@ -119,8 +122,18 @@ pub const IPromptChoice = struct {
     }
 };
 
+pub const PromptCancel = struct {
+    context: *anyopaque,
+    run_fn: *const fn (*anyopaque) void,
+    pub fn run(self: PromptCancel) void {
+        self.run_fn(self.context);
+    }
+};
 pub const IPromptOptions = struct {
     sticky: bool = false,
+    priority: NotificationPriority = .DEFAULT,
+    legacy_extension_link_parsing: ?LegacyExtensionLinkParsing = null,
+    on_cancel: ?PromptCancel = null,
 };
 
 pub const IStatusHandle = struct {
@@ -135,6 +148,8 @@ pub const IStatusHandle = struct {
         self.close_fn(self.context);
     }
 };
+
+pub const notification_service_id = @import("../../instantiation/common/instantiation.zig").ServiceIdentifier(INotificationService, "notificationService");
 
 pub const INotificationService = struct {
     context: *anyopaque,

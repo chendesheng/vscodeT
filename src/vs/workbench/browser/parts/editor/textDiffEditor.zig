@@ -25,6 +25,61 @@ const View = @import("../../../../../tui/editorView.zig").View;
 pub const DiffEditorWidget = widget_mod.DiffEditorWidget;
 pub const Options = widget_mod.Options;
 
+// Project the diffEditor configuration merged by upstream TextDiffEditor.
+pub fn computeConfiguration(configuration_service: ?@import("../../../../platform/configuration/common/configuration.zig").IConfigurationService) Options {
+    var options = Options{};
+    if (configuration_service) |configuration| {
+        options.ignore_trim_whitespace = configuration.getBool("diffEditor.ignoreTrimWhitespace", true);
+        options.render_side_by_side = configuration.getBool("diffEditor.renderSideBySide", true);
+        options.render_indicators = configuration.getBool("diffEditor.renderIndicators", true);
+        options.render_overview_ruler = configuration.getBool("diffEditor.renderOverviewRuler", true);
+        options.enable_split_view_resizing = configuration.getBool("diffEditor.enableSplitViewResizing", true);
+        options.hide_unchanged_regions = configuration.getBool("diffEditor.hideUnchangedRegions.enabled", false);
+        if (configuration.getValue("diffEditor.hideUnchangedRegions.contextLineCount")) |value| {
+            switch (value.*) {
+                .integer => |number| if (number >= 0) {
+                    options.hide_unchanged_regions_context_line_count = @intCast(number);
+                },
+                else => {},
+            }
+        }
+        if (configuration.getValue("diffEditor.hideUnchangedRegions.minimumLineCount")) |value| {
+            switch (value.*) {
+                .integer => |number| if (number >= 0) {
+                    options.hide_unchanged_regions_minimum_line_count = @intCast(number);
+                },
+                else => {},
+            }
+        }
+        if (configuration.getValue("diffEditor.maxComputationTime")) |value| {
+            switch (value.*) {
+                .integer => |number| options.max_computation_time_ms = number,
+                else => {},
+            }
+        }
+        if (configuration.getValue("diffEditor.splitViewDefaultRatio")) |value| {
+            switch (value.*) {
+                .float => |number| options.split_view_default_ratio = number,
+                .integer => |number| options.split_view_default_ratio = @floatFromInt(number),
+                else => {},
+            }
+        }
+        if (configuration.getValue("diffEditor.experimental.showMoves")) |value| {
+            switch (value.*) {
+                .bool => |enabled| options.show_moves = enabled,
+                else => {},
+            }
+        }
+        if (configuration.getValue("diffEditor.diffAlgorithm")) |value| {
+            switch (value.*) {
+                .string => |name| options.diff_algorithm = widget_mod.DiffAlgorithmName.fromName(name) orelse .advanced,
+                else => {},
+            }
+        }
+    }
+    return options;
+}
+
 pub const SnapshotEditorInput = struct {
     allocator: Allocator,
     base: editor_input.EditorInput,
