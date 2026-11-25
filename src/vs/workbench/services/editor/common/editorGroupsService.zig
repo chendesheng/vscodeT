@@ -48,10 +48,18 @@ pub const IEditorGroup = struct {
 const instantiation = @import("../../../../platform/instantiation/common/instantiation.zig");
 pub const editor_groups_service_id = instantiation.ServiceIdentifier(IEditorGroupsService, "editorGroupsService");
 
+/// Portable arrangement currently supported by the binary terminal grid.
+pub const GroupsArrangement = enum { EVEN };
+
 pub const IEditorGroupsService = struct {
     context: *anyopaque,
     active_group: *const fn (*anyopaque) ?IEditorGroup,
+    arrange_groups: *const fn (*anyopaque, GroupsArrangement) void,
     find_group: *const fn (*anyopaque, IFindGroupScope, GroupIdentifier, bool) anyerror!?IEditorGroup,
+
+    pub fn arrangeGroups(self: IEditorGroupsService, arrangement: GroupsArrangement) void {
+        self.arrange_groups(self.context, arrangement);
+    }
 
     pub fn activeGroup(self: IEditorGroupsService) ?IEditorGroup {
         return self.active_group(self.context);

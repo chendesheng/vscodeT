@@ -258,7 +258,7 @@ pub const Layout = struct {
     }
 
     pub fn interface(self: *Layout) layout_service.IWorkbenchLayoutService {
-        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered };
+        return .{ .context = self, .get_side_bar_position = getSideBarPositionContext, .register_part = registerPartContext, .is_visible = isVisibleContext, .set_part_hidden = setPartHiddenContext, .on_did_change_part_visibility = &self.on_did_change_part_visibility, .on_did_change_zen_mode = &self.on_did_change_zen_mode, .on_did_change_main_editor_centered = &self.on_did_change_main_editor_centered, .is_zen_mode_active = zenMode, .toggle_zen_mode = toggleZenModeContext, .is_main_editor_centered = mainEditorCentered, .center_main_editor_layout = centerMainEditorLayoutContext };
     }
 
     fn getSideBarPositionContext(context: *anyopaque) Position {
@@ -274,6 +274,11 @@ pub const Layout = struct {
     fn mainEditorCentered(context: *anyopaque) bool {
         const self: *Layout = @ptrCast(@alignCast(context));
         return self.isMainEditorCentered();
+    }
+
+    fn centerMainEditorLayoutContext(context: *anyopaque, centered: bool) !void {
+        const self: *Layout = @ptrCast(@alignCast(context));
+        try self.centerMainEditorLayout(centered, false);
     }
 
     fn registerPartContext(context: *anyopaque, part: *Part) !IDisposable {

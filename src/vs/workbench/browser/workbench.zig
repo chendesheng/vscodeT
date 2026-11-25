@@ -1402,8 +1402,12 @@ pub const Workbench = struct {
             .{ .id = "workbench.action.navigateRight", .label = "Focus Group Right", .category = "View", .context = self, .run = commandNavigateRight },
             .{ .id = "workbench.action.navigateUp", .label = "Focus Group Up", .category = "View", .context = self, .run = commandNavigateUp },
             .{ .id = "workbench.action.navigateDown", .label = "Focus Group Down", .category = "View", .context = self, .run = commandNavigateDown },
-            .{ .id = "workbench.action.navigateEditorGroups", .label = "Cycle Editor Groups", .category = "View", .context = self, .run = commandCycleGroup },
-            .{ .id = "workbench.action.evenEditorWidths", .label = "Reset Editor Group Sizes", .category = "View", .context = self, .run = commandEvenEditorWidths },
+        };
+        for (editor_commands) |command| try self.commands.register(command);
+        const editor_actions = @import("parts/editor/editorActions.zig");
+        try self.commands.registerAction(&self.instantiation, editor_actions.navigate_between_groups_action);
+        try self.commands.registerAction(&self.instantiation, editor_actions.reset_group_sizes_action);
+        const after_group_actions = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.action.increaseViewWidth", .label = "Increase Editor Width", .category = "View", .context = self, .run = commandIncreaseViewWidth },
             .{ .id = "workbench.action.decreaseViewWidth", .label = "Decrease Editor Width", .category = "View", .context = self, .run = commandDecreaseViewWidth },
             .{ .id = "workbench.action.increaseViewHeight", .label = "Increase Editor Height", .category = "View", .context = self, .run = commandIncreaseViewHeight },
@@ -1424,11 +1428,11 @@ pub const Workbench = struct {
             .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .label = "View: Toggle Problems", .category = "View", .context = self, .run = commandToggleProblems },
             .{ .id = "workbench.action.togglePanel", .label = "View: Toggle Panel Visibility", .category = "View", .context = self, .run = commandTogglePanel },
         };
-        for (editor_commands) |command| try self.commands.register(command);
+        for (after_group_actions) |command| try self.commands.register(command);
         try self.commands.registerAction(&self.instantiation, zen_mode_contribution.toggle_action);
         try self.commands.registerAction(&self.instantiation, zen_mode_contribution.exit_action);
+        try self.commands.registerAction(&self.instantiation, @import("actions/layoutActions.zig").toggle_centered_layout_action);
         const before_search = [_]commands_mod.CommandInfo{
-            .{ .id = "workbench.action.toggleCenteredLayout", .label = "Toggle Centered Layout", .category = zen_mode_contribution.category, .context = self, .run = commandToggleCenteredLayout },
             .{
                 .id = zen_mode_contribution.zen_hide_editor_tabs_id,
                 .label = zen_mode_contribution.zen_hide_editor_tabs_label,
@@ -6610,23 +6614,6 @@ pub const Workbench = struct {
         self.layoutAll();
     }
 
-    /// Port of `workbench.action.evenEditorWidths` for the terminal grid.
-    pub fn equalizeEditorGroups(self: *Workbench) void {
-        equalizeGrid(self.part.root);
-        self.layoutAll();
-    }
-
-    fn equalizeGrid(node: *LayoutNode) void {
-        switch (node.kind) {
-            .leaf => {},
-            .split => |*split| {
-                split.ratio = 0.5;
-                equalizeGrid(split.first);
-                equalizeGrid(split.second);
-            },
-        }
-    }
-
     /// Approximate the editor-part resize actions by changing the sidebar and
     /// panel sizes that determine the editor area.
     pub fn resizeEditorArea(self: *Workbench, width_delta: isize, height_delta: isize) !void {
@@ -10019,11 +10006,6 @@ pub const Workbench = struct {
         }
     }
 
-    pub fn toggleCenteredLayout(self: *Workbench) void {
-        self.layout.centerMainEditorLayout(!self.layout.isMainEditorCentered(), false) catch return;
-        if (self.activeTab()) |tab| tab.focusEditor();
-    }
-
     fn applyBreadcrumbsSettings(self: *Workbench) void {
         self.breadcrumbs_settings = BreadcrumbsSettings.load(self.configuration);
         if (self.breadcrumbs_control) |control| {
@@ -11060,11 +11042,6 @@ fn commandTogglePanel(context: *anyopaque) anyerror!void {
     _ = try self.openPanelContainer(id);
 }
 
-fn commandToggleCenteredLayout(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.toggleCenteredLayout();
-}
-
 fn zenTabsHideAvailable(context: *anyopaque) bool {
     const self: *Workbench = @ptrCast(@alignCast(context));
     return self.layout.isZenModeActive() and self.zenModeConfiguration().show_tabs != .none;
@@ -11749,16 +11726,6 @@ fn commandNavigateUp(context: *anyopaque) anyerror!void {
 fn commandNavigateDown(context: *anyopaque) anyerror!void {
     const self: *Workbench = @ptrCast(@alignCast(context));
     try self.navigateGroup(.down);
-}
-
-fn commandCycleGroup(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    try self.cycleGroup();
-}
-
-fn commandEvenEditorWidths(context: *anyopaque) anyerror!void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    self.equalizeEditorGroups();
 }
 
 fn commandIncreaseViewWidth(context: *anyopaque) anyerror!void {

@@ -135,6 +135,19 @@ pub fn Node(comptime T: type) type {
             };
         }
 
+        /// Distribute each binary SplitView and recurse into its child branches.
+        /// This is the terminal grid subset of GridView.distributeViewSizes(true).
+        pub fn distributeViewSizes(self: *Self) void {
+            switch (self.kind) {
+                .leaf => {},
+                .split => |*split| {
+                    split.ratio = 0.5;
+                    split.first.distributeViewSizes();
+                    split.second.distributeViewSizes();
+                },
+            }
+        }
+
         pub const Split = struct {
             direction: Orientation,
             ratio: f64,

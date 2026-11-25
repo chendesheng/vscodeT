@@ -25,6 +25,7 @@ pub const IWorkbenchLayoutService = struct {
     toggle_zen_mode: *const fn (*anyopaque) anyerror!void,
     is_zen_mode_active: *const fn (*anyopaque) bool,
     is_main_editor_centered: *const fn (*anyopaque) bool,
+    center_main_editor_layout: *const fn (*anyopaque, bool) anyerror!void,
 
     pub fn getSideBarPosition(self: @This()) Position {
         return self.get_side_bar_position(self.context);
@@ -32,6 +33,14 @@ pub const IWorkbenchLayoutService = struct {
 
     pub fn toggleZenMode(self: @This()) !void {
         try self.toggle_zen_mode(self.context);
+    }
+
+    pub fn isMainEditorLayoutCentered(self: @This()) bool {
+        return self.is_main_editor_centered(self.context);
+    }
+
+    pub fn centerMainEditorLayout(self: @This(), centered: bool) !void {
+        try self.center_main_editor_layout(self.context, centered);
     }
 
     pub fn registerPart(self: @This(), part: *Part) !IDisposable {

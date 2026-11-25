@@ -189,7 +189,20 @@ pub fn EditorPart(comptime GroupView: type) type {
         }
 
         pub fn interface(self: *Self) editor_groups.IEditorGroupsService {
-            return .{ .context = self, .active_group = activeGroup, .find_group = findGroupView };
+            return .{ .context = self, .active_group = activeGroup, .find_group = findGroupView, .arrange_groups = arrangeGroupsContext };
+        }
+
+        fn arrangeGroupsContext(context: *anyopaque, arrangement: editor_groups.GroupsArrangement) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            self.arrangeGroups(arrangement);
+        }
+
+        pub fn arrangeGroups(self: *Self, arrangement: editor_groups.GroupsArrangement) void {
+            if (self.count() < 2) return;
+            switch (arrangement) {
+                .EVEN => self.root.distributeViewSizes(),
+            }
+            self.layout(self.viewport);
         }
 
         fn activeGroup(context: *anyopaque) ?editor_groups.IEditorGroup {

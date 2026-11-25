@@ -38,3 +38,18 @@ pub const focus_group_actions = [_]actions.Action2{
     focusGroupAction("workbench.action.focusAboveGroup", "Focus Editor Group Above", .{ .direction = .UP }, chord(.UpArrow)),
     focusGroupAction("workbench.action.focusBelowGroup", "Focus Editor Group Below", .{ .direction = .DOWN }, chord(.DownArrow)),
 };
+
+// The palette retains these existing terminal labels and IDs.
+pub const navigate_between_groups_action = focusGroupAction("workbench.action.navigateEditorGroups", "Cycle Editor Groups", .{ .location = .next }, null);
+
+pub const reset_group_sizes_action: actions.Action2 = .{
+    .command = .{ .id = "workbench.action.evenEditorWidths", .title = "Reset Editor Group Sizes", .category = "View" },
+    .f1 = true,
+    .context = @constCast(&{}),
+    .run_fn = resetGroupSizes,
+};
+
+fn resetGroupSizes(_: *anyopaque, accessor: ServicesAccessor) !void {
+    const service = try accessor.get(groups.editor_groups_service_id);
+    service.arrangeGroups(.EVEN);
+}
