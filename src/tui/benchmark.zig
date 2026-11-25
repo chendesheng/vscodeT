@@ -67,7 +67,7 @@ fn openOnce(allocator: Allocator, io: Io, path: []const u8, stages: *[6]Stage) !
     t0 = nowUs(io);
     const input = try FileEditorInput.init(allocator, editor);
     errdefer input.deinit();
-    const tab = try Tab.initFromInput(allocator, input);
+    const tab = try Tab.initFromInput(@import("./editorView.zig").View.createHandle, allocator, input);
     stages[1] = .{ .name = "view", .us = nowUs(io) - t0 };
 
     t0 = nowUs(io);
@@ -115,7 +115,7 @@ test "benchmark: open file" {
             "total={d}us renders={d} wraps={d} last_visible={d} tokens_accurate_first_paint={}",
             .{
                 total_us,
-                tab.view.renderCount(),
+                @import("./editorView.zig").View.nativeView(tab.view).renderCount(),
                 tab.editor.view_lines.rebuildAllCount(),
                 last_visible,
                 accurate,
@@ -174,7 +174,7 @@ test "benchmark: edit frame" {
             after_paint - after_refresh,
         });
     }
-    const edit_perf = tab.view.perfCounters();
+    const edit_perf = @import("./editorView.zig").View.nativeView(tab.view).perfCounters();
     std.debug.print(
         "[bench] edit frame {s}: best={d}us last={d}us avg_edit={d}us avg_refresh={d}us avg_paint={d}us wraps_delta={d} chrome_renders={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{
@@ -247,7 +247,7 @@ test "benchmark: scroll frame" {
         wheel_best = @min(wheel_best, nowUs(io) - start);
     }
 
-    const scroll_perf = tab.view.perfCounters();
+    const scroll_perf = @import("./editorView.zig").View.nativeView(tab.view).perfCounters();
     std.debug.print(
         "[bench] scroll frame {s}: line_best={d}us avg_refresh={d}us avg_paint={d}us page_best={d}us wheel_best={d}us renders={d} chrome_renders={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{
@@ -257,7 +257,7 @@ test "benchmark: scroll frame" {
             @divTrunc(line_paint, @as(i64, @intCast(line_iterations))),
             page_best,
             wheel_best,
-            tab.view.renderCount(),
+            @import("./editorView.zig").View.nativeView(tab.view).renderCount(),
             scroll_perf.chrome_rebuilds,
             scroll_perf.chrome_subtrees_added,
             scroll_perf.chrome_subtrees_rebuilt,
@@ -422,7 +422,7 @@ test "benchmark: workbench scroll frame" {
         best = @min(best, nowUs(io) - frame_start);
     }
 
-    const workbench_perf = tab.view.perfCounters();
+    const workbench_perf = @import("./editorView.zig").View.nativeView(tab.view).perfCounters();
     std.debug.print(
         "[bench] workbench scroll {s}: best={d}us avg_scroll={d}us avg_refresh={d}us avg_render={d}us chrome_renders={d} chrome_ops=+{d}/~{d}/>{d}/-{d} syncs={d}\n",
         .{

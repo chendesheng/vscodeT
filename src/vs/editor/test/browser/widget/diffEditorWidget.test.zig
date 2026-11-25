@@ -15,6 +15,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "/tmp/original.zig",
@@ -43,6 +44,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "/tmp/original.zig",
@@ -75,6 +77,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "/tmp/original.zig",
@@ -98,6 +101,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "/tmp/original.zig",
@@ -119,6 +123,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "/tmp/original.zig",
@@ -147,6 +152,7 @@ pub fn Tests(comptime View: type) type {
         test "diffEditorWidget: wheel keeps the focused side while syncing both panes" {
             const common = "2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n";
             const widget = try DiffEditorWidget.create(
+                View.init,
                 testing.allocator,
                 Io.Threaded.global_single_threaded.io(),
                 "/tmp/original.txt",
@@ -178,6 +184,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "a.txt",
@@ -210,6 +217,7 @@ pub fn Tests(comptime View: type) type {
             const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
             const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "a.txt",
@@ -239,6 +247,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "a.txt",
@@ -293,6 +302,7 @@ pub fn Tests(comptime View: type) type {
             const original = "a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nz";
             const modified = "A\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\nZ";
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "a.txt",
@@ -322,6 +332,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "a.txt",
@@ -354,6 +365,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = std.testing.allocator;
             const io = std.Io.Threaded.global_single_threaded.io();
             const widget = try DiffEditorWidget.create(
+                View.init,
                 allocator,
                 io,
                 "a.txt",

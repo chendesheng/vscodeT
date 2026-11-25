@@ -235,6 +235,7 @@ pub fn DiffEditorWidget(comptime View: type) type {
         height: usize = 0,
 
         pub fn create(
+            factory: *const fn (Allocator, *Editor) anyerror!*View,
             allocator: Allocator,
             io: Io,
             original_path: []const u8,
@@ -342,9 +343,9 @@ pub fn DiffEditorWidget(comptime View: type) type {
                 allocator.destroy(modified_editor);
             }
 
-            const original_view = try View.init(allocator, original_editor);
+            const original_view = try factory(allocator, original_editor);
             errdefer original_view.deinit();
-            const modified_view = try View.init(allocator, modified_editor);
+            const modified_view = try factory(allocator, modified_editor);
             errdefer modified_view.deinit();
 
             original_editor.setReadOnly(true);

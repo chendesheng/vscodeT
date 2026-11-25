@@ -2,10 +2,10 @@
 //
 // The browser `RangeHighlightDecorations` owns a model-decoration id on the
 // active code editor and listens to cursor/model changes. The terminal port
-// keeps the same contract behind a host: the Workbench resolves the active
-// editor and applies a marker-selection decoration through `View`. Focus and
-// tab transitions drive the removals because the terminal editor has no public
-// cursor-change event.
+// resolves the active editor through EditorPart and writes a marker-selection
+// decoration directly to its model. The existing focus and tab transition
+// removal behavior is retained; upstream per-decoration ownership and listener
+// lifecycle still need to replace this transitional host contract.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -16,6 +16,38 @@ pub const Host = struct {
     context: *anyopaque,
     active_resource: *const fn (context: *anyopaque) ?[]const u8,
     set_range_highlight: *const fn (context: *anyopaque, range: ?Range) void,
+
+    /// Terminal editor part adapter. Decorations are written directly into
+    /// each editor model, not into the terminal renderer.
+    pub fn forEditorPart(part: anytype) Host {
+        const Part = @TypeOf(part.*);
+        const Adapter = struct {
+            const decorations = @import("../../editor/browser/widget/codeEditor/terminalModelDecorations.zig");
+            const editorBrowser = @import("../../editor/browser/editorBrowser.zig");
+
+            fn activeResource(context: *anyopaque) ?[]const u8 {
+                const editor_part: *Part = @ptrCast(@alignCast(context));
+                const pane = editor_part.activeView() orelse return null;
+                const tab = pane.activeTab() orelse return null;
+                return tab.editor.path;
+            }
+
+            fn setRange(context: *anyopaque, range: ?Range) void {
+                const editor_part: *Part = @ptrCast(@alignCast(context));
+                if (range) |value| {
+                    const pane = editor_part.activeView() orelse return;
+                    const tab = pane.activeTab() orelse return;
+                    const values = [_]editorBrowser.Decoration{.{ .range = value, .kind = .marker_selection_highlight }};
+                    decorations.replaceModelDecorationsFor(tab.editor.model, decorations.DecorationOwner.marker_selection, &values) catch {};
+                    return;
+                }
+                for (editor_part.group_views.items) |pane| {
+                    for (pane.tabs.items) |tab| decorations.replaceModelDecorationsFor(tab.editor.model, decorations.DecorationOwner.marker_selection, &.{}) catch {};
+                }
+            }
+        };
+        return .{ .context = part, .active_resource = Adapter.activeResource, .set_range_highlight = Adapter.setRange };
+    }
 };
 
 pub const RangeHighlightDecorations = struct {
@@ -30,6 +62,18 @@ pub const RangeHighlightDecorations = struct {
             .host = host,
             .on_highlight_removed = Emitter(void).init(allocator),
         };
+    }
+
+    pub fn create(allocator: Allocator, host: Host) !*RangeHighlightDecorations {
+        const self = try allocator.create(RangeHighlightDecorations);
+        self.* = init(allocator, host);
+        return self;
+    }
+
+    pub fn destroy(self: *RangeHighlightDecorations) void {
+        const allocator = self.allocator;
+        self.deinit();
+        allocator.destroy(self);
     }
 
     pub fn deinit(self: *RangeHighlightDecorations) void {

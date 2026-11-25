@@ -503,6 +503,7 @@ pub const Workbench = struct {
     editor_api: @import("../services/editor/common/editorService.zig").IEditorService,
     editor_groups_api: editor_groups.IEditorGroupsService,
     allocator: Allocator,
+    view_factory: @import("parts/editor/editorPane.zig").EditorViewFactory,
     io: Io,
     /// Io used to run interactive file/dir/network work off the TUI thread.
     /// It is a separate instance from `io` with `async_limit = .unlimited` so
@@ -713,7 +714,7 @@ pub const Workbench = struct {
 
     /// Constructs the window. The host owns the surface and the option slices
     /// through startup. Service instances supplied by the host remain borrowed.
-    pub fn init(allocator: Allocator, io: Io, surface: *ui.Surface, services: *ServiceCollection, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
+    pub fn init(allocator: Allocator, io: Io, view_factory: @import("parts/editor/editorPane.zig").EditorViewFactory, surface: *ui.Surface, services: *ServiceCollection, options: IWorkbenchOptions, state: ?PreviousState) !*Workbench {
         const parent = surface.document().root orelse return error.MissingWorkbenchParent;
         const self = try allocator.create(Workbench);
         errdefer allocator.destroy(self);
@@ -723,6 +724,7 @@ pub const Workbench = struct {
         self.restore_timer = null;
         self.references_view_registered = false;
         self.allocator = allocator;
+        self.view_factory = view_factory;
         self.io = io;
         self.async_io_state = Io.Threaded.init(allocator, .{
             .async_limit = .unlimited,
@@ -859,6 +861,7 @@ pub const Workbench = struct {
         errdefer self.service.deinit();
         self.part = try editor_part.EditorPart(GroupPane).initWithState(allocator, self.service, if (state) |previous| previous.data.serialized_grid else null);
         errdefer self.part.deinit();
+        self.range_highlights = try RangeHighlightDecorations.create(allocator, @import("codeeditor.zig").Host.forEditorPart(self.part));
         self.part.attachWindow(&self.window_events);
         try self.part.base.register(self.layout.interface());
         self.frame = try ui.Frame.init(allocator, self.cols, self.rows);
@@ -979,6 +982,7 @@ pub const Workbench = struct {
 
     fn restoreEditors(self: *Workbench) !void {
         const panes = @import("parts/editor/editorPane.zig").RestoredEditorPanes{
+            .view_factory = self.view_factory,
             .io = self.io,
             .width = self.cols,
             .height = @max(self.rows -| 2, 1),
@@ -1255,14 +1259,6 @@ pub const Workbench = struct {
             .text = "",
         }, "workbench.hint", .right, .{ .number = 0 });
         self.markers_status = try MarkersStatusBar.init(self.allocator, &self.statusbar);
-        const highlights = try self.allocator.create(RangeHighlightDecorations);
-        errdefer self.allocator.destroy(highlights);
-        highlights.* = RangeHighlightDecorations.init(self.allocator, .{
-            .context = self,
-            .active_resource = markerHighlightActiveResource,
-            .set_range_highlight = markerHighlightSetRange,
-        });
-        self.range_highlights = highlights;
     }
 
     fn deinitShellModels(self: *Workbench) void {
@@ -1271,8 +1267,7 @@ pub const Workbench = struct {
             self.problems_view = null;
         }
         if (self.range_highlights) |highlights| {
-            highlights.deinit();
-            self.allocator.destroy(highlights);
+            highlights.destroy();
             self.range_highlights = null;
         }
         if (self.markers_status) |status| {
@@ -3072,7 +3067,7 @@ pub const Workbench = struct {
     }
 
     fn openTerminalEditor(self: *Workbench, pane: *GroupPane, service: *TerminalService, instance: *terminal_service_mod.TerminalInstance) !*Tab {
-        const tab = try Tab.initTerminal(self.allocator, self.io, instance);
+        const tab = try Tab.initTerminal(self.view_factory, self.allocator, self.io, instance);
         errdefer tab.deinit();
         try pane.tabs.ensureUnusedCapacity(1);
         try service.editor.instances.ensureUnusedCapacity(1);
@@ -4040,7 +4035,7 @@ pub const Workbench = struct {
         right_label: []const u8,
     ) !void {
         const editors = editor_service_mod.EditorService{ .part = self.part };
-        try editors.openSnapshotDiff(self.io, if (self.configuration) |config| config.interface() else null, path, original_text, modified_text, left_label, right_label);
+        try editors.openSnapshotDiff(self.view_factory, self.io, if (self.configuration) |config| config.interface() else null, path, original_text, modified_text, left_label, right_label);
         self.focusEditor();
     }
 
@@ -4644,7 +4639,7 @@ pub const Workbench = struct {
             try self.focusPane(target);
             return;
         }
-        const preview = try Tab.initMarkdownPanel(self.allocator, source, pane.group, self.markdownPreviewConfig(), self.theme_palette, &self.images, self.async_io, &self.window_events);
+        const preview = try Tab.initMarkdownPanel(self.view_factory, self.allocator, source, pane.group, self.markdownPreviewConfig(), self.theme_palette, &self.images, self.async_io, &self.window_events);
         {
             errdefer preview.deinit();
             try target.tabs.ensureUnusedCapacity(1);
@@ -4669,7 +4664,7 @@ pub const Workbench = struct {
             // showTextDocument may reopen a source whose tab was closed.
             // Reuse the live document, including its unsaved text and undo.
             const input = try panel.source.copyInput();
-            const source = Tab.initFromInput(self.allocator, input) catch |err| {
+            const source = Tab.initFromInput(self.view_factory, self.allocator, input) catch |err| {
                 input.deinit();
                 return err;
             };
@@ -4853,7 +4848,7 @@ pub const Workbench = struct {
             return;
         }
 
-        const tab = try Tab.initImageFromInput(self.allocator, self.io, input, self.cols, self.editorContentHeight(), &self.images, window);
+        const tab = try Tab.initImageFromInput(self.view_factory, self.allocator, self.io, input, self.cols, self.editorContentHeight(), &self.images, window);
         try tab.view.setStatusBarVisible(false);
         try pane.addTab(tab);
         self.applyEditorSettingsToTab(tab);
@@ -4875,7 +4870,7 @@ pub const Workbench = struct {
         self.applyConfiguredLanguageAssociations(editor);
         if (self.language_features) |features| editor.attachLanguageServices(features, self.marker_service, self.marker_decorations);
         const service = editor_service_mod.EditorService{ .part = self.part };
-        try self.finishTextEditorOpen(path, try service.openTextEditor(editor, options, &self.images), options);
+        try self.finishTextEditorOpen(path, try service.openTextEditor(self.view_factory, editor, options, &self.images), options);
     }
 
     fn finishTextEditorOpen(self: *Workbench, path: []const u8, opened: editor_service_mod.OpenedTextEditor, options: OpenOptions) !void {
@@ -6013,7 +6008,7 @@ pub const Workbench = struct {
             }
             errdefer _ = target.group.model.closeEditor(&copied_input.base, .UNKNOWN, true) catch {};
 
-            const copied = try Tab.initFromInput(self.allocator, copied_input);
+            const copied = try Tab.initFromInput(self.view_factory, self.allocator, copied_input);
             tab_owned = copied;
             input_owned = false;
             try self.finishCopiedTab(target, copied);
@@ -6041,6 +6036,7 @@ pub const Workbench = struct {
 
             const dims = target.contentDimensions();
             const copied = try Tab.initImageFromInput(
+                self.view_factory,
                 self.allocator,
                 self.io,
                 copied_input,
@@ -9768,25 +9764,6 @@ fn commandQuickOpen(context: *anyopaque) anyerror!void {
     return self.quick_access.showFilePicker();
 }
 
-fn markerHighlightActiveResource(context: *anyopaque) ?[]const u8 {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    const tab = self.activeTab() orelse return null;
-    return tab.editor.path;
-}
-
-fn markerHighlightSetRange(context: *anyopaque, range: ?Range) void {
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (range) |value| {
-        const tab = self.activeTab() orelse return;
-        const decorations = [_]editorBrowser.Decoration{.{ .range = value, .kind = .marker_selection_highlight }};
-        tab.view.setMarkerSelectionHighlights(&decorations) catch {};
-        return;
-    }
-    for (self.part.group_views.items) |pane| {
-        for (pane.tabs.items) |tab| tab.view.setMarkerSelectionHighlights(&.{}) catch {};
-    }
-}
-
 fn problemsWorkspaceRoot(context: *anyopaque) ?[]const u8 {
     const self: *Workbench = @ptrCast(@alignCast(context));
     return self.workspaceFolderPath();
@@ -10933,7 +10910,7 @@ fn searchOpenResults(context: *anyopaque, config: search_editor.Config, snapshot
         query.deinit();
         return err;
     };
-    const tab = Tab.initSearchEditor(self.allocator, input) catch |err| {
+    const tab = Tab.initSearchEditor(self.view_factory, self.allocator, input) catch |err| {
         input.deinit();
         return err;
     };

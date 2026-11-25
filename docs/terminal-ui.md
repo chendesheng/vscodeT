@@ -13,6 +13,9 @@ explicit link and button hit regions, and the status-bar bell in lieu of the
 browser title bar. Notification deadlines use the shared window scheduler;
 there is no notification-state poll. The terminal routes tab, sash and quick
 input hit testing and terminal pixel/capability changes in `src/tui/workbench.zig`.
+The editor pane accepts an explicit view factory and an IEditorView handle;
+the native renderer remains in src/tui/editorView.zig. No portable source
+imports src/tui.
 [Workbench port audit](workbench-audit.md)
 
 ## 1. Context

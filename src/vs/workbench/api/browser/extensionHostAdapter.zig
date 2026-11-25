@@ -5,7 +5,7 @@
 // terminal-specific state: the active tab's document mirror, the command
 // surface Node extensions call back into, and the typed-text path
 // through the `type` command.
-const TestWindow = @import("../../test/browser/workbenchTestServices.zig").TestWindow;
+
 const std = @import("std");
 const build_options = @import("build_options");
 const Allocator = std.mem.Allocator;
@@ -1846,854 +1846,859 @@ fn countListenerCall(context: *anyopaque) void {
     calls.* += 1;
 }
 
-test "Extensions: editor-pane disposal detaches listeners before the editor is destroyed" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "owned.txt", .data = "alpha" });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_len = try tmp.dir.realPathFile(io, "owned.txt", &path_buffer);
+pub fn Tests(comptime factory: anytype) type {
+    return struct {
+        const TestWindow = @import("../../test/browser/workbenchTestServices.zig").TestWindow(factory);
+        test "Extensions: editor-pane disposal detaches listeners before the editor is destroyed" {
+            const allocator = std.testing.allocator;
+            const io = std.Io.Threaded.global_single_threaded.io();
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "owned.txt", .data = "alpha" });
+            var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path_len = try tmp.dir.realPathFile(io, "owned.txt", &path_buffer);
 
-    const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_len]}, 40, 9);
-    const workbench = workbench_window.workbench;
-    defer workbench_window.deinit();
+            const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_len]}, 40, 9);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
 
-    var content_calls: usize = 0;
-    var scroll_calls: usize = 0;
-    const content_listener = ChangeListener{ .context = &content_calls, .callback = countListenerCall };
-    const scroll_listener = ChangeListener{ .context = &scroll_calls, .callback = countListenerCall };
+            var content_calls: usize = 0;
+            var scroll_calls: usize = 0;
+            const content_listener = ChangeListener{ .context = &content_calls, .callback = countListenerCall };
+            const scroll_listener = ChangeListener{ .context = &scroll_calls, .callback = countListenerCall };
 
-    // An editor that the workbench still owns is detached normally.
-    const owned = workbench.activeTab().?.editor;
-    owned.addWorkingCopyContentListener(content_listener);
-    owned.addScrollListener(scroll_listener);
-    owned.removeWorkingCopyContentListener(content_listener);
-    owned.removeScrollListener(scroll_listener);
-    try owned.typeCharacter("x");
-    owned.emitCurrentViewState();
-    try std.testing.expectEqual(@as(usize, 0), content_calls);
-    try std.testing.expectEqual(@as(usize, 0), scroll_calls);
-    // A clean editor closes without the dirty confirmation.
-    try owned.save();
+            // An editor that the workbench still owns is detached normally.
+            const owned = workbench.activeTab().?.editor;
+            owned.addWorkingCopyContentListener(content_listener);
+            owned.addScrollListener(scroll_listener);
+            owned.removeWorkingCopyContentListener(content_listener);
+            owned.removeScrollListener(scroll_listener);
+            try owned.typeCharacter("x");
+            owned.emitCurrentViewState();
+            try std.testing.expectEqual(@as(usize, 0), content_calls);
+            try std.testing.expectEqual(@as(usize, 0), scroll_calls);
+            // A clean editor closes without the dirty confirmation.
+            try owned.save();
 
-    // A live editor outside this pane must keep its own listeners.
-    var stale = try Editor.createFromText(allocator, io, "beta", "stale.txt", 40, 9);
-    defer {
-        stale.deinit();
-        allocator.destroy(stale);
-    }
-    stale.addWorkingCopyContentListener(content_listener);
-    stale.addScrollListener(scroll_listener);
-    try stale.typeCharacter("y");
-    stale.emitCurrentViewState();
-    try std.testing.expect(content_calls > 0);
-    try std.testing.expect(scroll_calls > 0);
-
-    // The former Ctrl-W crash now retires subscriptions before tab deinit
-    // releases the editor. The callback must run exactly once.
-    try workbench.activeTab().?.ensureControllers();
-    const tab = workbench.activeTab().?;
-    const closed = tab.editor;
-    const Detach = struct {
-        editor: ?*Editor,
-        content: ChangeListener,
-        scroll: ChangeListener,
-        count: usize = 0,
-        fn onDispose(_: void, self: *@This()) !void {
-            const editor = self.editor orelse return error.AlreadyDisposed;
-            editor.removeWorkingCopyContentListener(self.content);
-            editor.removeScrollListener(self.scroll);
-            self.editor = null;
-            self.count += 1;
-        }
-    };
-    var detach: Detach = .{ .editor = closed, .content = content_listener, .scroll = scroll_listener };
-    closed.addWorkingCopyContentListener(content_listener);
-    closed.addScrollListener(scroll_listener);
-    _ = try tab.listenWillDispose(&detach, Detach.onDispose);
-    const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
-    try std.testing.expect((try workbench.handleTabKey(&ctrl_w)) == .handled);
-    try std.testing.expect(detach.editor == null);
-    try std.testing.expectEqual(@as(usize, 1), detach.count);
-}
-
-test "Extensions: insert-mode Backspace and Delete run the core editor commands" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
-    defer {
-        editor.deinit();
-        allocator.destroy(editor);
-    }
-
-    // Some editor actions delegate to `deleteLeft`; the key is not an edit by
-    // itself, so the TUI must run the command.
-    try editor.setSelections(&[_]Selection{Selection.init(1, 4, 1, 4)});
-    try std.testing.expect(try runEditorCommand(editor, "deleteLeft"));
-    const after_backspace = try editor.model.getValue(.TextDefined, false);
-    defer after_backspace.deinit();
-    try std.testing.expectEqualStrings("ab", after_backspace.items);
-    try std.testing.expectEqual(Position.init(1, 3), editor.modelCursorPosition());
-
-    // DeleteInInsertMode delegates to `deleteRight`.
-    try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 1)});
-    try std.testing.expect(try runEditorCommand(editor, "deleteRight"));
-    const after_delete = try editor.model.getValue(.TextDefined, false);
-    defer after_delete.deinit();
-    try std.testing.expectEqualStrings("b", after_delete.items);
-    try std.testing.expectEqual(Position.init(1, 1), editor.modelCursorPosition());
-
-    try std.testing.expect(!try runEditorCommand(editor, "unhandled.command"));
-}
-
-test "Extensions: language feature registration reaches the workbench registries" {
-    // The fixture registers definition/declaration/implementation/type
-    // definition/reference providers so the bridge actions run without tsserver.
-    if (!build_options.e2e) return error.SkipZigTest;
-    std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(time_compat.io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    const io = time_compat.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "fixture.json", .data = "{\n  \"a\": 1\n}\n" });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const relative_len = try tmp.dir.realPathFile(io, "fixture.json", &path_buffer);
-    const relative = path_buffer[0..relative_len];
-
-    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
-    const workbench = workbench_window.workbench;
-    defer workbench_window.deinit();
-    try workbench.enableLanguageFeatures();
-
-    var extension_host = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
-    defer extension_host.deinit();
-
-    const deadline = time_compat.milliTimestamp() + 10_000;
-    while (time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        if (extension_host.active != null) break;
-        time_compat.sleepMillis(10);
-    }
-    _ = extension_host.pump();
-
-    const features = workbench.language_features.?;
-    const model = workbench.activeTab().?.editor.model;
-    const hover_providers = try features.hover_provider.ordered(allocator, model, false);
-    defer allocator.free(hover_providers);
-    try std.testing.expect(hover_providers.len > 0);
-    const hover = try hover_providers[0].provide_hover(
-        hover_providers[0].context,
-        model,
-        Position.init(1, 1),
-        @import("../../../base/common/cancellation.zig").CancellationToken.None,
-        null,
-    );
-    try std.testing.expect(hover != null);
-
-    const completion_providers = try features.completion_provider.ordered(allocator, model, false);
-    defer allocator.free(completion_providers);
-    try std.testing.expect(completion_providers.len > 0);
-
-    const symbol_providers = try features.document_symbol_provider.ordered(allocator, model, false);
-    defer allocator.free(symbol_providers);
-    try std.testing.expect(symbol_providers.len > 0);
-
-    const declaration_providers = try features.declaration_provider.ordered(allocator, model, false);
-    defer allocator.free(declaration_providers);
-    try std.testing.expect(declaration_providers.len > 0);
-    var check_arena = std.heap.ArenaAllocator.init(allocator);
-    defer check_arena.deinit();
-    const check_links = try declaration_providers[0].provide_declaration(
-        declaration_providers[0].context,
-        check_arena.allocator(),
-        model,
-        Position.init(1, 1),
-        @import("../../../base/common/cancellation.zig").CancellationToken.None,
-    );
-    try std.testing.expect(check_links.len > 0);
-    const implementation_providers = try features.implementation_provider.ordered(allocator, model, false);
-    defer allocator.free(implementation_providers);
-    try std.testing.expect(implementation_providers.len > 0);
-    const type_providers = try features.type_definition_provider.ordered(allocator, model, false);
-    defer allocator.free(type_providers);
-    try std.testing.expect(type_providers.len > 0);
-    const reference_providers = try features.reference_provider.ordered(allocator, model, false);
-    defer allocator.free(reference_providers);
-    try std.testing.expect(reference_providers.len > 0);
-
-    // Extension command names reach the same workbench actions.
-    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToDeclaration"));
-    try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.revealDeclaration"));
-    try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToImplementation"));
-    try std.testing.expectEqual(@as(usize, 3), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToTypeDefinition"));
-    try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
-
-    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToReferences"));
-    try std.testing.expect(workbench.quick_access.isOpen());
-    workbench.quick_access.inputService().hide();
-    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.findReferences"));
-    try std.testing.expect(workbench.quick_access.isOpen());
-    workbench.quick_access.inputService().hide();
-    try std.testing.expect(runLspCommand(Services.bind(workbench), "outline.focus"));
-    try std.testing.expect(workbench.quick_access.isOpen());
-    workbench.quick_access.inputService().hide();
-    try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.showHover"));
-    try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
-    const tab = workbench.activeTab().?;
-    try tab.editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
-    try tab.editor.insertText("é");
-    _ = extension_host.pump();
-    const inline_deadline = time_compat.milliTimestamp() + 5_000;
-    while (!tab.view.ghost_text.isVisible() and time_compat.milliTimestamp() < inline_deadline) {
-        _ = extension_host.pump();
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-        time_compat.sleepMillis(10);
-    }
-    try std.testing.expect(tab.view.ghost_text.isVisible());
-    try std.testing.expectEqualStrings(" inline result", tab.view.ghost_text.text.?);
-    var before_inline = try model.getLineContent(1);
-    defer before_inline.deinit();
-    try std.testing.expect(try extension_host.inline_completions.accept());
-    var after_inline = try model.getLineContent(1);
-    defer after_inline.deinit();
-    try std.testing.expect(std.mem.endsWith(u8, after_inline.items, "é inline result"));
-    try tab.editor.undo();
-    var undone = try model.getLineContent(1);
-    defer undone.deinit();
-    try std.testing.expectEqualStrings(before_inline.items, undone.items);
-}
-
-test "Extensions: relative paths mirror the model URI language features use" {
-    // Regression: a relative command-line path used to be mirrored with its
-    // raw spelling while language-feature requests carried the model's
-    // absolute URI. The host never found the document, so `gd`/F12 and the
-    // other navigation actions returned no result for relative paths.
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "relative.json", .data = "{\n  \"a\": 1\n}\n" });
-    var absolute_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const absolute_length = try tmp.dir.realPathFile(io, "relative.json", &absolute_buffer);
-    var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const cwd_length = try Io.Dir.cwd().realPathFile(io, ".", &cwd_buffer);
-    const relative = try std.fs.path.relativeAlloc(
-        allocator,
-        cwd_buffer[0..cwd_length],
-        null,
-        cwd_buffer[0..cwd_length],
-        absolute_buffer[0..absolute_length],
-    );
-    defer allocator.free(relative);
-    // The bug only manifests when the input spelling is relative.
-    if (std.fs.path.isAbsolute(relative)) return error.SkipZigTest;
-
-    const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
-    const workbench = workbench_window.workbench;
-    defer workbench_window.deinit();
-    try workbench.enableLanguageFeatures();
-
-    var extension_host = try Extensions.init(
-        allocator,
-        io,
-        Services.bind(workbench),
-        &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }},
-        ".cache-ext/data-relative-fixture",
-        "host/dist",
-    );
-    defer extension_host.deinit();
-
-    const tab = workbench.activeTab().?;
-    const model_uri = try std_uri.resourceKey(allocator, tab.editor.model.uri());
-    defer allocator.free(model_uri);
-
-    const deadline = time_compat.milliTimestamp() + 10_000;
-    var mirrored: ?[]u8 = null;
-    while (time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        if (extension_host.active) |active| {
-            mirrored = try std.fmt.allocPrint(allocator, "file://{s}", .{active.uri});
-            break;
-        }
-        time_compat.sleepMillis(10);
-    }
-    defer if (mirrored) |value| allocator.free(value);
-    try std.testing.expect(mirrored != null);
-    try std.testing.expectEqualStrings(model_uri, mirrored.?);
-
-    // The fixture provider sees the mirrored document and the action jumps to
-    // its target range on line 1.
-    try tab.editor.setCursorPosition(Position.init(3, 1));
-    const navigation_deadline = time_compat.milliTimestamp() + 10_000;
-    var navigated = false;
-    while (!navigated and time_compat.milliTimestamp() < navigation_deadline) {
-        _ = extension_host.pump();
-        navigated = workbench.revealDefinition() catch false;
-        if (!navigated) time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(navigated);
-    try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
-
-    // Opening, selecting and closing tabs now deliver the document delta on
-    // editor events, even if the host's message pump has not been called.
-    try tmp.dir.writeFile(io, .{ .sub_path = "second.json", .data = "{\n}\n" });
-    var second_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const second_length = try tmp.dir.realPathFile(io, "second.json", &second_buffer);
-    try workbench.openPath(second_buffer[0..second_length]);
-    const second = workbench.activeTab().?;
-    try std.testing.expect(extension_host.active.?.tab == second);
-    try std.testing.expect(extension_host.tabs_task.at != null);
-    try second.editor.setCursorPosition(Position.init(2, 1));
-    try std.testing.expect(extension_host.selection_task.at != null);
-    second.editor.emitCurrentViewState();
-    try std.testing.expect(extension_host.visible_ranges_task.at != null);
-    second.editor.model.setLanguage("plaintext");
-    try std.testing.expectEqualStrings("plaintext", extension_host.active.?.language_id);
-    for (0..256) |_| {
-        if (extension_host.tabs_task.at == null and extension_host.selection_task.at == null and extension_host.visible_ranges_task.at == null) break;
-        _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
-    }
-    try std.testing.expect(extension_host.tabs_task.at == null and extension_host.selection_task.at == null and extension_host.visible_ranges_task.at == null);
-    try std.testing.expectEqual(@as(usize, 2), extension_host.last_selections.items[0].endLineNumber);
-    _ = try workbench.closeActive();
-    try std.testing.expect(extension_host.active.?.tab == tab);
-}
-
-test "Extensions: real TypeScript extension drives the language features" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "sample.ts", .data =
-        \\const  value:number = "text";
-        \\const other=value.toFixed( );
-        \\const é = 1; const x: number = "s";
-        \\
-    });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_length = try tmp.dir.realPathFile(io, "sample.ts", &path_buffer);
-
-    const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
-    const workbench = workbench_window.workbench;
-    defer workbench_window.deinit();
-    try workbench.enableLanguageFeatures();
-    var extension_host = try Extensions.init(
-        allocator,
-        io,
-        Services.bind(workbench),
-        &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
-        ".cache-ext/data-ts-test",
-        "host/dist",
-    );
-    defer extension_host.deinit();
-
-    const marker_service = workbench.marker_service.?;
-    const features = workbench.language_features.?;
-    const tab = workbench.activeTab().?;
-    const model = tab.editor.model;
-    var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
-    defer resource.deinit(allocator);
-    const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
-
-    const deadline = time_compat.milliTimestamp() + 60_000;
-
-    // Diagnostics: the extension's tsserver client publishes semantic errors
-    // through its diagnostic collection.
-    var found_diagnostic = false;
-    var verified_utf16 = false;
-    while ((!found_diagnostic or !verified_utf16) and time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const list = marker_service.read(arena.allocator(), .{ .resource = resource }) catch &.{};
-        for (list) |marker| {
-            if (std.mem.indexOf(u8, marker.message, "not assignable") == null) continue;
-            found_diagnostic = true;
-            if (marker.start_line_number == 3) {
-                var line = try model.getLineContent(3);
-                defer line.deinit();
-                if (marker.start_column == 21 and marker.end_column == 22 and line.items.len >= 21 and line.items[20] == 'x') {
-                    verified_utf16 = true;
-                }
+            // A live editor outside this pane must keep its own listeners.
+            var stale = try Editor.createFromText(allocator, io, "beta", "stale.txt", 40, 9);
+            defer {
+                stale.deinit();
+                allocator.destroy(stale);
             }
-        }
-        if (!found_diagnostic or !verified_utf16) time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(found_diagnostic);
-    try std.testing.expect(verified_utf16);
+            stale.addWorkingCopyContentListener(content_listener);
+            stale.addScrollListener(scroll_listener);
+            try stale.typeCharacter("y");
+            stale.emitCurrentViewState();
+            try std.testing.expect(content_calls > 0);
+            try std.testing.expect(scroll_calls > 0);
 
-    // Completion: tsserver suggests `toFixed` after `value.`.
-    var found_completion = false;
-    while (!found_completion and time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        const providers = try features.completion_provider.ordered(allocator, model, false);
-        defer allocator.free(providers);
-        for (providers) |provider| {
-            var arena = std.heap.ArenaAllocator.init(allocator);
-            defer arena.deinit();
-            const list = provider.provide_completion_items(
-                provider.context,
-                arena.allocator(),
+            // The former Ctrl-W crash now retires subscriptions before tab deinit
+            // releases the editor. The callback must run exactly once.
+            try workbench.activeTab().?.ensureControllers();
+            const tab = workbench.activeTab().?;
+            const closed = tab.editor;
+            const Detach = struct {
+                editor: ?*Editor,
+                content: ChangeListener,
+                scroll: ChangeListener,
+                count: usize = 0,
+                fn onDispose(_: void, self: *@This()) !void {
+                    const editor = self.editor orelse return error.AlreadyDisposed;
+                    editor.removeWorkingCopyContentListener(self.content);
+                    editor.removeScrollListener(self.scroll);
+                    self.editor = null;
+                    self.count += 1;
+                }
+            };
+            var detach: Detach = .{ .editor = closed, .content = content_listener, .scroll = scroll_listener };
+            closed.addWorkingCopyContentListener(content_listener);
+            closed.addScrollListener(scroll_listener);
+            _ = try tab.listenWillDispose(&detach, Detach.onDispose);
+            const ctrl_w = ui.KeyEvent{ .key = .{ .char = 'w' }, .mods = .{ .ctrl = true } };
+            try std.testing.expect((try workbench.handleTabKey(&ctrl_w)) == .handled);
+            try std.testing.expect(detach.editor == null);
+            try std.testing.expectEqual(@as(usize, 1), detach.count);
+        }
+
+        test "Extensions: insert-mode Backspace and Delete run the core editor commands" {
+            const allocator = std.testing.allocator;
+            const io = std.Io.Threaded.global_single_threaded.io();
+            var editor = try Editor.createFromText(allocator, io, "abc", "test.zig", 40, 8);
+            defer {
+                editor.deinit();
+                allocator.destroy(editor);
+            }
+
+            // Some editor actions delegate to `deleteLeft`; the key is not an edit by
+            // itself, so the TUI must run the command.
+            try editor.setSelections(&[_]Selection{Selection.init(1, 4, 1, 4)});
+            try std.testing.expect(try runEditorCommand(editor, "deleteLeft"));
+            const after_backspace = try editor.model.getValue(.TextDefined, false);
+            defer after_backspace.deinit();
+            try std.testing.expectEqualStrings("ab", after_backspace.items);
+            try std.testing.expectEqual(Position.init(1, 3), editor.modelCursorPosition());
+
+            // DeleteInInsertMode delegates to `deleteRight`.
+            try editor.setSelections(&[_]Selection{Selection.init(1, 1, 1, 1)});
+            try std.testing.expect(try runEditorCommand(editor, "deleteRight"));
+            const after_delete = try editor.model.getValue(.TextDefined, false);
+            defer after_delete.deinit();
+            try std.testing.expectEqualStrings("b", after_delete.items);
+            try std.testing.expectEqual(Position.init(1, 1), editor.modelCursorPosition());
+
+            try std.testing.expect(!try runEditorCommand(editor, "unhandled.command"));
+        }
+
+        test "Extensions: language feature registration reaches the workbench registries" {
+            // The fixture registers definition/declaration/implementation/type
+            // definition/reference providers so the bridge actions run without tsserver.
+            if (!build_options.e2e) return error.SkipZigTest;
+            std.Io.Dir.cwd().access(time_compat.io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            std.Io.Dir.cwd().access(time_compat.io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
+
+            const allocator = std.testing.allocator;
+            const io = time_compat.io;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "fixture.json", .data = "{\n  \"a\": 1\n}\n" });
+            var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const relative_len = try tmp.dir.realPathFile(io, "fixture.json", &path_buffer);
+            const relative = path_buffer[0..relative_len];
+
+            const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            try workbench.enableLanguageFeatures();
+
+            var extension_host = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }}, ".cache-ext/data-language-fixture", "host/dist");
+            defer extension_host.deinit();
+
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                if (extension_host.active != null) break;
+                time_compat.sleepMillis(10);
+            }
+            _ = extension_host.pump();
+
+            const features = workbench.language_features.?;
+            const model = workbench.activeTab().?.editor.model;
+            const hover_providers = try features.hover_provider.ordered(allocator, model, false);
+            defer allocator.free(hover_providers);
+            try std.testing.expect(hover_providers.len > 0);
+            const hover = try hover_providers[0].provide_hover(
+                hover_providers[0].context,
                 model,
-                Position.init(2, 19),
-                .{},
-                token,
-            ) catch continue;
-            for (list.items) |item| {
-                if (std.mem.indexOf(u8, item.label, "toFixed") != null) {
-                    found_completion = true;
+                Position.init(1, 1),
+                @import("../../../base/common/cancellation.zig").CancellationToken.None,
+                null,
+            );
+            try std.testing.expect(hover != null);
+
+            const completion_providers = try features.completion_provider.ordered(allocator, model, false);
+            defer allocator.free(completion_providers);
+            try std.testing.expect(completion_providers.len > 0);
+
+            const symbol_providers = try features.document_symbol_provider.ordered(allocator, model, false);
+            defer allocator.free(symbol_providers);
+            try std.testing.expect(symbol_providers.len > 0);
+
+            const declaration_providers = try features.declaration_provider.ordered(allocator, model, false);
+            defer allocator.free(declaration_providers);
+            try std.testing.expect(declaration_providers.len > 0);
+            var check_arena = std.heap.ArenaAllocator.init(allocator);
+            defer check_arena.deinit();
+            const check_links = try declaration_providers[0].provide_declaration(
+                declaration_providers[0].context,
+                check_arena.allocator(),
+                model,
+                Position.init(1, 1),
+                @import("../../../base/common/cancellation.zig").CancellationToken.None,
+            );
+            try std.testing.expect(check_links.len > 0);
+            const implementation_providers = try features.implementation_provider.ordered(allocator, model, false);
+            defer allocator.free(implementation_providers);
+            try std.testing.expect(implementation_providers.len > 0);
+            const type_providers = try features.type_definition_provider.ordered(allocator, model, false);
+            defer allocator.free(type_providers);
+            try std.testing.expect(type_providers.len > 0);
+            const reference_providers = try features.reference_provider.ordered(allocator, model, false);
+            defer allocator.free(reference_providers);
+            try std.testing.expect(reference_providers.len > 0);
+
+            // Extension command names reach the same workbench actions.
+            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToDeclaration"));
+            try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.revealDeclaration"));
+            try std.testing.expectEqual(@as(usize, 2), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToImplementation"));
+            try std.testing.expectEqual(@as(usize, 3), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToTypeDefinition"));
+            try std.testing.expectEqual(@as(usize, 1), workbench.activeTab().?.editor.modelCursorPosition().lineNumber);
+
+            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.goToReferences"));
+            try std.testing.expect(workbench.quick_access.isOpen());
+            workbench.quick_access.inputService().hide();
+            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.findReferences"));
+            try std.testing.expect(workbench.quick_access.isOpen());
+            workbench.quick_access.inputService().hide();
+            try std.testing.expect(runLspCommand(Services.bind(workbench), "outline.focus"));
+            try std.testing.expect(workbench.quick_access.isOpen());
+            workbench.quick_access.inputService().hide();
+            try std.testing.expect(runLspCommand(Services.bind(workbench), "editor.action.showHover"));
+            try std.testing.expect(workbench.activeTab().?.controllers.?.hover.isVisible());
+            const tab = workbench.activeTab().?;
+            try tab.editor.setCursorPosition(Position.init(1, model.getLineMaxColumn(1)));
+            try tab.editor.insertText("é");
+            _ = extension_host.pump();
+            const inline_deadline = time_compat.milliTimestamp() + 5_000;
+            while (!tab.view.ghost_text.isVisible() and time_compat.milliTimestamp() < inline_deadline) {
+                _ = extension_host.pump();
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+                time_compat.sleepMillis(10);
+            }
+            try std.testing.expect(tab.view.ghost_text.isVisible());
+            try std.testing.expectEqualStrings(" inline result", tab.view.ghost_text.text.?);
+            var before_inline = try model.getLineContent(1);
+            defer before_inline.deinit();
+            try std.testing.expect(try extension_host.inline_completions.accept());
+            var after_inline = try model.getLineContent(1);
+            defer after_inline.deinit();
+            try std.testing.expect(std.mem.endsWith(u8, after_inline.items, "é inline result"));
+            try tab.editor.undo();
+            var undone = try model.getLineContent(1);
+            defer undone.deinit();
+            try std.testing.expectEqualStrings(before_inline.items, undone.items);
+        }
+
+        test "Extensions: relative paths mirror the model URI language features use" {
+            // Regression: a relative command-line path used to be mirrored with its
+            // raw spelling while language-feature requests carried the model's
+            // absolute URI. The host never found the document, so `gd`/F12 and the
+            // other navigation actions returned no result for relative paths.
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            std.Io.Dir.cwd().access(io, "host/test-fixtures/language-features/package.json", .{}) catch return error.SkipZigTest;
+
+            const allocator = std.testing.allocator;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "relative.json", .data = "{\n  \"a\": 1\n}\n" });
+            var absolute_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const absolute_length = try tmp.dir.realPathFile(io, "relative.json", &absolute_buffer);
+            var cwd_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const cwd_length = try Io.Dir.cwd().realPathFile(io, ".", &cwd_buffer);
+            const relative = try std.fs.path.relativeAlloc(
+                allocator,
+                cwd_buffer[0..cwd_length],
+                null,
+                cwd_buffer[0..cwd_length],
+                absolute_buffer[0..absolute_length],
+            );
+            defer allocator.free(relative);
+            // The bug only manifests when the input spelling is relative.
+            if (std.fs.path.isAbsolute(relative)) return error.SkipZigTest;
+
+            const workbench_window = try TestWindow.init(allocator, io, &.{relative}, 80, 24);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            try workbench.enableLanguageFeatures();
+
+            var extension_host = try Extensions.init(
+                allocator,
+                io,
+                Services.bind(workbench),
+                &.{.{ .path = "host/test-fixtures/language-features", .is_under_development = true }},
+                ".cache-ext/data-relative-fixture",
+                "host/dist",
+            );
+            defer extension_host.deinit();
+
+            const tab = workbench.activeTab().?;
+            const model_uri = try std_uri.resourceKey(allocator, tab.editor.model.uri());
+            defer allocator.free(model_uri);
+
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            var mirrored: ?[]u8 = null;
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                if (extension_host.active) |active| {
+                    mirrored = try std.fmt.allocPrint(allocator, "file://{s}", .{active.uri});
                     break;
                 }
+                time_compat.sleepMillis(10);
             }
-            if (found_completion) break;
-        }
-        if (!found_completion) time_compat.sleepMillis(200);
-    }
-    try std.testing.expect(found_completion);
+            defer if (mirrored) |value| allocator.free(value);
+            try std.testing.expect(mirrored != null);
+            try std.testing.expectEqualStrings(model_uri, mirrored.?);
 
-    // Hover: quick info for `value` carries tsserver's display string.
-    var found_hover = false;
-    while (!found_hover and time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        const providers = try features.hover_provider.ordered(allocator, model, false);
-        defer allocator.free(providers);
-        for (providers) |provider| {
-            const hover = provider.provide_hover(provider.context, model, Position.init(2, 14), token, null) catch continue;
-            if (hover) |value| {
-                for (value.contents) |content| {
-                    if (std.mem.indexOf(u8, content.value, "number") != null) {
-                        found_hover = true;
+            // The fixture provider sees the mirrored document and the action jumps to
+            // its target range on line 1.
+            try tab.editor.setCursorPosition(Position.init(3, 1));
+            const navigation_deadline = time_compat.milliTimestamp() + 10_000;
+            var navigated = false;
+            while (!navigated and time_compat.milliTimestamp() < navigation_deadline) {
+                _ = extension_host.pump();
+                navigated = workbench.revealDefinition() catch false;
+                if (!navigated) time_compat.sleepMillis(20);
+            }
+            try std.testing.expect(navigated);
+            try std.testing.expectEqual(@as(usize, 1), tab.editor.modelCursorPosition().lineNumber);
+
+            // Opening, selecting and closing tabs now deliver the document delta on
+            // editor events, even if the host's message pump has not been called.
+            try tmp.dir.writeFile(io, .{ .sub_path = "second.json", .data = "{\n}\n" });
+            var second_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const second_length = try tmp.dir.realPathFile(io, "second.json", &second_buffer);
+            try workbench.openPath(second_buffer[0..second_length]);
+            const second = workbench.activeTab().?;
+            try std.testing.expect(extension_host.active.?.tab == second);
+            try std.testing.expect(extension_host.tabs_task.at != null);
+            try second.editor.setCursorPosition(Position.init(2, 1));
+            try std.testing.expect(extension_host.selection_task.at != null);
+            second.editor.emitCurrentViewState();
+            try std.testing.expect(extension_host.visible_ranges_task.at != null);
+            second.editor.model.setLanguage("plaintext");
+            try std.testing.expectEqualStrings("plaintext", extension_host.active.?.language_id);
+            for (0..256) |_| {
+                if (extension_host.tabs_task.at == null and extension_host.selection_task.at == null and extension_host.visible_ranges_task.at == null) break;
+                _ = workbench.window_events.dispatch(time_compat.milliTimestamp());
+            }
+            try std.testing.expect(extension_host.tabs_task.at == null and extension_host.selection_task.at == null and extension_host.visible_ranges_task.at == null);
+            try std.testing.expectEqual(@as(usize, 2), extension_host.last_selections.items[0].endLineNumber);
+            _ = try workbench.closeActive();
+            try std.testing.expect(extension_host.active.?.tab == tab);
+        }
+
+        test "Extensions: real TypeScript extension drives the language features" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
+            std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
+
+            const allocator = std.testing.allocator;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "sample.ts", .data =
+                \\const  value:number = "text";
+                \\const other=value.toFixed( );
+                \\const é = 1; const x: number = "s";
+                \\
+            });
+            var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path_length = try tmp.dir.realPathFile(io, "sample.ts", &path_buffer);
+
+            const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            try workbench.enableLanguageFeatures();
+            var extension_host = try Extensions.init(
+                allocator,
+                io,
+                Services.bind(workbench),
+                &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
+                ".cache-ext/data-ts-test",
+                "host/dist",
+            );
+            defer extension_host.deinit();
+
+            const marker_service = workbench.marker_service.?;
+            const features = workbench.language_features.?;
+            const tab = workbench.activeTab().?;
+            const model = tab.editor.model;
+            var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
+            defer resource.deinit(allocator);
+            const token = @import("../../../base/common/cancellation.zig").CancellationToken.None;
+
+            const deadline = time_compat.milliTimestamp() + 60_000;
+
+            // Diagnostics: the extension's tsserver client publishes semantic errors
+            // through its diagnostic collection.
+            var found_diagnostic = false;
+            var verified_utf16 = false;
+            while ((!found_diagnostic or !verified_utf16) and time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const list = marker_service.read(arena.allocator(), .{ .resource = resource }) catch &.{};
+                for (list) |marker| {
+                    if (std.mem.indexOf(u8, marker.message, "not assignable") == null) continue;
+                    found_diagnostic = true;
+                    if (marker.start_line_number == 3) {
+                        var line = try model.getLineContent(3);
+                        defer line.deinit();
+                        if (marker.start_column == 21 and marker.end_column == 22 and line.items.len >= 21 and line.items[20] == 'x') {
+                            verified_utf16 = true;
+                        }
+                    }
+                }
+                if (!found_diagnostic or !verified_utf16) time_compat.sleepMillis(20);
+            }
+            try std.testing.expect(found_diagnostic);
+            try std.testing.expect(verified_utf16);
+
+            // Completion: tsserver suggests `toFixed` after `value.`.
+            var found_completion = false;
+            while (!found_completion and time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                const providers = try features.completion_provider.ordered(allocator, model, false);
+                defer allocator.free(providers);
+                for (providers) |provider| {
+                    var arena = std.heap.ArenaAllocator.init(allocator);
+                    defer arena.deinit();
+                    const list = provider.provide_completion_items(
+                        provider.context,
+                        arena.allocator(),
+                        model,
+                        Position.init(2, 19),
+                        .{},
+                        token,
+                    ) catch continue;
+                    for (list.items) |item| {
+                        if (std.mem.indexOf(u8, item.label, "toFixed") != null) {
+                            found_completion = true;
+                            break;
+                        }
+                    }
+                    if (found_completion) break;
+                }
+                if (!found_completion) time_compat.sleepMillis(200);
+            }
+            try std.testing.expect(found_completion);
+
+            // Hover: quick info for `value` carries tsserver's display string.
+            var found_hover = false;
+            while (!found_hover and time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                const providers = try features.hover_provider.ordered(allocator, model, false);
+                defer allocator.free(providers);
+                for (providers) |provider| {
+                    const hover = provider.provide_hover(provider.context, model, Position.init(2, 14), token, null) catch continue;
+                    if (hover) |value| {
+                        for (value.contents) |content| {
+                            if (std.mem.indexOf(u8, content.value, "number") != null) {
+                                found_hover = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (found_hover) break;
+                }
+                if (!found_hover) time_compat.sleepMillis(200);
+            }
+            try std.testing.expect(found_hover);
+
+            // Definition: `value` on line 2 resolves to its declaration on line 1.
+            const definition_tab = workbench.activeTab().?;
+            try definition_tab.editor.setCursorPosition(Position.init(2, 13));
+            var found_definition = false;
+            while (!found_definition and time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                if (try workbench.revealDefinition()) {
+                    if (workbench.activeTab()) |opened| {
+                        const target = opened.editor.modelCursorPosition();
+                        if (target.lineNumber == 1 and std.mem.eql(u8, opened.editor.path, definition_tab.editor.path)) {
+                            found_definition = true;
+                            break;
+                        }
+                    }
+                }
+                time_compat.sleepMillis(200);
+            }
+            try std.testing.expect(found_definition);
+
+            try tab.editor.setCursorPosition(Position.init(2, 13));
+            try workbench.commands.execute("references-view.findReferences");
+            try std.testing.expect(workbench.quick_access.isOpen());
+            const reference_picker = workbench.quick_access.inputService().pickerRef();
+            try std.testing.expect(reference_picker.items.items.len >= 3);
+            reference_picker.accept();
+            try workbench.commands.execute("references-view.pickFromHistory");
+            try std.testing.expectEqualStrings("value", reference_picker.items.items[0].item.label);
+            reference_picker.accept();
+            try std.testing.expect(reference_picker.items.items.len >= 3);
+            workbench.quick_access.inputService().hide();
+
+            // Document symbols: the extension's provider feeds the breadcrumb/outline
+            // registries with UTF-16-converted ranges.
+            var found_symbol = false;
+            while (!found_symbol and time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                const providers = try features.document_symbol_provider.ordered(allocator, model, false);
+                defer allocator.free(providers);
+                for (providers) |provider| {
+                    var arena = std.heap.ArenaAllocator.init(allocator);
+                    defer arena.deinit();
+                    const symbols = provider.provide_document_symbols(
+                        provider.context,
+                        arena.allocator(),
+                        model,
+                        token,
+                    ) catch continue;
+                    for (symbols) |symbol| {
+                        if (std.mem.eql(u8, symbol.name, "value") or std.mem.eql(u8, symbol.name, "other")) {
+                            found_symbol = true;
+                            break;
+                        }
+                    }
+                    if (found_symbol) break;
+                }
+                if (!found_symbol) time_compat.sleepMillis(200);
+            }
+            try std.testing.expect(found_symbol);
+
+            // Formatting: the extension's document formatting provider replaces the
+            // unformatted text through the regular editor command path.
+            var formatted = false;
+            while (!formatted and time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                tab.editor.formatDocument() catch {};
+                var text = try model.getValue(.LF, false);
+                defer text.deinit();
+                formatted = std.mem.indexOf(u8, text.items, "const value: number") != null;
+                if (!formatted) time_compat.sleepMillis(200);
+            }
+            try std.testing.expect(formatted);
+        }
+
+        test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
+            std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
+
+            const allocator = std.testing.allocator;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "broken.cjs", .data =
+                \\function f() {
+                \\    return 1;
+                \\}
+                \\
+            });
+            var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path_length = try tmp.dir.realPathFile(io, "broken.cjs", &path_buffer);
+
+            const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            try workbench.enableLanguageFeatures();
+            var extension_host = try Extensions.init(
+                allocator,
+                io,
+                Services.bind(workbench),
+                &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
+                ".cache-ext/data-js-test",
+                "host/dist",
+            );
+            defer extension_host.deinit();
+
+            const marker_service = workbench.marker_service.?;
+            const tab = workbench.activeTab().?;
+            const model = tab.editor.model;
+            // Let the extension activate and open the mirror before simulating the
+            // user edit; the workbench starts the host asynchronously after the first
+            // document delta.
+            const ready_deadline = time_compat.milliTimestamp() + 5_000;
+            while (time_compat.milliTimestamp() < ready_deadline) {
+                _ = extension_host.pump();
+                time_compat.sleepMillis(20);
+            }
+            // Make the file invalid after the extension host has opened it, matching
+            // the user path: delete the closing brace and wait for the diagnostics.
+            try tab.editor.setCursorPosition(Position.init(3, 2));
+            try tab.editor.deleteLeft();
+            try std.testing.expect(tab.editor.last_content_changes.items.len > 0);
+            var edited_line = try model.getLineContent(3);
+            defer edited_line.deinit();
+            try std.testing.expectEqualStrings("", edited_line.items);
+
+            var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
+            defer resource.deinit(allocator);
+
+            const deadline = time_compat.milliTimestamp() + 60_000;
+            var found_error = false;
+            var marker_line: u32 = 0;
+            var marker_column: u32 = 0;
+            while (!found_error and time_compat.milliTimestamp() < deadline) {
+                _ = extension_host.pump();
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const list = marker_service.read(arena.allocator(), .{ .resource = resource }) catch &.{};
+                for (list) |marker| {
+                    if (marker.severity == markers_mod.MarkerSeverity.Error) {
+                        found_error = true;
+                        marker_line = marker.start_line_number;
+                        marker_column = marker.start_column;
                         break;
                     }
                 }
+                if (!found_error) time_compat.sleepMillis(20);
             }
-            if (found_hover) break;
-        }
-        if (!found_hover) time_compat.sleepMillis(200);
-    }
-    try std.testing.expect(found_hover);
+            try std.testing.expect(found_error);
 
-    // Definition: `value` on line 2 resolves to its declaration on line 1.
-    const definition_tab = workbench.activeTab().?;
-    try definition_tab.editor.setCursorPosition(Position.init(2, 13));
-    var found_definition = false;
-    while (!found_definition and time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        if (try workbench.revealDefinition()) {
-            if (workbench.activeTab()) |opened| {
-                const target = opened.editor.modelCursorPosition();
-                if (target.lineNumber == 1 and std.mem.eql(u8, opened.editor.path, definition_tab.editor.path)) {
-                    found_definition = true;
-                    break;
-                }
+            // The same marker feeds the workbench hover: moving the caret into the
+            // diagnostic range and opening the hover (the `gh` path) must show the
+            // severity/message rows.
+            try tab.ensureControllers();
+            try tab.editor.setCursorPosition(Position.init(marker_line, marker_column));
+            try std.testing.expect(try workbench.showHover());
+            const controllers = tab.controllers orelse return error.TestUnexpectedResult;
+            try std.testing.expect(controllers.hover.isVisible());
+            const content = controllers.hover.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
+            try std.testing.expect(std.mem.indexOf(u8, content, "Error:") != null);
+        }
+
+        test "Extensions: showDocument applies a line selection" {
+            const allocator = std.testing.allocator;
+            const io = std.Io.Threaded.global_single_threaded.io();
+            var editor = try Editor.createFromText(allocator, io, "alpha\nbeta\n", "selection.txt", 40, 8);
+            defer {
+                editor.deinit();
+                allocator.destroy(editor);
             }
-        }
-        time_compat.sleepMillis(200);
-    }
-    try std.testing.expect(found_definition);
-
-    try tab.editor.setCursorPosition(Position.init(2, 13));
-    try workbench.commands.execute("references-view.findReferences");
-    try std.testing.expect(workbench.quick_access.isOpen());
-    const reference_picker = workbench.quick_access.inputService().pickerRef();
-    try std.testing.expect(reference_picker.items.items.len >= 3);
-    reference_picker.accept();
-    try workbench.commands.execute("references-view.pickFromHistory");
-    try std.testing.expectEqualStrings("value", reference_picker.items.items[0].item.label);
-    reference_picker.accept();
-    try std.testing.expect(reference_picker.items.items.len >= 3);
-    workbench.quick_access.inputService().hide();
-
-    // Document symbols: the extension's provider feeds the breadcrumb/outline
-    // registries with UTF-16-converted ranges.
-    var found_symbol = false;
-    while (!found_symbol and time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        const providers = try features.document_symbol_provider.ordered(allocator, model, false);
-        defer allocator.free(providers);
-        for (providers) |provider| {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
-            const symbols = provider.provide_document_symbols(
-                provider.context,
+            const options = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"selection\":{\"startLineNumber\":2,\"startColumn\":1,\"endLineNumber\":2,\"endColumn\":2}}", .{});
+            applyShowDocumentSelection(editor, options);
+            try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
+            try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
+        }
+
+        test "Extensions: editorScroll, revealLine and cursorMove command arguments" {
+            const allocator = std.testing.allocator;
+            const io = std.Io.Threaded.global_single_threaded.io();
+            var editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight", "test.txt", 40, 6);
+            defer {
+                editor.deinit();
+                allocator.destroy(editor);
+            }
+
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+
+            const scroll_args = try std.json.parseFromSliceLeaky(
+                std.json.Value,
                 arena.allocator(),
-                model,
-                token,
-            ) catch continue;
-            for (symbols) |symbol| {
-                if (std.mem.eql(u8, symbol.name, "value") or std.mem.eql(u8, symbol.name, "other")) {
-                    found_symbol = true;
-                    break;
-                }
-            }
-            if (found_symbol) break;
+                "[{\"to\":\"down\",\"by\":\"line\",\"value\":2}]",
+                .{},
+            );
+            try std.testing.expect(applyEditorScroll(editor, scroll_args.array.items));
+            try std.testing.expectEqual(@as(usize, 3), editor.topViewLine());
+
+            const reveal_args = try std.json.parseFromSliceLeaky(
+                std.json.Value,
+                arena.allocator(),
+                "[{\"lineNumber\":0,\"at\":\"top\"}]",
+                .{},
+            );
+            try std.testing.expect(applyRevealLine(editor, reveal_args.array.items));
+            try std.testing.expectEqual(@as(usize, 1), editor.topViewLine());
+
+            try editor.setCursorPosition(Position.init(1, 1));
+            const move_args = try std.json.parseFromSliceLeaky(
+                std.json.Value,
+                arena.allocator(),
+                "[{\"to\":\"down\",\"by\":\"line\",\"select\":false,\"value\":1}]",
+                .{},
+            );
+            try std.testing.expect(try applyCursorMove(editor, move_args.array.items));
+            try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
         }
-        if (!found_symbol) time_compat.sleepMillis(200);
-    }
-    try std.testing.expect(found_symbol);
 
-    // Formatting: the extension's document formatting provider replaces the
-    // unformatted text through the regular editor command path.
-    var formatted = false;
-    while (!formatted and time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        tab.editor.formatDocument() catch {};
-        var text = try model.getValue(.LF, false);
-        defer text.deinit();
-        formatted = std.mem.indexOf(u8, text.items, "const value: number") != null;
-        if (!formatted) time_compat.sleepMillis(200);
-    }
-    try std.testing.expect(formatted);
-}
+        test "extension host document mirror keeps UTF-16 deletion ranges valid" {
+            const allocator = std.testing.allocator;
+            var lines = std.array_list.Managed([]u8).init(allocator);
+            try lines.append(try allocator.dupe(u8, "é}"));
+            defer freeDocumentLines(allocator, &lines);
 
-test "Extensions: real TypeScript extension reports JavaScript syntax errors" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, "host/dist/extensions/typescript-language-features/package.json", .{}) catch return error.SkipZigTest;
-    std.Io.Dir.cwd().access(io, "host/dist/extensions/node_modules/typescript/lib/tsserver.js", .{}) catch return error.SkipZigTest;
+            // `é` is two UTF-8 bytes but one UTF-16 code unit: deleting `}` is byte
+            // columns 3..4 and UTF-16 columns 2..3 in the mirrored document.
+            try std.testing.expectEqual(@as(usize, 2), utf16ColumnInLines(lines.items, 1, 3));
+            try std.testing.expectEqual(@as(usize, 3), utf16ColumnInLines(lines.items, 1, 4));
 
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "broken.cjs", .data =
-        \\function f() {
-        \\    return 1;
-        \\}
-        \\
-    });
-    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const path_length = try tmp.dir.realPathFile(io, "broken.cjs", &path_buffer);
-
-    const workbench_window = try TestWindow.init(allocator, io, &.{path_buffer[0..path_length]}, 100, 30);
-    const workbench = workbench_window.workbench;
-    defer workbench_window.deinit();
-    try workbench.enableLanguageFeatures();
-    var extension_host = try Extensions.init(
-        allocator,
-        io,
-        Services.bind(workbench),
-        &.{.{ .path = "host/dist/extensions/typescript-language-features", .is_builtin = true }},
-        ".cache-ext/data-js-test",
-        "host/dist",
-    );
-    defer extension_host.deinit();
-
-    const marker_service = workbench.marker_service.?;
-    const tab = workbench.activeTab().?;
-    const model = tab.editor.model;
-    // Let the extension activate and open the mirror before simulating the
-    // user edit; the workbench starts the host asynchronously after the first
-    // document delta.
-    const ready_deadline = time_compat.milliTimestamp() + 5_000;
-    while (time_compat.milliTimestamp() < ready_deadline) {
-        _ = extension_host.pump();
-        time_compat.sleepMillis(20);
-    }
-    // Make the file invalid after the extension host has opened it, matching
-    // the user path: delete the closing brace and wait for the diagnostics.
-    try tab.editor.setCursorPosition(Position.init(3, 2));
-    try tab.editor.deleteLeft();
-    try std.testing.expect(tab.editor.last_content_changes.items.len > 0);
-    var edited_line = try model.getLineContent(3);
-    defer edited_line.deinit();
-    try std.testing.expectEqualStrings("", edited_line.items);
-
-    var resource = try markers_mod.Resource.fromUri(allocator, model.uri());
-    defer resource.deinit(allocator);
-
-    const deadline = time_compat.milliTimestamp() + 60_000;
-    var found_error = false;
-    var marker_line: u32 = 0;
-    var marker_column: u32 = 0;
-    while (!found_error and time_compat.milliTimestamp() < deadline) {
-        _ = extension_host.pump();
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const list = marker_service.read(arena.allocator(), .{ .resource = resource }) catch &.{};
-        for (list) |marker| {
-            if (marker.severity == markers_mod.MarkerSeverity.Error) {
-                found_error = true;
-                marker_line = marker.start_line_number;
-                marker_column = marker.start_column;
-                break;
-            }
+            var empty: [0]u8 = .{};
+            try applyChangeToDocumentLines(allocator, &lines, .{
+                .range = Range.init(1, 3, 1, 4),
+                .text = empty[0..],
+            });
+            try std.testing.expectEqual(@as(usize, 1), lines.items.len);
+            try std.testing.expectEqualStrings("é", lines.items[0]);
         }
-        if (!found_error) time_compat.sleepMillis(20);
-    }
-    try std.testing.expect(found_error);
 
-    // The same marker feeds the workbench hover: moving the caret into the
-    // diagnostic range and opening the hover (the `gh` path) must show the
-    // severity/message rows.
-    try tab.ensureControllers();
-    try tab.editor.setCursorPosition(Position.init(marker_line, marker_column));
-    try std.testing.expect(try workbench.showHover());
-    const controllers = tab.controllers orelse return error.TestUnexpectedResult;
-    try std.testing.expect(controllers.hover.isVisible());
-    const content = controllers.hover.widget().getWidgetContent() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, content, "Error:") != null);
-}
-
-test "Extensions: showDocument applies a line selection" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var editor = try Editor.createFromText(allocator, io, "alpha\nbeta\n", "selection.txt", 40, 8);
-    defer {
-        editor.deinit();
-        allocator.destroy(editor);
-    }
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const options = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"selection\":{\"startLineNumber\":2,\"startColumn\":1,\"endLineNumber\":2,\"endColumn\":2}}", .{});
-    applyShowDocumentSelection(editor, options);
-    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
-    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().column);
-}
-
-test "Extensions: editorScroll, revealLine and cursorMove command arguments" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var editor = try Editor.createFromText(allocator, io, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight", "test.txt", 40, 6);
-    defer {
-        editor.deinit();
-        allocator.destroy(editor);
-    }
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const scroll_args = try std.json.parseFromSliceLeaky(
-        std.json.Value,
-        arena.allocator(),
-        "[{\"to\":\"down\",\"by\":\"line\",\"value\":2}]",
-        .{},
-    );
-    try std.testing.expect(applyEditorScroll(editor, scroll_args.array.items));
-    try std.testing.expectEqual(@as(usize, 3), editor.topViewLine());
-
-    const reveal_args = try std.json.parseFromSliceLeaky(
-        std.json.Value,
-        arena.allocator(),
-        "[{\"lineNumber\":0,\"at\":\"top\"}]",
-        .{},
-    );
-    try std.testing.expect(applyRevealLine(editor, reveal_args.array.items));
-    try std.testing.expectEqual(@as(usize, 1), editor.topViewLine());
-
-    try editor.setCursorPosition(Position.init(1, 1));
-    const move_args = try std.json.parseFromSliceLeaky(
-        std.json.Value,
-        arena.allocator(),
-        "[{\"to\":\"down\",\"by\":\"line\",\"select\":false,\"value\":1}]",
-        .{},
-    );
-    try std.testing.expect(try applyCursorMove(editor, move_args.array.items));
-    try std.testing.expectEqual(@as(usize, 2), editor.modelCursorPosition().lineNumber);
-}
-
-test "extension host document mirror keeps UTF-16 deletion ranges valid" {
-    const allocator = std.testing.allocator;
-    var lines = std.array_list.Managed([]u8).init(allocator);
-    try lines.append(try allocator.dupe(u8, "é}"));
-    defer freeDocumentLines(allocator, &lines);
-
-    // `é` is two UTF-8 bytes but one UTF-16 code unit: deleting `}` is byte
-    // columns 3..4 and UTF-16 columns 2..3 in the mirrored document.
-    try std.testing.expectEqual(@as(usize, 2), utf16ColumnInLines(lines.items, 1, 3));
-    try std.testing.expectEqual(@as(usize, 3), utf16ColumnInLines(lines.items, 1, 4));
-
-    var empty: [0]u8 = .{};
-    try applyChangeToDocumentLines(allocator, &lines, .{
-        .range = Range.init(1, 3, 1, 4),
-        .text = empty[0..],
-    });
-    try std.testing.expectEqual(@as(usize, 1), lines.items.len);
-    try std.testing.expectEqualStrings("é", lines.items[0]);
-}
-
-/// Use one extension per host so an identically labelled native or Emmet
-/// suggestion cannot mask a client/server or activation failure.
-fn checkBuiltinCompletion(comptime name: []const u8, filename: []const u8, source: []const u8, expected: []const u8) !void {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    const allocator = std.testing.allocator;
-    var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{ "vscode/extensions/configuration-editing", "vscode/extensions/lua" });
-    defer catalog.deinit();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = source });
-    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = try tmp.dir.realPathFile(io, filename, &buf);
-    const workbench_window = try TestWindow.init(allocator, io, &.{buf[0..len]}, 100, 30);
-    const workbench = workbench_window.workbench;
-    defer workbench_window.deinit();
-    workbench.setDeclarativeExtensions(&catalog);
-    try workbench.enableLanguageFeatures();
-    var extensions = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{
-        .path = "host/dist/extensions/" ++ name,
-        .is_builtin = true,
-    }}, ".cache-ext/test-" ++ name, "host/dist");
-    defer extensions.deinit();
-    const model = workbench.activeTab().?.editor.model;
-    const deadline = time_compat.milliTimestamp() + 15_000;
-    while (time_compat.milliTimestamp() < deadline) {
-        _ = extensions.pump();
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const a = arena.allocator();
-        const providers = try workbench.language_features.?.completion_provider.ordered(a, model, false);
-        for (providers) |provider| {
-            const items = provider.provide_completion_items(provider.context, a, model, Position.init(1, source.len + 1), .{}, .None) catch continue;
-            for (items.items) |item| {
-                if (std.mem.indexOf(u8, item.insert_text, expected) != null) return;
-            }
-        }
-        time_compat.sleepMillis(100);
-    }
-    return error.MissingBuiltinCompletion;
-}
-
-test "Extensions: CSS server suggests background-color" {
-    try checkBuiltinCompletion("css-language-features", "style.css", "a { background-col", "background-color");
-}
-
-test "Extensions: HTML server suggests textarea" {
-    try checkBuiltinCompletion("html-language-features", "index.html", "<textar", "textarea");
-}
-
-test "Extensions: Emmet expands a nested abbreviation" {
-    try checkBuiltinCompletion("emmet", "index.html", "ul>li", "<li>");
-}
-
-test "Extensions: settings authoring suggests languages from declarative extensions" {
-    try checkBuiltinCompletion("configuration-editing", "settings.json", "{\"files.defaultLanguage\": ", "lua");
-}
-
-test "Extensions: manifest authoring suggests a language override snippet" {
-    try checkBuiltinCompletion("extension-editing", "package.json", "{\"contributes\": {\"configurationDefaults\": ", "language");
-}
-
-test "Extensions: accept incoming merge conflict in the workbench" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "conflict.txt", .data = "<<<<<<< HEAD\ncurrent\n=======\nincoming\n>>>>>>> branch\n" });
-    const path = try tmp.dir.realPathFileAlloc(io, "conflict.txt", allocator);
-    defer allocator.free(path);
-    const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 25);
-    const workbench = workbench_window.workbench;
-    defer workbench_window.deinit();
-    var host = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
-    defer host.deinit();
-    const command = "merge-conflict.accept.all-incoming";
-    const deadline = time_compat.milliTimestamp() + 10_000;
-    while (workbench.commands.get(command) == null and time_compat.milliTimestamp() < deadline) {
-        _ = host.pump();
-        time_compat.sleepMillis(10);
-    }
-    const action = workbench.commands.get(command) orelse return error.MissingMergeCommand;
-    try std.testing.expect(action.show_in_palette and action.precondition.?(action.context));
-    try workbench.commands.execute(command);
-    while (time_compat.milliTimestamp() < deadline) {
-        _ = host.pump();
-        var value = try workbench.activeTab().?.editor.model.getValue(null, false);
-        defer value.deinit();
-        if (std.mem.eql(u8, value.items, "incoming\n")) return;
-        time_compat.sleepMillis(10);
-    }
-    return error.MissingMergeEdit;
-}
-
-test "Extensions: account sessions need a grant for the requesting extension and scopes" {
-    if (!build_options.e2e) return error.SkipZigTest;
-    const allocator = std.testing.allocator;
-    const io = time_compat.io;
-    std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
-    const workbench_window = try TestWindow.init(allocator, io, &.{}, 100, 30);
-    const workbench = workbench_window.workbench;
-    defer workbench_window.deinit();
-    const ext = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/test-fixtures/authentication", .is_under_development = true }}, ".cache-ext/auth-fixture", "host/dist");
-    defer ext.deinit();
-    var tmp = std.heap.ArenaAllocator.init(allocator);
-    defer tmp.deinit();
-    const a = tmp.allocator();
-    try ext.accounts.activate(a, "fixture");
-    const Result = struct {
-        success: ?bool = null,
-        fn receive(ctx: *anyopaque, reply: rpc.Reply) void {
-            const self: *@This() = @ptrCast(@alignCast(ctx));
-            self.success = reply == .json and reply.json == .bool and reply.json.bool;
-        }
-        fn request(self: *@This(), host: *Extensions, interactive: bool, scope: []const u8) !void {
-            self.success = null;
-            _ = try host.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &.{
-                .{ .json = .{ .string = "fixture.account" } }, .{ .json = .{ .bool = interactive } }, .{ .json = .{ .string = scope } },
-            }, null, .{ .context = self, .callback = receive });
-        }
-        fn wait(self: *@This(), host: *Extensions, picker: bool) !void {
-            const deadline = time_compat.milliTimestamp() + 5000;
+        /// Use one extension per host so an identically labelled native or Emmet
+        /// suggestion cannot mask a client/server or activation failure.
+        fn checkBuiltinCompletion(comptime name: []const u8, filename: []const u8, source: []const u8, expected: []const u8) !void {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            var catalog = try @import("../../services/extensions/common/extensionsRegistry.zig").scan(allocator, &.{ "vscode/extensions/configuration-editing", "vscode/extensions/lua" });
+            defer catalog.deinit();
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = source });
+            var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const len = try tmp.dir.realPathFile(io, filename, &buf);
+            const workbench_window = try TestWindow.init(allocator, io, &.{buf[0..len]}, 100, 30);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            workbench.setDeclarativeExtensions(&catalog);
+            try workbench.enableLanguageFeatures();
+            var extensions = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{
+                .path = "host/dist/extensions/" ++ name,
+                .is_builtin = true,
+            }}, ".cache-ext/test-" ++ name, "host/dist");
+            defer extensions.deinit();
+            const model = workbench.activeTab().?.editor.model;
+            const deadline = time_compat.milliTimestamp() + 15_000;
             while (time_compat.milliTimestamp() < deadline) {
+                _ = extensions.pump();
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const a = arena.allocator();
+                const providers = try workbench.language_features.?.completion_provider.ordered(a, model, false);
+                for (providers) |provider| {
+                    const items = provider.provide_completion_items(provider.context, a, model, Position.init(1, source.len + 1), .{}, .None) catch continue;
+                    for (items.items) |item| {
+                        if (std.mem.indexOf(u8, item.insert_text, expected) != null) return;
+                    }
+                }
+                time_compat.sleepMillis(100);
+            }
+            return error.MissingBuiltinCompletion;
+        }
+
+        test "Extensions: CSS server suggests background-color" {
+            try checkBuiltinCompletion("css-language-features", "style.css", "a { background-col", "background-color");
+        }
+
+        test "Extensions: HTML server suggests textarea" {
+            try checkBuiltinCompletion("html-language-features", "index.html", "<textar", "textarea");
+        }
+
+        test "Extensions: Emmet expands a nested abbreviation" {
+            try checkBuiltinCompletion("emmet", "index.html", "ul>li", "<li>");
+        }
+
+        test "Extensions: settings authoring suggests languages from declarative extensions" {
+            try checkBuiltinCompletion("configuration-editing", "settings.json", "{\"files.defaultLanguage\": ", "lua");
+        }
+
+        test "Extensions: manifest authoring suggests a language override snippet" {
+            try checkBuiltinCompletion("extension-editing", "package.json", "{\"contributes\": {\"configurationDefaults\": ", "language");
+        }
+
+        test "Extensions: accept incoming merge conflict in the workbench" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            var tmp = std.testing.tmpDir(.{});
+            defer tmp.cleanup();
+            try tmp.dir.writeFile(io, .{ .sub_path = "conflict.txt", .data = "<<<<<<< HEAD\ncurrent\n=======\nincoming\n>>>>>>> branch\n" });
+            const path = try tmp.dir.realPathFileAlloc(io, "conflict.txt", allocator);
+            defer allocator.free(path);
+            const workbench_window = try TestWindow.init(allocator, io, &.{path}, 80, 25);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            var host = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/dist/extensions/merge-conflict", .is_builtin = true }}, ".cache-ext/test-merge", "host/dist");
+            defer host.deinit();
+            const command = "merge-conflict.accept.all-incoming";
+            const deadline = time_compat.milliTimestamp() + 10_000;
+            while (workbench.commands.get(command) == null and time_compat.milliTimestamp() < deadline) {
                 _ = host.pump();
-                if (if (picker) host.services.quick_access.isOpen() else self.success != null) return;
                 time_compat.sleepMillis(10);
             }
-            return error.Timeout;
+            const action = workbench.commands.get(command) orelse return error.MissingMergeCommand;
+            try std.testing.expect(action.show_in_palette and action.precondition.?(action.context));
+            try workbench.commands.execute(command);
+            while (time_compat.milliTimestamp() < deadline) {
+                _ = host.pump();
+                var value = try workbench.activeTab().?.editor.model.getValue(null, false);
+                defer value.deinit();
+                if (std.mem.eql(u8, value.items, "incoming\n")) return;
+                time_compat.sleepMillis(10);
+            }
+            return error.MissingMergeEdit;
+        }
+
+        test "Extensions: account sessions need a grant for the requesting extension and scopes" {
+            if (!build_options.e2e) return error.SkipZigTest;
+            const allocator = std.testing.allocator;
+            const io = time_compat.io;
+            std.Io.Dir.cwd().access(io, "host/dist/extensionHost.mjs", .{}) catch return error.SkipZigTest;
+            const workbench_window = try TestWindow.init(allocator, io, &.{}, 100, 30);
+            const workbench = workbench_window.workbench;
+            defer workbench_window.deinit();
+            const ext = try Extensions.init(allocator, io, Services.bind(workbench), &.{.{ .path = "host/test-fixtures/authentication", .is_under_development = true }}, ".cache-ext/auth-fixture", "host/dist");
+            defer ext.deinit();
+            var tmp = std.heap.ArenaAllocator.init(allocator);
+            defer tmp.deinit();
+            const a = tmp.allocator();
+            try ext.accounts.activate(a, "fixture");
+            const Result = struct {
+                success: ?bool = null,
+                fn receive(ctx: *anyopaque, reply: rpc.Reply) void {
+                    const self: *@This() = @ptrCast(@alignCast(ctx));
+                    self.success = reply == .json and reply.json == .bool and reply.json.bool;
+                }
+                fn request(self: *@This(), host: *Extensions, interactive: bool, scope: []const u8) !void {
+                    self.success = null;
+                    _ = try host.host.call(proxyIdentifier.identifierFromEnum(protocol.ExtHostContext.ExtHostCommands), "$executeContributedCommand", &.{
+                        .{ .json = .{ .string = "fixture.account" } }, .{ .json = .{ .bool = interactive } }, .{ .json = .{ .string = scope } },
+                    }, null, .{ .context = self, .callback = receive });
+                }
+                fn wait(self: *@This(), host: *Extensions, picker: bool) !void {
+                    const deadline = time_compat.milliTimestamp() + 5000;
+                    while (time_compat.milliTimestamp() < deadline) {
+                        _ = host.pump();
+                        if (if (picker) host.services.quick_access.isOpen() else self.success != null) return;
+                        time_compat.sleepMillis(10);
+                    }
+                    return error.Timeout;
+                }
+            };
+            var result: Result = .{};
+            try result.request(ext, false, "read");
+            try result.wait(ext, false);
+            try std.testing.expect(!result.success.?);
+            try result.request(ext, true, "read");
+            try result.wait(ext, true);
+            const picker = workbench.quick_access.inputService().pickerRef();
+            try std.testing.expectEqualStrings("Cancel", picker.activeItem().?.label);
+            picker.accept();
+            try result.wait(ext, false);
+            try std.testing.expect(!result.success.?);
+            try result.request(ext, true, "read");
+            try result.wait(ext, true);
+            picker.setActiveIndex(1);
+            picker.accept();
+            try result.wait(ext, false);
+            try std.testing.expect(result.success.?);
+            try result.request(ext, false, "read");
+            try result.wait(ext, false);
+            try std.testing.expect(result.success.?);
+            try result.request(ext, false, "write");
+            try result.wait(ext, false);
+            try std.testing.expect(!result.success.?);
+            const accounts = try ext.accounts.accounts(a, "fixture");
+            try std.testing.expectEqual(@as(usize, 1), accounts.array.items.len);
+            try std.testing.expect(accounts.array.items[0].object.get("accessToken") == null);
+            try workbench.commands.execute("workbench.action.accounts.manage");
+            picker.accept();
+            try std.testing.expectEqualStrings("Fixture user", picker.activeItem().?.label);
+            picker.accept();
+            picker.setActiveIndex(1);
+            picker.accept();
+            try std.testing.expectEqual(@as(usize, 0), (try ext.accounts.accounts(a, "fixture")).array.items.len);
+            try result.request(ext, false, "read");
+            try result.wait(ext, false);
+            try std.testing.expect(!result.success.?);
         }
     };
-    var result: Result = .{};
-    try result.request(ext, false, "read");
-    try result.wait(ext, false);
-    try std.testing.expect(!result.success.?);
-    try result.request(ext, true, "read");
-    try result.wait(ext, true);
-    const picker = workbench.quick_access.inputService().pickerRef();
-    try std.testing.expectEqualStrings("Cancel", picker.activeItem().?.label);
-    picker.accept();
-    try result.wait(ext, false);
-    try std.testing.expect(!result.success.?);
-    try result.request(ext, true, "read");
-    try result.wait(ext, true);
-    picker.setActiveIndex(1);
-    picker.accept();
-    try result.wait(ext, false);
-    try std.testing.expect(result.success.?);
-    try result.request(ext, false, "read");
-    try result.wait(ext, false);
-    try std.testing.expect(result.success.?);
-    try result.request(ext, false, "write");
-    try result.wait(ext, false);
-    try std.testing.expect(!result.success.?);
-    const accounts = try ext.accounts.accounts(a, "fixture");
-    try std.testing.expectEqual(@as(usize, 1), accounts.array.items.len);
-    try std.testing.expect(accounts.array.items[0].object.get("accessToken") == null);
-    try workbench.commands.execute("workbench.action.accounts.manage");
-    picker.accept();
-    try std.testing.expectEqualStrings("Fixture user", picker.activeItem().?.label);
-    picker.accept();
-    picker.setActiveIndex(1);
-    picker.accept();
-    try std.testing.expectEqual(@as(usize, 0), (try ext.accounts.accounts(a, "fixture")).array.items.len);
-    try result.request(ext, false, "read");
-    try result.wait(ext, false);
-    try std.testing.expect(!result.success.?);
 }

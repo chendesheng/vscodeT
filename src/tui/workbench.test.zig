@@ -1,5 +1,5 @@
 // Terminal workbench integration tests, driven through the host and service APIs.
-const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow;
+const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow(@import("./editorView.zig").View.createHandle);
 const terminal_workbench = @import("workbench.zig");
 const renderFrame = terminal_workbench.renderFrame;
 const cursorCell = @import("workbench.zig").cursorCell;
@@ -488,11 +488,11 @@ test "Workbench: opening a new file rebuilds its view once" {
 
     try workbench.openPath(path_b);
     const tab = workbench.activeTab().?;
-    try std.testing.expectEqual(@as(usize, 0), tab.view.renderCount());
+    try std.testing.expectEqual(@as(usize, 0), @import("./editorView.zig").View.nativeView(tab.view).renderCount());
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try renderFrame(workbench, &out.writer);
-    try std.testing.expectEqual(@as(usize, 1), tab.view.renderCount());
+    try std.testing.expectEqual(@as(usize, 1), @import("./editorView.zig").View.nativeView(tab.view).renderCount());
 }
 
 test "Workbench: markdown preview toggle changes the current editor in place" {
@@ -692,7 +692,7 @@ test "Workbench: split copy shares rendered edits after changing focus" {
     try renderFrame(workbench, &out.writer);
 
     const active = workbench.activeTab().?;
-    try std.testing.expect(!inactive.view.needsRender());
+    try std.testing.expect(!@import("./editorView.zig").View.nativeView(inactive.view).needsRender());
     try active.editor.deleteRight();
     // The input loop refreshes the active view before painting the workbench.
     try active.view.refresh();
@@ -741,12 +741,12 @@ test "Workbench: editor group focus stays put when wheeling over another pane" {
     try renderFrame(workbench, &out.writer);
     try std.testing.expect(right_tab.view.isFocused());
     const surface = workbench.editor_surface;
-    try std.testing.expectEqual(surface.document(), left_tab.view.root_node.?.document);
-    try std.testing.expectEqual(surface.document(), right_tab.view.root_node.?.document);
+    try std.testing.expectEqual(surface.document(), @import("./editorView.zig").View.nativeView(left_tab.view).root_node.?.document);
+    try std.testing.expectEqual(surface.document(), @import("./editorView.zig").View.nativeView(right_tab.view).root_node.?.document);
     try std.testing.expectEqual(left.dom.?.editor_container, left_tab.element.?.parent.?);
     try std.testing.expectEqual(right.dom.?.editor_container, right_tab.element.?.parent.?);
     try std.testing.expect(left.dom.?.split_view.hasClass(editor_css.splitview.Class.split_view_view));
-    try std.testing.expect(left_tab.view.root_node.?.hasClass(editor_css.code_editor.Class.monaco_editor));
+    try std.testing.expect(@import("./editorView.zig").View.nativeView(left_tab.view).root_node.?.hasClass(editor_css.code_editor.Class.monaco_editor));
 
     const x = ui.cell.snap(left.rect.x) + left_tab.editor.gutterWidth();
     const y = ui.cell.snap(left.rect.y) + left.chromeHeight();
@@ -8611,7 +8611,7 @@ test "disposing a constructed workbench before startup leaves the window empty" 
     defer surface.deinit();
     var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(allocator);
     defer services.deinit();
-    const wb = try Workbench.init(allocator, std.testing.io, &surface, &services, .{}, null);
+    const wb = try Workbench.init(allocator, std.testing.io, @import("./editorView.zig").View.createHandle, &surface, &services, .{}, null);
     try std.testing.expectEqual(.Starting, wb.lifecycle.phase);
     wb.deinit();
     try std.testing.expect(surface.document().root.?.first_child == null);
@@ -8632,7 +8632,7 @@ test "workbench mounts and disposes only its subtree in the terminal window" {
         var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(std.testing.allocator);
         defer services.deinit();
         _ = try services.set(models.outline_model_service_id, &supplied_models);
-        const wb = try Workbench.init(std.testing.allocator, std.testing.io, &surface, &services, .{}, null);
+        const wb = try Workbench.init(std.testing.allocator, std.testing.io, @import("./editorView.zig").View.createHandle, &surface, &services, .{}, null);
         defer wb.deinit();
         try std.testing.expect(wb.layout.main_container == null);
         try std.testing.expect(sibling.nextSibling() == null);

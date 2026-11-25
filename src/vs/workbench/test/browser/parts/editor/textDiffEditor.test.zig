@@ -30,6 +30,7 @@ pub fn Tests(comptime View: type) type {
             const allocator = testing.allocator;
             const io = Io.Threaded.global_single_threaded.io();
             const view = try DiffView.create(
+                View.init,
                 allocator,
                 io,
                 .{

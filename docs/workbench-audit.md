@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 11,336 lines and has no inline tests. It has no direct imports from `src/tui`. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
+The browser shell is 11,313 lines and has no inline tests. There are no direct imports from `src/vs` to `src/tui` anywhere in the tree. Three files import the shell: the terminal host, its integration tests, and the Workbench test fixture. No production feature module imports the shell. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records the original 256 command IDs plus the newly ported notification commands with labels, categories and visibility for empty and
@@ -41,7 +41,7 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * The portable IEditorService mounted-pane contract now exposes the active input/control and actual editor events. IQuickInputService exposes pick results and visibility events. Image zoom and zoom selection are registered as Action2 in mediaPreviewActions and resolve those services, not Workbench. Existing palette metadata remains unchanged; reopening an image as text still crosses the shell’s resource-opening path.
 * The Changes and Graph view-mode, sort, refresh, reveal and reference-picker commands are Action2 contributions in their SCM view owners. ViewAction resolves them through IViewsService; existing terminal palette metadata and commands that operate on a registered hidden view are retained during extraction, pending full upstream metadata/visibility parity. The Graph owns its reference picker, copies provider IDs and labels and cancels it on disposal.
 * Decoded editor key/command and contribution dispatch now lives in the terminal CodeEditorWidget input adapter. The TUI view exposes a narrow IEditorKeyTarget; the built-in extension adapter and editor pane no longer import the terminal host’s input dispatcher. Raw decoding and quit handling remain at the host boundary.
-* DiffEditorWidget and the snapshot diff pane accept the editor view adapter as an explicit Zig type parameter; neither imports the terminal renderer. Their existing tests live at the owner test paths. Find, Suggest and Sticky Scroll tests also receive the real terminal View from the test root, retaining every assertion without importing src/tui. The sole remaining src/vs → src/tui edge is editorPane.zig’s concrete editor view factory.
+* DiffEditorWidget and the snapshot diff pane accept the editor view adapter as an explicit Zig type parameter; neither imports the terminal renderer. Their existing tests live at the owner test paths. Find, Suggest and Sticky Scroll tests also receive the real terminal View from the test root, retaining every assertion without importing src/tui. EditorPane now receives an explicit EditorViewFactory from the terminal composition root. IEditorView exposes the mounted control and view-model host with a borrowed lifetime; actual cell painting stays in src/tui/editorView.zig. Model-decoration writes no longer depend on a concrete view. The extension host and Vim/Helix integration suites are instantiated with the real native factory by src/tests.zig.
 * SearchEditorInput now owns upstream getMatchRanges/setMatchRanges and the previous decoration IDs. Generated results apply one TextModel delta and the terminal paints the existing searchEditorFindMatch class. The search editor no longer imports the terminal view; the rerun regression checks the actual alpha and beta match ranges.
 * Sticky scroll now owns its editor/view-model and controller adapter; the terminal view supplies only resolved colors, cell painting, focus and frame callbacks. Six terminal renderer integration cases (including ANSI syntax painting and scrollbar projection) moved unchanged from the editor/widget and theme-service source files into src/tui/editorView.test.zig. The reverse import allowlist shrinks by four.
 * Focus is now delivered at active editor/group changes, quick input show/hide, explicit part focus, modal dialog transitions, search input focus changes, and terminal active-instance/tab-list focus events. EditorPart updates the editor views; TerminalInstance emits its PTY focus sequence. The host no longer calls a focus synchronization method before rendering. A regression opens and switches editors, quick input and the status bar without painting a frame.
@@ -142,12 +142,12 @@ Show All Commands resolves the quick input service through its Action2 handler.
   and frame composition. It paints parts, active editor panes, terminal overlays, group and part borders, sashes, emits image
   and ANSI updates, and positions the hardware cursor. Breadcrumb and outline updates request a frame from their
   model listeners. The command table, editor and terminal menu construction, feature
-  wiring and several state-scanning methods still live in the browser shell.
+  wiring and command implementations still live in the browser shell.
   The native CLI still schedules background work and performs startup wiring.
 
 The startup sequence below describes the pinned target. The composition port,
 notification center and toasts, full layout restoration and event-driven
-background services are still in progress.
+background services are implemented in part; see the current scope described above.
 
 ## Implementation owners
 

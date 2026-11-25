@@ -691,7 +691,7 @@ comptime {
     _ = @import("./vs/workbench/browser/commands.zig");
     _ = @import("./vs/platform/quickinput/browser/quickInputList.zig");
     _ = @import("./vs/workbench/browser/quickaccess.zig");
-    _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig");
+    _ = @import("./vs/workbench/api/browser/extensionHostAdapter.zig").Tests(@import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/api/test/browser/mainThreadDiagnostics.test.zig");
     _ = @import("./vs/workbench/api/test/browser/mainThreadMessageService.test.zig");
     _ = @import("./vs/workbench/api/common/keyInput.zig");
@@ -702,13 +702,13 @@ comptime {
     _ = @import("./vs/workbench/contrib/helix/browser/helixExtension.zig");
     _ = @import("./vs/workbench/contrib/helix/browser/helixRuntime.zig");
     _ = @import("./vs/editor/contrib/helix/test/browser/helixEngine.test.zig");
-    _ = @import("./vs/workbench/contrib/helix/test/browser/helixExtension.test.zig");
-    _ = @import("./vs/workbench/contrib/helix/test/browser/helixRuntime.test.zig");
+    _ = @import("./vs/workbench/contrib/helix/test/browser/helixExtension.test.zig").Tests(@import("./tui/editorView.zig").View.createHandle);
+    _ = @import("./vs/workbench/contrib/helix/test/browser/helixRuntime.test.zig").Tests(@import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/editor/contrib/vim/browser/vimEngine.zig");
     _ = @import("./vs/workbench/contrib/vim/browser/vimExtension.zig");
     _ = @import("./vs/editor/contrib/vim/test/browser/vimEngine.test.zig");
-    _ = @import("./vs/workbench/contrib/vim/test/browser/vimExtension.test.zig");
-    _ = @import("./vs/workbench/contrib/vim/test/browser/vimRuntime.test.zig");
+    _ = @import("./vs/workbench/contrib/vim/test/browser/vimExtension.test.zig").Tests(@import("./tui/editorView.zig").View.createHandle);
+    _ = @import("./vs/workbench/contrib/vim/test/browser/vimRuntime.test.zig").Tests(@import("./tui/editorView.zig").View.createHandle);
     _ = @import("./vs/workbench/services/extensions/test/common/rpcProtocol.test.zig");
     _ = @import("./vs/workbench/services/extensions/test/common/extensionHostManager.test.zig");
     _ = @import("./vs/workbench/services/extensions/common/extensionService.zig");

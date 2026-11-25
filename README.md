@@ -2071,6 +2071,8 @@ Editor contributions:
   oriented grid, branch demotion, sash resize), `editorGroupView.zig`
   (model-to-tab mapping, active tab, pane activation) and `editorPanes.zig`
   (active pane, page position, size constraints). Each group has a tab row.
+  The host supplies an explicit editor view factory; the editor and diff panes
+  depend on the view contract rather than importing `src/tui`.
   `src/tui/workbench.zig` composites the panes into one frame and writes it to the terminal. Cell-edge borders draw the editor
   frame and the draggable sashes without consuming rows or columns.
   Drag selected tabs or the empty background of a tab strip

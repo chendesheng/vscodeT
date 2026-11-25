@@ -156,6 +156,7 @@ pub fn DiffView(comptime View: type) type {
     const DiffEditorWidget = widget_mod.DiffEditorWidget(View);
     return struct {
         const Self = @This();
+        factory: *const fn (Allocator, *Editor) anyerror!*View,
         allocator: Allocator,
         io: Io,
         model: DiffEditorModel,
@@ -165,6 +166,7 @@ pub fn DiffView(comptime View: type) type {
         diff_input: *diff_editor_input.DiffEditorInput,
 
         pub fn create(
+            factory: *const fn (Allocator, *Editor) anyerror!*View,
             allocator: Allocator,
             io: Io,
             model: DiffEditorModel,
@@ -189,6 +191,7 @@ pub fn DiffView(comptime View: type) type {
             errdefer allocator.free(modified_label);
 
             const widget = try DiffEditorWidget.create(
+                factory,
                 allocator,
                 io,
                 model.original_path,
@@ -238,6 +241,7 @@ pub fn DiffView(comptime View: type) type {
             errdefer diff_input.destroy();
 
             self.* = .{
+                .factory = factory,
                 .allocator = allocator,
                 .io = io,
                 .model = .{
@@ -271,6 +275,7 @@ pub fn DiffView(comptime View: type) type {
         /// the new content while keeping the input identity/tab.
         pub fn replace(self: *Self, original_text: []const u8, modified_text: []const u8, width: usize, height: usize, options: Options) !void {
             const widget = try DiffEditorWidget.create(
+                self.factory,
                 self.allocator,
                 self.io,
                 self.model.original_path,

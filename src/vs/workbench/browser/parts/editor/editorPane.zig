@@ -13,8 +13,11 @@ const Io = std.Io;
 
 const ui = @import("ui");
 const Editor = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor;
-const View = @import("../../../../../tui/editorView.zig").View;
-const Cell = @import("../../../../../tui/editorView.zig").Cell;
+const editor_view = @import("../../../../editor/browser/widget/codeEditor/terminalEditorView.zig");
+const View = editor_view.IEditorView;
+const Cell = editor_view.Cell;
+pub const EditorViewFactory = editor_view.EditorViewFactory;
+const ModelDecorationSink = @import("../../../../editor/browser/widget/codeEditor/terminalModelDecorations.zig").ModelDecorationSink;
 const editor_input_dispatch = @import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminalInput.zig");
 const FileEditorInput = @import("../../../contrib/files/browser/editors/fileEditorInputTerminal.zig").FileEditorInput;
 const EditorInput = @import("../../../common/editor/editorInput.zig").EditorInput;
@@ -63,6 +66,7 @@ const terminal_editor = @import("../../../contrib/terminal/browser/terminalEdito
 /// The group owns the view from addTab onward. The model keeps its original
 /// active, pinned, sticky and preview selections.
 pub const RestoredEditorPanes = struct {
+    view_factory: EditorViewFactory,
     io: Io,
     width: usize,
     height: usize,
@@ -72,10 +76,10 @@ pub const RestoredEditorPanes = struct {
 
     pub fn createPane(self: RestoredEditorPanes, allocator: Allocator, input: *EditorInput) !?*Tab {
         if (std.mem.eql(u8, input.type_id, ImagePreviewEditorInput.ID)) {
-            return try Tab.initImageFromInput(allocator, self.io, @ptrCast(@alignCast(input.impl.?)), self.width, self.height, self.images, null);
+            return try Tab.initImageFromInput(self.view_factory, allocator, self.io, @ptrCast(@alignCast(input.impl.?)), self.width, self.height, self.images, null);
         }
         if (!std.mem.eql(u8, input.type_id, FileEditorInput.TYPE_ID)) return null;
-        const tab = try Tab.initFromInput(allocator, @ptrCast(@alignCast(input.impl.?)));
+        const tab = try Tab.initFromInput(self.view_factory, allocator, @ptrCast(@alignCast(input.impl.?)));
         tab.setImageRuntime(self.images);
         return tab;
     }
@@ -131,11 +135,12 @@ pub const Tab = struct {
     selection_handler: ViewEventHandler = .{},
     selection_handler_added: bool = false,
 
-    pub fn init(allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Tab {
-        return initWithDeclarative(allocator, io, path, width, height, null);
+    pub fn init(factory: EditorViewFactory, allocator: Allocator, io: Io, path: []const u8, width: usize, height: usize) !*Tab {
+        return initWithDeclarative(factory, allocator, io, path, width, height, null);
     }
 
     pub fn initWithDeclarative(
+        factory: EditorViewFactory,
         allocator: Allocator,
         io: Io,
         path: []const u8,
@@ -152,7 +157,7 @@ pub const Tab = struct {
             allocator.destroy(editor);
         }
 
-        const view = try View.init(allocator, editor);
+        const view = try factory(allocator, editor);
         errdefer view.deinit();
 
         const input = try FileEditorInput.init(allocator, editor);
@@ -170,11 +175,11 @@ pub const Tab = struct {
 
     /// Builds a tab around an input that already owns its editor, used when a
     /// serialized group restores file inputs before the tab list is rebuilt.
-    pub fn initFromInput(allocator: Allocator, input: *FileEditorInput) !*Tab {
+    pub fn initFromInput(factory: EditorViewFactory, allocator: Allocator, input: *FileEditorInput) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
 
-        const view = try View.init(allocator, input.editor);
+        const view = try factory(allocator, input.editor);
         errdefer view.deinit();
 
         self.* = .{
@@ -187,10 +192,10 @@ pub const Tab = struct {
         return self;
     }
 
-    pub fn initSearchEditor(allocator: Allocator, input: *SearchEditorInput) !*Tab {
+    pub fn initSearchEditor(factory: EditorViewFactory, allocator: Allocator, input: *SearchEditorInput) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
-        const view = try View.init(allocator, input.editor);
+        const view = try factory(allocator, input.editor);
         self.* = .{
             .allocator = allocator,
             .editor = input.editor,
@@ -207,6 +212,7 @@ pub const Tab = struct {
     /// `tab.editor.path`/`view` keep working; it is read-only and never saved,
     /// and `paint`/`layoutCells` route to the image pane instead.
     pub fn initImage(
+        factory: EditorViewFactory,
         allocator: Allocator,
         io: Io,
         path: []const u8,
@@ -217,10 +223,11 @@ pub const Tab = struct {
     ) !*Tab {
         const input = try ImagePreviewEditorInput.init(allocator, path);
         errdefer input.deinit();
-        return initImageFromInput(allocator, io, input, width, height, runtime, window);
+        return initImageFromInput(factory, allocator, io, input, width, height, runtime, window);
     }
 
     pub fn initImageFromInput(
+        factory: EditorViewFactory,
         allocator: Allocator,
         io: Io,
         image_input: *ImagePreviewEditorInput,
@@ -239,7 +246,7 @@ pub const Tab = struct {
         }
         editor.setReadOnly(true);
 
-        const view = try View.init(allocator, editor);
+        const view = try factory(allocator, editor);
         errdefer view.deinit();
 
         const pane = if (window) |events|
@@ -263,7 +270,7 @@ pub const Tab = struct {
 
     /// The shell owns rendering and input. The editor shell carries a
     /// read-only placeholder for workbench paths that still require Editor/View.
-    pub fn initTerminal(allocator: Allocator, io: Io, instance: *TerminalInstance) !*Tab {
+    pub fn initTerminal(factory: EditorViewFactory, allocator: Allocator, io: Io, instance: *TerminalInstance) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
         const input = try TerminalEditorInput.init(allocator, instance);
@@ -274,7 +281,7 @@ pub const Tab = struct {
             allocator.destroy(editor);
         }
         editor.setReadOnly(true);
-        const view = try View.init(allocator, editor);
+        const view = try factory(allocator, editor);
         self.* = .{
             .allocator = allocator,
             .editor = editor,
@@ -633,7 +640,7 @@ pub const Tab = struct {
 
     /// Port of DynamicMarkdownPreview.create in the Markdown extension. A
     /// WebviewInput gives the preview its own tab and normal group lifecycle.
-    pub fn initMarkdownPanel(allocator: Allocator, source: *FileEditorInput, group: *groups.EditorGroup, config: MarkdownPreviewConfig, palette: ?*const theme_colors_mod.ThemeColors, runtime: *ui.image.Runtime, async_io: ?Io, window: *@import("../../../../base/common/windowDispatch.zig").Queue) !*Tab {
+    pub fn initMarkdownPanel(factory: EditorViewFactory, allocator: Allocator, source: *FileEditorInput, group: *groups.EditorGroup, config: MarkdownPreviewConfig, palette: ?*const theme_colors_mod.ThemeColors, runtime: *ui.image.Runtime, async_io: ?Io, window: *@import("../../../../base/common/windowDispatch.zig").Queue) !*Tab {
         const self = try allocator.create(Tab);
         errdefer allocator.destroy(self);
         const title = try std.fmt.allocPrint(allocator, "Preview {s}", .{source.base.getName()});
@@ -646,7 +653,7 @@ pub const Tab = struct {
             allocator.destroy(editor);
         }
         editor.setReadOnly(true);
-        const view = try View.init(allocator, editor);
+        const view = try factory(allocator, editor);
         errdefer view.deinit();
         self.* = .{ .allocator = allocator, .editor = editor, .view = view, .file_input = null, .input = &input.base, .image_runtime = runtime, .async_io = async_io, .window = window };
         const preview = try self.createMarkdownPreview(source.editor, config, palette);
@@ -855,10 +862,10 @@ fn SuggestControllerHostForView(view: *View) @import("../../../../editor/contrib
 pub const Controllers = struct {
     allocator: Allocator,
     editor: *Editor,
-    find_sink: View.ModelDecorationSink,
-    search_highlight_sink: View.ModelDecorationSink,
-    hover_sink: View.ModelDecorationSink,
-    word_sink: View.ModelDecorationSink,
+    find_sink: ModelDecorationSink,
+    search_highlight_sink: ModelDecorationSink,
+    hover_sink: ModelDecorationSink,
+    word_sink: ModelDecorationSink,
 
     find: *FindController,
     view: *View,
@@ -940,15 +947,15 @@ pub const Controllers = struct {
         self.hover_registration = null;
 
         self.find_sink = .{ .model = editor.model, .owner = 1 };
-        self.search_highlight_sink = View.ModelDecorationSink.incrementalSearch(editor.model);
+        self.search_highlight_sink = ModelDecorationSink.incrementalSearch(editor.model);
         editor.setSearchHighlightSink(.{
             .context = self.search_highlight_sink.context(),
-            .set = View.ModelDecorationSink.set,
+            .set = ModelDecorationSink.set,
         });
         errdefer editor.setSearchHighlightSink(null);
         self.find = try FindController.init(allocator, editor, .{
             .context = self.find_sink.context(),
-            .set = View.ModelDecorationSink.set,
+            .set = ModelDecorationSink.set,
         });
         errdefer self.find.deinit();
         self.find.widget().layout_context = view;
@@ -1009,7 +1016,7 @@ pub const Controllers = struct {
             .context = view,
             .decoration_context = self.word_sink.context(),
             .has_text_focus = viewHasWordTextFocus,
-            .set_decorations = View.ModelDecorationSink.set,
+            .set_decorations = ModelDecorationSink.set,
             .request_frame = viewRequestFrame,
         }, .{});
         errdefer self.word_highlighter.deinit();
@@ -1035,7 +1042,7 @@ pub const Controllers = struct {
 
         // Suggest controllers only exist after the block above; applying the
         // theme earlier dereferenced an unset widget.
-        self.setThemeColors(view.theme_colors);
+        self.setThemeColors(view.themeColors());
 
         self.find.applyConfiguration(view.terminal_view_host.options.get(.find));
         try view.addConfigurationListener(.{ .context = self, .notify = onConfigurationChanged });
@@ -1116,9 +1123,9 @@ fn setHoverModelDecoration(context: *anyopaque, range: ?Range) void {
         const decorations = [_]editorBrowser.Decoration{
             .{ .range = value, .kind = .hover_highlight },
         };
-        View.ModelDecorationSink.set(context, &decorations);
+        ModelDecorationSink.set(context, &decorations);
     } else {
-        View.ModelDecorationSink.set(context, &.{});
+        ModelDecorationSink.set(context, &.{});
     }
 }
 

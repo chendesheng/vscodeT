@@ -8,6 +8,8 @@
 > extraction and the live terminal host. The notification model, service, center,
 > toast/status parts and non-modal extension message bridge have since been ported;
 > the terminal host routes tab/sash/quick-input and image capability changes.
+> Editor panes receive the view factory from the terminal host; no portable
+> source imports src/tui.
 
 Status: all inventory slices are implemented in the terminal's shape. P1–P3
 are complete; P4 has the full terminal view/view-model/controller/widget stack

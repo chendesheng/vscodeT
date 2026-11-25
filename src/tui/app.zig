@@ -1,5 +1,5 @@
 const std = @import("std");
-const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow;
+const TestWindow = @import("../vs/workbench/test/browser/workbenchTestServices.zig").TestWindow(@import("./editorView.zig").View.createHandle);
 const builtin = @import("builtin");
 const Io = std.Io;
 const tui = @import("./tui.zig");
@@ -91,7 +91,7 @@ const WillShutdownEvent = @import("../vs/workbench/services/lifecycle/common/lif
 pub fn startWorkbench(allocator: std.mem.Allocator, io: std.Io, surface: *ui.Surface, paths: []const []const u8, previous: ?Workbench.PreviousState) !*Workbench {
     var services = try @import("../vs/workbench/workbench.common.main.zig").createServices(allocator);
     defer services.deinit();
-    const workbench = try Workbench.init(allocator, io, surface, &services, .{}, previous);
+    const workbench = try Workbench.init(allocator, io, @import("./editorView.zig").View.createHandle, surface, &services, .{}, previous);
     errdefer workbench.deinit();
     _ = try workbench.startup();
     for (paths) |path| try workbench.openPath(path);
@@ -923,7 +923,7 @@ pub fn main(init: std.process.Init) !void {
                         break :blk current.controllers.?;
                     };
                     handleMouseEvent(
-                        current.view,
+                        View.nativeView(current.view),
                         tab_controllers.hover,
                         tab_controllers.suggest,
                         current.editor,

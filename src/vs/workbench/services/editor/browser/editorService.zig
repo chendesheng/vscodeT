@@ -73,7 +73,7 @@ pub const EditorService = struct {
     /// Shared openEditor path for both a synchronously resolved text model and
     /// an asynchronous TextFileService read. Consumes the new editor on all
     /// outcomes. Input/pane ownership changes exactly once.
-    pub fn openTextEditor(self: EditorService, editor: *Editor, options: OpenOptions, images: *ui.image.Runtime) !OpenedTextEditor {
+    pub fn openTextEditor(self: EditorService, factory: editor_pane.EditorViewFactory, editor: *Editor, options: OpenOptions, images: *ui.image.Runtime) !OpenedTextEditor {
         const allocator = self.part.allocator;
         const input = FileEditorInput.init(allocator, editor) catch |err| {
             editor.deinit();
@@ -96,7 +96,7 @@ pub const EditorService = struct {
             if (owned_tab) |tab| tab.deinit();
         }
         const pane = self.part.viewForGroup(opened.group) orelse return error.GroupPaneMissing;
-        const tab = try Tab.initFromInput(allocator, input);
+        const tab = try Tab.initFromInput(factory, allocator, input);
         input_owned = false;
         owned_tab = tab;
         tab.setImageRuntime(images);
@@ -108,6 +108,7 @@ pub const EditorService = struct {
 
     pub fn openSnapshotDiff(
         self: EditorService,
+        factory: editor_pane.EditorViewFactory,
         io: std.Io,
         configuration: ?IConfigurationService,
         path: []const u8,
@@ -132,6 +133,7 @@ pub const EditorService = struct {
         const dims = pane.contentDimensions();
         const tab = blk: {
             const view = try editor_pane.DiffView.create(
+                factory,
                 self.part.allocator,
                 io,
                 .{
