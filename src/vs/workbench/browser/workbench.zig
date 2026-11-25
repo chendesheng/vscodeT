@@ -2410,13 +2410,10 @@ pub const Workbench = struct {
         }
     }
 
-    /// Drives the settings watcher. Returns true when a settings reload was
-    /// performed (or an event was emitted) and the host should repaint.
     /// Handles external file changes: clean open editors are reloaded, dirty
     /// ones keep the user's in-memory content (upstream marks the conflict).
     pub fn handleFileChanges(self: *Workbench, changes: []const @import("../../platform/files/common/files.zig").FileChange) void {
         for (changes) |change| {
-            if (self.repository) |repo| repo.onFileChange(change.resource);
             if (change.type == .DELETED) continue;
             // FSEvents can report a pre-existing path as ADDED on its first
             // event because it has no initial directory snapshot. For an open
@@ -11285,8 +11282,6 @@ fn commandSave(context: *anyopaque) anyerror!void {
     const tab = try commandTab(context);
     if (tab.isDiff() or tab.isImage()) return;
     try tab.editor.save();
-    const self: *Workbench = @ptrCast(@alignCast(context));
-    if (self.repository) |repo| repo.onFileChange(tab.editor.path);
 }
 
 fn commandRevert(context: *anyopaque) anyerror!void {

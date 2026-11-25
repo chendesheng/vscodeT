@@ -110,6 +110,7 @@ pub const Repository = struct {
     secondary_quick_diff: QuickDiffProvider,
     history: ?*GitHistoryProvider = null,
     file_service: ?*watchers.FileWatcherService = null,
+    file_listener: ?usize = null,
     root_watcher: ?*watchers.WatchHandle = null,
     dot_git_watcher: ?*watchers.WatchHandle = null,
     upstream_watcher: ?*watchers.WatchHandle = null,
@@ -239,12 +240,25 @@ pub const Repository = struct {
     pub fn watch(self: *Repository, service: *watchers.FileWatcherService) !void {
         if (self.file_service != null) return;
         const git = self.git orelse return;
-        self.root_watcher = try service.watch(self.root, .{ .recursive = true });
-        self.file_service = service;
+        const root_watcher = try service.watch(self.root, .{ .recursive = true });
+        errdefer root_watcher.dispose();
+        try self.listenForFileChanges(service);
+        self.root_watcher = root_watcher;
         // A worktree's metadata can live outside its workspace.
         self.dot_git = git.getRepositoryDotGit(self.root) catch return;
-        self.dot_git_watcher = try service.watch(self.dot_git.?.path, .{ .recursive = false });
+        self.dot_git_watcher = service.watch(self.dot_git.?.path, .{ .recursive = false }) catch null;
         self.updateUpstreamWatcher();
+    }
+
+    // The extension owns its workspace watcher subscription, just as
+    // Repository listens to onRepositoryWorkingTreeFileChange and DotGitWatcher.
+    fn listenForFileChanges(self: *Repository, service: *watchers.FileWatcherService) !void {
+        self.file_listener = try service.on_did_change.listen(self, onFileChanges);
+        self.file_service = service;
+    }
+
+    fn onFileChanges(changes: []const files.FileChange, self: *Repository) !void {
+        for (changes) |change| self.onFileChange(change.resource);
     }
 
     fn updateUpstreamWatcher(self: *Repository) void {
@@ -314,6 +328,7 @@ pub const Repository = struct {
     pub fn destroy(self: *Repository) void {
         const allocator = self.allocator;
         self.status_timer.schedule(null);
+        if (self.file_listener) |listener| self.file_service.?.on_did_change.unlisten(listener);
         if (self.upstream_watcher) |w| w.dispose();
         if (self.dot_git_watcher) |w| w.dispose();
         if (self.root_watcher) |w| w.dispose();
@@ -806,6 +821,8 @@ test "repository: file changes debounce status, wait for focus and respect autor
     };
     var host = HostState{};
     var window = dispatch.Queue{ .io = testing.io };
+    const file_service = try watchers.FileWatcherService.init(allocator, testing.io);
+    defer file_service.deinit();
     const provider = try Repository.create(allocator, null, repository, test_root, .{
         .context = &host,
         .open_change = TestHost.openChange,
@@ -814,6 +831,7 @@ test "repository: file changes debounce status, wait for focus and respect autor
     });
     defer provider.destroy();
     provider.attachWindow(&window);
+    try provider.listenForFileChanges(file_service);
     const index = try std.fs.path.join(allocator, &.{ test_root, ".git", "index" });
     defer allocator.free(index);
     const index_lock = try std.mem.concat(allocator, u8, &.{ index, ".lock" });
@@ -822,14 +840,14 @@ test "repository: file changes debounce status, wait for focus and respect autor
         .path = try allocator.dupe(u8, std.fs.path.dirname(index).?),
         .common_path = try allocator.dupe(u8, std.fs.path.dirname(index).?),
     };
-    provider.onFileChange(index_lock);
+    try file_service.on_did_change.fire(&.{.{ .type = .ADDED, .resource = index_lock }});
     try testing.expect(provider.status_timer.at == null);
     host.enabled = false;
-    provider.onFileChange(index);
+    try file_service.on_did_change.fire(&.{.{ .type = .UPDATED, .resource = index }});
     try testing.expect(provider.status_timer.at == null);
     host.enabled = true;
-    provider.onFileChange(index);
-    provider.onFileChange(index);
+    try file_service.on_did_change.fire(&.{.{ .type = .UPDATED, .resource = index }});
+    try file_service.on_did_change.fire(&.{.{ .type = .UPDATED, .resource = index }});
     const due = provider.status_timer.at.?;
     try testing.expect(!window.dispatch(due - 1));
     provider.onWindowFocus(false);
@@ -840,7 +858,7 @@ test "repository: file changes debounce status, wait for focus and respect autor
     try testing.expectEqual(@as(usize, 1), host.refreshes);
     const deleted_file = try std.fs.path.join(allocator, &.{ test_root, "removed.txt" });
     defer allocator.free(deleted_file);
-    provider.onFileChange(deleted_file);
+    try file_service.on_did_change.fire(&.{.{ .type = .DELETED, .resource = deleted_file }});
     try testing.expect(!window.dispatch(due + 4999));
     try testing.expect(window.dispatch(due + 5000));
     try testing.expectEqual(@as(usize, 2), host.refreshes);
