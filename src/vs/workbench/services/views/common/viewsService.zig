@@ -9,6 +9,16 @@ pub const IViewsService = struct {
     get_active_view: *const fn (*anyopaque, []const u8) ?*anyopaque,
     get_view: *const fn (*anyopaque, []const u8) ?*anyopaque,
     open_view: *const fn (*anyopaque, []const u8, bool) anyerror!?*anyopaque,
+    is_view_visible: *const fn (*anyopaque, []const u8) bool,
+    close_view: *const fn (*anyopaque, []const u8) anyerror!void,
+
+    pub fn isViewVisible(self: IViewsService, id: []const u8) bool {
+        return self.is_view_visible(self.context, id);
+    }
+
+    pub fn closeView(self: IViewsService, id: []const u8) !void {
+        try self.close_view(self.context, id);
+    }
 
     pub fn getActiveViewWithId(self: IViewsService, comptime View: type) ?*View {
         return @ptrCast(@alignCast(self.get_active_view(self.context, View.ID) orelse return null));

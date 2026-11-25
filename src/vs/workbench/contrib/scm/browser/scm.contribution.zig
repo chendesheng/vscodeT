@@ -220,3 +220,13 @@ pub const SCMContribution = struct {
 };
 
 pub const view_actions = scm_history.view_actions ++ scm_view.view_actions;
+
+// "scm" is the native activity alias for the upstream VIEWLET_ID.
+pub fn registerViewContainer(registry: *@import("../../../common/views.zig").ViewContainersRegistry) !void {
+    _ = try registry.register(.{
+        .id = "scm",
+        .title = "Source Control",
+        .glyph = '\u{e702}',
+        .order = 2,
+    }, .sidebar, .{});
+}

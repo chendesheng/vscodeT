@@ -59,6 +59,7 @@ pub const Host = struct {
 };
 
 pub const MarkersView = struct {
+    pub const ID = @import("../common/markers.zig").Markers.MARKERS_VIEW_ID;
     host: ?Host = null,
     allocator: Allocator,
     service: ?*MarkerService = null,
@@ -252,6 +253,19 @@ pub const MarkersView = struct {
         if (self.marker_rows.items.len == 0) return null;
         if (self.selection >= self.marker_rows.items.len) return null;
         return self.marker_rows.items[self.selection].marker;
+    }
+
+    /// Port of updateRangeHighlights and highlightCurrentSelectedMarkerRange.
+    /// The terminal passes actual focus and the active code editor; URI
+    /// identity is resolved at the filesystem boundary before highlighting.
+    pub fn updateRangeHighlights(self: *const MarkersView, focused: bool, active_editor: ?*@import("../../../../editor/browser/widget/codeEditor/codeEditorWidgetTerminal.zig").Editor, highlights: *@import("../../../browser/codeeditor.zig").RangeHighlightDecorations, io: std.Io) void {
+        highlights.removeHighlightRange();
+        if (!focused) return;
+        const marker = self.selectedMarker() orelse return;
+        if (!std.mem.eql(u8, marker.resource.scheme, "file")) return;
+        const editor = active_editor orelse return;
+        if (!@import("../../../services/textfile/common/textFileService.zig").samePath(self.allocator, io, editor.path, marker.resource.path)) return;
+        highlights.highlightRange(editor.path, editor.model.validateRange(markerRange(marker)));
     }
 
     pub fn selectedResource(self: *const MarkersView) ?*ResourceMarkers {

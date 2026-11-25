@@ -142,6 +142,7 @@ const QuickPickItem = quick_input_common.QuickPickItem;
 const QuickPick = @import("../vs/platform/quickinput/browser/quickInput.zig").QuickPick;
 const dialogs = @import("../vs/platform/dialogs/common/dialogs.zig");
 const markers_common = @import("../vs/workbench/contrib/markers/common/markers.zig");
+const markers_contribution = @import("../vs/workbench/contrib/markers/browser/markers.contribution.zig");
 const MarkersStatusBar = @import("../vs/workbench/contrib/markers/browser/markersStatusBar.zig").MarkersStatusBar;
 const pane_composite_mod = @import("../vs/workbench/browser/parts/paneCompositePart.zig");
 
@@ -288,11 +289,13 @@ const WindowViews = struct {
     workbench: *TerminalWorkbench,
 
     pub fn interface(self: *WindowViews) views_service.IViewsService {
-        return .{ .context = self, .get_active_view = getActiveView, .get_view = getView, .open_view = openView };
+        return .{ .context = self, .get_active_view = getActiveView, .get_view = getView, .open_view = openView, .is_view_visible = isViewVisible, .close_view = closeView };
     }
 
     fn getActiveView(context: *anyopaque, id: []const u8) ?*anyopaque {
         const self: *WindowViews = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, id, MarkersView.ID))
+            return if (self.workbench.problemsVisible()) getView(context, id) else null;
         const active = self.workbench.sidebar_part.pane.active_id orelse return null;
         if (std.mem.eql(u8, id, SearchView.ID))
             return if (std.mem.eql(u8, active, "search")) self.workbench.search_window.view else null;
@@ -303,6 +306,7 @@ const WindowViews = struct {
 
     fn getView(context: *anyopaque, id: []const u8) ?*anyopaque {
         const self: *WindowViews = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, id, MarkersView.ID)) return if (self.workbench.problems_view) |*view| view else null;
         if (std.mem.eql(u8, id, SearchView.ID)) return self.workbench.search_window.view;
         if (std.mem.eql(u8, id, OutlinePane.ID)) return self.workbench.outline_view;
         if (std.mem.eql(u8, id, scm_view_mod.SCMViewPane.ID)) return self.workbench.scm.changes;
@@ -312,6 +316,10 @@ const WindowViews = struct {
 
     fn openView(context: *anyopaque, id: []const u8, focus: bool) !?*anyopaque {
         const self: *WindowViews = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, id, MarkersView.ID)) {
+            _ = try self.workbench.openPanelContainerWithFocus(PROBLEMS_CONTAINER_ID, focus);
+            return getView(context, id);
+        }
         if (std.mem.eql(u8, id, OutlinePane.ID)) {
             try self.workbench.openOutlineView(focus);
             return self.workbench.outline_view;
@@ -319,6 +327,19 @@ const WindowViews = struct {
         if (!std.mem.eql(u8, id, SearchView.ID)) return null;
         try self.workbench.openActivity("search", focus);
         return self.workbench.search_window.view;
+    }
+
+    fn isViewVisible(context: *anyopaque, id: []const u8) bool {
+        const self: *WindowViews = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, id, MarkersView.ID)) return self.workbench.problemsVisible();
+        return self.workbench.geometry().sidebarShown() and getActiveView(context, id) != null;
+    }
+
+    fn closeView(context: *anyopaque, id: []const u8) !void {
+        const self: *WindowViews = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, id, MarkersView.ID) and self.workbench.problemsVisible()) {
+            try self.workbench.layout.setPartHidden(true, .panel);
+        }
     }
 };
 
@@ -1192,53 +1213,12 @@ pub const TerminalWorkbench = struct {
     /// fills the side bar and panel composite bars from the registry.
     fn registerViewContainers(self: *TerminalWorkbench) !void {
         const registry = &self.view_containers_registry;
-        // Side-bar ids stay the activity ids the terminal activity bar routes
-        // on; Explorer is the default container.
-        _ = try registry.register(.{
-            .id = "explorer",
-            .title = "Explorer",
-            .glyph = '\u{f07b}',
-            .order = 0,
-        }, .sidebar, .{ .is_default = true });
-        _ = try registry.register(.{
-            .id = "search",
-            .title = "Search",
-            .glyph = '\u{f002}',
-            .order = 1,
-        }, .sidebar, .{});
-        _ = try registry.register(.{
-            .id = "scm",
-            .title = "Source Control",
-            .glyph = '\u{e702}',
-            .order = 2,
-        }, .sidebar, .{});
-        // Panel containers: Problems order 0, Terminal order 3, matching
-        // `markers.contribution.ts` and `terminal.contribution.ts`.
-        _ = try registry.register(.{
-            .id = PROBLEMS_CONTAINER_ID,
-            .title = markers_common.PROBLEMS_TITLE,
-            .glyph = '!',
-            .hide_if_empty = true,
-            .order = 0,
-        }, .panel, .{});
-        _ = try registry.register(.{
-            .id = TERMINAL_CONTAINER_ID,
-            .title = "Terminal",
-            .glyph = '>',
-            .hide_if_empty = true,
-            .order = 3,
-        }, .panel, .{ .is_default = true, .do_not_register_open_command = true });
-
-        try self.fillPaneComposites(&self.sidebar_part.pane, .sidebar);
-        try self.fillPaneComposites(&self.panel_part.pane, .panel);
-
-        const panel_containers = try self.view_descriptor_service.getViewContainersByLocation(.panel, self.allocator);
-        defer self.allocator.free(panel_containers);
-        for (panel_containers) |container| {
-            if (container.hide_if_empty) {
-                _ = try self.panel_part.pane.setPaneCompositeVisible(container.id, false);
-            }
-        }
+        try @import("../vs/workbench/contrib/files/browser/explorerViewlet.zig").registerViewContainer(registry);
+        try @import("../vs/workbench/contrib/search/browser/search.contribution.zig").registerViewContainer(registry);
+        try scm_contribution.registerViewContainer(registry);
+        try markers_contribution.registerViewContainer(registry);
+        try @import("../vs/workbench/contrib/terminal/browser/terminal.contribution.zig").registerViewContainer(registry);
+        try @import("../vs/workbench/browser/parts/paneCompositePartService.zig").PaneCompositePartService.populateParts(&self.sidebar_part, &self.panel_part, &self.view_descriptor_service);
     }
 
     /// Port of the Explorer viewlet's two stacked views. Upstream registers
@@ -1308,20 +1288,6 @@ pub const TerminalWorkbench = struct {
         try model.addView(.{ .id = "outline", .name = "Outline", .order = 1, .weight = 30, .in_container = !scm, .collapsed = true });
         try model.addView(.{ .id = "changes", .name = "Changes", .order = 1, .weight = 40, .in_container = scm, .available = has_scm });
         try model.addView(.{ .id = "graph", .name = "Graph", .order = 2, .weight = 40, .in_container = scm, .available = has_history });
-    }
-
-    fn fillPaneComposites(self: *TerminalWorkbench, part: *pane_composite_mod.PaneCompositePart, location: views_mod.ViewContainerLocation) !void {
-        const containers = try self.view_descriptor_service.getViewContainersByLocation(location, self.allocator);
-        defer self.allocator.free(containers);
-        views_mod.sortByOrder(containers);
-        for (containers) |container| {
-            try part.addPaneComposite(.{
-                .id = container.id,
-                .name = container.title,
-                .order = container.order,
-                .glyph = container.glyph,
-            });
-        }
     }
 
     fn initStatusHint(self: *TerminalWorkbench) !void {
@@ -1583,10 +1549,9 @@ pub const TerminalWorkbench = struct {
         const after_terminal_editor = [_]commands_mod.CommandInfo{
             .{ .id = "workbench.view.explorer", .label = "View: Show Explorer", .category = "View", .context = self, .run = commandViewExplorer },
             .{ .id = "workbench.view.scm", .label = "View: Show Source Control", .category = "View", .context = self, .run = commandViewScm },
-            .{ .id = markers_common.Markers.SHOW_MARKERS_VIEW_ACTION_ID, .label = "View: Show Problems", .category = "View", .context = self, .run = commandShowProblems },
-            .{ .id = markers_common.Markers.TOGGLE_MARKERS_VIEW_ACTION_ID, .label = "View: Toggle Problems", .category = "View", .context = self, .run = commandToggleProblems },
         };
         for (after_terminal_editor) |command| try self.commands.register(command);
+        for (markers_contribution.view_actions) |action| try self.commands.registerAction(self.instantiation, action);
         try self.commands.registerAction(self.instantiation, panel_actions.toggle_panel_action);
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.toggle_action);
         try self.commands.registerAction(self.instantiation, zen_mode_contribution.exit_action);
@@ -2533,13 +2498,11 @@ pub const TerminalWorkbench = struct {
     /// Upstream `workbench.actions.view.problems`: open the Problems container
     /// in the panel and move focus to the list.
     pub fn showProblems(self: *TerminalWorkbench) !void {
-        _ = try self.openPanelContainer(PROBLEMS_CONTAINER_ID);
+        try markers_contribution.show(self.views_api);
     }
 
     pub fn toggleProblems(self: *TerminalWorkbench) !void {
-        if (self.problemsVisible()) {
-            try self.layout.setPartHidden(true, .panel);
-        } else try self.showProblems();
+        try markers_contribution.toggle(self.views_api);
     }
 
     fn problemsVisible(self: *const TerminalWorkbench) bool {
@@ -2609,31 +2572,8 @@ pub const TerminalWorkbench = struct {
     /// upstream `updateRangeHighlights` rule.
     pub fn updateProblemsHighlight(self: *TerminalWorkbench) void {
         const highlights = self.range_highlights orelse return;
-        if (!self.problemsFocused()) {
-            highlights.removeHighlightRange();
-            return;
-        }
-        const view = if (self.problems_view) |*view| view else {
-            highlights.removeHighlightRange();
-            return;
-        };
-        const marker = view.selectedMarker() orelse {
-            highlights.removeHighlightRange();
-            return;
-        };
-        if (!std.mem.eql(u8, marker.resource.scheme, "file")) {
-            highlights.removeHighlightRange();
-            return;
-        }
-        const tab = self.activeTab() orelse {
-            highlights.removeHighlightRange();
-            return;
-        };
-        if (!self.samePath(tab.editor.path, marker.resource.path)) {
-            highlights.removeHighlightRange();
-            return;
-        }
-        highlights.highlightRange(tab.editor.path, tab.editor.model.validateRange(MarkersView.markerRange(marker)));
+        const view = if (self.problems_view) |*value| value else return highlights.removeHighlightRange();
+        view.updateRangeHighlights(self.problemsFocused(), if (self.activeTab()) |tab| tab.editor else null, highlights, self.io);
     }
 
     pub fn setTerminalProfileStorage(self: *TerminalWorkbench, user_data_dir: []const u8) !void {
@@ -5467,16 +5407,6 @@ fn commandViewScm(context: *anyopaque) anyerror!void {
     if (!try self.showActivityById("scm")) return;
     self.focusSidebar();
     if (self.scm.changes) |view| view.refresh();
-}
-
-fn commandShowProblems(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.showProblems();
-}
-
-fn commandToggleProblems(context: *anyopaque) anyerror!void {
-    const self: *TerminalWorkbench = @ptrCast(@alignCast(context));
-    try self.toggleProblems();
 }
 
 fn zenTabsHideAvailable(context: *anyopaque) bool {

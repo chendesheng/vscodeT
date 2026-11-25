@@ -30,3 +30,13 @@ pub const result_actions = [_]@import("../../../../platform/actions/common/actio
     toolbar.expand_search_results,
     nav.toggle_query_details,
 };
+
+// "search" is the native activity alias for the upstream VIEWLET_ID.
+pub fn registerViewContainer(registry: *@import("../../../common/views.zig").ViewContainersRegistry) !void {
+    _ = try registry.register(.{
+        .id = "search",
+        .title = "Search",
+        .glyph = '\u{f002}',
+        .order = 1,
+    }, .sidebar, .{});
+}

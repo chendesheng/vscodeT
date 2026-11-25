@@ -2209,9 +2209,12 @@ test "Workbench: panel composite bar hosts Problems beside the Terminal" {
 
     // Toggling Problems while it owns focus hides the panel; toggling again
     // reveals the same container.
+    try std.testing.expect(workbench.views_api.isViewVisible(markers_common.Markers.MARKERS_VIEW_ID));
     try workbench.toggleProblems();
     try std.testing.expect(!workbench.geometry().panelShown());
+    try std.testing.expect(!workbench.views_api.isViewVisible(markers_common.Markers.MARKERS_VIEW_ID));
     try workbench.toggleProblems();
+    try std.testing.expect(workbench.views_api.isViewVisible(markers_common.Markers.MARKERS_VIEW_ID));
     try std.testing.expect(workbench.geometry().panelShown());
     try std.testing.expectEqualStrings(PROBLEMS_CONTAINER_ID, workbench.geometry().activePanelId());
 

@@ -17,6 +17,30 @@ pub const PaneCompositePartService = struct {
         open: *const fn (*anyopaque, []const u8, views.ViewContainerLocation, bool) anyerror!bool,
     },
 
+    /// Explicit factory registration replaces the browser instantiation
+    /// descriptors. Populate each part from the registry in view order.
+    pub fn populateParts(sidebar: *SidebarPart, panel: *PanelPart, descriptors: *const @import("../../services/views/browser/viewDescriptorService.zig").ViewDescriptorService) !void {
+        try populatePart(&sidebar.pane, descriptors);
+        try populatePart(&panel.pane, descriptors);
+    }
+
+    fn populatePart(part: *pane.PaneCompositePart, descriptors: *const @import("../../services/views/browser/viewDescriptorService.zig").ViewDescriptorService) !void {
+        const containers = try descriptors.getViewContainersByLocation(part.location, part.allocator);
+        defer part.allocator.free(containers);
+        views.sortByOrder(containers);
+        for (containers) |container| {
+            try part.addPaneComposite(.{
+                .id = container.id,
+                .name = container.title,
+                .order = container.order,
+                .glyph = container.glyph,
+            });
+            // Only the native panel has hideIfEmpty containers.
+            if (part.location == .panel and container.hide_if_empty)
+                _ = try part.setPaneCompositeVisible(container.id, false);
+        }
+    }
+
     pub fn interface(self: *PaneCompositePartService) IPaneCompositePartService {
         return .{
             .context = self,
