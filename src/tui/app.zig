@@ -810,8 +810,8 @@ pub fn main(init: std.process.Init) !void {
             switch (item.*) {
                 .focus => |focused| {
                     if (!focused) {
-                        if (workbench.context_menu != null) {
-                            workbench.dismissContextMenu();
+                        if (workbench.context_menu_service.current != null) {
+                            workbench.context_menu_service.hideContextMenu();
                             needs_render = true;
                         }
                         if (workbench.cancelEditorDrag()) needs_render = true;
@@ -829,7 +829,7 @@ pub fn main(init: std.process.Init) !void {
                         if (workbench.shouldQuit()) return;
                         continue;
                     }
-                    if (workbench.handleContextMenuKey(event)) continue;
+                    if (workbench.context_menu_service.handleKey(event)) continue;
                     if (workbench.handleBreadcrumbPopupKey(event)) continue;
                     if (isCtrlQ(event.*)) {
                         if (workbench.requestQuit()) return;
@@ -924,7 +924,7 @@ pub fn main(init: std.process.Init) !void {
                         if (workbench.shouldQuit()) return;
                         continue;
                     }
-                    if (workbench.handleContextMenuMouse(event)) continue;
+                    if (workbench.context_menu_service.handleMouse(event, &workbench.pointer)) continue;
                     if (workbench.handleBreadcrumbPopupMouse(event)) continue;
                     if (workbench.handleTabDragMouse(event)) continue;
                     if (workbench.handleQuickAccessMouse(event)) continue;

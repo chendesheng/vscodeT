@@ -2993,15 +2993,15 @@ test "Workbench: status bar context menu hides an entry" {
     const id = entry.id;
     try workbench.showStatusbarContextMenu(entry.handle, &.{ .kind = .down, .button = .right, .x = 4, .y = 11 });
     try std.testing.expect(!workbench.isQuickAccessOpen());
-    try std.testing.expect(workbench.context_menu != null);
-    for (workbench.context_menu.?.popup.?.items) |item| {
+    try std.testing.expect(workbench.context_menu_service.current != null);
+    for (workbench.context_menu_service.current.?.popup.?.items) |item| {
         if (item.type == .checkbox) try std.testing.expect(item.label.len > 0);
     }
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .end }));
-    try std.testing.expect(std.mem.startsWith(u8, workbench.context_menu.?.popup.?.focusedItem().?.label, "Hide"));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .end }));
+    try std.testing.expect(std.mem.startsWith(u8, workbench.context_menu_service.current.?.popup.?.focusedItem().?.label, "Hide"));
 
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = workbench.handleContextMenuKey(&enter);
+    _ = workbench.context_menu_service.handleKey(&enter);
     try std.testing.expect(model.isHidden(id));
 }
 
@@ -3636,12 +3636,12 @@ test "Workbench: tab context menu closes the tab" {
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
     try std.testing.expect(!workbench.isQuickAccessOpen());
-    try std.testing.expect(workbench.context_menu != null);
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
-    try std.testing.expectEqualStrings("Close", workbench.context_menu.?.popup.?.focusedItem().?.label);
+    try std.testing.expect(workbench.context_menu_service.current != null);
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    try std.testing.expectEqualStrings("Close", workbench.context_menu_service.current.?.popup.?.focusedItem().?.label);
 
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = workbench.handleContextMenuKey(&enter);
+    _ = workbench.context_menu_service.handleKey(&enter);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
 }
 
@@ -4516,7 +4516,7 @@ test "Workbench: new terminal creates one tab and hover does not act" {
     try std.testing.expect(workbench.handleTerminalMouse(&tab_right));
     try std.testing.expectEqual(@as(usize, 1), service.group.active);
     var escape: ui.KeyEvent = .{ .key = .escape };
-    try std.testing.expect(workbench.handleContextMenuKey(&escape));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&escape));
     var tab_click = ui.MouseEvent{ .kind = .down, .button = .left, .x = ui.cell.snap(with_tabs.tabs.x) + 1, .y = ui.cell.snap(with_tabs.tabs.y) };
     try std.testing.expect(workbench.handleTerminalMouse(&tab_click));
     try std.testing.expectEqual(@as(usize, 0), service.group.active);
@@ -5022,15 +5022,15 @@ test "Workbench: right click on a tab neither closes nor activates it" {
     var down = ui.MouseEvent{ .kind = .down, .x = tab_x, .y = tab_y, .button = .right };
     try std.testing.expect(workbench.handleTabMouse(&down));
     try std.testing.expect(!workbench.isQuickAccessOpen());
-    try std.testing.expect(workbench.context_menu != null);
+    try std.testing.expect(workbench.context_menu_service.current != null);
     var release = down;
     release.kind = .up;
-    try std.testing.expect(workbench.handleContextMenuMouse(&release));
-    try std.testing.expect(workbench.context_menu != null);
-    try std.testing.expectEqual(tab_x, workbench.context_menu.?.popup.?.options.x.?);
-    try std.testing.expectEqual(tab_y, workbench.context_menu.?.popup.?.options.y.?);
+    try std.testing.expect(workbench.context_menu_service.handleMouse(&release, &workbench.pointer));
+    try std.testing.expect(workbench.context_menu_service.current != null);
+    try std.testing.expectEqual(tab_x, workbench.context_menu_service.current.?.popup.?.options.x.?);
+    try std.testing.expectEqual(tab_y, workbench.context_menu_service.current.?.popup.?.options.y.?);
     var escape = ui.KeyEvent{ .key = .escape };
-    _ = workbench.handleContextMenuKey(&escape);
+    _ = workbench.context_menu_service.handleKey(&escape);
 
     try std.testing.expectEqual(@as(usize, 2), workbench.tabCount());
     try std.testing.expectEqualStrings("right_b.txt", workbench.activeTab().?.input.getName());
@@ -5164,13 +5164,13 @@ test "Workbench: tab overflow lists clipped tabs" {
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
     try std.testing.expect(!workbench.isQuickAccessOpen());
-    try std.testing.expect(workbench.context_menu != null);
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
-    const hidden_name = try allocator.dupe(u8, workbench.context_menu.?.popup.?.focusedItem().?.label);
+    try std.testing.expect(workbench.context_menu_service.current != null);
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    const hidden_name = try allocator.dupe(u8, workbench.context_menu_service.current.?.popup.?.focusedItem().?.label);
     defer allocator.free(hidden_name);
 
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = workbench.handleContextMenuKey(&enter);
+    _ = workbench.context_menu_service.handleKey(&enter);
     try std.testing.expectEqualStrings(hidden_name, workbench.activeTab().?.input.getName());
 }
 
@@ -5201,10 +5201,10 @@ test "Workbench: tab context menu closes to the right" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
-    for (0..2) |_| try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .down }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    for (0..2) |_| try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = workbench.handleContextMenuKey(&enter);
+    _ = workbench.context_menu_service.handleKey(&enter);
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
 }
 
@@ -5234,10 +5234,10 @@ test "Workbench: tab context menu splits the captured tab" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
-    for (0..6) |_| try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .down }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    for (0..6) |_| try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = workbench.handleContextMenuKey(&enter);
+    _ = workbench.context_menu_service.handleKey(&enter);
 
     try std.testing.expectEqual(@as(usize, 2), workbench.groupCount());
     try std.testing.expectEqualStrings("split_a.txt", workbench.activeTab().?.input.getName());
@@ -5268,10 +5268,10 @@ test "Workbench: tab context menu closes saved tabs" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
-    for (0..3) |_| try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .down }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    for (0..3) |_| try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = workbench.handleContextMenuKey(&enter);
+    _ = workbench.context_menu_service.handleKey(&enter);
     try std.testing.expectEqual(@as(usize, 0), workbench.tabCount());
 }
 
@@ -5304,10 +5304,10 @@ test "Workbench: close saved keeps dirty tabs" {
         .button = .right,
     };
     try std.testing.expect(workbench.handleTabMouse(&down));
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
-    for (0..3) |_| try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .down }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    for (0..3) |_| try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .down }));
     var enter = ui.KeyEvent{ .key = .enter };
-    _ = workbench.handleContextMenuKey(&enter);
+    _ = workbench.context_menu_service.handleKey(&enter);
 
     try std.testing.expectEqual(@as(usize, 1), workbench.tabCount());
     try std.testing.expectEqualStrings("dirty_saved_a.txt", workbench.activeTab().?.input.getName());
@@ -7132,12 +7132,52 @@ test "Workbench: outline side panel shows provider symbols" {
     try std.testing.expectEqualStrings(OutlinePane.more_actions_id, actions[1].id);
     try workbench.commands.execute(OutlinePane.more_actions_id);
     try std.testing.expect(!workbench.isQuickAccessOpen());
-    const popup = workbench.context_menu.?.popup.?;
+    const popup = workbench.context_menu_service.current.?.popup.?;
     try std.testing.expect(popup.items[0].checked);
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .enter }));
     try std.testing.expect(!view.view_state.follow_cursor);
-    try std.testing.expect(workbench.context_menu == null);
+    try std.testing.expect(workbench.context_menu_service.current == null);
+
+    // The native title menu also resolves contributions registered after startup.
+    const Probe = struct {
+        workbench: *Workbench,
+        calls: std.ArrayList(u8) = .empty,
+        fn show(_: void, probe: *@This()) !void {
+            try probe.calls.append(std.testing.allocator, 's');
+        }
+        fn hide(_: void, probe: *@This()) !void {
+            try probe.calls.append(std.testing.allocator, 'h');
+        }
+        fn run(ptr: *anyopaque) anyerror!void {
+            const probe: *@This() = @ptrCast(@alignCast(ptr));
+            try std.testing.expect(probe.workbench.context_menu_service.current == null);
+            try probe.calls.append(std.testing.allocator, 'r');
+            try probe.workbench.commands.execute(OutlinePane.more_actions_id);
+        }
+    };
+    var probe = Probe{ .workbench = workbench };
+    defer probe.calls.deinit(allocator);
+    const menus = &workbench.context_menu_service;
+    const show_listener = try menus.on_did_show_context_menu.listen(&probe, Probe.show);
+    defer menus.on_did_show_context_menu.unlisten(show_listener);
+    const hide_listener = try menus.on_did_hide_context_menu.listen(&probe, Probe.hide);
+    defer menus.on_did_hide_context_menu.unlisten(hide_listener);
+    const title = @import("../vs/platform/actions/common/actions.zig").menu_ids.ViewTitle;
+    try workbench.commands.platform.register(.{ .id = "test.outline", .context = &probe, .run = Probe.run });
+    try workbench.commands.menus.appendMenuGroup(title, "zz_test", "More");
+    try workbench.commands.menus.appendMenuItem(title, .{ .command = .{ .id = "test.outline", .title = "$(symbol-method) Run Contribution" }, .group = "zz_test", .when = &.{ .Equals = .{ .key = "view", .value = .{ .string = "outline" } } } });
+    try workbench.commands.menus.appendMenuItem(title, .{ .command = .{ .id = "test.hidden", .title = "Another View" }, .group = "zz_test", .when = &.{ .Equals = .{ .key = "view", .value = .{ .string = "elsewhere" } } } });
+    try workbench.commands.execute(OutlinePane.more_actions_id);
+    const rows = menus.current.?.popup.?.items;
+    try std.testing.expectEqualStrings("More", rows[rows.len - 2].label);
+    try std.testing.expect(!rows[rows.len - 2].enabled);
+    try std.testing.expect(menus.handleKey(&.{ .key = .end }));
+    try std.testing.expectEqualStrings("Run Contribution", menus.current.?.popup.?.focusedItem().?.label);
+    try std.testing.expect(menus.handleKey(&.{ .key = .enter }));
+    try std.testing.expectEqualStrings("shrs", probe.calls.items);
+    try std.testing.expect(menus.handleKey(&.{ .key = .escape }));
+    try std.testing.expectEqualStrings("shrsh", probe.calls.items);
 }
 
 test "Workbench: closing the active tab detaches the outline editor handler" {
@@ -7610,36 +7650,36 @@ test "Workbench: SCM headers toggle on click and Load More pages the history" {
 
     const graph_press = ui.MouseEvent{ .kind = .down, .button = .left, .x = action_x.?, .y = graph_header_y };
     try std.testing.expect(workbench.handleSidebarMouse(&graph_press));
-    try std.testing.expect(workbench.context_menu != null);
-    const graph_menu = workbench.context_menu.?.popup.?;
+    try std.testing.expect(workbench.context_menu_service.current != null);
+    const graph_menu = workbench.context_menu_service.current.?.popup.?;
     try std.testing.expect(!workbench.isQuickAccessOpen());
     try std.testing.expectEqual(graph_press.x, graph_menu.options.x.?);
     try std.testing.expectEqual(graph_press.y, graph_menu.options.y.?);
     try std.testing.expectEqualStrings("View as List", graph_menu.items[0].label);
     try std.testing.expectEqual(mode_before == .list, graph_menu.items[0].checked);
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .end }));
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .end }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .enter }));
     try std.testing.expectEqual(.tree, view.viewMode());
     view.setViewMode(mode_before);
 
     const changes = workbench.scm_view.?;
     changes.setViewMode(.tree);
     try workbench.commands.execute(scm_view_mod.CHANGES_MENU_ACTION_ID);
-    const changes_menu = workbench.context_menu.?.popup.?;
+    const changes_menu = workbench.context_menu_service.current.?.popup.?;
     try std.testing.expectEqualStrings("View & Sort", changes_menu.items[0].label);
     try std.testing.expect(changes_menu.items[0].submenu[1].checked);
     try std.testing.expect(!changes_menu.items[0].submenu[3].enabled);
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .home }));
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .right }));
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .enter }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .home }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .right }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .enter }));
     try std.testing.expectEqual(.list, changes.viewMode());
 
     const header_context = ui.MouseEvent{ .kind = .down, .button = .right, .x = header_start + 1, .y = graph_header_y };
     try std.testing.expect(workbench.handleSidebarMouse(&header_context));
-    const view_items = workbench.context_menu.?.popup.?.items;
+    const view_items = workbench.context_menu_service.current.?.popup.?.items;
     try std.testing.expectEqualStrings("Graph", view_items[view_items.len - 1].label);
     try std.testing.expect(view_items[view_items.len - 1].checked);
-    try std.testing.expect(workbench.handleContextMenuKey(&.{ .key = .escape }));
+    try std.testing.expect(workbench.context_menu_service.handleKey(&.{ .key = .escape }));
 
     // Moving back over the title clears the action hover.
     try std.testing.expect(workbench.handleSidebarMouse(&over_title));

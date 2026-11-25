@@ -753,8 +753,11 @@ to the callback. `popup(allocator, items, options, on_hide)` returns a
 drive.
 
 Editor tabs, the status bar, activity and tab overflow, and terminal menus share
-the workbench popup host. The opening press anchors the menu in screen cells.
-The host consumes its matching release and restores input routing on dismissal.
+the platform ContextMenuService. The opening press anchors the menu in screen
+cells. The service consumes its matching release and restores input routing
+before running the selected action. Outline and Source Control resolve pane
+menus through MenuService. Registered group titles appear as disabled rows.
+The status bar builds its entry actions from the live StatusbarModel.
 
 The menu is deliberately not part of the DOM: it does not enter
 `Document.activeElement`, node listeners or tab order. It paints into a host

@@ -13,6 +13,12 @@
 // - the tree mode compresses single-child folders like `scm.compactFolders`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const actions = @import("../../../../platform/actions/common/actions.zig");
+const keys = @import("../../../../platform/contextkey/common/contextkey.zig");
+const OverlayContext = @import("../../../../platform/contextkey/browser/contextKeyService.zig").OverlayContext;
+const MenuService = @import("../../../../platform/actions/common/menuService.zig").MenuService;
+const Menu = @import("../../../../platform/contextview/browser/contextMenuService.zig").Menu;
+
 const IConfigurationService = @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const ui = @import("ui");
 const history = @import("../common/history.zig");
@@ -34,6 +40,25 @@ pub const SET_LIST_VIEW_MODE_ACTION_ID = "workbench.scm.action.graph.setListView
 pub const SET_TREE_VIEW_MODE_ACTION_ID = "workbench.scm.action.graph.setTreeViewMode";
 pub const fetch_glyph: u21 = '⇣';
 pub const open_changes_glyph: u21 = '▤';
+
+pub fn registerMenus(registry: *actions.MenuRegistry) !void {
+    inline for (.{
+        .{ SET_LIST_VIEW_MODE_ACTION_ID, "View as List", "list", 1 },
+        .{ SET_TREE_VIEW_MODE_ACTION_ID, "View as Tree", "tree", 2 },
+    }) |entry| try registry.appendMenuItem(actions.menu_ids.SCMHistoryTitle, .{
+        .command = .{ .id = entry[0], .title = entry[1], .toggled = &.{ .Equals = .{ .key = "scmHistoryViewMode", .value = .{ .string = entry[2] } } } },
+        .group = "9_viewmode",
+        .order = entry[3],
+    });
+}
+
+pub fn appendSecondary(menu: *Menu, service: *MenuService, parent: keys.IContext, view: *const SCMHistoryViewPane) !void {
+    var context = OverlayContext{ .parent = parent, .overlay = &.{
+        .{ .key = "view", .value = .{ .string = HISTORY_VIEW_PANE_ID } },
+        .{ .key = "scmHistoryViewMode", .value = .{ .string = @tagName(view.viewMode()) } },
+    } };
+    try menu.appendMenuActions(service, actions.menu_ids.SCMHistoryTitle, context.interface(), true);
+}
 
 pub const ViewMode = enum { list, tree };
 

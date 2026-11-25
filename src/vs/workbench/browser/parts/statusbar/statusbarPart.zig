@@ -163,6 +163,37 @@ pub const StatusbarPart = struct {
         return palette.colorOr(id, fallback);
     }
 
+    /// A right-click on an empty cell still offers the workbench and entry actions.
+    pub fn getContextMenuActions(self: *StatusbarPart, menu: *@import("../../../../platform/contextview/browser/contextMenuHandler.zig").Menu, handle: ?EntryHandle, toggle_bar: anytype) !void {
+        const actions = @import("statusbarActions.zig");
+        const arena = menu.arena.allocator();
+        try menu.addAction("workbench.action.toggleStatusbarVisibility", "Hide Status Bar", null, toggle_bar);
+        try menu.separator();
+
+        var handled = std.StringHashMap(void).init(arena);
+        for (self.model.entries()) |entry| {
+            // The terminal reserves empty entries for inactive contributions.
+            if (entry.name().len == 0 and entry.item.text().len == 0) continue;
+            if ((try handled.getOrPut(entry.id)).found_existing) continue;
+            const id = try arena.dupe(u8, entry.id);
+            const name = try arena.dupe(u8, entry.name());
+            const action = actions.ToggleStatusbarEntryVisibilityAction.init(id, name, &self.model);
+            try menu.addAction(id, name, action.checked, action);
+        }
+
+        const target = self.model.findByHandle(handle orelse return) orelse return;
+        try menu.separator();
+        if (target.item.entry.extension_id) |extension| {
+            if (self.command_executor) |executor| try menu.addAction("statusbar.manage.extension", "Manage Extension", null, actions.ManageExtensionAction{
+                .extension_id = try arena.dupe(u8, extension),
+                .executor = executor,
+            });
+        }
+        const id = try arena.dupe(u8, target.id);
+        const label = try std.fmt.allocPrint(arena, "Hide '{s}'", .{target.name()});
+        try menu.addAction(id, label, null, actions.HideStatusbarEntryAction{ .id = id, .label = label, .model = &self.model });
+    }
+
     pub fn init(allocator: Allocator) !StatusbarPart {
         var surface = try ui.Surface.init(allocator, .{
             .cols = 1,

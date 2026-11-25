@@ -163,6 +163,10 @@ pub const MenuItemAction = struct {
         self.hide_state.updateHidden(self.menu, self.item.id, !self.hide_state.isHidden(self.menu, self.item.id));
     }
 
+    pub fn from(action: IAction) ?*const MenuItemAction {
+        return if (action.get_id == getId) @ptrCast(@alignCast(action.context)) else null;
+    }
+
     pub fn interface(self: *MenuItemAction) IAction {
         return .{
             .context = self,
@@ -223,6 +227,10 @@ pub const SubmenuItemAction = struct {
     actions: []const IAction,
     checked: ?bool,
     group_title: ?[]const u8,
+
+    pub fn from(action: IAction) ?*const SubmenuItemAction {
+        return if (action.get_id == getId) @ptrCast(@alignCast(action.context)) else null;
+    }
 
     pub fn interface(self: *SubmenuItemAction) IAction {
         return .{
@@ -423,7 +431,9 @@ pub const MenuHideState = struct {
 
 fn addMenuId(allocator: Allocator, set: *std.StringHashMap(void), id: MenuId) !void {
     if (set.contains(id.id)) return;
-    try set.put(try allocator.dupe(u8, id.id), {});
+    const owned = try allocator.dupe(u8, id.id);
+    errdefer allocator.free(owned);
+    try set.put(owned, {});
 }
 
 fn collectEntryKeys(allocator: Allocator, set: *std.StringHashMap(void), entry: *const MenuEntry) !void {
@@ -449,7 +459,9 @@ fn addKeys(allocator: Allocator, set: *std.StringHashMap(void), expression: *con
     defer allocator.free(keys);
     for (keys) |key| {
         if (set.contains(key)) continue;
-        try set.put(try allocator.dupe(u8, key), {});
+        const owned = try allocator.dupe(u8, key);
+        errdefer allocator.free(owned);
+        try set.put(owned, {});
     }
 }
 
@@ -601,12 +613,11 @@ pub const MenuService = struct {
     }
 
     fn buildGroups(self: *MenuService, allocator: Allocator, id: MenuId, context: contextkey.IContext, menu_ids: *std.StringHashMap(void), context_keys: *std.StringHashMap(void), options: MenuActionOptions) ![]const MenuGroup {
-        const meta_allocator = self.allocator;
-        try addMenuId(meta_allocator, menu_ids, id);
+        try addMenuId(menu_ids.allocator, menu_ids, id);
         var visible = ArrayList(*const MenuEntry).init(allocator);
         defer visible.deinit();
         for (self.registry.getMenuItems(id)) |*entry| {
-            try collectEntryKeys(meta_allocator, context_keys, entry);
+            try collectEntryKeys(context_keys.allocator, context_keys, entry);
             const when = switch (entry.*) {
                 .command => |item| item.when,
                 .submenu => |item| item.when,

@@ -25,7 +25,7 @@ commit. Preserve discovery through `src/tests.zig` when moving cases.
 
 ## Implemented since the baseline
 
-The browser shell is 14,810 lines and has no inline tests. All 151 baseline
+The browser shell is 14,667 lines and has no inline tests. All 151 baseline
 tests remain registered. Of those, 150 exercise the terminal host and one
 exercises the tabs control at its owner path. The command-palette fixture
 records 256 command IDs with labels, categories and visibility for empty and
@@ -66,13 +66,17 @@ Show All Commands resolves the quick input service through its Action2 handler.
 * The tunnel view owns the two Ports palette actions. The compiled-in extension
   registers its private local provider with the workspace API and uses the
   window terminal API. Thirteen files still import the shell.
+* ContextMenuService owns the terminal popup, input capture and hide-before-action
+  ordering. Outline, SCM Changes and SCM History resolve their registered actions
+  through MenuService with pane-scoped context keys. StatusbarPart builds actions
+  for the clicked entry.
 * The SCM changes and history panes read settings through IConfigurationService.
   Configuration change events apply settings to open panes, including edits
   made through the configuration API. The graph restores its workspace view mode
   before applying the configured default.
 * The terminal host owns its input buffer, descriptor waits, resize handling
   and frame output. Breadcrumb and outline updates request a frame from their
-  model listeners. The command table, native menu construction, feature
+  model listeners. The command table, editor and terminal menu construction, feature
   wiring and several state-scanning methods still live in the browser shell.
   The native CLI still schedules background work and performs startup wiring.
 

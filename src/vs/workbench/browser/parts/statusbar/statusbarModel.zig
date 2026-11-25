@@ -75,6 +75,8 @@ pub const StatusbarModel = struct {
     }
 
     pub fn deinit(self: *StatusbarModel) void {
+        var ids = self.hidden.keyIterator();
+        while (ids.next()) |id| self.allocator.free(id.*);
         self.hidden.deinit();
         self.on_did_change_entry_visibility.deinit();
         self.entries_list.deinit();
@@ -158,8 +160,12 @@ pub const StatusbarModel = struct {
 
     pub fn hide(self: *StatusbarModel, id: []const u8) void {
         if (self.hidden.contains(id)) return;
+        const owned_id = self.allocator.dupe(u8, id) catch return;
+        self.hidden.put(owned_id, {}) catch {
+            self.allocator.free(owned_id);
+            return;
+        };
         self.revision +%= 1;
-        self.hidden.put(id, {}) catch return;
         self.updateVisibility(id, true);
         if (self.focused_handle) |handle| {
             if (self.findByHandle(handle)) |entry| {
@@ -170,7 +176,8 @@ pub const StatusbarModel = struct {
     }
 
     pub fn show(self: *StatusbarModel, id: []const u8) void {
-        if (self.hidden.fetchRemove(id) == null) return;
+        const removed = self.hidden.fetchRemove(id) orelse return;
+        defer self.allocator.free(removed.key);
         self.revision +%= 1;
         self.updateVisibility(id, true);
         self.markFirstLastVisibleEntry();
@@ -549,4 +556,15 @@ test "StatusbarModel: empty text is not focusable" {
     });
     const focused = model.focusNextEntry().?;
     try std.testing.expectEqual(visible, focused.handle);
+}
+
+test "hidden statusbar ids outlive the action and entry that supplied them" {
+    var model = StatusbarModel.init(std.testing.allocator);
+    defer model.deinit();
+    var transient = "example".*;
+    model.hide(&transient);
+    transient[0] = 'X';
+    try std.testing.expect(model.isHidden("example"));
+    model.show("example");
+    try std.testing.expect(!model.isHidden("example"));
 }

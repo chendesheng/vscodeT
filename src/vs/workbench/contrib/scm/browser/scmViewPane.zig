@@ -26,6 +26,12 @@
 //   filtering and automatic reveal are unported.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const menus = @import("../../../../platform/actions/common/actions.zig");
+const keys = @import("../../../../platform/contextkey/common/contextkey.zig");
+const OverlayContext = @import("../../../../platform/contextkey/browser/contextKeyService.zig").OverlayContext;
+const MenuService = @import("../../../../platform/actions/common/menuService.zig").MenuService;
+const Menu = @import("../../../../platform/contextview/browser/contextMenuService.zig").Menu;
+
 const IConfigurationService = @import("../../../../platform/configuration/common/configuration.zig").IConfigurationService;
 const ui = @import("ui");
 const theme_colors_mod = @import("../../../browser/themeColors.zig");
@@ -46,6 +52,43 @@ pub const SET_SORT_BY_STATUS_ACTION_ID = "workbench.scm.action.setSortKey.status
 pub const REFRESH_ACTION_ID = "git.refresh";
 pub const CHANGES_MENU_ACTION_ID = "workbench.scm.action.showChangesMenu";
 pub const COMMIT_ACTION_ID = "git.commit";
+const view_sort_menu = menus.MenuId{ .id = "SCMViewSort" };
+const in_view = keys.Expr{ .Equals = .{ .key = "view", .value = .{ .string = scm.VIEW_PANE_ID } } };
+const has_repositories = keys.Expr{ .NotEquals = .{ .key = "scmRepositoryCount", .value = .{ .number = 0 } } };
+const list_view = keys.Expr{ .Equals = .{ .key = "scmViewMode", .value = .{ .string = "list" } } };
+
+pub fn registerMenus(registry: *menus.MenuRegistry) !void {
+    try registry.appendSubmenuItem(menus.menu_ids.SCMTitle, .{
+        .title = "View & Sort",
+        .submenu = view_sort_menu,
+        .when = &.{ .And = @constCast(&[_]*const keys.Expr{ &in_view, &has_repositories }) },
+        .group = "0_view&sort",
+        .order = 1,
+    });
+    for ([_]menus.IMenuItem{
+        .{ .command = .{ .id = SET_LIST_VIEW_MODE_ACTION_ID, .title = "View as List", .toggled = &list_view }, .group = "1_viewmode" },
+        .{ .command = .{ .id = SET_TREE_VIEW_MODE_ACTION_ID, .title = "View as Tree", .toggled = &.{ .Equals = .{ .key = "scmViewMode", .value = .{ .string = "tree" } } } }, .group = "1_viewmode" },
+    }) |item| try registry.appendMenuItem(view_sort_menu, item);
+    inline for (.{
+        .{ SET_SORT_BY_NAME_ACTION_ID, "Sort Changes by Name", "name" },
+        .{ SET_SORT_BY_PATH_ACTION_ID, "Sort Changes by Path", "path" },
+        .{ SET_SORT_BY_STATUS_ACTION_ID, "Sort Changes by Status", "status" },
+    }) |entry| try registry.appendMenuItem(view_sort_menu, .{
+        .command = .{ .id = entry[0], .title = entry[1], .precondition = &list_view, .toggled = &.{ .Equals = .{ .key = "scmViewSortKey", .value = .{ .string = entry[2] } } } },
+        .group = "2_sort",
+    });
+}
+
+pub fn appendSecondary(menu: *Menu, service: *MenuService, parent: keys.IContext, view: *const SCMViewPane) !void {
+    var context = OverlayContext{ .parent = parent, .overlay = &.{
+        .{ .key = "view", .value = .{ .string = scm.VIEW_PANE_ID } },
+        .{ .key = "scmRepositoryCount", .value = .{ .number = @floatFromInt(view.service.repositoryCount()) } },
+        .{ .key = "scmViewMode", .value = .{ .string = @tagName(view.viewMode()) } },
+        .{ .key = "scmViewSortKey", .value = .{ .string = @tagName(view.effectiveSortKey()) } },
+    } };
+    try menu.appendMenuActions(service, menus.menu_ids.SCMTitle, context.interface(), true);
+}
+
 pub const CommitAction = enum { commit, amend, push, sync };
 pub const ResourceAction = enum {
     open_file,

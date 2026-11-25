@@ -253,6 +253,10 @@ pub const ActionRunner = struct {
 pub const Separator = struct {
     label_text: ?[]const u8 = null,
 
+    pub fn isSeparator(action: IAction) bool {
+        return action.get_id == getId;
+    }
+
     pub fn interface(self: *Separator) IAction {
         return .{
             .context = self,
