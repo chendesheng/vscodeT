@@ -719,7 +719,7 @@ console API for raw mode, sizing and input polling.
   probes the draft cell-border protocol. The sidebar, the entire editor area
   and each modal dialog have their own outline, with rounded corners when the
   terminal supports them. Native context menus are host-composited popups
-  (`ui/contextmenu.zig`) modeled on VS Code's `IContextMenuItem` API: rounded
+  (`ui/src/contextmenu.zig`) modeled on VS Code's `IContextMenuItem` API: rounded
   framed levels, check/radio marks, separators, accelerators and nested
   submenus, with the host routing keys and mouse events while the menu is open.
   Editor groups share straight, draggable dividers.
@@ -1348,7 +1348,7 @@ console API for raw mode, sizing and input polling.
   `zig build run -- --preview <file>` read-only mode uses the same token
   renderer and adds Up/Down, PageUp/PageDown, Home, End and mouse-wheel
   scrolling; Ctrl-Q quits. Overlay widgets and a single-line terminal input box
-  (`ui/inputbox.zig`) are in place, and the find bar is wired: Ctrl-F opens
+  (`ui/src/inputbox.zig`) are in place, and the find bar is wired: Ctrl-F opens
   find (a single-line selection seeds the query), Ctrl-R opens the replace row,
   Enter/Shift-Enter go to the next/previous match, Escape closes, Tab switches
   between the find and replace inputs, Up/Down recall previous find/replace

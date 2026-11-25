@@ -1,6 +1,6 @@
 //! Terminal key-event dispatch shared by the TUI read loop and the wasm host.
 //!
-//! The byte-to-`ui.input.KeyEvent` decoding stays in `ui/input.zig`; this module
+//! The byte-to-`ui.input.KeyEvent` decoding stays in `ui/src/input.zig`; this module
 //! maps a decoded key to the editor command or edit operation that the terminal
 //! host performs. It deliberately has no terminal, workbench or OS dependency so
 //! the same behavior backs the native TUI and the browser demo.

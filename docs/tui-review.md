@@ -106,7 +106,7 @@ Direct duplication that can be deleted (two entries need the small port named
 in the bullet):
 
 - `src/tui/ansi.zig` is dead: **zero imports**, not registered in `tests.zig`;
-  `ui/ansi.zig` (encoding) and `ui/input.zig` (decoding) replaced it.
+  `ui/src/ansi.zig` (encoding) and `ui/src/input.zig` (decoding) replaced it.
 - `src/tui/preview.zig` is a second, weaker view renderer (gutter, tokens,
   status) for `--preview`; upstream has no preview view. Fold the mode into
   `View`/`Editor` with `readOnly`.
@@ -159,7 +159,7 @@ existing ports under `src/vs/`.
 | Destination | Rule | Precedent already in the tree |
 | --- | --- | --- |
 | `src/vs/...` mirrored path | The behaviour exists in VS Code, including view logic and widgets. Terminal cells replace DOM/CSS, but the decision logic keeps the upstream file and names. | `workbench/browser/parts/statusbar/statusbarPart.zig` (716 lines) renders a `ui` surface; `editorGroupView.zig` keeps tab state and hit rectangles; `breadcrumbsControl.zig` draws itself; 40 files under `src/vs` import `ui`. |
-| `ui/` | Generic terminal capability with no VS Code semantics: screen control, cell-border protocol, text drawing, scrollbar geometry, reusable form/overlay primitives. | `ui/inputbox.zig`, `ui/dialog.zig`, `ui/scroll_view.zig`, `ui/ansi.zig`. |
+| `ui/` | Generic terminal capability with no VS Code semantics: screen control, cell-border protocol, text drawing, scrollbar geometry, reusable form/overlay primitives. | `ui/src/inputbox.zig`, `ui/src/dialog.zig`, `ui/src/scroll_view.zig`, `ui/src/ansi.zig`. |
 | `src/tui/` | Process/terminal host only: CLI, raw mode, read/poll loop, signals, frame output, platform paths, spawning the extension host, and explicitly TUI-only fallbacks. | `tui.zig` raw mode/poll, `app.zig` CLI and loop. |
 
 The repo's long-term architecture in `docs/terminal-ui.md` says the same thing:
@@ -200,7 +200,7 @@ means a smaller host file remains; "Keep" means it stays.
 | `session.zig` | 298 | **Split** | memento/DTO → `editorPart.zig`/`editorGroupsService.zig`; file host remains |
 | `editorInput.zig` | 242 | **Delete** | merge into ported `contrib/files/.../fileEditorInput.zig` |
 | `terminalInput.zig` | 255 | **Move** | `contrib/terminal/browser/terminalInput.zig` |
-| `ansi.zig` | 237 | **Delete** | dead; `ui/ansi.zig` + `ui/input.zig` cover it |
+| `ansi.zig` | 237 | **Delete** | dead; `ui/src/ansi.zig` + `ui/src/input.zig` cover it |
 | `utf8Helper.zig` | 199 | **Move** | `base/common/strings.zig` (Zig-only UTF-8 helpers) |
 | `language.zig` | 156 | **Move** | `workbench/services/language/common/bundledLanguages.zig` (bundled subset) |
 | `terminalView.zig` | 127 | **Move** | `contrib/terminal/browser/terminalRenderer.zig` |
@@ -214,7 +214,7 @@ means a smaller host file remains; "Keep" means it stays.
 | `fileIcon.zig` | 71 | **Keep** (short term) | documented TUI badge; fold into file-icon picker when icon themes are ported |
 | `workingCopy.zig` | 70 | **Delete** | `textFileEditorModel.zig` adapter |
 | `hoverProvider.zig` | 175 | **Keep** | TUI-only word/token fallback; documented |
-| `cellBorders.zig` | 61 | **Move** | probe state machine → `ui/cell_border.zig`; app drives it |
+| `cellBorders.zig` | 61 | **Move** | probe state machine → `ui/src/cell_border.zig`; app drives it |
 | `terminalView.test.zig` | 29 | **Move** | with `terminalRenderer.zig` |
 | `settingsWatcher.zig` | 145 | **Move** | `workbench/services/configuration/browser/configurationService.zig` |
 
@@ -375,7 +375,7 @@ use `View` with input disabled), and move the rendering tests to `view.zig`.
 
 `src/tui/ansi.zig` tokenizes ANSI sequences (`AnsiToken`, `tokenize`, tests).
 Nothing imports it; it is not in `tests.zig`. The replacement is
-`ui/input.zig` (decode) and `ui/ansi.zig` (encode). Delete it before doing
+`ui/src/input.zig` (decode) and `ui/src/ansi.zig` (encode). Delete it before doing
 anything else.
 
 ### 3.9 Theme loading has two implementations
@@ -407,8 +407,8 @@ live in `src/tui/`:
 | --- | --- |
 | `drawText`/`drawPlainText` | `explorerTreeSidebar.zig:543`, `quickInput.zig:377`, `searchView.zig:1389`, `terminalPanel.zig:154`, `workbench.zig:4547`, plus `tabBar.zig` label drawing and `fileIcon.zig:54` |
 | Text width/clip/truncate | `tabBar.zig:73-128`, the `drawText` copies, `ui.paint.drawText` |
-| Scrollbar thumb math/paint | `view.zig:1639-1705`, `searchView.zig:1003-1020`, `explorerTreeSidebar.zig:405-431`, `ui/scroll_view.zig` |
-| Overlay placement/blit/outside-click | `quickInput.zig:62-169`, `ui/dialog.zig`, `workbench.zig` dialog path |
+| Scrollbar thumb math/paint | `view.zig:1639-1705`, `searchView.zig:1003-1020`, `explorerTreeSidebar.zig:405-431`, `ui/src/scroll_view.zig` |
+| Overlay placement/blit/outside-click | `quickInput.zig:62-169`, `ui/src/dialog.zig`, `workbench.zig` dialog path |
 | Screen control sequences | `tui.zig:132-286` (alt screen, mouse capture, cursor, clear, line wrap, bracketed paste) |
 
 None of these is VS Code-specific. They belong in `ui/` (see §5).
@@ -956,7 +956,7 @@ setup (they currently have their own).
 
 **`cellBorders.zig`**
 
-`ui/cell_border.zig` already owns the query, DA1, parser and capabilities. Move
+`ui/src/cell_border.zig` already owns the query, DA1, parser and capabilities. Move
 the probe state machine there (`Probe.feed(bytes)` / `Probe.finished()` /
 `Result`) and let `app.zig` drive the reads/timeout. The host keeps the
 `readFd`/`pollInput` loop only.
@@ -1021,11 +1021,11 @@ Everything else has an upstream home.
 These are generic terminal capabilities currently implemented in `src/tui/`.
 They have no VS Code semantics and no dependency on `src/`.
 
-1. **`ui/screen.zig`** (or extend `ui/ansi.zig`): alternate screen, bracketed
+1. **`ui/src/screen.zig`** (or extend `ui/src/ansi.zig`): alternate screen, bracketed
    paste, mouse capture, line wrap, clear screen, cursor position/move/hide/
    show, cursor-position query. Replace `tui.zig:132-286` and the duplicate
    setup in `ui/examples/*`.
-2. **`ui/cell_border.zig` probe**: `Probe` state machine fed by the host, with
+2. **`ui/src/cell_border.zig` probe**: `Probe` state machine fed by the host, with
    `Result { supported, capabilities }`. Remove `src/tui/cellBorders.zig`.
 3. **`ui/text.zig`**: `drawText(grid, text, x, y, max_width, paint, measure)`,
    `measure`, `truncate`, and `drawStyledRuns` (coalesce equal-style runs into
@@ -1043,7 +1043,7 @@ They have no VS Code semantics and no dependency on `src/`.
    caller data.
 6. **`ui/overlay.zig`** (candidate, defer): centered/anchored overlay
    rectangle, `clearBordersRect`, `blit`, outside-click hit test. Duplicated
-   by `quickInput.zig` and `ui/dialog.zig`, but the editor anchoring
+   by `quickInput.zig` and `ui/src/dialog.zig`, but the editor anchoring
    preferences are VS Code contracts; wait for the second non-editor consumer
    (quick input) before extracting.
 7. **`ui.CellGrid.addBorderRect`**: the pane-border and drop-target rectangle
@@ -1055,7 +1055,7 @@ They have no VS Code semantics and no dependency on `src/`.
    `ui.input` stream; `decodeWithRemainder` already exists. Weak candidate,
    do it with the host loop cleanup.
 9. **Small value helpers**: `ui.Style.eql`/`ui.Color.eql`, `ui.Color.fromRgb`,
-   `ui.dom.appendStyledRuns`. `ui/style.zig` has `Color.eql`; `view.zig` has a
+   `ui.dom.appendStyledRuns`. `ui/src/style.zig` has `Color.eql`; `view.zig` has a
    private `styleEql`. Cursor show/hide/place is renderer state; a
    `Surface`/`Frame` cursor API is a weak candidate (app currently emits the
    ANSI cursor sequence).
@@ -1106,8 +1106,8 @@ some are removed).
 5. Delete `keybindings.dispatchString`, `CommandRegistry.get`, the unused
    `capped` field; fix stale headers (commands "no registry", keybindings
    "TuiKeybindings retired") (~40).
-6. Move the cell-border probe to `ui/cell_border.zig`; move screen sequences
-   from `tui.zig` to `ui/screen.zig` (~210).
+6. Move the cell-border probe to `ui/src/cell_border.zig`; move screen sequences
+   from `tui.zig` to `ui/src/screen.zig` (~210).
 7. Add `ui/text.zig` and replace the five `drawText` copies (~150).
 
 ### P1 — service and duplicate-model ports (~1,500 lines out)
@@ -1254,7 +1254,7 @@ without touching VS Code ports.
 | TUI file | Upstream source(s) (`vscode/src/vs/...` unless noted) | Zig target under `src/` |
 | --- | --- | --- |
 | `activityBar.zig` | `workbench/browser/parts/activitybar/activitybarPart.ts`, `workbench/browser/parts/compositeBar.ts` | `vs/workbench/browser/parts/activitybar/activitybarPart.zig`, `compositeBar.zig` |
-| `ansi.zig` | none (dead; `ui/ansi.zig` + `ui/input.zig` replaced it) | delete |
+| `ansi.zig` | none (dead; `ui/src/ansi.zig` + `ui/src/input.zig` replaced it) | delete |
 | `app.zig` | `workbench/browser/workbench.ts` (boot), `editor/browser/coreCommands.ts` | host + `vs/editor/browser/coreCommands.zig` |
 | `commands.zig` | `platform/actions/common/actions.ts`, `platform/commands/common/commands.ts`, `platform/quickinput/browser/commandsQuickAccess.ts` | `vs/platform/{actions,commands,quickinput}/...` |
 | `editor.zig` | `editor/browser/widget/codeEditor/codeEditorWidget.ts`, `editor/common/cursor/cursor.ts`, `editor/browser/view/viewController.ts`, `editor/browser/coreCommands.ts` | `vs/editor/...` |
@@ -1282,14 +1282,14 @@ without touching VS Code ports.
 | `terminalView.zig` | none (xterm renderer replacement) | `vs/workbench/contrib/terminal/browser/terminalRenderer.zig` |
 | `terminalView.test.zig` | none (moves with `terminalView.zig`) | `vs/workbench/contrib/terminal/browser/terminalView.test.zig` |
 | `theme.zig` | `editor/common/languages/supports/tokenization.ts`, `platform/theme/common/themeService.ts` | `vs/editor/common/tokenizationRegistry.zig` / theme service |
-| `tui.zig` | none (terminal host) | host + `ui/screen.zig` |
+| `tui.zig` | none (terminal host) | host + `ui/src/screen.zig` |
 | `utf8Helper.zig` | none direct (Zig adaptation) | `vs/base/common/strings.zig` |
 | `view.zig` | `editor/browser/view.ts`, `view/viewLayer.ts`, `view/viewOverlays.ts`, `viewParts/*` | `vs/editor/browser/view.zig`, `view/viewPart.zig`, `viewParts/*` |
 | `workbench.zig` | `workbench/browser/workbench.ts`, `browser/parts/editor/editorActions.ts`, `browser/actions/layoutActions.ts`, `contrib/terminal/browser/terminalActions.ts`, `contrib/search/browser/searchActions*` | `vs/workbench/browser/...` parts/actions; host shell |
 | `workingCopy.zig` | `workbench/services/textfile/common/textFileEditorModel.ts`, `workbench/services/workingCopy/common/workingCopy.ts` | `vs/workbench/services/textfile/common/textFileEditorModel.zig` |
 | `hoverProvider.zig` | none (TUI fallback) | keep host |
 | `fileIcon.zig` | `workbench/services/themes/common/fileIconThemeData.ts` | keep host until icon themes |
-| `cellBorders.zig` | none (terminal protocol) | `ui/cell_border.zig` |
+| `cellBorders.zig` | none (terminal protocol) | `ui/src/cell_border.zig` |
 
 ## Appendix B: classification checklist
 

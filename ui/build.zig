@@ -5,18 +5,19 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const ui = b.addModule("ui", .{
-        .root_source_file = b.path("ui.zig"),
+        .root_source_file = b.path("src/ui.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+    const test_module = b.addModule("ui_tests", .{
+        .root_source_file = b.path("tests/tests.zig"),
+        .target = target,
+        .optimize = optimize,
     });
+    test_module.addImport("ui", ui);
+    test_module.addAnonymousImport("bench_harness", .{ .root_source_file = b.path("bench/harness.zig") });
+    const tests = b.addTest(.{ .root_module = test_module });
     const run_tests = b.addRunArtifact(tests);
 
     const test_step = b.step("test", "Run the ui library tests");

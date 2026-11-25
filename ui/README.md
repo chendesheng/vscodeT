@@ -3,6 +3,8 @@
 A small, standalone Zig 0.17 terminal UI library. It is the rendering layer used
 by the `vscode-textbuffer` preview; it has no dependency on the editor.
 
+The public module starts at [src/ui.zig](src/ui.zig). [tests/](tests/) holds the unit and stress suites and their fixtures. Runnable scenes live in [examples/](examples/) and benchmarks in [bench/](bench/).
+
 - A DOM-like retained tree (`Node` is an element or text) with authored
   `Style` declarations. No CSS parser, no HTML parser and no selector engine:
   unset fields cascade from the parent's `ComputedStyle` when CSS makes the
@@ -54,7 +56,7 @@ by the `vscode-textbuffer` preview; it has no dependency on the editor.
   press/release handling. It is not a DOM node: the host renders it over its
   frame and routes input to it while open.
 - A double-buffered `CellGrid` renderer that emits only the ANSI frame diff.
-- Kitty graphics support in `ui/image.zig`: capability probe, PNG/RGBA
+- Kitty graphics support in `ui/src/image.zig`: capability probe, PNG/RGBA
   transmission, virtual placements, image deletion and Unicode-placeholder
   cells (`U+10EEEE` + row/column diacritics + the image id in the foreground
   color). `Runtime` owns the id space and queues escape codes for the host to
@@ -794,7 +796,7 @@ cannot look fast.
   profiler. It prints the PID; use `sample <pid> N` on macOS or
   `perf record -g` on Linux.
 
-`ui/stress.zig` adds bounded stress cases to `zig build test`: large document
+`ui/tests/stress.zig` adds bounded stress cases to `zig build test`: large document
 solve/paint, a retained scroll window, deep nesting, a many-line wrapped
 paragraph, a bordered frame + frame diff, focus/hit-test traversal and repeated
 class toggles. The heavier sizes are opt-in through the benchmark.
@@ -806,7 +808,7 @@ cd ui
 zig build test
 ```
 
-The root repository's `zig build test` also runs `ui/tests.zig`, so the library
+The root repository's `zig build test` also runs `ui/tests/tests.zig`, so the library
 tests stay part of the main suite. The text suite includes the checked-in UAX
 #14 conformance subset and the VS Code-derived wrapping cases (tabs, wide
 cells, CJK/Kinsoku, punctuation and `keepAll`).
